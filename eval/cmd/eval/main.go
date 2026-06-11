@@ -1,7 +1,5 @@
-// Command eval is the unified entry point for every FlowCraft
-// evaluation suite. It dispatches to suite-specific subcommands
-// (`eval locomo`, `eval beir`, `eval taubench`, …) so a single
-// binary covers the full eval/ tree.
+// Command eval is the entry point for FlowCraft's maintained evaluation
+// harnesses. Today it dispatches to the SimpleQA suite.
 //
 // See `eval --help` for the suite list and per-subcommand help.
 package main

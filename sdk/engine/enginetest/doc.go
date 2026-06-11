@@ -23,8 +23,8 @@
 //     }
 //
 //   - [HostSuite] — the standard contract every [engine.Host]
-//     implementation should pass. Hosts (NoopHost, vessel
-//     sandboxHost, OTel-instrumented HostFuncs, third-party hosts)
+//     implementation should pass. Hosts (NoopHost, sandbox-backed
+//     hosts, OTel-instrumented HostFuncs, third-party hosts)
 //     add a one-liner:
 //
 //     func TestMyHost_Contract(t *testing.T) {
@@ -41,7 +41,7 @@
 //
 // This package does not enumerate engine- or host-specific
 // behaviours (graph-edge ordering, script-language semantics,
-// vessel sandbox-specific bus routing, …). It only asserts what
+// host-specific bus routing, …). It only asserts what
 // every implementation of the targeted interface is contractually
 // obliged to do. Implementation-specific tests live next to the
 // implementation.

@@ -3,8 +3,7 @@
 // config) triple consumed by sdk/llm.NewFromConfig and
 // sdkx/embedding.NewFromConfig.
 //
-// It exists so eval/locomo/cmd/eval and eval/history/cmd/eval share a
-// single env-var loader (instead of each cmd carrying a verbatim copy).
+// It keeps eval CLIs and tests from each carrying a verbatim env-var loader.
 // The shape of the config map mirrors sdk/llm.NewFromConfig's signature
 // so eval CLIs and tests/conformance/llm consume the same JSON layout.
 //
@@ -34,8 +33,8 @@
 //	FLOWCRAFT_AZURE_REASONING = {"provider":"azure", "api_key":..., "caps":{"no_temperature":true}}
 //	FLOWCRAFT_AZURE_FAST      = {"provider":"azure", "api_key":..., "caps":{}}
 //
-//	--extractor-llm azure_reasoning:o1-mini   # uses FLOWCRAFT_AZURE_REASONING
-//	--answer-llm    azure_fast:gpt-4o-mini    # uses FLOWCRAFT_AZURE_FAST
+//	--answer-llm azure_fast:gpt-4o-mini       # uses FLOWCRAFT_AZURE_FAST
+//	--judge-llm  azure_reasoning:o1-mini      # uses FLOWCRAFT_AZURE_REASONING
 //
 // In the simple "one profile per provider" case the alias is just the
 // provider name and the JSON's "provider" field can be omitted.

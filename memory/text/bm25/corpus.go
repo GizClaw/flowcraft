@@ -2,9 +2,9 @@ package bm25
 
 // CorpusStats holds corpus-level statistics for BM25 scoring:
 // document count, average document length, and per-term document
-// frequency. It backs every Score / ScoreText call — callers
-// instantiate it once per index, feed it via [CorpusStats.AddDocument]
-// during ingest, and pass it by pointer to the scoring functions.
+// frequency. It backs every [Score] call — callers instantiate it
+// once per index, feed it via [CorpusStats.AddDocument] during ingest,
+// and pass it by pointer to the scoring function.
 //
 // CorpusStats is NOT safe for concurrent mutation. Indexing
 // pipelines must synchronise [CorpusStats.AddDocument] /

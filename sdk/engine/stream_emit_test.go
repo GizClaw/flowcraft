@@ -60,7 +60,7 @@ func TestEmitStreamToken_HappyPath(t *testing.T) {
 
 // TestEmitStreamDelta_StepActorWithoutNodeSuffix documents that
 // engines whose step convention is NOT graph-runner-shaped (e.g.
-// vessel inline's "<agent>.iter<N>") still get HeaderAgentID
+// an embedded loop engine's "<agent>.iter<N>") still get HeaderAgentID
 // populated correctly — splitStepActor returns the whole stepActor
 // as the agent.id prefix when no ".node." marker is present, and
 // leaves HeaderNodeID unset so the header doesn't accidentally

@@ -1,9 +1,8 @@
 // Package notify delivers eval run events to external IM endpoints.
 //
 // The package intentionally exposes a tiny Notifier interface (one method)
-// so the locomo runner can stay free of any specific provider dependency:
-// the runner emits structured events to an [locomo.EventHook]; this package
-// supplies adapters that fan those events out.
+// so eval suites can emit structured events without depending on a specific
+// messaging provider.
 //
 // Backend matrix:
 //
@@ -16,9 +15,8 @@
 //   - [NoOp]       — silently drop every event.
 //
 // The Feishu **custom-bot webhook** path is intentionally not supported:
-// it posts one chat message per event, which floods the channel on
-// long-running evals (LoCoMo10 ≈ 30 min, LongMemEval `_s` ≈ 50 h).
-// CardKit cards are the only sane UX at that timescale.
+// CardKit gives us one live card per run instead of one chat message per
+// progress event.
 package notify
 
 import (
@@ -38,7 +36,7 @@ import (
 // from Fields. Keep Fields values stringly-typed so transport
 // serialisation stays trivial.
 type Event struct {
-	Kind   string            // start | ingest_progress | ingest_done | qa_progress | done | error
+	Kind   string            // start | qa_progress | done | error
 	Time   time.Time         // event timestamp, set by the runner
 	Title  string            // single-line summary, suitable as a notification subject
 	Body   string            // optional multi-line body with details
@@ -48,8 +46,7 @@ type Event struct {
 // Notifier delivers an [Event] to a downstream channel.
 //
 // Implementations MUST be safe for concurrent use; the runner may call Notify
-// from multiple goroutines (ingest workers, QA workers, the supervising main
-// goroutine) without serialisation.
+// from multiple goroutines without serialisation.
 type Notifier interface {
 	Notify(ctx context.Context, e Event) error
 }
@@ -83,7 +80,7 @@ func (m Multi) Notify(ctx context.Context, e Event) error {
 // FlagOptions is the CLI-facing configuration. Pass it to [FromFlags] to
 // build a concrete Notifier; all-empty yields a [NoOp].
 type FlagOptions struct {
-	// Name is a short human-readable identifier (e.g. "lme-oracle") that
+	// Name is a short human-readable identifier (e.g. "simpleqa-smoke") that
 	// gets prepended to every event Title and shown in the CardKit header.
 	Name string
 

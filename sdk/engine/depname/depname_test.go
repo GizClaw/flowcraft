@@ -23,7 +23,6 @@ func TestConstants_Stable(t *testing.T) {
 		{"LLMResolver", depname.LLMResolver, "llm.resolver"},
 		{"ToolRegistry", depname.ToolRegistry, "tool.registry"},
 		{"ToolAllowedNames", depname.ToolAllowedNames, "tool.allowed_names"},
-		{"HistoryStore", depname.HistoryStore, "history.store"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -43,7 +42,6 @@ func TestConstants_NamingConvention(t *testing.T) {
 		depname.LLMResolver,
 		depname.ToolRegistry,
 		depname.ToolAllowedNames,
-		depname.HistoryStore,
 	}
 	for _, n := range all {
 		if n == "" {
@@ -68,7 +66,6 @@ func TestConstants_NoDuplicates(t *testing.T) {
 		"LLMResolver":      depname.LLMResolver,
 		"ToolRegistry":     depname.ToolRegistry,
 		"ToolAllowedNames": depname.ToolAllowedNames,
-		"HistoryStore":     depname.HistoryStore,
 	}
 	seen := make(map[string]string, len(all))
 	for sym, val := range all {

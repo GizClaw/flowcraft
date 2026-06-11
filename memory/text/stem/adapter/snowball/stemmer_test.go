@@ -3,7 +3,6 @@ package snowball_test
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/memory/text/stem"
 	"github.com/GizClaw/flowcraft/memory/text/stem/adapter/snowball"
 )
 
@@ -36,17 +35,11 @@ func TestStem_KnownPorter2Cases(t *testing.T) {
 	}
 }
 
-// TestStem_DropInForPorter1 confirms the adapter exposes the same
-// signature as [stem.Porter] so callers can swap by import alias
-// without touching call sites. The test type-checks the function
-// against stem.Porter.
-func TestStem_DropInForPorter1(t *testing.T) {
-	var p1 = stem.Porter
-	var p2 = snowball.Stem
-	// Both must be (string) string. The blank var lines fail to
-	// compile if either signature drifts.
-	_ = p1
-	_ = p2
+// TestStem_FunctionSignature confirms the adapter stays usable as a
+// tokenizer Stemmer function.
+func TestStem_FunctionSignature(t *testing.T) {
+	var stemmer func(string) string = snowball.Stem
+	_ = stemmer
 }
 
 func TestStem_Idempotent(t *testing.T) {

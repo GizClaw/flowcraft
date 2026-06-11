@@ -22,7 +22,7 @@ import (
 // NodeBuilder constructs a graph.Node from its declarative definition.
 // Build-time dependencies (LLM resolver, tool registry, script runtime,
 // workspace, etc.) are captured by the closure that returns the builder
-// — see graph/node/llmnode, graph/node/scriptnode, graph/node/knowledgenode.
+// — see graph/node/llmnode and graph/node/scriptnode.
 type NodeBuilder func(def graph.NodeDefinition) (graph.Node, error)
 
 // Factory maps node type strings to NodeBuilders and constructs node
@@ -34,8 +34,8 @@ type Factory struct {
 }
 
 // NewFactory creates an empty Factory. Call RegisterBuilder (or the
-// per-sub-package Register helpers like llmnode.Register, scriptnode.Register,
-// knowledgenode.Register) to populate it before passing it to runner.New.
+// per-sub-package Register helpers like llmnode.Register and
+// scriptnode.Register) to populate it before passing it to runner.New.
 func NewFactory() *Factory {
 	return &Factory{builders: map[string]NodeBuilder{}}
 }

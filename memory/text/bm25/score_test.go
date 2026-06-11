@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/text/bm25"
-	"github.com/GizClaw/flowcraft/memory/text/stem"
+	snowball "github.com/GizClaw/flowcraft/memory/text/stem/adapter/snowball"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
@@ -39,23 +39,6 @@ func TestCorpusStats_AddRemove(t *testing.T) {
 	}
 }
 
-func TestExtractKeywords(t *testing.T) {
-	tok := &tokenize.Simple{}
-	kws := bm25.ExtractKeywords("Hello world hello test", tok)
-	seen := make(map[string]int)
-	for _, kw := range kws {
-		seen[kw]++
-	}
-	for _, kw := range kws {
-		if seen[kw] > 1 {
-			t.Fatalf("keyword %q appears %d times (not deduped)", kw, seen[kw])
-		}
-	}
-	if len(kws) == 0 {
-		t.Fatal("expected non-empty keywords")
-	}
-}
-
 func TestBM25_ScoreOptions(t *testing.T) {
 	tok := &tokenize.Simple{}
 	cs := bm25.NewCorpus()
@@ -76,7 +59,7 @@ func TestBM25_Basic(t *testing.T) {
 	cs.AddDocument(tok.Tokenize("Go programming language"))
 	cs.AddDocument(tok.Tokenize("Python scripting"))
 
-	score := bm25.ScoreText("Go programming language is great", bm25.ExtractKeywords("go programming", tok), cs, tok)
+	score := bm25.Score(tok.Tokenize("Go programming language is great"), tokenize.ExtractKeywords("go programming", tok), cs)
 	if score <= 0 {
 		t.Fatalf("expected positive score, got %f", score)
 	}
@@ -87,7 +70,7 @@ func TestBM25_NoMatch(t *testing.T) {
 	cs := bm25.NewCorpus()
 	cs.AddDocument(tok.Tokenize("Go programming"))
 
-	score := bm25.ScoreText("Go programming", bm25.ExtractKeywords("python", tok), cs, tok)
+	score := bm25.Score(tok.Tokenize("Go programming"), tokenize.ExtractKeywords("python", tok), cs)
 	if score != 0 {
 		t.Fatalf("expected 0, got %f", score)
 	}
@@ -95,7 +78,7 @@ func TestBM25_NoMatch(t *testing.T) {
 
 func TestBM25_NilCorpus(t *testing.T) {
 	tok := &tokenize.Simple{}
-	score := bm25.ScoreText("test", []string{"test"}, nil, tok)
+	score := bm25.Score(tok.Tokenize("test"), []string{"test"}, nil)
 	if score != 0 {
 		t.Fatalf("expected 0 for nil corpus, got %f", score)
 	}
@@ -113,11 +96,11 @@ func TestBM25_RankingCorrectness(t *testing.T) {
 	cs.AddDocument(tok.Tokenize(doc2))
 	cs.AddDocument(tok.Tokenize(doc3))
 
-	keywords := bm25.ExtractKeywords("Go programming", tok)
+	keywords := tokenize.ExtractKeywords("Go programming", tok)
 
-	score1 := bm25.ScoreText(doc1, keywords, cs, tok)
-	score3 := bm25.ScoreText(doc3, keywords, cs, tok)
-	scorePy := bm25.ScoreText(doc2, keywords, cs, tok)
+	score1 := bm25.Score(tok.Tokenize(doc1), keywords, cs)
+	score3 := bm25.Score(tok.Tokenize(doc3), keywords, cs)
+	scorePy := bm25.Score(tok.Tokenize(doc2), keywords, cs)
 
 	if score1 <= 0 {
 		t.Fatalf("expected positive score for Go doc, got %f", score1)
@@ -143,9 +126,9 @@ func TestBM25_LengthNormalization(t *testing.T) {
 	cs.AddDocument(tok.Tokenize(short))
 	cs.AddDocument(tok.Tokenize(long))
 
-	keywords := bm25.ExtractKeywords("Go concurrency", tok)
-	scoreShort := bm25.ScoreText(short, keywords, cs, tok)
-	scoreLong := bm25.ScoreText(long, keywords, cs, tok)
+	keywords := tokenize.ExtractKeywords("Go concurrency", tok)
+	scoreShort := bm25.Score(tok.Tokenize(short), keywords, cs)
+	scoreLong := bm25.Score(tok.Tokenize(long), keywords, cs)
 
 	if scoreShort <= scoreLong {
 		t.Errorf("short doc should score higher due to length normalization (b=0.75): short=%f, long=%f",
@@ -159,19 +142,19 @@ func TestStemming_RecallImprovement(t *testing.T) {
 	docText := "programming languages support concurrent computing"
 	cs.AddDocument(tok.Tokenize(docText))
 
-	score := bm25.ScoreText(docText, bm25.ExtractKeywords("programs language", tok), cs, tok)
+	score := bm25.Score(tok.Tokenize(docText), tokenize.ExtractKeywords("programs language", tok), cs)
 	if score <= 0 {
 		t.Fatalf("stemming should enable 'programs' to match 'programming', got score %f", score)
 	}
 
-	if stem.Porter("programs") != stem.Porter("programming") {
-		t.Fatalf("expected stem.Porter('programs')=%q == stem.Porter('programming')=%q", stem.Porter("programs"), stem.Porter("programming"))
+	if snowball.Stem("programs") != snowball.Stem("programming") {
+		t.Fatalf("expected snowball.Stem('programs')=%q == snowball.Stem('programming')=%q", snowball.Stem("programs"), snowball.Stem("programming"))
 	}
-	if stem.Porter("languages") != stem.Porter("language") {
-		t.Fatalf("expected stem.Porter('languages')=%q == stem.Porter('language')=%q", stem.Porter("languages"), stem.Porter("language"))
+	if snowball.Stem("languages") != snowball.Stem("language") {
+		t.Fatalf("expected snowball.Stem('languages')=%q == snowball.Stem('language')=%q", snowball.Stem("languages"), snowball.Stem("language"))
 	}
 
-	scoreNoMatch := bm25.ScoreText(docText, bm25.ExtractKeywords("database storage", tok), cs, tok)
+	scoreNoMatch := bm25.Score(tok.Tokenize(docText), tokenize.ExtractKeywords("database storage", tok), cs)
 	if scoreNoMatch != 0 {
 		t.Fatalf("expected 0 score for unrelated query, got %f", scoreNoMatch)
 	}

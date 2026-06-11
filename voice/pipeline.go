@@ -176,7 +176,7 @@ func WithEngineHost(h engine.Host) PipelineOption {
 
 // WithRunOptions appends [agent.RunOption] values that are forwarded
 // unchanged to every [agent.Run] invocation the pipeline makes. Use
-// this to install a [agent.BoardSeeder] (for history / RAG injection),
+// this to install a [agent.BoardSeeder] (for transcript / RAG injection),
 // observers, deciders, dependencies, or extra attributes.
 //
 // The internal host installed for stream capture is appended AFTER

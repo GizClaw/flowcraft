@@ -12,7 +12,7 @@ import "context"
 //
 // Round B exposes one decision point — [Decider.BeforeFinalize] —
 // which fires after engine.Execute returned but before [Run] commits
-// the produced messages to history (i.e., before any Observer's
+// the produced messages to a transcript (i.e., before any Observer's
 // OnRunEnd). This covers two real cases:
 //
 //  1. Disposition: a barge-in cause means the assistant was cut off
@@ -71,7 +71,7 @@ type Decider interface {
 type FinalizeDecision struct {
 	// DiscardOutput, when true, instructs Run to mark Result.Committed
 	// = false regardless of Status. Observers reading Committed
-	// (notably history-append observers) skip persistence on a
+	// (notably transcript-append observers) skip persistence on a
 	// discarded run.
 	//
 	// Setting DiscardOutput on a StatusCompleted run is allowed and

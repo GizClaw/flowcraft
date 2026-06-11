@@ -64,7 +64,7 @@ func TestCreateAndView(t *testing.T) {
 	})
 
 	// Verify the write landed under memories/ (not at workspace root)
-	// so the Memory Tool subtree coexists with recall/knowledge/...
+	// so the Memory Tool subtree coexists with other workspace consumers.
 	data, err := ws.Read(context.Background(), "memories/notes/a.txt")
 	if err != nil {
 		t.Fatalf("expected file at memories/notes/a.txt: %v", err)
@@ -85,19 +85,19 @@ func TestCreateAndView(t *testing.T) {
 func TestSubtreeIsolation(t *testing.T) {
 	tool, ws := newTool(t)
 
-	// Pre-seed peer subtrees that another subsystem (recall, etc.)
-	// would own; the Memory Tool must not see or touch them.
-	if err := ws.Write(context.Background(), "recall/facts.json", []byte(`{}`)); err != nil {
+	// Pre-seed peer subtrees that other subsystems would own; the
+	// Memory Tool must not see or touch them.
+	if err := ws.Write(context.Background(), "retrieval/facts.json", []byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ws.Write(context.Background(), "knowledge/chunks.bin", []byte("x")); err != nil {
+	if err := ws.Write(context.Background(), "views/chunks.bin", []byte("x")); err != nil {
 		t.Fatal(err)
 	}
 
 	exec(t, tool, map[string]any{"command": "create", "path": "/memories/note.md", "file_text": "hi"})
 
 	out := exec(t, tool, map[string]any{"command": "view", "path": "/memories"})
-	if strings.Contains(out, "recall") || strings.Contains(out, "knowledge") {
+	if strings.Contains(out, "retrieval") || strings.Contains(out, "views") {
 		t.Errorf("memory view leaked sibling subtree: %s", out)
 	}
 	if !strings.Contains(out, "note.md") {
@@ -105,8 +105,8 @@ func TestSubtreeIsolation(t *testing.T) {
 	}
 
 	// Peer subtree must remain untouched.
-	if exists, _ := ws.Exists(context.Background(), "recall/facts.json"); !exists {
-		t.Error("peer subtree recall/facts.json was disturbed")
+	if exists, _ := ws.Exists(context.Background(), "retrieval/facts.json"); !exists {
+		t.Error("peer subtree retrieval/facts.json was disturbed")
 	}
 }
 

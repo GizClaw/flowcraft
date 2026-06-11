@@ -36,7 +36,7 @@ type CLIFlags struct {
 // every leaf suite inherits them uniformly.
 func RegisterFlags(fs *pflag.FlagSet) *CLIFlags {
 	c := &CLIFlags{}
-	fs.StringVar(&c.Name, "notify-name", "", "run identifier shown in the Feishu card header (e.g. lme-oracle); empty disables prefix")
+	fs.StringVar(&c.Name, "notify-name", "", "run identifier shown in the Feishu card header (e.g. simpleqa-smoke); empty disables prefix")
 	fs.IntVar(&c.ProgressPct, "notify-progress-pct", 25, "send milestone notifications every N percent of work (0 disables intermediate updates)")
 	fs.BoolVar(&c.DryRun, "notify-dry-run", false, "print events to stderr instead of posting to Feishu (for CI / smoke tests)")
 	return c
@@ -59,7 +59,7 @@ func (c *CLIFlags) Build() (Notifier, error) {
 // Forward sends ev through n and logs (rather than returns) the error.
 // EventHook adapters call Forward so they can be defined as one-liners:
 //
-//	opts.Hook = func(ctx context.Context, e history.Event) {
+//	opts.Hook = func(ctx context.Context, e simpleqa.Event) {
 //	    notify.Forward(ctx, notifier, notify.Event{
 //	        Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
 //	    })

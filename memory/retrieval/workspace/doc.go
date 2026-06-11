@@ -3,8 +3,8 @@
 // LocalWorkspace, ScopedWorkspace, or a future remote backend such as
 // S3Workspace). It is a single-process, production-grade alternative
 // to the SQLite and PostgreSQL adapters for deployments that want
-// every piece of agent state — recall facts, knowledge corpora,
-// history archives, Memory-Tool notes — to share one sandboxed root.
+// memory sources, derived views, retrieval indexes, transcripts, and
+// Memory-Tool notes to share one sandboxed root.
 //
 // Despite the package name, nothing here issues raw filesystem
 // syscalls; the backend's storage characteristics are determined
@@ -16,9 +16,9 @@
 //
 // Pick this backend when one or more of the following apply:
 //
-//   - You already use a Workspace for [sdk/history] archives,
-//     [sdkx/tool/memory], or knowledge ingestion, and want recall to
-//     share the same root for one-knob ops/backup.
+//   - You already use a Workspace for transcript archives,
+//     [sdkx/tool/memory], source ingestion, or derived views, and want
+//     retrieval indexes to share the same root for one-knob ops/backup.
 //   - You want a fully self-contained, network-free retrieval store
 //     (no SQLite cgo decision, no Postgres dependency).
 //   - The corpus fits the workspace medium's read-amplification budget:

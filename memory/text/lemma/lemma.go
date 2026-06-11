@@ -9,7 +9,7 @@
 //
 // The canonical composition for BM25 vocabulary normalisation is:
 //
-//	stem.Porter(lemma.Lemmatize(word))
+//	snowball.Stem(lemma.Lemmatize(word))
 //
 // applied to a lower-cased token after stop-word filtering.
 package lemma
@@ -27,8 +27,8 @@ func Lemmatize(word string) string {
 // when it matches a known English irregular inflection (verb past /
 // past-participle, irregular noun plural). For tokens not in the table
 // it returns word unchanged. Regular morphology (-ing / -ed / -s /
-// -tion / ...) is intentionally NOT handled here — that is Porter's
-// job in [sdk/text/stem.Porter]. The two are composed in the
+// -tion / ...) is intentionally NOT handled here — that is the stemmer's
+// job. The two are composed in the
 // tokenizer:
 //
 //	tokenize → lowercase → Lemmatize → Porter

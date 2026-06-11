@@ -33,7 +33,7 @@ type config struct {
 
 // WithTable overrides the table name (default "engine_checkpoints").
 // Useful for multi-tenant deployments that namespace tables per
-// vessel.
+// service or tenant.
 func WithTable(name string) Option {
 	return func(c *config) { c.tableName = name }
 }

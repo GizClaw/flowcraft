@@ -28,6 +28,15 @@ func TestSimple_StopWords(t *testing.T) {
 	}
 }
 
+func TestExtractKeywords_DedupesInTokenOrder(t *testing.T) {
+	tok := &tokenize.Simple{}
+	got := tokenize.ExtractKeywords("Hello world hello test world", tok)
+	want := []string{"hello", "world", "test"}
+	if !sliceEqual(got, want) {
+		t.Fatalf("ExtractKeywords = %v, want %v", got, want)
+	}
+}
+
 func TestSimple_ShortTokens(t *testing.T) {
 	tok := &tokenize.Simple{}
 	tokens := tok.Tokenize("a b c d go")

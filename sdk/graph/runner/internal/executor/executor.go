@@ -30,7 +30,7 @@ const ctxKeyActorKey ctxKey = iota
 // Deprecated: prefer populating engine.Run.Attributes with the
 // canonical telemetry.AttrAgentID key — agent.Run already does
 // this, and unlike a context value the attribute survives
-// cross-process hand-offs (HTTP, A2A, vessel inline engines). The
+// cross-process hand-offs (HTTP, A2A, embedded engines). The
 // executor's agentIDFor resolver still honours this ctx-key as a
 // fallback when no attribute is set, so existing callers keep
 // working until the v0.5.0 removal.
@@ -56,7 +56,7 @@ func actorKeyFrom(ctx context.Context) string {
 //     under this key (sdk/agent.mergeAttributes), and runner.Runner
 //     forwards engine.Run.Attributes into cfg.attributes via
 //     executor.WithAttributes. This path survives cross-process
-//     hand-offs (HTTP, vessel inline, A2A) because the attribute
+//     hand-offs (HTTP, embedded engine, A2A) because the attribute
 //     bag is part of the engine.Run contract.
 //  2. actorKeyFrom(ctx) — legacy WithActorKey ctx-key. Kept until
 //     v0.5.0 so direct executor callers (tests, embedded users)

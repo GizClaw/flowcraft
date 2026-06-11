@@ -136,7 +136,7 @@ func (t *Tool) Execute(ctx context.Context, arguments string) (string, error) {
 // toWorkspacePath validates the LLM-emitted path and returns the
 // equivalent workspace-relative path. The "memories" segment is
 // preserved so the tool stays sandboxed inside <workspace>/memories/,
-// peer to other workspace consumers (recall/, knowledge/, history/).
+// peer to other workspace consumers (retrieval/, transcripts/, views/).
 //
 // Examples (with default PathPrefix "/memories"):
 //

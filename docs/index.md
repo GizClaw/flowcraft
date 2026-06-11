@@ -5,8 +5,8 @@ title: FlowCraft Documentation
 
 # FlowCraft
 
-Go SDK for building AI agents with long-term memory, knowledge
-retrieval, runtime orchestration, and voice. Source on
+Go SDK for building AI agents with execution primitives, memory substrates,
+provider adapters, evaluation harnesses, and voice. Source on
 [github.com/GizClaw/flowcraft](https://github.com/GizClaw/flowcraft).
 
 ## Migrations
@@ -25,20 +25,19 @@ The repository is organised as independently released Go modules:
 | Primitives | `sdk/engine` | Board / Run / Host / Interrupt / Checkpoint contracts |
 | DAG executor | `sdk/graph` | Declarative graph runtime (`runner.Runner` implements `engine.Engine`) |
 | Orchestration | `sdk/agent` | Agents, observers, deciders, board seeders, handoff DSL |
-| Memory services | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing |
-| Adapters | `sdkx/...` | Concrete provider / protocol bindings layered on the SDK and memory contracts |
-| Runtime | `vessel/...`, `cmd/vesseld` | In-process runtime and deployable daemon |
+| Memory substrate | `memory/{sources,views,retrieval,text}` | Source records, derived views, retrieval indexes, text processing |
+| Adapters | `sdkx/...` | Concrete provider, tool, checkpoint, and protocol bindings layered on the SDK and memory contracts |
+| Voice | `voice/...` | Voice pipeline components |
+| Evaluation | `eval/simpleqa` | SimpleQA evaluation harness |
 
 ## Repository layout
 
 ```
 sdk/         Core SDK (interfaces + primitives)
-memory/      Recall, history, knowledge, retrieval, text
-sdkx/        Provider and protocol adapters
-vessel/      Runtime and assembly helpers
-cmd/vesseld/ Daemon binary
-voice/       Voice pipeline: STT → LLM → TTS
-eval/        Quality-evaluation harnesses
+memory/      Sources, views, retrieval, text, execution substrate
+sdkx/        Provider, tool, checkpoint, and protocol adapters
+voice/       Voice pipeline: STT -> LLM -> TTS
+eval/        SimpleQA evaluation harness
 examples/    Reference assemblies
 tests/       Conformance / quality / e2e suites
 ```

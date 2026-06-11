@@ -7,8 +7,8 @@
 // periodic checkpoints of the matching HNSW graph. Badger and Bleve commit
 // writes through their own embedded stores; HNSW updates the live graph and is
 // checkpointed by a per-namespace flush loop plus Close. It is intended as a
-// higher-performance local backend for recall's retrieval lens; the canonical
-// memory truth remains the recall TemporalStore.
+// higher-performance local retrieval backend; canonical memory truth remains in
+// caller-owned sources and views.
 //
 // Capabilities.BM25, Vector, and Hybrid are true: Search supports QueryText,
 // QueryVector, and BM25+vector hybrid fusion using SearchRequest.HybridMode

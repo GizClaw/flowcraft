@@ -59,8 +59,8 @@ type Node struct {
 	// graph.ExecutionContext.Deps[depname.ToolRegistry] (populated
 	// by agent.Run from agent.WithDependencies). Closure-binding
 	// here remains supported for callers that construct llmnode
-	// without an upstream agent.Run wiring deps (vessel inline
-	// engine, hand-built test graphs).
+	// without an upstream agent.Run wiring deps (embedded engines,
+	// hand-built test graphs).
 	toolRegistry *tool.Registry
 
 	config     Config
@@ -74,7 +74,7 @@ type Node struct {
 // expected to supply the registry via [engine.Dependencies] under the
 // [depname.ToolRegistry] key. Pass a non-nil registry to keep the
 // legacy "builder closure" behaviour for callers driving the node
-// outside agent.Run (e.g. the vessel inline engine, unit tests).
+// outside agent.Run (e.g. embedded engines, unit tests).
 // At runtime the run-scoped registry wins when both are present.
 func New(id string, resolver llm.LLMResolver, toolReg *tool.Registry, config Config) *Node {
 	return &Node{id: id, resolver: resolver, toolRegistry: toolReg, config: config}

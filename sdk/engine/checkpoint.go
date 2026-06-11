@@ -68,12 +68,12 @@ type Checkpoint struct {
 	// SpecVersion identifies the engine's spec / definition version
 	// at the time the checkpoint was produced. The format is
 	// engine-defined: graph runner uses the [GraphMeta.Version]
-	// string; a script engine could store a content hash; vessel
-	// composes the spec document version.
+	// string; a script engine could store a content hash; a
+	// declarative host can compose the spec document version.
 	//
 	// CanResume implementations compare this against the engine's
 	// current version: a mismatch means the underlying spec has
-	// drifted (graph re-edited, script reloaded, vessel reapplied
+	// drifted (graph re-edited, script reloaded, host spec reapplied
 	// with new agent definition) and silently resuming would replay
 	// against semantics the original run never saw. Engines that
 	// detect drift surface errdefs.NotAvailable from CanResume so

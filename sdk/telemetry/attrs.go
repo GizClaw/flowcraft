@@ -158,21 +158,18 @@ const (
 	// ----- Conversation / data scope -----
 
 	// AttrConversationID identifies the conversation an operation
-	// belongs to. Shared by sdk/history (transcript / DAG / archive),
-	// sdk/recall (long-term memory writes keyed by conversation),
+	// belongs to. Shared by transcript stores, retrieval writers,
 	// sdk/kanban (when the kanban scope mirrors a conversation), and
-	// the future sdk/pod controller (multi-agent pods that share a
-	// conversation context). Producers MUST use this constant
-	// instead of legacy snake_case "conversation_id" string literals
-	// so dashboards can join across the four packages by a single
-	// dimension.
+	// host orchestration that groups runs by conversation context.
+	// Producers MUST use this constant instead of legacy snake_case
+	// "conversation_id" string literals so dashboards can join across
+	// packages by a single dimension.
 	AttrConversationID = "conversation.id"
 
-	// AttrDatasetID identifies a knowledge dataset. Emitted by
-	// sdk/knowledge (rebuild / write / delete), the knowledgenode
-	// graph node, and any retrieval span that targets one specific
-	// dataset. Cross-package dimension; needed for "errors per
-	// dataset" / "latency per dataset" splits in the dashboard.
+	// AttrDatasetID identifies a corpus or retrieval dataset. Emitted
+	// by retrieval, indexing, or ingestion spans that target one
+	// specific dataset. Cross-package dimension; needed for "errors
+	// per dataset" / "latency per dataset" splits in the dashboard.
 	AttrDatasetID = "dataset.id"
 
 	// ----- Errors -----

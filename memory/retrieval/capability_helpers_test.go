@@ -5,7 +5,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
-	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
+	wsindex "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 type declaredOnlyIndex struct{}
@@ -38,16 +39,21 @@ func (declaredOnlyIndex) List(context.Context, string, retrieval.ListRequest) (*
 }
 
 func TestCapabilitiesOfProjectsOptionalInterfaces(t *testing.T) {
-	idx := memidx.New()
+	idx, err := wsindex.New(sdkworkspace.NewMemWorkspace(), wsindex.WithAutoCompact(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer idx.Close()
 	caps := retrieval.CapabilitiesOf(idx)
-	if !caps.Extensions.DocGetter || !caps.Extensions.Iterable || !caps.Extensions.DeleteByFilter || !caps.Extensions.DropNamespace {
-		t.Fatalf("memory extensions not projected: %+v", caps.Extensions)
+	if !caps.Extensions.DocGetter || !caps.Extensions.Filterable || !caps.Extensions.Iterable ||
+		!caps.Extensions.Count || !caps.Extensions.DeleteByFilter || !caps.Extensions.DropNamespace {
+		t.Fatalf("workspace extensions not projected: %+v", caps.Extensions)
 	}
 	if !retrieval.Supports(idx, retrieval.CapabilityDocGetter) {
-		t.Fatal("memory index should support DocGetter")
+		t.Fatal("workspace index should support DocGetter")
 	}
 	if !retrieval.Supports(idx, retrieval.CapabilityHybrid) {
-		t.Fatal("memory index should report Search hybrid support")
+		t.Fatal("workspace index should report Search hybrid support")
 	}
 }
 

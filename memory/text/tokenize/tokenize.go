@@ -8,14 +8,13 @@
 //   - [Simple]: ASCII / Latin text. Splits on Unicode letter / digit
 //     boundaries, lower-cases, filters English stop words and tokens
 //     shorter than 2 characters, then folds each survivor through
-//     lemma.Lemmatize + stem.Porter so irregular ("went"/"go") and
-//     regular ("attending"/"attend") forms collapse to one key.
+//     lemma.Lemmatize + Snowball stemming so irregular ("went"/"go")
+//     and regular ("attending"/"attend") forms collapse to one key.
 //
 //   - [CJKBigram]: Mixed-script text containing Han / Hangul /
 //     Kana. Emits unigrams + bigrams over each CJK run and falls
 //     back to [Simple] for ASCII runs. Cheap and dependency-free,
-//     suitable as a default until a proper segmenter (gse, jieba)
-//     is plugged in via an adapter sub-package.
+//     suitable as the default in-memory tokenizer for mixed-script text.
 //
 //   - [Detect]: Cheap script sniffer that picks Simple or
 //     CJKBigram based on the first CJK rune it sees. Use when the
@@ -33,4 +32,23 @@ package tokenize
 // Tokenizer instance per retrieval backend.
 type Tokenizer interface {
 	Tokenize(text string) []string
+}
+
+// ExtractKeywords tokenizes text and deduplicates tokens while
+// preserving first-seen order. The result is suitable as a BM25 query.
+func ExtractKeywords(text string, tokenizer Tokenizer) []string {
+	if tokenizer == nil {
+		return nil
+	}
+	tokens := tokenizer.Tokenize(text)
+	seen := make(map[string]bool, len(tokens))
+	unique := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if seen[t] {
+			continue
+		}
+		seen[t] = true
+		unique = append(unique, t)
+	}
+	return unique
 }

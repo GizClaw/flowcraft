@@ -21,7 +21,7 @@ import (
 // Run is intentionally minimalist: it owns identifier minting, board
 // assembly, observer dispatch, and result classification — and
 // nothing else. Anything that looks like "policy" (load conversation
-// history, run RAG retrieval, write transcripts after a turn, emit
+// transcripts, run RAG retrieval, write transcripts after a turn, emit
 // metrics, route engine envelopes to a bus, accumulate token usage,
 // …) lives outside Run on:
 //
@@ -113,8 +113,8 @@ func Run(
 	attrs := mergeAttributes(rc.attributes, req, ag, runID)
 	// Promote agent.Agent.Tools into engine.Run.Deps under
 	// depname.ToolAllowedNames so engines that honour the
-	// allow-list (graph runner llmnode today; vessel inline engine
-	// after Epic D) finally see the policy gate. Caller-supplied
+	// allow-list (graph runner llmnode and other deps-aware engines)
+	// see the policy gate. Caller-supplied
 	// rc.deps[ToolAllowedNames] wins so tests / power users can
 	// override the agent-level claim per call.
 	runDeps := promoteAgentTools(rc.deps, ag.Tools)
@@ -380,9 +380,9 @@ func mintRunID() string {
 // agent.Agent.Tools is set and the caller's Dependencies container
 // does NOT already define [depname.ToolAllowedNames], the helper
 // returns a CLONE of the caller's container with the agent's tool
-// list set under that key. Engines that honour the allow-list
-// (graph runner llmnode; vessel inline engine after Epic D) then
-// see it via engine.GetDep at run time.
+// list set under that key. Engines that honour the allow-list (graph
+// runner llmnode and other deps-aware engines) then see it via
+// engine.GetDep at run time.
 //
 // Cloning preserves Run's "callers' container is immutable from
 // our perspective" rule — a caller that reuses one Dependencies
@@ -490,7 +490,7 @@ func applyOptions(ag Agent, opts []RunOption) runConfig {
 }
 
 // WithBoardSeed installs a custom [BoardSeeder] for this run. Use it
-// to inject conversation history, RAG-retrieved context, system
+// to inject conversation transcripts, RAG-retrieved context, system
 // prompts, or any other board state the engine needs at start.
 //
 // When omitted, agent uses [defaultSeeder] which appends req.Message
@@ -665,7 +665,7 @@ func WithArtifactChannels(channels ...string) RunOption {
 // / Decider on the parent run) is the canonical use. agent.Run does
 // NOT auto-derive ParentRunID from any ambient context — explicit
 // is the only contract that survives ctx propagation rewrites and
-// cross-process dispatch (vessel, A2A bridge).
+// cross-process dispatch (host services, A2A bridge).
 //
 // Engines / hosts that don't read ParentRunID are unaffected. The
 // field is also surfaced under telemetry.AttrParentRunID by

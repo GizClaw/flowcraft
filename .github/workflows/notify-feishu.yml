@@ -40,13 +40,7 @@ name: notify / feishu
 on:
   workflow_run:
     workflows:
-      - "eval / beir"
-      - "eval / history"
-      - "eval / knowledge"
-      - "eval / locomo"
-      - "eval / longmemeval"
       - "eval / simpleqa"
-      - "eval / taubench"
     types: [completed]
 
 permissions:
@@ -134,71 +128,11 @@ jobs:
             # branch + listing the workflow name above; no need to
             # touch the eval workflow itself.
             case "$SHORT" in
-              locomo|longmemeval)
-                METRICS=$(jq -r '
-                  def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-                  "runner=" + ((.runner // "n/a")|tostring)
-                  + (if .retrieval_backend != null and .retrieval_backend != ""
-                       then " retrieval=" + (.retrieval_backend|tostring)
-                       else "" end)
-                  + " host=" + ((.source.host // "n/a")|tostring)
-                  + " dataset=" + ((.dataset // "n/a")|tostring)
-                  + "\n"
-                  + "n=" + (.n|tostring)
-                  + " qa.judge=" + (.aggregate."qa.judge"|tostring)
-                  + " qa.f1=" + (.aggregate."qa.f1"|tostring)
-                  + " qa.em=" + (.aggregate."qa.em"|tostring)
-                  + (if .aggregate."recall.k_hit" != null
-                       then " recall.k_hit=" + (.aggregate."recall.k_hit"|tostring)
-                       else "" end)
-                  + " save.p95=" + ns2ms(.latency.save.p95)
-                  + " recall.p95=" + ns2ms(.latency.recall.p95)
-                ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
-                ;;
-              beir)
-                METRICS=$(jq -r '
-                  def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-                  .lanes | to_entries | map(
-                    .key as $lane
-                    | (.value.ndcg | to_entries | map("ndcg@\(.key)=\(.value)") | join(" ")) as $ndcg
-                    | (.value.recall | to_entries | map("recall@\(.key)=\(.value)") | join(" ")) as $rec
-                    | "[\($lane)] \($ndcg) \($rec) mrr=\(.value.mrr) errors=\(.value.errors) p95=" + ns2ms(.value.latency_p95)
-                  ) | join("\n")
-                ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
-                ;;
-              history)
-                METRICS=$(jq -r '
-                  def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-                  .strategies | to_entries | map(
-                    if (.value.skipped // "") != "" then
-                      "[\(.key)] SKIPPED (\(.value.skipped))"
-                    else
-                      "[\(.key)] judge=\(.value.qa_judge) f1=\(.value.qa_f1) em=\(.value.qa_em) tokens.p95=\(.value.prompt_tokens_p95) load.p95=" + ns2ms(.value.history_load_p95)
-                    end
-                  ) | join("\n")
-                ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
-                ;;
-              knowledge)
-                METRICS=$(jq -r '
-                  def ns2ms(x): if x == null then "n/a" else ((x/1000000)|tostring) + "ms" end;
-                  .lanes | to_entries | map(
-                    "[\(.key)] recall@k=\(.value.recall_at_k) keyword=\(.value.keyword_rate) neg_breach=\(.value.negative_breach) errors=\(.value.errors) p95=" + ns2ms(.value.latency_p95)
-                  ) | join("\n")
-                ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
-                ;;
               simpleqa)
                 METRICS=$(jq -r '
                   "n=\(.n) correct=\(.correct) incorrect=\(.incorrect) not_attempted=\(.not_attempted) judge_failures=\(.judge_failures)\n" +
                   "accuracy=\(.accuracy) attempted_accuracy=\(.attempted_accuracy)\n" +
                   "abstention=\(.abstention_rate) hallucination=\(.hallucination_rate)"
-                ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
-                ;;
-              taubench)
-                METRICS=$(jq -r '
-                  "n=\(.n) passed=\(.passed) pass_rate=\(.pass_rate) duration_ms=\(.duration_ms)\n" +
-                  ((.per_domain // {}) | to_entries | map(
-                    "[\(.key)] pass_rate=\(.value.pass_rate) (\(.value.passed)/\(.value.tasks))"
-                  ) | join("\n"))
                 ' "$REPORT" 2>/dev/null) || METRICS="metrics parse failed"
                 ;;
               *)

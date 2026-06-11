@@ -30,8 +30,6 @@
 !sdk/**
 !sdkx/
 !sdkx/**
-!vessel/
-!vessel/**
 !voice/
 !voice/**
 !tests/

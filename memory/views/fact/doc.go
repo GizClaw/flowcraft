@@ -5,5 +5,5 @@
 // retrieval projection; records remain rebuildable and reconcilable from their
 // observation lineage.
 // Graph persists the semantic entity/value nodes and relation edges derived from
-// fact ledger outputs for long-term recall.
+// fact ledger outputs for downstream retrieval or reasoning views.
 package fact

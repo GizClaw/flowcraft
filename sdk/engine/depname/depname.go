@@ -41,10 +41,10 @@
 //	    }
 //	}
 //
-// agent.Run / vessel build paths that perform pre-flight validation
-// iterate RequiredDepNames and reject the run when a required key is
-// absent in the container — surfacing wiring mistakes before any
-// engine.Execute call.
+// agent.Run and other host build paths that perform pre-flight
+// validation iterate RequiredDepNames and reject the run when a
+// required key is absent in the container — surfacing wiring mistakes
+// before any engine.Execute call.
 //
 // # Naming convention
 //
@@ -82,13 +82,4 @@ const (
 	// caller has not already set it on a custom Dependencies
 	// container — caller-supplied wins.
 	ToolAllowedNames = "tool.allowed_names"
-
-	// HistoryStore is a history.History the engine MAY use to
-	// load / append the conversation transcript. Engines that
-	// receive their messages exclusively through the seeded
-	// engine.Board do not need this dep — it is exposed for
-	// engines that fetch / persist history themselves (e.g. a
-	// scriptengine that supports ad-hoc history.search calls).
-	// The underlying value MUST satisfy history.History.
-	HistoryStore = "history.store"
 )

@@ -45,7 +45,7 @@ If your `.env` lives at the repo root, run from this directory so `loadDotEnv()`
 
 - Shows partial/final transcripts, assistant streaming text, and simple turn metrics.
 - Text input instead of speaking; **`/voice`** lists or sets TTS voice when the API returns a list.
-- **`/reset`**: stops the current generation/playback (`Pipeline.Abort` + `Session.StopSpeaking`) and clears the on-screen log. This example does **not** wire any history / recall store into the agent run, so there is no persisted multi-turn server memory to wipe—only in-flight work and the terminal buffer.
+- **`/reset`**: stops the current generation/playback (`Pipeline.Abort` + `Session.StopSpeaking`) and clears the on-screen log. This example does **not** wire any transcript or retrieval store into the agent run, so there is no persisted multi-turn server memory to wipe—only in-flight work and the terminal buffer.
 
 ## Project layout (short)
 

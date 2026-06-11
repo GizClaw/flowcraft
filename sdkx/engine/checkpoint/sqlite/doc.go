@@ -2,8 +2,8 @@
 //
 // The driver is modernc.org/sqlite (pure Go, no cgo) so this backend
 // works on every Go platform without a C toolchain. The store is
-// suitable for single-process daemons (vesseld), embedded examples,
-// and tests; for multi-writer workloads use the postgres backend.
+// suitable for single-process services, embedded examples, and tests;
+// for multi-writer workloads use the postgres backend.
 //
 // # Usage
 //

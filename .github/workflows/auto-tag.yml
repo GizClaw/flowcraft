@@ -8,7 +8,6 @@ on:
       - "sdkx/**"
       - "memory/**"
       - "voice/**"
-      - "vessel/**"
 
 permissions:
   contents: write
@@ -18,20 +17,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Hard opt-out: if the head commit message contains `[skip-tag]`, the
-  # whole workflow skips. Use this when a release coordinator is hand-
-  # tagging (e.g. a SemVer-major / breaking-change bump that auto-tag's
-  # patch-only logic would label incorrectly). Mirrors GitHub's own
-  # `[skip ci]` convention.
-  #
-  # Per-module skip is below: `[skip-tag:sdk]` keeps the workflow
-  # running but bypasses the sdk module specifically.
-  #
-  # Scoping rule (since 2026-05): auto-tag will ONLY consider modules
-  # whose files were modified in the current push (event.before..
-  # event.after). Earlier `[skip-tag:X]` accumulated diff is no longer
-  # charged to the next unrelated PR — the next PR that touches X
-  # will pick it up instead. See workflow body for details.
   guard:
     name: Check skip-tag marker
     runs-on: ubuntu-latest
@@ -61,9 +46,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.x"
+          go-version: "1.25"
 
       - name: Configure git
         run: |
@@ -71,14 +56,9 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Capture per-module skip markers
-        id: skip
         run: |
           msg=$(git log -1 --pretty=%B)
-          # Extract each `[skip-tag:<mod>]` marker from the commit message
-          # and surface them as MODULE_SKIP_<MOD>=1 env vars consumed by
-          # tag_module. Case-insensitive on the keyword, exact match on
-          # the module token.
-          for mod in sdk sdkx memory voice vessel; do
+          for mod in sdk sdkx memory voice; do
             if echo "$msg" | grep -qiE "\[skip[-_]tag:${mod}\]"; then
               key="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
@@ -87,38 +67,22 @@ jobs:
           done
 
       - name: Detect modules touched by THIS push
-        id: touched
         env:
           BEFORE_SHA: ${{ github.event.before }}
           AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          # We only consider modules whose files were modified between
-          # the previous main tip (event.before) and the new tip
-          # (event.after / github.sha). This is what stops auto-tag
-          # from charging unrelated modules for diff that accumulated
-          # across earlier `[skip-tag:X]` PRs — the canonical bug fix
-          # behind this rewrite.
-          #
-          # Edge case: when this is the very first push that creates
-          # main (or after a force-push that rewrote history),
-          # event.before is the all-zeros SHA. In that case we fall
-          # back to "module has any tracked file" which is a safe
-          # superset and reproduces the pre-fix behaviour.
           zeros="0000000000000000000000000000000000000000"
           if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "${zeros}" ]; then
             echo "no usable BEFORE_SHA, treating every module as touched"
-            for mod in sdk sdkx memory voice vessel; do
+            for mod in sdk sdkx memory voice; do
               key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
             done
             exit 0
           fi
-          # Make sure the before SHA is actually fetched. checkout@v4
-          # with fetch-depth: 0 already pulls full history, but a defensive
-          # fetch keeps the workflow robust against shallow-clone tweaks.
           git fetch --no-tags origin "${BEFORE_SHA}" >/dev/null 2>&1 || true
-          for mod in sdk sdkx memory voice vessel; do
+          for mod in sdk sdkx memory voice; do
             if [ -n "$(git diff --name-only "${BEFORE_SHA}".."${AFTER_SHA}" -- "$mod/")" ]; then
               key="MODULE_TOUCHED_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
               echo "${key}=1" >> "$GITHUB_ENV"
@@ -149,29 +113,6 @@ jobs:
             [ -n "$(git diff --name-only "$latest"..HEAD -- "$mod/")" ]
           }
 
-          # tag_module tags a module if both:
-          #
-          #   1. THIS push touched files inside the module directory
-          #      (MODULE_TOUCHED_<MOD>=1 from the previous step), AND
-          #   2. there are diffs in the module directory since the
-          #      latest module tag (so we capture any prior commits
-          #      that were left untagged due to `[skip-tag:<mod>]`).
-          #
-          # Rule 1 is the fix for the cross-module bleed bug: a PR
-          # that only modifies voice/ no longer wakes up sdk's tag
-          # logic just because some earlier sdk-only PR carried
-          # `[skip-tag:sdk]`. That earlier PR's accumulated diff will
-          # only be released the next time someone actually pushes
-          # an sdk/ change.
-          #
-          # Rule 2 is preserved so that a single PR that touches a
-          # module gets credited for the full untagged window — e.g.
-          # if PR#56 carried [skip-tag:sdk] and PR#60 (our hypothetical
-          # next sdk PR) does not, PR#60 patches up to v0.x.(N+2) in
-          # one go, which is the documented "skip == defer" semantics.
-          #
-          # Per-module SKIP marker still wins over both rules so a
-          # release coordinator can hand-tag a SemVer-major bump.
           tag_module() {
             local mod=$1
             local skip_var="MODULE_SKIP_$(echo "$mod" | tr '[:lower:]' '[:upper:]')"
@@ -206,14 +147,3 @@ jobs:
           tag_module "sdkx"
           tag_module "memory"
           tag_module "voice"
-          # vessel is auto-patched the same way once a seed tag exists
-          # (e.g. vessel/v0.1.0). The first-ever tag must be created
-          # by hand: latest_tag returns empty and tag_module logs a
-          # warning + skips, so we never accidentally publish v0.0.1
-          # for a never-released module.
-          tag_module "vessel"
-          # NOTE: cmd/vesseld is intentionally NOT auto-tagged. It
-          # is a daemon binary, not a library — releases ship as
-          # GitHub Release artifacts (cross-platform binaries +
-          # optional container image), not as Go module tags. See
-          # .github/workflows/release-vesseld.yml.

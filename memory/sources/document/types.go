@@ -7,8 +7,8 @@ type Document struct {
 	DatasetID string
 	// ID is the stable primary key within a dataset.
 	ID string
-	// Name is a display name, filename, or legacy alias. Migrations from the
-	// old knowledge source should explicitly set ID, often to the legacy Name.
+	// Name is a display name, filename, or legacy alias. Migrations from an
+	// older document source should explicitly set ID, often to the legacy Name.
 	Name      string
 	SourceURI string
 	MIMEType  string

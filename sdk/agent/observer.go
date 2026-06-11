@@ -8,9 +8,9 @@ import (
 
 // Observer is a read-only lifecycle hook that lets callers react to
 // stages of a [Run] without affecting its outcome. It is the plumbing
-// behind agent's "history append on completion", "metric emit on
-// start", "transcript snapshot on interrupt", and similar patterns,
-// none of which agent hard-codes any more.
+// behind agent's "transcript append on completion", "metric emit on
+// start", "board snapshot on interrupt", and similar patterns, none
+// of which agent hard-codes.
 //
 // Design rules:
 //
@@ -83,12 +83,12 @@ type Observer interface {
 // Observer method. Embed it in custom observers that only care about a
 // subset of the lifecycle:
 //
-//	type historyAppender struct {
+//	type transcriptAppender struct {
 //	    agent.BaseObserver
-//	    store sdk_history.History
+//	    store TranscriptStore
 //	}
 //
-//	func (h *historyAppender) OnRunEnd(ctx context.Context, info agent.RunInfo, res *agent.Result) {
+//	func (h *transcriptAppender) OnRunEnd(ctx context.Context, info agent.RunInfo, res *agent.Result) {
 //	    if res.Status != agent.StatusCompleted { return }
 //	    _ = h.store.Append(ctx, info.ContextID, res.Messages)
 //	}

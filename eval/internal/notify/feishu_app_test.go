@@ -185,8 +185,7 @@ func TestFeishuApp_SubsequentEventsPatch(t *testing.T) {
 	// body and the start title (which lives in History). It MUST NOT
 	// contain the qa_progress title — _progress events are transient
 	// and are dropped from History once superseded by the next event,
-	// so the card doesn't bloat over a 50 h run with dozens of
-	// progress milestones.
+	// so the card doesn't bloat with repeated progress milestones.
 	for _, want := range []string{"begin", "complete", "qa.judge=0.612", "✅"} {
 		if !strings.Contains(elementStr, want) {
 			t.Errorf("patched element should contain %q\n--- element ---\n%s", want, elementStr)
@@ -197,13 +196,9 @@ func TestFeishuApp_SubsequentEventsPatch(t *testing.T) {
 	}
 }
 
-// TestFeishuApp_ProgressEventsFilteredFromHistory pins the filter
-// rule end-to-end across every *_progress kind we know about:
-// ingest_progress (locomo/longmemeval), qa_progress (locomo /
-// longmemeval / simpleqa / beir / taubench), strategy_progress
-// (history), lane_progress (knowledge). All of them must be visible
-// in Latest while they're the most recent event, then dropped from
-// History the moment a non-progress event arrives.
+// TestFeishuApp_ProgressEventsFilteredFromHistory pins that qa_progress
+// is visible in Latest while it is the most recent event, then dropped
+// from History the moment a non-progress event arrives.
 func TestFeishuApp_ProgressEventsFilteredFromHistory(t *testing.T) {
 	mock := &fakeFeishu{}
 	srv := httptest.NewServer(mock.handler(t))
@@ -215,20 +210,17 @@ func TestFeishuApp_ProgressEventsFilteredFromHistory(t *testing.T) {
 		Now:  func() time.Time { return time.Date(2026, 5, 11, 13, 0, 0, 0, time.UTC) },
 	}
 	ctx := context.Background()
-	progressKinds := []string{"ingest_progress", "qa_progress", "strategy_progress", "lane_progress"}
 	if err := app.Notify(ctx, Event{Kind: "start", Title: "begin"}); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	for i, k := range progressKinds {
-		title := k + "-25%"
-		if err := app.Notify(ctx, Event{Kind: k, Title: title}); err != nil {
-			t.Fatalf("%d %s: %v", i, k, err)
-		}
-		// While this kind is Latest its title must be visible.
-		body, _ := mock.lastPatchBody["partial_element"].(string)
-		if !strings.Contains(body, title) {
-			t.Errorf("Latest must show current %s title %q; body=%s", k, title, body)
-		}
+	title := "qa_progress-25%"
+	if err := app.Notify(ctx, Event{Kind: "qa_progress", Title: title}); err != nil {
+		t.Fatalf("qa_progress: %v", err)
+	}
+	// While progress is Latest its title must be visible.
+	body, _ := mock.lastPatchBody["partial_element"].(string)
+	if !strings.Contains(body, title) {
+		t.Errorf("Latest must show current qa_progress title %q; body=%s", title, body)
 	}
 	if err := app.Notify(ctx, Event{Kind: "done", Title: "complete"}); err != nil {
 		t.Fatalf("done: %v", err)
@@ -237,17 +229,14 @@ func TestFeishuApp_ProgressEventsFilteredFromHistory(t *testing.T) {
 	if !strings.Contains(final, "begin") || !strings.Contains(final, "complete") {
 		t.Errorf("final card must keep start (in History) + done (in Latest); body=%s", final)
 	}
-	for _, k := range progressKinds {
-		title := k + "-25%"
-		if strings.Contains(final, title) {
-			t.Errorf("%s title %q must be dropped from History once superseded; body=%s", k, title, final)
-		}
+	if strings.Contains(final, title) {
+		t.Errorf("qa_progress title %q must be dropped from History once superseded; body=%s", title, final)
 	}
 }
 
 // TestFeishuApp_LifecycleReply verifies that lifecycle events
-// (ingest_done / done / error) additionally post a threaded text reply
-// to the parent card message, while progress and start events do not.
+// (done / error) additionally post a threaded text reply to the parent
+// card message, while progress and start events do not.
 // The reply path embeds the message_id captured from the initial card
 // send, so this also indirectly checks the message_id wire-up.
 func TestFeishuApp_LifecycleReply(t *testing.T) {
@@ -257,7 +246,7 @@ func TestFeishuApp_LifecycleReply(t *testing.T) {
 
 	app := &FeishuApp{
 		AppID: "cli", AppSecret: "s", ChatID: "oc",
-		Name: "lme-s", Base: srv.URL,
+		Name: "simpleqa-smoke", Base: srv.URL,
 	}
 	ctx := context.Background()
 
@@ -269,24 +258,20 @@ func TestFeishuApp_LifecycleReply(t *testing.T) {
 		t.Errorf("start must NOT trigger reply; got %d reply calls", mock.replyCalls)
 	}
 
-	// 2. ingest_progress (any *_progress): silent patch only.
-	if err := app.Notify(ctx, Event{Kind: "ingest_progress", Title: "ingest 5%"}); err != nil {
-		t.Fatalf("ingest_progress: %v", err)
+	// 2. qa_progress: silent patch only.
+	if err := app.Notify(ctx, Event{Kind: "qa_progress", Title: "qa 5%"}); err != nil {
+		t.Fatalf("qa_progress: %v", err)
 	}
 	if mock.replyCalls != 0 {
-		t.Errorf("ingest_progress must NOT trigger reply; got %d reply calls", mock.replyCalls)
+		t.Errorf("qa_progress must NOT trigger reply; got %d reply calls", mock.replyCalls)
 	}
 
-	// 3. ingest_done: lifecycle — reply expected.
-	if err := app.Notify(ctx, Event{
-		Kind:  "ingest_done",
-		Title: "ingest done in 2h48m (2436 Save calls)",
-		Body:  "save.p50=42s save.p95=2m18s",
-	}); err != nil {
-		t.Fatalf("ingest_done: %v", err)
+	// 3. done: lifecycle — reply expected.
+	if err := app.Notify(ctx, Event{Kind: "done", Title: "eval done in 2m50s", Body: "attempted_accuracy=0.100"}); err != nil {
+		t.Fatalf("done: %v", err)
 	}
 	if mock.replyCalls != 1 {
-		t.Fatalf("ingest_done must trigger 1 reply; got %d", mock.replyCalls)
+		t.Fatalf("done must trigger 1 reply; got %d", mock.replyCalls)
 	}
 	if !strings.HasPrefix(mock.lastReplyPath, "/open-apis/im/v1/messages/om_fake/reply") {
 		t.Errorf("reply path must embed parent message_id; got %s", mock.lastReplyPath)
@@ -304,40 +289,31 @@ func TestFeishuApp_LifecycleReply(t *testing.T) {
 	contentRaw, _ := mock.lastReplyBody["content"].(string)
 	var content map[string]string
 	_ = json.Unmarshal([]byte(contentRaw), &content)
-	if !strings.Contains(content["text"], "ingest_done") || !strings.Contains(content["text"], "2436 Save calls") {
+	if !strings.Contains(content["text"], "done") || !strings.Contains(content["text"], "eval done") {
 		t.Errorf("reply text should surface kind + headline title; got %q", content["text"])
 	}
-	if !strings.Contains(content["text"], "save.p95=2m18s") {
+	if !strings.Contains(content["text"], "attempted_accuracy=0.100") {
 		t.Errorf("reply text should append first line of Body for the notification preview; got %q", content["text"])
 	}
 
-	// 4. done: lifecycle — second reply.
-	if err := app.Notify(ctx, Event{Kind: "done", Title: "eval done in 2h50m", Body: "qa.judge=0.960"}); err != nil {
-		t.Fatalf("done: %v", err)
-	}
-	if mock.replyCalls != 2 {
-		t.Errorf("done must trigger 1 additional reply; got total %d", mock.replyCalls)
-	}
-
-	// 5. error: lifecycle — third reply.
-	if err := app.Notify(ctx, Event{Kind: "error", Title: "extractor blew up"}); err != nil {
+	// 4. error: lifecycle — second reply.
+	if err := app.Notify(ctx, Event{Kind: "error", Title: "judge failed"}); err != nil {
 		t.Fatalf("error: %v", err)
 	}
-	if mock.replyCalls != 3 {
+	if mock.replyCalls != 2 {
 		t.Errorf("error must trigger 1 additional reply; got total %d", mock.replyCalls)
 	}
 
 	// Sanity: silent patches kept growing across every non-start event
 	// (start used inline content, no patch yet).
-	if mock.patchCalls != 4 {
-		t.Errorf("expected 4 patches (progress + ingest_done + done + error); got %d", mock.patchCalls)
+	if mock.patchCalls != 3 {
+		t.Errorf("expected 3 patches (progress + done + error); got %d", mock.patchCalls)
 	}
 }
 
 // TestFeishuApp_TokenCached confirms that the token endpoint is hit
 // exactly once across many events when the cached value is still
-// fresh. Without caching, a 50 h run would hammer the auth endpoint
-// thousands of times.
+// fresh.
 func TestFeishuApp_TokenCached(t *testing.T) {
 	mock := &fakeFeishu{}
 	srv := httptest.NewServer(mock.handler(t))

@@ -40,7 +40,7 @@ func TestNode_ResolveTools_RunDepsRegistryWinsOverConstructor(t *testing.T) {
 
 // TestNode_ResolveTools_FallsBackToConstructorWhenNoDeps documents
 // the back-compat path: callers that build llmnode without any
-// agent.Run wiring (vessel inline engine, hand-built test graphs)
+// agent.Run wiring (embedded engines, hand-built test graphs)
 // keep the legacy "registry comes from the constructor" behaviour.
 func TestNode_ResolveTools_FallsBackToConstructorWhenNoDeps(t *testing.T) {
 	ctorReg := tool.NewRegistry()
@@ -102,7 +102,7 @@ func TestNode_ResolveTools_EmptyCeilingDeniesAll(t *testing.T) {
 
 // TestNode_ResolveTools_AbsentCeilingFallsBackToConfig confirms the
 // legacy back-compat path. Engines that haven't been migrated to
-// declare ToolAllowedNames (vessel inline engine pre-Epic-D) MUST
+// declare ToolAllowedNames (legacy embedded engines) MUST
 // keep working with the per-node ToolNames as the only filter.
 func TestNode_ResolveTools_AbsentCeilingFallsBackToConfig(t *testing.T) {
 	deps := &engine.Dependencies{}

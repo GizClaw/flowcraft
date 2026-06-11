@@ -711,7 +711,7 @@ func TestAgentRun_NoAgentToolsKeepsLegacyBehaviour(t *testing.T) {
 // Before the fix the executor only consulted runner.WithActorKey
 // (a ctx-key), which agent.Run never set; envelopes published
 // through agent.Run therefore carried empty agent_id headers,
-// breaking multi-agent observability in vessel mode (multiple
+// breaking multi-agent observability in host-managed mode (multiple
 // agents publishing to the same NATS topic could not be split by
 // producer).
 func TestAgentRun_EnvelopeAgentIDIsAgentID(t *testing.T) {
@@ -763,7 +763,7 @@ func TestAgentRun_EnvelopeAgentIDIsAgentID(t *testing.T) {
 // migration contract at the integration boundary: even after
 // agent.Run/runner moved to SetAgentID semantics, the legacy
 // envelope header HeaderActorID must keep being populated so
-// pre-v0.4 consumers (vessel/logs, dashboards inspecting raw
+// pre-v0.4 consumers (legacy logs, dashboards inspecting raw
 // Headers["actor_id"]) keep working unchanged until v0.5.0
 // removes the mirror.
 func TestAgentRun_LegacyActorIDHeaderStillSet(t *testing.T) {

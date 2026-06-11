@@ -48,7 +48,7 @@ import (
 // suffix to disambiguate units within the same agent run:
 //
 //   - graph runner: "<agent.id>.node.<node id>"
-//   - vessel inline: "<agent.id>.iter<N>"
+//   - embedded loop engine: "<agent.id>.iter<N>"
 //   - script engine (future): "<agent.id>.stmt<N>"
 //
 // Engines are responsible for keeping the value dot/wildcard-free
@@ -98,7 +98,7 @@ func SubjectRunEnd(runID string) event.Subject {
 // work; it MUST start with the executing agent.id (so consumers can
 // reconstruct the agent identity from the subject when the envelope
 // header is unavailable). See the file header for the per-engine
-// suffix conventions (graph: ".node.<id>"; vessel inline:
+// suffix conventions (graph: ".node.<id>"; embedded loop engine:
 // ".iter<N>") and for why agent-level NATS wildcard fan-in goes
 // through the [event.HeaderAgentID] header instead of the subject.
 //

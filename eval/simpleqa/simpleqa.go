@@ -4,24 +4,15 @@
 // a model answers each question and an LLM-as-judge grades the answer
 // against the gold target.
 //
-// Why SimpleQA, given we already ship eval/locomo and friends:
+// Why SimpleQA:
 //
-//   - Locomo / LongMemEval / history all measure memory recall under
-//     a known context. They tell us nothing about a model's
-//     factual ceiling.
 //   - SimpleQA is calibration-aware: a model that doesn't know is
 //     SUPPOSED to abstain. The headline metric is the
 //     "correct-given-attempted" ratio (CORRECT / (CORRECT + INCORRECT))
 //     which rewards models that say "I don't know" instead of
 //     hallucinating.
-//   - It composes with everything else: pair the same model on
-//     LongMemEval (memory) and SimpleQA (knowledge) and we get a 2x2
-//     view that scales with future "agentic" variants (SimpleQA +
-//     web-search, SimpleQA + sdk/knowledge-backed RAG).
-//
-// Roadmap: a follow-up commit will add a knowledge-grounded variant
-// that wraps the answer LLM in sdk/agent + sdk/knowledge.Search so we
-// can compare "raw model" vs "model + retrieval" calibration.
+//   - It is small enough to keep as the baseline eval harness while
+//     broader memory and retrieval benchmarks are out of tree.
 //
 // [SimpleQA]: https://openai.com/index/introducing-simpleqa/
 package simpleqa

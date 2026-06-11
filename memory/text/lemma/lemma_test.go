@@ -4,14 +4,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/text/lemma"
-	"github.com/GizClaw/flowcraft/memory/text/stem"
+	snowball "github.com/GizClaw/flowcraft/memory/text/stem/adapter/snowball"
 	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 // TestLemmatize_IrregularsCollapse asserts that the irregular-form
 // table actually collapses high-frequency inflections that Porter
-// alone leaves orphaned. Each row picks an inflection that Porter
-// stem mishandles (vowel-change pasts, suppletive forms, irregular
+// alone leaves orphaned. Each row picks an inflection that a suffix
+// stemmer mishandles (vowel-change pasts, suppletive forms, irregular
 // noun plurals) and asserts that after Lemmatize + Stem the two
 // surface forms share a BM25 key.
 func TestLemmatize_IrregularsCollapse(t *testing.T) {
@@ -64,10 +64,10 @@ func TestLemmatize_IrregularsCollapse(t *testing.T) {
 		{"geese", "goose"},
 	}
 	for _, c := range cases {
-		a := stem.Porter(lemma.Lemmatize(c[0]))
-		b := stem.Porter(lemma.Lemmatize(c[1]))
+		a := snowball.Stem(lemma.Lemmatize(c[0]))
+		b := snowball.Stem(lemma.Lemmatize(c[1]))
 		if a != b {
-			t.Errorf("stem.Porter(lemma.Lemmatize(%q))=%q != stem.Porter(lemma.Lemmatize(%q))=%q",
+			t.Errorf("snowball.Stem(lemma.Lemmatize(%q))=%q != snowball.Stem(lemma.Lemmatize(%q))=%q",
 				c[0], a, c[1], b)
 		}
 	}

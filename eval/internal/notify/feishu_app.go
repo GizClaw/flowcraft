@@ -16,9 +16,8 @@ import (
 
 // FeishuApp delivers run events as a single, live-updated Feishu CardKit
 // card. Unlike the custom-bot webhook, this backend posts ONE message per
-// eval run and rewrites the markdown body on every event, so a 4 h
-// LongMemEval run shows up as a single growing card instead of N separate
-// chat messages.
+// eval run and rewrites the markdown body on every event, so progress
+// updates show up as a single growing card instead of separate chat messages.
 //
 // Wire it via env (no CLI flags carry secrets):
 //
@@ -44,12 +43,11 @@ import (
 //   - Every subsequent CardKit PATCH updates the body silently — Feishu
 //     does NOT notify on card edits and there is no "edited" badge. This
 //     is by design: a 100-milestone run does not spam the chat.
-//   - For lifecycle kinds {ingest_done, done, error} we additionally
+//   - For lifecycle kinds {done, error} we additionally
 //     post a one-line TEXT reply threaded to the card. Replies DO fire
 //     normal notifications, so the operator gets pinged exactly at the
-//     handful of moments they actually need to look (phase boundaries,
-//     final scores, failures) while progress milestones remain silent
-//     edits on the same card.
+//     moments they actually need to look (final scores, failures) while
+//     progress milestones remain silent edits on the same card.
 type FeishuApp struct {
 	AppID     string
 	AppSecret string
@@ -131,7 +129,7 @@ func (f *FeishuApp) Notify(ctx context.Context, e Event) error {
 // may add later.
 func isLifecycleNotify(kind string) bool {
 	switch kind {
-	case "ingest_done", "done", "error":
+	case "done", "error":
 		return true
 	}
 	return false
@@ -429,8 +427,7 @@ func (f *FeishuApp) cardSchema() any {
 //	❌ error     kind == "error"
 //
 // Card height is O(N) in event count but each historical event contributes
-// exactly one line, so even a 25 %-resolution 50 h run (~10 events) stays
-// well under 20 lines of markdown.
+// exactly one line, so progress updates stay compact.
 func (f *FeishuApp) renderMarkdown() string {
 	if len(f.events) == 0 {
 		return "_waiting for first event…_"
@@ -465,22 +462,15 @@ func (f *FeishuApp) renderMarkdown() string {
 		for i := 0; i < len(f.events)-1; i++ {
 			e := f.events[i]
 			// *_progress milestones are transient: they give live
-			// visibility while a phase is running but are superseded
-			// by the matching *_done. Keeping them in History bloats
-			// the card on long runs (many progress lines + one done
-			// line all saying essentially the same thing), so we drop
-			// them once a newer event arrives. The current progress
-			// event is still rendered in the Latest block.
+			// visibility while work is running but are superseded by
+			// the next event. Keeping them in History bloats the card,
+			// so we drop them once a newer event arrives. The current
+			// progress event is still rendered in the Latest block.
 			//
-			// Covered kinds: ingest_progress, qa_progress, and the
-			// history-suite per-strategy progress events
-			// (strategy_progress, lane_progress). Hard-coded on
-			// purpose: future eval suites that add their own *_progress
-			// kind opt in by extending this list, which forces the
-			// author to think about History-vs-Latest semantics.
+			// Covered kinds: qa_progress. Future eval suites that add
+			// their own progress kind should opt in here deliberately.
 			switch e.Kind {
-			case "ingest_progress", "qa_progress",
-				"strategy_progress", "lane_progress":
+			case "qa_progress":
 				continue
 			}
 			since := e.At.Sub(first.At).Truncate(time.Second)

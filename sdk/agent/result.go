@@ -61,7 +61,7 @@ type Artifact struct {
 //     branch.
 //
 //   - Run() returns (nil, err) ONLY for infrastructure failures the
-//     caller cannot reasonably recover from (e.g. history append
+//     caller cannot reasonably recover from (e.g. transcript append
 //     refused, factory returned nil engine).
 //
 // This mirrors sdk/workflow.Result's "W-5" rule and avoids the
@@ -83,7 +83,7 @@ type Result struct {
 	Cause engine.Cause `json:"cause,omitempty"`
 
 	// Messages is the slice of NEW messages produced this turn —
-	// excluding the input request and any history loaded before the
+	// excluding the input request and any transcript loaded before the
 	// turn. Suitable for streaming to a UI or appending to the
 	// persistent transcript (which Run already did).
 	Messages []model.Message `json:"messages,omitempty"`

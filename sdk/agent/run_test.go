@@ -1142,9 +1142,9 @@ func TestRun_WithParentRunID_PropagatesToEngineRun(t *testing.T) {
 }
 
 // TestRun_WithParentRunID_EmptyIsNoop documents the no-op contract:
-// callers (vessel, future pod controller) that don't have a parent
-// id MUST be able to omit the option without seeing an "empty
-// parent" appear downstream.
+// callers (host controllers, future pod controller) that don't have
+// a parent id MUST be able to omit the option without seeing an
+// "empty parent" appear downstream.
 func TestRun_WithParentRunID_EmptyIsNoop(t *testing.T) {
 	var observed string
 	var sawHookCall bool

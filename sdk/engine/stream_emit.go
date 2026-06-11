@@ -101,7 +101,7 @@ func EmitStreamToolResult(ctx context.Context, pub Publisher, runID, stepActor, 
 // stepActor follows the contract documented at the top of subjects.go:
 // it MUST start with the executing agent.id (so [PatternRunAgentStream]
 // can fan-in by agent) and MAY append an engine-private suffix
-// (graph runner: ".node.<nodeID>"; vessel inline: ".iter<N>"). Both
+// (graph runner: ".node.<nodeID>"; embedded loop engine: ".iter<N>"). Both
 // runID and stepActor are sanitised by [SanitiseID] so caller-supplied
 // values cannot fragment the resulting subject.
 //
@@ -146,7 +146,7 @@ func EmitStreamDelta(ctx context.Context, pub Publisher, runID, stepActor string
 // splitStepActor extracts the agent.id prefix and the optional graph
 // runner ".node.<nodeID>" suffix from a stepActor string. Returns
 // (stepActor, "") when no recognised suffix is present, so engines
-// that use a different suffix scheme (e.g. vessel inline's ".iter<N>")
+// that use a different suffix scheme (e.g. an embedded loop engine's ".iter<N>")
 // only get the agent.id projected onto HeaderAgentID and rely on
 // other facilities for the rest.
 //

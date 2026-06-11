@@ -10,6 +10,7 @@ import (
 	hybridparams "github.com/GizClaw/flowcraft/memory/retrieval/internal/hybrid"
 	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
 	"github.com/GizClaw/flowcraft/memory/text/bm25"
+	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 // Search runs a single-modality or hybrid retrieval against ns.
@@ -28,9 +29,8 @@ import (
 //     memtable doc. Each segment caches its [tokenize.Tokenizer]
 //     output via [segmentReader.loadBM25]; Search folds those
 //     tokens (plus freshly-tokenized memtable docs) into a single
-//     [bm25.CorpusStats] before scoring. This matches the
-//     reference [memory/retrieval/memory.Index] behaviour and the
-//     BM25 protocol — IDF is corpus-relative, so a per-segment
+//     [bm25.CorpusStats] before scoring. This matches the retrieval
+//     contract and the BM25 protocol — IDF is corpus-relative, so a per-segment
 //     corpus would make a doc's rank depend on which segment it
 //     happens to live in. Cosine for QueryVector is
 //     [scoring.CosineSim] over the doc's Vector field. SparseVec is
@@ -46,8 +46,7 @@ import (
 //     applying it there.
 //
 // Empty namespaces (no manifest yet) return an empty SearchResponse rather
-// than an error: matches the in-memory backend so callers do not need to
-// special-case "not yet ingested".
+// than an error, so callers do not need to special-case "not yet ingested".
 func (idx *Index) Search(
 	ctx context.Context,
 	namespace string,
@@ -91,16 +90,15 @@ func (idx *Index) Search(
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
-	keywords := bm25.ExtractKeywords(req.QueryText, idx.cfg.tokenizer)
+	keywords := tokenize.ExtractKeywords(req.QueryText, idx.cfg.tokenizer)
 	queryVec := req.QueryVector
 
 	// Phase 1: walk the snapshot newest-first, collecting one
 	// liveDoc per surviving ID. Filter is NOT applied here — the
 	// global BM25 corpus must reflect every live doc in the
-	// namespace (Lucene/`sdk/retrieval/memory.Index` behaviour);
-	// applying the filter pre-scoring would bake the filtered
-	// subset into IDF and break ranking when the same query is
-	// run with different filters.
+	// namespace; applying the filter pre-scoring would bake the
+	// filtered subset into IDF and break ranking when the same query
+	// is run with different filters.
 	live := make(map[string]*liveDoc)
 	deleted := make(map[string]struct{})
 
@@ -177,9 +175,8 @@ func (idx *Index) Search(
 	}
 
 	// Phase 3: score against the global corpus and apply the
-	// filter as a post-step. Zero-score docs are deliberately kept
-	// (matches the in-memory backend contract — every filter-
-	// passing doc is a candidate; MinScore / TopK trims later).
+	// filter as a post-step. Zero-score docs are deliberately kept:
+	// every filter-passing doc is a candidate; MinScore / TopK trims later.
 	merged := make(map[string]*partial, len(live))
 	for id, ld := range live {
 		if !retrieval.DocMatchesFilter(ld.doc, req.Filter) {
@@ -879,8 +876,7 @@ func (idx *Index) SupportsFilter(_ retrieval.Filter) bool { return true }
 // every doc in the namespace, applies the filter, and issues a
 // single Delete with the matching IDs. Empty filters are rejected
 // with [retrieval.ErrEmptyDeleteFilter] to prevent accidental
-// "delete everything" calls — same contract the in-memory backend
-// honours.
+// "delete everything" calls.
 //
 // Implemented as List + Delete rather than a manifest-time
 // physical purge so the writer's WAL/segment story stays
@@ -940,8 +936,8 @@ func (idx *Index) DeleteByFilter(ctx context.Context, namespace string, f retrie
 	return int64(len(matched)), nil
 }
 
-// isEmptyFilter mirrors [retrieval/memory.isEmptyFilter]; an empty
-// predicate must NOT silently delete every doc in the namespace.
+// isEmptyFilter enforces the retrieval contract: an empty predicate
+// must NOT silently delete every doc in the namespace.
 func isEmptyFilter(f retrieval.Filter) bool {
 	return len(f.And) == 0 && len(f.Or) == 0 && f.Not == nil &&
 		len(f.Eq) == 0 && len(f.Neq) == 0 && len(f.In) == 0 && len(f.NotIn) == 0 &&

@@ -25,8 +25,8 @@ var (
 )
 
 // Capabilities reports what this engine implementation can do, per the
-// [engine.Describer] contract. Hosts (agent.Run preflight, vessel
-// build path, dashboards) read this to gate features on.
+// [engine.Describer] contract. Hosts (agent.Run preflight,
+// deployment controllers, dashboards) read this to gate features on.
 //
 // Current values:
 //

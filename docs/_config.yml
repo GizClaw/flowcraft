@@ -1,5 +1,5 @@
 title: FlowCraft
-description: Go SDK for building AI agents with long-term memory, knowledge retrieval, and voice
+description: Go SDK for building AI agents with memory substrates, provider adapters, evaluation, and voice
 theme: jekyll-theme-cayman
 markdown: GFM
 

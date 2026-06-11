@@ -6,8 +6,8 @@ import "testing"
 // parser must accept the canonical letter forms, the upper-cased word
 // forms, and tolerate common framing prefixes ("(A)", "A:", "A.")
 // without bucketing anything ambiguous. These cases are derived from
-// actual mis-replies we observed during early LongMemEval / SimpleQA
-// runs against various providers.
+// actual mis-replies we observed during SimpleQA runs against various
+// providers.
 func TestParseVerdict(t *testing.T) {
 	cases := []struct {
 		in          string

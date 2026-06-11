@@ -54,7 +54,7 @@ func (p *Prefix) SuffixedScope(runtimeID, userID, suffix string) string {
 	return base + suffixSeparator + suffix
 }
 
-// DatasetScope returns the dataset-keyed namespace used by knowledge-like
+// DatasetScope returns the dataset-keyed namespace used by corpus-oriented
 // systems:
 //
 //	<prefix>_<Sanitize(datasetID)>__<suffix>
@@ -65,7 +65,7 @@ func (p *Prefix) DatasetScope(datasetID, suffix string) string {
 	return p.name + "_" + Sanitize(datasetID) + suffixSeparator + suffix
 }
 
-// LegacyUserScopeV1 returns the pre-V2 recall-style user namespace:
+// LegacyUserScopeV1 returns the pre-V2 legacy user namespace:
 //
 //	<prefix>_<Sanitize(runtimeID)>__u_<Sanitize(userID)>
 //

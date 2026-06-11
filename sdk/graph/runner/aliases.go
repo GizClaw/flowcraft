@@ -76,7 +76,7 @@ type CloneableResolver = executor.CloneableResolver
 // this ctx-key when the attribute is absent. Prefer driving the
 // runner through [agent.Run] (or stamp the attribute directly on
 // engine.Run.Attributes) — that path survives cross-process
-// hand-offs (HTTP, vessel inline, A2A) where context values are
+// hand-offs (HTTP, embedded engine, A2A) where context values are
 // dropped at the wire boundary. WithActorKey will be removed in
 // v0.5.0.
 func WithActorKey(ctx context.Context, key string) context.Context {

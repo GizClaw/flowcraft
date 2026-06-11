@@ -23,13 +23,13 @@
 // <workspace>/memories/, peer to the other workspace consumers:
 //
 //	<workspace>/
-//	├── memories/   <-- written by Memory Tool
-//	├── recall/     <-- managed by recall.Service (when fs-backed)
-//	├── knowledge/  <-- managed by knowledge.Service (when fs-backed)
-//	└── history/    <-- managed by history.Coordinator
+//	├── memories/    <-- written by Memory Tool
+//	├── retrieval/   <-- optional retrieval indexes
+//	├── transcripts/ <-- optional transcript store
+//	└── views/       <-- optional derived memory views
 //
 // This isolation is what lets a single Workspace be shared across
-// every memory subsystem without their writes colliding. Hosts can
+// workspace consumers without their writes colliding. Hosts can
 // optionally wrap the workspace with [workspace.NewScopedWorkspace]
 // to enforce the boundary defensively.
 //
@@ -40,18 +40,18 @@
 // lives. The underlying primitive ([workspace.Workspace]) stays in
 // sdk; this package is the wire-level binding.
 //
-// # Composition with the memory hierarchy
+// # Composition with memory substrates
 //
-// FlowCraft already exposes a four-tier memory architecture:
+// FlowCraft exposes memory substrates that callers can combine:
 //
-//	sdk/history    - per-conversation transcript (hot)
-//	sdk/recall     - long-term facts (BM25 + vector)
-//	sdk/knowledge  - retrieval over corpora (chunk + rerank)
-//	sdk/workspace  - persistent file tree (Memory Tool target)
+//	memory/sources    - canonical evidence records
+//	memory/views      - derived projections
+//	memory/retrieval  - retrieval indexes
+//	sdk/workspace     - persistent file tree (Memory Tool target)
 //
 // This package wires the file-tree tier to the Anthropic spec so
 // agents using Anthropic's client-tool calling protocol see a
 // drop-in compatible "memory" surface, while internally the same
-// workspace can be shared with knowledge ingestion, skills, and any
-// other workspace consumer.
+// workspace can be shared with ingestion, skills, retrieval indexes,
+// and any other workspace consumer.
 package memory

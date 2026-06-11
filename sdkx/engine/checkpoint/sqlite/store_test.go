@@ -38,7 +38,7 @@ func TestOpenInMemory(t *testing.T) {
 func TestWithCustomTable(t *testing.T) {
 	dir := t.TempDir()
 	dsn := "file:" + filepath.Join(dir, "ckpt.db")
-	s, err := sqlite.Open(context.Background(), dsn, sqlite.WithTable("vessel_x_ckpts"))
+	s, err := sqlite.Open(context.Background(), dsn, sqlite.WithTable("service_x_ckpts"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

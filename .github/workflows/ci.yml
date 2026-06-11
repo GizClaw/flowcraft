@@ -16,12 +16,8 @@ jobs:
       memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
       voice: ${{ steps.filter.outputs.voice }}
-      vessel: ${{ steps.filter.outputs.vessel }}
-      vesseld: ${{ steps.filter.outputs.vesseld }}
-      vessel_quality: ${{ steps.filter.outputs.vessel_quality }}
-      vesseld_e2e: ${{ steps.filter.outputs.vesseld_e2e }}
-      retrieval_e2e: ${{ steps.filter.outputs.retrieval_e2e }}
       eval: ${{ steps.filter.outputs.eval }}
+      examples: ${{ steps.filter.outputs.examples }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -37,26 +33,19 @@ jobs:
               - 'sdkx/**'
             voice:
               - 'voice/**'
-            vessel:
-              - 'vessel/**'
-            vesseld:
-              - 'cmd/vesseld/**'
-            vessel_quality:
-              - 'tests/quality/vessel/**'
-            vesseld_e2e:
-              - 'tests/e2e/vesseld/**'
-            retrieval_e2e:
-              - 'tests/e2e/retrieval/**'
             eval:
               - 'eval/**'
+            examples:
+              - 'examples/voice-pipeline/**'
             ci:
               - '.github/workflows/**'
               - 'Makefile'
+              - 'go.work'
 
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.examples == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -65,27 +54,18 @@ jobs:
           go-version: "1.25"
       - name: go vet
         run: |
-          # Workspace members (go.work) — vetted with the workspace
-          # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx voice vessel cmd/vesseld eval; do
+          set -euo pipefail
+          for m in sdk memory sdkx voice eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
-          # Modules that pin released sdk/sdkx/vessel via require
-          # directives — vet them with GOWORK=off so the pinned
-          # versions are honoured. The e2e suites are also build-
-          # tagged (//go:build e2e) so we pass -tags=e2e.
-          for m in tests/quality/vessel; do
+          for m in examples/voice-pipeline; do
             echo "==> vet $m (GOWORK=off)"
             (cd "$m" && GOWORK=off go vet ./...)
           done
-          for m in tests/e2e/vesseld tests/e2e/retrieval; do
-            echo "==> vet $m (e2e tag, GOWORK=off)"
-            (cd "$m" && GOWORK=off go vet -tags=e2e ./...)
-          done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx voice vessel cmd/vesseld eval tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval)
+          diff=$(gofmt -l sdk memory sdkx voice eval examples/voice-pipeline)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -129,7 +109,6 @@ jobs:
   test-sdkx:
     name: Test sdkx (Go ${{ matrix.go-version }})
     needs: detect
-    # sdkx depends on sdk and memory adapters, so run when any changes
     if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -147,12 +126,7 @@ jobs:
   test-sdkx-nsjail-integration:
     name: Integration sdkx/sandbox/nsjail
     needs: detect
-    # nsjail backend lives in sdkx and depends on sdk/sandbox; rerun
-    # whenever either module's source changes (or CI itself changes).
-    # The job installs the nsjail binary and runs the
-    # integration_nsjail-tagged tests, which never run in the default
-    # test-sdkx lane (the build tag keeps them out).
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,10 +134,6 @@ jobs:
         with:
           go-version: "1.25"
       - name: Install nsjail
-        # Ubuntu 24.04 (noble) dropped the nsjail package from
-        # universe, so we build from source. The compile takes ~30s
-        # on a GitHub-hosted runner — cheap enough to do every run
-        # given how rarely this job triggers (sdk/sdkx changes only).
         run: |
           set -euo pipefail
           if command -v nsjail >/dev/null 2>&1; then
@@ -181,7 +151,6 @@ jobs:
           make -C /tmp/nsjail -j"$(nproc)"
           sudo install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail
           nsjail --help 2>&1 | head -3 || true
-          which nsjail
       - name: Test
         run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
         working-directory: sdkx
@@ -189,8 +158,7 @@ jobs:
   test-voice:
     name: Test voice (Go ${{ matrix.go-version }})
     needs: detect
-    # voice depends on sdk, so run when either changes
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -204,115 +172,9 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: voice
 
-  test-vessel:
-    name: Test vessel (Go ${{ matrix.go-version }})
-    needs: detect
-    # vessel depends on sdk; sdk memory shims also depend on memory.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: vessel
-
-  test-vesseld:
-    name: Test vesseld (Go ${{ matrix.go-version }})
-    needs: detect
-    # vesseld depends on sdk + memory + sdkx + vessel; rerun when any changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: cmd/vesseld
-
-  test-vessel-quality:
-    name: Test vessel quality (Go ${{ matrix.go-version }})
-    needs: detect
-    # In-process quality suite for the vessel runtime; reruns on
-    # sdk/vessel changes plus when the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vessel_quality == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: GOWORK=off go test -count=1 -race ./...
-        working-directory: tests/quality/vessel
-
-  test-vesseld-e2e:
-    name: E2E vesseld (Go ${{ matrix.go-version }})
-    needs: detect
-    # Black-box subprocess suite for the vesseld binary; reruns
-    # when the daemon, vessel, sdk, or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.vesseld_e2e == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    env:
-      # The e2e module pins released sdk/sdkx versions and uses
-      # `replace` directives to swap in the in-tree source. It must
-      # NOT participate in the workspace, otherwise go.work would
-      # take precedence and the replace lines become dead code.
-      GOWORK: "off"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -tags=e2e -count=1 -race ./...
-        working-directory: tests/e2e/vesseld
-
-  test-retrieval-e2e:
-    name: E2E retrieval (Go ${{ matrix.go-version }})
-    needs: detect
-    # On-disk LocalWorkspace conformance suite for sdkx/retrieval/workspace.
-    # Reruns when sdk/memory/sdkx changes or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.retrieval_e2e == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    env:
-      # Pinned to released sdk/sdkx tags via go.mod; keep go.work
-      # out of the resolution path so the pin is honoured.
-      GOWORK: "off"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -tags=e2e -count=1 -race -timeout 120s ./...
-        working-directory: tests/e2e/retrieval
-
   test-eval:
     name: Test eval (Go ${{ matrix.go-version }})
     needs: detect
-    # eval is a workspace member (see go.work) — sdk/sdkx resolve to
-    # monorepo HEAD via the workspace overlay, so rerun whenever sdk,
-    # memory, sdkx, or eval source changes.
     if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
@@ -327,12 +189,37 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: eval
 
-  # Gate job: single required status check for branch protection.
-  # Always runs; succeeds only when all triggered jobs pass.
+  test-examples:
+    name: Test examples (Go ${{ matrix.go-version }})
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.examples == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    strategy:
+      matrix:
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 ./...
+        working-directory: examples/voice-pipeline
+
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e, test-retrieval-e2e, test-eval]
+    needs:
+      - lint
+      - test-sdk
+      - test-memory
+      - test-sdkx
+      - test-sdkx-nsjail-integration
+      - test-voice
+      - test-eval
+      - test-examples
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -344,12 +231,8 @@ jobs:
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
             "${{ needs.test-voice.result }}" \
-            "${{ needs.test-vessel.result }}" \
-            "${{ needs.test-vesseld.result }}" \
-            "${{ needs.test-vessel-quality.result }}" \
-            "${{ needs.test-vesseld-e2e.result }}" \
-            "${{ needs.test-retrieval-e2e.result }}" \
             "${{ needs.test-eval.result }}" \
+            "${{ needs.test-examples.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

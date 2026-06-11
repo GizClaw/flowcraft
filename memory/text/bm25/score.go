@@ -1,12 +1,10 @@
-// Package bm25 implements Okapi BM25 scoring with a pluggable
-// tokenizer.
+// Package bm25 implements Okapi BM25 scoring over pre-tokenized text.
 //
 // BM25 is the canonical lexical retrieval scoring function used
-// across the SDK: corpus statistics live in [CorpusStats], single-
-// document scoring goes through [Score], and free-text scoring
-// (tokenize on the fly) goes through [ScoreText]. The k1 / b
-// parameters default to the textbook 1.2 / 0.75 and can be
-// overridden per call with [WithK1] / [WithB].
+// across the SDK: corpus statistics live in [CorpusStats], and
+// single-document scoring goes through [Score]. The k1 / b parameters
+// default to the textbook 1.2 / 0.75 and can be overridden per call
+// with [WithK1] / [WithB].
 //
 // CorpusStats is not safe for concurrent mutation. Indexing
 // pipelines should synchronise [CorpusStats.AddDocument] /
@@ -15,18 +13,15 @@ package bm25
 
 import (
 	"math"
-
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 // Score computes the BM25 score for a document (already tokenized)
 // against the query keywords.
 //
-// This is the core scoring primitive — callers that already hold a
-// tokenized document slice should reach for [Score] directly;
-// [ScoreText] is sugar that tokenizes the input first.
+// Callers should tokenize content and queries in the tokenize package,
+// then pass the resulting slices here.
 func Score(docTokens, queryKeywords []string, corpus *CorpusStats, opts ...ScoreOption) float64 {
-	if len(docTokens) == 0 {
+	if len(docTokens) == 0 || len(queryKeywords) == 0 || corpus == nil || corpus.DocCount == 0 {
 		return 0
 	}
 	cfg := applyScoreOptions(opts)
@@ -54,29 +49,4 @@ func Score(docTokens, queryKeywords []string, corpus *CorpusStats, opts ...Score
 		score += idf * tfNorm
 	}
 	return score
-}
-
-// ScoreText computes BM25 for arbitrary text content by tokenizing
-// it with the supplied [tokenize.Tokenizer] first.
-func ScoreText(text string, keywords []string, corpus *CorpusStats, tokenizer tokenize.Tokenizer, opts ...ScoreOption) float64 {
-	if corpus == nil || corpus.DocCount == 0 || len(keywords) == 0 {
-		return 0
-	}
-	tokens := tokenizer.Tokenize(text)
-	return Score(tokens, keywords, corpus, opts...)
-}
-
-// ExtractKeywords tokenizes text and deduplicates the result,
-// returning a stable-ordered slice suitable as a BM25 query.
-func ExtractKeywords(text string, tokenizer tokenize.Tokenizer) []string {
-	tokens := tokenizer.Tokenize(text)
-	seen := make(map[string]bool, len(tokens))
-	var unique []string
-	for _, t := range tokens {
-		if !seen[t] {
-			seen[t] = true
-			unique = append(unique, t)
-		}
-	}
-	return unique
 }

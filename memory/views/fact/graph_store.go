@@ -16,7 +16,7 @@ type NodeID string
 // EdgeID is a stable fact graph edge identifier.
 type EdgeID string
 
-// NodeKind describes the minimal fact graph node families needed by recall.
+// NodeKind describes the minimal fact graph node families used by this view.
 type NodeKind string
 
 const (
@@ -30,7 +30,7 @@ type FactRef struct {
 	Role   string
 }
 
-// Node is an entity or value participating in long-lived fact recall.
+// Node is an entity or value participating in the long-lived fact graph.
 type Node struct {
 	ID         NodeID
 	Scope      views.Scope

@@ -20,7 +20,8 @@
 //   - standard library
 //
 // engine MUST NOT import sdk/agent, sdk/agent/strategy, sdk/graph,
-// sdk/script, sdk/history, sdk/recall, sdk/llm, sdk/tool, sdk/workflow.
+// sdk/script, sdk/llm, sdk/tool, sdk/workflow, or application-owned
+// transcript/retrieval packages.
 //
 // # The contract at a glance
 //
@@ -132,8 +133,8 @@
 //
 //   - StreamCallback / StreamEvent — replaced by Publisher +
 //     event.Envelope.
-//   - Memory / MemorySession — that is a sdk/history + sdk/recall
-//     concern at the agent layer.
+//   - Memory / MemorySession — transcript, retrieval, and archival
+//     policy belongs in the agent host/application layer.
 //   - Strategy / Runnable / Disposition / ResumeToken — those are
 //     agent ↔ engine adapter contracts and live in sdk/agent and
 //     sdk/agent/strategy.
@@ -180,7 +181,7 @@
 // # Capability discovery
 //
 // Hosts that need to know what an engine can do BEFORE invoking
-// Execute (e.g. agent.Run preflight, dashboard rendering, vessel
+// Execute (e.g. agent.Run preflight, dashboard rendering, host
 // admission) call [CapabilitiesOf]:
 //
 //	caps := engine.CapabilitiesOf(eng)

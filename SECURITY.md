@@ -10,8 +10,6 @@ Security fixes are issued against the latest release of each module.
 | `sdk`      | latest `sdk/v0.x`    |
 | `memory`   | latest `memory/v0.x` |
 | `sdkx`     | latest `sdkx/v0.x`   |
-| `vessel`   | latest `vessel/v0.x` |
-| `vesseld`  | latest `vesseld/v0.x` |
 | `voice`    | latest `voice/v0.x`  |
 
 Older minor versions are not patched; please upgrade before reporting issues
@@ -30,7 +28,7 @@ Use one of the following private channels:
 
 Please include:
 
-- Affected module(s) and version/tag (e.g. `vessel/v0.3.0`).
+- Affected module(s) and version/tag (e.g. `sdk/v0.4.0`).
 - A minimal reproduction (config, command, request, or code snippet).
 - Impact assessment (what a malicious actor could do).
 - Any suggested mitigation, if you have one.
@@ -48,14 +46,15 @@ Please include:
 
 In scope:
 
-- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `vessel/`,
-  `cmd/vesseld/`, `voice/`, `examples/`, `tests/`).
-- Default configurations shipped with `vesseld` and the example deployments.
+- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `voice/`,
+  `examples/`, `eval/`).
+- Default configurations shipped with the SDK, adapters, memory substrates,
+  voice pipeline, and example deployments.
 
 Out of scope:
 
 - Third-party LLM, STT, or TTS providers — please report those upstream.
 - Vulnerabilities that require an attacker to already control the host
-  running `vesseld` or the operator's developer machine.
+  running the application or the operator's developer machine.
 - Best-practice hardening suggestions without a concrete attack — those are
   welcome as regular GitHub issues or pull requests.

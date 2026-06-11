@@ -9,7 +9,7 @@ import (
 // CJKBigram handles CJK text by emitting bigrams for CJK runs and
 // falling back to [Simple] for non-CJK runs. This avoids a heavy
 // external dependency (a real segmenter such as gse) while still
-// providing reasonable CJK search recall: a CJK substring of
+// providing reasonable CJK search match quality: a CJK substring of
 // length n contributes n unigrams + (n-1) bigrams to the index,
 // so any sub-bigram query lights up the document.
 //

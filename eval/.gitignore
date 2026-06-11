@@ -1,29 +1,8 @@
 # Eval-local artifacts; not tracked.
-#
-# - {locomo,longmemeval}/data/    upstream dumps + converted .jsonl
-#                                 (CC-BY but bulky; users fetch via
-#                                 each suite's converter subcommand)
-# - {locomo,longmemeval,history,knowledge,beir,simpleqa,taubench}/results/
-#                                 per-run report JSON. Headline
-#                                 baselines are summarised in each
-#                                 suite's README; the raw artefacts
-#                                 are intentionally excluded.
-# - compiled binaries from `go build ./cmd/eval` (the unified Cobra
-#   entry point) and any local-build leftovers.
-locomo/data/
-locomo/results/
-longmemeval/data/
-longmemeval/results/
-history/results/
-knowledge/results/
-beir/results/
-simpleqa/results/
-taubench/results/
 
-# Unified-CLI build product: `go build ./cmd/eval` from eval/ drops
-# the binary at eval/eval. The trailing slash-less form means "file
-# named eval at the eval/ root only" — it does NOT match any suite
-# subdirectory's content because `/eval` is rooted at this .gitignore
-# location (eval/) and there is no folder literally called `eval` here
-# (the suites are locomo/, longmemeval/, history/, …).
+# Per-run SimpleQA report JSON.
+simpleqa/results/
+
+# CLI build product: `go build ./cmd/eval` from eval/ drops the binary
+# at eval/eval. The leading slash anchors this to the module root.
 /eval

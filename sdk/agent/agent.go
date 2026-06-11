@@ -10,7 +10,7 @@ package agent
 // internally owned a Strategy and so could only execute one way.
 type Agent struct {
 	// ID is the stable identifier for this agent. It flows into
-	// telemetry, history conversation keys, and any A2A federation
+	// telemetry, transcript conversation keys, and any A2A federation
 	// envelope. MUST be non-empty.
 	ID string `json:"id"`
 

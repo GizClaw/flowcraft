@@ -17,10 +17,9 @@ import (
 // scriptnode. ScriptRuntime is required; the rest are optional.
 //
 // CommandRunner keeps its field name (rather than tracking the
-// sandbox.Runner rename) so existing wiring in callers like vesseld
-// does not have to chase the v0.2.0 rename. The field type is now
-// sandbox.Runner; workspace.CommandRunner remains a working alias until
-// v0.5.0.
+// sandbox.Runner rename) so existing host wiring does not have to
+// chase the v0.2.0 rename. The field type is now sandbox.Runner;
+// workspace.CommandRunner remains a working alias until v0.5.0.
 type Deps struct {
 	ScriptRuntime script.Runtime
 	ScriptFS      fs.FS

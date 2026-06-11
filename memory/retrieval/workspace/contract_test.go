@@ -11,10 +11,9 @@ import (
 )
 
 // TestContract runs the generic [contract.Run] suite against the
-// workspace-backed Index. This is the same contract that
-// sdk/retrieval/memory and sdk/retrieval/postgres satisfy, so a
-// passing run here means the workspace backend is plug-compatible
-// with retrieval consumers in the codebase.
+// workspace-backed Index. A passing run here means the workspace
+// backend satisfies the retrieval contract expected by consumers in
+// the codebase.
 //
 // Each subtest gets a fresh MemWorkspace via the factory below; no
 // per-subtest state leaks. AutoCompact is disabled to keep the

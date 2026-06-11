@@ -8,7 +8,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/memory/retrieval/journal"
-	memidx "github.com/GizClaw/flowcraft/memory/retrieval/memory"
+	wsindex "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 // hybridClaimingIndex is a minimal retrieval.Index that advertises
@@ -58,6 +59,16 @@ func (nullJournal) Replay(context.Context, string, uint64) iter.Seq2[journal.Eve
 func (nullJournal) Compact(context.Context, time.Time) error { return nil }
 func (nullJournal) Close() error                             { return nil }
 
+func newWorkspaceIndex(t *testing.T) *wsindex.Index {
+	t.Helper()
+	idx, err := wsindex.New(sdkworkspace.NewMemWorkspace(), wsindex.WithAutoCompact(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	return idx
+}
+
 // TestWrap_DoesNotFalselyAdvertiseOptionalInterfaces is the regression guard
 // for issue #157. The wrapper must expose only optional method-set interfaces
 // that the wrapped index actually implements.
@@ -96,31 +107,29 @@ func TestWrap_DoesNotFalselyAdvertiseOptionalInterfaces(t *testing.T) {
 }
 
 func TestWrap_ProjectsImplementedOptionalInterfaces(t *testing.T) {
-	wrapped := journal.Wrap(memidx.New(), nullJournal{})
+	wrapped := journal.Wrap(newWorkspaceIndex(t), nullJournal{})
 	if _, ok := wrapped.(retrieval.DocGetter); !ok {
-		t.Fatal("wrapped memory index should expose DocGetter")
+		t.Fatal("wrapped workspace index should expose DocGetter")
 	}
 	if _, ok := wrapped.(retrieval.DeletableByFilter); !ok {
-		t.Fatal("wrapped memory index should expose DeletableByFilter")
+		t.Fatal("wrapped workspace index should expose DeletableByFilter")
 	}
 	if _, ok := wrapped.(retrieval.Droppable); !ok {
-		t.Fatal("wrapped memory index should expose Droppable")
+		t.Fatal("wrapped workspace index should expose Droppable")
 	}
 	if _, ok := wrapped.(retrieval.Iterable); !ok {
-		t.Fatal("wrapped memory index should expose Iterable")
+		t.Fatal("wrapped workspace index should expose Iterable")
 	}
 	if _, ok := wrapped.(retrieval.Countable); !ok {
-		t.Fatal("wrapped memory index should expose Countable")
+		t.Fatal("wrapped workspace index should expose Countable")
 	}
-	if _, ok := wrapped.(retrieval.Filterable); ok {
-		t.Fatal("wrapped memory index should not expose Filterable")
+	if _, ok := wrapped.(retrieval.Filterable); !ok {
+		t.Fatal("wrapped workspace index should expose Filterable")
 	}
 	caps := retrieval.CapabilitiesOf(wrapped)
-	if !caps.Extensions.DocGetter || !caps.Extensions.DeleteByFilter || !caps.Extensions.DropNamespace || !caps.Extensions.Iterable || !caps.Extensions.Count {
-		t.Fatalf("CapabilitiesOf did not project memory extensions: %+v", caps.Extensions)
-	}
-	if caps.Extensions.Filterable {
-		t.Fatalf("CapabilitiesOf falsely projected Filterable: %+v", caps.Extensions)
+	if !caps.Extensions.DocGetter || !caps.Extensions.Filterable || !caps.Extensions.DeleteByFilter ||
+		!caps.Extensions.DropNamespace || !caps.Extensions.Iterable || !caps.Extensions.Count {
+		t.Fatalf("CapabilitiesOf did not project workspace extensions: %+v", caps.Extensions)
 	}
 	if caps.WriteIsAtomic {
 		t.Fatalf("journal wrapper should not advertise atomic writes: %+v", caps)
@@ -149,7 +158,7 @@ func TestWrap_PartialExtensionCapabilitiesMatchWrapperMethodSet(t *testing.T) {
 }
 
 func TestWrap_CapabilityProjectionMatchesMethodSet(t *testing.T) {
-	assertExtensionProjectionMatchesMethodSet(t, journal.Wrap(memidx.New(), nullJournal{}))
+	assertExtensionProjectionMatchesMethodSet(t, journal.Wrap(newWorkspaceIndex(t), nullJournal{}))
 }
 
 func assertExtensionProjectionMatchesMethodSet(t *testing.T, idx retrieval.Index) {

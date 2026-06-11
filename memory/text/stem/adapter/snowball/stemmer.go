@@ -1,5 +1,5 @@
-// Package snowball adapts [github.com/kljensen/snowball] to the
-// sdk/text/stem function signature.
+// Package snowball adapts [github.com/kljensen/snowball] to the tokenizer
+// stemmer function signature.
 //
 // snowball implements the Porter2 (Snowball English) stemmer plus
 // stemmers for Spanish, French, Russian, Swedish, Norwegian, and
@@ -10,12 +10,10 @@
 // (e.g. "general" / "generic" collapsed by Porter1, kept distinct
 // by Porter2) and is generally preferred for English BM25 work.
 //
-// This adapter exposes Porter2 through a function with the same
-// signature as [sdk/text/stem.Porter] so callers can swap by
-// import path:
+// This adapter exposes Porter2 through a plain func(string) string so callers
+// can pass it directly into tokenizer configuration:
 //
-//	import "github.com/GizClaw/flowcraft/memory/text/stem"            // Porter1
-//	import snowball "github.com/GizClaw/flowcraft/memory/text/stem/adapter/snowball"   // Porter2
+//	import snowball "github.com/GizClaw/flowcraft/memory/text/stem/adapter/snowball"
 //
 // Switching stemmers changes the BM25 vocabulary; indexes built
 // with one MUST be rebuilt before scoring against the other. The
@@ -33,11 +31,9 @@ import (
 // snowball algorithm. The input is lower-cased internally so
 // callers may pass surface forms.
 //
-// Stop words are not skipped — Stem follows the same contract as
-// [sdk/text/stem.Porter]: the input is returned unchanged for
-// strings the algorithm cannot reduce further (including very
-// short inputs). Callers who want stop-word filtering should
-// consult [sdk/text/stopword] first.
+// Stop words are not skipped: the input is returned unchanged for strings the
+// algorithm cannot reduce further (including very short inputs). Callers who
+// want stop-word filtering should consult [memory/text/stopword] first.
 //
 // Errors from the underlying snowball implementation are
 // suppressed: the algorithm returns errors only for unsupported

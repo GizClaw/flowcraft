@@ -12,9 +12,7 @@
 // adapters. tool.Tool implementations are concrete adapters — they
 // bridge the generic tool.Tool interface to one specific service —
 // and therefore belong here, mirroring the existing
-// sdk/llm → sdkx/llm/*, sdk/workspace → sdkx/tool/memory layouts.
-// See sdkx/tool/history/doc.go for the same rationale applied to
-// the history coordinator.
+// sdk/llm -> sdkx/llm/* and sdk/workspace -> sdkx/tool/memory layouts.
 //
 // # Deny-by-default
 //
@@ -65,8 +63,8 @@
 //	)
 //	t, err := exec.New(rn)
 //
-// The same sandbox can be shared with the script-engine shell
-// bridge, vesseld Sandbox resources (planned, v0.2.0), and any
-// future sdkx/sandbox/{nsjail,container,microvm} backend without
-// changing this tool's call site.
+// The same sandbox can be shared with the script-engine shell bridge,
+// host-managed sandbox resources, and any future
+// sdkx/sandbox/{nsjail,container,microvm} backend without changing
+// this tool's call site.
 package exec

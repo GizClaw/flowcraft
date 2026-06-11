@@ -7,13 +7,24 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
-	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
+	wsindex "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
+	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
+func newTestIndex(t *testing.T) *wsindex.Index {
+	t.Helper()
+	idx, err := wsindex.New(sdkworkspace.NewMemWorkspace(), wsindex.WithAutoCompact(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = idx.Close() })
+	return idx
+}
+
 func TestWrapPreservesOptionalInterfaces(t *testing.T) {
-	idx := Wrap(memory.New(), NewMemoryJournal())
+	idx := Wrap(newTestIndex(t), NewMemoryJournal())
 	if _, ok := idx.(retrieval.DocGetter); !ok {
-		t.Fatal("DocGetter should be exposed (memory.Index implements it)")
+		t.Fatal("DocGetter should be exposed")
 	}
 	if _, ok := idx.(retrieval.DeletableByFilter); !ok {
 		t.Fatal("DeletableByFilter should be exposed")
@@ -28,7 +39,7 @@ func TestWrapPreservesOptionalInterfaces(t *testing.T) {
 
 func TestWrapDeleteByFilterRecordsAuditEvents(t *testing.T) {
 	ctx := context.Background()
-	inner := memory.New()
+	inner := newTestIndex(t)
 	j := NewMemoryJournal()
 	idx := Wrap(inner, j)
 	ns := "ns-bulk"
@@ -113,7 +124,7 @@ func TestWrapDeleteByFilterDeletesSnapshottedIDs(t *testing.T) {
 
 func TestWrapDeleteByFilterRejectsEmptyFilter(t *testing.T) {
 	ctx := context.Background()
-	inner := memory.New()
+	inner := newTestIndex(t)
 	j := NewMemoryJournal()
 	idx := Wrap(inner, j)
 	ns := "ns-empty-delete"
@@ -145,7 +156,7 @@ func TestWrapDeleteByFilterRejectsEmptyFilter(t *testing.T) {
 
 func TestWrapDropRecordsAuditEvents(t *testing.T) {
 	ctx := context.Background()
-	inner := memory.New()
+	inner := newTestIndex(t)
 	j := NewMemoryJournal()
 	idx := Wrap(inner, j)
 	ns := "ns-drop"
@@ -257,7 +268,7 @@ func (m *mutatingFilterIndex) Iterate(_ context.Context, _ string, cursor string
 
 func TestWrapJournalUpsertBefore(t *testing.T) {
 	ctx := context.Background()
-	inner := memory.New()
+	inner := newTestIndex(t)
 	j := NewMemoryJournal()
 	idx := Wrap(inner, j)
 	ns := "ns1"

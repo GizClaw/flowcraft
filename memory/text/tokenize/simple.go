@@ -21,11 +21,10 @@ import (
 // Elasticsearch and the wider IR community. Porter2 corrects
 // several over-stemming bugs the original Porter algorithm has
 // (e.g. "general" / "generic" collapsed by Porter1, kept distinct
-// by Porter2). Callers who need the historical Porter1 output for
-// BM25 index back-compat can pin
+// by Porter2). Callers who need custom BM25 index compatibility can pin their
+// own stemmer:
 //
-//	import "github.com/GizClaw/flowcraft/memory/text/stem"
-//	tok := &tokenize.Simple{Stemmer: stem.Porter}
+//	tok := &tokenize.Simple{Stemmer: myStemmer}
 //
 // Note that switching stemmers changes the BM25 vocabulary; any
 // persisted CorpusStats index built with one stemmer MUST be

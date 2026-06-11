@@ -32,7 +32,7 @@
 // without changing its definition. This is the central design point that
 // supersedes sdk/workflow's Agent-owns-Strategy coupling.
 //
-// # Memory / history / recall integration
+// # Transcript and retrieval integration
 //
 // agent does NOT define a History interface. The reason: not every
 // engine speaks "graph + node" or stores its working state on the
@@ -67,11 +67,10 @@
 //     supplied host — what you pass in is exactly what the engine
 //     sees.
 //
-// Concrete history / recall / archival integrations are intentionally
-// the caller's problem: they are 5–10 lines of glue around any
-// transcript store and live with the application that owns the
-// store, not in sdk/agent. See example_multiturn_test.go for the
-// canonical wiring shape.
+// Concrete transcript, retrieval, and archival integrations are
+// intentionally the caller's problem: they are thin glue around the
+// stores and retrievers the application owns, not built into sdk/agent.
+// See example_multiturn_test.go for the canonical wiring shape.
 //
 // # Allowed dependencies
 //
@@ -80,12 +79,12 @@
 //   - sdk/errdefs
 //   - standard library
 //
-// agent MUST NOT import sdk/history, sdk/recall, sdk/agent/strategy
-// (when added), sdk/graph, sdk/script, sdk/workflow, sdk/voice,
-// sdk/event. Anything that needs an event bus (Publish wiring, OTel
-// span linking, telemetry sinks) lives in the caller-supplied
-// [engine.Host] (see [WithEngineHost]); agent itself does not own any
-// event-routing convention.
+// agent MUST NOT import sdk/agent/strategy (when added), sdk/graph,
+// sdk/script, sdk/workflow, sdk/voice, sdk/event, or application-owned
+// transcript/retrieval packages. Anything that needs an event bus
+// (Publish wiring, OTel span linking, telemetry sinks) lives in the
+// caller-supplied [engine.Host] (see [WithEngineHost]); agent itself
+// does not own any event-routing convention.
 //
 // # What lives here
 //
@@ -147,7 +146,7 @@
 // # What does NOT live here yet (later)
 //
 //   - RunHandle / ResumeToken for in-flight run management
-//     (deferred until vessel-level handle plumbing matures).
+//     (deferred until host-level handle plumbing matures).
 //
 //   - Strategy adapter for compiled engines (sdk/agent/strategy will host
 //     it once we know what shape it should have).

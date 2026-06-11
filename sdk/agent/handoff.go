@@ -94,8 +94,8 @@ type HandoffArgs struct {
 
 	// Note is an optional free-form message the LLM wants the
 	// receiving agent to read first. Avoid stuffing the entire
-	// transcript here; the receiving side should reload history
-	// via the host's normal mechanisms.
+	// transcript here; the receiving side should reload transcript
+	// context via the host's normal mechanisms.
 	Note string `json:"note,omitempty"`
 }
 

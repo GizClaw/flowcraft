@@ -31,7 +31,7 @@ type config struct {
 
 // WithTable overrides the table name (default "engine_checkpoints").
 // Useful for multi-tenant deployments that namespace tables per
-// vessel.
+// service or tenant.
 func WithTable(name string) Option {
 	return func(c *config) { c.tableName = name }
 }
@@ -56,7 +56,7 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	// SQLite serialises writes at the file level. Limit the database/sql
 	// pool to a single connection so writers queue inside Go instead of
 	// hitting SQLITE_BUSY. Reads still run on this connection — fine for
-	// the single-process daemons this backend targets.
+	// the single-process services this backend targets.
 	db.SetMaxOpenConns(1)
 
 	if err := db.PingContext(ctx); err != nil {
