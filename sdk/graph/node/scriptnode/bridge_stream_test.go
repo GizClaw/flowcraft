@@ -59,29 +59,15 @@ func TestStreamBridge_SubscribeNode_FiltersNodeAndProjectsCurrent(t *testing.T) 
 	}
 }
 
-func TestStreamBridge_SubscribeNode_RunIDOverrideFiltersDefaultRun(t *testing.T) {
+func TestStreamBridge_SubscribeNode_RunIDOverrideRejected(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
 
 	subscribe := streamSubscribeFunc(t, "run-default", bus)
-	iter, err := subscribe(map[string]any{"run_id": "run-override", "node_id": "planner"})
-	if err != nil {
-		t.Fatalf("subscribe_node: %v", err)
+	_, err := subscribe(map[string]any{"run_id": "run-override", "node_id": "planner"})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("subscribe_node error = %v, want Validation", err)
 	}
-	defer iter["close"].(func() error)()
-
-	publishStreamDelta(t, bus, "run-default", "planner", "agent-a", "default run")
-	publishStreamDelta(t, bus, "run-override", "planner", "agent-a", "override run")
-
-	if !iter["next"].(func() bool)() {
-		t.Fatal("next() = false, want override run delta")
-	}
-	cur := iter["current"].(func() map[string]any)()
-	checkCurrentDelta(t, cur, map[string]any{
-		"content": "override run",
-		"run_id":  "run-override",
-		"node_id": "planner",
-	})
 }
 
 func TestStreamBridge_SubscribeNode_CurrentPreservesPayloadObjectFields(t *testing.T) {
@@ -365,6 +351,8 @@ func TestStreamBridge_SubscribeNode_InvalidBufferSize(t *testing.T) {
 		{name: "zero", value: 0},
 		{name: "negative", value: -1},
 		{name: "non number", value: "1"},
+		{name: "fractional", value: 1.5},
+		{name: "too large", value: maxStreamSubBufferSize + 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -450,6 +438,50 @@ func TestScriptNode_StreamBridge_SubscribeNodeFromScript(t *testing.T) {
 	}
 	if got, _ := board.GetVar("stream_subject"); got == "" {
 		t.Fatal("stream_subject missing")
+	}
+}
+
+func TestScriptNode_StreamBridge_CleansUpUnclosedSubscriptions(t *testing.T) {
+	tests := []struct {
+		name    string
+		source  string
+		wantErr bool
+	}{
+		{
+			name:   "natural return",
+			source: `stream.subscribe_node({ node_id: "planner" });`,
+		},
+		{
+			name:    "throw",
+			source:  `stream.subscribe_node({ node_id: "planner" }); throw new Error("boom");`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mem := event.NewMemoryBus()
+			t.Cleanup(func() { _ = mem.Close() })
+			bus := &closeTrackingBus{Bus: mem}
+
+			rt := jsrt.New(jsrt.WithPoolSize(1))
+			n := New("listener", "script", tt.source, nil, rt)
+			n.eventBus = bus
+
+			err := n.ExecuteBoard(graph.ExecutionContext{
+				Context: context.Background(),
+				RunID:   "run-cleanup",
+			}, graph.NewBoard())
+			if tt.wantErr && err == nil {
+				t.Fatal("expected script error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ExecuteBoard: %v", err)
+			}
+			if bus.closeCount() != 1 {
+				t.Fatalf("subscription close count = %d, want 1", bus.closeCount())
+			}
+		})
 	}
 }
 
@@ -585,4 +617,40 @@ func (b *subscribeNotifyBus) Subscribe(ctx context.Context, pattern event.Patter
 		b.once.Do(func() { close(b.subscribed) })
 	}
 	return sub, err
+}
+
+type closeTrackingBus struct {
+	event.Bus
+	mu     sync.Mutex
+	closed int
+}
+
+func (b *closeTrackingBus) Subscribe(ctx context.Context, pattern event.Pattern, opts ...event.SubOption) (event.Subscription, error) {
+	sub, err := b.Bus.Subscribe(ctx, pattern, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &closeTrackingSubscription{Subscription: sub, bus: b}, nil
+}
+
+func (b *closeTrackingBus) closeCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.closed
+}
+
+type closeTrackingSubscription struct {
+	event.Subscription
+	bus  *closeTrackingBus
+	once sync.Once
+}
+
+func (s *closeTrackingSubscription) Close() error {
+	err := s.Subscription.Close()
+	s.once.Do(func() {
+		s.bus.mu.Lock()
+		s.bus.closed++
+		s.bus.mu.Unlock()
+	})
+	return err
 }

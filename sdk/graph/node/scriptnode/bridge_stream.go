@@ -3,6 +3,7 @@ package scriptnode
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,49 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
 
-const defaultStreamSubBufferSize = 256
+const (
+	defaultStreamSubBufferSize = 256
+	maxStreamSubBufferSize     = 4096
+)
+
+type streamCleanupKey struct{}
+
+type streamCleanupRegistry struct {
+	mu       sync.Mutex
+	cleanups []func() error
+}
+
+func withStreamCleanup(ctx context.Context) (context.Context, *streamCleanupRegistry) {
+	reg := &streamCleanupRegistry{}
+	return context.WithValue(ctx, streamCleanupKey{}, reg), reg
+}
+
+func streamCleanupFromContext(ctx context.Context) *streamCleanupRegistry {
+	reg, _ := ctx.Value(streamCleanupKey{}).(*streamCleanupRegistry)
+	return reg
+}
+
+func (r *streamCleanupRegistry) Add(fn func() error) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.mu.Lock()
+	r.cleanups = append(r.cleanups, fn)
+	r.mu.Unlock()
+}
+
+func (r *streamCleanupRegistry) Close() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	cleanups := append([]func() error(nil), r.cleanups...)
+	r.cleanups = nil
+	r.mu.Unlock()
+	for i := len(cleanups) - 1; i >= 0; i-- {
+		_ = cleanups[i]()
+	}
+}
 
 // newStreamBridge exposes graph node stream subscriptions to scripts as
 // the global "stream".
@@ -62,6 +105,9 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 					cancel: cancel,
 					sub:    sub,
 				}
+				if reg := streamCleanupFromContext(callCtx); reg != nil {
+					reg.Add(iter.Close)
+				}
 				return map[string]any{
 					"next":    iter.Next,
 					"current": iter.Current,
@@ -98,6 +144,9 @@ func parseStreamSubscribeOptions(raw any, defaultRunID string) (streamSubscribeO
 		if !ok {
 			return opts, errdefs.Validationf("stream.subscribe_node: run_id must be a string, got %T", v)
 		}
+		if s != defaultRunID {
+			return opts, errdefs.Validationf("stream.subscribe_node: run_id override is not allowed")
+		}
 		opts.runID = s
 	}
 	if opts.runID == "" {
@@ -116,41 +165,47 @@ func parseStreamSubscribeOptions(raw any, defaultRunID string) (streamSubscribeO
 func streamBufferSize(v any) (int, error) {
 	switch n := v.(type) {
 	case int:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return n, nil
 		}
 	case int32:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case int64:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint32:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint64:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case float32:
-		if n > 0 {
+		if math.Trunc(float64(n)) != float64(n) {
+			return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be an integer")
+		}
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case float64:
-		if n > 0 {
+		if math.Trunc(n) != n {
+			return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be an integer")
+		}
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	default:
 		return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be a positive number, got %T", v)
 	}
-	return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be positive")
+	return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be between 1 and %d", maxStreamSubBufferSize)
 }
 
 type streamNodeIterator struct {

@@ -2,6 +2,7 @@ package scriptnode
 
 import (
 	"io/fs"
+	"reflect"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -28,15 +29,7 @@ type Deps struct {
 	Workspace     workspace.Workspace
 	CommandRunner sandbox.Runner
 	EventBus      event.Bus
-}
-
-// needsShell lists built-in jsnode types that additionally require a
-// shell bridge. Every built-in node already gets fs / board / expr /
-// host / runtime bridges unconditionally below; the entries here are
-// the *additional* shell bridge gate (driven by deps.CommandRunner).
-var needsShell = map[string]bool{
-	"gate":    true,
-	"context": true,
+	ExtraBridges  []bindings.BindingFunc
 }
 
 // Register binds the built-in script-backed node builders ("script", every
@@ -48,8 +41,12 @@ var needsShell = map[string]bool{
 // require deps.CommandRunner. Missing deps are reported as a build-time
 // validation error from Factory.Build.
 func Register(factory *node.Factory, deps Deps) {
+	extraBridges := append([]bindings.BindingFunc(nil), deps.ExtraBridges...)
 	newNode := func(id, nodeType, src string, config map[string]any, extras ...bindings.BindingFunc) *ScriptNode {
-		n := New(id, nodeType, src, config, deps.ScriptRuntime, extras...)
+		nodeExtras := make([]bindings.BindingFunc, 0, len(extras)+len(extraBridges))
+		nodeExtras = append(nodeExtras, extras...)
+		nodeExtras = append(nodeExtras, extraBridges...)
+		n := New(id, nodeType, src, config, deps.ScriptRuntime, nodeExtras...)
 		n.eventBus = deps.EventBus
 		return n
 	}
@@ -63,7 +60,11 @@ func Register(factory *node.Factory, deps Deps) {
 			}
 			src := scripts.MustGet(n)
 			var extras []bindings.BindingFunc
-			if needsShell[n] {
+			if needsShell(n, def.Config) {
+				if deps.CommandRunner == nil {
+					return nil, errdefs.Validationf(
+						"node %q (type %s): command runner not configured", def.ID, n)
+				}
 				extras = append(extras, bindings.NewShellBridge(deps.CommandRunner))
 			}
 			extras = append(extras, bindings.NewFSBridge(deps.Workspace))
@@ -98,4 +99,33 @@ func Register(factory *node.Factory, deps Deps) {
 		return nil, errdefs.Validationf(
 			"unknown node type %q for node %q", def.Type, def.ID)
 	})
+}
+
+// needsShell reports whether this built-in's current configuration will call
+// shell.exec. Files-only context nodes and commandless gates do not need a
+// command runner at build time.
+func needsShell(nodeType string, config map[string]any) bool {
+	switch nodeType {
+	case "context", "gate":
+		return configValueNonEmpty(config, "commands")
+	default:
+		return false
+	}
+}
+
+func configValueNonEmpty(config map[string]any, key string) bool {
+	if config == nil {
+		return false
+	}
+	v, ok := config[key]
+	if !ok || v == nil {
+		return false
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Array, reflect.Chan, reflect.Map, reflect.Slice, reflect.String:
+		return rv.Len() > 0
+	default:
+		return true
+	}
 }

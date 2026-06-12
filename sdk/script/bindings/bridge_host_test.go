@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
@@ -59,6 +60,11 @@ func (h *recordingHost) ReportUsage(_ context.Context, u model.TokenUsage) error
 func invoke(host engine.Host) (string, map[string]any) {
 	name, raw := NewHostBridge(host, "test-source", nil)(context.Background())
 	return name, raw.(map[string]any)
+}
+
+func invokeForRun(host engine.Host, runID string) map[string]any {
+	_, raw := NewHostBridge(host, "test-source", nil, WithHostRunID(runID))(context.Background())
+	return raw.(map[string]any)
 }
 
 func invokeWithEmitter(host engine.Host, emitter StreamEmitter) map[string]any {
@@ -115,6 +121,61 @@ func TestHostBridge_Publish_RejectsBadSubject(t *testing.T) {
 	}
 	if len(host.publishCalls) != 0 {
 		t.Fatalf("host should not see invalid envelope, got %d calls", len(host.publishCalls))
+	}
+}
+
+func TestHostBridge_Publish_LegacyCallAllowsEngineSubject(t *testing.T) {
+	host := newRecordingHost()
+	_, api := invoke(host)
+	publish := api["publish"].(func(string, any) error)
+
+	if err := publish(string(engine.SubjectRunStart("run-legacy")), map[string]any{"ok": true}); err != nil {
+		t.Fatalf("legacy publish engine subject: %v", err)
+	}
+	if len(host.publishCalls) != 1 {
+		t.Fatalf("publish calls = %d, want 1", len(host.publishCalls))
+	}
+	if string(host.publishCalls[0].Subject) != string(engine.SubjectRunStart("run-legacy")) {
+		t.Fatalf("subject = %q", host.publishCalls[0].Subject)
+	}
+}
+
+func TestHostBridge_Publish_EngineSubjectMustMatchCurrentRun(t *testing.T) {
+	host := newRecordingHost()
+	api := invokeForRun(host, "run-1")
+	publish := api["publish"].(func(string, any) error)
+
+	if err := publish(string(engine.SubjectRunStart("run-2")), nil); !errdefs.IsValidation(err) {
+		t.Fatalf("publish cross-run error = %v, want Validation", err)
+	}
+	if len(host.publishCalls) != 0 {
+		t.Fatalf("cross-run publish should not reach host, got %d calls", len(host.publishCalls))
+	}
+
+	if err := publish(string(engine.SubjectRunStart("run-1")), map[string]any{"ok": true}); err != nil {
+		t.Fatalf("publish current run: %v", err)
+	}
+	if len(host.publishCalls) != 1 {
+		t.Fatalf("publish calls = %d, want 1", len(host.publishCalls))
+	}
+	if got := host.publishCalls[0].RunID(); got != "run-1" {
+		t.Fatalf("published RunID = %q, want run-1", got)
+	}
+}
+
+func TestHostBridge_Publish_CustomSubjectStillAllowedWithRunConstraint(t *testing.T) {
+	host := newRecordingHost()
+	api := invokeForRun(host, "run-1")
+	publish := api["publish"].(func(string, any) error)
+
+	if err := publish("agent.test.foo", map[string]any{"hello": "world"}); err != nil {
+		t.Fatalf("publish custom subject: %v", err)
+	}
+	if len(host.publishCalls) != 1 {
+		t.Fatalf("publish calls = %d, want 1", len(host.publishCalls))
+	}
+	if string(host.publishCalls[0].Subject) != "agent.test.foo" {
+		t.Fatalf("subject = %q", host.publishCalls[0].Subject)
 	}
 }
 

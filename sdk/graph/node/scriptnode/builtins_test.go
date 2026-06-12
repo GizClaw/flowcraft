@@ -217,8 +217,8 @@ func TestScriptNode_NodeBridge_ExposesIDAndType(t *testing.T) {
 //   - set approval_status = "pending"
 //   - set approval_request.node_id to the actual node id (NOT undefined,
 //     which was the regression with config.__node_id)
-//   - surface signal.interrupt("waiting for approval") as
-//     errdefs.IsInterrupted so the agent layer pauses the run.
+//   - surface signal.interrupt({kind:"user_input", ...}) as
+//     CauseUserInput so the agent layer pauses for user input.
 func TestBuiltin_Approval_FirstPassInterruptsWithNodeID(t *testing.T) {
 	_, board, err := execBuiltin(t, "approval", "approval-step-7", map[string]any{
 		"prompt": "Approve change?",
@@ -241,6 +241,13 @@ func TestBuiltin_Approval_FirstPassInterruptsWithNodeID(t *testing.T) {
 	if req["prompt"] != "Approve change?" {
 		t.Fatalf("approval_request.prompt = %v", req["prompt"])
 	}
+	var ie engine.InterruptedError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected engine.InterruptedError in chain, got %v", err)
+	}
+	if ie.Cause != engine.CauseUserInput {
+		t.Fatalf("Cause = %q, want %q", ie.Cause, engine.CauseUserInput)
+	}
 }
 
 // When the agent resumes the node after the user replied,
@@ -249,12 +256,106 @@ func TestBuiltin_Approval_FirstPassInterruptsWithNodeID(t *testing.T) {
 func TestBuiltin_Approval_DecisionRecorded(t *testing.T) {
 	_, board, err := execBuiltin(t, "approval", "ap1", nil, func(b *graph.Board) {
 		b.SetVar("approval_decision", "approved")
+		b.SetVar("approval_request", map[string]any{"node_id": "ap1"})
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if v, _ := board.GetVar("approval_status"); v != "approved" {
 		t.Fatalf("approval_status = %v", v)
+	}
+	for _, key := range []string{
+		"approval_decision",
+		"approval_request",
+		"__approval.ap1.decision",
+		"__approval.ap1.request",
+	} {
+		if v, ok := board.GetVar(key); ok {
+			t.Fatalf("%s should be cleared after consumption, got %v", key, v)
+		}
+	}
+}
+
+func TestBuiltin_Approval_LegacyGlobalDecisionWithoutRequestIsConsumed(t *testing.T) {
+	_, board, err := execBuiltin(t, "approval", "ap_legacy", nil, func(b *graph.Board) {
+		b.SetVar("approval_decision", "approved")
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, _ := board.GetVar("approval_status"); v != "approved" {
+		t.Fatalf("approval_status = %v", v)
+	}
+	if v, ok := board.GetVar("approval_decision"); ok {
+		t.Fatalf("approval_decision should be cleared after consumption, got %v", v)
+	}
+}
+
+func TestBuiltin_Approval_GlobalDecisionForOtherNodeDoesNotLeak(t *testing.T) {
+	_, board, err := execBuiltin(t, "approval", "ap2", nil, func(b *graph.Board) {
+		b.SetVar("approval_decision", "approved")
+		b.SetVar("approval_request", map[string]any{"node_id": "ap1"})
+	})
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("expected fresh approval interrupt, got: %v", err)
+	}
+	if v, _ := board.GetVar("approval_status"); v != "pending" {
+		t.Fatalf("approval_status = %v, want pending", v)
+	}
+	raw, _ := board.GetVar("approval_request")
+	req, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("approval_request shape = %T", raw)
+	}
+	if req["node_id"] != "ap2" {
+		t.Fatalf("approval_request.node_id = %v, want ap2", req["node_id"])
+	}
+	if v, ok := board.GetVar("approval_decision"); ok {
+		t.Fatalf("stale approval_decision should be cleared, got %v", v)
+	}
+
+	n := New("ap2", "approval", scripts.MustGet("approval"), nil, jsrt.New(jsrt.WithPoolSize(1)))
+	if err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board); err != nil {
+		t.Fatalf("second execution with pending approval should not consume stale decision: %v", err)
+	}
+	if v, _ := board.GetVar("approval_status"); v != "pending" {
+		t.Fatalf("approval_status after second execution = %v, want pending", v)
+	}
+}
+
+func TestBuiltin_Approval_ConsumedDecisionDoesNotSatisfyNextExecution(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	n := New("ap_repeat", "approval", scripts.MustGet("approval"), nil, rt)
+	board := graph.NewBoard()
+	board.SetVar("approval_decision", "approved")
+
+	if err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board); err != nil {
+		t.Fatalf("first execution should consume decision: %v", err)
+	}
+
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board)
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("second execution should request fresh approval, got: %v", err)
+	}
+	if v, _ := board.GetVar("approval_status"); v != "pending" {
+		t.Fatalf("approval_status = %v, want pending", v)
+	}
+	raw, _ := board.GetVar("approval_request")
+	req, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("approval_request shape = %T", raw)
+	}
+	if req["node_id"] != "ap_repeat" {
+		t.Fatalf("approval_request.node_id = %v, want ap_repeat", req["node_id"])
 	}
 }
 
@@ -346,6 +447,23 @@ func TestBuiltin_Iteration_AccumulatesResults(t *testing.T) {
 	}
 	if len(results) != 3 {
 		t.Fatalf("results len = %d, want 3 (results=%v)", len(results), results)
+	}
+}
+
+func TestBuiltin_Iteration_PoolSizeOneRejectsNestedExec(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	n := New("iter_pool1", "iteration", scripts.MustGet("iteration"), map[string]any{
+		"input_key":   "items",
+		"body_script": `board.setVar("__iteration_result", "unreachable");`,
+	}, rt)
+	board := graph.NewBoard()
+	board.SetVar("items", []any{"one"})
+
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(), RunID: runIDForTests,
+	}, board)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("ExecuteBoard error = %v, want NotAvailable", err)
 	}
 }
 

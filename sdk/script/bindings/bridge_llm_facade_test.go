@@ -205,6 +205,21 @@ func TestLLMBridge_Stream_PartExposesToolCall(t *testing.T) {
 	}
 }
 
+func TestLLMBridge_Stream_NextAfterCloseReturnsFalse(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	res, _ := newScriptedLLM("done")
+
+	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
+	_, err := rt.Exec(context.Background(), "stream-next-after-close", `
+		var s = llm.stream(null);
+		s.close();
+		if (s.next()) throw new Error("next after close should return false");
+	`, env)
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+}
+
 func TestLLMBridge_Stream_FinishAfterDrainReturnsResult(t *testing.T) {
 	// Calling finish() after manual draining must still return the same
 	// result (the round driver caches the result on first finish).

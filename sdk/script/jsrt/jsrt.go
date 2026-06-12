@@ -83,6 +83,13 @@ func New(opts ...Option) *Runtime {
 	return r
 }
 
+// SupportsNestedExec reports whether runtime.execScript has any chance of
+// acquiring a second VM while a parent script is still holding one. Runtime
+// bindings still use ExecNested so they can fail fast when the pool is busy.
+func (r *Runtime) SupportsNestedExec() bool {
+	return r != nil && r.poolSize > 1
+}
+
 func (r *Runtime) init() {
 	r.once.Do(func() {
 		r.pool = make(chan *goja.Runtime, r.poolSize)
@@ -107,6 +114,10 @@ func (r *Runtime) newVM() *goja.Runtime {
 // is cancelled before one becomes available.
 var ErrVMPoolExhausted = errdefs.NotAvailable(errors.New("jsrt: VM pool exhausted, context cancelled while waiting"))
 
+// ErrVMPoolBusy is returned by nested execution when no VM is immediately
+// available. Nested scripts must not wait on the same pool their parent holds.
+var ErrVMPoolBusy = errdefs.NotAvailable(errors.New("jsrt: VM pool exhausted"))
+
 func (r *Runtime) acquire(ctx context.Context) (*goja.Runtime, error) {
 	r.init()
 	select {
@@ -114,6 +125,16 @@ func (r *Runtime) acquire(ctx context.Context) (*goja.Runtime, error) {
 		return vm, nil
 	case <-ctx.Done():
 		return nil, ErrVMPoolExhausted
+	}
+}
+
+func (r *Runtime) tryAcquire() (*goja.Runtime, error) {
+	r.init()
+	select {
+	case vm := <-r.pool:
+		return vm, nil
+	default:
+		return nil, ErrVMPoolBusy
 	}
 }
 
@@ -126,38 +147,52 @@ func (r *Runtime) release(vm *goja.Runtime) {
 // A built-in "signal" global is always injected, providing interrupt/error/done
 // control flow back to the host.
 func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	return r.exec(ctx, name, source, env, false)
+}
+
+// ExecNested runs a child script only when another VM is immediately
+// available. It is used by runtime.execScript to avoid parent scripts
+// deadlocking each other while they still hold their own VMs.
+func (r *Runtime) ExecNested(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	return r.exec(ctx, name, source, env, true)
+}
+
+func (r *Runtime) exec(ctx context.Context, name, source string, env *script.Env, nested bool) (*script.Signal, error) {
 	if r.maxExecTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.maxExecTime)
 		defer cancel()
 	}
 
-	vm, err := r.acquire(ctx)
+	var (
+		vm  *goja.Runtime
+		err error
+	)
+	if nested {
+		vm, err = r.tryAcquire()
+	} else {
+		vm, err = r.acquire(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
+	defer r.discardAndRelease(vm)
 
 	vm.ClearInterrupt()
-
-	injectedNames := make([]string, 0, 8)
 
 	var config map[string]any
 	if env != nil {
 		config = env.Config
 	}
 	if err := vm.Set("config", config); err != nil {
-		r.release(vm)
 		return nil, fmt.Errorf("jsrt: set config: %w", err)
 	}
-	injectedNames = append(injectedNames, "config")
 
 	if env != nil {
 		for bname, bval := range env.Bindings {
 			if err := vm.Set(bname, bval); err != nil {
-				r.cleanupAndRelease(vm, injectedNames)
 				return nil, fmt.Errorf("jsrt: set binding %q: %w", bname, err)
 			}
-			injectedNames = append(injectedNames, bname)
 		}
 	}
 
@@ -186,10 +221,8 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 		},
 	}
 	if err := vm.Set("signal", signalObj); err != nil {
-		r.cleanupAndRelease(vm, injectedNames)
 		return nil, fmt.Errorf("jsrt: set signal: %w", err)
 	}
-	injectedNames = append(injectedNames, "signal")
 
 	interruptDone := make(chan struct{})
 	defer close(interruptDone)
@@ -202,8 +235,6 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	}()
 
 	_, runErr := vm.RunString(wrapIIFE(source))
-
-	defer r.cleanupAndRelease(vm, injectedNames)
 
 	if runErr != nil {
 		if _, ok := runErr.(*goja.InterruptedError); ok {
@@ -225,11 +256,8 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	return nil, nil
 }
 
-func (r *Runtime) cleanupAndRelease(vm *goja.Runtime, names []string) {
-	for _, name := range names {
-		_ = vm.Set(name, goja.Undefined())
-	}
-	r.release(vm)
+func (r *Runtime) discardAndRelease(_ *goja.Runtime) {
+	r.release(r.newVM())
 }
 
 func wrapIIFE(source string) string {
