@@ -2,6 +2,7 @@ package scriptnode
 
 import (
 	"context"
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -67,6 +68,77 @@ func TestStreamBridge_SubscribeNode_RunIDOverrideRejected(t *testing.T) {
 	_, err := subscribe(map[string]any{"run_id": "run-override", "node_id": "planner"})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("subscribe_node error = %v, want Validation", err)
+	}
+}
+
+func TestStreamBridge_SubscribeNode_NodeIDsFiltersMultipleTargets(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_ids": []string{"planner", "executor"}})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStreamDelta(t, bus, "run-1", "other", "agent-a", "ignore me")
+	publishStreamDelta(t, bus, "run-1", "planner", "agent-a", "from planner")
+	publishStreamDelta(t, bus, "run-1", "executor", "agent-a", "from executor")
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want planner delta")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"content": "from planner",
+		"node_id": "planner",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want executor delta")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"content": "from executor",
+		"node_id": "executor",
+	})
+}
+
+func TestStreamBridge_SubscribeNode_NodeIDAndNodeIDsMutuallyExclusive(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	_, err := subscribe(map[string]any{
+		"node_id":  "planner",
+		"node_ids": []string{"executor"},
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("subscribe_node error = %v, want Validation", err)
+	}
+}
+
+func TestStreamBridge_SubscribeNode_InvalidNodeIDs(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	tests := []struct {
+		name string
+		raw  any
+	}{
+		{name: "empty string slice", raw: []string{}},
+		{name: "empty any slice", raw: []any{}},
+		{name: "non string element", raw: []any{"planner", 42}},
+		{name: "empty string element", raw: []string{"planner", ""}},
+		{name: "not an array", raw: "planner"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := subscribe(map[string]any{"node_ids": tt.raw})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("subscribe_node error = %v, want Validation", err)
+			}
+		})
 	}
 }
 
@@ -218,6 +290,74 @@ func TestStreamBridge_SubscribeNode_StepSkippedIsTerminal(t *testing.T) {
 	}
 }
 
+func TestStreamBridge_SubscribeNode_MultiNodeFirstTerminalDoesNotClose(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_ids": []string{"planner", "executor"}})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "complete", nil)
+	publishStreamDelta(t, bus, "run-1", "executor", "agent-a", "still open")
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want planner terminal")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":   "step.ended",
+		"status":  "success",
+		"node_id": "planner",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want executor delta after first terminal")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"content": "still open",
+		"node_id": "executor",
+	})
+}
+
+func TestStreamBridge_SubscribeNode_MultiNodeClosesAfterAllTargetsTerminal(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_ids": []string{"planner", "executor"}})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+
+	publishStepLifecycle(t, bus, "run-1", "planner", "agent-a", "complete", nil)
+	publishStepLifecycle(t, bus, "run-1", "executor", "agent-a", "skipped", nil)
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want planner terminal")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":   "step.ended",
+		"node_id": "planner",
+	})
+
+	if !iter["next"].(func() bool)() {
+		t.Fatal("next() = false, want executor terminal")
+	}
+	checkCurrentEvent(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"event":   "step.skipped",
+		"status":  "skipped",
+		"node_id": "executor",
+	})
+
+	if iter["next"].(func() bool)() {
+		t.Fatal("next() after all target terminals = true, want false")
+	}
+}
+
 func TestStreamBridge_SubscribeNode_FiltersOtherNodeLifecycleEvents(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
@@ -239,6 +379,106 @@ func TestStreamBridge_SubscribeNode_FiltersOtherNodeLifecycleEvents(t *testing.T
 		"event":   "step.started",
 		"node_id": "planner",
 	})
+}
+
+func TestStreamBridge_SubscribeNode_NextTimeoutReturnsFalseWithoutClosing(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+	nextTimeout := iter["next_timeout_ms"].(func(any) (bool, error))
+
+	got, err := nextTimeout(10)
+	if err != nil {
+		t.Fatalf("next_timeout_ms: %v", err)
+	}
+	if got {
+		t.Fatal("next_timeout_ms timeout = true, want false")
+	}
+
+	publishStreamDelta(t, bus, "run-1", "planner", "agent-a", "after timeout")
+	got, err = nextTimeout(100)
+	if err != nil {
+		t.Fatalf("next_timeout_ms after publish: %v", err)
+	}
+	if !got {
+		t.Fatal("next_timeout_ms after publish = false, want true")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"content": "after timeout",
+	})
+}
+
+func TestStreamBridge_SubscribeNode_NextTimeoutZeroPollsNonBlocking(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+	nextTimeout := iter["next_timeout_ms"].(func(any) (bool, error))
+
+	got, err := nextTimeout(0)
+	if err != nil {
+		t.Fatalf("next_timeout_ms(0): %v", err)
+	}
+	if got {
+		t.Fatal("next_timeout_ms(0) before publish = true, want false")
+	}
+
+	publishStreamDelta(t, bus, "run-1", "planner", "agent-a", "ready")
+	got, err = nextTimeout(0)
+	if err != nil {
+		t.Fatalf("next_timeout_ms(0) after publish: %v", err)
+	}
+	if !got {
+		t.Fatal("next_timeout_ms(0) after publish = false, want true")
+	}
+	checkCurrentDelta(t, iter["current"].(func() map[string]any)(), map[string]any{
+		"content": "ready",
+	})
+}
+
+func TestStreamBridge_SubscribeNode_InvalidNextTimeout(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	subscribe := streamSubscribeFunc(t, "run-1", bus)
+	iter, err := subscribe(map[string]any{"node_id": "planner"})
+	if err != nil {
+		t.Fatalf("subscribe_node: %v", err)
+	}
+	defer iter["close"].(func() error)()
+	nextTimeout := iter["next_timeout_ms"].(func(any) (bool, error))
+
+	tests := []struct {
+		name string
+		raw  any
+	}{
+		{name: "negative", raw: -1},
+		{name: "fractional", raw: 1.5},
+		{name: "non number", raw: "1"},
+		{name: "nan", raw: math.NaN()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := nextTimeout(tt.raw)
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("next_timeout_ms(%v) error = %v, want Validation", tt.raw, err)
+			}
+			if got {
+				t.Fatalf("next_timeout_ms(%v) = true, want false", tt.raw)
+			}
+		})
+	}
 }
 
 func TestStreamBridge_SubscribeNode_NextReturnsFalseWhenCallContextCanceled(t *testing.T) {
@@ -438,6 +678,41 @@ func TestScriptNode_StreamBridge_SubscribeNodeFromScript(t *testing.T) {
 	}
 	if got, _ := board.GetVar("stream_subject"); got == "" {
 		t.Fatal("stream_subject missing")
+	}
+}
+
+func TestScriptNode_StreamBridge_NextTimeoutFromScriptFailsOpen(t *testing.T) {
+	mem := event.NewMemoryBus()
+	t.Cleanup(func() { _ = mem.Close() })
+
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	factory := nodepkg.NewFactory()
+	Register(factory, Deps{ScriptRuntime: rt, EventBus: mem})
+	n, err := factory.Build(graph.NodeDefinition{
+		ID:   "listener",
+		Type: "script",
+		Config: map[string]any{
+			"source": `
+				var sub = stream.subscribe_node({ node_ids: ["planner", "executor"] });
+				if (sub.next_timeout_ms(0)) throw new Error("poll should not have an event");
+				if (sub.next_timeout_ms(10)) throw new Error("timeout should fail open");
+				board.setVar("stream_fail_open", true);
+				sub.close();
+			`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("build script node: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	board := graph.NewBoard()
+	if err := n.ExecuteBoard(graph.ExecutionContext{Context: ctx, RunID: "run-js"}, board); err != nil {
+		t.Fatalf("ExecuteBoard: %v", err)
+	}
+	if got, _ := board.GetVar("stream_fail_open"); got != true {
+		t.Fatalf("stream_fail_open = %v, want true", got)
 	}
 }
 
