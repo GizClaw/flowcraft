@@ -59,6 +59,18 @@ func TestNewTextMessage(t *testing.T) {
 	}
 }
 
+func TestMessage_ClonePreservesName(t *testing.T) {
+	msg := NewTextMessage(RoleAssistant, "hi")
+	msg.Name = "generate_game_master"
+
+	cp := msg.Clone()
+	msg.Name = "mutated"
+
+	if cp.Name != "generate_game_master" {
+		t.Fatalf("Name = %q, want generate_game_master", cp.Name)
+	}
+}
+
 func TestNewImageMessage(t *testing.T) {
 	msg := NewImageMessage(RoleUser, "describe this", "https://img.example.com/cat.jpg")
 	if len(msg.Parts) != 2 {

@@ -80,6 +80,7 @@ type Part struct {
 // Message is a multi-modal, provider-agnostic chat message.
 type Message struct {
 	Role  Role   `json:"role"`
+	Name  string `json:"name,omitzero"`
 	Parts []Part `json:"parts"`
 }
 
@@ -88,6 +89,7 @@ type Message struct {
 func (m Message) Clone() Message {
 	return Message{
 		Role:  m.Role,
+		Name:  m.Name,
 		Parts: CloneParts(m.Parts),
 	}
 }
