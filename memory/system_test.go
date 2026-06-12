@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory"
@@ -3431,6 +3432,7 @@ func (f *fakeMemoryEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]
 }
 
 type recordingSearchIndex struct {
+	mu             sync.Mutex
 	caps           retrieval.Capabilities
 	searchRequests []retrieval.SearchRequest
 	searchSpaces   []string
@@ -3438,6 +3440,8 @@ type recordingSearchIndex struct {
 }
 
 func (idx *recordingSearchIndex) Upsert(_ context.Context, _ string, docs []retrieval.Doc) error {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	for _, doc := range docs {
 		idx.upsertDocs = append(idx.upsertDocs, retrieval.CloneDoc(doc))
 	}
@@ -3450,6 +3454,8 @@ func (idx *recordingSearchIndex) Delete(context.Context, string, []string) error
 
 func (idx *recordingSearchIndex) Search(_ context.Context, namespace string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
 	req.QueryVector = append([]float32(nil), req.QueryVector...)
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
 	idx.searchSpaces = append(idx.searchSpaces, namespace)
 	idx.searchRequests = append(idx.searchRequests, req)
 	return &retrieval.SearchResponse{}, nil

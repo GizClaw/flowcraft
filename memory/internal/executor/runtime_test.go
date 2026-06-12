@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -965,6 +966,57 @@ func TestPackContextIncludesRecentSummaryDocumentObservationFactAndGraphItems(t 
 	}
 	if graphNodeItems == 0 || graphEdgeItems == 0 {
 		t.Fatalf("graph items include nodes:%d edges:%d, want at least one of each", graphNodeItems, graphEdgeItems)
+	}
+}
+
+func TestPackContextRunsRetrievalSearchesConcurrently(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{
+			{Kind: compiler.SourceMessageLog, Required: true},
+			{Kind: compiler.SourceDocumentStore, Required: true},
+		},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilitySummaryDAG, Required: true},
+			{Capability: compiler.CapabilityDocumentChunks, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+		},
+		[]compiler.ProjectionRequest{
+			{Capability: compiler.CapabilitySummaryDAG, Namespace: "summary_nodes", Required: true},
+			{Capability: compiler.CapabilityDocumentChunks, Namespace: "doc_chunks", Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Namespace: "observations", Required: true},
+		},
+	)
+	index := newOverlappingSearchIndex(2)
+	deps := newExecutorDeps(t, assembly)
+	deps.Index = index
+	deps.DocumentChunker = &fakeChunker{}
+	deps.Summarizer = &fakeSummarizer{}
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(concurrent pack runtime) error = %v", err)
+	}
+
+	search := retrieval.SearchRequest{QueryText: "Ada tea", TopK: 3}
+	packCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, err = rt.PackContext(packCtx, PackContextRequest{
+		Window:            recent.WindowRequest{Scope: testScope("conv-concurrent")},
+		SummarySearch:     &search,
+		DocumentSearch:    &search,
+		ObservationSearch: &search,
+	})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if index.maxActiveSearches() < 2 {
+		t.Fatalf("max concurrent searches = %d, want at least 2", index.maxActiveSearches())
+	}
+	if index.searchCalls() != 3 {
+		t.Fatalf("search calls = %d, want 3", index.searchCalls())
 	}
 }
 
@@ -2100,6 +2152,89 @@ func (i *closeTrackingIndex) Capabilities() retrieval.Capabilities {
 
 func (i *closeTrackingIndex) Close() error {
 	i.closed = true
+	return nil
+}
+
+type overlappingSearchIndex struct {
+	mu        sync.Mutex
+	releaseAt int
+	release   chan struct{}
+	released  bool
+	calls     int
+	active    int
+	maxActive int
+}
+
+func newOverlappingSearchIndex(releaseAt int) *overlappingSearchIndex {
+	return &overlappingSearchIndex{
+		releaseAt: releaseAt,
+		release:   make(chan struct{}),
+	}
+}
+
+func (idx *overlappingSearchIndex) Upsert(context.Context, string, []retrieval.Doc) error {
+	return nil
+}
+
+func (idx *overlappingSearchIndex) Delete(context.Context, string, []string) error {
+	return nil
+}
+
+func (idx *overlappingSearchIndex) Search(ctx context.Context, _ string, _ retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
+	release := idx.enterSearch()
+	defer idx.leaveSearch()
+
+	select {
+	case <-release:
+		return &retrieval.SearchResponse{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (idx *overlappingSearchIndex) enterSearch() <-chan struct{} {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+
+	idx.calls++
+	idx.active++
+	if idx.active > idx.maxActive {
+		idx.maxActive = idx.active
+	}
+	if !idx.released && idx.active >= idx.releaseAt {
+		close(idx.release)
+		idx.released = true
+	}
+	return idx.release
+}
+
+func (idx *overlappingSearchIndex) leaveSearch() {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.active--
+}
+
+func (idx *overlappingSearchIndex) searchCalls() int {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.calls
+}
+
+func (idx *overlappingSearchIndex) maxActiveSearches() int {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	return idx.maxActive
+}
+
+func (idx *overlappingSearchIndex) List(context.Context, string, retrieval.ListRequest) (*retrieval.ListResponse, error) {
+	return &retrieval.ListResponse{}, nil
+}
+
+func (idx *overlappingSearchIndex) Capabilities() retrieval.Capabilities {
+	return retrieval.Capabilities{BM25: true}
+}
+
+func (idx *overlappingSearchIndex) Close() error {
 	return nil
 }
 
