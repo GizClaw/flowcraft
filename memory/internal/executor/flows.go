@@ -1020,7 +1020,7 @@ func (r *Executor) writerFor(capability compiler.Capability, namespaceOverride s
 	projection := r.projections[capability]
 	binding := projection.Binding
 	binding.Namespace = namespaceOverride
-	return indexed.NewWriter(r.index, binding)
+	return r.newProjectionWriter(binding)
 }
 
 func (r *Executor) namespaceForSearch(capability compiler.Capability, namespaceOverride string) (string, error) {

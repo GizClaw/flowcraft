@@ -12,6 +12,7 @@ import (
 	viewfact "github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	viewrecent "github.com/GizClaw/flowcraft/memory/views/recent"
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -29,7 +30,8 @@ type Deps struct {
 	EntityProfileStore  viewentity.ProfileStore
 	EntityTimelineStore viewentity.TimelineStore
 
-	Index retrieval.Index
+	Index    retrieval.Index
+	Embedder embedding.Embedder
 
 	DocumentChunker       derive.DocumentChunker
 	Summarizer            derive.Summarizer
@@ -165,7 +167,8 @@ func executorDeps(assembly compiler.Assembly, deps Deps) internalexecutor.Deps {
 		EntityProfileStore:  deps.EntityProfileStore,
 		EntityTimelineStore: deps.EntityTimelineStore,
 
-		Index: deps.Index,
+		Index:    deps.Index,
+		Embedder: deps.Embedder,
 
 		DocumentChunker:       deps.DocumentChunker,
 		Summarizer:            deps.Summarizer,

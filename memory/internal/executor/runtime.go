@@ -28,7 +28,8 @@ func New(deps Deps) (*Executor, error) {
 		messageStore:  deps.MessageStore,
 		documentStore: deps.DocumentStore,
 
-		index: deps.Index,
+		index:    deps.Index,
+		embedder: deps.Embedder,
 
 		enabled:     make(map[compiler.Capability]compiler.ViewAssembly, len(deps.Assembly.Views)),
 		projections: make(map[compiler.Capability]compiler.ProjectionAssembly, len(deps.Assembly.Projections)),
@@ -293,13 +294,27 @@ func (r *Executor) configureProjectionWriters() error {
 		return errdefs.Validationf("%s: projections require Index", errPrefix)
 	}
 	for _, projection := range projections {
-		writer, err := indexed.NewWriter(r.index, projection.Binding)
+		writer, err := r.newProjectionWriter(projection.Binding)
 		if err != nil {
 			return fmt.Errorf("%s: create projection writer for %q: %w", errPrefix, projection.Capability, err)
 		}
 		r.writers[projection.Capability] = writer
 	}
 	return nil
+}
+
+func (r *Executor) newProjectionWriter(binding indexed.Binding) (*indexed.Writer, error) {
+	return indexed.NewWriter(r.index, binding, r.projectionWriterOptions()...)
+}
+
+func (r *Executor) projectionWriterOptions() []indexed.WriterOption {
+	if r == nil || r.embedder == nil || !retrieval.Supports(r.index, retrieval.CapabilityVector) {
+		return nil
+	}
+	return []indexed.WriterOption{
+		indexed.WithEmbedder(r.embedder),
+		indexed.WithVectorize(true),
+	}
 }
 
 func (r *Executor) projectionWritersToConfigure() ([]compiler.ProjectionAssembly, error) {

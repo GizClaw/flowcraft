@@ -383,6 +383,58 @@ func TestRuntimeIndexesProjectsSearchesAndHydratesViews(t *testing.T) {
 	}
 }
 
+func TestRuntimeProjectionWriterVectorizesRetrievalDocs(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceDocumentStore, Required: true}},
+		[]compiler.CapabilitySpec{{Capability: compiler.CapabilityDocumentChunks, Required: true}},
+		[]compiler.ProjectionRequest{{Capability: compiler.CapabilityDocumentChunks, Namespace: "doc_chunks", Required: true}},
+	)
+
+	embedder := &fakeRuntimeEmbedder{
+		batchVectors: [][]float32{{0.25, 0.75}},
+	}
+	deps := newExecutorDeps(t, assembly)
+	deps.DocumentChunker = &fakeChunker{}
+	deps.Embedder = embedder
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(vectorized projection runtime) error = %v", err)
+	}
+
+	if _, err := rt.DocumentStore().Put(ctx, sourcedocument.PutRequest{
+		Document: sourcedocument.Document{
+			DatasetID: "dataset-1",
+			ID:        "doc-1",
+			Content:   "chunkable document evidence about runtime memory",
+		},
+	}); err != nil {
+		t.Fatalf("Put document error = %v", err)
+	}
+	if _, err := rt.IndexDocument(ctx, testDocumentScope("dataset-1"), "doc-1", ""); err != nil {
+		t.Fatalf("IndexDocument() error = %v", err)
+	}
+
+	if len(embedder.batchTexts) != 1 || embedder.batchTexts[0] != "chunkable document evidence about runtime memory" {
+		t.Fatalf("EmbedBatch texts = %q, want document chunk text", embedder.batchTexts)
+	}
+	iterable, ok := retrieval.AsIterable(rt.RetrievalIndex())
+	if !ok {
+		t.Fatal("runtime retrieval index should expose Iterable")
+	}
+	docs, _, err := iterable.Iterate(ctx, "doc_chunks", "", 10)
+	if err != nil {
+		t.Fatalf("Iterate(doc_chunks) error = %v", err)
+	}
+	if len(docs) != 1 {
+		t.Fatalf("Iterate(doc_chunks) docs len = %d, want 1: %+v", len(docs), docs)
+	}
+	if got := docs[0].Vector; len(got) != 2 || got[0] != 0.25 || got[1] != 0.75 {
+		t.Fatalf("retrieval doc vector = %v, want generated vector", got)
+	}
+}
+
 func TestRuntimeFactLedgerAndGraphVerticalSlice(t *testing.T) {
 	ctx := context.Background()
 	assembly := compileAssembly(
@@ -2049,4 +2101,22 @@ func (i *closeTrackingIndex) Capabilities() retrieval.Capabilities {
 func (i *closeTrackingIndex) Close() error {
 	i.closed = true
 	return nil
+}
+
+type fakeRuntimeEmbedder struct {
+	batchTexts   []string
+	batchVectors [][]float32
+}
+
+func (f *fakeRuntimeEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return nil, nil
+}
+
+func (f *fakeRuntimeEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	f.batchTexts = append(f.batchTexts, texts...)
+	vectors := make([][]float32, len(f.batchVectors))
+	for i, vector := range f.batchVectors {
+		vectors[i] = append([]float32(nil), vector...)
+	}
+	return vectors, nil
 }

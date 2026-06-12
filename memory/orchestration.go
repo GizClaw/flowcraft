@@ -439,7 +439,7 @@ func (r *System) PackContext(ctx context.Context, req ContextRequest) (*ContextP
 	if r == nil || r.inner == nil {
 		return nil, errdefs.NotAvailablef("memory: system is not configured")
 	}
-	innerReq, err := r.packContextRequest(req)
+	innerReq, err := r.packContextRequest(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -487,19 +487,32 @@ func contextPackFromExecutor(in *internalexecutor.ContextPack) *ContextPack {
 	}
 }
 
-func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackContextRequest, error) {
+func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (internalexecutor.PackContextRequest, error) {
 	window, scope, err := normalizeContextRequest(req)
 	if err != nil {
 		return internalexecutor.PackContextRequest{}, err
 	}
+	query := strings.TrimSpace(req.Query)
 	topK := req.TopK
-	if strings.TrimSpace(req.Query) != "" && topK <= 0 {
+	if query != "" && topK <= 0 {
 		topK = defaultContextTopK
+	}
+	searchInput := packContextSearchInput{
+		query:         query,
+		topK:          topK,
+		hybridEnabled: r.hybridQueryEmbeddingEnabled(),
+		embed: func() ([]float32, error) {
+			vector, err := r.deps.Embedder.Embed(ctx, query)
+			if err != nil {
+				return nil, fmt.Errorf("memory: embed context query: %w", err)
+			}
+			return vector, nil
+		},
 	}
 
 	out := internalexecutor.PackContextRequest{
 		Scope:  scope,
-		Query:  req.Query,
+		Query:  query,
 		Window: window,
 	}
 	for _, stage := range r.plan.Read {
@@ -511,7 +524,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilitySummaryDAG, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilitySummaryDAG, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, summaryScopeFilter(scope))
 				out.SummarySearch = search
 				out.SummaryNamespace = namespace
@@ -523,7 +536,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityDocumentChunks, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityDocumentChunks, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, documentScopeFilter(scope))
 				out.DocumentSearch = search
 				out.DocumentNamespace = namespace
@@ -535,7 +548,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityObservationLedger, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityObservationLedger, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.ObservationSearch = search
 				out.ObservationNamespace = namespace
@@ -547,7 +560,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityFactLedger, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityFactLedger, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, factScopeFilter(scope))
 				out.FactSearch = search
 				out.FactNamespace = namespace
@@ -559,7 +572,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityFactGraph, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityFactGraph, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.FactGraphSearch = search
 				out.FactGraphNamespace = namespace
@@ -571,7 +584,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityEntityProfile, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityEntityProfile, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.EntityProfileSearch = search
 				out.EntityProfileNamespace = namespace
@@ -583,7 +596,7 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-			if err := r.populateSearch(stage, CapabilityEntityTimeline, req.Query, topK, func(search *retrieval.SearchRequest) {
+			if err := r.populateSearch(stage, CapabilityEntityTimeline, &searchInput, func(search *retrieval.SearchRequest) {
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.EntityTimelineSearch = search
 				out.EntityTimelineNamespace = namespace
@@ -599,18 +612,60 @@ func (r *System) packContextRequest(req ContextRequest) (internalexecutor.PackCo
 	return out, nil
 }
 
-func (r *System) populateSearch(stage PlannedStage, capability Capability, query string, topK int, set func(*retrieval.SearchRequest)) error {
+type packContextSearchInput struct {
+	query         string
+	topK          int
+	hybridEnabled bool
+	queryVector   []float32
+	vectorReady   bool
+	embed         func() ([]float32, error)
+}
+
+func (in *packContextSearchInput) ensureQueryVector() ([]float32, error) {
+	if in == nil || !in.hybridEnabled {
+		return nil, nil
+	}
+	if !in.vectorReady {
+		vector, err := in.embed()
+		if err != nil {
+			return nil, err
+		}
+		in.queryVector = append([]float32(nil), vector...)
+		in.vectorReady = true
+	}
+	return append([]float32(nil), in.queryVector...), nil
+}
+
+func (r *System) populateSearch(stage PlannedStage, capability Capability, input *packContextSearchInput, set func(*retrieval.SearchRequest)) error {
 	if !r.readAvailable[capability] {
 		if stage.Optional {
 			return nil
 		}
 		return errdefs.NotAvailablef("memory: read stage %q requires configured projection for capability %q", stage.Name, capability)
 	}
-	if strings.TrimSpace(query) == "" {
+	if input == nil || strings.TrimSpace(input.query) == "" {
 		return errdefs.Validationf("memory: read stage %q requires query", stage.Name)
 	}
-	set(&retrieval.SearchRequest{QueryText: query, TopK: topK})
+	search := &retrieval.SearchRequest{QueryText: input.query, TopK: input.topK}
+	if input.hybridEnabled {
+		vector, err := input.ensureQueryVector()
+		if err != nil {
+			return err
+		}
+		search.QueryVector = vector
+		search.HybridMode = retrieval.HybridDefault
+	}
+	set(search)
 	return nil
+}
+
+func (r *System) hybridQueryEmbeddingEnabled() bool {
+	if r == nil || r.deps.Embedder == nil {
+		return false
+	}
+	index := r.inner.RetrievalIndex()
+	return retrieval.Supports(index, retrieval.CapabilityVector) &&
+		retrieval.Supports(index, retrieval.CapabilityHybrid)
 }
 
 func (r *System) requireWriteStage(stage PlannedStage, capability Capability) error {

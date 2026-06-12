@@ -163,6 +163,50 @@ func TestWriterUpsertConvertsRecordsToDocs(t *testing.T) {
 	}
 }
 
+func TestWriterUpsertVectorizesMissingRecordVectors(t *testing.T) {
+	index := &fakeIndex{}
+	embedder := &fakeEmbedder{
+		batchVectors: [][]float32{
+			{10, 11},
+			{20, 21},
+		},
+	}
+	writer, err := NewWriter(index, validBinding(), WithEmbedder(embedder), WithVectorize(true))
+	if err != nil {
+		t.Fatalf("NewWriter(vectorized) error = %v", err)
+	}
+
+	records := []Record{
+		{ID: "needs-vector-1", Text: "first text"},
+		{ID: "keeps-vector", Text: "second text", Vector: []float32{7, 8}},
+		{ID: "vector-only", Vector: []float32{9, 9}},
+		{ID: "needs-vector-2", Text: "third text"},
+	}
+	if err := writer.Upsert(context.Background(), records); err != nil {
+		t.Fatalf("Upsert(vectorized) error = %v", err)
+	}
+
+	wantTexts := []string{"first text", "third text"}
+	if !reflect.DeepEqual(embedder.batchTexts, wantTexts) {
+		t.Fatalf("EmbedBatch texts = %q, want %q", embedder.batchTexts, wantTexts)
+	}
+	if got := index.upsertDocs[0].Vector; !reflect.DeepEqual(got, []float32{10, 11}) {
+		t.Fatalf("doc[0].Vector = %v, want generated vector", got)
+	}
+	if got := index.upsertDocs[1].Vector; !reflect.DeepEqual(got, []float32{7, 8}) {
+		t.Fatalf("doc[1].Vector = %v, want existing vector preserved", got)
+	}
+	if got := index.upsertDocs[2].Vector; !reflect.DeepEqual(got, []float32{9, 9}) {
+		t.Fatalf("doc[2].Vector = %v, want vector-only record preserved", got)
+	}
+	if got := index.upsertDocs[3].Vector; !reflect.DeepEqual(got, []float32{20, 21}) {
+		t.Fatalf("doc[3].Vector = %v, want second generated vector", got)
+	}
+	if len(records[0].Vector) != 0 {
+		t.Fatalf("Upsert mutated caller record vector: %v", records[0].Vector)
+	}
+}
+
 func TestWriterUpsertHandlesEmptyBatch(t *testing.T) {
 	writer, err := NewWriter(&fakeIndex{}, validBinding())
 	if err != nil {
@@ -574,4 +618,22 @@ type droppableFakeIndex struct {
 func (f *droppableFakeIndex) Drop(_ context.Context, namespace string) error {
 	f.dropNamespace = namespace
 	return nil
+}
+
+type fakeEmbedder struct {
+	batchTexts   []string
+	batchVectors [][]float32
+}
+
+func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
+	return nil, nil
+}
+
+func (f *fakeEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	f.batchTexts = append(f.batchTexts, texts...)
+	vectors := make([][]float32, len(f.batchVectors))
+	for i, vector := range f.batchVectors {
+		vectors[i] = append([]float32(nil), vector...)
+	}
+	return vectors, nil
 }

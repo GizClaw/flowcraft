@@ -256,6 +256,83 @@ read_stages:
 	}
 }
 
+func TestMemoryFacadePackContextUsesHybridQueryEmbedding(t *testing.T) {
+	ctx := context.Background()
+	index := &recordingSearchIndex{
+		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
+	}
+	embedder := &fakeMemoryEmbedder{embedVector: []float32{0.1, 0.2}}
+	deps := newDeps(t)
+	deps.Index = index
+	deps.Embedder = embedder
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+
+	mem, err := memory.New(queryEmbeddingSpec(), deps)
+	if err != nil {
+		t.Fatalf("New(query embedding memory) error = %v", err)
+	}
+	_, err = mem.PackContext(ctx, memory.ContextRequest{
+		Scope: testScope("conv-embed"),
+		Query: " Ada tea ",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+
+	if len(embedder.embedTexts) != 1 || embedder.embedTexts[0] != "Ada tea" {
+		t.Fatalf("Embed texts = %q, want one normalized query", embedder.embedTexts)
+	}
+	if len(index.searchRequests) != 2 {
+		t.Fatalf("Search requests len = %d, want observation and fact searches", len(index.searchRequests))
+	}
+	for i, req := range index.searchRequests {
+		if req.QueryText != "Ada tea" || req.TopK != 3 {
+			t.Fatalf("Search request[%d] text/topK = %q/%d, want normalized query and TopK", i, req.QueryText, req.TopK)
+		}
+		if got := req.QueryVector; len(got) != 2 || got[0] != 0.1 || got[1] != 0.2 {
+			t.Fatalf("Search request[%d] QueryVector = %v, want query embedding", i, got)
+		}
+		if req.HybridMode != retrieval.HybridDefault {
+			t.Fatalf("Search request[%d] HybridMode = %q, want HybridDefault", i, req.HybridMode)
+		}
+	}
+}
+
+func TestMemoryFacadePackContextWithoutEmbedderUsesQueryTextOnly(t *testing.T) {
+	ctx := context.Background()
+	index := &recordingSearchIndex{
+		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
+	}
+	deps := newDeps(t)
+	deps.Index = index
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+
+	mem, err := memory.New(queryEmbeddingSpec(), deps)
+	if err != nil {
+		t.Fatalf("New(query text memory) error = %v", err)
+	}
+	_, err = mem.PackContext(ctx, memory.ContextRequest{
+		Scope: testScope("conv-text"),
+		Query: "Ada tea",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+
+	if len(index.searchRequests) != 2 {
+		t.Fatalf("Search requests len = %d, want observation and fact searches", len(index.searchRequests))
+	}
+	for i, req := range index.searchRequests {
+		if req.QueryText != "Ada tea" || len(req.QueryVector) != 0 {
+			t.Fatalf("Search request[%d] = %+v, want QueryText only", i, req)
+		}
+	}
+}
+
 func TestMemoryFacadePackContextOnlyReturnsActiveFacts(t *testing.T) {
 	ctx := context.Background()
 	specYAML := `
@@ -3197,6 +3274,27 @@ func semanticRetrievalSpec() memory.Spec {
 	}
 }
 
+func queryEmbeddingSpec() memory.Spec {
+	return memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityObservationLedger, Required: true},
+			{Capability: memory.CapabilityFactLedger, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
+			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_observations"},
+			{Name: "retrieve_facts"},
+			{Name: "pack_context"},
+		},
+	}
+}
+
 func entityRetrievalSpec() memory.Spec {
 	return memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
@@ -3302,6 +3400,71 @@ func (f *fakeMemoryContextPacker) PackContext(_ context.Context, input derive.Co
 		return f.fn(input)
 	}
 	return derive.ContextPackOutput{Items: input.Items}, nil
+}
+
+type fakeMemoryEmbedder struct {
+	embedTexts   []string
+	batchTexts   []string
+	embedVector  []float32
+	batchVectors [][]float32
+}
+
+func (f *fakeMemoryEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	f.embedTexts = append(f.embedTexts, text)
+	return append([]float32(nil), f.embedVector...), nil
+}
+
+func (f *fakeMemoryEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
+	f.batchTexts = append(f.batchTexts, texts...)
+	if f.batchVectors == nil {
+		vectors := make([][]float32, len(texts))
+		for i := range vectors {
+			vectors[i] = append([]float32(nil), f.embedVector...)
+		}
+		return vectors, nil
+	}
+	vectors := make([][]float32, len(f.batchVectors))
+	for i, vector := range f.batchVectors {
+		vectors[i] = append([]float32(nil), vector...)
+	}
+	return vectors, nil
+}
+
+type recordingSearchIndex struct {
+	caps           retrieval.Capabilities
+	searchRequests []retrieval.SearchRequest
+	searchSpaces   []string
+	upsertDocs     []retrieval.Doc
+}
+
+func (idx *recordingSearchIndex) Upsert(_ context.Context, _ string, docs []retrieval.Doc) error {
+	for _, doc := range docs {
+		idx.upsertDocs = append(idx.upsertDocs, retrieval.CloneDoc(doc))
+	}
+	return nil
+}
+
+func (idx *recordingSearchIndex) Delete(context.Context, string, []string) error {
+	return nil
+}
+
+func (idx *recordingSearchIndex) Search(_ context.Context, namespace string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
+	req.QueryVector = append([]float32(nil), req.QueryVector...)
+	idx.searchSpaces = append(idx.searchSpaces, namespace)
+	idx.searchRequests = append(idx.searchRequests, req)
+	return &retrieval.SearchResponse{}, nil
+}
+
+func (idx *recordingSearchIndex) List(context.Context, string, retrieval.ListRequest) (*retrieval.ListResponse, error) {
+	return &retrieval.ListResponse{}, nil
+}
+
+func (idx *recordingSearchIndex) Capabilities() retrieval.Capabilities {
+	return idx.caps
+}
+
+func (idx *recordingSearchIndex) Close() error {
+	return nil
 }
 
 func (f *fakeSummarizer) Summarize(_ context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {

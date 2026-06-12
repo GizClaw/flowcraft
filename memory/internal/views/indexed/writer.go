@@ -2,29 +2,56 @@ package indexed
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Writer writes indexed projection records to the bound retrieval namespace.
 type Writer struct {
-	index   retrieval.Index
-	binding Binding
+	index     retrieval.Index
+	binding   Binding
+	embedder  embedding.Embedder
+	vectorize bool
+}
+
+// WriterOption configures projection writer behavior.
+type WriterOption func(*Writer)
+
+// WithEmbedder installs the embedder used when vectorization is enabled.
+func WithEmbedder(embedder embedding.Embedder) WriterOption {
+	return func(w *Writer) {
+		w.embedder = embedder
+	}
+}
+
+// WithVectorize enables or disables filling missing record vectors from Text.
+func WithVectorize(enabled bool) WriterOption {
+	return func(w *Writer) {
+		w.vectorize = enabled
+	}
 }
 
 // NewWriter validates the namespace binding and builds a retrieval index writer.
-func NewWriter(index retrieval.Index, binding Binding) (*Writer, error) {
+func NewWriter(index retrieval.Index, binding Binding, opts ...WriterOption) (*Writer, error) {
 	if index == nil {
 		return nil, errdefs.Validationf("%s: index is required", errPrefix)
 	}
 	if err := binding.Validate(); err != nil {
 		return nil, err
 	}
-	return &Writer{
+	writer := &Writer{
 		index:   index,
 		binding: cloneBinding(binding),
-	}, nil
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(writer)
+		}
+	}
+	return writer, nil
 }
 
 // Binding returns a copy of the retrieval namespace binding.
@@ -35,14 +62,50 @@ func (w *Writer) Binding() Binding {
 // Upsert validates records, converts them to retrieval docs, and writes them to
 // the bound namespace.
 func (w *Writer) Upsert(ctx context.Context, records []Record) error {
-	docs := make([]retrieval.Doc, len(records))
-	for i, record := range records {
+	projected := append([]Record(nil), records...)
+	if err := w.fillVectors(ctx, projected); err != nil {
+		return err
+	}
+	docs := make([]retrieval.Doc, len(projected))
+	for i, record := range projected {
 		if err := record.Validate(); err != nil {
 			return err
 		}
 		docs[i] = docFromRecord(record)
 	}
 	return w.index.Upsert(ctx, w.binding.Namespace, docs)
+}
+
+func (w *Writer) fillVectors(ctx context.Context, records []Record) error {
+	if w == nil || !w.vectorize || w.embedder == nil || len(records) == 0 {
+		return nil
+	}
+	texts := make([]string, 0, len(records))
+	recordIndexes := make([]int, 0, len(records))
+	for i, record := range records {
+		if err := record.Validate(); err != nil {
+			return err
+		}
+		if len(record.Vector) > 0 {
+			continue
+		}
+		texts = append(texts, record.Text)
+		recordIndexes = append(recordIndexes, i)
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+	vectors, err := w.embedder.EmbedBatch(ctx, texts)
+	if err != nil {
+		return fmt.Errorf("%s: embed projection records: %w", errPrefix, err)
+	}
+	if len(vectors) != len(texts) {
+		return errdefs.Validationf("%s: embed projection records returned %d vectors for %d texts", errPrefix, len(vectors), len(texts))
+	}
+	for i, vector := range vectors {
+		records[recordIndexes[i]].Vector = append([]float32(nil), vector...)
+	}
+	return nil
 }
 
 // Delete removes records by id from the bound namespace.

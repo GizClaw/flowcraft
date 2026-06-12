@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
+	"github.com/GizClaw/flowcraft/sdk/embedding"
 )
 
 const errPrefix = "memory/internal/executor"
@@ -34,7 +35,8 @@ type Deps struct {
 	EntityProfileStore  viewentity.ProfileStore
 	EntityTimelineStore viewentity.TimelineStore
 
-	Index retrieval.Index
+	Index    retrieval.Index
+	Embedder embedding.Embedder
 
 	DocumentChunker       DocumentChunker
 	Summarizer            Summarizer
@@ -62,7 +64,8 @@ type Executor struct {
 	entityProfile     *viewentity.Profile
 	entityTimeline    *viewentity.Timeline
 
-	index retrieval.Index
+	index    retrieval.Index
+	embedder embedding.Embedder
 
 	enabled     map[compiler.Capability]compiler.ViewAssembly
 	projections map[compiler.Capability]compiler.ProjectionAssembly
