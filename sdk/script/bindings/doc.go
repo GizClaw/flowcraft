@@ -42,7 +42,7 @@
 //	bridge_shell.go   sandboxed subprocesses (allowlist via ShellOption)
 //	bridge_fs.go      workspace files
 //	bridge_runtime.go sub-script execScript (inherits parent bindings)
-//	bridge_llm.go         NewLLMBridge facade + LLMRunOptions (script-facing options schema)
+//	bridge_llm.go         NewLLMBridge facade + defaultable LLMRunOptions schema
 //	bridge_llm_round.go   in-bridge round driver (resolver + GenerateStream + tool.Registry)
 //	llm_marshal.go        model.* ⇄ map[string]any projections (multimodal-aware)
 //	bridge_tools.go   tool.Registry (deny-by-default, explicit allowlist or AllowAll)

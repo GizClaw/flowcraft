@@ -19,8 +19,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
+const jsCanonicalMessages = `[{ role: "user", parts: [{ type: "text", text: "hello" }] }]`
+
 // llmEnv assembles a script.Env that exposes only the "llm" global, backed
-// by the supplied resolver / registry / read-history function. Mirrors the
+// by the supplied resolver / registry. Mirrors the
 // minimal wiring a host would do when only LLM access matters.
 func llmEnv(t *testing.T, br BindingFunc) *script.Env {
 	t.Helper()
@@ -42,7 +44,7 @@ func newScriptedLLM(text string) (*fakeResolver, *fakeLLM) {
 }
 
 // ---------------------------------------------------------------------------
-// llm.run() — happy path + option / history wiring
+// llm.run() — happy path + explicit message / option wiring
 // ---------------------------------------------------------------------------
 
 func TestLLMBridge_Run_HappyPath(t *testing.T) {
@@ -53,14 +55,11 @@ func TestLLMBridge_Run_HappyPath(t *testing.T) {
 		Resolver: res,
 		Defaults: LLMRunOptions{Model: "default-model"},
 		Source:   "test",
-		ReadMessages: func(_ context.Context) []model.Message {
-			return []model.Message{{Role: model.RoleUser, Parts: []model.Part{{Type: model.PartText, Text: "hello"}}}}
-		},
 	})
 	env := llmEnv(t, bridge)
 
 	_, err := rt.Exec(context.Background(), "run", `
-		var r = llm.run(null);
+		var r = llm.run({ messages: `+jsCanonicalMessages+` });
 		if (r.content !== "hi from model") throw new Error("content: " + r.content);
 		if (!r.usage || r.usage.input_tokens !== 1) throw new Error("usage missing");
 		if (!r.messages || r.messages.length === 0) throw new Error("messages missing");
@@ -69,9 +68,9 @@ func TestLLMBridge_Run_HappyPath(t *testing.T) {
 		t.Fatalf("script: %v", err)
 	}
 
-	// History was forwarded to the LLM.
-	if len(llmd.gotMsgs) != 1 || llmd.gotMsgs[0].Role != model.RoleUser {
-		t.Errorf("LLM did not receive ReadMessages payload: %+v", llmd.gotMsgs)
+	// Script-supplied messages were forwarded to the LLM.
+	if len(llmd.gotMsgs) != 1 || llmd.gotMsgs[0].Role != model.RoleUser || llmd.gotMsgs[0].Content() != "hello" {
+		t.Errorf("LLM did not receive explicit messages payload: %+v", llmd.gotMsgs)
 	}
 	if res.gotModel != "default-model" {
 		t.Errorf("default model not used: %q", res.gotModel)
@@ -90,7 +89,7 @@ func TestLLMBridge_Run_ScriptOverrideWinsOverDefaults(t *testing.T) {
 	env := llmEnv(t, bridge)
 
 	_, err := rt.Exec(context.Background(), "override", `
-		llm.run({ model: "override-model" });
+		llm.run({ messages: `+jsCanonicalMessages+`, model: "override-model" });
 	`, env)
 	if err != nil {
 		t.Fatalf("script: %v", err)
@@ -109,11 +108,51 @@ func TestLLMBridge_Run_RejectsUnknownOption(t *testing.T) {
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "typo", `
 		try {
-			llm.run({ modle: "typo" });
+			llm.run({ messages: `+jsCanonicalMessages+`, modle: "typo" });
 			throw new Error("expected llm.run to reject unknown field");
 		} catch (e) {
 			if (String(e).indexOf("modle") === -1) {
 				throw new Error("error should name the bad field, got: " + e);
+			}
+		}
+	`, env)
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+}
+
+func TestLLMBridge_Run_RejectsMissingMessages(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	res, _ := newScriptedLLM("ok")
+
+	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
+	_, err := rt.Exec(context.Background(), "missing-messages", `
+		try {
+			llm.run(null);
+			throw new Error("expected llm.run to reject missing messages");
+		} catch (e) {
+			if (String(e).indexOf("messages") === -1) {
+				throw new Error("error should name missing messages, got: " + e);
+			}
+		}
+	`, env)
+	if err != nil {
+		t.Fatalf("script: %v", err)
+	}
+}
+
+func TestLLMBridge_Run_RejectsContentShorthandMessages(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	res, _ := newScriptedLLM("ok")
+
+	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
+	_, err := rt.Exec(context.Background(), "content-shorthand", `
+		try {
+			llm.run({ messages: [{ role: "user", content: "hello" }] });
+			throw new Error("expected llm.run to reject content shorthand");
+		} catch (e) {
+			if (String(e).indexOf("content") === -1) {
+				throw new Error("error should name content field, got: " + e);
 			}
 		}
 	`, env)
@@ -129,7 +168,7 @@ func TestLLMBridge_Run_ResolverErrorPropagates(t *testing.T) {
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "resolveerr", `
 		try {
-			llm.run(null);
+			llm.run({ messages: `+jsCanonicalMessages+` });
 			throw new Error("expected llm.run to throw on resolver error");
 		} catch (e) {
 			if (String(e).indexOf("provider unreachable") === -1) {
@@ -160,7 +199,7 @@ func TestLLMBridge_Stream_TextAccumulatesAcrossChunks(t *testing.T) {
 
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "stream-text", `
-		var s = llm.stream(null);
+		var s = llm.stream({ messages: `+jsCanonicalMessages+` });
 		var seen = "";
 		while (s.next()) {
 			seen += s.text();
@@ -190,7 +229,7 @@ func TestLLMBridge_Stream_PartExposesToolCall(t *testing.T) {
 
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "stream-part", `
-		var s = llm.stream(null);
+		var s = llm.stream({ messages: `+jsCanonicalMessages+` });
 		if (!s.next()) throw new Error("expected one chunk");
 		var p = s.part();
 		if (p.type !== "tool_call") throw new Error("part.type: " + p.type);
@@ -211,7 +250,7 @@ func TestLLMBridge_Stream_NextAfterCloseReturnsFalse(t *testing.T) {
 
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "stream-next-after-close", `
-		var s = llm.stream(null);
+		var s = llm.stream({ messages: `+jsCanonicalMessages+` });
 		s.close();
 		if (s.next()) throw new Error("next after close should return false");
 	`, env)
@@ -228,7 +267,7 @@ func TestLLMBridge_Stream_FinishAfterDrainReturnsResult(t *testing.T) {
 
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "stream-finish", `
-		var s = llm.stream(null);
+		var s = llm.stream({ messages: `+jsCanonicalMessages+` });
 		while (s.next()) {} // drain
 		var r = s.finish();
 		if (r.content !== "done") throw new Error("content: " + r.content);
@@ -248,7 +287,7 @@ func TestLLMBridge_Stream_StartFailureSurfacesAsThrow(t *testing.T) {
 	env := llmEnv(t, NewLLMBridge(LLMBridgeOptions{Resolver: res, Defaults: LLMRunOptions{Model: "m"}, Source: "test"}))
 	_, err := rt.Exec(context.Background(), "stream-fail", `
 		try {
-			llm.stream(null);
+			llm.stream({ messages: `+jsCanonicalMessages+` });
 			throw new Error("expected llm.stream to throw on start failure");
 		} catch (e) {
 			if (String(e).indexOf("nope") === -1) {
@@ -288,7 +327,7 @@ func TestLLMBridge_Run_ToolDefsForwardedToLLM(t *testing.T) {
 
 	// Script restricts to "calc" only; "search" must not reach the LLM.
 	_, err := rt.Exec(context.Background(), "run-tools", `
-		llm.run({ tools: ["calc"] });
+		llm.run({ messages: `+jsCanonicalMessages+`, tools: ["calc"] });
 	`, env)
 	if err != nil {
 		t.Fatalf("script: %v", err)
