@@ -47,6 +47,9 @@ func TestNewValidationAndClosedIndexErrors(t *testing.T) {
 	if !caps.BM25 || !caps.Vector || !caps.Hybrid || !caps.NativeDeleteByFilter {
 		t.Fatalf("unexpected caps: %+v", caps)
 	}
+	if !retrieval.Supports(idx, retrieval.CapabilityNamespaceWarm) {
+		t.Fatal("BBH should advertise namespace warming")
+	}
 	if err := idx.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +61,31 @@ func TestNewValidationAndClosedIndexErrors(t *testing.T) {
 	}
 	if _, err := idx.Search(context.Background(), "ns", retrieval.SearchRequest{QueryText: "x"}); err == nil {
 		t.Fatal("search after close should fail")
+	}
+}
+
+func TestWarmNamespace(t *testing.T) {
+	idx := openInternalIndex(t, t.TempDir())
+	warmer, ok := retrieval.AsNamespaceWarmer(idx)
+	if !ok {
+		t.Fatal("BBH should expose NamespaceWarmer")
+	}
+	if err := warmer.WarmNamespace(context.Background(), "warm/ns"); err != nil {
+		t.Fatalf("WarmNamespace: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := warmer.WarmNamespace(ctx, "cancelled"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled WarmNamespace error = %v, want context.Canceled", err)
+	}
+	if err := warmer.WarmNamespace(context.Background(), " "); err == nil {
+		t.Fatal("blank WarmNamespace namespace should fail")
+	}
+	if err := idx.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := warmer.WarmNamespace(context.Background(), "closed"); err == nil {
+		t.Fatal("closed WarmNamespace should fail")
 	}
 }
 

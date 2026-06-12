@@ -79,3 +79,9 @@ type DeletableByFilter interface {
 type Droppable interface {
 	Drop(ctx context.Context, namespace string) error
 }
+
+// NamespaceWarmer supports explicitly opening backend resources for a
+// namespace before the first read or write path needs them.
+type NamespaceWarmer interface {
+	WarmNamespace(ctx context.Context, namespace string) error
+}

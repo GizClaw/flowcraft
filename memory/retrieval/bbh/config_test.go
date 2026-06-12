@@ -56,6 +56,26 @@ func TestDurationUnmarshalJSONAndYAML(t *testing.T) {
 	}
 }
 
+func TestDurationMarshalJSONAndYAML(t *testing.T) {
+	d := Duration{Duration: 1500 * time.Millisecond}
+	raw, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `"1.5s"` {
+		t.Fatalf("json marshal = %s, want %q", raw, `"1.5s"`)
+	}
+	yraw, err := yaml.Marshal(struct {
+		D Duration `yaml:"d"`
+	}{D: d})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(yraw) != "d: 1.5s\n" {
+		t.Fatalf("yaml marshal = %q, want %q", string(yraw), "d: 1.5s\n")
+	}
+}
+
 func TestConfigLoadErrors(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := loadConfigFile(dir, "missing.yaml"); err == nil {

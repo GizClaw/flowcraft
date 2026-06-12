@@ -45,8 +45,9 @@ type journaledIndex struct {
 //
 // Currently transparently delegates: [retrieval.DocGetter],
 // [retrieval.Filterable], [retrieval.DeletableByFilter],
-// [retrieval.Droppable], [retrieval.Iterable]. These have in-tree
-// implementations and the bridge logic on `*journaledIndex` is correct.
+// [retrieval.Droppable], [retrieval.Iterable], [retrieval.Countable], and
+// [retrieval.NamespaceWarmer]. These have in-tree implementations and the
+// bridge logic on `*journaledIndex` is correct.
 // [retrieval.Hybridable], [retrieval.Snapshottable], and
 // [retrieval.Vectorizable] are NOT delegated by the base wrapper today —
 // no in-tree backend implements them. When a future backend does, add a
@@ -319,6 +320,13 @@ func (w *journaledIndex) count(ctx context.Context, namespace string, f retrieva
 	return 0, nil
 }
 
+func (w *journaledIndex) warmNamespace(ctx context.Context, namespace string) error {
+	if x, ok := w.inner.(retrieval.NamespaceWarmer); ok {
+		return x.WarmNamespace(ctx, namespace)
+	}
+	return nil
+}
+
 // REMOVED in PR-4 (issue #157):
 //   - Snapshot / Restore
 //   - SearchHybrid
@@ -353,6 +361,10 @@ func newWrapped(base *journaledIndex) retrieval.Index {
 	_, hasDrop := inner.(retrieval.Droppable)
 	_, hasIter := inner.(retrieval.Iterable)
 	_, hasCount := inner.(retrieval.Countable)
+	_, hasWarm := inner.(retrieval.NamespaceWarmer)
+	if hasWarm {
+		return newWrappedWarm(base, hasGet, hasFlt, hasDF, hasDrop, hasIter, hasCount)
+	}
 	switch {
 	case hasGet && hasFlt && hasDF && hasDrop && hasIter && hasCount:
 		return &wrappedFullCount{wrappedFull: &wrappedFull{journaledIndex: base}}
@@ -377,6 +389,31 @@ func newWrapped(base *journaledIndex) retrieval.Index {
 	}
 }
 
+func newWrappedWarm(base *journaledIndex, hasGet, hasFlt, hasDF, hasDrop, hasIter, hasCount bool) retrieval.Index {
+	switch {
+	case hasGet && hasFlt && hasDF && hasDrop && hasIter && hasCount:
+		return &wrappedFullCountWarm{wrappedFullCount: &wrappedFullCount{wrappedFull: &wrappedFull{journaledIndex: base}}}
+	case hasGet && hasFlt && hasDF && hasDrop && hasIter:
+		return &wrappedFullWarm{wrappedFull: &wrappedFull{journaledIndex: base}}
+	case hasGet && hasFlt && hasDF && hasIter && hasCount:
+		return &wrappedFilterAuditableCountWarm{wrappedFilterAuditableCount: &wrappedFilterAuditableCount{wrappedFilterAuditable: &wrappedFilterAuditable{journaledIndex: base}}}
+	case hasGet && hasFlt && hasDF && hasIter:
+		return &wrappedFilterAuditableWarm{wrappedFilterAuditable: &wrappedFilterAuditable{journaledIndex: base}}
+	case hasGet && hasDF && hasDrop && hasIter && hasCount:
+		return &wrappedAuditableCountWarm{wrappedAuditableCount: &wrappedAuditableCount{wrappedAuditable: &wrappedAuditable{journaledIndex: base}}}
+	case hasGet && hasDF && hasDrop && hasIter:
+		return &wrappedAuditableWarm{wrappedAuditable: &wrappedAuditable{journaledIndex: base}}
+	case hasGet && hasIter && hasCount:
+		return &wrappedReadableCountWarm{wrappedReadableCount: &wrappedReadableCount{wrappedReadable: &wrappedReadable{journaledIndex: base}}}
+	case hasGet && hasIter:
+		return &wrappedReadableWarm{wrappedReadable: &wrappedReadable{journaledIndex: base}}
+	case hasGet:
+		return &wrappedGetterWarm{wrappedGetter: &wrappedGetter{journaledIndex: base}}
+	default:
+		return &wrappedWarm{journaledIndex: base}
+	}
+}
+
 // The variants below "freeze" the optional method set at compile time so
 // callers' interface assertions reflect the inner backend's true
 // capability surface. Each embeds *journaledIndex so the bridging methods
@@ -391,6 +428,16 @@ type wrappedFullCount struct{ *wrappedFull }
 type wrappedFilterAuditableCount struct{ *wrappedFilterAuditable }
 type wrappedAuditableCount struct{ *wrappedAuditable }
 type wrappedReadableCount struct{ *wrappedReadable }
+type wrappedWarm struct{ *journaledIndex }
+type wrappedFullWarm struct{ *wrappedFull }
+type wrappedFilterAuditableWarm struct{ *wrappedFilterAuditable }
+type wrappedAuditableWarm struct{ *wrappedAuditable }
+type wrappedReadableWarm struct{ *wrappedReadable }
+type wrappedGetterWarm struct{ *wrappedGetter }
+type wrappedFullCountWarm struct{ *wrappedFullCount }
+type wrappedFilterAuditableCountWarm struct{ *wrappedFilterAuditableCount }
+type wrappedAuditableCountWarm struct{ *wrappedAuditableCount }
+type wrappedReadableCountWarm struct{ *wrappedReadableCount }
 
 func (w *wrappedFull) Get(ctx context.Context, namespace, id string) (retrieval.Doc, bool, error) {
 	return w.get(ctx, namespace, id)
@@ -454,6 +501,37 @@ func (w *wrappedReadableCount) Count(ctx context.Context, namespace string, f re
 	return w.count(ctx, namespace, f)
 }
 
+func (w *wrappedWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedFullWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedFilterAuditableWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedAuditableWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedReadableWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedGetterWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedFullCountWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedFilterAuditableCountWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedAuditableCountWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+func (w *wrappedReadableCountWarm) WarmNamespace(ctx context.Context, namespace string) error {
+	return w.warmNamespace(ctx, namespace)
+}
+
 var (
 	_ retrieval.Index             = (*journaledIndex)(nil)
 	_ retrieval.DocGetter         = (*wrappedGetter)(nil)
@@ -475,6 +553,16 @@ var (
 	_ retrieval.Countable         = (*wrappedFilterAuditableCount)(nil)
 	_ retrieval.Countable         = (*wrappedAuditableCount)(nil)
 	_ retrieval.Countable         = (*wrappedReadableCount)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedFullWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedFilterAuditableWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedAuditableWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedReadableWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedGetterWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedFullCountWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedFilterAuditableCountWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedAuditableCountWarm)(nil)
+	_ retrieval.NamespaceWarmer   = (*wrappedReadableCountWarm)(nil)
 )
 
 func isEmptyFilter(f retrieval.Filter) bool {
