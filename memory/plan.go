@@ -83,6 +83,9 @@ func compileWritePlan(assembly compiler.Assembly, available map[Capability]bool)
 			plan = append(plan, planned)
 		}
 	}
+	if err := validateWriteStageAsyncDependencies(plan); err != nil {
+		return nil, err
+	}
 	return plan, nil
 }
 
@@ -364,6 +367,39 @@ func writeStageCapability(name string) (Capability, bool) {
 		return CapabilityEntityTimeline, true
 	default:
 		return "", false
+	}
+}
+
+func validateWriteStageAsyncDependencies(stages []PlannedStage) error {
+	byName := make(map[string]PlannedStage, len(stages))
+	for _, stage := range stages {
+		byName[stage.Name] = stage
+	}
+	for _, stage := range stages {
+		if stage.Async {
+			continue
+		}
+		for _, dependency := range writeStageDependencies(stage.Name) {
+			upstream, ok := byName[dependency]
+			if !ok || !upstream.Async {
+				continue
+			}
+			return errdefs.Validationf("memory: write stage %q cannot be sync because dependency %q is async", stage.Name, upstream.Name)
+		}
+	}
+	return nil
+}
+
+func writeStageDependencies(name string) []string {
+	switch name {
+	case writeStageReconcileFacts:
+		return []string{writeStageExtractObservations}
+	case writeStageBuildFactGraph:
+		return []string{writeStageReconcileFacts}
+	case writeStageBuildEntityProfiles, writeStageBuildEntityTimeline:
+		return []string{writeStageReconcileFacts, writeStageBuildFactGraph}
+	default:
+		return nil
 	}
 }
 

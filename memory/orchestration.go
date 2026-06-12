@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
@@ -110,7 +111,20 @@ func (r *System) AppendMessage(ctx context.Context, req AppendMessageRequest) (*
 
 	result := &AppendMessageResult{}
 	window := recent.WindowRequest{Scope: scope}
+	var syncStages []PlannedStage
 	var asyncChain []PlannedStage
+	flushSync := func() error {
+		if len(syncStages) == 0 {
+			return nil
+		}
+		stageResult, err := r.executeWriteStageDAG(ctx, syncStages, window, scope)
+		if err != nil {
+			return err
+		}
+		mergeAppendMessageResult(result, stageResult)
+		syncStages = nil
+		return nil
+	}
 	flushAsync := func() error {
 		if len(asyncChain) == 0 {
 			return nil
@@ -129,15 +143,19 @@ func (r *System) AppendMessage(ctx context.Context, req AppendMessageRequest) (*
 			continue
 		}
 		if stage.Async {
+			if err := flushSync(); err != nil {
+				return nil, err
+			}
 			asyncChain = append(asyncChain, stage)
 			continue
 		}
 		if err := flushAsync(); err != nil {
 			return nil, err
 		}
-		if err := r.executeWriteStage(ctx, stage, window, scope, result); err != nil {
-			return nil, err
-		}
+		syncStages = append(syncStages, stage)
+	}
+	if err := flushSync(); err != nil {
+		return nil, err
 	}
 	if err := flushAsync(); err != nil {
 		return nil, err
@@ -183,16 +201,409 @@ func (r *System) enqueueWriteChain(ctx context.Context, traceID TraceID, scope S
 }
 
 func (r *System) executeWriteStages(ctx context.Context, stages []PlannedStage, window recent.WindowRequest, scope viewobservation.Scope) (*AppendMessageResult, error) {
-	result := &AppendMessageResult{}
-	for _, stage := range stages {
-		if stage.Name == writeStageAppendMessage || stage.Name == writeStageChunkDocument {
-			continue
-		}
-		if err := r.executeWriteStage(ctx, stage, window, scope, result); err != nil {
-			return nil, err
+	return r.executeWriteStageDAG(ctx, stages, window, scope)
+}
+
+type writeExecutionState struct {
+	mu     sync.Mutex
+	window recent.WindowRequest
+	scope  views.Scope
+
+	observations []viewobservation.Observation
+	facts        []fact.Fact
+	graph        *FactGraphBuildResult
+	profiles     []viewentity.ProfileRecord
+	events       []viewentity.Event
+}
+
+func (s *writeExecutionState) setObservations(observations []viewobservation.Observation) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observations = append([]viewobservation.Observation(nil), observations...)
+}
+
+func (s *writeExecutionState) getObservations() []viewobservation.Observation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]viewobservation.Observation(nil), s.observations...)
+}
+
+func (s *writeExecutionState) setFacts(facts []fact.Fact) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.facts = append([]fact.Fact(nil), facts...)
+}
+
+func (s *writeExecutionState) getFacts() []fact.Fact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]fact.Fact(nil), s.facts...)
+}
+
+func (s *writeExecutionState) setGraph(graph *FactGraphBuildResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.graph = cloneFactGraphBuildResult(graph)
+}
+
+func (s *writeExecutionState) getEntityEvidence() ([]fact.Fact, *FactGraphBuildResult) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]fact.Fact(nil), s.facts...), cloneFactGraphBuildResult(s.graph)
+}
+
+func (s *writeExecutionState) setProfiles(profiles []viewentity.ProfileRecord) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = append([]viewentity.ProfileRecord(nil), profiles...)
+}
+
+func (s *writeExecutionState) setEvents(events []viewentity.Event) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append([]viewentity.Event(nil), events...)
+}
+
+func (s *writeExecutionState) result() *AppendMessageResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &AppendMessageResult{
+		Observations:   append([]viewobservation.Observation(nil), s.observations...),
+		Facts:          append([]fact.Fact(nil), s.facts...),
+		FactGraph:      cloneFactGraphBuildResult(s.graph),
+		EntityProfiles: append([]viewentity.ProfileRecord(nil), s.profiles...),
+		EntityEvents:   append([]viewentity.Event(nil), s.events...),
+	}
+}
+
+type writeStageNode struct {
+	stage PlannedStage
+	name  string
+	deps  []string
+	run   func(context.Context, *writeExecutionState) error
+}
+
+func (r *System) executeWriteStageDAG(ctx context.Context, stages []PlannedStage, window recent.WindowRequest, scope views.Scope) (*AppendMessageResult, error) {
+	nodes, order, err := r.buildWriteStageDAG(stages)
+	if err != nil {
+		return nil, err
+	}
+	if len(nodes) == 0 {
+		return &AppendMessageResult{}, nil
+	}
+
+	dependents := make(map[string][]string, len(nodes))
+	indegree := make(map[string]int, len(nodes))
+	for _, name := range order {
+		node := nodes[name]
+		indegree[name] = len(node.deps)
+		for _, dep := range node.deps {
+			if _, ok := nodes[dep]; !ok {
+				return nil, errdefs.Validationf("memory: write stage %q depends on missing stage %q", name, dep)
+			}
+			dependents[dep] = append(dependents[dep], name)
 		}
 	}
-	return result, nil
+
+	ready := make([]string, 0, len(nodes))
+	for _, name := range order {
+		if indegree[name] == 0 {
+			ready = append(ready, name)
+		}
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	state := &writeExecutionState{window: window, scope: scope}
+	type writeStageResult struct {
+		name string
+		err  error
+	}
+	done := make(chan writeStageResult, len(nodes))
+	started := make(map[string]bool, len(nodes))
+	completed := 0
+	running := 0
+	var firstErr error
+
+	for completed < len(nodes) {
+		if firstErr == nil {
+			for _, name := range ready {
+				if started[name] {
+					continue
+				}
+				started[name] = true
+				running++
+				node := nodes[name]
+				go func() {
+					done <- writeStageResult{name: node.name, err: node.run(ctx, state)}
+				}()
+			}
+		}
+		ready = nil
+
+		if running == 0 {
+			if firstErr != nil {
+				return nil, firstErr
+			}
+			return nil, errdefs.Validationf("memory: write stage DAG has a cycle")
+		}
+
+		result := <-done
+		running--
+		completed++
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			cancel()
+		}
+		if firstErr != nil {
+			continue
+		}
+		for _, dependent := range dependents[result.name] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				ready = append(ready, dependent)
+			}
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return state.result(), nil
+}
+
+func (r *System) buildWriteStageDAG(stages []PlannedStage) (map[string]writeStageNode, []string, error) {
+	nodes := make(map[string]writeStageNode)
+	var order []string
+	var add func(PlannedStage) error
+	add = func(stage PlannedStage) error {
+		switch stage.Name {
+		case writeStageAppendMessage, writeStageChunkDocument:
+			return nil
+		}
+		if existing, ok := nodes[stage.Name]; ok {
+			if !existing.stage.Optional && stage.Optional {
+				return nil
+			}
+			existing.stage = stage
+			nodes[stage.Name] = existing
+			return nil
+		}
+		if !isSupportedWriteStage(stage.Name) {
+			if stage.Optional {
+				return nil
+			}
+			return errdefs.Validationf("memory: unsupported write stage %q", stage.Name)
+		}
+		if stage.Capability == "" {
+			if capability, ok := writeStageCapability(stage.Name); ok {
+				stage.Capability = capability
+			}
+		}
+		for _, dep := range writeStageDependencies(stage.Name) {
+			if _, ok := nodes[dep]; ok {
+				continue
+			}
+			if !r.writeStageDependencyAvailable(dep) {
+				continue
+			}
+			if err := add(PlannedStage{Name: dep}); err != nil {
+				return err
+			}
+		}
+		deps := make([]string, 0, len(writeStageDependencies(stage.Name)))
+		for _, dep := range writeStageDependencies(stage.Name) {
+			if _, ok := nodes[dep]; ok {
+				deps = append(deps, dep)
+			}
+		}
+		node, err := r.writeStageNode(stage, deps)
+		if err != nil {
+			return err
+		}
+		nodes[stage.Name] = node
+		order = append(order, stage.Name)
+		return nil
+	}
+
+	for _, stage := range stages {
+		if err := add(stage); err != nil {
+			return nil, nil, err
+		}
+	}
+	return nodes, order, nil
+}
+
+func (r *System) writeStageDependencyAvailable(name string) bool {
+	capability, ok := writeStageCapability(name)
+	return ok && r.writeAvailable[capability]
+}
+
+func (r *System) writeStageNode(stage PlannedStage, deps []string) (writeStageNode, error) {
+	node := writeStageNode{
+		stage: stage,
+		name:  stage.Name,
+		deps:  append([]string(nil), deps...),
+	}
+	switch stage.Name {
+	case writeStageExtractObservations:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			if err := r.requireWriteStage(stage, CapabilityObservationLedger); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilityObservationLedger, state.scope)
+			if err != nil {
+				return err
+			}
+			observations, err := r.inner.ExtractObservations(ctx, state.window, state.scope, namespace)
+			if err != nil {
+				return err
+			}
+			state.setObservations(observations)
+			return nil
+		}
+	case writeStageReconcileFacts:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			observations := state.getObservations()
+			if len(observations) == 0 {
+				return nil
+			}
+			if err := r.requireWriteStage(stage, CapabilityFactLedger); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilityFactLedger, state.scope)
+			if err != nil {
+				return err
+			}
+			facts, err := r.inner.ReconcileFactsScoped(ctx, observations, namespace)
+			if err != nil {
+				return err
+			}
+			state.setFacts(facts)
+			return nil
+		}
+	case writeStageBuildFactGraph:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			facts := state.getFacts()
+			if len(facts) == 0 {
+				return nil
+			}
+			if err := r.requireWriteStage(stage, CapabilityFactGraph); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilityFactGraph, state.scope)
+			if err != nil {
+				return err
+			}
+			graph, err := r.inner.BuildFactGraphScoped(ctx, facts, namespace)
+			if err != nil {
+				return err
+			}
+			state.setGraph(factGraphBuildResultFromExecutor(graph))
+			return nil
+		}
+	case writeStageBuildEntityProfiles:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			facts, graph := state.getEntityEvidence()
+			if len(facts) == 0 {
+				return nil
+			}
+			if err := r.requireWriteStage(stage, CapabilityEntityProfile); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilityEntityProfile, state.scope)
+			if err != nil {
+				return err
+			}
+			profiles, err := r.inner.BuildEntityProfilesScoped(ctx, internalexecutor.EntityBuildInput{
+				Scope: state.scope,
+				Facts: facts,
+				Graph: factGraphBuildResultToExecutor(graph),
+			}, namespace)
+			if err != nil {
+				return err
+			}
+			state.setProfiles(profiles)
+			return nil
+		}
+	case writeStageBuildEntityTimeline:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			facts, graph := state.getEntityEvidence()
+			if len(facts) == 0 {
+				return nil
+			}
+			if err := r.requireWriteStage(stage, CapabilityEntityTimeline); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilityEntityTimeline, state.scope)
+			if err != nil {
+				return err
+			}
+			events, err := r.inner.BuildEntityTimelineScoped(ctx, internalexecutor.EntityBuildInput{
+				Scope: state.scope,
+				Facts: facts,
+				Graph: factGraphBuildResultToExecutor(graph),
+			}, namespace)
+			if err != nil {
+				return err
+			}
+			state.setEvents(events)
+			return nil
+		}
+	case writeStageBuildSummaryDAG:
+		node.run = func(ctx context.Context, state *writeExecutionState) error {
+			if err := r.requireWriteStage(stage, CapabilitySummaryDAG); err != nil {
+				return err
+			}
+			namespace, err := r.scopedWriteNamespace(CapabilitySummaryDAG, state.scope)
+			if err != nil {
+				return err
+			}
+			_, err = r.inner.BuildSummaryDAG(ctx, state.window, namespace)
+			return err
+		}
+	default:
+		if stage.Optional {
+			node.run = func(context.Context, *writeExecutionState) error { return nil }
+			return node, nil
+		}
+		return writeStageNode{}, errdefs.Validationf("memory: unsupported write stage %q", stage.Name)
+	}
+	return node, nil
+}
+
+func mergeAppendMessageResult(dst, src *AppendMessageResult) {
+	if dst == nil || src == nil {
+		return
+	}
+	if src.Observations != nil {
+		dst.Observations = src.Observations
+	}
+	if src.Facts != nil {
+		dst.Facts = src.Facts
+	}
+	if src.FactGraph != nil {
+		dst.FactGraph = src.FactGraph
+	}
+	if src.EntityProfiles != nil {
+		dst.EntityProfiles = src.EntityProfiles
+	}
+	if src.EntityEvents != nil {
+		dst.EntityEvents = src.EntityEvents
+	}
+	if src.Jobs != nil {
+		dst.Jobs = append(dst.Jobs, src.Jobs...)
+	}
+}
+
+func cloneFactGraphBuildResult(in *FactGraphBuildResult) *FactGraphBuildResult {
+	if in == nil {
+		return nil
+	}
+	return &FactGraphBuildResult{
+		Nodes: append([]fact.Node(nil), in.Nodes...),
+		Edges: append([]fact.Edge(nil), in.Edges...),
+	}
 }
 
 func (r *System) executeWriteStage(ctx context.Context, stage PlannedStage, window recent.WindowRequest, scope viewobservation.Scope, result *AppendMessageResult) error {
@@ -502,7 +913,11 @@ func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (in
 		topK:          topK,
 		hybridEnabled: r.hybridQueryEmbeddingEnabled(),
 		embed: func() ([]float32, error) {
-			vector, err := r.deps.Embedder.Embed(ctx, query)
+			embedCtx, cancel := r.embeddingContext(ctx)
+			if cancel != nil {
+				defer cancel()
+			}
+			vector, err := r.deps.Embedder.Embed(embedCtx, query)
 			if err != nil {
 				return nil, fmt.Errorf("memory: embed context query: %w", err)
 			}
@@ -610,6 +1025,13 @@ func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (in
 		}
 	}
 	return out, nil
+}
+
+func (r *System) embeddingContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if r == nil || r.deps.Embedding.Timeout <= 0 {
+		return ctx, nil
+	}
+	return context.WithTimeout(ctx, r.deps.Embedding.Timeout)
 }
 
 type packContextSearchInput struct {

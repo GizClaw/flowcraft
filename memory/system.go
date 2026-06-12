@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"time"
+
 	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
 	internalexecutor "github.com/GizClaw/flowcraft/memory/internal/executor"
@@ -16,6 +18,13 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
+// EmbeddingOptions configures embedding provider calls made by memory.
+type EmbeddingOptions struct {
+	// Timeout bounds each individual embedding provider call. A zero value
+	// preserves the caller-provided context without adding a deadline.
+	Timeout time.Duration
+}
+
 // Deps contains the explicit stores, retrieval index, and services used
 // to construct a System. New does not create or choose any of these.
 type Deps struct {
@@ -30,8 +39,9 @@ type Deps struct {
 	EntityProfileStore  viewentity.ProfileStore
 	EntityTimelineStore viewentity.TimelineStore
 
-	Index    retrieval.Index
-	Embedder embedding.Embedder
+	Index     retrieval.Index
+	Embedder  embedding.Embedder
+	Embedding EmbeddingOptions
 
 	DocumentChunker       derive.DocumentChunker
 	Summarizer            derive.Summarizer
@@ -167,8 +177,9 @@ func executorDeps(assembly compiler.Assembly, deps Deps) internalexecutor.Deps {
 		EntityProfileStore:  deps.EntityProfileStore,
 		EntityTimelineStore: deps.EntityTimelineStore,
 
-		Index:    deps.Index,
-		Embedder: deps.Embedder,
+		Index:            deps.Index,
+		Embedder:         deps.Embedder,
+		EmbeddingTimeout: deps.Embedding.Timeout,
 
 		DocumentChunker:       deps.DocumentChunker,
 		Summarizer:            deps.Summarizer,

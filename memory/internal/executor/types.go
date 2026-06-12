@@ -35,8 +35,9 @@ type Deps struct {
 	EntityProfileStore  viewentity.ProfileStore
 	EntityTimelineStore viewentity.TimelineStore
 
-	Index    retrieval.Index
-	Embedder embedding.Embedder
+	Index            retrieval.Index
+	Embedder         embedding.Embedder
+	EmbeddingTimeout time.Duration
 
 	DocumentChunker       DocumentChunker
 	Summarizer            Summarizer
@@ -64,8 +65,9 @@ type Executor struct {
 	entityProfile     *viewentity.Profile
 	entityTimeline    *viewentity.Timeline
 
-	index    retrieval.Index
-	embedder embedding.Embedder
+	index            retrieval.Index
+	embedder         embedding.Embedder
+	embeddingTimeout time.Duration
 
 	enabled     map[compiler.Capability]compiler.ViewAssembly
 	projections map[compiler.Capability]compiler.ProjectionAssembly

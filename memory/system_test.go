@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory"
 	"github.com/GizClaw/flowcraft/memory/derive"
@@ -301,6 +303,36 @@ func TestMemoryFacadePackContextUsesHybridQueryEmbedding(t *testing.T) {
 	}
 }
 
+func TestMemoryFacadePackContextQueryEmbeddingTimeoutReturnsDeadlineExceeded(t *testing.T) {
+	ctx := context.Background()
+	index := &recordingSearchIndex{
+		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
+	}
+	embedder := &fakeMemoryEmbedder{blockEmbedUntilContextDone: true}
+	deps := newDeps(t)
+	deps.Index = index
+	deps.Embedder = embedder
+	deps.Embedding = memory.EmbeddingOptions{Timeout: time.Nanosecond}
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+
+	mem, err := memory.New(queryEmbeddingSpec(), deps)
+	if err != nil {
+		t.Fatalf("New(query embedding timeout memory) error = %v", err)
+	}
+	_, err = mem.PackContext(ctx, memory.ContextRequest{
+		Scope: testScope("conv-embed-timeout"),
+		Query: "Ada tea",
+		TopK:  3,
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("PackContext(timeout) error = %v, want deadline exceeded", err)
+	}
+	if len(index.searchRequests) != 0 {
+		t.Fatalf("Search requests len = %d, want none after embedding timeout", len(index.searchRequests))
+	}
+}
+
 func TestMemoryFacadePackContextWithoutEmbedderUsesQueryTextOnly(t *testing.T) {
 	ctx := context.Background()
 	index := &recordingSearchIndex{
@@ -465,6 +497,123 @@ func TestMemoryFacadeEntityProfileAndTimelinePackContext(t *testing.T) {
 	}
 	if !kinds[derive.ContextItemEntityProfile] || !kinds[derive.ContextItemEntityTimeline] {
 		t.Fatalf("PackContext Items = %+v, want entity profile and timeline items", pack.Items)
+	}
+}
+
+func TestMemoryFacadeWriteStageDAGRunsReadyStagesConcurrently(t *testing.T) {
+	ctx := context.Background()
+	spec := memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+			{Capability: memory.CapabilityObservationLedger, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true},
+			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
+		},
+		WriteStages: []memory.StageSpec{
+			{Name: "append_message"},
+			{Name: "build_summary_dag"},
+			{Name: "extract_observations"},
+		},
+	}
+	release := make(chan struct{})
+	summaryStarted := make(chan struct{})
+	observationsStarted := make(chan struct{})
+	deps := newDeps(t)
+	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
+	deps.Summarizer = &blockingSummarizer{started: summaryStarted, release: release}
+	deps.ObservationExtractor = &blockingObservationExtractor{started: observationsStarted, release: release}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New DAG concurrency spec error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+			Scope:    testScope("conv-dag-concurrent"),
+			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+		})
+		done <- err
+	}()
+
+	waitClosed(t, summaryStarted, "summary stage start")
+	waitClosed(t, observationsStarted, "observation stage start")
+	close(release)
+	if err := waitErr(t, done, "AppendMessage"); err != nil {
+		t.Fatalf("AppendMessage error = %v", err)
+	}
+}
+
+func TestMemoryFacadeWriteStageDAGExecutesSharedDependenciesOnce(t *testing.T) {
+	ctx := context.Background()
+	spec := entityRetrievalSpec()
+	spec.WriteStages = []memory.StageSpec{
+		{Name: "append_message"},
+		{Name: "build_entity_profiles"},
+		{Name: "build_entity_timeline"},
+	}
+	extractor := &fakeObservationExtractor{}
+	reconciler := &fakeFactReconciler{}
+	graphBuilder := &fakeFactGraphBuilder{}
+	deps := newDeps(t)
+	deps.ObservationExtractor = extractor
+	deps.FactReconciler = reconciler
+	deps.FactGraphBuilder = graphBuilder
+	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
+	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		t.Fatalf("New DAG dependency spec error = %v", err)
+	}
+
+	scope := testScope("conv-dag-shared-deps")
+	scope.EntityID = "user:ada"
+	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope:    scope,
+		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage shared dependencies error = %v", err)
+	}
+	if extractor.calls != 1 || reconciler.calls != 1 || graphBuilder.calls != 1 {
+		t.Fatalf("dependency calls = extractor:%d reconciler:%d graph:%d, want all one", extractor.calls, reconciler.calls, graphBuilder.calls)
+	}
+	if len(result.EntityProfiles) != 1 || len(result.EntityEvents) != 1 {
+		t.Fatalf("AppendMessage entities = profiles:%+v events:%+v, want both outputs", result.EntityProfiles, result.EntityEvents)
+	}
+}
+
+func TestMemoryFacadeWriteStageDAGPropagatesUpstreamError(t *testing.T) {
+	ctx := context.Background()
+	wantErr := errors.New("extract observations failed")
+	extractor := &failingObservationExtractor{err: wantErr}
+	reconciler := &fakeFactReconciler{}
+	graphBuilder := &fakeFactGraphBuilder{}
+	deps := newDeps(t)
+	deps.ObservationExtractor = extractor
+	deps.FactReconciler = reconciler
+	deps.FactGraphBuilder = graphBuilder
+	mem, err := memory.New(semanticRetrievalSpec(), deps)
+	if err != nil {
+		t.Fatalf("New DAG error spec error = %v", err)
+	}
+
+	_, err = mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope:    testScope("conv-dag-error"),
+		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("AppendMessage error = %v, want %v", err, wantErr)
+	}
+	if extractor.calls != 1 {
+		t.Fatalf("extractor calls = %d, want 1", extractor.calls)
+	}
+	if reconciler.calls != 0 || graphBuilder.calls != 0 {
+		t.Fatalf("downstream calls = reconciler:%d graph:%d, want none", reconciler.calls, graphBuilder.calls)
 	}
 }
 
@@ -1343,6 +1492,79 @@ func TestMemoryFacadeAsyncWriteStagesDrainIntoReadPath(t *testing.T) {
 	}
 	if len(after.ObservationHits) != 1 || len(after.FactHits) != 1 || len(after.FactGraphHits) == 0 {
 		t.Fatalf("PackContext after drain hits = obs:%d facts:%d graph:%d, want derived hits", len(after.ObservationHits), len(after.FactHits), len(after.FactGraphHits))
+	}
+}
+
+func TestMemoryFacadeWriteStageAsyncDependencyValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		stages   []memory.StageSpec
+		wantErr  bool
+		contains []string
+	}{
+		{
+			name: "extract observations async before sync reconcile is invalid",
+			stages: []memory.StageSpec{
+				{Name: "append_message"},
+				{Name: "extract_observations", Async: true},
+				{Name: "reconcile_facts"},
+			},
+			wantErr:  true,
+			contains: []string{"reconcile_facts", "extract_observations"},
+		},
+		{
+			name: "reconcile facts async before sync graph is invalid",
+			stages: []memory.StageSpec{
+				{Name: "append_message"},
+				{Name: "extract_observations"},
+				{Name: "reconcile_facts", Async: true},
+				{Name: "build_fact_graph"},
+			},
+			wantErr:  true,
+			contains: []string{"build_fact_graph", "reconcile_facts"},
+		},
+		{
+			name: "sync extract before async reconcile and graph is valid",
+			stages: []memory.StageSpec{
+				{Name: "append_message"},
+				{Name: "extract_observations"},
+				{Name: "reconcile_facts", Async: true},
+				{Name: "build_fact_graph", Async: true},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := semanticRetrievalSpec()
+			spec.WriteStages = tc.stages
+			deps := newDeps(t)
+			deps.ObservationExtractor = &fakeObservationExtractor{}
+			deps.FactReconciler = &fakeFactReconciler{}
+			deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+			deps.JobStore = memory.NewMemoryJobStore()
+
+			mem, err := memory.New(spec, deps)
+			if tc.wantErr {
+				if err == nil || !errdefs.IsValidation(err) {
+					t.Fatalf("New async dependency spec err = %v, want validation error", err)
+				}
+				for _, want := range tc.contains {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("New async dependency spec err = %v, want message containing %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("New async dependency spec error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := mem.Close(); err != nil {
+					t.Fatalf("Close error = %v", err)
+				}
+			})
+		})
 	}
 }
 
@@ -3154,6 +3376,26 @@ func messageWithText(text string) sourcemessage.Message {
 	}
 }
 
+func waitClosed(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitErr(t *testing.T, ch <-chan error, name string) error {
+	t.Helper()
+	select {
+	case err := <-ch:
+		return err
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+		return nil
+	}
+}
+
 func testScope(conversationID string) memory.Scope {
 	return memory.Scope{
 		RuntimeID:      "runtime-1",
@@ -3344,6 +3586,24 @@ type fakeDocumentChunker struct {
 
 type fakeSummarizer struct{}
 
+type blockingSummarizer struct {
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+type blockingObservationExtractor struct {
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+	base    fakeObservationExtractor
+}
+
+type failingObservationExtractor struct {
+	err   error
+	calls int
+}
+
 type fakeMemoryContextPacker struct {
 	calls int
 	input derive.ContextPackInput
@@ -3404,14 +3664,19 @@ func (f *fakeMemoryContextPacker) PackContext(_ context.Context, input derive.Co
 }
 
 type fakeMemoryEmbedder struct {
-	embedTexts   []string
-	batchTexts   []string
-	embedVector  []float32
-	batchVectors [][]float32
+	embedTexts                 []string
+	batchTexts                 []string
+	embedVector                []float32
+	batchVectors               [][]float32
+	blockEmbedUntilContextDone bool
 }
 
-func (f *fakeMemoryEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+func (f *fakeMemoryEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	f.embedTexts = append(f.embedTexts, text)
+	if f.blockEmbedUntilContextDone {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return append([]float32(nil), f.embedVector...), nil
 }
 
@@ -3473,6 +3738,16 @@ func (idx *recordingSearchIndex) Close() error {
 	return nil
 }
 
+func (f *blockingSummarizer) Summarize(ctx context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return (&fakeSummarizer{}).Summarize(ctx, input)
+}
+
 func (f *fakeSummarizer) Summarize(_ context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {
 	if len(input.Window.Messages) == 0 {
 		return nil, nil
@@ -3490,6 +3765,21 @@ func (f *fakeSummarizer) Summarize(_ context.Context, input derive.SummaryInput)
 			TransformSignature: "fake-summary:v1",
 		},
 	}}, nil
+}
+
+func (f *blockingObservationExtractor) ExtractObservations(ctx context.Context, input derive.ObservationInput) ([]viewobservation.Observation, error) {
+	f.once.Do(func() { close(f.started) })
+	select {
+	case <-f.release:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return f.base.ExtractObservations(ctx, input)
+}
+
+func (f *failingObservationExtractor) ExtractObservations(context.Context, derive.ObservationInput) ([]viewobservation.Observation, error) {
+	f.calls++
+	return nil, f.err
 }
 
 func (f *fakeObservationExtractor) ExtractObservations(_ context.Context, input derive.ObservationInput) ([]viewobservation.Observation, error) {

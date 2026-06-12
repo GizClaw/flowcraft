@@ -28,8 +28,9 @@ func New(deps Deps) (*Executor, error) {
 		messageStore:  deps.MessageStore,
 		documentStore: deps.DocumentStore,
 
-		index:    deps.Index,
-		embedder: deps.Embedder,
+		index:            deps.Index,
+		embedder:         deps.Embedder,
+		embeddingTimeout: deps.EmbeddingTimeout,
 
 		enabled:     make(map[compiler.Capability]compiler.ViewAssembly, len(deps.Assembly.Views)),
 		projections: make(map[compiler.Capability]compiler.ProjectionAssembly, len(deps.Assembly.Projections)),
@@ -314,6 +315,7 @@ func (r *Executor) projectionWriterOptions() []indexed.WriterOption {
 	return []indexed.WriterOption{
 		indexed.WithEmbedder(r.embedder),
 		indexed.WithVectorize(true),
+		indexed.WithEmbeddingTimeout(r.embeddingTimeout),
 	}
 }
 

@@ -3,6 +3,7 @@ package indexed
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
@@ -11,10 +12,11 @@ import (
 
 // Writer writes indexed projection records to the bound retrieval namespace.
 type Writer struct {
-	index     retrieval.Index
-	binding   Binding
-	embedder  embedding.Embedder
-	vectorize bool
+	index            retrieval.Index
+	binding          Binding
+	embedder         embedding.Embedder
+	vectorize        bool
+	embeddingTimeout time.Duration
 }
 
 // WriterOption configures projection writer behavior.
@@ -31,6 +33,13 @@ func WithEmbedder(embedder embedding.Embedder) WriterOption {
 func WithVectorize(enabled bool) WriterOption {
 	return func(w *Writer) {
 		w.vectorize = enabled
+	}
+}
+
+// WithEmbeddingTimeout bounds each EmbedBatch call when timeout is positive.
+func WithEmbeddingTimeout(timeout time.Duration) WriterOption {
+	return func(w *Writer) {
+		w.embeddingTimeout = timeout
 	}
 }
 
@@ -95,7 +104,13 @@ func (w *Writer) fillVectors(ctx context.Context, records []Record) error {
 	if len(texts) == 0 {
 		return nil
 	}
-	vectors, err := w.embedder.EmbedBatch(ctx, texts)
+	embedCtx := ctx
+	var cancel context.CancelFunc
+	if w.embeddingTimeout > 0 {
+		embedCtx, cancel = context.WithTimeout(ctx, w.embeddingTimeout)
+		defer cancel()
+	}
+	vectors, err := w.embedder.EmbedBatch(embedCtx, texts)
 	if err != nil {
 		return fmt.Errorf("%s: embed projection records: %w", errPrefix, err)
 	}

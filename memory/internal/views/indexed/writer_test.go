@@ -3,6 +3,7 @@ package indexed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -204,6 +205,28 @@ func TestWriterUpsertVectorizesMissingRecordVectors(t *testing.T) {
 	}
 	if len(records[0].Vector) != 0 {
 		t.Fatalf("Upsert mutated caller record vector: %v", records[0].Vector)
+	}
+}
+
+func TestWriterUpsertEmbeddingTimeoutReturnsDeadlineExceeded(t *testing.T) {
+	index := &fakeIndex{}
+	writer, err := NewWriter(
+		index,
+		validBinding(),
+		WithEmbedder(blockingEmbedder{}),
+		WithVectorize(true),
+		WithEmbeddingTimeout(time.Nanosecond),
+	)
+	if err != nil {
+		t.Fatalf("NewWriter(timeout vectorized) error = %v", err)
+	}
+
+	err = writer.Upsert(context.Background(), []Record{{ID: "needs-vector", Text: "slow text"}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Upsert(timeout) error = %v, want deadline exceeded", err)
+	}
+	if len(index.upsertDocs) != 0 {
+		t.Fatalf("Upsert(timeout) wrote %d docs, want none", len(index.upsertDocs))
 	}
 }
 
@@ -636,4 +659,16 @@ func (f *fakeEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float3
 		vectors[i] = append([]float32(nil), vector...)
 	}
 	return vectors, nil
+}
+
+type blockingEmbedder struct{}
+
+func (blockingEmbedder) Embed(ctx context.Context, _ string) ([]float32, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (blockingEmbedder) EmbedBatch(ctx context.Context, _ []string) ([][]float32, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
