@@ -170,6 +170,42 @@ func TestRuntime_IIFE_LocalIsolation(t *testing.T) {
 	}
 }
 
+func TestRuntime_GlobalObjectDoesNotLeakBetweenExecs(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	var oldHostCalled bool
+	env := &script.Env{
+		Bindings: map[string]any{
+			"host": map[string]any{
+				"mark": func() { oldHostCalled = true },
+			},
+		},
+	}
+
+	_, err := rt.Exec(context.Background(), "pollute-global", `
+		_G.old_host = host
+		_G.leaked_value = "secret"
+	`, env)
+	if err != nil {
+		t.Fatalf("first exec: %v", err)
+	}
+
+	_, err = rt.Exec(context.Background(), "check-global", `
+		if _G.old_host ~= nil then
+			_G.old_host.mark()
+			error("old host leaked across executions")
+		end
+		if _G.leaked_value ~= nil then
+			error("global value leaked across executions: " .. tostring(_G.leaked_value))
+		end
+	`, nil)
+	if err != nil {
+		t.Fatalf("global object should not leak between executions: %v", err)
+	}
+	if oldHostCalled {
+		t.Fatal("old host capability was callable from a later execution")
+	}
+}
+
 func TestRuntime_Bindings(t *testing.T) {
 	rt := New(WithPoolSize(1))
 	var captured string
@@ -264,7 +300,7 @@ func TestRuntime_VMDiscardOnError_NoStateLeak(t *testing.T) {
 	}
 }
 
-func TestRuntime_VMDiscardOnError_SignalDoesNotDiscard(t *testing.T) {
+func TestRuntime_VMDiscardAfterSignal_NoStateLeak(t *testing.T) {
 	rt := New(WithPoolSize(1))
 
 	_, err := rt.Exec(context.Background(), "set-global", `
@@ -276,12 +312,12 @@ func TestRuntime_VMDiscardOnError_SignalDoesNotDiscard(t *testing.T) {
 	}
 
 	_, err = rt.Exec(context.Background(), "check-persist", `
-		if _G.persist_marker ~= 42 then
-			error("expected marker to persist after signal (VM not discarded)")
+		if _G.persist_marker ~= nil then
+			error("global state leaked after signal: " .. tostring(_G.persist_marker))
 		end
 	`, nil)
 	if err != nil {
-		t.Fatalf("VM should NOT be discarded on signal: %v", err)
+		t.Fatalf("VM should be discarded after signal: %v", err)
 	}
 }
 

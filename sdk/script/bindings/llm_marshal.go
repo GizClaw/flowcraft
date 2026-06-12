@@ -235,6 +235,10 @@ var (
 		"parts":   {},
 		"content": {}, // emitted by messageToMap as a convenience; ignored on input
 	}
+	allowedCanonicalMessageKeys = map[string]struct{}{
+		"role":  {},
+		"parts": {},
+	}
 	allowedPartTextKeys       = map[string]struct{}{"type": {}, "text": {}}
 	allowedPartImageKeys      = map[string]struct{}{"type": {}, "image": {}}
 	allowedPartAudioKeys      = map[string]struct{}{"type": {}, "audio": {}}
@@ -274,13 +278,40 @@ func parseChannelMessages(raw any, ctx string) ([]model.Message, error) {
 	return out, nil
 }
 
+// parseLLMMessages converts the explicit llm.run/stream({ messages })
+// payload into canonical model.Message values. Unlike board channel
+// parsing, this path accepts only the canonical role+parts shape and
+// rejects the projected "content" convenience field.
+func parseLLMMessages(raw any, ctx string) ([]model.Message, error) {
+	if raw == nil {
+		return nil, errdefs.Validationf("%s: missing required field %q", ctx, "messages")
+	}
+	list, err := asAnyList(raw, ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]model.Message, len(list))
+	for i, item := range list {
+		msg, err := parseMessageWithAllowedKeys(item, fmt.Sprintf("%s[%d]", ctx, i), allowedCanonicalMessageKeys)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = msg
+	}
+	return out, nil
+}
+
 // parseMessage validates and converts one script-side message map.
 func parseMessage(raw any, ctx string) (model.Message, error) {
+	return parseMessageWithAllowedKeys(raw, ctx, allowedMessageKeys)
+}
+
+func parseMessageWithAllowedKeys(raw any, ctx string, allowed map[string]struct{}) (model.Message, error) {
 	m, err := asStringMap(raw, ctx)
 	if err != nil {
 		return model.Message{}, err
 	}
-	if err := rejectUnknownKeys(m, allowedMessageKeys, ctx); err != nil {
+	if err := rejectUnknownKeys(m, allowed, ctx); err != nil {
 		return model.Message{}, err
 	}
 

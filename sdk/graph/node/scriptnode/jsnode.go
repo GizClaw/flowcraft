@@ -1,9 +1,11 @@
 package scriptnode
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
@@ -22,6 +24,7 @@ type ScriptNode struct {
 	script      string
 	config      map[string]any
 	runtime     script.Runtime
+	eventBus    event.Bus
 	extraBindFn []bindings.BindingFunc
 	inputPorts  []graph.Port
 	outputPorts []graph.Port
@@ -55,6 +58,13 @@ func (n *ScriptNode) SetConfig(c map[string]any) { n.config = c }
 // ExecuteBoard runs the script with board, expr, host, stream, and
 // runtime bindings.
 func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board) error {
+	callCtx := ctx.Context
+	if callCtx == nil {
+		callCtx = context.Background()
+	}
+	callCtx, cleanup := withStreamCleanup(callCtx)
+	defer cleanup.Close()
+
 	// Bridge wiring rationale:
 	//
 	//   - host: engine.Host control plane (publish / askUser / ...) plus
@@ -76,7 +86,8 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 	allFns := []bindings.BindingFunc{
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
-		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher),
+		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher, bindings.WithHostRunID(ctx.RunID)),
+		newStreamBridge(ctx.RunID, n.eventBus),
 		newParallelBridge(),
 		// Reconstruct the full RunInfo from engine.Run.Attributes
 		// (promoted by agent.Run upstream) instead of the legacy
@@ -92,17 +103,17 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 
 	hostBindings := make(map[string]any, len(allFns)+1)
 	for _, fn := range allFns {
-		name, val := fn(ctx.Context)
+		name, val := fn(callCtx)
 		hostBindings[name] = val
 	}
-	hostBindings["runtime"] = bindings.RuntimeBinding(ctx.Context, n.runtime, hostBindings)
+	hostBindings["runtime"] = bindings.RuntimeBinding(callCtx, n.runtime, hostBindings)
 
 	env := &script.Env{
 		Config:   n.config,
 		Bindings: hostBindings,
 	}
 
-	sig, err := n.runtime.Exec(ctx.Context, n.id+".js", n.script, env)
+	sig, err := n.runtime.Exec(callCtx, n.id+".js", n.script, env)
 	if err != nil {
 		return fmt.Errorf("script node %s execution failed: %w", n.id, err)
 	}

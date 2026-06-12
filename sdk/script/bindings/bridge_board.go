@@ -30,6 +30,10 @@ type Board interface {
 	AppendChannelMessage(name string, msg model.Message)
 }
 
+type boardVarDeleter interface {
+	DeleteVar(key string)
+}
+
 // NewBoardBridge exposes board state as the global "board".
 //
 // Vars (control variables, untyped):
@@ -37,6 +41,7 @@ type Board interface {
 //   - setVar(key, val)
 //   - getVars()        → map[string]any
 //   - hasVar(key)      → bool
+//   - deleteVar(key)
 //
 // Channels (typed conversation history; multimodal-aware via the
 // model.Message projection in bridge_llm_marshal.go):
@@ -58,8 +63,15 @@ func NewBoardBridge(board Board) BindingFunc {
 		return "board", map[string]any{
 			"MAIN_CHANNEL": engine.MainChannel,
 
-			"getVar":  func(key string) any { v, _ := board.GetVar(key); return v },
-			"setVar":  func(key string, value any) { board.SetVar(key, value) },
+			"getVar": func(key string) any { v, _ := board.GetVar(key); return v },
+			"setVar": func(key string, value any) { board.SetVar(key, value) },
+			"deleteVar": func(key string) {
+				if deleter, ok := board.(boardVarDeleter); ok {
+					deleter.DeleteVar(key)
+					return
+				}
+				board.SetVar(key, nil)
+			},
 			"getVars": func() map[string]any { return board.Vars() },
 			"hasVar":  func(key string) bool { _, ok := board.GetVar(key); return ok },
 

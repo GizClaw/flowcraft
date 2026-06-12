@@ -3,26 +3,16 @@
 //
 // # Prompt caching
 //
-// Doubao implements automatic prefix caching server-side. Callers
-// using the shared multi-segment system-prompt convention (multiple
-// llm.Message{Role:System} entries at the head of the request) get
-// the benefit transparently: convertMessages preserves each system
-// message as its own ChatCompletionMessage rather than joining them
-// into one string, keeping the byte-exact prefix stable across calls
-// whose stable segments are unchanged.
-//
-// Unlike sdkx/llm/openai and sdkx/llm/anthropic, the ArkRuntime SDK
+// Doubao implements automatic prefix caching server-side. The
+// Responses API exposes system/developer text through `instructions`;
+// routing locality is governed by Doubao's backend because ArkRuntime
 // does not expose a routing-hint field analogous to OpenAI's
-// `prompt_cache_key` or an explicit `cache_control` breakpoint, so
-// there is no per-request opt-in surface to wire. Routing locality
-// is governed entirely by Doubao's backend. The `User` field on
-// ChatCompletionRequest is reserved for caller-supplied end-user
-// identifiers (abuse monitoring) and is left alone to avoid
-// clobbering that semantics.
+// `prompt_cache_key` or an explicit `cache_control` breakpoint.
 package bytedance
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -32,7 +22,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
+	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -52,7 +42,12 @@ func init() {
 		if v, ok := config["retry_times"].(float64); ok {
 			retryTimes = int(v)
 		}
-		return New(modelName, apiKey, baseURL, region, retryTimes)
+		model, err := New(modelName, apiKey, baseURL, region, retryTimes)
+		if err != nil {
+			return nil, err
+		}
+		model.webSearch = parseWebSearchConfig(config["web_search"])
+		return model, nil
 	})
 
 	// Catalog reflects the Doubao 2.0 launch (2026-02-14) lineup as
@@ -64,9 +59,9 @@ func init() {
 	//
 	// All Doubao Seed 2.0 variants share a 256K context window and a
 	// 32K max output cap per the unified family doc. Vision and tool
-	// use are first-class. The Volcengine Ark API is OpenAI-style and
-	// supports streaming + structured output natively, so no
-	// negative input/protocol caps need declaring.
+	// use are first-class. The Responses API supports streaming and
+	// structured output natively, but does not expose stop sequences
+	// or frequency/presence penalties.
 	//
 	// Output modality: text only. Image generation lives in
 	// dedicated Doubao image SKUs and audio/video in Seedance 2.0 —
@@ -75,6 +70,8 @@ func init() {
 	// image-output / audio-output slots onto these chat models.
 	chatTextOutputOnly := llm.DisabledCaps(
 		llm.CapImageOutput, llm.CapAudioOutput,
+		llm.CapStopWords, llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+		llm.CapAudio,
 	)
 
 	llm.RegisterProviderModels("bytedance", []llm.ModelInfo{
@@ -126,8 +123,9 @@ func init() {
 
 // LLM implements llm.LLM using the Volcengine ArkRuntime Go SDK.
 type LLM struct {
-	client *arkruntime.Client
-	model  string
+	client    *arkruntime.Client
+	model     string
+	webSearch webSearchConfig
 }
 
 var _ llm.LLM = (*LLM)(nil)
@@ -165,10 +163,15 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	defer span.End()
 
 	options := llm.ApplyOptions(opts...)
-	req := c.buildRequest(messages, options)
+	req, err := c.buildRequest(messages, options)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
 
 	start := time.Now()
-	resp, err := c.client.CreateChatCompletion(ctx, req)
+	resp, err := c.client.CreateResponses(ctx, req)
 	dur := time.Since(start)
 	if err != nil {
 		span.RecordError(err)
@@ -180,31 +183,21 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
 	}
 
-	if len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err := errdefs.NotAvailablef("bytedance: empty choices")
+	msg := responseMessage(resp)
+	if len(msg.Parts) == 0 {
+		err := errdefs.NotAvailablef("bytedance: empty response")
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", dur, llm.TokenUsage{})
 		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
-	usage := llm.TokenUsage{
-		InputTokens:  int64(resp.Usage.PromptTokens),
-		OutputTokens: int64(resp.Usage.CompletionTokens),
-		TotalTokens:  int64(resp.Usage.TotalTokens),
-		// Doubao prefix caching is transparent — when a prefix of
-		// the prompt has been seen recently the response reports
-		// usage.prompt_tokens_details.cached_tokens as the cached
-		// subset, billed roughly 1/10 of the standard input rate.
-		// Plumb it through so callers can compute hit-rate uniformly.
-		CachedInputTokens: int64(resp.Usage.PromptTokensDetails.CachedTokens),
-	}
+	usage := responseUsage(resp)
 
 	span.SetAttributes(llm.UsageSpanAttrs(usage)...)
 	span.SetStatus(codes.Ok, "OK")
 	llm.RecordLLMMetrics(ctx, "bytedance", c.model, "success", dur, usage)
 
-	msg := convertResponse(resp)
 	return msg, usage, nil
 }
 
@@ -215,10 +208,15 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	))
 
 	options := llm.ApplyOptions(opts...)
-	req := c.buildRequest(messages, options)
-	req.StreamOptions = &model.StreamOptions{IncludeUsage: true}
+	req, err := c.buildRequest(messages, options)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
+		return nil, err
+	}
 
-	stream, err := c.client.CreateChatCompletionStream(ctx, req)
+	stream, err := c.client.CreateResponsesStream(ctx, req)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -228,10 +226,8 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 	// Defensive: the ark SDK has not been observed returning a nil
 	// stream alongside a nil error, but the pointer-return convention
-	// is not a language guarantee — the openai-go variant has caused
-	// a runner crash in production (see PR description). Guarding
-	// symmetrically keeps every chat-completion provider on the
-	// same contract.
+	// is not a language guarantee. Guarding keeps every provider on
+	// the same contract.
 	if stream == nil {
 		err := errdefs.NotAvailablef("bytedance: nil stream handle with no error (provider misbehaviour)")
 		span.RecordError(err)
@@ -241,94 +237,101 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 		return nil, err
 	}
 
-	return newStreamMessage(ctx, span, c.model, stream), nil
+	return newResponsesStreamMessage(ctx, span, c.model, stream), nil
 }
 
-func (c *LLM) buildRequest(msgs []llm.Message, opts *llm.GenerateOptions) model.CreateChatCompletionRequest {
+func (c *LLM) buildRequest(msgs []llm.Message, opts *llm.GenerateOptions) (*arkresponses.ResponsesRequest, error) {
 	maxTokens := defaultMaxTokens
 	if opts.MaxTokens != nil {
 		maxTokens = int(*opts.MaxTokens)
 	}
+	maxOutputTokens := int64(maxTokens)
 
-	thinkType := model.ThinkingTypeDisabled
+	thinkType := arkresponses.ThinkingType_disabled
 	if opts.Thinking != nil && *opts.Thinking {
-		thinkType = model.ThinkingTypeEnabled
+		thinkType = arkresponses.ThinkingType_enabled
 	}
 
-	req := model.CreateChatCompletionRequest{
-		Model:     c.model,
-		Messages:  convertMessages(msgs),
-		MaxTokens: &maxTokens,
-		Thinking:  &model.Thinking{Type: thinkType},
+	req := &arkresponses.ResponsesRequest{
+		Model:           c.model,
+		Input:           &arkresponses.ResponsesInput{Union: &arkresponses.ResponsesInput_ListValue{ListValue: &arkresponses.InputItemList{}}},
+		MaxOutputTokens: &maxOutputTokens,
+		Thinking:        &arkresponses.ResponsesThinking{Type: &thinkType},
 	}
 
 	if opts.Temperature != nil {
-		t := float32(*opts.Temperature)
-		req.Temperature = &t
+		req.Temperature = opts.Temperature
 	}
 	if opts.TopP != nil {
-		p := float32(*opts.TopP)
-		req.TopP = &p
-	}
-	if len(opts.StopWords) > 0 {
-		req.Stop = opts.StopWords
-	}
-	if opts.FrequencyPenalty != nil {
-		fp := float32(*opts.FrequencyPenalty)
-		req.FrequencyPenalty = &fp
-	}
-	if opts.PresencePenalty != nil {
-		pp := float32(*opts.PresencePenalty)
-		req.PresencePenalty = &pp
+		req.TopP = opts.TopP
 	}
 	if opts.JSONMode != nil && *opts.JSONMode {
-		req.ResponseFormat = &model.ResponseFormat{
-			Type: model.ResponseFormatJsonObject,
+		req.Text = &arkresponses.ResponsesText{Format: &arkresponses.TextFormat{Type: arkresponses.TextType_json_object}}
+	}
+	if opts.JSONSchema != nil {
+		schema, err := json.Marshal(opts.JSONSchema.Schema)
+		if err != nil {
+			return nil, errdefs.Validation(errdefs.Fmt("bytedance: marshal json schema: %w", err))
 		}
+		req.Text = &arkresponses.ResponsesText{Format: &arkresponses.TextFormat{
+			Type:        arkresponses.TextType_json_schema,
+			Name:        opts.JSONSchema.Name,
+			Description: stringPtrIfNotEmpty(opts.JSONSchema.Description),
+			Schema:      &arkresponses.Bytes{Value: schema},
+			Strict:      &opts.JSONSchema.Strict,
+		}}
 	}
 	if len(opts.Tools) > 0 {
-		tools := make([]*model.Tool, 0, len(opts.Tools))
+		tools := make([]*arkresponses.ResponsesTool, 0, len(opts.Tools))
 		for _, td := range opts.Tools {
-			tools = append(tools, &model.Tool{
-				Type: "function",
-				Function: &model.FunctionDefinition{
+			schema, err := json.Marshal(td.InputSchema)
+			if err != nil {
+				return nil, errdefs.Validation(errdefs.Fmt("bytedance: marshal tool schema %q: %w", td.Name, err))
+			}
+			tools = append(tools, &arkresponses.ResponsesTool{Union: &arkresponses.ResponsesTool_ToolFunction{
+				ToolFunction: &arkresponses.ToolFunction{
+					Type:        arkresponses.ToolType_function,
 					Name:        td.Name,
-					Description: td.Description,
-					Parameters:  td.InputSchema,
+					Description: stringPtrIfNotEmpty(td.Description),
+					Parameters:  &arkresponses.Bytes{Value: schema},
 				},
-			})
+			}})
 		}
 		req.Tools = tools
 	}
 	if opts.ToolChoice != nil {
 		switch opts.ToolChoice.Type {
 		case llm.ToolChoiceAuto:
-			req.ToolChoice = "auto"
+			req.ToolChoice = &arkresponses.ResponsesToolChoice{Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_auto}}
 		case llm.ToolChoiceNone:
-			req.ToolChoice = "none"
+			req.ToolChoice = &arkresponses.ResponsesToolChoice{Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_none}}
 		case llm.ToolChoiceRequired:
-			req.ToolChoice = "required"
+			req.ToolChoice = &arkresponses.ResponsesToolChoice{Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_required}}
 		case llm.ToolChoiceSpecific:
-			req.ToolChoice = model.ToolChoice{
-				Type:     "function",
-				Function: model.ToolChoiceFunction{Name: opts.ToolChoice.Name},
-			}
+			req.ToolChoice = &arkresponses.ResponsesToolChoice{Union: &arkresponses.ResponsesToolChoice_FunctionToolChoice{
+				FunctionToolChoice: &arkresponses.FunctionToolChoice{Type: arkresponses.ToolType_function, Name: opts.ToolChoice.Name},
+			}}
 		}
 	}
 
-	// parallel_tool_calls: the Volcengine SDK exposes this as the typed
-	// field req.ParallelToolCalls (*bool) rather than a free-form Extra
-	// passthrough. We bridge it from opts.Extra["parallel_tool_calls"]
-	// so callers get the same control surface as on the OpenAI adapter.
-	//
-	// When the model's CapParallelTools is disabled, the WithCaps
-	// middleware strips this key from Extra before we get here — so
-	// the typed field stays nil and Doubao falls back to its API
-	// default, never seeing a parallel-tool toggle the model can't
-	// honour.
 	if v, ok := opts.Extra["parallel_tool_calls"].(bool); ok {
 		req.ParallelToolCalls = &v
 	}
+	webSearch := c.webSearch
+	if opts.Extra != nil {
+		if v, ok := opts.Extra["web_search"]; ok {
+			webSearch = parseWebSearchConfig(v)
+		}
+	}
+	if webSearch.Enabled {
+		req.Tools = append(req.Tools, webSearch.tool())
+	}
 
-	return req
+	if err := appendResponsesMessages(req, msgs); err != nil {
+		return nil, err
+	}
+	if req.Instructions == nil && len(req.Input.GetListValue().GetListValue()) == 0 {
+		return nil, errdefs.Validation(errdefs.New("bytedance: empty prompt"))
+	}
+	return req, nil
 }

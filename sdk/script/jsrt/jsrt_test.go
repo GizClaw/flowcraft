@@ -208,6 +208,42 @@ func TestRuntime_IIFE_VarIsolation(t *testing.T) {
 	}
 }
 
+func TestRuntime_GlobalObjectDoesNotLeakBetweenExecs(t *testing.T) {
+	rt := New(WithPoolSize(1))
+	var oldHostCalled bool
+	env := &script.Env{
+		Bindings: map[string]any{
+			"host": map[string]any{
+				"mark": func() { oldHostCalled = true },
+			},
+		},
+	}
+
+	_, err := rt.Exec(context.Background(), "pollute-global", `
+		globalThis.oldHost = host;
+		globalThis.leakedValue = "secret";
+	`, env)
+	if err != nil {
+		t.Fatalf("first exec: %v", err)
+	}
+
+	_, err = rt.Exec(context.Background(), "check-global", `
+		if (typeof globalThis.oldHost !== "undefined") {
+			globalThis.oldHost.mark();
+			throw new Error("old host leaked across executions");
+		}
+		if (typeof globalThis.leakedValue !== "undefined") {
+			throw new Error("global value leaked across executions: " + globalThis.leakedValue);
+		}
+	`, nil)
+	if err != nil {
+		t.Fatalf("global object should not leak between executions: %v", err)
+	}
+	if oldHostCalled {
+		t.Fatal("old host capability was callable from a later execution")
+	}
+}
+
 func TestEnrichError_GojaException(t *testing.T) {
 	rt := New(WithPoolSize(1))
 	_, err := rt.Exec(context.Background(), "err-test", `

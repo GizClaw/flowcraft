@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -47,31 +48,21 @@ func TestFSBridge_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestFSBridge_NilWorkspace_NoOps(t *testing.T) {
-	// nil workspace must not panic — every op falls through to a benign default.
-	// Tests cover the zero-deps path scriptnode falls into when fs isn't configured.
-	rt := jsrt.New(jsrt.WithPoolSize(1))
-	board := engine.NewBoard()
+func TestFSBridge_NilWorkspace_ReadWriteDeleteNotAvailable(t *testing.T) {
+	_, raw := bindings.NewFSBridge(nil)(context.Background())
+	api := raw.(map[string]any)
 
-	env := bindings.BuildEnv(context.Background(), nil,
-		bindings.NewBoardBridge(board),
-		bindings.NewFSBridge(nil),
-	)
-	_, err := rt.Exec(context.Background(), "fs-nil", `
-		if (fs.exists("anything")) throw new Error("nil ws should report not-exists");
-		if (fs.read("anything") !== "") throw new Error("nil ws read should be empty string");
-
-		// write/delete must be no-op (no error, no panic).
-		fs.write("anything", "data");
-		fs.delete("anything");
-
-		board.setVar("ok", true);
-	`, env)
-	if err != nil {
-		t.Fatalf("unexpected error with nil workspace: %v", err)
+	if api["exists"].(func(string) bool)("anything") {
+		t.Fatal("nil workspace should report not-exists")
 	}
-	if v, _ := board.GetVar("ok"); v != true {
-		t.Fatal("script should have completed all assertions")
+	if _, err := api["read"].(func(string) (string, error))("anything"); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("read error = %v, want NotAvailable", err)
+	}
+	if err := api["write"].(func(string, string) error)("anything", "data"); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("write error = %v, want NotAvailable", err)
+	}
+	if err := api["delete"].(func(string) error)("anything"); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("delete error = %v, want NotAvailable", err)
 	}
 }
 

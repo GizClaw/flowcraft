@@ -10,17 +10,11 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
-// TestGenerate_EmptyChoices regresses the existing "len(resp.Choices)
-// == 0" guard against a degraded ark-runtime response. The
-// ChatCompletionResponse is a value type so resp itself can never be
-// nil, but Choices may legitimately come back empty when the upstream
-// model trips a moderation gate. We pin the contract so any future
-// refactor that drops the guard would be caught.
-func TestGenerate_EmptyChoices(t *testing.T) {
+func TestGenerate_EmptyResponsesOutput(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, `{"id":"x","object":"chat.completion","choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}`)
+		_, _ = io.WriteString(w, `{"id":"x","object":"response","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}`)
 	}))
 	defer srv.Close()
 
@@ -31,7 +25,7 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			t.Fatalf("Generate panicked on empty choices: %v", r)
+			t.Fatalf("Generate panicked on empty output: %v", r)
 		}
 	}()
 
@@ -41,11 +35,8 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 	}
 }
 
-// TestGenerateStream_TransportError verifies the streaming path
-// emits an error (not a panic) when the upstream returns a 5xx.
-// The bytedance stream client wraps the SSE reader so a transport
-// error during the request shows up as an err from
-// CreateChatCompletionStream.
+// TestGenerateStream_TransportError verifies the streaming path emits
+// an error (not a panic) when the upstream returns a 5xx.
 func TestGenerateStream_TransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

@@ -81,6 +81,13 @@ func (b *Board) SetVar(key string, value any) {
 	b.mu.Unlock()
 }
 
+// DeleteVar removes a board-level variable. Concurrent-safe.
+func (b *Board) DeleteVar(key string) {
+	b.mu.Lock()
+	delete(b.vars, key)
+	b.mu.Unlock()
+}
+
 // GetVar retrieves a board-level variable.
 func (b *Board) GetVar(key string) (any, bool) {
 	b.mu.RLock()

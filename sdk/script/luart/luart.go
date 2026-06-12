@@ -81,6 +81,13 @@ func New(opts ...Option) *Runtime {
 	return r
 }
 
+// SupportsNestedExec reports whether runtime.execScript has any chance of
+// acquiring a second LState while a parent script is still holding one.
+// Runtime bindings still use ExecNested so they can fail fast when busy.
+func (r *Runtime) SupportsNestedExec() bool {
+	return r != nil && r.poolSize > 1
+}
+
 func (r *Runtime) init() {
 	r.once.Do(func() {
 		r.pool = make(chan *lua.LState, r.poolSize)
@@ -101,6 +108,10 @@ func (r *Runtime) newVM() *lua.LState {
 // is cancelled before one becomes available.
 var ErrVMPoolExhausted = errdefs.NotAvailable(errors.New("luart: VM pool exhausted, context cancelled while waiting"))
 
+// ErrVMPoolBusy is returned by nested execution when no LState is immediately
+// available. Nested scripts must not wait on the same pool their parent holds.
+var ErrVMPoolBusy = errdefs.NotAvailable(errors.New("luart: VM pool exhausted"))
+
 // ErrRuntimeClosed is returned when Exec is called after Close.
 var ErrRuntimeClosed = errors.New("luart: runtime is closed")
 
@@ -117,6 +128,22 @@ func (r *Runtime) acquire(ctx context.Context) (*lua.LState, error) {
 		return L, nil
 	case <-ctx.Done():
 		return nil, ErrVMPoolExhausted
+	}
+}
+
+func (r *Runtime) tryAcquire() (*lua.LState, error) {
+	if r.closed.Load() {
+		return nil, ErrRuntimeClosed
+	}
+	r.init()
+	select {
+	case L := <-r.pool:
+		if L == nil {
+			return nil, ErrRuntimeClosed
+		}
+		return L, nil
+	default:
+		return nil, ErrVMPoolBusy
 	}
 }
 
@@ -146,13 +173,32 @@ func (r *Runtime) Close() error {
 // config and bindings as globals. A built-in "signal" global is always
 // injected for interrupt/error/done control flow back to the host.
 func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	return r.exec(ctx, name, source, env, false)
+}
+
+// ExecNested runs a child script only when another LState is immediately
+// available. It is used by runtime.execScript to avoid parent scripts
+// deadlocking each other while they still hold their own LStates.
+func (r *Runtime) ExecNested(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error) {
+	return r.exec(ctx, name, source, env, true)
+}
+
+func (r *Runtime) exec(ctx context.Context, name, source string, env *script.Env, nested bool) (*script.Signal, error) {
 	if r.maxExecTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.maxExecTime)
 		defer cancel()
 	}
 
-	L, err := r.acquire(ctx)
+	var (
+		L   *lua.LState
+		err error
+	)
+	if nested {
+		L, err = r.tryAcquire()
+	} else {
+		L, err = r.acquire(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -160,18 +206,13 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 	L.RemoveContext()
 
 	injectedNames := make([]string, 0, 8)
-	var discardVM bool
 	defer func() {
 		L.RemoveContext()
 		for _, n := range injectedNames {
 			L.SetGlobal(n, lua.LNil)
 		}
-		if discardVM {
-			L.Close()
-			r.release(r.newVM())
-		} else {
-			r.release(L)
-		}
+		L.Close()
+		r.release(r.newVM())
 	}()
 
 	setGlobal := func(key string, val lua.LValue) {
@@ -223,7 +264,6 @@ func (r *Runtime) Exec(ctx context.Context, name, source string, env *script.Env
 		if sig != nil {
 			return sig, nil
 		}
-		discardVM = true
 		if ctx.Err() != nil {
 			return nil, errdefs.FromContext(fmt.Errorf("luart: script %q: execution cancelled: %w", name, ctx.Err()))
 		}
