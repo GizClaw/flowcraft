@@ -1,0 +1,5 @@
+name: match_route_web_search_current
+description: Current public-information questions should route to the web search node.
+raid: match_route
+turns:
+  - 今天 OpenAI 有什么新消息？

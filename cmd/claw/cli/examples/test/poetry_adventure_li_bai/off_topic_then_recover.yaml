@@ -1,0 +1,7 @@
+name: poetry_adventure_li_bai_off_topic_then_recover
+description: If the child chats off-topic instead of answering the checkpoint, the raid should stay on the same dynasty and award no badge until a valid poem line is given.
+raid: poetry_adventure_li_bai
+turns:
+  - 开始古诗闯关
+  - 我今天不想背诗，想聊游戏和作业，你玩过什么游戏吗？
+  - 举头望明月

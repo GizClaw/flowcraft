@@ -1,0 +1,5 @@
+name: match_route_music_direct
+description: Direct music request should route to function_play_music and emit play_music tool events.
+raid: match_route
+turns:
+  - 我想听卡农

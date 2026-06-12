@@ -1,0 +1,5 @@
+name: func_chat_stop_music_volume
+description: Three function commands should execute stop, music, then volume in order.
+raid: func_chat
+turns:
+  - 停止播放，然后我想听卡农，最后小声点

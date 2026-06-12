@@ -1,0 +1,16 @@
+name: chat_history_window_continuity
+description: Exercise short-term history across many turns without relying on vector embeddings.
+raid: chat
+turns:
+  - 我们来编一个小故事，主角叫豆豆，是一只会修月亮的小熊。
+  - 豆豆先找到一把银色小梯子。
+  - 然后它遇到一朵怕黑的云。
+  - 云说它把月亮钥匙弄丢了。
+  - 豆豆决定先去池塘边找找。
+  - 池塘里有一条会打喷嚏的小鱼。
+  - 小鱼说钥匙可能在芦苇下面。
+  - 豆豆拨开芦苇，看见一个亮亮的小盒子。
+  - 盒子里不是钥匙，是一张小地图。
+  - 地图上画着老钟楼。
+  - 豆豆爬上老钟楼，看见月亮边上裂了一条缝。
+  - 你还记得主角叫什么、它一开始拿到的东西是什么吗？

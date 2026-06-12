@@ -1,0 +1,9 @@
+name: multi_role_storyteller_speaker_control_and_user_interrupt
+description: Stress speaker selection with direct user addresses and interruptions; visible output should stay in-character and avoid role labels.
+raid: multi_role_storyteller
+turns:
+  - ""
+  - 悟空，你别急着打，先问问他篮子里为什么有黑腥水。
+  - 八戒你也说句话，但别把故事变成搞笑段子。
+  - 唐僧会不会误会悟空太凶？让他劝一句。
+  - 门外那个货郎现在怎么狡辩？

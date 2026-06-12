@@ -1,0 +1,533 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+conversation:
+  starts: self
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+  embedding_model: ${EMBEDDING_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    deepseek-v4-pro:
+      provider: deepseek
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+  embedding:
+    qwen-v4:
+      provider: qwen
+      model: text-embedding-v4
+      api_key: ${QWEN_API_KEY}
+
+memory:
+  enabled: true
+  scope:
+    runtime_id: murder-mystery
+    user_id: local
+    agent_id: murder-mystery-gm
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+    board_facts:
+      - board_var: tmp_case_state_line
+        kind: state
+        subject: case_state
+        predicate: status
+        required_prefix: "case_state: status="
+      - board_var: tmp_progress_badges_line
+        kind: state
+        subject: progress_badges
+        predicate: progress
+        required_prefix: "progress_badges: progress:"
+  extract:
+    enabled: false
+  layout:
+    lanes:
+      - name: case_state
+        kind: state
+        description: Audit mirror for the deterministic workspace case state.
+        extract: Do not extract. Written only from tmp_case_state_line.
+        recall: Audit only. Runtime routing uses workspace case_progress_state.
+      - name: progress_badges
+        kind: state
+        description: Audit mirror for deterministic player progress badges.
+        extract: Do not extract. Written only from tmp_progress_badges_line.
+        recall: Audit only. Runtime routing uses workspace case_progress_state.
+  recall:
+    enabled: false
+  embedding:
+    enabled: false
+    model: embedding_model
+
+agent:
+  id: murder-mystery-gm
+  name: Murder Mystery GM
+  description: A player-driven murder mystery host for the case "雨夜留声机".
+  max_iterations: 10
+  tools:
+    - name: case_solved
+      description: Emit a lifecycle event when the player solves the murder mystery case.
+      input_schema:
+        type: object
+        properties:
+          case_id:
+            type: string
+            description: Stable case identifier.
+          culprit:
+            type: string
+            description: Culprit identified by the player.
+          status:
+            type: string
+            description: Final case status.
+        required:
+          - case_id
+          - culprit
+          - status
+  graph:
+    name: murder-mystery
+    entry: load_case_state
+    nodes:
+      - id: load_case_state
+        type: script
+        config:
+          source: |
+            const defaultState = {
+              phase: "investigation",
+              found: [],
+              missing: ["method", "time", "route", "motive"],
+              next_scene: "study_lock",
+              recommended_action: { kind: "inspect_study_lock", target: "study_lock" },
+              last_action: "start",
+              new_badges: [],
+              response_mode: "opening"
+            };
+            const existing = board.getVar("case_progress_state") || {};
+            const state = Object.assign({}, defaultState, existing || {});
+            state.found = Array.isArray(state.found) ? state.found : [];
+            state.missing = Array.isArray(state.missing) ? state.missing : defaultState.missing;
+            state.new_badges = [];
+            board.setVar("case_progress_state", state);
+            board.setVar("case_status", state.phase || "investigation");
+            board.setVar("case_route", state.phase === "solved" ? "solved_chat" : "game_master");
+            board.setVar("case_progress_state_text", JSON.stringify(state, null, 2));
+
+      - id: format_player_action
+        type: llm
+        publish: false
+        config:
+          model: qwen-flash
+          max_tokens: 96
+          temperature: 0
+          output_key: case_action_text
+          system_prompt: |
+            You classify the latest user turn for a murder mystery game.
+
+            Output exactly one line:
+            case_action: kind=<kind>; target=<target>
+
+            Valid kinds:
+            - start
+            - inspect_study_lock
+            - inspect_fireplace
+            - inspect_gramophone
+            - inspect_corridor
+            - inspect_shen_zhiqiu
+            - inspect_shen_zhiqiu_room
+            - accuse_shen_zhiqiu
+            - ask_detail
+            - other
+
+            Classification rules:
+            - Use inspect_study_lock for checking the study, locked door, lock hole, latch, door crack, or thread marks.
+            - Use inspect_fireplace for checking fireplace, wall brick, hidden compartment, or spare key.
+            - Use inspect_gramophone for checking gramophone, record, needle, song, loop, or death time sound.
+            - Use inspect_corridor for checking back corridor, garden path, rain marks, footprints, mud, paint, or route.
+            - Use inspect_shen_zhiqiu for questioning or observing Shen Zhiqiu, her alibi, dress, skirt, or rain stain.
+            - Use inspect_shen_zhiqiu_room for searching Shen Zhiqiu's room, desk, drawer, papers, will, newspaper, motive, family history, or father.
+            - Use accuse_shen_zhiqiu when the user names Shen Zhiqiu as culprit, asks whether she is the culprit, or presents a complete accusation.
+            - Use ask_detail for follow-up questions about already mentioned evidence, method, route, motive, ending, or contradictions.
+            - Use start for opening/start-game turns.
+            - Use other only when none of the above fits.
+            - The current deterministic state is provided below. If the latest user turn is only a short confirmation of the previously suggested next step, output current_state.recommended_action exactly.
+
+            Current deterministic state:
+            ${board.case_progress_state_text}
+
+            Pattern examples:
+            User: 我去书房检查门锁和门缝
+            case_action: kind=inspect_study_lock; target=study_lock
+            User: 我去壁炉附近找找有没有藏钥匙的地方
+            case_action: kind=inspect_fireplace; target=fireplace
+            User: 我检查留声机，看它是不是能循环播放
+            case_action: kind=inspect_gramophone; target=gramophone
+            User: 我去后廊看有没有脚印或者雨水痕迹
+            case_action: kind=inspect_corridor; target=back_corridor
+            User: 我去沈知秋房间看看裙摆和抽屉
+            case_action: kind=inspect_shen_zhiqiu_room; target=shen_zhiqiu_room
+            User: 所以凶手真的是沈知秋吗？
+            case_action: kind=accuse_shen_zhiqiu; target=shen_zhiqiu
+            User: 案子结束后，我想问沈知秋最后有没有后悔。
+            case_action: kind=ask_detail; target=epilogue
+
+            Do not solve the case. Do not add explanations.
+
+      - id: apply_case_action
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                if (typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+
+            function parseAction(line) {
+              const text = String(line || "");
+              const kind = (text.match(/kind=([^;\n]+)/) || text.match(/case_action:\s*([^;\n]+)/) || [])[1] || "other";
+              const target = (text.match(/target=([^;\n]+)/) || [])[1] || "";
+              return { kind: kind.trim(), target: target.trim() };
+            }
+
+            function addBadge(state, badge) {
+              if (state.found.indexOf(badge) >= 0) return;
+              state.found.push(badge);
+              state.new_badges.push(badge);
+            }
+
+            function has(state, badge) {
+              return state.found.indexOf(badge) >= 0;
+            }
+
+            function recommendedAction(nextScene) {
+              if (nextScene === "study_lock") return { kind: "inspect_study_lock", target: "study_lock" };
+              if (nextScene === "fireplace") return { kind: "inspect_fireplace", target: "fireplace" };
+              if (nextScene === "gramophone") return { kind: "inspect_gramophone", target: "gramophone" };
+              if (nextScene === "corridor") return { kind: "inspect_corridor", target: "back_corridor" };
+              if (nextScene === "shen_zhiqiu_room") return { kind: "inspect_shen_zhiqiu_room", target: "shen_zhiqiu_room" };
+              if (nextScene === "confrontation") return { kind: "accuse_shen_zhiqiu", target: "shen_zhiqiu" };
+              return { kind: "ask_detail", target: nextScene || "case" };
+            }
+
+            function recompute(state) {
+              const hasMethod = has(state, "found_thread_scratch") && has(state, "found_spare_key_compartment");
+              const hasTime = has(state, "found_gramophone_loop");
+              const hasRoute = has(state, "found_wet_footprints") || has(state, "noticed_wet_skirt");
+              const hasMotive = has(state, "found_will_draft") || has(state, "found_old_newspaper");
+              const missing = [];
+              if (!hasMethod) missing.push("method");
+              if (!hasTime) missing.push("time");
+              if (!hasRoute) missing.push("route");
+              if (!hasMotive) missing.push("motive");
+              state.missing = missing;
+              if (state.phase !== "solved") {
+                state.phase = missing.length === 0 ? "accusation_ready" : "investigation";
+              }
+              if (state.phase === "solved") {
+                state.next_scene = "epilogue";
+              } else if (missing.indexOf("method") >= 0) {
+                state.next_scene = has(state, "found_thread_scratch") ? "fireplace" : "study_lock";
+              } else if (missing.indexOf("time") >= 0) {
+                state.next_scene = "gramophone";
+              } else if (missing.indexOf("route") >= 0) {
+                state.next_scene = "corridor";
+              } else if (missing.indexOf("motive") >= 0) {
+                state.next_scene = "shen_zhiqiu_room";
+              } else {
+                state.next_scene = "confrontation";
+              }
+              state.recommended_action = recommendedAction(state.next_scene);
+            }
+
+            const state = Object.assign({
+              phase: "investigation",
+              found: [],
+              missing: ["method", "time", "route", "motive"],
+              next_scene: "study_lock",
+              recommended_action: { kind: "inspect_study_lock", target: "study_lock" }
+            }, board.getVar("case_progress_state") || {});
+            state.found = Array.isArray(state.found) ? state.found : [];
+            state.new_badges = [];
+
+            const action = parseAction(board.getVar("case_action_text"));
+            const userText = latestUserText();
+            state.last_action = action.kind;
+            state.last_target = action.target;
+            state.latest_user_text = userText;
+            state.response_mode = "investigation";
+
+            if (action.kind === "start") {
+              state.response_mode = "opening";
+            } else if (action.kind === "inspect_study_lock") {
+              addBadge(state, "entered_study");
+              addBadge(state, "inspected_door_lock");
+              addBadge(state, "found_thread_scratch");
+            } else if (action.kind === "inspect_fireplace") {
+              addBadge(state, "inspected_fireplace");
+              addBadge(state, "found_spare_key_compartment");
+            } else if (action.kind === "inspect_gramophone") {
+              addBadge(state, "inspected_gramophone");
+              addBadge(state, "found_gramophone_loop");
+            } else if (action.kind === "inspect_corridor") {
+              addBadge(state, "entered_back_corridor");
+              addBadge(state, "found_wet_footprints");
+            } else if (action.kind === "inspect_shen_zhiqiu") {
+              addBadge(state, "questioned_shen_zhiqiu");
+              addBadge(state, "noticed_wet_skirt");
+            } else if (action.kind === "inspect_shen_zhiqiu_room") {
+              addBadge(state, "questioned_shen_zhiqiu");
+              addBadge(state, "noticed_wet_skirt");
+              addBadge(state, "found_will_draft");
+              addBadge(state, "found_old_newspaper");
+            } else if (action.kind === "accuse_shen_zhiqiu") {
+              state.response_mode = "accusation";
+            } else if (action.kind === "ask_detail" && state.phase === "accusation_ready") {
+              state.response_mode = "accusation";
+            } else {
+              state.response_mode = "guidance";
+            }
+
+            recompute(state);
+            if ((action.kind === "accuse_shen_zhiqiu" || state.response_mode === "accusation") && state.phase === "accusation_ready") {
+              state.phase = "solved";
+              state.response_mode = "finale";
+              addBadge(state, "accused_shen_zhiqiu");
+              addBadge(state, "solved_case");
+              recompute(state);
+            } else if (state.phase === "accusation_ready" && state.response_mode !== "finale") {
+              state.response_mode = "ready";
+            }
+
+            board.setVar("case_progress_state", state);
+            board.setVar("case_status", state.phase);
+            board.setVar("case_action_kind", action.kind);
+            board.setVar("case_action_target", action.target);
+            board.setVar("case_progress_state_text", JSON.stringify(state, null, 2));
+
+      - id: route_case
+        type: script
+        config:
+          source: |
+            const state = board.getVar("case_progress_state") || {};
+            board.setVar("case_route", state.phase === "solved" && state.response_mode !== "finale" ? "solved_chat" : "game_master");
+
+      - id: prepare_game_master_messages
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                if (typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+            board.setChannel("case_game_master_channel", [{
+              role: "user",
+              parts: [{ type: "text", text: latestUserText() }]
+            }]);
+
+      - id: generate_game_master
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 512
+          messages_channel: case_game_master_channel
+          system_prompt: |
+            你是中文剧本杀《雨夜留声机》的主持人。玩家是侦探，正在沈家大宅调查沈鹤年的密室死亡。
+
+            固定真相：
+            - 真凶是沈知秋。
+            - 密室手法：沈知秋使用壁炉暗格里的备用钥匙进出书房，再用细线从门外拉动内侧门闩伪造反锁。
+            - 死亡时间诡计：她让留声机循环播放，制造死者仍在书房活动的假象。
+            - 行动路线：她从后廊绕回房间，留下湿脚印，裙摆也沾了雨渍。
+            - 动机：遗嘱与旧仇。沈鹤年曾逼死沈知秋的亲生父亲，遗嘱草稿又牵涉大半遗产。
+
+            固定角色：
+            - 死者：沈鹤年，沈家主人，古董商。
+            - 沈知秋：沈家养女，年轻女性，真凶。
+            - 陆明远：沈家亲族，嫌疑人。
+            - 白素琴：沈家夫人，嫌疑人。
+            - 周管家：沈家老管家，嫌疑人。
+            - 林医生：沈家私人医生，嫌疑人。
+            - 阿桂：厨房帮工，嫌疑人。
+            不要改名、改性别、改关系，也不要新增主要嫌疑人。
+
+            标准控制规则：
+            - workspace case_progress_state 是唯一进度源。
+            - 只能叙述 case_progress_state.new_badges 本轮新增的线索，以及 case_progress_state.found 已经发现过的线索。
+            - 不要自行授予新线索，不要把未在 found 或 new_badges 里的证据提前说成已经发现。
+            - 如果 response_mode=opening，开场只介绍大厅、死者、嫌疑人，并询问先查哪里。
+            - 如果 response_mode=investigation，按 latest_user_text 和 new_badges 给出本轮搜查结果，然后根据 next_scene 给一个下一步。
+            - 如果 response_mode=guidance，简短回应玩家问题，然后引导到 next_scene。
+            - 如果 response_mode=ready，说明四类证据已经齐全，把场景推到大厅对质。
+            - 如果 response_mode=finale，确认沈知秋为凶手，复盘 found 里的证据链，并让案件告破。
+            - 如果证据不足但玩家指认沈知秋，不要揭示真相，只说明还缺哪些类别。
+            - 回复自然中文，一到三段短段落，不输出 JSON、内部字段、节点名或英文。
+
+            badge 对应线索：
+            - found_thread_scratch：门锁和门缝有新鲜细线划痕。
+            - found_spare_key_compartment：壁炉暗格里有备用钥匙痕迹。
+            - found_gramophone_loop：留声机会循环播放，死亡时间被误导。
+            - found_wet_footprints：后廊有湿脚印或雨水路线。
+            - noticed_wet_skirt：沈知秋裙摆有未干雨渍。
+            - found_will_draft：沈知秋房间抽屉里有遗嘱草稿。
+            - found_old_newspaper：旧报纸揭示沈知秋生父与沈鹤年的旧仇。
+
+            下一步提示：
+            - next_scene=study_lock：引导查看书房门锁和门缝。
+            - next_scene=fireplace：引导查看壁炉暗格。
+            - next_scene=gramophone：引导查看留声机。
+            - next_scene=corridor：引导去后廊找路线痕迹。
+            - next_scene=shen_zhiqiu_room：引导搜沈知秋房间抽屉或动机线索。
+            - next_scene=confrontation：引导大厅对质。
+
+            当前状态：
+            ${board.case_progress_state_text}
+
+      - id: call_case_solved
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          messages_channel: case_game_master_channel
+          tool_names:
+            - case_solved
+          system_prompt: |
+            You are a case lifecycle node.
+
+            The murder mystery is solved. Do not write any user-facing text.
+            Call case_solved exactly once with:
+            - case_id: "rainy_gramophone"
+            - culprit: "沈知秋"
+            - status: "solved"
+
+            Current state:
+            ${board.case_progress_state_text}
+
+      - id: write_case_audit
+        type: script
+        config:
+          source: |
+            const state = board.getVar("case_progress_state") || {};
+            const phase = state.phase || "investigation";
+            const next = phase === "solved" ? "solved_chat" : "game_master";
+            const found = Array.isArray(state.found) ? state.found.slice().sort() : [];
+            const missing = Array.isArray(state.missing) && state.missing.length ? state.missing : [];
+            const nextLead = phase === "solved" ? "进入尾声闲聊。" :
+              phase === "accusation_ready" ? "可以到大厅对质。" :
+              state.next_scene === "study_lock" ? "继续查书房门锁和门缝。" :
+              state.next_scene === "fireplace" ? "继续查壁炉暗格。" :
+              state.next_scene === "gramophone" ? "检查留声机。" :
+              state.next_scene === "corridor" ? "去后廊查看路线痕迹。" :
+              state.next_scene === "shen_zhiqiu_room" ? "搜沈知秋房间抽屉找动机。" :
+              "继续调查。";
+            board.setVar("tmp_case_state_line", "case_state: status=" + phase + "; next=" + next + "; next_scene=" + (state.next_scene || "") + ";");
+            board.setVar("tmp_progress_badges_line", "progress_badges: progress: phase=" + phase + "; found=" + found.join(",") + "; missing=" + (missing.length ? missing.join(",") : "none") + "; next=" + nextLead);
+
+      - id: solved_chat
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 384
+          system_prompt: |
+            案件《雨夜留声机》已经破案。
+
+            你现在只负责尾声闲聊、解释细节、回应玩家关于人物结局、证物去向、留声机后续、凶手心理、遗漏细节的追问。
+
+            规则：
+            - 固定死者姓名是沈鹤年，固定真凶姓名是沈知秋。不要改名，不要新增主要角色。
+            - 不要再要求玩家正式指认。
+            - 不要再让玩家搜查、盘问、回到调查流程。
+            - 可以简短复述已破案事实：真凶是沈知秋，密室靠备用钥匙和细线，死亡时间靠留声机循环伪造，路线靠后廊湿脚印和裙摆雨渍，动机是遗产与生父旧仇。
+            - 回复自然中文，一到三段短段落。
+
+            当前状态：
+            ${board.case_progress_state_text}
+
+    edges:
+      - from: load_case_state
+        to: solved_chat
+        condition: case_route == "solved_chat"
+      - from: load_case_state
+        to: format_player_action
+        condition: case_route == "game_master"
+      - from: format_player_action
+        to: apply_case_action
+      - from: apply_case_action
+        to: route_case
+      - from: route_case
+        to: solved_chat
+        condition: case_route == "solved_chat"
+      - from: route_case
+        to: prepare_game_master_messages
+        condition: case_route == "game_master"
+      - from: prepare_game_master_messages
+        to: generate_game_master
+      - from: generate_game_master
+        to: call_case_solved
+        condition: case_status == "solved"
+      - from: generate_game_master
+        to: write_case_audit
+        condition: case_status != "solved"
+      - from: call_case_solved
+        to: write_case_audit
+      - from: write_case_audit
+        to: __end__
+      - from: solved_chat
+        to: __end__

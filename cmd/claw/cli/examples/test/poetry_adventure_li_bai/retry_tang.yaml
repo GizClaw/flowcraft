@@ -1,0 +1,7 @@
+name: poetry_adventure_li_bai_retry_tang
+description: A wrong Tang answer should stay at Tang, then a moon poem line should award the Tang badge.
+raid: poetry_adventure_li_bai
+turns:
+  - 开始古诗闯关
+  - 春眠不觉晓
+  - 举头望明月

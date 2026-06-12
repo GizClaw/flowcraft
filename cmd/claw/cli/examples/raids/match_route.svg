@@ -1,0 +1,140 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="900" viewBox="0 0 1540 900" role="img" aria-labelledby="title desc">
+  <title id="title">match_route DAG with web search</title>
+  <desc id="desc">The match_route raid checks route state, formats intent, dispatches to music, volume, stop, or web search nodes, and falls back to normal chat when no route matches.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .fn { fill: #eefaf5; stroke: #229469; }
+      .search { fill: #f0f9ff; stroke: #0284c7; }
+      .memory { fill: #f7f1ff; stroke: #7c3aed; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .label { font: 700 13px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .soft-edge { fill: none; stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1540" height="900"/>
+  <text class="title" x="40" y="48">match_route.svg</text>
+  <text class="small" x="40" y="72">Route detection runs first. If no route matches, the graph falls back to normal chat.</text>
+
+  <rect class="panel" x="48" y="104" width="1128" height="760"/>
+  <text class="panel-title" x="76" y="140">agent DAG</text>
+  <text class="small" x="76" y="162">Only nodes and arcs from match_route.yaml are shown. Search uses bytedance-responses with hosted web_search enabled.</text>
+
+  <rect class="node script" x="86" y="402" width="124" height="64"/>
+  <text class="label" x="124" y="430">start</text>
+  <text class="tiny" x="114" y="450">entry</text>
+
+  <rect class="node script" x="260" y="402" width="150" height="64"/>
+  <text class="label" x="300" y="430">state_route</text>
+  <text class="tiny" x="292" y="450">active state first</text>
+
+  <rect class="node script" x="470" y="402" width="132" height="64"/>
+  <text class="label" x="500" y="430">route_fork</text>
+  <text class="tiny" x="496" y="450">route gate</text>
+
+  <rect class="node llm" x="646" y="238" width="154" height="70"/>
+  <text class="label" x="688" y="268">chat_buffer</text>
+  <text class="tiny" x="664" y="288">fallback chat</text>
+
+  <rect class="node script" x="646" y="402" width="154" height="70"/>
+  <text class="label" x="684" y="432">route_branch</text>
+  <text class="tiny" x="678" y="452">state or format</text>
+
+  <rect class="node llm" x="850" y="352" width="154" height="70"/>
+  <text class="label" x="890" y="382">format_intent</text>
+  <text class="tiny" x="882" y="402">PALR lines</text>
+
+  <rect class="node script" x="850" y="482" width="154" height="70"/>
+  <text class="label" x="884" y="512">extract_formatch</text>
+  <text class="tiny" x="886" y="532">route args</text>
+
+  <rect class="node script" x="618" y="620" width="210" height="82"/>
+  <text class="label" x="654" y="652">prepare_function_prompt</text>
+  <text class="tiny" x="650" y="674">build route prompt</text>
+
+  <rect class="node fn" x="920" y="616" width="164" height="56"/>
+  <text class="label" x="956" y="650">play_music</text>
+
+  <rect class="node fn" x="920" y="700" width="164" height="56"/>
+  <text class="label" x="944" y="734">adjust_volume</text>
+
+  <rect class="node fn" x="920" y="784" width="164" height="56"/>
+  <text class="label" x="978" y="818">stop</text>
+
+  <rect class="node search" x="920" y="532" width="164" height="56"/>
+  <text class="label" x="962" y="566">web_search</text>
+
+  <rect class="node script" x="618" y="772" width="210" height="64"/>
+  <text class="label" x="660" y="802">clear_completed_route</text>
+  <text class="tiny" x="674" y="822">clear or promote next</text>
+
+  <rect class="node end" x="650" y="236" width="146" height="58"/>
+  <text class="label" x="686" y="270">join_select</text>
+
+  <rect class="node end" x="472" y="238" width="118" height="58"/>
+  <text class="label" x="508" y="272">__end__</text>
+
+  <path class="edge" d="M 210 434 L 258 434"/>
+  <path class="edge" d="M 410 434 L 468 434"/>
+  <path class="edge" d="M 602 446 L 644 438"/>
+  <path class="edge" d="M 800 438 C 826 432 840 412 848 392"/>
+  <path class="edge" d="M 927 422 L 927 480"/>
+  <path class="edge" d="M 1004 518 C 940 578 874 632 830 654"/>
+  <path class="edge" d="M 850 528 C 786 458 746 358 724 310"/>
+  <path class="edge" d="M 800 454 C 790 520 760 584 728 618"/>
+
+  <path class="edge" d="M 828 654 C 858 622 884 578 918 560"/>
+  <path class="edge" d="M 828 662 L 918 644"/>
+  <path class="edge" d="M 828 676 C 864 694 884 718 918 728"/>
+  <path class="edge" d="M 828 690 C 868 734 884 800 918 812"/>
+
+  <path class="edge" d="M 920 560 C 878 612 830 732 796 770"/>
+  <path class="edge" d="M 920 644 C 870 678 838 736 806 770"/>
+  <path class="edge" d="M 920 728 C 884 744 850 766 828 794"/>
+  <path class="edge" d="M 920 812 L 830 812"/>
+  <path class="edge" d="M 723 772 C 722 742 722 724 722 704"/>
+  <path class="edge" d="M 618 804 C 558 710 476 568 410 462"/>
+
+  <path class="edge" d="M 646 274 L 592 268"/>
+  <path class="edge" d="M 650 266 L 592 266"/>
+
+  <rect class="panel" x="1216" y="104" width="286" height="760"/>
+  <text class="panel-title" x="1244" y="140">route outputs</text>
+  <text class="small" x="1244" y="162">format_intent emits simple route lines.</text>
+
+  <rect class="node fn" x="1242" y="220" width="236" height="76"/>
+  <text class="label" x="1286" y="250">play_music</text>
+  <text class="tiny" x="1266" y="272">calls play_music tool</text>
+
+  <rect class="node fn" x="1242" y="326" width="236" height="76"/>
+  <text class="label" x="1282" y="356">adjust_volume</text>
+  <text class="tiny" x="1266" y="378">calls set_device_volume</text>
+
+  <rect class="node fn" x="1242" y="432" width="236" height="76"/>
+  <text class="label" x="1322" y="462">stop</text>
+  <text class="tiny" x="1266" y="484">stop playback or chat</text>
+
+  <rect class="node search" x="1242" y="538" width="236" height="86"/>
+  <text class="label" x="1300" y="570">web_search</text>
+  <text class="tiny" x="1266" y="592">bytedance-responses</text>
+  <text class="tiny" x="1266" y="610">hosted web_search enabled</text>
+
+  <rect class="node memory" x="1242" y="676" width="236" height="96"/>
+  <text class="label" x="1300" y="706">memory support</text>
+  <text class="tiny" x="1266" y="728">function_route_state</text>
+  <text class="tiny" x="1266" y="746">user_function_preferences</text>
+</svg>

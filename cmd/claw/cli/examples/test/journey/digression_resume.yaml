@@ -1,0 +1,11 @@
+name: journey_digression_resume
+description: Mix story turns with preferences, side questions, and unrelated chat, then resume the prior Journey beat.
+raid: journey
+turns:
+  - ""
+  - 继续讲水帘洞，但是每次短一点，像讲给小朋友听
+  - 先打断一下，我更喜欢孙悟空聪明调皮的地方
+  - 好，回到刚才的故事，继续水帘洞之后发生了什么
+  - 这个时候他已经叫孙悟空了吗？
+  - 明白了，继续讲，不要从仙石那里重新开始
+  - 现在应该讲到他为什么想求长生了吧？接着讲

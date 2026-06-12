@@ -8,107 +8,52 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// Option configures a Claw before its runtime pieces are built.
-type Option func(*Claw)
-
-// WithConfig bypasses workspace config discovery.
-func WithConfig(cfg Config) Option {
-	return func(c *Claw) {
-		cfg.applyDefaults()
-		c.cfg = cfg
-		c.hasConfig = true
-	}
-}
-
-// WithConfigRoot changes the workspace subtree New reads JSON config from.
-// The directory may contain workspace.json, models.json, memory.json, and
-// agent.json. Empty keeps the default "config".
-func WithConfigRoot(root string) Option {
-	return func(c *Claw) {
-		c.configRoot = cleanConfigRoot(root)
-	}
-}
-
-// WithWorkspaceConfig overrides workspace paths after config loading.
-func WithWorkspaceConfig(cfg WorkspaceConfig) Option {
-	return func(c *Claw) {
-		c.overrides.workspace = &cfg
-	}
-}
-
-// WithModels overrides model definitions after config loading.
-func WithModels(cfg ModelsConfig) Option {
-	return func(c *Claw) {
-		c.overrides.models = &cfg
-	}
-}
-
-// WithMemoryConfig overrides memory configuration after config loading.
-func WithMemoryConfig(cfg MemoryConfig) Option {
-	return func(c *Claw) {
-		c.overrides.memory = &cfg
-	}
-}
-
-// WithAgentConfig overrides agent configuration after config loading.
-func WithAgentConfig(cfg AgentConfig) Option {
-	return func(c *Claw) {
-		c.overrides.agent = &cfg
-	}
-}
-
-// WithChatModel injects an already-built chat model.
-func WithChatModel(client llm.LLM) Option {
-	return func(c *Claw) {
-		c.chat = client
-	}
-}
-
 // Claw is a local single-agent runtime backed by one workspace.
 type Claw struct {
-	ws         sdkworkspace.Workspace
-	cfg        Config
-	configRoot string
-	overrides  configOverrides
+	ws       sdkworkspace.Workspace
+	cfg      Config
+	agent    agent.Agent
+	engine   engine.Engine
+	resolver llm.LLMResolver
+	tools    *tool.Registry
+	history  *historyRuntime
+	memory   *memoryRuntime
 
-	hasConfig bool
-	agent     agent.Agent
-	engine    engine.Engine
-	chat      llm.LLM
-	resolver  llm.LLMResolver
-	memory    *memoryRuntime
+	toolMu             sync.RWMutex
+	toolHandlers       map[string]ToolHandler
+	defaultToolHandler ToolHandler
 
 	mu     sync.Mutex
-	active map[string]struct{}
+	active *roundController
 }
 
-// New constructs a Claw from a workspace and optional runtime overrides.
-func New(ws sdkworkspace.Workspace, opts ...Option) (*Claw, error) {
+// New constructs a Claw from the fixed workspace config layout.
+func New(ws sdkworkspace.Workspace) (_ *Claw, err error) {
 	c := &Claw{
-		ws:         ws,
-		configRoot: defaultConfigRoot,
-		active:     make(map[string]struct{}),
+		ws: ws,
 	}
-	for _, opt := range opts {
-		if opt != nil {
-			opt(c)
-		}
-	}
-	ctx := context.Background()
-	if !c.hasConfig {
-		cfg, err := loadConfig(ctx, ws, c.configRoot)
+	defer func() {
 		if err != nil {
-			return nil, err
+			_ = c.Close()
 		}
-		c.cfg = cfg
+	}()
+	ctx := context.Background()
+	cfg, err := loadConfig(ctx, ws)
+	if err != nil {
+		return nil, err
 	}
-	c.cfg.applyOverrides(c.overrides)
-	c.cfg.applyDefaults()
-	c.cfg.ensureAgentGraph()
-	c.resolver = c.buildResolver()
+	c.cfg = cfg
+	c.resolver = newProviderSafeLLMResolver(c.buildResolver())
+	c.tools = c.buildToolRegistry()
+	hist, err := c.buildHistory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.history = hist
 	mem, err := c.buildMemory(ctx)
 	if err != nil {
 		return nil, err
@@ -130,12 +75,24 @@ func (c *Claw) Config() Config {
 
 // Close releases resources owned by Claw.
 func (c *Claw) Close() error {
+	return c.CloseContext(context.Background())
+}
+
+// CloseContext releases resources owned by Claw, using ctx to bound
+// close-time drains such as async memory extraction.
+func (c *Claw) CloseContext(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	c.mu.Lock()
+	active := c.active
+	c.mu.Unlock()
+	if active != nil {
+		active.interrupt(true)
+	}
 	var errs []error
 	if c.memory != nil {
-		errs = append(errs, c.memory.close())
+		errs = append(errs, c.memory.close(ctx))
 	}
 	return errors.Join(errs...)
 }

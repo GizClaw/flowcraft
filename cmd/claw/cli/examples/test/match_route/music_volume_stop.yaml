@@ -1,0 +1,5 @@
+name: music_volume_stop
+description: Three-command request should play music, adjust volume, then stop playback.
+raid: match_route
+turns:
+  - 我想听卡农，然后把音量调到30%，最后停止播放

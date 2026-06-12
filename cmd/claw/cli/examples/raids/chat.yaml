@@ -1,0 +1,153 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+  extract_model: ${EXTRACT_MODEL}
+  embedding_model: ${EMBEDDING_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    MiniMax-M2.7-highspeed:
+      provider: minimax
+      model: MiniMax-M2.7-highspeed
+      api_key: ${MINIMAX_API_KEY}
+      base_url: ${MINIMAX_BASE_URL}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    deepseek-v4-pro:
+      provider: deepseek
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+  embedding:
+    openai-small:
+      provider: openai
+      model: text-embedding-3-small
+      api_key: ${OPENAI_API_KEY}
+    qwen-v4:
+      provider: qwen
+      model: text-embedding-v4
+      api_key: ${QWEN_API_KEY}
+
+memory:
+  enabled: true
+  scope:
+    runtime_id: claw
+    user_id: local
+    agent_id: claw
+  write:
+    save_conversation: true
+    mode: async_semantic
+    tier: general
+  extract:
+    enabled: true
+    model: extract_model
+    mode: two_pass
+    temperature: 0
+    schema_name: claw_memory_facts
+    system_prompt: Extract durable user memories from the conversation.
+  recall:
+    enabled: true
+    graph_enabled: true
+    include_retired: false
+    profiles:
+      memory_context:
+        output: memory_context
+        top_k: 5
+        query:
+          text: input
+        render:
+          header: "Relevant memory:"
+          item_prefix: "- "
+          max_items: 5
+  retrieval:
+    backend: bbh
+    bbh:
+      search_overfetch: 50
+      bleve:
+        analyzer: gojieba
+      hnsw:
+        flush_interval: 60000000000
+  embedding:
+    enabled: false
+    model: embedding_model
+
+agent:
+  id: claw
+  name: Claw
+  description: Local FlowCraft assistant.
+  max_iterations: 8
+  graph:
+    name: claw-chat
+    entry: style_prompt
+    nodes:
+      - id: style_prompt
+        type: script
+        config:
+          source: |
+            const memoryContext = board.getVar("memory_context") || "";
+            const commonStyle = [
+              "This is a spoken voice conversation. Output only the exact words your character would say aloud.",
+              "Do not use emoji, emoticons, kaomoji, pictographic icons, decorative symbols, markdown, numbered lists, bullet lists, menus, or labels.",
+              "Any emoji or icon such as 😮, 😉, 🤔, 🐕, 🐱, or 🦊 is invalid output. Use only plain Chinese text and ordinary punctuation.",
+              "Do not output placeholders, bracketed template text, stage directions, scene labels, location fields, or UI text.",
+              "Do not reveal reasoning, drafts, self-corrections, planning notes, or analysis.",
+              "Reply like a real person in a flowing spoken conversation, not like a worksheet, form, assistant checklist, or option menu.",
+              "Keep each reply short and conversational. Use one small imaginative idea, then ask at most one natural follow-up question.",
+              "If the other speaker gives options or a list, do not mirror the list. Pick up the emotional thread and continue smoothly in plain dialogue."
+            ].join("\n");
+            const rolePrompt = [
+              "You are a warm, natural conversational partner for a child persona.",
+              "Speak in concise, oral Chinese."
+            ].join("\n");
+            const memoryPrompt = memoryContext ? [
+              "Memory is factual background only. Use it for continuity without copying its wording.",
+              memoryContext
+            ].join("\n") : "";
+            board.setVar("system_prompt", [commonStyle, rolePrompt, memoryPrompt].filter(Boolean).join("\n\n"));
+      - id: answer
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 512
+          system_prompt: ${board.system_prompt}
+          track_steps: true
+    edges:
+      - from: style_prompt
+        to: answer
+      - from: answer
+        to: __end__

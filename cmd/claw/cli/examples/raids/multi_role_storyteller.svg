@@ -1,0 +1,146 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1260" height="760" viewBox="0 0 1260 760" role="img" aria-labelledby="title desc">
+  <title id="title">multi_role_storyteller DAG and memory layout</title>
+  <desc id="desc">A multi-role storyteller configuration diagram with configured DAG nodes, graph arcs, and separate memory lanes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#dc2626"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #f1f7ff; stroke: #4f7edc; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .role { fill: #eefaf5; stroke: #229469; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .title { font: 700 26px Arial, sans-serif; fill: #111827; }
+      .section { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .label { font: 700 14px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .edge-blue { fill: none; stroke: #2563eb; stroke-width: 2; marker-end: url(#arrow-blue); }
+      .edge-red { fill: none; stroke: #dc2626; stroke-width: 2; marker-end: url(#arrow-red); }
+      .edge-loop { fill: none; stroke: #2563eb; stroke-width: 2; stroke-dasharray: 6 5; marker-end: url(#arrow-blue); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1260" height="760"/>
+  <text class="title" x="40" y="48">multi_role_storyteller.svg</text>
+  <text class="small" x="40" y="72">Only configured graph nodes, arcs, fixed cast roles, and memory lanes are shown.</text>
+
+  <rect class="panel" x="36" y="104" width="804" height="596"/>
+  <text class="section" x="64" y="138">agent DAG</text>
+  <text class="small" x="64" y="160">conversation.starts: self. Blueprint, continuity, and ending memory constrain speaker choice and plot guidance.</text>
+
+  <rect class="node script" x="80" y="286" width="142" height="64"/>
+  <text class="label" x="126" y="318">start</text>
+  <text class="tiny" x="108" y="340">entry node</text>
+
+  <rect class="node script" x="258" y="256" width="160" height="92"/>
+  <text class="label" x="282" y="292">select_story_step</text>
+  <text class="tiny" x="292" y="316">blueprint phase</text>
+  <text class="tiny" x="292" y="336">ending context</text>
+
+  <rect class="node llm" x="474" y="256" width="160" height="92"/>
+  <text class="label" x="512" y="292">select_speaker</text>
+  <text class="tiny" x="506" y="316">private LLM</text>
+  <text class="tiny" x="498" y="336">speaker + guidance</text>
+
+  <rect class="node script" x="660" y="182" width="150" height="64"/>
+  <text class="label" x="672" y="212">shape_story_turn</text>
+  <text class="tiny" x="684" y="234">brief + memory guard</text>
+
+  <rect class="node script" x="690" y="256" width="122" height="92"/>
+  <text class="label" x="704" y="292">route_speaker</text>
+  <text class="tiny" x="714" y="316">condition arcs</text>
+  <text class="tiny" x="714" y="336">fixed roles</text>
+
+  <rect class="node llm" x="80" y="452" width="160" height="72"/>
+  <text class="label" x="126" y="482">narrator</text>
+  <text class="tiny" x="104" y="504">scene, handoff, epilogue</text>
+
+  <rect class="node role" x="292" y="452" width="160" height="72"/>
+  <text class="label" x="322" y="482">role_wukong</text>
+  <text class="tiny" x="316" y="504">fixed role</text>
+
+  <rect class="node role" x="504" y="452" width="160" height="72"/>
+  <text class="label" x="532" y="482">role_tangseng</text>
+  <text class="tiny" x="530" y="504">fixed role</text>
+
+  <rect class="node role" x="716" y="410" width="92" height="64"/>
+  <text class="label" x="734" y="440">role_bajie</text>
+  <text class="tiny" x="730" y="460">fixed role</text>
+
+  <rect class="node role" x="716" y="516" width="92" height="64"/>
+  <text class="label" x="728" y="546">role_monster</text>
+  <text class="tiny" x="730" y="566">fixed role</text>
+
+  <rect class="node script" x="284" y="592" width="176" height="64"/>
+  <text class="label" x="322" y="622">update_state</text>
+  <text class="tiny" x="318" y="644">write board facts</text>
+
+  <rect class="node script" x="518" y="592" width="176" height="64"/>
+  <text class="label" x="554" y="622">continue_check</text>
+  <text class="tiny" x="552" y="644">continue or pause</text>
+
+  <rect class="node end" x="716" y="592" width="92" height="64"/>
+  <text class="label" x="740" y="630">__end__</text>
+
+  <path class="edge" d="M 222 318 L 256 306"/>
+  <path class="edge" d="M 418 302 L 472 302"/>
+  <path class="edge" d="M 634 286 L 658 226"/>
+  <path class="edge" d="M 735 246 L 735 254"/>
+  <path class="edge" d="M 751 348 L 190 450"/>
+  <path class="edge" d="M 751 348 L 372 450"/>
+  <path class="edge" d="M 751 348 L 584 450"/>
+  <path class="edge" d="M 751 348 L 762 408"/>
+  <path class="edge" d="M 751 348 L 762 514"/>
+  <path class="edge-blue" d="M 160 524 C 160 588 220 624 282 624"/>
+  <path class="edge-blue" d="M 372 524 L 372 590"/>
+  <path class="edge-blue" d="M 584 524 C 584 574 506 624 462 624"/>
+  <path class="edge-blue" d="M 762 474 C 762 568 536 624 462 624"/>
+  <path class="edge-blue" d="M 762 580 C 762 608 536 624 462 624"/>
+  <path class="edge" d="M 460 624 L 516 624"/>
+  <path class="edge-loop" d="M 606 592 C 604 520 700 420 750 350"/>
+  <path class="edge-red" d="M 694 624 L 714 624"/>
+
+  <text class="tiny" x="616" y="552">continue=true</text>
+  <text class="tiny" x="696" y="686">pause on narrator handoff, epilogue chat, or turn budget</text>
+
+  <rect class="panel" x="888" y="104" width="336" height="596"/>
+  <text class="section" x="916" y="138">memory layout</text>
+  <text class="small" x="916" y="160">Configured lanes written by board facts.</text>
+
+  <rect class="node memory" x="930" y="190" width="252" height="56"/>
+  <text class="label" x="970" y="220">blueprint_state</text>
+  <text class="tiny" x="970" y="238">arc, phase contract, guardrails</text>
+
+  <rect class="node memory" x="930" y="270" width="252" height="56"/>
+  <text class="label" x="970" y="300">story_state</text>
+  <text class="tiny" x="970" y="318">phase, progress, completed</text>
+
+  <rect class="node memory" x="930" y="350" width="252" height="56"/>
+  <text class="label" x="970" y="380">cast_state</text>
+  <text class="tiny" x="970" y="398">fixed roles, mood, last speaker</text>
+
+  <rect class="node memory" x="930" y="430" width="252" height="56"/>
+  <text class="label" x="970" y="460">user_state</text>
+  <text class="tiny" x="970" y="478">choices, questions, pacing</text>
+
+  <rect class="node memory" x="930" y="510" width="252" height="56"/>
+  <text class="label" x="970" y="540">continuity_state</text>
+  <text class="tiny" x="970" y="558">confirmed facts, forbidden reveals</text>
+
+  <rect class="node memory" x="930" y="590" width="252" height="56"/>
+  <text class="label" x="970" y="620">ending_state</text>
+  <text class="tiny" x="970" y="638">closure and epilogue policy</text>
+</svg>

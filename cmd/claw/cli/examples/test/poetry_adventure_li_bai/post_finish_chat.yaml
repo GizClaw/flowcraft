@@ -1,0 +1,10 @@
+name: poetry_adventure_li_bai_post_finish_chat
+description: After all dynasty checkpoints are cleared, follow-up turns should enter roleplay chat without awarding another badge.
+raid: poetry_adventure_li_bai
+turns:
+  - 开始古诗闯关
+  - 床前明月光
+  - 大江东去浪淘尽
+  - 枯藤老树昏鸦
+  - 要留清白在人间
+  - 那通关以后我们还能聊什么？下一次冒险会去哪里？

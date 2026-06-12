@@ -40,11 +40,19 @@ func (c *Claw) loadContextState(ctx context.Context, id string) (contextState, e
 	return st, nil
 }
 
-func (c *Claw) saveContextState(ctx context.Context, id string, result *agent.Result) error {
+func (c *Claw) saveContextState(ctx context.Context, id string, result *agent.Result, inputVars ...map[string]any) error {
 	if result == nil || result.LastBoard == nil {
 		return nil
 	}
-	vars := persistentVars(result.LastBoard.Vars())
+	vars := map[string]any{}
+	for _, input := range inputVars {
+		for k, v := range persistentVars(input) {
+			vars[k] = v
+		}
+	}
+	for k, v := range persistentVars(result.LastBoard.Vars()) {
+		vars[k] = v
+	}
 	st := contextState{
 		ContextID: id,
 		UpdatedAt: time.Now(),
@@ -68,9 +76,20 @@ func (c *Claw) stateWorkspace() sdkworkspace.Workspace {
 	return sdkworkspace.Sub(c.ws, c.cfg.Workspace.StateRoot)
 }
 
+func (c *Claw) contextID() string {
+	if c == nil {
+		return defaultConversationContextID
+	}
+	id := strings.TrimSpace(c.cfg.Conversation.ContextID)
+	if id == "" {
+		return defaultConversationContextID
+	}
+	return id
+}
+
 func contextStatePath(id string) string {
 	if strings.TrimSpace(id) == "" {
-		id = "default"
+		id = defaultConversationContextID
 	}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(id))
 	return filepath.ToSlash(filepath.Join("contexts", encoded+".json"))

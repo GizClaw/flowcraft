@@ -1,0 +1,12 @@
+name: murder_mystery_post_solved_epilogue
+description: After the case is solved, follow-up questions should route to solved_chat instead of the investigation GM.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我去书房检查门锁和门缝
+  - 我检查留声机，看它是不是能循环播放
+  - 我去壁炉附近找找有没有藏钥匙的地方
+  - 我去后廊看有没有脚印或者雨水痕迹
+  - 我去沈知秋房间看看裙摆和抽屉
+  - 我正式指认沈知秋。她用备用钥匙进出书房，用细线伪造反锁，用留声机循环伪造死亡时间，从后廊绕回房间，遗嘱草稿和旧报纸说明她有遗产和复仇动机
+  - 那台留声机后来还发生过什么怪事吗？

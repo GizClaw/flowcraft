@@ -1,0 +1,6 @@
+name: volume_then_music_missing
+description: Volume command should run first, then missing-title music should ask and resume on the next turn.
+raid: match_route
+turns:
+  - 大声点，然后我要听歌
+  - 卡农

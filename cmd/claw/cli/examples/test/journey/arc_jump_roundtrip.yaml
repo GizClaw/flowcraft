@@ -1,0 +1,12 @@
+name: journey_arc_jump_roundtrip
+description: Exercise origin continuity, explicit jumps across arcs, and returning to an earlier origin beat.
+raid: journey
+turns:
+  - ""
+  - 接着讲瀑布里面，不要重新讲仙石
+  - 刚才讲到哪里了？先一句话回答，再继续
+  - 先问一下，他现在已经叫孙悟空了吗？然后继续原来的故事点
+  - 现在跳到大闹天宫刚开始，但不要讲到五行山
+  - 回到水帘洞之后，美猴王为什么会想出海求仙？不要跳天宫
+  - 现在跳到女儿国，只讲刚到女儿国的开头
+  - 刚才讲到哪里了？如果刚才在女儿国，就继续女儿国；不要回花果山

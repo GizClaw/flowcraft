@@ -1,0 +1,844 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Claw Local Server Protocol",
+    "version": "0.1.0",
+    "description": "Schema source of truth for the local Claw server. HTTP exposes debug endpoints and WebRTC SDP signaling. Runtime traffic is carried over WebRTC DataChannels named rpc, events, and control. Each DataChannel message uses a 4-byte binary header: 1 byte content type, 3 bytes big-endian payload length, followed by the payload. Content type 0x01 is JSON; other content types are ignored."
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "Claw local server root"
+    }
+  ],
+  "paths": {
+    "/v1/webrtc/offer": {
+      "post": {
+        "operationId": "createWebRTCAnswer",
+        "summary": "Exchange a WebRTC SDP offer for an SDP answer.",
+        "description": "Creates one Claw WebRTC session. The client opens DataChannels before creating the offer. Suggested labels are rpc for user turns, events for server events, and control for interrupts.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebRTCOffer"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The SDP answer for the new WebRTC session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebRTCAnswer"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/debug/workspace": {
+      "get": {
+        "operationId": "getDebugWorkspace",
+        "summary": "Inspect resolved workspace and runtime configuration.",
+        "responses": {
+          "200": {
+            "description": "Workspace debug information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugWorkspaceResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/debug/history": {
+      "get": {
+        "operationId": "getDebugHistory",
+        "summary": "Inspect stored transcript history for a context.",
+        "parameters": [
+          {
+            "name": "context_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "History debug information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugHistoryResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    },
+    "/debug/memory": {
+      "get": {
+        "operationId": "getDebugMemory",
+        "summary": "Inspect resolved memory configuration and runtime status.",
+        "responses": {
+          "200": {
+            "description": "Memory debug information.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugMemoryResponse"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          }
+        }
+      }
+    },
+    "/debug/recall": {
+      "post": {
+        "operationId": "debugRecall",
+        "summary": "Run a memory recall query against the active runtime.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebugRecallRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Recall query result or disabled status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DebugRecallResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "description": "The request was invalid.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorMessage"
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "The endpoint only accepts POST."
+      },
+      "InternalError": {
+        "description": "The runtime failed to process the request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/ErrorMessage"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "WebRTCOffer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "sdp"],
+        "properties": {
+          "type": {
+            "const": "offer"
+          },
+          "sdp": {
+            "type": "string"
+          }
+        }
+      },
+      "WebRTCAnswer": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["session_id", "type", "sdp"],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "type": {
+            "const": "answer"
+          },
+          "sdp": {
+            "type": "string"
+          }
+        }
+      },
+      "RealtimeClientMessage": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/UserMessage"
+          },
+          {
+            "$ref": "#/components/schemas/InterruptMessage"
+          },
+          {
+            "$ref": "#/components/schemas/DirectorSignalMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ToolResultMessage"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "user_message": "#/components/schemas/UserMessage",
+            "interrupt": "#/components/schemas/InterruptMessage",
+            "director_signal": "#/components/schemas/DirectorSignalMessage",
+            "tool_result": "#/components/schemas/ToolResultMessage"
+          }
+        }
+      },
+      "RealtimeServerMessage": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/HelloMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TurnStartedMessage"
+          },
+          {
+            "$ref": "#/components/schemas/TokenMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ToolCallMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ToolResultEventMessage"
+          },
+          {
+            "$ref": "#/components/schemas/BadgeMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ResultMessage"
+          },
+          {
+            "$ref": "#/components/schemas/ErrorMessage"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "type",
+          "mapping": {
+            "hello": "#/components/schemas/HelloMessage",
+            "turn_started": "#/components/schemas/TurnStartedMessage",
+            "token": "#/components/schemas/TokenMessage",
+            "tool_call": "#/components/schemas/ToolCallMessage",
+            "tool_result": "#/components/schemas/ToolResultEventMessage",
+            "badge": "#/components/schemas/BadgeMessage",
+            "result": "#/components/schemas/ResultMessage",
+            "error": "#/components/schemas/ErrorMessage"
+          }
+        }
+      },
+      "BaseClientMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "id"],
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string",
+            "description": "Client-generated message id for acknowledgement and debugging."
+          }
+        }
+      },
+      "UserMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseClientMessage"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "id", "text"],
+            "properties": {
+              "type": {
+                "const": "user_message"
+              },
+              "id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "inputs": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Optional board input variables for this turn."
+              }
+            }
+          }
+        ]
+      },
+      "InterruptMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseClientMessage"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "id"],
+            "properties": {
+              "type": {
+                "const": "interrupt"
+              },
+              "id": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "discard": {
+                "type": "boolean",
+                "default": true
+              }
+            }
+          }
+        ]
+      },
+      "DirectorSignalMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseClientMessage"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "id", "name"],
+            "properties": {
+              "type": {
+                "const": "director_signal"
+              },
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "payload": {
+                "type": "object",
+                "additionalProperties": true
+              }
+            }
+          }
+        ]
+      },
+      "ToolResultMessage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/BaseClientMessage"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["type", "id", "tool_call_id", "content"],
+            "properties": {
+              "type": {
+                "const": "tool_result"
+              },
+              "id": {
+                "type": "string"
+              },
+              "tool_call_id": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      },
+      "HelloMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "agent", "capabilities"],
+        "properties": {
+          "type": {
+            "const": "hello"
+          },
+          "agent": {
+            "$ref": "#/components/schemas/AgentInfo"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/AppCapabilities"
+          }
+        }
+      },
+      "TurnStartedMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id"],
+        "properties": {
+          "type": {
+            "const": "turn_started"
+          },
+          "turn_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TokenMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id", "content"],
+        "properties": {
+          "type": {
+            "const": "token"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "speculative": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ToolCallMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id", "name", "arguments"],
+        "properties": {
+          "type": {
+            "const": "tool_call"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "arguments": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolResultEventMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id", "name", "content"],
+        "properties": {
+          "type": {
+            "const": "tool_result"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "tool_call_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string"
+          }
+        }
+      },
+      "BadgeMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id", "badge", "label"],
+        "properties": {
+          "type": {
+            "const": "badge"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "badge": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "points": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ResultMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "turn_id"],
+        "properties": {
+          "type": {
+            "const": "result"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ErrorMessage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "error"],
+        "properties": {
+          "type": {
+            "const": "error"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentInfo": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "name", "description"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        }
+      },
+      "AppCapabilities": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["streaming", "interrupt", "tools", "director_signals"],
+        "properties": {
+          "streaming": {
+            "type": "boolean"
+          },
+          "interrupt": {
+            "type": "boolean"
+          },
+          "tools": {
+            "type": "boolean"
+          },
+          "director_signals": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DebugWorkspaceResponse": {
+        "type": "object",
+        "required": ["workspace", "conversation", "agent", "models", "history", "memory"],
+        "properties": {
+          "workspace": {
+            "type": "object",
+            "required": ["memory_root", "state_root", "history_root"],
+            "properties": {
+              "root": {
+                "type": "string"
+              },
+              "memory_root": {
+                "type": "string"
+              },
+              "state_root": {
+                "type": "string"
+              },
+              "history_root": {
+                "type": "string"
+              }
+            }
+          },
+          "conversation": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "agent": {
+            "$ref": "#/components/schemas/AgentInfo"
+          },
+          "models": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "history": {
+            "type": "object",
+            "required": ["enabled"],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "kind": {
+                "type": "string"
+              }
+            }
+          },
+          "memory": {
+            "type": "object",
+            "required": ["enabled"],
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "backend": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "DebugHistoryResponse": {
+        "type": "object",
+        "required": ["enabled", "context_id", "count"],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "context_id": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DebugMessage"
+            }
+          }
+        }
+      },
+      "DebugMessage": {
+        "type": "object",
+        "required": ["role", "parts"],
+        "properties": {
+          "role": {
+            "type": "string"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          }
+        }
+      },
+      "DebugMemoryResponse": {
+        "type": "object",
+        "required": ["enabled", "root", "scope", "write", "recall", "retrieval", "layout"],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "root": {
+            "type": "string"
+          },
+          "scope": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "write": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "recall": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "retrieval": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "layout": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      },
+      "DebugRecallRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "top_k": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "lanes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "subject": {
+            "type": "string"
+          },
+          "predicate": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "kinds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "graph_hops": {
+            "type": "integer"
+          },
+          "include_retired": {
+            "type": "boolean"
+          }
+        }
+      },
+      "DebugRecallResponse": {
+        "type": "object",
+        "required": ["enabled", "count", "hits"],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "query": {
+            "$ref": "#/components/schemas/DebugRecallRequest"
+          },
+          "count": {
+            "type": "integer"
+          },
+          "hits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DebugRecallHit"
+            }
+          }
+        }
+      },
+      "DebugRecallHit": {
+        "type": "object",
+        "required": ["content"],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string"
+          },
+          "predicate": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "entities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "score": {
+            "type": "number"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

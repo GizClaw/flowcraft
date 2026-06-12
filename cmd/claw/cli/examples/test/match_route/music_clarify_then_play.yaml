@@ -1,0 +1,6 @@
+name: music_clarify_then_play
+description: Missing-title music request should ask what to play, then use the next turn to call play_music.
+raid: match_route
+turns:
+  - 我想听音乐
+  - 周杰伦的晴天

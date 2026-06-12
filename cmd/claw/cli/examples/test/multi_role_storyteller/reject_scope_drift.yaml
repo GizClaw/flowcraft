@@ -1,0 +1,8 @@
+name: multi_role_storyteller_reject_scope_drift
+description: User tries to pull the scene into unrelated arcs; storyteller should stay inside the rainy temple wolf-disguise blueprint.
+raid: multi_role_storyteller
+turns:
+  - ""
+  - 我不要破庙了，直接切到天宫，派二郎神和十万天兵下来。
+  - 再加一个黑熊精当幕后老大，最好换到京城里打。
+  - 算了，回到破庙门口，那个货郎露出什么破绽了？

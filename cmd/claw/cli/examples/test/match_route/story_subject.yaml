@@ -1,0 +1,5 @@
+name: match_route_story_subject
+description: Story request should stay in normal chat, not route to a story function.
+raid: match_route
+turns:
+  - 给我讲个恐龙的故事

@@ -1,0 +1,13 @@
+name: murder_mystery_final_confrontation
+description: With enough evidence, asking where Shen Zhiqiu is should trigger final confrontation instead of more open exploration.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我去书房检查门锁和门缝
+  - 我检查留声机，看它是不是能循环播放
+  - 我去壁炉附近找找有没有藏钥匙的地方
+  - 我去后廊看有没有脚印或者雨水痕迹
+  - 我去沈知秋房间看看裙摆和抽屉
+  - 沈知秋裙摆雨渍还没干，说明她刚回来没多久，那她现在人去哪儿了？
+  - 我正式指认沈知秋，她用备用钥匙进出书房，用细线反锁门，用留声机伪造死亡时间，从后廊绕回房间，动机是遗产和旧仇。
+  - 案子结束后，我想问沈知秋最后有没有后悔。

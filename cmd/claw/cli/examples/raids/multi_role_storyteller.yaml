@@ -1,0 +1,723 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+conversation:
+  starts: self
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+
+memory:
+  enabled: true
+  scope:
+    runtime_id: multi-role-storyteller
+    user_id: local
+    agent_id: storyteller
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+    board_facts:
+      - board_var: tmp_story_state_line
+        kind: state
+        subject: story_state
+        predicate: progress
+        required_prefix: "story_state:"
+      - board_var: tmp_blueprint_state_line
+        kind: state
+        subject: blueprint_state
+        predicate: arc
+        required_prefix: "blueprint_state:"
+      - board_var: tmp_cast_state_line
+        kind: state
+        subject: cast_state
+        predicate: status
+        required_prefix: "cast_state:"
+      - board_var: tmp_user_state_line
+        kind: state
+        subject: user_state
+        predicate: participation
+        required_prefix: "user_state:"
+      - board_var: tmp_continuity_state_line
+        kind: state
+        subject: continuity_state
+        predicate: facts
+        required_prefix: "continuity_state:"
+      - board_var: tmp_ending_state_line
+        kind: state
+        subject: ending_state
+        predicate: closure
+        required_prefix: "ending_state:"
+  extract:
+    enabled: false
+  layout:
+    lanes:
+      - name: story_state
+        kind: state
+        description: Current blueprint step, scene pressure, and last visible event.
+        extract: Do not extract. Written only from tmp_story_state_line.
+        recall: Story continuity audit lane.
+      - name: blueprint_state
+        kind: state
+        description: Active arc, phase contract, phase guardrails, and allowed story scope.
+        extract: Do not extract. Written only from tmp_blueprint_state_line.
+        recall: Blueprint boundary lane.
+      - name: cast_state
+        kind: state
+        description: Fixed cast presence, mood, and last speaker.
+        extract: Do not extract. Written only from tmp_cast_state_line.
+        recall: Cast continuity audit lane.
+      - name: user_state
+        kind: state
+        description: User choices, interruptions, questions, and preferred pacing.
+        extract: Do not extract. Written only from tmp_user_state_line.
+        recall: User participation audit lane.
+      - name: continuity_state
+        kind: state
+        description: Confirmed facts, open questions, and facts the story must not contradict.
+        extract: Do not extract. Written only from tmp_continuity_state_line.
+        recall: Continuity guard lane.
+      - name: ending_state
+        kind: state
+        description: Main conflict closure, epilogue mode, and whether new plot branches are allowed.
+        extract: Do not extract. Written only from tmp_ending_state_line.
+        recall: Ending policy lane.
+  recall:
+    enabled: false
+  embedding:
+    enabled: false
+
+agent:
+  id: storyteller
+  name: Multi Role Storyteller
+  description: A self-starting fixed-cast story scene driven by a static blueprint.
+  max_iterations: 40
+  graph:
+    name: multi-role-storyteller
+    entry: start
+    nodes:
+      - id: start
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                if (typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+
+            const story = board.getVar("story_state") || {
+              scene: "取经路上的破庙雨夜",
+              phase: "threshold",
+              phase_spoken: [],
+              next_phase: "",
+              awaiting_user: false,
+              completed: false,
+              epilogue_turns: 0,
+              pressure: "门外有人在雨里敲门，但声音不像普通人。",
+              last_event: "故事尚未开场。",
+            };
+            const blueprintState = board.getVar("blueprint_state") || {
+              arc: "破庙雨夜黄毛货郎",
+              contract: "固定一折短故事：门外黄毛货郎其实是黄毛狼妖伪装；围绕敲门、试探、露馅、制伏、逐走、天明上路推进。",
+              current_phase: story.phase || "threshold",
+              allowed_scope: "只允许破庙雨夜、黄毛货郎/狼妖、取经四人、篮中黑腥水/黄毛/脚印等本折线索。",
+              forbidden_scope: "不要新增狮驼岭、黑熊精、貂鼠、天宫神将、铜铃残魂、京城、另一个大妖或新地点主线。",
+            };
+            const cast = board.getVar("cast_state") || {
+              present: "narrator,wukong,tangseng,bajie,monster",
+              last_speaker: "",
+              mood: "悟空警觉，唐僧谨慎，八戒怕麻烦，门外妖怪伪装虚弱。",
+            };
+            const user = board.getVar("user_state") || {
+              last_input: "",
+              last_choice: "",
+              preference: "喜欢节奏快、具体、有角色冲突的西游对话。",
+            };
+            const continuity = board.getVar("continuity_state") || {
+              confirmed: "地点=破庙雨夜；门外人=黄毛货郎伪装；真实身份=黄毛狼妖；结局约束=狼妖被制伏后逐走或罚走，不打死；固定角色=旁白/悟空/唐僧/八戒/妖怪。",
+              open_threads: "敲门异常；黄毛与黑腥水；货郎为何夜雨来庙；是否开门；悟空如何试探。",
+              forbidden_reveals: "不要把妖怪改成其他种类；不要说还有幕后大妖；不要把故事转去别的地点。",
+            };
+            const ending = board.getVar("ending_state") || {
+              mode: "active_story",
+              closed: false,
+              closure: "",
+              epilogue_policy: "主冲突结束后只复盘本折因果或轻轻引下一折，不再给本折新增敌人。",
+            };
+            const latest = latestUserText();
+            if (latest) user.last_input = latest;
+            board.setVar("story_state", story);
+            board.setVar("blueprint_state", blueprintState);
+            board.setVar("cast_state", cast);
+            board.setVar("user_state", user);
+            board.setVar("continuity_state", continuity);
+            board.setVar("ending_state", ending);
+            board.setVar("story_state_text", JSON.stringify(story, null, 2));
+            board.setVar("blueprint_state_text", JSON.stringify(blueprintState, null, 2));
+            board.setVar("cast_state_text", JSON.stringify(cast, null, 2));
+            board.setVar("user_state_text", JSON.stringify(user, null, 2));
+            board.setVar("continuity_state_text", JSON.stringify(continuity, null, 2));
+            board.setVar("ending_state_text", JSON.stringify(ending, null, 2));
+            board.setVar("latest_user_text", latest);
+            board.setVar("internal_turn_count", 0);
+            board.setVar("continue_story", true);
+
+      - id: select_story_step
+        type: script
+        config:
+          source: |
+            const story = board.getVar("story_state") || {};
+            const blueprintState = board.getVar("blueprint_state") || {};
+            const continuity = board.getVar("continuity_state") || {};
+            const ending = board.getVar("ending_state") || {};
+            const user = board.getVar("user_state") || {};
+            const latest = String(board.getVar("latest_user_text") || "").trim();
+            const blueprint = {
+              threshold: {
+                name: "threshold",
+                goal: "破庙雨夜，门外异常敲门。重点是建立气氛、角色分歧和是否应门的张力。",
+                guard: "只能建立破庙雨夜和敲门异常，不揭示最终妖身。",
+                allowed: ["narrator", "wukong", "tangseng", "bajie"],
+                first: "narrator",
+                handoff_after: 3,
+                next_phase: "reveal",
+              },
+              reveal: {
+                name: "reveal",
+                goal: "根据用户介入推进开门、隔门试探或观察，只露出黄毛货郎的可疑状态和篮中异样。",
+                guard: "可以出现黄毛、黑腥水、篮子、脚印；不要说他已经是某个大妖，也不要新增幕后势力。",
+                allowed: ["wukong", "narrator", "monster", "bajie", "tangseng"],
+                first: "narrator",
+                handoff_after: 4,
+                next_phase: "probe",
+              },
+              probe: {
+                name: "probe",
+                goal: "悟空试探货郎，妖怪继续装可怜，唐僧担心误伤，八戒怕惹祸，疑点继续累积。",
+                guard: "这一阶段只做试探，不动手定输赢；妖怪仍不承认身份。",
+                allowed: ["wukong", "monster", "tangseng", "bajie", "narrator"],
+                first: "wukong",
+                handoff_after: 4,
+                next_phase: "pressure",
+              },
+              pressure: {
+                name: "pressure",
+                goal: "妖怪反咬或诱骗进庙，悟空发现更多破绽，唐僧与八戒形成分歧，让冲突升级但不变成解谜问答。",
+                guard: "可以让妖怪狡辩或诱骗；不要引入第二只妖怪；不要把场景带出破庙。",
+                allowed: ["monster", "wukong", "tangseng", "bajie", "narrator"],
+                first: "monster",
+                handoff_after: 4,
+                next_phase: "exposure",
+              },
+              exposure: {
+                name: "exposure",
+                goal: "关键破绽出现：黄毛、黑腥水、狼爪影子或脚印暴露，悟空确认货郎不是凡人。",
+                guard: "只确认黄毛狼妖伪装，不扩展到黑熊、貂鼠、神将、京城或其他新主线。",
+                allowed: ["narrator", "wukong", "monster", "tangseng", "bajie"],
+                first: "narrator",
+                handoff_after: 4,
+                next_phase: "clash",
+              },
+              clash: {
+                name: "clash",
+                goal: "冲突进入动作段：悟空逼近，妖怪露怯，货郎伪装开始撑不住，用户可以自然插话改变打法。",
+                guard: "动作只围绕破庙门口和狼妖伪装；不要一棒直接跳到新故事。",
+                allowed: ["wukong", "monster", "narrator", "bajie", "tangseng"],
+                first: "wukong",
+                handoff_after: 4,
+                next_phase: "turning",
+              },
+              turning: {
+                name: "turning",
+                goal: "妖怪露出狼形但还想逃或求饶，唐僧要求不要滥杀，八戒害怕又嘴硬。",
+                guard: "可以出现狼耳、狼爪、黄毛狼妖原形；不要新增同伙或幕后山主。",
+                allowed: ["monster", "tangseng", "wukong", "bajie", "narrator"],
+                first: "monster",
+                handoff_after: 4,
+                next_phase: "resolution",
+              },
+              resolution: {
+                name: "resolution",
+                goal: "收束主冲突：黄毛狼妖被悟空制住后逐走或罚走，交代为何夜雨敲门，唐僧与八戒各自给出反应。",
+                guard: "这是本折收束。只解决黄毛狼妖，不打死狼妖，不再抛新敌人、新法器、新地点。",
+                allowed: ["narrator", "wukong", "monster", "tangseng", "bajie"],
+                first: "wukong",
+                handoff_after: 4,
+                next_phase: "aftermath",
+              },
+              aftermath: {
+                name: "aftermath",
+                goal: "余波：破庙雨声渐小，确认狼妖已被逐走且没有更多危险，天明继续上路，给这一折明确结束感。",
+                guard: "必须确认本折没有更多妖怪或同伙；不要改变狼妖未被打死的结局；只能轻轻提示下一折在远处，不展开。",
+                allowed: ["narrator", "tangseng", "bajie", "wukong"],
+                first: "narrator",
+                handoff_after: 3,
+                next_phase: "epilogue",
+              },
+              epilogue: {
+                name: "epilogue",
+                goal: "主冲突已经结束。旁白进入尾声对话，只回应用户对本折的追问、复盘因果，或用一句话轻轻引下一折。",
+                guard: "尾声禁止新增本折敌人、反转、同伙、法器或新地点剧情。用户问有没有更多妖怪时，说明这一折已经收住。",
+                allowed: ["narrator"],
+                first: "narrator",
+                handoff_after: 1,
+                next_phase: "epilogue",
+              },
+            };
+
+            if (story.awaiting_user && latest) {
+              user.last_choice = latest;
+              story.awaiting_user = false;
+              story.phase = story.next_phase || story.phase || "threshold";
+              story.phase_spoken = [];
+              story.next_phase = "";
+              if (story.phase === "epilogue") {
+                story.completed = true;
+                story.pressure = "主冲突已结束，进入旁白尾声对话。";
+                ending.mode = "epilogue";
+                ending.closed = true;
+              }
+            }
+            const phaseName = blueprint[story.phase] ? story.phase : "threshold";
+            const phase = blueprint[phaseName];
+            blueprintState.current_phase = phase.name;
+            blueprintState.phase_goal = phase.goal;
+            blueprintState.phase_guard = phase.guard;
+            blueprintState.next_phase = phase.next_phase;
+            ending.mode = phase.name === "epilogue" ? "epilogue" : "active_story";
+            const spoken = Array.isArray(story.phase_spoken) ? story.phase_spoken : [];
+            let turnAllowed = phase.allowed.slice();
+            const handoffAfter = Number(phase.handoff_after || 0);
+            const handoffDue = handoffAfter > 0 && spoken.length + 1 >= handoffAfter;
+            if (phase.name === "epilogue") {
+              turnAllowed = ["narrator"];
+            } else if (spoken.length === 0 && phase.first) {
+              turnAllowed = [phase.first];
+            } else if (handoffDue && phase.allowed.indexOf("narrator") >= 0) {
+              turnAllowed = ["narrator"];
+            } else {
+              const unused = phase.allowed.filter(function(speaker) {
+                return spoken.indexOf(speaker) < 0;
+              });
+              if (unused.length > 0) turnAllowed = unused;
+            }
+
+            const phaseContext = {
+              phase: phase.name,
+              goal: phase.goal,
+              guard: phase.guard,
+              allowed_speakers: turnAllowed,
+              blueprint_allowed_speakers: phase.allowed,
+              first_speaker_hint: phase.first,
+              handoff_after: phase.handoff_after,
+              next_phase: phase.next_phase,
+              phase_spoken: spoken,
+              internal_turn_count: Number(board.getVar("internal_turn_count") || 0),
+              last_speaker: String((board.getVar("cast_state") || {}).last_speaker || ""),
+              latest_user_text: latest,
+              blueprint_contract: String(blueprintState.contract || ""),
+              continuity_confirmed: String(continuity.confirmed || ""),
+              continuity_forbidden: String(continuity.forbidden_reveals || ""),
+              ending_mode: String(ending.mode || "active_story"),
+              ending_policy: String(ending.epilogue_policy || ""),
+              story_completed: story.completed === true,
+            };
+            board.setVar("story_phase_context", phaseContext);
+            board.setVar("story_phase_context_text", JSON.stringify(phaseContext, null, 2));
+            board.setVar("story_step_next_phase", phase.next_phase);
+            board.setVar("blueprint_state", blueprintState);
+            board.setVar("continuity_state", continuity);
+            board.setVar("ending_state", ending);
+            board.setVar("story_state", story);
+            board.setVar("user_state", user);
+            board.setVar("blueprint_state_text", JSON.stringify(blueprintState, null, 2));
+            board.setVar("continuity_state_text", JSON.stringify(continuity, null, 2));
+            board.setVar("ending_state_text", JSON.stringify(ending, null, 2));
+            board.setChannel("speaker_select_channel", [{
+              role: "user",
+              parts: [{ type: "text", text: JSON.stringify(phaseContext, null, 2) }],
+            }]);
+
+      - id: select_speaker
+        type: llm
+        publish: false
+        config:
+          model: qwen-flash
+          max_tokens: 128
+          temperature: 0
+          output_key: speaker_select_text
+          messages_channel: speaker_select_channel
+          system_prompt: |
+            You select the next visible speaker for a fixed-cast multi-role story.
+            You do not write story prose. Output exactly one control line.
+
+            Valid speakers are only:
+            narrator, wukong, tangseng, bajie, monster
+
+            Required format:
+            speaker=<narrator|wukong|tangseng|bajie|monster>; await_user=<true|false>; guidance=<short Chinese plot guidance>; reason=<short Chinese reason>
+
+            Rules:
+            - Use only allowed_speakers from the phase context. It is the candidate list for this specific turn.
+            - The blueprint phase goal and guard control the scene; do not invent a new story plan.
+            - guidance is a private one-sentence cue for the selected speaker, grounded in the original blueprint and current phase.
+            - guidance must respect continuity_state, ending_state, and guard.
+            - guidance must not add new major cast, new location, new enemy, or a different plot branch unrelated to the phase goal.
+            - guidance and reason must not contain English semicolons or Chinese semicolons.
+            - Prefer first_speaker_hint when phase_spoken is empty unless latest_user_text strongly addresses another allowed speaker.
+            - Do not repeat last_speaker unless latest_user_text directly addresses that speaker or no other allowed speaker fits.
+            - When phase_spoken is not empty and any allowed speaker has not spoken in this phase, choose an unused allowed speaker.
+            - Do not choose narrator twice in the same phase unless narrator is the only allowed speaker or this is the handoff speaker.
+            - When phase_spoken length plus this next speaker reaches handoff_after, choose narrator if narrator is allowed and set await_user=true.
+            - await_user=true means narrator will naturally pause for the user. Do not create an ask_user node.
+            - If phase is resolution, guide the speaker toward a concrete ending beat, not another escalation.
+            - If phase is aftermath, guide toward "no more danger in this arc" and dawn departure.
+            - If phase is epilogue, speaker must be narrator, await_user must be true, and guidance should answer only from confirmed facts or lightly point outside this arc.
+            - If latest_user_text asks what happens, who appears, or how the scene changes, narrator is usually best.
+            - If latest_user_text talks to or about 悟空/猴/打/砸/开门/金箍棒, wukong may be best.
+            - If latest_user_text talks to or about 唐僧/师父/慈悲/误伤, tangseng may be best.
+            - If latest_user_text talks to or about 八戒/老猪, bajie may be best.
+            - If latest_user_text talks to or about 妖怪/货郎/门外人/求饶/他说什么, monster may be best when monster is allowed.
+
+      - id: shape_story_turn
+        type: script
+        config:
+          source: |
+            const raw = String(board.getVar("speaker_select_text") || "");
+            const ctx = board.getVar("story_phase_context") || {};
+            const allowed = Array.isArray(ctx.allowed_speakers) ? ctx.allowed_speakers : ["narrator"];
+            function field(name, fallback) {
+              const re = new RegExp("(^|[;；\\s])" + name + "\\s*=\\s*([^;；]+)", "i");
+              const m = re.exec(raw);
+              return m ? String(m[2] || "").trim() : fallback;
+            }
+            const requestedSpeaker = field("speaker", ctx.first_speaker_hint || "narrator").toLowerCase();
+            let speaker = requestedSpeaker;
+            let guidance = field("guidance", "按当前蓝图目标自然推进这一小步，不要另起新线。");
+            if (allowed.indexOf(speaker) < 0) {
+              speaker = allowed.indexOf("narrator") >= 0 ? "narrator" : allowed[0] || "narrator";
+              guidance = "按最终发言身份改写这一拍，只推进当前蓝图目标，不沿用被纠正 speaker 的口吻。";
+            }
+            let awaitUser = /await_user\s*=\s*true/i.test(raw);
+            const goal = String(ctx.goal || "推进当前场景的一小步。");
+            const guard = String(ctx.guard || "不要偏离当前蓝图阶段。");
+            const blueprintState = board.getVar("blueprint_state") || {};
+            const continuity = board.getVar("continuity_state") || {};
+            const ending = board.getVar("ending_state") || {};
+            if (String(ctx.phase || "") === "epilogue") {
+              speaker = "narrator";
+              awaitUser = true;
+              guidance = "只回应本折已确认事实，说明黄毛狼妖事件已经收住，不再给破庙这一折新增妖怪或反转";
+            }
+            const spoken = Array.isArray(ctx.phase_spoken) ? ctx.phase_spoken : [];
+            const handoffAfter = Number(ctx.handoff_after || 0);
+            if (handoffAfter > 0 && spoken.length + 1 >= handoffAfter && allowed.indexOf("narrator") >= 0) {
+              speaker = "narrator";
+              awaitUser = true;
+              if (requestedSpeaker !== "narrator") {
+                guidance = "旁白承接刚才的角色动作，推进镜头并自然停在用户可以插话的位置。";
+              }
+            }
+            guidance = guidance.replace(/[。.!！?？]+$/, "");
+            function cleanText(value) {
+              return String(value || "").replace(/[。.!！?？]+$/, "");
+            }
+            const latest = String(board.getVar("latest_user_text") || "");
+            const cleanGoal = cleanText(goal);
+            const cleanGuard = cleanText(guard);
+            const boundary = "阶段目标=" + cleanGoal +
+              "。阶段边界=" + cleanGuard +
+              "。剧情引导=" + guidance +
+              "。连续性事实=" + cleanText(continuity.confirmed) +
+              "。禁止突破=" + cleanText(continuity.forbidden_reveals) +
+              "。结尾策略=" + cleanText(ending.epilogue_policy) +
+              "。当前发言身份=" + speaker +
+              "。只推进当前蓝图一小步，不要固定轮流报幕，不要突破 memory layout 的边界。";
+            board.setVar("planned_speaker", speaker);
+            board.setVar("story_step_name", String(ctx.phase || "scene") + ":" + speaker);
+            board.setVar("story_step_goal", boundary);
+            board.setVar("story_step_guidance", guidance);
+            board.setVar("story_step_await_user", awaitUser);
+
+      - id: route_speaker
+        type: script
+        config:
+          source: |
+            const speaker = String(board.getVar("planned_speaker") || "narrator");
+            const latest = String(board.getVar("latest_user_text") || "");
+            const goal = String(board.getVar("story_step_goal") || "推进当前场景的一小步。");
+            const guidance = String(board.getVar("story_step_guidance") || "");
+            board.setVar("next_speaker", speaker);
+            board.setChannel("speech_channel", [{
+              role: "user",
+              parts: [{
+                type: "text",
+                text: "speaker=" + speaker + "\nblueprint_step=" + String(board.getVar("story_step_name") || "") + "\nstory_brief=" + goal + "\nguidance=" + guidance + "\nlatest_user_text=" + latest,
+              }],
+            }]);
+
+      - id: narrator
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 180
+          output_key: tmp_speech_text
+          messages_channel: speech_channel
+          system_prompt: |
+            你是旁白，只负责环境、动作、镜头和自然停顿，不替角色说台词。
+            这是语音互动故事，只输出自然中文正文，不要输出角色标签、Markdown、列表、舞台格式、括号动作或内部字段。
+            每次只推进一个小情节，最多两段短段落。
+            如果蓝图目标要求把镜头交给用户，要自然停在一个让用户想接话的位置，不要说“请用户输入”，不要列选项。
+            如果 ending_state.mode 是 epilogue，只复盘本折已确认事实；不要新增妖怪、同伙、法器、幕后主使或新地点剧情。
+
+            蓝图目标：${board.story_step_goal}
+            当前故事状态：${board.story_state_text}
+            固定角色状态：${board.cast_state_text}
+            用户状态：${board.user_state_text}
+
+      - id: role_wukong
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          output_key: tmp_speech_text
+          messages_channel: speech_channel
+          system_prompt: |
+            你只扮演孙悟空。只说孙悟空会说出口的话，不替旁白、唐僧、八戒或妖怪发言。
+            语气机敏、直接、警觉，有行动感。只输出孙悟空口头说出来的话；不要输出角色标签、Markdown、舞台说明、括号动作或内部字段，不要使用任何括号。
+            回复一到三句自然中文，不要重复同一句威胁。
+
+            蓝图目标：${board.story_step_goal}
+            当前故事状态：${board.story_state_text}
+            固定角色状态：${board.cast_state_text}
+            用户状态：${board.user_state_text}
+
+      - id: role_tangseng
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          output_key: tmp_speech_text
+          messages_channel: speech_channel
+          system_prompt: |
+            你只扮演唐僧。只说唐僧会说出口的话，不替旁白、悟空、八戒或妖怪发言。
+            语气克制、慈悲、谨慎。只输出唐僧口头说出来的话；不要输出角色标签、Markdown、舞台说明、括号动作或内部字段，不要使用任何括号。
+            回复一到三句自然中文。
+
+            蓝图目标：${board.story_step_goal}
+            当前故事状态：${board.story_state_text}
+            固定角色状态：${board.cast_state_text}
+            用户状态：${board.user_state_text}
+
+      - id: role_bajie
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          output_key: tmp_speech_text
+          messages_channel: speech_channel
+          system_prompt: |
+            你只扮演猪八戒。只说猪八戒会说出口的话，不替旁白、悟空、唐僧或妖怪发言。
+            语气有点怕麻烦、嘴碎、但不恶意。只输出猪八戒口头说出来的话；不要输出角色标签、Markdown、舞台说明、括号动作或内部字段，不要使用任何括号。
+            回复一到三句自然中文。
+
+            蓝图目标：${board.story_step_goal}
+            当前故事状态：${board.story_state_text}
+            固定角色状态：${board.cast_state_text}
+            用户状态：${board.user_state_text}
+
+      - id: role_monster
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 128
+          output_key: tmp_speech_text
+          messages_channel: speech_channel
+          system_prompt: |
+            你只扮演门外伪装成人的妖怪。只说这个妖怪会说出口的话，不替旁白或取经人发言。
+            语气表面虚弱可怜，但话里带一点不自然。不要直接承认自己是妖怪。只输出妖怪口头说出来的话，只使用中文，不要输出英文。不要输出角色标签、Markdown、舞台说明、括号动作或内部字段，不要使用任何括号。
+            回复一到三句自然中文。
+
+            蓝图目标：${board.story_step_goal}
+            当前故事状态：${board.story_state_text}
+            固定角色状态：${board.cast_state_text}
+            用户状态：${board.user_state_text}
+
+      - id: update_state
+        type: script
+        config:
+          source: |
+            const speaker = String(board.getVar("next_speaker") || "narrator");
+            const speech = String(board.getVar("tmp_speech_text") || board.getVar("response") || "").trim();
+            const story = board.getVar("story_state") || {};
+            const blueprintState = board.getVar("blueprint_state") || {};
+            const cast = board.getVar("cast_state") || {};
+            const user = board.getVar("user_state") || {};
+            const continuity = board.getVar("continuity_state") || {};
+            const ending = board.getVar("ending_state") || {};
+            const shortSpeech = speech.length > 80 ? speech.slice(0, 80) + "..." : speech;
+            const nextPhase = String(board.getVar("story_step_next_phase") || "");
+            const awaitUser = board.getVar("story_step_await_user") === true;
+
+            story.awaiting_user = awaitUser;
+            story.next_phase = awaitUser ? nextPhase : story.next_phase || "";
+            story.phase_spoken = Array.isArray(story.phase_spoken) ? story.phase_spoken : [];
+            story.phase_spoken = story.phase_spoken.concat([speaker]).slice(-8);
+            story.last_event = shortSpeech || story.last_event || "继续场景。";
+            if (String(story.phase || "") === "epilogue") {
+              story.completed = true;
+              story.epilogue_turns = Number(story.epilogue_turns || 0) + 1;
+              ending.mode = "epilogue";
+              ending.closed = true;
+              ending.closure = "黄毛狼妖这一折已经结束，只能复盘本折因果或轻提示下一折。";
+            }
+            story.pressure = story.completed === true ? "主冲突已结束，旁白可以继续和用户对话或引出下一折。" :
+              awaitUser ? "故事停在用户自然插话的位置。" :
+              speaker === "monster" ? "门外来者还在狡辩，身份越来越可疑。" :
+              speaker === "wukong" ? "悟空正在把怀疑变成行动。" :
+              "破庙雨夜的疑点继续加深。";
+            blueprintState.current_phase = story.phase || blueprintState.current_phase || "";
+            blueprintState.next_phase = nextPhase || blueprintState.next_phase || "";
+            if (story.completed === true) {
+              blueprintState.allowed_scope = "尾声只能讨论破庙雨夜黄毛狼妖这一折的已确认事实，或一句话带到下一折。";
+              blueprintState.forbidden_scope = "不要继续给破庙这一折新增妖怪、同伙、法器、幕后主使、京城或新地点剧情。";
+              continuity.open_threads = "本折主冲突已收束；用户若追问，只回答已确认因果。";
+            } else if (nextPhase === "epilogue") {
+              ending.closure = "下一次用户接话后进入尾声，确认本折没有更多同伙或新危险。";
+            }
+            cast.last_speaker = speaker;
+            if (speaker === "monster") {
+              cast.mood = "妖怪继续伪装，悟空更警觉，唐僧犹豫，八戒害怕。";
+            } else if (speaker === "wukong") {
+              cast.mood = "悟空警觉上前，唐僧提醒谨慎，八戒想躲远一点。";
+            } else if (story.completed === true) {
+              cast.mood = "主冲突已结束，旁白接住用户的尾声对话。";
+            } else if (awaitUser) {
+              cast.mood = "众人等用户自然插话或判断下一步。";
+            }
+
+            const count = Number(board.getVar("internal_turn_count") || 0) + 1;
+            board.setVar("internal_turn_count", count);
+            board.setVar("story_state", story);
+            board.setVar("blueprint_state", blueprintState);
+            board.setVar("cast_state", cast);
+            board.setVar("user_state", user);
+            board.setVar("continuity_state", continuity);
+            board.setVar("ending_state", ending);
+            board.setVar("story_state_text", JSON.stringify(story, null, 2));
+            board.setVar("blueprint_state_text", JSON.stringify(blueprintState, null, 2));
+            board.setVar("cast_state_text", JSON.stringify(cast, null, 2));
+            board.setVar("user_state_text", JSON.stringify(user, null, 2));
+            board.setVar("continuity_state_text", JSON.stringify(continuity, null, 2));
+            board.setVar("ending_state_text", JSON.stringify(ending, null, 2));
+            board.setVar("tmp_story_state_line", "story_state: scene=" + (story.scene || "") + "; phase=" + (story.phase || "") + "; awaiting_user=" + (story.awaiting_user === true) + "; pressure=" + (story.pressure || "") + "; last_event=" + (story.last_event || ""));
+            board.setVar("tmp_blueprint_state_line", "blueprint_state: arc=" + (blueprintState.arc || "") + "; current_phase=" + (blueprintState.current_phase || "") + "; next_phase=" + (blueprintState.next_phase || "") + "; allowed_scope=" + (blueprintState.allowed_scope || "") + "; forbidden_scope=" + (blueprintState.forbidden_scope || ""));
+            board.setVar("tmp_cast_state_line", "cast_state: present=" + (cast.present || "") + "; last_speaker=" + (cast.last_speaker || "") + "; mood=" + (cast.mood || ""));
+            board.setVar("tmp_user_state_line", "user_state: last_input=" + (user.last_input || "") + "; last_choice=" + (user.last_choice || "") + "; preference=" + (user.preference || ""));
+            board.setVar("tmp_continuity_state_line", "continuity_state: confirmed=" + (continuity.confirmed || "") + "; open_threads=" + (continuity.open_threads || "") + "; forbidden_reveals=" + (continuity.forbidden_reveals || ""));
+            board.setVar("tmp_ending_state_line", "ending_state: mode=" + (ending.mode || "") + "; closed=" + (ending.closed === true) + "; closure=" + (ending.closure || "") + "; epilogue_policy=" + (ending.epilogue_policy || ""));
+
+      - id: continue_check
+        type: script
+        config:
+          source: |
+            const count = Number(board.getVar("internal_turn_count") || 0);
+            const story = board.getVar("story_state") || {};
+            const shouldContinue = story.awaiting_user !== true && count < 4;
+            board.setVar("continue_story", shouldContinue);
+
+    edges:
+      - from: start
+        to: select_story_step
+      - from: select_story_step
+        to: select_speaker
+      - from: select_speaker
+        to: shape_story_turn
+      - from: shape_story_turn
+        to: route_speaker
+      - from: route_speaker
+        to: narrator
+        condition: next_speaker == "narrator"
+      - from: route_speaker
+        to: role_wukong
+        condition: next_speaker == "wukong"
+      - from: route_speaker
+        to: role_tangseng
+        condition: next_speaker == "tangseng"
+      - from: route_speaker
+        to: role_bajie
+        condition: next_speaker == "bajie"
+      - from: route_speaker
+        to: role_monster
+        condition: next_speaker == "monster"
+      - from: narrator
+        to: update_state
+      - from: role_wukong
+        to: update_state
+      - from: role_tangseng
+        to: update_state
+      - from: role_bajie
+        to: update_state
+      - from: role_monster
+        to: update_state
+      - from: update_state
+        to: continue_check
+      - from: continue_check
+        to: select_story_step
+        condition: continue_story == true
+      - from: continue_check
+        to: __end__
+        condition: continue_story == false

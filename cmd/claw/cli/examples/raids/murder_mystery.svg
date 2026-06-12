@@ -1,0 +1,106 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">murder_mystery DAG and memory layout</title>
+  <desc id="desc">The agent DAG shows configured graph nodes. The memory layout is separate and not connected to DAG edges.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .tool { fill: #f3ecff; stroke: #7c3aed; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .label { font: 700 13px Arial, sans-serif; fill: #111827; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .edge-label { font: 12px Arial, sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="760"/>
+  <text class="title" x="40" y="48">murder_mystery.svg</text>
+  <text class="small" x="40" y="72">Agent DAG and memory layout are shown as separate areas.</text>
+
+  <rect class="panel" x="48" y="104" width="820" height="620"/>
+  <text class="panel-title" x="76" y="140">agent DAG</text>
+  <text class="small" x="76" y="162">Only graph nodes are shown here.</text>
+
+  <rect class="node script" x="98" y="196" width="178" height="66"/>
+  <text class="label" x="136" y="225">load_case_state</text>
+  <text class="tiny" x="124" y="246">read workspace state</text>
+
+  <rect class="node llm" x="338" y="196" width="184" height="66"/>
+  <text class="label" x="372" y="225">format_player_action</text>
+  <text class="tiny" x="366" y="246">classify latest turn</text>
+
+  <rect class="node script" x="584" y="196" width="178" height="66"/>
+  <text class="label" x="623" y="225">apply_case_action</text>
+  <text class="tiny" x="615" y="246">update progress state</text>
+
+  <rect class="node script" x="584" y="326" width="178" height="66"/>
+  <text class="label" x="628" y="355">route_case</text>
+  <text class="tiny" x="618" y="376">choose next branch</text>
+
+  <rect class="node script" x="338" y="326" width="184" height="66"/>
+  <text class="label" x="350" y="355">prepare_game_master_messages</text>
+  <text class="tiny" x="370" y="376">set clean channel</text>
+
+  <rect class="node llm" x="98" y="326" width="178" height="66"/>
+  <text class="label" x="122" y="355">generate_game_master</text>
+  <text class="tiny" x="126" y="376">investigate or finale</text>
+
+  <rect class="node tool" x="98" y="456" width="178" height="66"/>
+  <text class="label" x="132" y="485">call_case_solved</text>
+  <text class="tiny" x="124" y="506">emit case_solved tool</text>
+
+  <rect class="node script" x="338" y="456" width="184" height="66"/>
+  <text class="label" x="376" y="485">write_case_audit</text>
+  <text class="tiny" x="366" y="506">mirror state to memory</text>
+
+  <rect class="node llm" x="338" y="586" width="184" height="66"/>
+  <text class="label" x="386" y="615">solved_chat</text>
+  <text class="tiny" x="372" y="636">post-solved chat</text>
+
+  <rect class="node end" x="584" y="586" width="128" height="66"/>
+  <text class="label" x="625" y="615">__end__</text>
+  <text class="tiny" x="616" y="636">turn complete</text>
+
+  <path class="edge" d="M 276 229 L 336 229"/>
+  <text class="edge-label" x="286" y="216">game_master</text>
+  <path class="edge" d="M 522 229 L 582 229"/>
+  <path class="edge" d="M 673 262 L 673 324"/>
+  <path class="edge" d="M 584 359 L 524 359"/>
+  <text class="edge-label" x="540" y="346">game_master</text>
+  <path class="edge" d="M 338 359 L 278 359"/>
+  <path class="edge" d="M 187 392 L 187 454"/>
+  <text class="edge-label" x="198" y="429">solved</text>
+  <path class="edge" d="M 276 359 C 300 424 300 489 336 489"/>
+  <text class="edge-label" x="276" y="438">not solved</text>
+  <path class="edge" d="M 276 489 L 336 489"/>
+  <path class="edge" d="M 522 489 C 590 510 638 544 648 584"/>
+  <path class="edge" d="M 522 619 L 582 619"/>
+  <path class="edge" d="M 673 392 C 680 500 594 612 524 619"/>
+  <text class="edge-label" x="650" y="506">solved_chat</text>
+  <path class="edge" d="M 187 262 C 188 498 278 620 336 619"/>
+  <text class="edge-label" x="116" y="552">already solved</text>
+
+  <rect class="panel" x="920" y="104" width="332" height="620"/>
+  <text class="panel-title" x="948" y="140">memory layout</text>
+  <text class="small" x="948" y="162">Audit lanes mirror deterministic workspace state.</text>
+
+  <rect class="node memory" x="966" y="262" width="240" height="86"/>
+  <text class="label" x="1034" y="294">case_state</text>
+  <text class="tiny" x="992" y="316">status and next route audit</text>
+
+  <rect class="node memory" x="966" y="430" width="240" height="86"/>
+  <text class="label" x="1026" y="462">progress_badges</text>
+  <text class="tiny" x="994" y="484">found clues and missing classes</text>
+</svg>

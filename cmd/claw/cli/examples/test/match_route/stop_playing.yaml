@@ -1,0 +1,5 @@
+name: match_route_stop_playing
+description: Stop request should route to function_stop.
+raid: match_route
+turns:
+  - 停止播放
