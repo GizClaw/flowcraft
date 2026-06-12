@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
+	"github.com/GizClaw/flowcraft/memory/views"
 	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
 	"github.com/GizClaw/flowcraft/memory/views/fact"
 	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
@@ -67,13 +68,14 @@ func (r *Executor) PackContext(ctx context.Context, req PackContextRequest) (*Co
 }
 
 type packContextSearches struct {
-	SummaryHits        []SummaryNodeSearchHit
-	DocumentHits       []DocumentChunkSearchHit
-	ObservationHits    []ObservationSearchHit
-	FactHits           []FactSearchHit
-	FactGraphHits      []FactGraphSearchHit
-	EntityProfileHits  []EntityProfileSearchHit
-	EntityTimelineHits []EntityTimelineSearchHit
+	SummaryHits            []SummaryNodeSearchHit
+	DocumentHits           []DocumentChunkSearchHit
+	ObservationHits        []ObservationSearchHit
+	FactHits               []FactSearchHit
+	FactGraphHits          []FactGraphSearchHit
+	FactGraphExpansionHits []FactGraphSearchHit
+	EntityProfileHits      []EntityProfileSearchHit
+	EntityTimelineHits     []EntityTimelineSearchHit
 }
 
 type packContextSearchTask func(context.Context) packContextSearchResult
@@ -138,11 +140,13 @@ func (r *Executor) runPackContextSearches(ctx context.Context, req PackContextRe
 			result.apply(&searches)
 		}
 	}
+	searches.FactGraphHits = mergeFactGraphSearchHits(searches.FactGraphHits, searches.FactGraphExpansionHits)
+	searches.FactGraphExpansionHits = nil
 	return searches, nil
 }
 
 func (r *Executor) packContextSearchTasks(req PackContextRequest) []packContextSearchTask {
-	tasks := make([]packContextSearchTask, 0, 7)
+	tasks := make([]packContextSearchTask, 0, 8)
 	if req.SummarySearch != nil {
 		search := clonePackContextSearchRequest(req.SummarySearch)
 		namespace := req.SummaryNamespace
@@ -205,6 +209,21 @@ func (r *Executor) packContextSearchTasks(req PackContextRequest) []packContextS
 			}
 			return packContextSearchResult{apply: func(out *packContextSearches) {
 				out.FactGraphHits = resp.Hits
+			}}
+		})
+	}
+	if req.FactGraphExpansion != nil {
+		expansion := cloneFactGraphExpansionRequest(*req.FactGraphExpansion)
+		if expansion.Scope.IsZero() {
+			expansion.Scope = contextPackScope(req)
+		}
+		tasks = append(tasks, func(ctx context.Context) packContextSearchResult {
+			resp, err := r.expandFactGraph(ctx, expansion)
+			if err != nil {
+				return packContextSearchResult{err: err}
+			}
+			return packContextSearchResult{apply: func(out *packContextSearches) {
+				out.FactGraphExpansionHits = resp.Hits
 			}}
 		})
 	}
@@ -360,6 +379,12 @@ func clonePackContextSearchRequest(in *retrieval.SearchRequest) retrieval.Search
 	return out
 }
 
+func cloneFactGraphExpansionRequest(in FactGraphExpansionRequest) FactGraphExpansionRequest {
+	out := in
+	out.Search = clonePackContextSearchRequest(&in.Search)
+	return out
+}
+
 func cloneRetrievalFilter(in retrieval.Filter) retrieval.Filter {
 	out := in
 	out.And = cloneRetrievalFilters(in.And)
@@ -495,4 +520,94 @@ func renderTriple(subject, predicate, object string) string {
 		strings.TrimSpace(object),
 	}
 	return strings.TrimSpace(strings.Join(parts, " "))
+}
+
+func mergeFactGraphSearchHits(left, right []FactGraphSearchHit) []FactGraphSearchHit {
+	if len(left) == 0 {
+		return dedupeFactGraphSearchHits(right)
+	}
+	if len(right) == 0 {
+		return dedupeFactGraphSearchHits(left)
+	}
+	out := make([]FactGraphSearchHit, 0, len(left)+len(right))
+	seen := map[string]bool{}
+	appendHit := func(hit FactGraphSearchHit) {
+		key := factGraphSearchHitKey(hit)
+		if key == "" {
+			out = append(out, hit)
+			return
+		}
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, hit)
+	}
+	for _, hit := range left {
+		appendHit(hit)
+	}
+	for _, hit := range right {
+		appendHit(hit)
+	}
+	return out
+}
+
+func dedupeFactGraphSearchHits(in []FactGraphSearchHit) []FactGraphSearchHit {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]FactGraphSearchHit, 0, len(in))
+	seen := map[string]bool{}
+	for _, hit := range in {
+		key := factGraphSearchHitKey(hit)
+		if key != "" {
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, hit)
+	}
+	return out
+}
+
+func factGraphSearchHitKey(hit FactGraphSearchHit) string {
+	switch {
+	case hit.Node != nil:
+		return "node:" + string(hit.Node.ID)
+	case hit.Edge != nil:
+		return "edge:" + string(hit.Edge.ID)
+	case strings.TrimSpace(hit.Retrieval.Doc.ID) != "":
+		return "retrieval:" + hit.Retrieval.Doc.ID
+	default:
+		return ""
+	}
+}
+
+func factGraphScopeHardMatches(requested, record views.Scope) bool {
+	if requested.IsZero() {
+		return true
+	}
+	return strings.TrimSpace(record.RuntimeID) == strings.TrimSpace(requested.RuntimeID) &&
+		strings.TrimSpace(record.UserID) == strings.TrimSpace(requested.UserID)
+}
+
+func factGraphScopeSoftMatches(requested, record views.Scope) bool {
+	if requested.IsZero() {
+		return true
+	}
+	return softScopeFieldMatches(requested.AgentID, record.AgentID) &&
+		softScopeFieldMatches(requested.ConversationID, record.ConversationID) &&
+		softScopeFieldMatches(requested.DatasetID, record.DatasetID) &&
+		softScopeFieldMatches(requested.EntityID, record.EntityID)
+}
+
+func factGraphScopeMatches(requested, record views.Scope) bool {
+	return factGraphScopeHardMatches(requested, record) && factGraphScopeSoftMatches(requested, record)
+}
+
+func softScopeFieldMatches(requested, record string) bool {
+	requested = strings.TrimSpace(requested)
+	record = strings.TrimSpace(record)
+	return requested == "" || record == "" || requested == record
 }

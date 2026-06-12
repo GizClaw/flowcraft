@@ -982,7 +982,7 @@ func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (in
 			}); err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}
-		case readStageRetrieveFactGraph, readStageExpandFactGraph:
+		case readStageRetrieveFactGraph:
 			namespace, err := r.scopedReadNamespace(CapabilityFactGraph, scope)
 			if err != nil {
 				return internalexecutor.PackContextRequest{}, err
@@ -991,6 +991,21 @@ func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (in
 				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
 				out.FactGraphSearch = search
 				out.FactGraphNamespace = namespace
+			}); err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+		case readStageExpandFactGraph:
+			namespace, err := r.scopedReadNamespace(CapabilityFactGraph, scope)
+			if err != nil {
+				return internalexecutor.PackContextRequest{}, err
+			}
+			if err := r.populateSearch(stage, CapabilityFactGraph, &searchInput, func(search *retrieval.SearchRequest) {
+				search.Filter = mergeFilters(search.Filter, semanticScopeFilter(scope))
+				out.FactGraphExpansion = &internalexecutor.FactGraphExpansionRequest{
+					Scope:     scope,
+					Search:    *search,
+					Namespace: namespace,
+				}
 			}); err != nil {
 				return internalexecutor.PackContextRequest{}, err
 			}

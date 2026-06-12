@@ -19,6 +19,12 @@ import (
 
 const errPrefix = "memory/internal/executor"
 
+const (
+	defaultFactGraphExpansionDepth    = 1
+	defaultFactGraphExpansionMaxNodes = 25
+	defaultFactGraphExpansionMaxEdges = 50
+)
+
 // Deps contains the canonical stores, semantic view stores, retrieval index,
 // and capability services used to construct one memory executor.
 type Deps struct {
@@ -119,6 +125,22 @@ type FactGraphSearchResponse struct {
 	Took time.Duration
 }
 
+// FactGraphExpansionOptions bounds read-time graph expansion from projection seeds.
+type FactGraphExpansionOptions struct {
+	Depth    int
+	MaxNodes int
+	MaxEdges int
+}
+
+// FactGraphExpansionRequest searches projection seeds, then hydrates a bounded
+// depth-1 graph neighborhood from the fact graph store.
+type FactGraphExpansionRequest struct {
+	Scope     views.Scope
+	Search    retrieval.SearchRequest
+	Namespace string
+	Options   FactGraphExpansionOptions
+}
+
 // EntityBuildInput carries fact and graph evidence for entity profile/timeline builders.
 type EntityBuildInput struct {
 	Scope views.Scope
@@ -149,6 +171,7 @@ type PackContextRequest struct {
 	ObservationSearch    *retrieval.SearchRequest
 	FactSearch           *retrieval.SearchRequest
 	FactGraphSearch      *retrieval.SearchRequest
+	FactGraphExpansion   *FactGraphExpansionRequest
 	EntityProfileSearch  *retrieval.SearchRequest
 	EntityTimelineSearch *retrieval.SearchRequest
 

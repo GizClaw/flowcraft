@@ -546,6 +546,215 @@ func (r *Executor) searchFactGraph(ctx context.Context, req retrieval.SearchRequ
 	return out, nil
 }
 
+func (r *Executor) expandFactGraph(ctx context.Context, req FactGraphExpansionRequest) (*FactGraphSearchResponse, error) {
+	options := normalizeFactGraphExpansionOptions(req.Options)
+	if options.Depth <= 0 {
+		return &FactGraphSearchResponse{}, nil
+	}
+
+	seeds, err := r.searchFactGraph(ctx, req.Search, req.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	if seeds == nil || len(seeds.Hits) == 0 {
+		return &FactGraphSearchResponse{}, nil
+	}
+
+	active := fact.FactActive
+	state := &factGraphExpansionState{
+		scope:    req.Scope,
+		maxNodes: options.MaxNodes,
+		maxEdges: options.MaxEdges,
+		seen:     map[string]bool{},
+	}
+	for _, seed := range seeds.Hits {
+		switch {
+		case seed.Node != nil:
+			if !factGraphScopeMatches(req.Scope, seed.Node.Scope) {
+				continue
+			}
+			state.add(seed)
+			if state.edgesFull() {
+				continue
+			}
+			outgoing, err := r.factGraph.ListEdges(ctx, fact.EdgeListOptions{
+				From:   seed.Node.ID,
+				Status: &active,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := r.expandFactGraphNodeEdges(ctx, state, seed.Node.ID, outgoing, true); err != nil {
+				return nil, err
+			}
+			if state.edgesFull() {
+				continue
+			}
+			incoming, err := r.factGraph.ListEdges(ctx, fact.EdgeListOptions{
+				To:     seed.Node.ID,
+				Status: &active,
+			})
+			if err != nil {
+				return nil, err
+			}
+			if err := r.expandFactGraphNodeEdges(ctx, state, seed.Node.ID, incoming, false); err != nil {
+				return nil, err
+			}
+		case seed.Edge != nil:
+			edge := *seed.Edge
+			if !factGraphScopeMatches(req.Scope, edge.Scope) {
+				continue
+			}
+			if !isActiveFactGraphEdge(edge) {
+				continue
+			}
+			state.add(seed)
+			if _, err := r.addFactGraphEndpoint(ctx, state, edge.From, FactGraphSearchHit{
+				Expanded:   true,
+				Depth:      1,
+				SeedEdgeID: edge.ID,
+			}); err != nil {
+				return nil, err
+			}
+			if _, err := r.addFactGraphEndpoint(ctx, state, edge.To, FactGraphSearchHit{
+				Expanded:   true,
+				Depth:      1,
+				SeedEdgeID: edge.ID,
+			}); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return &FactGraphSearchResponse{Hits: state.hits, Took: seeds.Took}, nil
+}
+
+func (r *Executor) expandFactGraphNodeEdges(ctx context.Context, state *factGraphExpansionState, seedID fact.NodeID, edges []fact.Edge, outgoing bool) error {
+	for _, edge := range edges {
+		if state.edgesFull() {
+			return nil
+		}
+		if !isActiveFactGraphEdge(edge) || !factGraphScopeMatches(state.scope, edge.Scope) {
+			continue
+		}
+		otherID := edge.From
+		if outgoing {
+			otherID = edge.To
+		}
+		if state.nodesFull() && !state.seen["node:"+string(otherID)] {
+			continue
+		}
+		otherNode, ok, err := r.getScopedFactGraphNode(ctx, state.scope, otherID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		state.add(FactGraphSearchHit{
+			Edge:       &edge,
+			Expanded:   true,
+			Depth:      1,
+			SeedNodeID: seedID,
+		})
+		state.add(FactGraphSearchHit{
+			Node:       &otherNode,
+			Expanded:   true,
+			Depth:      1,
+			SeedNodeID: seedID,
+		})
+	}
+	return nil
+}
+
+func (r *Executor) addFactGraphEndpoint(ctx context.Context, state *factGraphExpansionState, nodeID fact.NodeID, hit FactGraphSearchHit) (bool, error) {
+	if state.nodesFull() {
+		return false, nil
+	}
+	node, ok, err := r.getScopedFactGraphNode(ctx, state.scope, nodeID)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, nil
+	}
+	hit.Node = &node
+	state.add(hit)
+	return true, nil
+}
+
+func (r *Executor) getScopedFactGraphNode(ctx context.Context, scope views.Scope, nodeID fact.NodeID) (fact.Node, bool, error) {
+	node, ok, err := r.factGraph.GetNode(ctx, nodeID)
+	if err != nil {
+		return fact.Node{}, false, err
+	}
+	if !ok || !factGraphScopeMatches(scope, node.Scope) {
+		return fact.Node{}, false, nil
+	}
+	return node, true, nil
+}
+
+type factGraphExpansionState struct {
+	scope    views.Scope
+	maxNodes int
+	maxEdges int
+	nodes    int
+	edges    int
+	seen     map[string]bool
+	hits     []FactGraphSearchHit
+}
+
+func (s *factGraphExpansionState) add(hit FactGraphSearchHit) {
+	key := factGraphSearchHitKey(hit)
+	if key != "" {
+		if s.seen[key] {
+			return
+		}
+		if hit.Node != nil && s.nodesFull() {
+			return
+		}
+		if hit.Edge != nil && s.edgesFull() {
+			return
+		}
+		s.seen[key] = true
+	}
+	if hit.Node != nil {
+		s.nodes++
+	}
+	if hit.Edge != nil {
+		s.edges++
+	}
+	s.hits = append(s.hits, hit)
+}
+
+func (s *factGraphExpansionState) nodesFull() bool {
+	return s.maxNodes > 0 && s.nodes >= s.maxNodes
+}
+
+func (s *factGraphExpansionState) edgesFull() bool {
+	return s.maxEdges > 0 && s.edges >= s.maxEdges
+}
+
+func normalizeFactGraphExpansionOptions(in FactGraphExpansionOptions) FactGraphExpansionOptions {
+	out := in
+	if out.Depth <= 0 {
+		out.Depth = defaultFactGraphExpansionDepth
+	}
+	if out.Depth > defaultFactGraphExpansionDepth {
+		out.Depth = defaultFactGraphExpansionDepth
+	}
+	if out.MaxNodes <= 0 {
+		out.MaxNodes = defaultFactGraphExpansionMaxNodes
+	}
+	if out.MaxEdges <= 0 {
+		out.MaxEdges = defaultFactGraphExpansionMaxEdges
+	}
+	return out
+}
+
+func isActiveFactGraphEdge(edge fact.Edge) bool {
+	return edge.Status == fact.FactActive
+}
+
 // BuildEntityProfiles derives profile records from fact/graph evidence, stores
 // them, and projects them when an entity profile projection is configured.
 func (r *Executor) BuildEntityProfiles(ctx context.Context, input EntityBuildInput) ([]viewentity.ProfileRecord, error) {

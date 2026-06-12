@@ -136,9 +136,13 @@ type FactSearchHit struct {
 
 // FactGraphSearchHit pairs a retrieval hit with either a graph node or edge.
 type FactGraphSearchHit struct {
-	Retrieval retrieval.Hit
-	Node      *viewfact.Node
-	Edge      *viewfact.Edge
+	Retrieval  retrieval.Hit
+	Node       *viewfact.Node
+	Edge       *viewfact.Edge
+	Expanded   bool
+	Depth      int
+	SeedNodeID viewfact.NodeID
+	SeedEdgeID viewfact.EdgeID
 }
 
 // EntityProfileSearchHit pairs a retrieval hit with its semantic entity profile.

@@ -53,6 +53,15 @@ func contextPackQuery(req PackContextRequest) string {
 		req.ObservationSearch,
 		req.FactSearch,
 		req.FactGraphSearch,
+	} {
+		if search != nil && strings.TrimSpace(search.QueryText) != "" {
+			return search.QueryText
+		}
+	}
+	if req.FactGraphExpansion != nil && strings.TrimSpace(req.FactGraphExpansion.Search.QueryText) != "" {
+		return req.FactGraphExpansion.Search.QueryText
+	}
+	for _, search := range []*retrieval.SearchRequest{
 		req.EntityProfileSearch,
 		req.EntityTimelineSearch,
 	} {
@@ -207,6 +216,7 @@ func cloneFactGraphSearchHits(in []FactGraphSearchHit) []FactGraphSearchHit {
 	}
 	out := make([]FactGraphSearchHit, len(in))
 	for i, hit := range in {
+		out[i] = hit
 		out[i].Retrieval = cloneRetrievalHit(hit.Retrieval)
 		if hit.Node != nil {
 			node := cloneFactGraphNode(*hit.Node)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
+	"github.com/GizClaw/flowcraft/memory/internal/projectors"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	retrievalworkspace "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
@@ -969,6 +970,136 @@ func TestPackContextIncludesRecentSummaryDocumentObservationFactAndGraphItems(t 
 	}
 }
 
+func TestPackContextFactGraphExpansionAddsScopedActiveNeighbors(t *testing.T) {
+	ctx := context.Background()
+	assembly := compileAssembly(
+		t,
+		[]compiler.SourceSpec{{Kind: compiler.SourceMessageLog, Required: true}},
+		[]compiler.CapabilitySpec{
+			{Capability: compiler.CapabilityRecentWindow, Required: true},
+			{Capability: compiler.CapabilityObservationLedger, Required: true},
+			{Capability: compiler.CapabilityFactLedger, Required: true},
+			{Capability: compiler.CapabilityFactGraph, Required: true},
+		},
+		[]compiler.ProjectionRequest{{Capability: compiler.CapabilityFactGraph, Namespace: "fact_graph", Required: true}},
+	)
+
+	scope := testScope("conv-expand")
+	seedID := fact.NodeID("node-seed")
+	seedHit := retrieval.Hit{
+		Doc: retrieval.Doc{
+			ID:      "fact_node:node-seed",
+			Content: "Ada",
+			Metadata: map[string]any{
+				projectors.MetadataRecordTypeKey: projectors.RecordTypeFactNode,
+				projectors.MetadataNodeIDKey:     string(seedID),
+			},
+		},
+		Score: 1,
+	}
+	index := &staticSearchIndex{hits: []retrieval.Hit{seedHit}}
+	packer := &fakeContextPacker{}
+	deps := newExecutorDeps(t, assembly)
+	deps.Index = index
+	deps.ObservationExtractor = &fakeObservationExtractor{}
+	deps.FactReconciler = &fakeFactReconciler{}
+	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
+	deps.ContextPacker = packer
+	rt, err := New(deps)
+	if err != nil {
+		t.Fatalf("New(fact graph expansion runtime) error = %v", err)
+	}
+
+	seedNode := runtimeGraphNode(seedID, "Ada", scope)
+	teaNode := runtimeGraphNode("node-tea", "Tea", scope)
+	projectNode := runtimeGraphNode("node-project", "Project", scope)
+	inactiveNode := runtimeGraphNode("node-inactive", "Inactive", scope)
+	otherScope := scope
+	otherScope.RuntimeID = "runtime-other"
+	otherNode := runtimeGraphNode("node-other", "Other", otherScope)
+	for _, node := range []fact.Node{seedNode, teaNode, projectNode, inactiveNode, otherNode} {
+		if _, err := deps.FactGraphStore.PutNode(ctx, node); err != nil {
+			t.Fatalf("PutNode(%q) error = %v", node.ID, err)
+		}
+	}
+	for _, edge := range []fact.Edge{
+		runtimeGraphEdge("edge-out", scope, seedID, teaNode.ID, "likes", fact.FactActive),
+		runtimeGraphEdge("edge-in", scope, projectNode.ID, seedID, "mentions", fact.FactActive),
+		runtimeGraphEdge("edge-inactive", scope, seedID, inactiveNode.ID, "ignores", fact.FactRetracted),
+		runtimeGraphEdge("edge-cross", otherScope, seedID, otherNode.ID, "leaks", fact.FactActive),
+	} {
+		if _, err := deps.FactGraphStore.PutEdge(ctx, edge); err != nil {
+			t.Fatalf("PutEdge(%q) error = %v", edge.ID, err)
+		}
+	}
+
+	packer.fn = func(input ContextPackInput) (ContextPackOutput, error) {
+		if len(input.FactGraphHits) != 5 {
+			t.Fatalf("packer FactGraphHits len = %d, want seed plus four expanded hits: %+v", len(input.FactGraphHits), input.FactGraphHits)
+		}
+		if len(input.Items) != 5 {
+			t.Fatalf("packer Items len = %d, want graph items for seed plus expanded hits: %+v", len(input.Items), input.Items)
+		}
+		var expanded int
+		for _, hit := range input.FactGraphHits {
+			if hit.Expanded {
+				expanded++
+			}
+		}
+		if expanded != 4 {
+			t.Fatalf("packer expanded hits = %d, want 4: %+v", expanded, input.FactGraphHits)
+		}
+		return ContextPackOutput{Items: input.Items}, nil
+	}
+
+	search := retrieval.SearchRequest{QueryText: "Ada", TopK: 10}
+	pack, err := rt.PackContext(ctx, PackContextRequest{
+		Scope:           scope,
+		Window:          recent.WindowRequest{Scope: scope},
+		FactGraphSearch: &search,
+		FactGraphExpansion: &FactGraphExpansionRequest{
+			Scope:  scope,
+			Search: search,
+		},
+	})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if index.searchCalls() != 2 {
+		t.Fatalf("search calls = %d, want retrieve and expand searches", index.searchCalls())
+	}
+
+	gotKeys := factGraphHitKeys(pack.FactGraphHits)
+	wantKeys := []string{
+		"node:node-seed",
+		"edge:edge-out",
+		"node:node-tea",
+		"edge:edge-in",
+		"node:node-project",
+	}
+	if strings.Join(gotKeys, ",") != strings.Join(wantKeys, ",") {
+		t.Fatalf("FactGraphHits order = %v, want %v; hits=%+v", gotKeys, wantKeys, pack.FactGraphHits)
+	}
+	for _, key := range []string{"edge:edge-inactive", "node:node-inactive", "edge:edge-cross", "node:node-other"} {
+		if containsString(gotKeys, key) {
+			t.Fatalf("FactGraphHits included %s across inactive or hard-scope boundary: %+v", key, pack.FactGraphHits)
+		}
+	}
+	assertExpandedProvenance(t, pack.FactGraphHits[1], seedID, "")
+	assertExpandedProvenance(t, pack.FactGraphHits[2], seedID, "")
+	assertExpandedProvenance(t, pack.FactGraphHits[3], seedID, "")
+	assertExpandedProvenance(t, pack.FactGraphHits[4], seedID, "")
+	if pack.FactGraphHits[0].Expanded {
+		t.Fatalf("seed hit marked expanded: %+v", pack.FactGraphHits[0])
+	}
+	if packer.calls != 1 {
+		t.Fatalf("context packer calls = %d, want 1", packer.calls)
+	}
+	if len(pack.Items) != 5 {
+		t.Fatalf("Items len = %d, want seed plus expanded graph items: %+v", len(pack.Items), pack.Items)
+	}
+}
+
 func TestPackContextRunsRetrievalSearchesConcurrently(t *testing.T) {
 	ctx := context.Background()
 	assembly := compileAssembly(
@@ -1855,6 +1986,78 @@ func runtimeFact(id fact.FactID, scope views.Scope, status fact.FactStatus) fact
 	}
 }
 
+func runtimeGraphNode(id fact.NodeID, label string, scope views.Scope) fact.Node {
+	return fact.Node{
+		ID:       id,
+		Scope:    scope,
+		Kind:     fact.NodeEntity,
+		Label:    label,
+		FactRefs: []fact.FactRef{{FactID: "fact-graph-support", Role: "supporting_fact"}},
+		Signature: views.ViewSignature{
+			ViewID: views.ID("fact-graph"),
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          views.ID("fact-ledger"),
+				OutputSignature: "runtime-fact:v1",
+				RecordKey:       "fact-graph-support",
+			}},
+			TransformSignature: "runtime-graph:v1",
+		},
+	}
+}
+
+func runtimeGraphEdge(id fact.EdgeID, scope views.Scope, from, to fact.NodeID, predicate string, status fact.FactStatus) fact.Edge {
+	return fact.Edge{
+		ID:        id,
+		Scope:     scope,
+		From:      from,
+		To:        to,
+		Predicate: predicate,
+		Status:    status,
+		FactRefs:  []fact.FactRef{{FactID: "fact-graph-support", Role: "supporting_fact"}},
+		Signature: views.ViewSignature{
+			ViewID: views.ID("fact-graph"),
+			UpstreamViewRefs: []views.UpstreamViewRef{{
+				ViewID:          views.ID("fact-ledger"),
+				OutputSignature: "runtime-fact:v1",
+				RecordKey:       "fact-graph-support",
+			}},
+			TransformSignature: "runtime-graph:v1",
+		},
+	}
+}
+
+func factGraphHitKeys(hits []FactGraphSearchHit) []string {
+	out := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		switch {
+		case hit.Node != nil:
+			out = append(out, "node:"+string(hit.Node.ID))
+		case hit.Edge != nil:
+			out = append(out, "edge:"+string(hit.Edge.ID))
+		default:
+			out = append(out, "")
+		}
+	}
+	return out
+}
+
+func assertExpandedProvenance(t *testing.T, hit FactGraphSearchHit, seedNodeID fact.NodeID, seedEdgeID fact.EdgeID) {
+	t.Helper()
+	if !hit.Expanded || hit.Depth != 1 || hit.SeedNodeID != seedNodeID || hit.SeedEdgeID != seedEdgeID {
+		t.Fatalf("expanded provenance = expanded:%v depth:%d seed_node:%q seed_edge:%q, want expanded depth=1 seed_node:%q seed_edge:%q; hit=%+v",
+			hit.Expanded, hit.Depth, hit.SeedNodeID, hit.SeedEdgeID, seedNodeID, seedEdgeID, hit)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 type fakeChunker struct {
 	calls int
 }
@@ -2153,6 +2356,45 @@ func (i *closeTrackingIndex) Capabilities() retrieval.Capabilities {
 func (i *closeTrackingIndex) Close() error {
 	i.closed = true
 	return nil
+}
+
+type staticSearchIndex struct {
+	mu    sync.Mutex
+	hits  []retrieval.Hit
+	calls int
+}
+
+func (i *staticSearchIndex) Upsert(context.Context, string, []retrieval.Doc) error {
+	return nil
+}
+
+func (i *staticSearchIndex) Delete(context.Context, string, []string) error {
+	return nil
+}
+
+func (i *staticSearchIndex) Search(context.Context, string, retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.calls++
+	return &retrieval.SearchResponse{Hits: retrieval.CloneHits(i.hits)}, nil
+}
+
+func (i *staticSearchIndex) List(context.Context, string, retrieval.ListRequest) (*retrieval.ListResponse, error) {
+	return &retrieval.ListResponse{}, nil
+}
+
+func (i *staticSearchIndex) Capabilities() retrieval.Capabilities {
+	return retrieval.Capabilities{BM25: true}
+}
+
+func (i *staticSearchIndex) Close() error {
+	return nil
+}
+
+func (i *staticSearchIndex) searchCalls() int {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	return i.calls
 }
 
 type overlappingSearchIndex struct {

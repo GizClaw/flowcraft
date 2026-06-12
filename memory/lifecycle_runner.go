@@ -61,6 +61,8 @@ func (r *LifecycleRunnerRegistry) Lookup(kind LifecycleJobKind) (LifecycleRunner
 func (r *System) defaultLifecycleRunnerRegistry() *LifecycleRunnerRegistry {
 	registry := NewLifecycleRunnerRegistry()
 	registry.Register(LifecycleJobKindWriteChain, writeChainLifecycleRunner{})
+	registry.Register(LifecycleJobKindFreshnessCheck, freshnessCheckLifecycleRunner{})
+	registry.Register(LifecycleJobKindReconcile, reconcileLifecycleRunner{})
 	if r != nil && r.writeAvailable[CapabilityDocumentChunks] {
 		runner := documentChunksLifecycleRunner{}
 		registry.Register(LifecycleJobKindReload, runner)
@@ -225,6 +227,166 @@ func (documentChunksLifecycleRunner) Run(ctx context.Context, req LifecycleRunRe
 	}
 	finalizeLifecycleExecutionReport(&report)
 	return report, runErr
+}
+
+type freshnessCheckLifecycleRunner struct{}
+
+func (freshnessCheckLifecycleRunner) Run(ctx context.Context, req LifecycleRunRequest) (LifecycleExecutionReport, error) {
+	report := newLifecycleReportForJob(req.System, req.Job)
+	if req.Job.Kind != LifecycleJobKindFreshnessCheck {
+		err := errdefs.NotAvailablef("memory: freshness_check runner cannot execute job kind %q", req.Job.Kind)
+		failLifecycleReport(&report, err)
+		return report, err
+	}
+	if req.System == nil || req.System.inner == nil {
+		err := errdefs.NotAvailablef("memory: system is not configured")
+		failLifecycleReport(&report, err)
+		return report, err
+	}
+
+	diagnostics, err := req.System.Diagnostics(ctx, DiagnosticRequest{
+		TraceID:      req.Job.TraceID,
+		Scope:        req.Job.Scope,
+		Capabilities: req.Job.Capabilities,
+		Documents:    req.Job.Documents,
+		Stage:        diagnosticStageFreshness,
+	})
+	applyDiagnosticsToLifecycleReport(&report, diagnostics)
+	if err != nil {
+		report.Status = LifecycleStatusFailed
+		if report.Message == "" {
+			report.Message = err.Error()
+		}
+		finalizeLifecycleExecutionReport(&report)
+		return report, err
+	}
+	if !diagnostics.OK && diagnosticsHasErrorSeverity(diagnostics) {
+		err := fmt.Errorf("memory: freshness diagnostics failed: %s", diagnostics.Message)
+		report.Status = LifecycleStatusFailed
+		if report.Message == "" || report.Message == "diagnostics checks found missing dependencies" {
+			report.Message = err.Error()
+		}
+		finalizeLifecycleExecutionReport(&report)
+		return report, err
+	}
+
+	report.Status = LifecycleStatusCompleted
+	if report.Message == "" {
+		report.Message = "freshness diagnostics completed"
+	}
+	finalizeLifecycleExecutionReport(&report)
+	return report, nil
+}
+
+type reconcileLifecycleRunner struct{}
+
+func (reconcileLifecycleRunner) Run(ctx context.Context, req LifecycleRunRequest) (LifecycleExecutionReport, error) {
+	report := newLifecycleReportForJob(req.System, req.Job)
+	if req.Job.Kind != LifecycleJobKindReconcile {
+		err := errdefs.NotAvailablef("memory: reconcile runner cannot execute job kind %q", req.Job.Kind)
+		failLifecycleReport(&report, err)
+		return report, err
+	}
+	if req.System == nil || req.System.inner == nil {
+		err := errdefs.NotAvailablef("memory: system is not configured")
+		failLifecycleReport(&report, err)
+		return report, err
+	}
+
+	diagnostics, err := req.System.Diagnostics(ctx, DiagnosticRequest{
+		TraceID:      req.Job.TraceID,
+		Scope:        req.Job.Scope,
+		Capabilities: req.Job.Capabilities,
+		Documents:    req.Job.Documents,
+		Stage:        diagnosticStageConsistency,
+		Consistency: []ConsistencyCheckKind{
+			ConsistencyCheckProjection,
+			ConsistencyCheckSourceView,
+		},
+	})
+	applyDiagnosticsToLifecycleReport(&report, diagnostics)
+	if err != nil {
+		report.Status = LifecycleStatusFailed
+		if report.Message == "" {
+			report.Message = err.Error()
+		}
+		finalizeLifecycleExecutionReport(&report)
+		return report, err
+	}
+	if !diagnostics.OK && diagnosticsHasErrorSeverity(diagnostics) {
+		err := fmt.Errorf("memory: reconcile diagnostics failed: %s", diagnostics.Message)
+		report.Status = LifecycleStatusFailed
+		if report.Message == "" || report.Message == "diagnostics checks found missing dependencies" {
+			report.Message = err.Error()
+		}
+		finalizeLifecycleExecutionReport(&report)
+		return report, err
+	}
+
+	report.Status = LifecycleStatusCompleted
+	if report.Message == "" {
+		report.Message = "reconcile diagnostics completed"
+	}
+	finalizeLifecycleExecutionReport(&report)
+	return report, nil
+}
+
+func applyDiagnosticsToLifecycleReport(report *LifecycleExecutionReport, diagnostics DiagnosticReport) {
+	report.Accepted = true
+	report.Supported = true
+	report.Message = diagnostics.Message
+	report.Checkpoint = map[string]any{
+		"ready":         diagnostics.Ready,
+		"ok":            diagnostics.OK,
+		"check_count":   len(diagnostics.Checks),
+		"warning_count": len(diagnostics.Warnings),
+	}
+	errorCount := 0
+	repairHintCount := 0
+	for _, check := range diagnostics.Checks {
+		step := LifecycleStep{
+			Name:      check.Name,
+			Status:    LifecycleStatusCompleted,
+			Planned:   true,
+			Completed: true,
+			Message:   check.Message,
+			Details: map[string]any{
+				"diagnostic_status":   string(check.Status),
+				"diagnostic_severity": string(check.Severity),
+				"ok":                  check.OK,
+			},
+		}
+		if check.Capability != "" {
+			step.Details["capability"] = string(check.Capability)
+		}
+		if check.Target != (LifecycleTarget{}) {
+			step.Details["target"] = check.Target
+		}
+		if check.RepairHint != "" {
+			step.Details["repair_hint"] = check.RepairHint
+			repairHintCount++
+		}
+		for key, value := range check.Details {
+			step.Details[key] = value
+		}
+		if check.Severity == DiagnosticSeverityError && !check.OK {
+			errorCount++
+			step.Status = LifecycleStatusFailed
+			step.Completed = false
+		}
+		report.Steps = append(report.Steps, step)
+	}
+	report.Checkpoint["error_count"] = errorCount
+	report.Checkpoint["repair_hint_count"] = repairHintCount
+}
+
+func diagnosticsHasErrorSeverity(report DiagnosticReport) bool {
+	for _, check := range report.Checks {
+		if check.Severity == DiagnosticSeverityError && !check.OK {
+			return true
+		}
+	}
+	return false
 }
 
 func newLifecycleReportForJob(system *System, job LifecycleJob) LifecycleExecutionReport {
