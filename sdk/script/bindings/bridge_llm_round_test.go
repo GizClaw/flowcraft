@@ -258,6 +258,32 @@ func TestRoundStream_TextChunks_ProjectAsPartText(t *testing.T) {
 	}
 }
 
+func TestRoundStream_NextAfterCloseReturnsFalse(t *testing.T) {
+	stream := &fakeStream{
+		chunks: []model.StreamChunk{{Content: "hello"}},
+	}
+	res := &fakeResolver{llm: &fakeLLM{stream: stream}}
+	rs, err := startRound(context.Background(), res, nil, "src", nil, roundOptions{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rs.Next() {
+		t.Fatal("expected first chunk")
+	}
+	if got := rs.Current(); got.Type != model.PartText || got.Text != "hello" {
+		t.Fatalf("Current before close = %+v, want text hello", got)
+	}
+	if err := rs.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if rs.Next() {
+		t.Fatal("Next after Close = true, want false")
+	}
+	if got := rs.Current(); got != (model.Part{}) {
+		t.Fatalf("Current after Close/Next = %+v, want zero Part", got)
+	}
+}
+
 func TestRoundStream_ToolCallChunk_ProjectAsPartToolCall(t *testing.T) {
 	stream := &fakeStream{
 		chunks: []model.StreamChunk{

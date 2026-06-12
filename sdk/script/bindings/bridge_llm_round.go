@@ -196,6 +196,9 @@ func startRound(
 // non-textual chunks fall back to a zero Part — Current() == Part{}
 // — to keep the iterator deterministic.
 func (s *roundStream) Next() bool {
+	if s == nil || s.inner == nil {
+		return false
+	}
 	s.current = model.Part{}
 	if !s.inner.Next() {
 		return false
@@ -237,6 +240,7 @@ func (s *roundStream) Text() string {
 func (s *roundStream) Close() error {
 	inner := s.inner
 	s.inner = nil
+	s.current = model.Part{}
 	if inner != nil {
 		return inner.Close()
 	}

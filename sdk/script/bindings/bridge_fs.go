@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -12,7 +13,7 @@ func NewFSBridge(ws workspace.Workspace) BindingFunc {
 		return "fs", map[string]any{
 			"read": func(path string) (string, error) {
 				if ws == nil {
-					return "", nil
+					return "", errdefs.NotAvailablef("fs.read: workspace not configured")
 				}
 				data, err := ws.Read(ctx, path)
 				if err != nil {
@@ -22,7 +23,7 @@ func NewFSBridge(ws workspace.Workspace) BindingFunc {
 			},
 			"write": func(path, content string) error {
 				if ws == nil {
-					return nil
+					return errdefs.NotAvailablef("fs.write: workspace not configured")
 				}
 				return ws.Write(ctx, path, []byte(content))
 			},
@@ -35,7 +36,7 @@ func NewFSBridge(ws workspace.Workspace) BindingFunc {
 			},
 			"delete": func(path string) error {
 				if ws == nil {
-					return nil
+					return errdefs.NotAvailablef("fs.delete: workspace not configured")
 				}
 				return ws.Delete(ctx, path)
 			},

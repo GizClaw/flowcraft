@@ -3,6 +3,7 @@ package scriptnode
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -13,7 +14,49 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
 
-const defaultStreamSubBufferSize = 256
+const (
+	defaultStreamSubBufferSize = 256
+	maxStreamSubBufferSize     = 4096
+)
+
+type streamCleanupKey struct{}
+
+type streamCleanupRegistry struct {
+	mu       sync.Mutex
+	cleanups []func() error
+}
+
+func withStreamCleanup(ctx context.Context) (context.Context, *streamCleanupRegistry) {
+	reg := &streamCleanupRegistry{}
+	return context.WithValue(ctx, streamCleanupKey{}, reg), reg
+}
+
+func streamCleanupFromContext(ctx context.Context) *streamCleanupRegistry {
+	reg, _ := ctx.Value(streamCleanupKey{}).(*streamCleanupRegistry)
+	return reg
+}
+
+func (r *streamCleanupRegistry) Add(fn func() error) {
+	if r == nil || fn == nil {
+		return
+	}
+	r.mu.Lock()
+	r.cleanups = append(r.cleanups, fn)
+	r.mu.Unlock()
+}
+
+func (r *streamCleanupRegistry) Close() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	cleanups := append([]func() error(nil), r.cleanups...)
+	r.cleanups = nil
+	r.mu.Unlock()
+	for i := len(cleanups) - 1; i >= 0; i-- {
+		_ = cleanups[i]()
+	}
+}
 
 // newStreamBridge exposes graph node stream subscriptions to scripts as
 // the global "stream".
@@ -21,7 +64,8 @@ const defaultStreamSubBufferSize = 256
 // Script-facing API:
 //
 //	stream.subscribe_node({ node_id: "planner", run_id: "...", buffer_size: 256 })
-//	    -> { next, current, close }
+//	stream.subscribe_node({ node_ids: ["planner", "executor"] })
+//	    -> { next, next_timeout_ms, current, close }
 func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 	return func(callCtx context.Context) (string, any) {
 		if callCtx == nil {
@@ -49,7 +93,8 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 					// lifecycle events still reach slow subscribers.
 					event.WithBackpressure(event.DropOldest),
 					event.WithPredicate(func(env event.Envelope) bool {
-						return env.NodeID() == opts.nodeID
+						_, ok := opts.nodeIDSet[env.NodeID()]
+						return ok
 					}),
 				)
 				if err != nil {
@@ -61,11 +106,18 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 					ctx:    subCtx,
 					cancel: cancel,
 					sub:    sub,
+
+					targetNodeCount: len(opts.nodeIDSet),
+					terminalNodes:   make(map[string]struct{}, len(opts.nodeIDSet)),
+				}
+				if reg := streamCleanupFromContext(callCtx); reg != nil {
+					reg.Add(iter.Close)
 				}
 				return map[string]any{
-					"next":    iter.Next,
-					"current": iter.Current,
-					"close":   iter.Close,
+					"next":            iter.Next,
+					"next_timeout_ms": iter.NextTimeoutMS,
+					"current":         iter.Current,
+					"close":           iter.Close,
 				}, nil
 			},
 		}
@@ -74,6 +126,8 @@ func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
 
 type streamSubscribeOptions struct {
 	nodeID     string
+	nodeIDs    []string
+	nodeIDSet  map[string]struct{}
 	runID      string
 	bufferSize int
 }
@@ -87,16 +141,42 @@ func parseStreamSubscribeOptions(raw any, defaultRunID string) (streamSubscribeO
 	if !ok {
 		return opts, errdefs.Validationf("stream.subscribe_node: options must be an object, got %T", raw)
 	}
-	if v, ok := m["node_id"].(string); ok {
-		opts.nodeID = v
+	nodeIDRaw, hasNodeID := m["node_id"]
+	nodeIDsRaw, hasNodeIDs := m["node_ids"]
+	if hasNodeID && hasNodeIDs {
+		return opts, errdefs.Validationf("stream.subscribe_node: node_id and node_ids are mutually exclusive")
 	}
-	if opts.nodeID == "" {
-		return opts, errdefs.Validationf("stream.subscribe_node: node_id is required")
+	switch {
+	case hasNodeID:
+		s, ok := nodeIDRaw.(string)
+		if !ok {
+			return opts, errdefs.Validationf("stream.subscribe_node: node_id must be a string, got %T", nodeIDRaw)
+		}
+		if s == "" {
+			return opts, errdefs.Validationf("stream.subscribe_node: node_id must be a non-empty string")
+		}
+		opts.nodeID = s
+		opts.nodeIDs = []string{s}
+	case hasNodeIDs:
+		ids, err := streamNodeIDs(nodeIDsRaw)
+		if err != nil {
+			return opts, err
+		}
+		opts.nodeIDs = ids
+	default:
+		return opts, errdefs.Validationf("stream.subscribe_node: node_id or node_ids is required")
+	}
+	opts.nodeIDSet = make(map[string]struct{}, len(opts.nodeIDs))
+	for _, nodeID := range opts.nodeIDs {
+		opts.nodeIDSet[nodeID] = struct{}{}
 	}
 	if v, ok := m["run_id"]; ok && v != nil {
 		s, ok := v.(string)
 		if !ok {
 			return opts, errdefs.Validationf("stream.subscribe_node: run_id must be a string, got %T", v)
+		}
+		if s != defaultRunID {
+			return opts, errdefs.Validationf("stream.subscribe_node: run_id override is not allowed")
 		}
 		opts.runID = s
 	}
@@ -113,44 +193,87 @@ func parseStreamSubscribeOptions(raw any, defaultRunID string) (streamSubscribeO
 	return opts, nil
 }
 
+func streamNodeIDs(v any) ([]string, error) {
+	var raw []any
+	switch ids := v.(type) {
+	case []string:
+		out := append([]string(nil), ids...)
+		return validateStreamNodeIDs(out)
+	case []any:
+		raw = ids
+	default:
+		return nil, errdefs.Validationf("stream.subscribe_node: node_ids must be an array of strings, got %T", v)
+	}
+	if len(raw) == 0 {
+		return nil, errdefs.Validationf("stream.subscribe_node: node_ids must not be empty")
+	}
+	out := make([]string, 0, len(raw))
+	for idx, item := range raw {
+		s, ok := item.(string)
+		if !ok {
+			return nil, errdefs.Validationf("stream.subscribe_node: node_ids[%d] must be a string, got %T", idx, item)
+		}
+		out = append(out, s)
+	}
+	return validateStreamNodeIDs(out)
+}
+
+func validateStreamNodeIDs(ids []string) ([]string, error) {
+	if len(ids) == 0 {
+		return nil, errdefs.Validationf("stream.subscribe_node: node_ids must not be empty")
+	}
+	for idx, nodeID := range ids {
+		if nodeID == "" {
+			return nil, errdefs.Validationf("stream.subscribe_node: node_ids[%d] must be a non-empty string", idx)
+		}
+	}
+	return ids, nil
+}
+
 func streamBufferSize(v any) (int, error) {
 	switch n := v.(type) {
 	case int:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return n, nil
 		}
 	case int32:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case int64:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint32:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case uint64:
-		if n > 0 {
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case float32:
-		if n > 0 {
+		if math.Trunc(float64(n)) != float64(n) {
+			return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be an integer")
+		}
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	case float64:
-		if n > 0 {
+		if math.Trunc(n) != n {
+			return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be an integer")
+		}
+		if n > 0 && n <= maxStreamSubBufferSize {
 			return int(n), nil
 		}
 	default:
 		return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be a positive number, got %T", v)
 	}
-	return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be positive")
+	return 0, errdefs.Validationf("stream.subscribe_node: buffer_size must be between 1 and %d", maxStreamSubBufferSize)
 }
 
 type streamNodeIterator struct {
@@ -161,13 +284,40 @@ type streamNodeIterator struct {
 	mu      sync.Mutex
 	current map[string]any
 	once    sync.Once
+
+	targetNodeCount int
+	terminalNodes   map[string]struct{}
 }
 
 // Next blocks until the next matching node stream event arrives. It returns false when
 // the subscription or parent execution context is closed.
 func (i *streamNodeIterator) Next() bool {
+	return i.next(false, 0)
+}
+
+// NextTimeoutMS waits up to ms for the next matching node stream event. Timeout
+// returns false without closing the subscription so scripts can fail open.
+func (i *streamNodeIterator) NextTimeoutMS(raw any) (bool, error) {
+	timeout, err := streamNextTimeout(raw)
+	if err != nil {
+		return false, err
+	}
+	return i.next(true, timeout), nil
+}
+
+func (i *streamNodeIterator) next(useTimeout bool, timeout time.Duration) bool {
 	if i == nil || i.sub == nil {
 		return false
+	}
+	if useTimeout && timeout == 0 {
+		return i.poll()
+	}
+	var timer *time.Timer
+	var timeoutC <-chan time.Time
+	if useTimeout && timeout > 0 {
+		timer = time.NewTimer(timeout)
+		timeoutC = timer.C
+		defer timer.Stop()
 	}
 	for {
 		select {
@@ -175,21 +325,55 @@ func (i *streamNodeIterator) Next() bool {
 			if !ok {
 				return false
 			}
-			cur, terminal, ok := streamNodeEnvelopeToMap(env)
-			if !ok {
-				continue
+			if i.acceptEnvelope(env) {
+				return true
 			}
-			i.mu.Lock()
-			i.current = cur
-			i.mu.Unlock()
-			if terminal {
-				_ = i.Close()
-			}
-			return true
 		case <-i.ctx.Done():
+			return false
+		case <-timeoutC:
 			return false
 		}
 	}
+}
+
+func (i *streamNodeIterator) poll() bool {
+	for {
+		select {
+		case env, ok := <-i.sub.C():
+			if !ok {
+				return false
+			}
+			if i.acceptEnvelope(env) {
+				return true
+			}
+		case <-i.ctx.Done():
+			return false
+		default:
+			return false
+		}
+	}
+}
+
+func (i *streamNodeIterator) acceptEnvelope(env event.Envelope) bool {
+	cur, terminal, ok := streamNodeEnvelopeToMap(env)
+	if !ok {
+		return false
+	}
+	closeAfter := false
+	i.mu.Lock()
+	i.current = cur
+	if terminal {
+		if i.terminalNodes == nil {
+			i.terminalNodes = make(map[string]struct{}, i.targetNodeCount)
+		}
+		i.terminalNodes[env.NodeID()] = struct{}{}
+		closeAfter = len(i.terminalNodes) >= i.targetNodeCount
+	}
+	i.mu.Unlock()
+	if closeAfter {
+		_ = i.Close()
+	}
+	return true
 }
 
 func (i *streamNodeIterator) Current() map[string]any {
@@ -220,6 +404,72 @@ func (i *streamNodeIterator) Close() error {
 		}
 	})
 	return err
+}
+
+const maxStreamNextTimeoutMS = int64(1<<63-1) / int64(time.Millisecond)
+
+func streamNextTimeout(v any) (time.Duration, error) {
+	ms, err := streamNonNegativeIntegerMS(v)
+	if err != nil {
+		return 0, err
+	}
+	if ms > maxStreamNextTimeoutMS {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms is too large")
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func streamNonNegativeIntegerMS(v any) (int64, error) {
+	switch n := v.(type) {
+	case int:
+		return streamSignedMS(int64(n))
+	case int32:
+		return streamSignedMS(int64(n))
+	case int64:
+		return streamSignedMS(n)
+	case uint:
+		return streamUnsignedMS(uint64(n))
+	case uint32:
+		return streamUnsignedMS(uint64(n))
+	case uint64:
+		return streamUnsignedMS(n)
+	case float32:
+		return streamFloatMS(float64(n))
+	case float64:
+		return streamFloatMS(n)
+	default:
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms must be a non-negative integer, got %T", v)
+	}
+}
+
+func streamSignedMS(n int64) (int64, error) {
+	if n < 0 {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms must be non-negative")
+	}
+	return n, nil
+}
+
+func streamUnsignedMS(n uint64) (int64, error) {
+	if n > uint64(maxStreamNextTimeoutMS) {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms is too large")
+	}
+	return int64(n), nil
+}
+
+func streamFloatMS(n float64) (int64, error) {
+	if math.IsNaN(n) || math.IsInf(n, 0) {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms must be a finite number")
+	}
+	if math.Trunc(n) != n {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms must be an integer")
+	}
+	if n < 0 {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms must be non-negative")
+	}
+	if n > float64(maxStreamNextTimeoutMS) {
+		return 0, errdefs.Validationf("stream.subscribe_node.next_timeout_ms: ms is too large")
+	}
+	return int64(n), nil
 }
 
 func streamNodeEnvelopeToMap(env event.Envelope) (map[string]any, bool, bool) {

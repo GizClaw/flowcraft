@@ -3,6 +3,7 @@ package bindings
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
@@ -97,7 +98,11 @@ type StreamEmitter interface {
 // ctx.Host / ctx.Publisher the executor installed and reuses those
 // instances for all bindings. When emitter is nil host.emit silently
 // drops the call, matching graph.NoopPublisher on the Go side.
-func NewHostBridge(host engine.Host, source string, emitter StreamEmitter) BindingFunc {
+func NewHostBridge(host engine.Host, source string, emitter StreamEmitter, opts ...HostBridgeOption) BindingFunc {
+	cfg := hostBridgeConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return func(callCtx context.Context) (string, any) {
 		if host == nil {
 			host = engine.NoopHost{}
@@ -142,6 +147,9 @@ func NewHostBridge(host engine.Host, source string, emitter StreamEmitter) Bindi
 			},
 
 			"publish": func(subject string, payload any) error {
+				if err := validateHostPublishSubject(subject, cfg); err != nil {
+					return err
+				}
 				env, err := event.NewEnvelope(callCtx, event.Subject(subject), payload)
 				if err != nil {
 					// Bad subject / unmarshallable payload — this is
@@ -150,6 +158,9 @@ func NewHostBridge(host engine.Host, source string, emitter StreamEmitter) Bindi
 					// can react with the same Validation handling
 					// they use for other malformed bridge calls.
 					return errdefs.Validationf("host.publish: %s", err.Error())
+				}
+				if cfg.enforceRunID && strings.HasPrefix(subject, engine.SubjectPrefix) {
+					env.SetRunID(cfg.runID)
 				}
 				return host.Publish(callCtx, env)
 			},
@@ -200,6 +211,56 @@ func NewHostBridge(host engine.Host, source string, emitter StreamEmitter) Bindi
 			},
 		}
 	}
+}
+
+type hostBridgeConfig struct {
+	runID        string
+	enforceRunID bool
+}
+
+// HostBridgeOption configures NewHostBridge.
+type HostBridgeOption func(*hostBridgeConfig)
+
+// WithHostRunID constrains host.publish for engine.run.* subjects to the
+// current run while leaving custom non-engine subjects available.
+func WithHostRunID(runID string) HostBridgeOption {
+	return func(c *hostBridgeConfig) {
+		c.runID = runID
+		c.enforceRunID = true
+	}
+}
+
+func validateHostPublishSubject(subject string, cfg hostBridgeConfig) error {
+	if !cfg.enforceRunID {
+		return nil
+	}
+	runID, ok := engineSubjectRunID(subject)
+	if !ok {
+		return nil
+	}
+	if cfg.runID == "" {
+		return errdefs.Validationf("host.publish: engine subject %q requires a current run_id", subject)
+	}
+	want := engine.SanitiseID(cfg.runID)
+	if runID != want {
+		return errdefs.Validationf(
+			"host.publish: engine subject run_id %q does not match current run_id %q",
+			runID, want,
+		)
+	}
+	return nil
+}
+
+func engineSubjectRunID(subject string) (string, bool) {
+	if !strings.HasPrefix(subject, engine.SubjectPrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(subject, engine.SubjectPrefix)
+	idx := strings.IndexByte(rest, '.')
+	if idx < 0 {
+		return rest, true
+	}
+	return rest[:idx], true
 }
 
 // parseUserPrompt projects a script-supplied object onto engine.UserPrompt.
