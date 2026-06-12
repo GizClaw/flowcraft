@@ -16,15 +16,14 @@ import (
 //
 // The bridge is the only consumer of these options at the moment, so
 // the surface stays minimal: a resolver to materialize the LLM, an
-// optional tool registry for function-calling, the per-call defaults
-// the script can override, a source label for diagnostics, and a hook
-// for the bridge to read the conversation history at call time.
+// optional tool registry for function-calling, the generation defaults
+// the script can override per call, and a source label for diagnostics.
 //
 // Notably absent — these were intentional decisions during the
 // "B-track" refactor:
 //
 //   - No llm.RoundConfig: scripts and the bridge interior speak the
-//     bridge's own LLMRunOptions / roundOptions types end-to-end.
+//     bridge's own call-options / roundOptions types end-to-end.
 //   - No Go-side OnEvent hook: scripts pull chunks via the iterator
 //     returned by stream(); a host-side event subscription will be
 //     added only when a real consumer needs it.
@@ -32,35 +31,38 @@ type LLMBridgeOptions struct {
 	Resolver llm.LLMResolver
 	Registry *tool.Registry
 
-	// Defaults are merged with the script-supplied overrides on every
-	// llm.run() / llm.stream() call. Any field the script omits is
-	// inherited from here; explicit script values win.
+	// Defaults are merged with the script-supplied generation overrides
+	// on every llm.run() / llm.stream() call. Any field the script
+	// omits is inherited from here; explicit script values win.
+	// Messages are never defaulted and must be supplied per call.
 	Defaults LLMRunOptions
 
 	// Source labels diagnostics (errors, future tracing). It is the
 	// bridge equivalent of "node id" / "event id" in legacy code.
 	Source string
-
-	// ReadMessages returns the conversation history to send to the
-	// LLM. Called once per script invocation so the script can mutate
-	// the board between rounds and have the next call see the update.
-	// When nil, an empty slice is used.
-	ReadMessages func(ctx context.Context) []model.Message
 }
 
-// LLMRunOptions is the strongly-typed object that scripts pass to
-// llm.run() / llm.stream().
+// LLMRunOptions is the defaultable generation-options subset shared by
+// LLMBridgeOptions.Defaults and per-call script overrides.
 //
-// All fields are optional; any unset field inherits the bridge's
-// LLMBridgeOptions.Defaults value. Pointer fields (Temperature,
-// JSONMode, Thinking) distinguish "script omitted" from "script
-// explicitly set to zero/false". Unknown JSON keys are rejected at
-// parse time so script typos surface immediately instead of silently
-// falling back to defaults.
+// Scripts pass a call object containing messages plus these optional
+// fields. Messages are parsed separately into an internal call-options
+// value so LLMBridgeOptions.Defaults cannot imply a default conversation.
+// The messages value is required on every call and must use the
+// canonical model.Message shape: role plus parts. Any unset generation
+// field inherits the bridge's LLMBridgeOptions.Defaults value.
+// Pointer fields (Temperature, JSONMode, Thinking) distinguish "script
+// omitted" from "script explicitly set to zero/false". Unknown JSON keys
+// are rejected at parse time so script typos surface immediately instead
+// of silently falling back to defaults.
 //
 // Script-side schema (JS / Lua):
 //
 //	llm.run({
+//	    messages: [{
+//	        role: "user",
+//	        parts: [{ type: "text", text: "What changed?" }],
+//	    }],
 //	    model:        "openai/gpt-4o-mini",   // optional, string
 //	    temperature:  0.2,                    // optional, number
 //	    max_tokens:   1024,                   // optional, integer
@@ -77,16 +79,24 @@ type LLMRunOptions struct {
 	Tools       []string `json:"tools,omitempty"`
 }
 
+type llmCallOptions struct {
+	messages   []model.Message
+	runOptions LLMRunOptions
+}
+
 // NewLLMBridge exposes LLM calls to scripts as the global "llm":
 //
-//	llm.run()                              // blocking, returns full result map
-//	llm.run({ model, temperature, ... })   // with per-call overrides
-//	llm.stream()                           // returns iterator { next, part, text, finish, close }
-//	llm.stream({ model, ... })             // streamed, with per-call overrides
+//	llm.run({ messages })                         // blocking, returns full result map
+//	llm.run({ messages, model, temperature, ... }) // with per-call overrides
+//	llm.stream({ messages })                      // returns iterator { next, part, text, finish, close }
+//	llm.stream({ messages, model, ... })          // streamed, with per-call overrides
 //
 // Iterator usage (multimodal-friendly):
 //
-//	var s = llm.stream({ model: "..." });
+//	var s = llm.stream({
+//	    messages: [{ role: "user", parts: [{ type: "text", text: "go on" }] }],
+//	    model: "...",
+//	});
 //	while (s.next()) {
 //	    var p = s.part();        // map projection of model.Part
 //	    if (p.type === "text")   write(p.text);
@@ -98,31 +108,24 @@ type LLMRunOptions struct {
 //
 // Neither mode writes to the board; the script controls what to do
 // with results (typically via the board bridge: board.setVar /
-// board.setChannel). See LLMRunOptions for the per-call schema.
+// board.setChannel). The per-call schema is parsed by parseRunOptions.
 func NewLLMBridge(opts LLMBridgeOptions) BindingFunc {
 	return func(callCtx context.Context) (string, any) {
-		readMsgs := func() []model.Message {
-			if opts.ReadMessages != nil {
-				return opts.ReadMessages(callCtx)
-			}
-			return nil
-		}
-
-		resolveOpts := func(rawOpts any) (roundOptions, error) {
-			override, err := parseRunOptions(rawOpts)
+		resolveOpts := func(rawOpts any) (roundOptions, []model.Message, error) {
+			callOpts, err := parseRunOptions(rawOpts)
 			if err != nil {
-				return roundOptions{}, err
+				return roundOptions{}, nil, err
 			}
-			return toRoundOptions(opts.Defaults, override), nil
+			return toRoundOptions(opts.Defaults, callOpts.runOptions), callOpts.messages, nil
 		}
 
 		return "llm", map[string]any{
 			"run": func(rawOpts any) (map[string]any, error) {
-				ro, err := resolveOpts(rawOpts)
+				ro, messages, err := resolveOpts(rawOpts)
 				if err != nil {
 					return nil, err
 				}
-				r, err := runRound(callCtx, opts.Resolver, opts.Registry, opts.Source, readMsgs(), ro)
+				r, err := runRound(callCtx, opts.Resolver, opts.Registry, opts.Source, messages, ro)
 				if err != nil {
 					return nil, err
 				}
@@ -130,11 +133,11 @@ func NewLLMBridge(opts LLMBridgeOptions) BindingFunc {
 			},
 
 			"stream": func(rawOpts any) (map[string]any, error) {
-				ro, err := resolveOpts(rawOpts)
+				ro, messages, err := resolveOpts(rawOpts)
 				if err != nil {
 					return nil, err
 				}
-				s, err := startRound(callCtx, opts.Resolver, opts.Registry, opts.Source, readMsgs(), ro)
+				s, err := startRound(callCtx, opts.Resolver, opts.Registry, opts.Source, messages, ro)
 				if err != nil {
 					return nil, err
 				}
@@ -156,37 +159,64 @@ func NewLLMBridge(opts LLMBridgeOptions) BindingFunc {
 	}
 }
 
-// parseRunOptions decodes the script-supplied options object into
-// LLMRunOptions. nil is treated as "no overrides" (zero value). Any
-// other non-map value, or any unknown JSON key, returns an error so
-// that the script sees a real exception instead of silently inheriting
-// the bridge defaults.
-func parseRunOptions(v any) (LLMRunOptions, error) {
+// parseRunOptions decodes the script-supplied call object into internal
+// call options. messages is mandatory and must be supplied explicitly
+// for each llm.run() / llm.stream() call; only generation fields flow
+// into LLMRunOptions for default merging. Any non-map value, missing or
+// null messages value, or unknown JSON key returns an error so that the
+// script sees a real exception instead of silently inheriting a default
+// conversation or an implicit history source.
+func parseRunOptions(v any) (llmCallOptions, error) {
 	if v == nil {
-		return LLMRunOptions{}, nil
+		return llmCallOptions{}, errdefs.Validationf("llm: missing required field %q", "messages")
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return LLMRunOptions{}, errdefs.Validationf("llm: options must be an object, got %T", v)
+		return llmCallOptions{}, errdefs.Validationf("llm: options must be an object, got %T", v)
 	}
-	if len(m) == 0 {
-		return LLMRunOptions{}, nil
+	rawMessages, ok := m["messages"]
+	if !ok {
+		return llmCallOptions{}, errdefs.Validationf("llm: missing required field %q", "messages")
+	}
+	messages, err := parseLLMMessages(rawMessages, "llm.messages")
+	if err != nil {
+		return llmCallOptions{}, err
 	}
 	raw, err := json.Marshal(m)
 	if err != nil {
-		return LLMRunOptions{}, fmt.Errorf("llm: marshal options: %w", err)
+		return llmCallOptions{}, fmt.Errorf("llm: marshal options: %w", err)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	var opts LLMRunOptions
-	if err := dec.Decode(&opts); err != nil {
-		return LLMRunOptions{}, fmt.Errorf("llm: invalid options: %w", err)
+	var opts struct {
+		Messages    json.RawMessage `json:"messages"`
+		Model       string          `json:"model,omitempty"`
+		Temperature *float64        `json:"temperature,omitempty"`
+		MaxTokens   int64           `json:"max_tokens,omitempty"`
+		JSONMode    *bool           `json:"json_mode,omitempty"`
+		Thinking    *bool           `json:"thinking,omitempty"`
+		Tools       []string        `json:"tools,omitempty"`
 	}
-	return opts, nil
+	if err := dec.Decode(&opts); err != nil {
+		return llmCallOptions{}, fmt.Errorf("llm: invalid options: %w", err)
+	}
+	return llmCallOptions{
+		messages: messages,
+		runOptions: LLMRunOptions{
+			Model:       opts.Model,
+			Temperature: opts.Temperature,
+			MaxTokens:   opts.MaxTokens,
+			JSONMode:    opts.JSONMode,
+			Thinking:    opts.Thinking,
+			Tools:       opts.Tools,
+		},
+	}, nil
 }
 
 // toRoundOptions folds defaults with the script-supplied override into
-// the bridge-internal roundOptions value the round logic consumes.
+// the bridge-internal roundOptions value the round logic consumes. It
+// only handles generation options; messages are resolved by parseRunOptions
+// and passed to the round separately.
 //
 // Merge rules:
 //

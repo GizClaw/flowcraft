@@ -4,32 +4,65 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
 func pf(v float64) *float64 { return &v }
 func pb(v bool) *bool       { return &v }
+
+func canonicalMessagesRaw(text string) []any {
+	return []any{
+		map[string]any{
+			"role": "user",
+			"parts": []any{
+				map[string]any{"type": "text", "text": text},
+			},
+		},
+	}
+}
 
 // ---------------------------------------------------------------------------
 // parseRunOptions — input validation
 // ---------------------------------------------------------------------------
 
 func TestParseRunOptions_Nil(t *testing.T) {
-	got, err := parseRunOptions(nil)
-	if err != nil {
-		t.Fatalf("nil should be accepted, got err: %v", err)
+	_, err := parseRunOptions(nil)
+	if err == nil {
+		t.Fatal("nil options should be rejected")
 	}
-	if !reflect.DeepEqual(got, LLMRunOptions{}) {
-		t.Fatalf("nil should yield zero options, got %+v", got)
+	if !strings.Contains(err.Error(), "messages") {
+		t.Fatalf("error should mention missing messages, got: %v", err)
 	}
 }
 
 func TestParseRunOptions_EmptyMap(t *testing.T) {
-	got, err := parseRunOptions(map[string]any{})
-	if err != nil {
-		t.Fatalf("empty map should be accepted, got err: %v", err)
+	_, err := parseRunOptions(map[string]any{})
+	if err == nil {
+		t.Fatal("empty options should be rejected")
 	}
-	if !reflect.DeepEqual(got, LLMRunOptions{}) {
-		t.Fatalf("empty map should yield zero options, got %+v", got)
+	if !strings.Contains(err.Error(), "messages") {
+		t.Fatalf("error should mention missing messages, got: %v", err)
+	}
+}
+
+func TestParseRunOptions_MissingMessages(t *testing.T) {
+	_, err := parseRunOptions(map[string]any{"model": "m"})
+	if err == nil {
+		t.Fatal("options without messages should be rejected")
+	}
+	if !strings.Contains(err.Error(), "messages") {
+		t.Fatalf("error should mention missing messages, got: %v", err)
+	}
+}
+
+func TestParseRunOptions_NullMessages(t *testing.T) {
+	_, err := parseRunOptions(map[string]any{"messages": nil})
+	if err == nil {
+		t.Fatal("messages:null should be rejected")
+	}
+	if !strings.Contains(err.Error(), "messages") {
+		t.Fatalf("error should mention messages, got: %v", err)
 	}
 }
 
@@ -54,6 +87,7 @@ func TestParseRunOptions_NonMap(t *testing.T) {
 
 func TestParseRunOptions_AllFields(t *testing.T) {
 	in := map[string]any{
+		"messages":    canonicalMessagesRaw("hello"),
 		"model":       "openai/gpt-4o-mini",
 		"temperature": 0.25,
 		"max_tokens":  float64(1024), // jsrt/luart deliver numbers as float64
@@ -65,28 +99,33 @@ func TestParseRunOptions_AllFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Model != "openai/gpt-4o-mini" {
-		t.Errorf("model = %q", got.Model)
+	if got.runOptions.Model != "openai/gpt-4o-mini" {
+		t.Errorf("model = %q", got.runOptions.Model)
 	}
-	if got.Temperature == nil || *got.Temperature != 0.25 {
-		t.Errorf("temperature = %v", got.Temperature)
+	if got.runOptions.Temperature == nil || *got.runOptions.Temperature != 0.25 {
+		t.Errorf("temperature = %v", got.runOptions.Temperature)
 	}
-	if got.MaxTokens != 1024 {
-		t.Errorf("max_tokens = %d", got.MaxTokens)
+	if got.runOptions.MaxTokens != 1024 {
+		t.Errorf("max_tokens = %d", got.runOptions.MaxTokens)
 	}
-	if got.JSONMode == nil || *got.JSONMode != true {
-		t.Errorf("json_mode = %v", got.JSONMode)
+	if got.runOptions.JSONMode == nil || *got.runOptions.JSONMode != true {
+		t.Errorf("json_mode = %v", got.runOptions.JSONMode)
 	}
-	if got.Thinking == nil || *got.Thinking != false {
-		t.Errorf("thinking = %v", got.Thinking)
+	if got.runOptions.Thinking == nil || *got.runOptions.Thinking != false {
+		t.Errorf("thinking = %v", got.runOptions.Thinking)
 	}
-	if len(got.Tools) != 2 || got.Tools[0] != "web_search" || got.Tools[1] != "calc" {
-		t.Errorf("tools = %v", got.Tools)
+	if len(got.runOptions.Tools) != 2 || got.runOptions.Tools[0] != "web_search" || got.runOptions.Tools[1] != "calc" {
+		t.Errorf("tools = %v", got.runOptions.Tools)
+	}
+	wantMessages := []model.Message{model.NewTextMessage(model.RoleUser, "hello")}
+	if !reflect.DeepEqual(got.messages, wantMessages) {
+		t.Errorf("messages = %+v, want %+v", got.messages, wantMessages)
 	}
 }
 
 func TestParseRunOptions_UnknownField_Rejected(t *testing.T) {
 	_, err := parseRunOptions(map[string]any{
+		"messages":   canonicalMessagesRaw("hello"),
 		"model":      "m1",
 		"temprature": 0.5, // typo!
 		"json_mode":  true,
@@ -99,12 +138,42 @@ func TestParseRunOptions_UnknownField_Rejected(t *testing.T) {
 	}
 }
 
+func TestParseRunOptions_RejectsMessageContentShorthand(t *testing.T) {
+	cases := []map[string]any{
+		{
+			"messages": []any{
+				map[string]any{"role": "user", "content": "hello"},
+			},
+		},
+		{
+			"messages": []any{
+				map[string]any{
+					"role":    "user",
+					"content": "hello",
+					"parts": []any{
+						map[string]any{"type": "text", "text": "hello"},
+					},
+				},
+			},
+		},
+	}
+	for _, in := range cases {
+		_, err := parseRunOptions(in)
+		if err == nil {
+			t.Fatalf("messages content shorthand should be rejected: %v", in)
+		}
+		if !strings.Contains(err.Error(), "content") {
+			t.Fatalf("error should name content field, got: %v", err)
+		}
+	}
+}
+
 func TestParseRunOptions_TypeMismatch_Rejected(t *testing.T) {
 	cases := []map[string]any{
-		{"temperature": "hot"}, // string in number field
-		{"max_tokens": "lots"},
-		{"json_mode": "yes"},
-		{"tools": "web_search"}, // string instead of []string
+		{"messages": canonicalMessagesRaw("hello"), "temperature": "hot"}, // string in number field
+		{"messages": canonicalMessagesRaw("hello"), "max_tokens": "lots"},
+		{"messages": canonicalMessagesRaw("hello"), "json_mode": "yes"},
+		{"messages": canonicalMessagesRaw("hello"), "tools": "web_search"}, // string instead of []string
 	}
 	for _, in := range cases {
 		_, err := parseRunOptions(in)
@@ -119,23 +188,24 @@ func TestParseRunOptions_TypeMismatch_Rejected(t *testing.T) {
 // test guards that decoding paths preserve that distinction.
 func TestParseRunOptions_BoolPointers_PreserveExplicitFalse(t *testing.T) {
 	got, err := parseRunOptions(map[string]any{
+		"messages":  canonicalMessagesRaw("hello"),
 		"json_mode": false,
 		"thinking":  false,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.JSONMode == nil {
+	if got.runOptions.JSONMode == nil {
 		t.Fatal("json_mode=false should produce non-nil pointer")
 	}
-	if *got.JSONMode != false {
-		t.Errorf("json_mode value = %v", *got.JSONMode)
+	if *got.runOptions.JSONMode != false {
+		t.Errorf("json_mode value = %v", *got.runOptions.JSONMode)
 	}
-	if got.Thinking == nil {
+	if got.runOptions.Thinking == nil {
 		t.Fatal("thinking=false should produce non-nil pointer")
 	}
-	if *got.Thinking != false {
-		t.Errorf("thinking value = %v", *got.Thinking)
+	if *got.runOptions.Thinking != false {
+		t.Errorf("thinking value = %v", *got.runOptions.Thinking)
 	}
 }
 

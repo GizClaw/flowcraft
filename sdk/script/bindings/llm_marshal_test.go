@@ -438,6 +438,51 @@ func TestParseMessage_AcceptsContentKey_AsBijection(t *testing.T) {
 	}
 }
 
+func TestParseLLMMessages_AcceptsCanonicalMessages(t *testing.T) {
+	in := []any{
+		map[string]any{
+			"role": "user",
+			"parts": []any{
+				map[string]any{"type": "text", "text": "hello"},
+			},
+		},
+	}
+	got, err := parseLLMMessages(in, "llm.messages")
+	if err != nil {
+		t.Fatalf("canonical llm messages should parse: %v", err)
+	}
+	want := []model.Message{model.NewTextMessage(model.RoleUser, "hello")}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("messages = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseLLMMessages_RejectsContentField(t *testing.T) {
+	cases := []any{
+		[]any{
+			map[string]any{"role": "user", "content": "hello"},
+		},
+		[]any{
+			map[string]any{
+				"role":    "user",
+				"content": "hello",
+				"parts": []any{
+					map[string]any{"type": "text", "text": "hello"},
+				},
+			},
+		},
+	}
+	for _, in := range cases {
+		_, err := parseLLMMessages(in, "llm.messages")
+		if err == nil {
+			t.Fatalf("content key should be rejected for llm messages: %v", in)
+		}
+		if !strings.Contains(err.Error(), "content") {
+			t.Fatalf("error should name content field, got: %v", err)
+		}
+	}
+}
+
 func TestParsePart_UnknownType(t *testing.T) {
 	in := map[string]any{"type": "future_thing"}
 	_, err := parsePart(in, "ctx")
@@ -540,6 +585,25 @@ func TestParseChannelMessages_NilAndEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("empty should produce empty slice, got %#v", got)
+	}
+}
+
+func TestParseChannelMessages_AcceptsContentKeyRoundTrip(t *testing.T) {
+	in := []any{
+		map[string]any{
+			"role":    "assistant",
+			"content": "hello",
+			"parts": []any{
+				map[string]any{"type": "text", "text": "hello"},
+			},
+		},
+	}
+	got, err := parseChannelMessages(in, "setChannel")
+	if err != nil {
+		t.Fatalf("setChannel round-trip content key should remain accepted: %v", err)
+	}
+	if len(got) != 1 || got[0].Content() != "hello" {
+		t.Fatalf("parsed messages = %+v", got)
 	}
 }
 
