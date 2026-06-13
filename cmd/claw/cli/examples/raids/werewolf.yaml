@@ -1,0 +1,2505 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+conversation:
+  starts: self
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+  extract_model: qwen-flash
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    deepseek-v4-pro:
+      provider: deepseek
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+memory:
+  enabled: true
+  scope:
+    runtime_id: werewolf
+    user_id: local
+    agent_id: werewolf-host
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+    board_facts:
+      - board_var: tmp_game_progress_line
+        kind: state
+        subject: game_progress
+        predicate: status
+        required_prefix: "game_progress: "
+      - board_var: tmp_public_timeline_line
+        kind: event
+        subject: public_timeline
+        predicate: event
+        required_prefix: "public_timeline: "
+      - board_var: tmp_resolution_log_line
+        kind: event
+        subject: resolution_log
+        predicate: decision
+        required_prefix: "resolution_log: "
+      - board_var: tmp_seat_1_memory_line
+        kind: state
+        subject: seat_1_memory
+        predicate: role_context
+        required_prefix: "seat_1_memory: "
+      - board_var: tmp_seat_2_memory_line
+        kind: state
+        subject: seat_2_memory
+        predicate: role_context
+        required_prefix: "seat_2_memory: "
+      - board_var: tmp_seat_3_memory_line
+        kind: state
+        subject: seat_3_memory
+        predicate: role_context
+        required_prefix: "seat_3_memory: "
+      - board_var: tmp_seat_4_memory_line
+        kind: state
+        subject: seat_4_memory
+        predicate: role_context
+        required_prefix: "seat_4_memory: "
+      - board_var: tmp_seat_5_memory_line
+        kind: state
+        subject: seat_5_memory
+        predicate: role_context
+        required_prefix: "seat_5_memory: "
+      - board_var: tmp_seat_6_memory_line
+        kind: state
+        subject: seat_6_memory
+        predicate: role_context
+        required_prefix: "seat_6_memory: "
+      - board_var: tmp_seat_7_memory_line
+        kind: state
+        subject: seat_7_memory
+        predicate: role_context
+        required_prefix: "seat_7_memory: "
+      - board_var: tmp_seat_8_memory_line
+        kind: state
+        subject: seat_8_memory
+        predicate: role_context
+        required_prefix: "seat_8_memory: "
+  extract:
+    enabled: true
+  layout:
+    lanes:
+      - name: game_progress
+        kind: state
+        description: Audit mirror for phase, day, alive seats, and winner.
+        extract: Do not extract. Written only from tmp_game_progress_line.
+        recall: Audit only. Runtime routing uses board state werewolf_game_state.
+      - name: public_timeline
+        kind: event
+        description: Public speeches, deaths, nominations, and votes.
+        extract: Do not extract. Written only from tmp_public_timeline_line.
+        recall: Inject as public recap for live speech context.
+      - name: seat_1_memory
+        kind: state
+        description: Seat 1 Lin Zhi private role context, public pressure, vote history, and prior speaking stance.
+        extract: Do not extract. Written only from tmp_seat_1_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_2_memory
+        kind: state
+        description: Seat 2 A Che private role context, seer results, credibility, and prior speaking stance.
+        extract: Do not extract. Written only from tmp_seat_2_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_3_memory
+        kind: state
+        description: Seat 3 user private role context, public speech, vote history, and player-visible progress.
+        extract: Do not extract. Written only from tmp_seat_3_memory_line.
+        recall: Audit and player continuity only.
+      - name: seat_4_memory
+        kind: state
+        description: Seat 4 Xiao Man public status, uncertainty, vote concerns, and whether this seat is alive.
+        extract: Do not extract. Written only from tmp_seat_4_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_5_memory
+        kind: state
+        description: Seat 5 Zhou Lan private role context, suspicion level, vote pressure, and prior speaking stance.
+        extract: Do not extract. Written only from tmp_seat_5_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_6_memory
+        kind: state
+        description: Seat 6 Chen Doctor public stance, survival state, and cautious analysis continuity.
+        extract: Do not extract. Written only from tmp_seat_6_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_7_memory
+        kind: state
+        description: Seat 7 Lao Zhao public stance, survival state, and forceful voting continuity.
+        extract: Do not extract. Written only from tmp_seat_7_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: seat_8_memory
+        kind: state
+        description: Seat 8 Su He public status, death state, and post-game observer context.
+        extract: Do not extract. Written only from tmp_seat_8_memory_line.
+        recall: Private per-seat memory; not injected into live public speech.
+      - name: resolution_log
+        kind: event
+        description: Tool-call mirror of setup, vote exiles, and final result.
+        extract: Do not extract. Written only from tmp_resolution_log_line.
+        recall: Audit only.
+  recall:
+    enabled: true
+    graph_enabled: true
+    include_retired: false
+    profiles:
+      game_memory:
+        output: game_memory
+        top_k: 2
+        query:
+          text: "werewolf game progress phase day alive winner vote"
+          lanes: [game_progress]
+          kinds: [state]
+        render:
+          header: "Game memory:"
+          item_prefix: "- "
+          max_items: 2
+      public_memory:
+        output: public_memory
+        top_k: 3
+        query:
+          text: "werewolf public timeline death speech vote result"
+          lanes: [public_timeline]
+          kinds: [event]
+        render:
+          header: "Public memory:"
+          item_prefix: "- "
+          max_items: 3
+  embedding:
+    enabled: false
+
+agent:
+  id: werewolf-host
+  name: Werewolf Host
+  description: A Chinese Werewolf host where the user sits at seat 3 and every NPC seat has its own graph node.
+  max_iterations: 36
+  tools:
+    - name: werewolf_game_event
+      description: Emit a lifecycle event when Werewolf game state changes.
+      input_schema:
+        type: object
+        properties:
+          event_type:
+            type: string
+            description: setup, night_resolve, game_over, or continue.
+          phase:
+            type: string
+            description: Current phase after the event.
+          detail:
+            type: string
+            description: Internal lifecycle detail. Do not use it for public narration.
+        required:
+          - event_type
+          - phase
+          - detail
+  graph:
+    name: werewolf
+    entry: load_game_state
+    nodes:
+      - id: load_game_state
+        type: script
+        config:
+          source: |
+            function latestUserText() {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                const msg = msgs[i] || {};
+                if (msg.role !== "user") continue;
+                if (typeof msg.content === "string" && msg.content.trim()) return msg.content.trim();
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                const text = parts.map(function(part) {
+                  return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (text) return text;
+              }
+              return "";
+            }
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function publicStateView(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              function seatName(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+                return "";
+              }
+              return {
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                player: { seat: state.player_seat || 3 },
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, alive: aliveSet[String(s.id)] === true, speaking_style: s.persona || "" };
+                }),
+                public_log: Array.isArray(state.public_log) ? state.public_log : [],
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0,
+                vote_retry_reason: state.vote_retry_reason || "",
+                winner: state.winner || "",
+                public_focus: state.public_focus || ""
+              };
+            }
+            function syncStateViews(state) {
+              state.seats = Array.isArray(state.seats) ? state.seats : [];
+              state.alive = Array.isArray(state.alive) ? state.alive : [];
+              state.public_log = Array.isArray(state.public_log) ? state.public_log : [];
+              state.private_notes = Array.isArray(state.private_notes) ? state.private_notes : [];
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              state.role_assignment = {
+                seed: state.role_seed || "unassigned",
+                player_seat: state.player_seat || 3,
+                player_role: state.player_role || "villager",
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, role: s.role, persona: s.persona };
+                })
+              };
+              state.phase_state = {
+                started: state.started === true,
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                winner: state.winner || "",
+                last_event: state.last_event || "",
+                pending_tool_event: state.pending_tool_event || ""
+              };
+              state.seat_state = {
+                alive: state.alive || [],
+                dead: (state.seats || []).filter(function(s) {
+                  return !aliveSet[String(s.id)];
+                }).map(function(s) { return s.id; }),
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0
+              };
+              for (let i = 1; i <= 8; i++) {
+                board.setVar("seat_" + i + "_alive", aliveSet[String(i)] ? "true" : "false");
+              }
+              board.setVar("werewolf_phase", state.phase || "setup");
+              board.setVar("werewolf_pending_tool_event", state.pending_tool_event || "");
+              board.setVar("werewolf_pending_tool_detail", state.pending_tool_detail || "");
+              board.setVar("werewolf_game_state", state);
+              const promptStateText = JSON.stringify(publicStateView(state), null, 2);
+              board.setVar("werewolf_game_state_text", promptStateText);
+              board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+              board.setVar("werewolf_player_role_label", roleLabel(state.player_role || ""));
+              function ch(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: text + "\n\n当前状态:\n" + promptStateText }]
+                }]);
+              }
+              function rawCh(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: String(text || "") }]
+                }]);
+              }
+              function recentHistory(limit) {
+                const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                const start = Math.max(0, msgs.length - Number(limit || 10));
+                return msgs.slice(start).map(function(msg) {
+                  const role = msg.role || "";
+                  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                  let node = "";
+                  const text = parts.map(function(part) {
+                    if (!part) return "";
+                    if (part.type === "text/xml" && typeof part.text === "string") {
+                      const m = part.text.match(/node id="([^"]+)"/);
+                      if (m) node = m[1];
+                      return "";
+                    }
+                    return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                  }).join("").trim();
+                  if (!text) return "";
+                  return (node ? node : role) + ": " + text.slice(0, 220);
+                }).filter(Boolean).join("\n");
+              }
+              function seatByID(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+                return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+              }
+              function seatPublicBehavior(id) {
+                const map = {
+                  3: "玩家本人，只参与白天发言和投票。",
+                  4: "犹豫但会观察票型，倾向多听一轮。",
+                  5: "打圆场、转移焦点，削弱对自己的压力。",
+                  6: "谨慎分析公开发言和票型，不抢节奏。",
+                  7: "强势归票，抓住最清晰的公开矛盾推进投票。",
+                  8: "已出局时只在赛后旁观复盘。"
+                };
+                return map[Number(id)] || "根据公开信息发言。";
+              }
+              function privateSeatContextFor(id) {
+                const seat = seatByID(id);
+                const role = roleLabel(seat.role || "");
+                const rows = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+                  return Number(r.seer) === Number(id);
+                }).map(function(r) {
+                  const target = seatByID(r.target);
+                  return "第" + r.day + "夜查验结果：" + r.target + "号" + (target.name || "") + "为" + r.camp;
+                });
+                const seerText = rows.length ? rows.join(" | ") : "暂无";
+                return "你的身份=" + role + "; 你的夜间查验=" + seerText + "; 只能使用自己的身份、自己的查验和公开信息发言，不得知道其他玩家的隐藏身份。";
+              }
+              function seatPublicCtx(id, text) {
+                const history = recentHistory(6) || "暂无";
+                const memory = String(board.getVar("public_memory") || "暂无");
+                const focus = String(board.getVar("werewolf_public_focus") || "暂无");
+                const seat = seatByID(id);
+                const view = "座位=" + id + "; 姓名=" + (seat.name || "") + "; 存活=" + (seat.alive === true ? "true" : "false") + "; 发言风格=" + (seat.persona || "") + "; 本轮公开任务=" + seatPublicBehavior(id) + "; 私有视角=" + privateSeatContextFor(id);
+                board.setVar("seat_" + id + "_public_view", view);
+                return text + "\n\n当前公开焦点:\n" + focus + "\n\n公开角色视图:\n" + view + "\n\n公开记忆:\n" + memory + "\n\n近期历史:\n" + history;
+              }
+              function seatPrivateCtx(id, text) {
+                const memory = String(board.getVar("seat_" + id + "_memory") || "暂无");
+                const publicMemory = String(board.getVar("public_memory") || "暂无");
+                const seat = seatByID(id);
+                const status = "seat=" + id + "; name=" + (seat.name || "") + "; role=" + roleLabel(seat.role || "") + "; alive=" + (seat.alive === true ? "true" : "false") + "; death_reason=" + (seat.death_reason || "none") + "; death_day=" + (seat.death_day || "none") + "; persona=" + (seat.persona || "");
+                const contract = "post_game_contract: phase=ended 时只复盘本局；role_assignment 不变；不创建新局；不新增夜间行动、查验、投票或技能结算；seat_state 与 seat_memory 中的 alive/death_reason/death_day 是每个角色出局原因的事实来源；只引用当前 state、public_log、seer_results、seat_memory 和 history 中已有的事实；output_format=plain_text。";
+                const factCheck = "seat_fact_check: death_reason=" + (seat.death_reason || "none") + "; death_day=" + (seat.death_day || "none") + "; alive=" + (seat.alive === true ? "true" : "false") + "; 出局后的内容属于赛后旁观复盘，不是游戏内发言、投票、查验或夜间行动。";
+                function ownHistoryForSeat(seatID) {
+                  const nodeNames = {
+                    1: ["seat_1_lin_zhi_speak"],
+                    2: ["seat_2_ache_speak"],
+                    4: ["seat_4_xiaoman_speak"],
+                    5: ["seat_5_zhoulan_speak"],
+                    6: ["seat_6_chen_doctor_speak"],
+                    7: ["seat_7_laozhao_speak"],
+                    8: ["seat_8_suhe_speak"]
+                  }[Number(seatID)] || [];
+                  const seen = {};
+                  for (const name of nodeNames) seen[name] = true;
+                  const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                  return msgs.map(function(msg) {
+                    const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                    let node = "";
+                    const text = parts.map(function(part) {
+                      if (!part) return "";
+                      if (part.type === "text/xml" && typeof part.text === "string") {
+                        const m = part.text.match(/node id="([^"]+)"/);
+                        if (m) node = m[1];
+                        return "";
+                      }
+                      return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                    }).join("").trim();
+                    if (!seen[node] || !text) return "";
+                    return node + ": " + text.slice(0, 260);
+                  }).filter(Boolean).slice(-4).join("\n") || "none";
+                }
+                board.setVar("post_game_contract", contract);
+                return text + "\n\n赛后角色状态:\n" + status + "\n\n赛后事实核对:\n" + factCheck + "\n\n赛后状态约束:\n" + contract + "\n\n角色私有记忆:\n" + memory + "\n\n公开记忆:\n" + publicMemory + "\n\n本角色历史发言:\n" + ownHistoryForSeat(id);
+              }
+              ch("host_opening_channel", "主持人开局公告。");
+              ch("host_day_channel", "主持人白天公告。");
+              ch("seat_1_channel", seatPublicCtx(1, "发言人=1号林知；用第一人称短话发言。"));
+              ch("seat_2_channel", seatPublicCtx(2, "发言人=2号阿澈；用第一人称短话发言。"));
+              ch("seat_4_channel", seatPublicCtx(4, "发言人=4号小满；用第一人称短话发言。"));
+              ch("seat_5_channel", seatPublicCtx(5, "发言人=5号周岚；用第一人称短话发言。"));
+              ch("seat_6_channel", seatPublicCtx(6, "发言人=6号陈医生；用第一人称短话发言。"));
+              ch("seat_7_channel", seatPublicCtx(7, "发言人=7号老赵；用第一人称短话发言。"));
+              ch("seat_8_channel", seatPublicCtx(8, "发言人=8号苏禾；用第一人称短话发言。"));
+              ch("user_prompt_channel", "主持人提示3号玩家发言。");
+              ch("vote_prompt_channel", "主持人投票提示，要求3号玩家明确投票座位号。");
+              rawCh("vote_result_channel", String(state.vote_result_summary || ""));
+              ch("retry_channel", "主持人纠正当前动作。");
+              ch("post_game_seat_1_channel", seatPrivateCtx(1, "赛后自由发言，角色=1号林知。"));
+              ch("post_game_seat_2_channel", seatPrivateCtx(2, "赛后自由发言，角色=2号阿澈。"));
+              ch("post_game_seat_4_channel", seatPrivateCtx(4, "赛后自由发言，角色=4号小满。"));
+              ch("post_game_seat_5_channel", seatPrivateCtx(5, "赛后自由发言，角色=5号周岚。"));
+              ch("post_game_seat_6_channel", seatPrivateCtx(6, "赛后自由发言，角色=6号陈医生。"));
+              ch("post_game_seat_7_channel", seatPrivateCtx(7, "赛后自由发言，角色=7号老赵。"));
+              ch("post_game_seat_8_channel", seatPrivateCtx(8, "赛后自由发言，角色=8号苏禾。"));
+              ch("post_game_host_channel", "赛后自由发言收束，角色=主持人。");
+              return state;
+            }
+            const existing = board.getVar("werewolf_game_state") || {};
+            const state = Object.assign({
+              started: false,
+              phase: "setup",
+              day: 0,
+              player_seat: 3,
+              player_role: "villager",
+              role_seed: "unassigned",
+              seats: [],
+              alive: [],
+              public_log: [],
+              private_notes: [],
+              last_event: "new",
+              last_action: "",
+              last_target: "",
+              pending_tool_event: "",
+              pending_tool_detail: "",
+              winner: "",
+              public_focus: ""
+            }, existing || {});
+            state.latest_user_text = latestUserText();
+            syncStateViews(state);
+
+      - id: route_setup
+        type: script
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            if (state.phase === "ended") {
+              board.setVar("werewolf_route", "post_game_free_chat");
+            } else if (state.started !== true || state.phase === "setup") {
+              board.setVar("werewolf_route", "setup_game");
+            } else if (state.phase === "night_open") {
+              board.setVar("werewolf_route", "night_open");
+            } else if (state.phase === "day_open") {
+              board.setVar("werewolf_route", "day_open");
+            } else if (state.phase === "user_speech") {
+              board.setVar("werewolf_route", "user_speech");
+            } else if (state.phase === "vote") {
+              board.setVar("werewolf_route", "vote");
+            } else {
+              board.setVar("werewolf_route", "day_open");
+            }
+
+      - id: route_post_game_chat
+        type: script
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const text = String(state.latest_user_text || "").trim();
+            if (/大家|全员|每个人|所有人|按座位|一圈|都说/.test(text)) {
+              board.setVar("post_game_mode", "role_chain");
+            } else {
+              board.setVar("post_game_mode", "host_only");
+            }
+
+      - id: setup_game
+        type: script
+        config:
+          source: |
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function publicStateView(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              function seatName(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+                return "";
+              }
+              return {
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                player: { seat: state.player_seat || 3 },
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, alive: aliveSet[String(s.id)] === true, speaking_style: s.persona || "" };
+                }),
+                public_log: Array.isArray(state.public_log) ? state.public_log : [],
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0,
+                vote_retry_reason: state.vote_retry_reason || "",
+                winner: state.winner || "",
+                public_focus: state.public_focus || ""
+              };
+            }
+            function syncStateViews(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              state.role_assignment = {
+                seed: state.role_seed || "unassigned",
+                player_seat: state.player_seat || 3,
+                player_role: state.player_role || "villager",
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, role: s.role, persona: s.persona };
+                })
+              };
+              state.phase_state = {
+                started: state.started === true,
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                winner: state.winner || "",
+                last_event: state.last_event || "",
+                pending_tool_event: state.pending_tool_event || ""
+              };
+              state.seat_state = {
+                alive: state.alive || [],
+                dead: (state.seats || []).filter(function(s) { return !aliveSet[String(s.id)]; }).map(function(s) { return s.id; }),
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0
+              };
+              for (let i = 1; i <= 8; i++) board.setVar("seat_" + i + "_alive", aliveSet[String(i)] ? "true" : "false");
+              board.setVar("werewolf_phase", state.phase || "setup");
+              board.setVar("werewolf_pending_tool_event", state.pending_tool_event || "");
+              board.setVar("werewolf_pending_tool_detail", state.pending_tool_detail || "");
+              board.setVar("werewolf_game_state", state);
+              const promptStateText = JSON.stringify(publicStateView(state), null, 2);
+              board.setVar("werewolf_game_state_text", promptStateText);
+              board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+              board.setVar("werewolf_player_role_label", roleLabel(state.player_role || ""));
+              function ch(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: text + "\n\n当前状态:\n" + promptStateText }]
+                }]);
+              }
+              function rawCh(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: String(text || "") }]
+                }]);
+              }
+              function recentHistory(limit) {
+                const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                const start = Math.max(0, msgs.length - Number(limit || 10));
+                return msgs.slice(start).map(function(msg) {
+                  const role = msg.role || "";
+                  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                  let node = "";
+                  const text = parts.map(function(part) {
+                    if (!part) return "";
+                    if (part.type === "text/xml" && typeof part.text === "string") {
+                      const m = part.text.match(/node id="([^"]+)"/);
+                      if (m) node = m[1];
+                      return "";
+                    }
+                    return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                  }).join("").trim();
+                  if (!text) return "";
+                  return (node ? node : role) + ": " + text.slice(0, 220);
+                }).filter(Boolean).join("\n");
+              }
+              function seatByID(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+                return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+              }
+              function seatPublicBehavior(id) {
+                const map = {
+                  3: "玩家本人，只参与白天发言和投票。",
+                  4: "犹豫但会观察票型，倾向多听一轮。",
+                  5: "打圆场、转移焦点，削弱对自己的压力。",
+                  6: "谨慎分析公开发言和票型，不抢节奏。",
+                  7: "强势归票，抓住最清晰的公开矛盾推进投票。",
+                  8: "已出局时只在赛后旁观复盘。"
+                };
+                return map[Number(id)] || "根据公开信息发言。";
+              }
+              function privateSeatContextFor(id) {
+                const seat = seatByID(id);
+                const role = roleLabel(seat.role || "");
+                const rows = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+                  return Number(r.seer) === Number(id);
+                }).map(function(r) {
+                  const target = seatByID(r.target);
+                  return "第" + r.day + "夜查验结果：" + r.target + "号" + (target.name || "") + "为" + r.camp;
+                });
+                const seerText = rows.length ? rows.join(" | ") : "暂无";
+                return "你的身份=" + role + "; 你的夜间查验=" + seerText + "; 只能使用自己的身份、自己的查验和公开信息发言，不得知道其他玩家的隐藏身份。";
+              }
+              function seatPublicCtx(id, text) {
+                const history = recentHistory(6) || "暂无";
+                const memory = String(board.getVar("public_memory") || "暂无");
+                const focus = String(board.getVar("werewolf_public_focus") || "暂无");
+                const seat = seatByID(id);
+                const view = "座位=" + id + "; 姓名=" + (seat.name || "") + "; 存活=" + (seat.alive === true ? "true" : "false") + "; 发言风格=" + (seat.persona || "") + "; 本轮公开任务=" + seatPublicBehavior(id) + "; 私有视角=" + privateSeatContextFor(id);
+                board.setVar("seat_" + id + "_public_view", view);
+                return text + "\n\n当前公开焦点:\n" + focus + "\n\n公开角色视图:\n" + view + "\n\n公开记忆:\n" + memory + "\n\n近期历史:\n" + history;
+              }
+              function seatPrivateCtx(id, text) {
+                const memory = String(board.getVar("seat_" + id + "_memory") || "暂无");
+                const publicMemory = String(board.getVar("public_memory") || "暂无");
+                const seat = seatByID(id);
+                const status = "seat=" + id + "; name=" + (seat.name || "") + "; role=" + roleLabel(seat.role || "") + "; alive=" + (seat.alive === true ? "true" : "false") + "; death_reason=" + (seat.death_reason || "none") + "; death_day=" + (seat.death_day || "none") + "; persona=" + (seat.persona || "");
+                const contract = "post_game_contract: phase=ended 时只复盘本局；role_assignment 不变；不创建新局；不新增夜间行动、查验、投票或技能结算；seat_state 与 seat_memory 中的 alive/death_reason/death_day 是每个角色出局原因的事实来源；只引用当前 state、public_log、seer_results、seat_memory 和 history 中已有的事实；output_format=plain_text。";
+                const factCheck = "seat_fact_check: death_reason=" + (seat.death_reason || "none") + "; death_day=" + (seat.death_day || "none") + "; alive=" + (seat.alive === true ? "true" : "false") + "; 出局后的内容属于赛后旁观复盘，不是游戏内发言、投票、查验或夜间行动。";
+                function ownHistoryForSeat(seatID) {
+                  const nodeNames = {
+                    1: ["seat_1_lin_zhi_speak"],
+                    2: ["seat_2_ache_speak"],
+                    4: ["seat_4_xiaoman_speak"],
+                    5: ["seat_5_zhoulan_speak"],
+                    6: ["seat_6_chen_doctor_speak"],
+                    7: ["seat_7_laozhao_speak"],
+                    8: ["seat_8_suhe_speak"]
+                  }[Number(seatID)] || [];
+                  const seen = {};
+                  for (const name of nodeNames) seen[name] = true;
+                  const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                  return msgs.map(function(msg) {
+                    const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                    let node = "";
+                    const text = parts.map(function(part) {
+                      if (!part) return "";
+                      if (part.type === "text/xml" && typeof part.text === "string") {
+                        const m = part.text.match(/node id="([^"]+)"/);
+                        if (m) node = m[1];
+                        return "";
+                      }
+                      return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                    }).join("").trim();
+                    if (!seen[node] || !text) return "";
+                    return node + ": " + text.slice(0, 260);
+                  }).filter(Boolean).slice(-4).join("\n") || "none";
+                }
+                board.setVar("post_game_contract", contract);
+                return text + "\n\n赛后角色状态:\n" + status + "\n\n赛后事实核对:\n" + factCheck + "\n\n赛后状态约束:\n" + contract + "\n\n角色私有记忆:\n" + memory + "\n\n公开记忆:\n" + publicMemory + "\n\n本角色历史发言:\n" + ownHistoryForSeat(id);
+              }
+              ch("host_opening_channel", "主持人开局公告。");
+              ch("host_day_channel", "主持人白天公告。");
+              ch("seat_1_channel", seatPublicCtx(1, "发言人=1号林知；用第一人称短话发言。"));
+              ch("seat_2_channel", seatPublicCtx(2, "发言人=2号阿澈；用第一人称短话发言。"));
+              ch("seat_4_channel", seatPublicCtx(4, "发言人=4号小满；用第一人称短话发言。"));
+              ch("seat_5_channel", seatPublicCtx(5, "发言人=5号周岚；用第一人称短话发言。"));
+              ch("seat_6_channel", seatPublicCtx(6, "发言人=6号陈医生；用第一人称短话发言。"));
+              ch("seat_7_channel", seatPublicCtx(7, "发言人=7号老赵；用第一人称短话发言。"));
+              ch("seat_8_channel", seatPublicCtx(8, "发言人=8号苏禾；用第一人称短话发言。"));
+              ch("user_prompt_channel", "主持人提示3号玩家发言。");
+              ch("vote_prompt_channel", "主持人投票提示，要求3号玩家明确投票座位号。");
+              rawCh("vote_result_channel", String(state.vote_result_summary || ""));
+              ch("retry_channel", "主持人纠正当前动作。");
+              ch("post_game_seat_1_channel", seatPrivateCtx(1, "赛后自由发言，角色=1号林知。"));
+              ch("post_game_seat_2_channel", seatPrivateCtx(2, "赛后自由发言，角色=2号阿澈。"));
+              ch("post_game_seat_4_channel", seatPrivateCtx(4, "赛后自由发言，角色=4号小满。"));
+              ch("post_game_seat_5_channel", seatPrivateCtx(5, "赛后自由发言，角色=5号周岚。"));
+              ch("post_game_seat_6_channel", seatPrivateCtx(6, "赛后自由发言，角色=6号陈医生。"));
+              ch("post_game_seat_7_channel", seatPrivateCtx(7, "赛后自由发言，角色=7号老赵。"));
+              ch("post_game_seat_8_channel", seatPrivateCtx(8, "赛后自由发言，角色=8号苏禾。"));
+              ch("post_game_host_channel", "赛后自由发言收束，角色=主持人。");
+            }
+            function seededRandom(seed) {
+              let h = 2166136261;
+              const s = String(seed || "");
+              for (let i = 0; i < s.length; i++) {
+                h ^= s.charCodeAt(i);
+                h = Math.imul(h, 16777619);
+              }
+              return function() {
+                h += 0x6D2B79F5;
+                let t = h;
+                t = Math.imul(t ^ (t >>> 15), t | 1);
+                t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+                return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+              };
+            }
+            function shuffle(list, rand) {
+              const out = list.slice();
+              for (let i = out.length - 1; i > 0; i--) {
+                const j = Math.floor(rand() * (i + 1));
+                const tmp = out[i];
+                out[i] = out[j];
+                out[j] = tmp;
+              }
+              return out;
+            }
+            const roleSeed = "werewolf-" + Date.now();
+            const rand = seededRandom(roleSeed);
+            const assignedUserRole = "villager";
+            let removedUserCard = false;
+            const npcRoles = ["werewolf", "werewolf", "werewolf", "villager", "villager", "seer", "witch", "hunter"].filter(function(role) {
+              if (!removedUserCard && role === assignedUserRole) {
+                removedUserCard = true;
+                return false;
+              }
+              return true;
+            });
+            const assignedRoles = shuffle(npcRoles, rand);
+            const baseSeats = [
+              { id: 1, name: "林知", persona: "谨慎、会反咬、擅长装好人" },
+              { id: 2, name: "阿澈", persona: "逻辑清楚但语气不强势，愿意公开报验" },
+              { id: 3, name: "你", persona: "用户，可白天发言、投票，也可以诈身份" },
+              { id: 4, name: "小满", persona: "容易犹豫，重视票型" },
+              { id: 5, name: "周岚", persona: "爱打圆场、转移焦点、缓和矛盾" },
+              { id: 6, name: "陈医生", persona: "保守，倾向多听一轮" },
+              { id: 7, name: "老赵", persona: "直接、强硬、喜欢拍桌归票" },
+              { id: 8, name: "苏禾", persona: "安静，容易被忽视，但复盘时会补充细节" }
+            ];
+            let roleIndex = 0;
+            const seats = baseSeats.map(function(seat) {
+              const role = seat.id === 3 ? assignedUserRole : assignedRoles[roleIndex++];
+              return Object.assign({}, seat, { role: role, alive: true });
+            });
+            function firstSeatByRole(role) {
+              for (const seat of seats) if (seat.role === role) return Number(seat.id);
+              return 0;
+            }
+            const state = {
+              started: true,
+              phase: "night_open",
+              day: 1,
+              player_seat: 3,
+              player_role: seats[2].role,
+              role_seed: roleSeed,
+              seer_seat: firstSeatByRole("seer"),
+              witch_seat: firstSeatByRole("witch"),
+              hunter_seat: firstSeatByRole("hunter"),
+              seats: seats,
+              alive: [1, 2, 3, 4, 5, 6, 7, 8],
+              public_log: [
+                "第1夜：游戏开始，主持人进入夜间流程。"
+              ],
+              private_notes: ["你是3号玩家，身份由 role_assignment 记录；夜间行动由主持流程自动推进。"],
+              seer_results: [],
+              last_event: "setup_day_open",
+              last_action: "start",
+              last_target: "",
+              last_night_kill: 0,
+              pending_night_kill: 0,
+              pending_seer_target: 0,
+              witch_used_poison: false,
+              witch_used_save: false,
+              pending_tool_event: "setup",
+              pending_tool_detail: "setup_state_initialized",
+              winner: "",
+              public_focus: "当前公开焦点：第1夜正在进行，白天信息尚未公布。"
+            };
+            syncStateViews(state);
+            board.setChannel("werewolf_tool_channel", [{
+              role: "user",
+              parts: [{ type: "text", text: "Emit the configured Werewolf lifecycle event exactly as specified." }]
+            }]);
+
+      - id: host_opening
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function seatName(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+              return "";
+            }
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            const seats = (state.seats || []).map(function(s) {
+              return String(s.id) + "号" + (s.name || "");
+            }).join("、");
+            const text = "本局是8人狼人杀，座位为：" + seats + "。你是" + (state.player_seat || 3) + "号，身份是" + roleLabel(state.player_role || "") + "。现在游戏开始，进入第" + (state.day || 1) + "夜。";
+            host.emit("token", { content: text });
+
+      - id: host_night_begin
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            state.phase = "night_open";
+            state.last_event = "night_begin";
+            board.setVar("werewolf_phase", "night_open");
+            board.setVar("werewolf_game_state", state);
+            const text = "天黑请闭眼。现在是第" + (state.day || 1) + "夜，所有玩家进入夜间阶段。";
+            host.emit("token", { content: text });
+
+      - id: host_werewolf_action
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function seatRole(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            function isAlive(id) {
+              const n = Number(id);
+              return (state.alive || []).map(Number).indexOf(n) >= 0;
+            }
+            function chooseNightKill() {
+              if (Number(state.day || 1) === 1 && isAlive(8) && seatRole(8) !== "werewolf") return 8;
+              const priority = [4, 6, 7, 2, 8];
+              for (const id of priority) {
+                if (id !== Number(state.player_seat || 3) && isAlive(id) && seatRole(id) !== "werewolf") return id;
+              }
+              return 0;
+            }
+            state.pending_night_kill = chooseNightKill();
+            state.last_event = "werewolf_night_action";
+            board.setVar("werewolf_game_state", state);
+            host.emit("token", { content: "狼人请睁眼，确认今晚袭击目标。狼人请闭眼。" });
+
+      - id: host_seer_action
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function isAlive(id) {
+              const n = Number(id);
+              return (state.alive || []).map(Number).indexOf(n) >= 0;
+            }
+            function seatRole(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            function chooseSeerTarget() {
+              const priority = [1, 5, 2, 4, 6, 7, 8];
+              for (const id of priority) {
+                if (id !== Number(state.seer_seat || 0) && isAlive(id) && seatRole(id) === "werewolf") return id;
+              }
+              return 0;
+            }
+            function firstLivingRole(role) {
+              for (const seat of state.seats || []) {
+                if (seat.alive === true && seat.role === role) return Number(seat.id);
+              }
+              return 0;
+            }
+            const seerSeat = Number(state.seer_seat || firstLivingRole("seer") || 0);
+            state.pending_seer_target = seerSeat > 0 && isAlive(seerSeat) ? (chooseSeerTarget() || firstLivingRole("werewolf")) : 0;
+            if (state.pending_seer_target > 0) {
+              state.seer_results = Array.isArray(state.seer_results) ? state.seer_results : [];
+              const exists = state.seer_results.some(function(r) {
+                return Number(r.day) === Number(state.day) && Number(r.seer) === seerSeat && Number(r.target) === Number(state.pending_seer_target);
+              });
+              if (!exists) state.seer_results.push({
+                day: state.day,
+                seer: seerSeat,
+                target: state.pending_seer_target,
+                camp: seatRole(state.pending_seer_target) === "werewolf" ? "狼人阵营" : "好人阵营"
+              });
+            }
+            state.last_event = "seer_night_action";
+            board.setVar("werewolf_game_state", state);
+            host.emit("token", { content: "预言家请睁眼，选择一名玩家查验身份。主持人给出查验结果。预言家请闭眼。" });
+
+      - id: host_witch_action
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const text = "女巫请睁眼。昨晚有人遇袭，是否使用解药？是否使用毒药？女巫本夜选择不使用毒药。女巫请闭眼。";
+            host.emit("token", { content: text });
+
+      - id: resolve_night
+        type: script
+        config:
+          source: |
+            function seatName(state, id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+              return "";
+            }
+            function seatRole(state, id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            function aliveWithout(state, id, reason, day) {
+              const n = Number(id);
+              state.alive = (state.alive || []).filter(function(x) { return Number(x) !== n; });
+              for (const seat of state.seats || []) if (Number(seat.id) === n) {
+                seat.alive = false;
+                seat.death_reason = String(reason || seat.death_reason || "dead");
+                seat.death_day = Number(day || seat.death_day || state.day || 0);
+              }
+            }
+            function addPublic(state, line) {
+              const log = Array.isArray(state.public_log) ? state.public_log.slice() : [];
+              log.push(line);
+              state.public_log = log;
+            }
+            function isAlive(state, id) {
+              const n = Number(id);
+              return (state.alive || []).map(Number).indexOf(n) >= 0;
+            }
+            function chooseSeerTarget(state) {
+              if (!isAlive(state, 2)) return 0;
+              if (Number(state.day || 1) === 1 && isAlive(state, 1)) return 1;
+              const priority = [5, 1, 4, 6, 7, 8];
+              for (const id of priority) {
+                if (isAlive(state, id) && seatRole(state, id) === "werewolf") return id;
+              }
+              return 0;
+            }
+            function publicSeerResult(state, seer, target) {
+              if (!seer || !target) return;
+              state.seer_results = Array.isArray(state.seer_results) ? state.seer_results : [];
+              const exists = state.seer_results.some(function(r) {
+                return Number(r.day) === Number(state.day) && Number(r.seer) === Number(seer) && Number(r.target) === Number(target);
+              });
+              if (!exists) state.seer_results.push({
+                day: state.day,
+                seer: Number(seer),
+                target: Number(target),
+                camp: seatRole(state, target) === "werewolf" ? "狼人阵营" : "好人阵营"
+              });
+            }
+            const state = board.getVar("werewolf_game_state") || {};
+            function firstLivingRole(role) {
+              for (const seat of state.seats || []) {
+                if (seat.alive === true && seat.role === role) return Number(seat.id);
+              }
+              return 0;
+            }
+            function chooseSeerTargetForNight() {
+              const seerSeat = Number(state.seer_seat || 0);
+              const priority = [1, 5, 2, 4, 6, 7, 8];
+              for (const id of priority) {
+                if (id !== seerSeat && isAlive(state, id) && seatRole(state, id) === "werewolf") return id;
+              }
+              for (const id of priority) {
+                if (id !== seerSeat && isAlive(state, id)) return id;
+              }
+              return 0;
+            }
+            const seerSeat = Number(state.seer_seat || firstLivingRole("seer") || 0);
+            const seerTarget = seerSeat > 0 ? (Number(state.pending_seer_target || 0) || chooseSeerTargetForNight()) : 0;
+            if (seerSeat > 0 && seerTarget > 0) {
+              state.seer_results = Array.isArray(state.seer_results) ? state.seer_results : [];
+              const exists = state.seer_results.some(function(r) {
+                return Number(r.day) === Number(state.day) && Number(r.seer) === seerSeat && Number(r.target) === Number(seerTarget);
+              });
+              if (!exists) state.seer_results.push({
+                day: state.day,
+                seer: seerSeat,
+                target: seerTarget,
+                camp: seatRole(state, seerTarget) === "werewolf" ? "狼人阵营" : "好人阵营"
+              });
+            }
+            const killed = Number(state.pending_night_kill || 0);
+            if (killed > 0 && isAlive(state, killed)) {
+              aliveWithout(state, killed, "night_kill", state.day);
+              state.last_night_kill = killed;
+              addPublic(state, "第" + state.day + "夜：夜晚结束，" + killed + "号" + seatName(state, killed) + "死亡。");
+            } else {
+              state.last_night_kill = 0;
+              addPublic(state, "第" + state.day + "夜：夜晚结束，无人死亡。");
+            }
+            const deathText = state.last_night_kill > 0 ? "昨夜" + state.last_night_kill + "号" + seatName(state, state.last_night_kill) + "死亡" : "昨夜无人死亡";
+            state.public_focus = "当前公开焦点：第" + state.day + "天白天刚开始，" + deathText + "；尚未有人公开报验，按座位顺序发言。";
+            state.phase = "day_open";
+            state.last_event = "night_resolved";
+            state.pending_tool_event = "night_resolve";
+            state.pending_tool_detail = "night_resolve_state_updated";
+            state.pending_night_kill = 0;
+            state.pending_seer_target = 0;
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function publicStateView(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              return {
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                player: { seat: state.player_seat || 3 },
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, alive: aliveSet[String(s.id)] === true, speaking_style: s.persona || "" };
+                }),
+                public_log: Array.isArray(state.public_log) ? state.public_log : [],
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0,
+                vote_retry_reason: state.vote_retry_reason || "",
+                winner: state.winner || "",
+                public_focus: state.public_focus || ""
+              };
+            }
+            function recentHistory(limit) {
+              const msgs = board.channel(board.MAIN_CHANNEL) || [];
+              const start = Math.max(0, msgs.length - Number(limit || 10));
+              return msgs.slice(start).map(function(msg) {
+                const role = msg.role || "";
+                const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                let node = "";
+                const text = parts.map(function(part) {
+                  if (!part) return "";
+                  if (part.type === "text/xml" && typeof part.text === "string") {
+                    const m = part.text.match(/node id="([^"]+)"/);
+                    if (m) node = m[1];
+                    return "";
+                  }
+                  return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                }).join("").trim();
+                if (!text) return "";
+                return (node ? node : role) + ": " + text.slice(0, 220);
+              }).filter(Boolean).join("\n");
+            }
+            function seatByID(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+              return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+            }
+            function seatPublicBehavior(id) {
+              const map = {
+                3: "玩家本人，只参与白天发言和投票。",
+                4: "犹豫但会观察票型，倾向多听一轮。",
+                5: "打圆场、转移焦点，削弱对自己的压力。",
+                6: "谨慎分析公开发言和票型，不抢节奏。",
+                7: "强势归票，抓住最清晰的公开矛盾推进投票。",
+                8: "已出局时只在赛后旁观复盘。"
+              };
+              return map[Number(id)] || "根据公开信息发言。";
+            }
+            function privateSeatContextFor(id) {
+              const seat = seatByID(id);
+              const role = roleLabel(seat.role || "");
+              const rows = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+                return Number(r.seer) === Number(id);
+              }).map(function(r) {
+                const target = seatByID(r.target);
+                return "第" + r.day + "夜查验结果：" + r.target + "号" + (target.name || "") + "为" + r.camp;
+              });
+              const seerText = rows.length ? rows.join(" | ") : "暂无";
+              return "你的身份=" + role + "; 你的夜间查验=" + seerText + "; 只能使用自己的身份、自己的查验和公开信息发言，不得知道其他玩家的隐藏身份。";
+            }
+            const aliveSet = {};
+            for (const id of state.alive || []) aliveSet[String(id)] = true;
+            state.role_assignment = {
+              seed: state.role_seed || "unassigned",
+              player_seat: state.player_seat || 3,
+              player_role: state.player_role || "villager",
+              seats: (state.seats || []).map(function(s) { return { id: s.id, name: s.name, role: s.role, persona: s.persona }; })
+            };
+            state.phase_state = {
+              started: state.started === true,
+              phase: state.phase || "setup",
+              day: state.day || 0,
+              winner: state.winner || "",
+              last_event: state.last_event || "",
+              pending_tool_event: state.pending_tool_event || ""
+            };
+            state.seat_state = {
+              alive: state.alive || [],
+              dead: (state.seats || []).filter(function(s) { return !aliveSet[String(s.id)]; }).map(function(s) { return s.id; }),
+              last_night_kill: state.last_night_kill || 0,
+              last_exile: state.last_exile || 0
+            };
+            for (let i = 1; i <= 8; i++) board.setVar("seat_" + i + "_alive", aliveSet[String(i)] ? "true" : "false");
+            board.setVar("werewolf_phase", "day_open");
+            board.setVar("werewolf_pending_tool_event", state.pending_tool_event);
+            board.setVar("werewolf_pending_tool_detail", state.pending_tool_detail);
+            board.setVar("werewolf_game_state", state);
+            const promptStateText = JSON.stringify(publicStateView(state), null, 2);
+            board.setVar("werewolf_game_state_text", promptStateText);
+            board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+            board.setVar("werewolf_player_role_label", roleLabel(state.player_role || ""));
+            function ch(name, text) {
+              board.setChannel(name, [{
+                role: "user",
+                parts: [{ type: "text", text: text + "\n\n当前状态:\n" + promptStateText }]
+              }]);
+            }
+            function seatPublicCtx(id, text) {
+              const history = recentHistory(6) || "暂无";
+              const memory = String(board.getVar("public_memory") || "暂无");
+              const focus = String(board.getVar("werewolf_public_focus") || "暂无");
+              const seat = seatByID(id);
+              const view = "座位=" + id + "; 姓名=" + (seat.name || "") + "; 存活=" + (seat.alive === true ? "true" : "false") + "; 发言风格=" + (seat.persona || "") + "; 本轮公开任务=" + seatPublicBehavior(id) + "; 私有视角=" + privateSeatContextFor(id);
+              board.setVar("seat_" + id + "_public_view", view);
+              return text + "\n\n当前公开焦点:\n" + focus + "\n\n公开角色视图:\n" + view + "\n\n公开记忆:\n" + memory + "\n\n近期历史:\n" + history;
+            }
+            ch("host_day_channel", "主持人白天公告。");
+            ch("seat_1_channel", seatPublicCtx(1, "发言人=1号林知；用第一人称短话发言。"));
+            ch("seat_2_channel", seatPublicCtx(2, "发言人=2号阿澈；用第一人称短话发言。"));
+            ch("seat_4_channel", seatPublicCtx(4, "发言人=4号小满；用第一人称短话发言。"));
+            ch("seat_5_channel", seatPublicCtx(5, "发言人=5号周岚；用第一人称短话发言。"));
+            ch("seat_6_channel", seatPublicCtx(6, "发言人=6号陈医生；用第一人称短话发言。"));
+            ch("seat_7_channel", seatPublicCtx(7, "发言人=7号老赵；用第一人称短话发言。"));
+            ch("seat_8_channel", seatPublicCtx(8, "发言人=8号苏禾；用第一人称短话发言。"));
+            ch("user_prompt_channel", "主持人提示3号玩家发言。");
+            ch("vote_prompt_channel", "主持人投票提示，要求3号玩家明确投票座位号。");
+
+      - id: format_player_move
+        type: llm
+        publish: false
+        config:
+          model: extract_model
+          max_tokens: 80
+          temperature: 0
+          output_key: werewolf_move_text
+          system_prompt: |
+            You classify the latest user turn for a Werewolf game.
+
+            Output exactly one line:
+            werewolf_move: action=<action>; target=<seat_number_or_empty>
+
+            Valid actions:
+            - speech
+            - night_action
+            - vote
+            - ask
+            - other
+
+            Rules:
+            - speech means the user argues, trusts, doubts, defends, or summarizes as a day speaker.
+            - night_action means the user asks to perform a night skill now, such as "我要查验1号", "我想毒5号", "我救8号", or "我夜里刀2号".
+            - A day speech may include lies, fake role claims, fake seer results, bluffs, or accusations. Classify those as speech, not night_action.
+            - vote means the user casts a formal exile vote.
+            - Extract Arabic or Chinese seat numbers. Example: 5号 -> target=5.
+
+            Current state:
+            ${board.werewolf_game_state_text}
+
+            Do not explain.
+
+      - id: validate_user_speech
+        type: script
+        config:
+          source: |
+            function parseMove(line) {
+              const text = String(line || "");
+              const action = (text.match(/action=([^;\n]+)/) || [])[1] || "other";
+              const target = (text.match(/target=([^;\n]+)/) || [])[1] || "";
+              return { action: action.trim(), target: String(target || "").trim() };
+            }
+            function parseFallback(text) {
+              const raw = String(text || "");
+              const seat = (raw.match(/([1-8])\s*号/) || raw.match(/([1-8])/ ) || [])[1] || "";
+              if (/不对|怎么|为什么|为啥|是不是|吗|呢|记错|重复|谁死|现在/.test(raw) && !/我是预言家|我查验|我验|我昨晚|我夜里|我要查|我能查|我是女巫|我是猎人|我是狼人/.test(raw)) {
+                return { action: "ask", target: seat };
+              }
+              if (/平民|村民|闭眼民/.test(raw) && /信|相信|支持|怀疑|倾向|先出|今天出|出掉|归票|跟票|继续跟|站边|表水|发言/.test(raw)) {
+                return { action: "speech", target: seat };
+              }
+              if (/(阿澈|2号|二号).*(预言家|查验|报验|查杀)|((信|相信|支持|站边|跟).*(阿澈|2号|二号))/.test(raw)) {
+                return { action: "speech", target: seat };
+              }
+              if (/(我要|我想|我现在|现在|本轮|轮到我|夜里|今晚|今夜).*(查验|验人|刀人|杀|毒|救|用药|开枪)/.test(raw) || /(查验|验人|刀人|毒|救|用药|开枪).*(可以吗|行吗|能不能|要不要)/.test(raw)) {
+                return { action: "night_action", target: seat };
+              }
+              if (/投票|我投|放逐|出掉|归票|票/.test(raw)) return { action: "vote", target: seat };
+              if (/为什么|规则|现在|谁死|身份/.test(raw)) return { action: "ask", target: seat };
+              return { action: "speech", target: seat };
+            }
+            function addPublic(state, line) {
+              const log = Array.isArray(state.public_log) ? state.public_log.slice() : [];
+              log.push(line);
+              state.public_log = log;
+            }
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function publicStateView(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              function seatName(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+                return "";
+              }
+              return {
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                player: { seat: state.player_seat || 3 },
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, alive: aliveSet[String(s.id)] === true, speaking_style: s.persona || "" };
+                }),
+                public_log: Array.isArray(state.public_log) ? state.public_log : [],
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0,
+                vote_retry_reason: state.vote_retry_reason || "",
+                winner: state.winner || "",
+                public_focus: state.public_focus || ""
+              };
+            }
+            function syncStateViews(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              state.role_assignment = {
+                seed: state.role_seed || "unassigned",
+                player_seat: state.player_seat || 3,
+                player_role: state.player_role || "villager",
+                seats: (state.seats || []).map(function(s) { return { id: s.id, name: s.name, role: s.role, persona: s.persona }; })
+              };
+              state.phase_state = {
+                started: state.started === true,
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                winner: state.winner || "",
+                last_event: state.last_event || "",
+                pending_tool_event: state.pending_tool_event || ""
+              };
+              state.seat_state = {
+                alive: state.alive || [],
+                dead: (state.seats || []).filter(function(s) { return !aliveSet[String(s.id)]; }).map(function(s) { return s.id; }),
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0
+              };
+              for (let i = 1; i <= 8; i++) board.setVar("seat_" + i + "_alive", aliveSet[String(i)] ? "true" : "false");
+              board.setVar("werewolf_phase", state.phase || "setup");
+              board.setVar("werewolf_pending_tool_event", state.pending_tool_event || "");
+              board.setVar("werewolf_pending_tool_detail", state.pending_tool_detail || "");
+              board.setVar("werewolf_game_state", state);
+              const promptStateText = JSON.stringify(publicStateView(state), null, 2);
+              board.setVar("werewolf_game_state_text", promptStateText);
+              board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+              board.setVar("werewolf_player_role_label", roleLabel(state.player_role || ""));
+              function ch(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: text + "\n\n当前状态:\n" + promptStateText }]
+                }]);
+              }
+              function rawCh(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: String(text || "") }]
+                }]);
+              }
+              function recentHistory(limit) {
+                const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                const start = Math.max(0, msgs.length - Number(limit || 10));
+                return msgs.slice(start).map(function(msg) {
+                  const role = msg.role || "";
+                  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                  let node = "";
+                  const text = parts.map(function(part) {
+                    if (!part) return "";
+                    if (part.type === "text/xml" && typeof part.text === "string") {
+                      const m = part.text.match(/node id="([^"]+)"/);
+                      if (m) node = m[1];
+                      return "";
+                    }
+                    return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                  }).join("").trim();
+                  if (!text) return "";
+                  return (node ? node : role) + ": " + text.slice(0, 220);
+                }).filter(Boolean).join("\n");
+              }
+              function seatByID(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+                return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+              }
+              function seatPublicBehavior(id) {
+                const map = {
+                  4: "犹豫但会观察票型，倾向多听一轮。",
+                  5: "打圆场、转移焦点，削弱对自己的压力。",
+                  6: "谨慎分析公开发言和票型，不抢节奏。",
+                  7: "强势归票，抓住最清晰的公开矛盾推进投票。",
+                  8: "已出局时只在赛后旁观复盘。"
+                };
+                return map[Number(id)] || "根据公开信息发言。";
+              }
+              function seatPublicCtx(id, text) {
+                const history = recentHistory(6) || "暂无";
+                const memory = String(board.getVar("public_memory") || "暂无");
+                const focus = String(board.getVar("werewolf_public_focus") || "暂无");
+                const seat = seatByID(id);
+                const view = "座位=" + id + "; 姓名=" + (seat.name || "") + "; 存活=" + (seat.alive === true ? "true" : "false") + "; 发言风格=" + (seat.persona || "") + "; 本轮公开任务=" + seatPublicBehavior(id);
+                board.setVar("seat_" + id + "_public_view", view);
+                return text + "\n\n当前公开焦点:\n" + focus + "\n\n公开角色视图:\n" + view + "\n\n公开记忆:\n" + memory + "\n\n近期历史:\n" + history;
+              }
+              ch("host_day_channel", "主持人白天公告。");
+              ch("seat_4_channel", seatPublicCtx(4, "发言人=4号小满；用第一人称短话发言。"));
+              ch("seat_5_channel", seatPublicCtx(5, "发言人=5号周岚；用第一人称短话发言。"));
+              ch("seat_6_channel", seatPublicCtx(6, "发言人=6号陈医生；用第一人称短话发言。"));
+              ch("seat_7_channel", seatPublicCtx(7, "发言人=7号老赵；用第一人称短话发言。"));
+              ch("seat_8_channel", seatPublicCtx(8, "发言人=8号苏禾；用第一人称短话发言。"));
+              ch("vote_prompt_channel", "主持人投票提示，要求3号玩家明确投票座位号。");
+              ch("retry_channel", "主持人纠正当前动作。");
+            }
+            const state = board.getVar("werewolf_game_state") || {};
+            let move = parseMove(board.getVar("werewolf_move_text") || "");
+            const fallback = parseFallback(state.latest_user_text || "");
+            if (move.action === "claim_power") move = { action: "speech", target: move.target || fallback.target || "" };
+            if (fallback.action === "speech" && move.action === "night_action") move = fallback;
+            if (move.action === "other" || move.action === "ask" || (fallback.action !== "speech" && fallback.action !== move.action)) move = fallback;
+            state.last_action = move.action;
+            state.last_target = move.target;
+            state.pending_tool_event = "";
+            state.pending_tool_detail = "";
+            if (move.action === "night_action") {
+              state.last_event = "invalid_user_role_action";
+              state.speech_valid = false;
+              state.phase = "user_speech";
+              board.setVar("speech_valid", "false");
+            } else {
+              state.last_event = "user_speech_ok";
+              state.speech_valid = true;
+              state.phase = "npc_tail";
+              addPublic(state, "第" + state.day + "天3号玩家发言：" + String(state.latest_user_text || "").slice(0, 120));
+              board.setVar("speech_valid", "true");
+            }
+            syncStateViews(state);
+
+      - id: user_speech_retry
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const role = String(board.getVar("werewolf_player_role_label") || "平民");
+            const action = String(state.last_action || "");
+            let reason = "这个动作不符合当前阶段。";
+            if (action === "night_action") reason = "当前是白天发言阶段，不能执行夜间技能。你可以在发言里跳身份、诈身份或质疑别人。";
+            const text = reason + "现在仍轮到3号你发言，请用" + role + "视角说明你信谁、怀疑谁，以及理由。";
+            host.emit("token", { content: text });
+
+      - id: seat_4_xiaoman_speak
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 160
+          output_key: tmp_speech_text
+          messages_channel: seat_4_channel
+          system_prompt: |
+            根据 messages_channel 中的公开角色视图、当前公开焦点、公开记忆和近期历史，扮演4号小满，用第一人称短话回应3号刚才的发言。
+            只能自称4号小满，禁止自称3号、用户或其他座位，禁止替其他玩家发言。
+
+      - id: seat_5_zhoulan_speak
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 220
+          messages_channel: seat_5_channel
+          system_prompt: |
+            根据 messages_channel 中的公开角色视图、当前公开焦点、公开记忆和近期历史，扮演5号周岚，用第一人称短话回应票型、报验节奏和3号刚才的发言。
+            只能自称5号周岚，禁止自称3号、用户或其他座位，禁止替其他玩家发言。
+
+      - id: seat_6_chen_doctor_speak
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 220
+          messages_channel: seat_6_channel
+          system_prompt: |
+            根据 messages_channel 中的公开角色视图、当前公开焦点、公开记忆和近期历史，扮演6号陈医生，用第一人称短话给出谨慎分析和投票倾向。
+            只能自称6号陈医生，禁止自称3号、用户或其他座位，禁止替其他玩家发言。
+
+      - id: seat_7_laozhao_speak
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 220
+          messages_channel: seat_7_channel
+          system_prompt: |
+            根据 messages_channel 中的公开角色视图、当前公开焦点、公开记忆和近期历史，扮演7号老赵，用第一人称短话强势推动当前最清晰的投票方向。
+            只能自称7号老赵，禁止自称3号、用户或其他座位，禁止替其他玩家发言。
+
+      - id: seat_8_suhe_speak
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 160
+          messages_channel: seat_8_channel
+          system_prompt: |
+            根据 messages_channel 中的公开角色视图、当前公开焦点、公开记忆和近期历史，扮演8号苏禾，用第一人称短话发言。
+            只能自称8号苏禾，禁止自称3号、用户或其他座位，禁止替其他玩家发言。
+
+      - id: prepare_vote_phase
+        type: script
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            state.phase = "vote";
+            state.last_event = "discussion_ready_to_vote";
+            board.setVar("werewolf_game_state", state);
+            board.setVar("werewolf_game_state_text", JSON.stringify({
+              phase: state.phase || "vote",
+              day: state.day || 0,
+              player: { seat: state.player_seat || 3 },
+              public_log: Array.isArray(state.public_log) ? state.public_log : [],
+              alive: Array.isArray(state.alive) ? state.alive : [],
+              last_night_kill: state.last_night_kill || 0,
+              last_exile: state.last_exile || 0,
+              public_focus: state.public_focus || ""
+            }, null, 2));
+            board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+            board.setVar("werewolf_phase", "vote");
+
+      - id: host_vote_prompt
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const focus = String(state.public_focus || board.getVar("werewolf_public_focus") || "当前公开焦点已进入投票阶段。").trim();
+            let target = "";
+            const patterns = [/查验([1-8])号/, /围绕([1-8])号/, /怀疑([1-8])号/, /归票([1-8])号/, /投([1-8])号/];
+            for (const pattern of patterns) {
+              const match = focus.match(pattern);
+              if (match) {
+                target = match[1];
+                break;
+              }
+            }
+            const example = target ? "我投" + target + "号" : "我投某号";
+            const text = focus + "\n请3号玩家明确投票座位号，例如“" + example + "”。";
+            host.emit("token", { content: text });
+
+      - id: apply_vote
+        type: script
+        config:
+          source: |
+            function parseMove(line) {
+              const text = String(line || "");
+              const action = (text.match(/action=([^;\n]+)/) || [])[1] || "other";
+              const target = (text.match(/target=([^;\n]+)/) || [])[1] || "";
+              return { action: action.trim(), target: String(target || "").trim() };
+            }
+            function parseVote(text) {
+              const raw = String(text || "");
+              const seat = (raw.match(/([1-8])\s*号/) || raw.match(/([1-8])/ ) || [])[1] || "";
+              if (/凭啥|为什么|为啥|不改|不想|不投|必须|要我|让我|规则|不对|怎么/.test(raw) && !/^\s*(我投|我投票|投票|我票|我出|我放逐)/.test(raw)) {
+                return { action: "other", target: seat };
+              }
+              if (seat && (
+                /^\s*(我\s*)?(投票|投|票|出|出掉|放逐)\s*[1-8]\s*号?/.test(raw) ||
+                /我\s*(决定|就|先|要|还是|改票|改投|改成)?\s*(投|票|出|出掉|放逐)?\s*[1-8]\s*号?/.test(raw)
+              )) return { action: "vote", target: seat };
+              return { action: "other", target: seat };
+            }
+            function seatName(state, id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || (String(n) + "号");
+              return id ? String(id) + "号" : "";
+            }
+            function seatRole(state, id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            function aliveWithout(state, id, reason, day) {
+              const n = Number(id);
+              state.alive = (state.alive || []).filter(function(x) { return Number(x) !== n; });
+              for (const seat of state.seats || []) if (Number(seat.id) === n) {
+                seat.alive = false;
+                seat.death_reason = String(reason || seat.death_reason || "dead");
+                seat.death_day = Number(day || seat.death_day || state.day || 0);
+              }
+            }
+            function addPublic(state, line) {
+              const log = Array.isArray(state.public_log) ? state.public_log.slice() : [];
+              log.push(line);
+              state.public_log = log;
+            }
+            function livingRoles(state, role) {
+              return (state.seats || []).filter(function(s) { return s.alive === true && s.role === role; }).length;
+            }
+            function firstLivingRole(state, role) {
+              for (const seat of state.seats || []) {
+                if (seat.alive === true && seat.role === role) return Number(seat.id);
+              }
+              return 0;
+            }
+            function isAlive(state, id) {
+              const n = Number(id);
+              return (state.alive || []).map(Number).indexOf(n) >= 0;
+            }
+            function chooseNightKill(state) {
+              const priority = [4, 6, 7, 2];
+              for (const id of priority) {
+                if (id !== Number(state.player_seat || 3) && isAlive(state, id) && seatRole(state, id) !== "werewolf") return id;
+              }
+              return 0;
+            }
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function publicStateView(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              function seatName(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+                return "";
+              }
+              return {
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                player: { seat: state.player_seat || 3 },
+                seats: (state.seats || []).map(function(s) {
+                  return { id: s.id, name: s.name, alive: aliveSet[String(s.id)] === true, speaking_style: s.persona || "" };
+                }),
+                public_log: Array.isArray(state.public_log) ? state.public_log : [],
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0,
+                vote_retry_reason: state.vote_retry_reason || "",
+                winner: state.winner || "",
+                public_focus: state.public_focus || ""
+              };
+            }
+            function syncStateViews(state) {
+              const aliveSet = {};
+              for (const id of state.alive || []) aliveSet[String(id)] = true;
+              state.role_assignment = {
+                seed: state.role_seed || "unassigned",
+                player_seat: state.player_seat || 3,
+                player_role: state.player_role || "villager",
+                seats: (state.seats || []).map(function(s) { return { id: s.id, name: s.name, role: s.role, persona: s.persona }; })
+              };
+              state.phase_state = {
+                started: state.started === true,
+                phase: state.phase || "setup",
+                day: state.day || 0,
+                winner: state.winner || "",
+                last_event: state.last_event || "",
+                pending_tool_event: state.pending_tool_event || ""
+              };
+              state.seat_state = {
+                alive: state.alive || [],
+                dead: (state.seats || []).filter(function(s) { return !aliveSet[String(s.id)]; }).map(function(s) { return s.id; }),
+                last_night_kill: state.last_night_kill || 0,
+                last_exile: state.last_exile || 0
+              };
+              for (let i = 1; i <= 8; i++) board.setVar("seat_" + i + "_alive", aliveSet[String(i)] ? "true" : "false");
+              board.setVar("werewolf_phase", state.phase || "setup");
+              board.setVar("werewolf_pending_tool_event", state.pending_tool_event || "");
+              board.setVar("werewolf_pending_tool_detail", state.pending_tool_detail || "");
+              board.setVar("werewolf_game_state", state);
+              const promptStateText = JSON.stringify(publicStateView(state), null, 2);
+              board.setVar("werewolf_game_state_text", promptStateText);
+              board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+              board.setVar("werewolf_player_role_label", roleLabel(state.player_role || ""));
+              function ch(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: text + "\n\n当前状态:\n" + promptStateText }]
+                }]);
+              }
+              function rawCh(name, text) {
+                board.setChannel(name, [{
+                  role: "user",
+                  parts: [{ type: "text", text: String(text || "") }]
+                }]);
+              }
+              function recentHistory(limit) {
+                const msgs = board.channel(board.MAIN_CHANNEL) || [];
+                const start = Math.max(0, msgs.length - Number(limit || 10));
+                return msgs.slice(start).map(function(msg) {
+                  const role = msg.role || "";
+                  const parts = Array.isArray(msg.parts) ? msg.parts : [];
+                  let node = "";
+                  const text = parts.map(function(part) {
+                    if (!part) return "";
+                    if (part.type === "text/xml" && typeof part.text === "string") {
+                      const m = part.text.match(/node id="([^"]+)"/);
+                      if (m) node = m[1];
+                      return "";
+                    }
+                    return part.type === "text" && typeof part.text === "string" ? part.text : "";
+                  }).join("").trim();
+                  if (!text) return "";
+                  return (node ? node : role) + ": " + text.slice(0, 220);
+                }).filter(Boolean).join("\n");
+              }
+              function seatByID(id) {
+                const n = Number(id);
+                for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+                return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+              }
+              function seatPublicBehavior(id) {
+                const map = {
+                  3: "玩家本人，只参与白天发言和投票。",
+                  4: "犹豫但会观察票型，倾向多听一轮。",
+                  5: "打圆场、转移焦点，削弱对自己的压力。",
+                  6: "谨慎分析公开发言和票型，不抢节奏。",
+                  7: "强势归票，抓住最清晰的公开矛盾推进投票。",
+                  8: "已出局时只在赛后旁观复盘。"
+                };
+                return map[Number(id)] || "根据公开信息发言。";
+              }
+              function privateSeatContextFor(id) {
+                const seat = seatByID(id);
+                const role = roleLabel(seat.role || "");
+                const rows = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+                  return Number(r.seer) === Number(id);
+                }).map(function(r) {
+                  const target = seatByID(r.target);
+                  return "第" + r.day + "夜查验结果：" + r.target + "号" + (target.name || "") + "为" + r.camp;
+                });
+                const seerText = rows.length ? rows.join(" | ") : "暂无";
+                return "你的身份=" + role + "; 你的夜间查验=" + seerText + "; 只能使用自己的身份、自己的查验和公开信息发言，不得知道其他玩家的隐藏身份。";
+              }
+              function seatPublicCtx(id, text) {
+                const history = recentHistory(6) || "暂无";
+                const memory = String(board.getVar("public_memory") || "暂无");
+                const focus = String(board.getVar("werewolf_public_focus") || "暂无");
+                const seat = seatByID(id);
+                const view = "座位=" + id + "; 姓名=" + (seat.name || "") + "; 存活=" + (seat.alive === true ? "true" : "false") + "; 发言风格=" + (seat.persona || "") + "; 本轮公开任务=" + seatPublicBehavior(id) + "; 私有视角=" + privateSeatContextFor(id);
+                board.setVar("seat_" + id + "_public_view", view);
+                return text + "\n\n当前公开焦点:\n" + focus + "\n\n公开角色视图:\n" + view + "\n\n公开记忆:\n" + memory + "\n\n近期历史:\n" + history;
+              }
+              ch("host_day_channel", "主持人白天公告。");
+              ch("seat_1_channel", seatPublicCtx(1, "发言人=1号林知；用第一人称短话发言。"));
+              ch("seat_2_channel", seatPublicCtx(2, "发言人=2号阿澈；用第一人称短话发言。"));
+              ch("seat_4_channel", seatPublicCtx(4, "发言人=4号小满；用第一人称短话发言。"));
+              ch("seat_5_channel", seatPublicCtx(5, "发言人=5号周岚；用第一人称短话发言。"));
+              ch("seat_6_channel", seatPublicCtx(6, "发言人=6号陈医生；用第一人称短话发言。"));
+              ch("seat_7_channel", seatPublicCtx(7, "发言人=7号老赵；用第一人称短话发言。"));
+              ch("seat_8_channel", seatPublicCtx(8, "发言人=8号苏禾；用第一人称短话发言。"));
+              ch("user_prompt_channel", "主持人提示3号玩家发言。");
+              rawCh("vote_result_channel", String(state.vote_result_summary || ""));
+              ch("vote_prompt_channel", "主持人投票提示，要求3号玩家明确投票座位号。");
+            }
+            function latestPublicTarget(state) {
+              const focus = String(state.public_focus || "");
+              const patterns = [
+                /查验([1-8])号/,
+                /围绕([1-8])号/,
+                /怀疑([1-8])号/,
+                /归票([1-8])号/,
+                /投([1-8])号/
+              ];
+              for (const pattern of patterns) {
+                const match = focus.match(pattern);
+                if (match) return Number(match[1]);
+              }
+              return 0;
+            }
+            function firstAliveByRole(state, role, exclude) {
+              const skip = {};
+              for (const id of exclude || []) skip[String(id)] = true;
+              for (const id of (state.alive || []).map(Number).sort(function(a, b) { return a - b; })) {
+                if (!skip[String(id)] && seatRole(state, id) === role) return id;
+              }
+              return 0;
+            }
+            function firstAliveNotRole(state, role, exclude) {
+              const skip = {};
+              for (const id of exclude || []) skip[String(id)] = true;
+              for (const id of (state.alive || []).map(Number).sort(function(a, b) { return a - b; })) {
+                if (!skip[String(id)] && seatRole(state, id) !== role) return id;
+              }
+              return 0;
+            }
+            function chooseNPCVote(state, voter, userTarget) {
+              const focusTarget = latestPublicTarget(state);
+              const role = seatRole(state, voter);
+              if (role === "werewolf") {
+                if (focusTarget > 0 && focusTarget !== voter && seatRole(state, focusTarget) !== "werewolf" && isAlive(state, focusTarget)) return focusTarget;
+                if (userTarget > 0 && userTarget !== voter && seatRole(state, userTarget) !== "werewolf" && isAlive(state, userTarget)) return userTarget;
+                return firstAliveNotRole(state, "werewolf", [voter]);
+              }
+              if (focusTarget > 0 && focusTarget !== voter && isAlive(state, focusTarget)) return focusTarget;
+              if (userTarget > 0 && userTarget !== voter && isAlive(state, userTarget)) return userTarget;
+              return firstAliveByRole(state, "werewolf", [voter]) || firstAliveNotRole(state, role, [voter]);
+            }
+            function collectVotes(state, userTarget) {
+              const votes = [];
+              const player = Number(state.player_seat || 3);
+              for (const voter of (state.alive || []).map(Number).sort(function(a, b) { return a - b; })) {
+                const target = voter === player ? userTarget : chooseNPCVote(state, voter, userTarget);
+                votes.push({ voter: voter, target: Number(target || 0) });
+              }
+              return votes;
+            }
+            function voteTargetName(state, id) {
+              const n = Number(id || 0);
+              return n > 0 ? n + "号" + seatName(state, n) : "弃票";
+            }
+            function voteLines(state, votes) {
+              return votes.map(function(v) {
+                return v.voter + "号" + seatName(state, v.voter) + "投" + voteTargetName(state, v.target);
+              });
+            }
+            function chooseExileFromVotes(state, votes, userTarget) {
+              const counts = {};
+              for (const v of votes) {
+                if (!v.target || !isAlive(state, v.target)) continue;
+                counts[String(v.target)] = (counts[String(v.target)] || 0) + 1;
+              }
+              let best = 0;
+              let bestCount = -1;
+              for (const key of Object.keys(counts)) {
+                const id = Number(key);
+                const count = counts[key];
+                if (count > bestCount || (count === bestCount && id === Number(userTarget))) {
+                  best = id;
+                  bestCount = count;
+                }
+              }
+              return best || Number(userTarget || 0);
+            }
+            const state = board.getVar("werewolf_game_state") || {};
+            let move = parseVote(state.latest_user_text || "");
+            if (move.action !== "vote") {
+              const classified = parseMove(board.getVar("werewolf_move_text") || "");
+              if (classified.action === "vote" && classified.target) move = classified;
+            }
+            const target = Number(move.target || 0);
+            state.last_action = move.action;
+            state.last_target = move.target;
+            state.pending_tool_event = "";
+            state.pending_tool_detail = "";
+            if (move.action !== "vote" || target <= 0 || target === state.player_seat || (state.alive || []).map(Number).indexOf(target) < 0) {
+              state.last_event = "need_vote_target";
+              state.vote_retry_reason = "请明确投一个仍存活、且不是自己的座位号。";
+              state.vote_valid = false;
+              board.setVar("vote_valid", "false");
+              syncStateViews(state);
+            } else {
+              state.vote_valid = true;
+              board.setVar("vote_valid", "true");
+              const votedDay = state.day;
+              const votes = collectVotes(state, target);
+              const exileTarget = chooseExileFromVotes(state, votes, target);
+              const voteText = voteLines(state, votes).join("；");
+              state.vote_records = Array.isArray(state.vote_records) ? state.vote_records : [];
+              state.vote_records.push({ day: votedDay, votes: votes, exiled: exileTarget });
+              aliveWithout(state, exileTarget, "exile", votedDay);
+              state.last_exile = exileTarget;
+              const role = seatRole(state, exileTarget);
+              addPublic(state, "第" + votedDay + "天投票：" + voteText + "。最高票为" + exileTarget + "号" + seatName(state, exileTarget) + "，被放逐。");
+              state.last_event = "vote_exile";
+              if (livingRoles(state, "werewolf") <= 0) {
+                state.phase = "ended";
+                state.winner = "good";
+                state.pending_tool_event = "game_over";
+                state.pending_tool_detail = "game_over_state_updated";
+                state.vote_result_summary = "第" + votedDay + "天投票结束。\n票型：" + voteText + "。\n" + exileTarget + "号" + seatName(state, exileTarget) + "被放逐，身份为" + (role === "werewolf" ? "狼人" : "好人") + "。所有狼人出局，好人阵营获胜。";
+                state.public_focus = "当前公开焦点：第" + votedDay + "天投票已放逐" + exileTarget + "号" + seatName(state, exileTarget) + "；所有狼人出局，好人阵营获胜。";
+                addPublic(state, "好人阵营获胜。");
+              } else {
+                state.day += 1;
+                state.phase = "night_open";
+                state.pending_tool_event = "";
+                state.pending_tool_detail = "";
+                state.pending_night_kill = 0;
+                state.pending_seer_target = 0;
+                state.last_night_kill = 0;
+                state.public_focus = "当前公开焦点：第" + votedDay + "天投票已结束，" + exileTarget + "号" + seatName(state, exileTarget) + "被放逐，身份暂不公开；接下来进入第" + state.day + "夜。";
+                state.vote_result_summary = "第" + votedDay + "天投票结束。\n票型：" + voteText + "。\n" + exileTarget + "号" + seatName(state, exileTarget) + "被放逐，身份暂不公开。接下来进入第" + state.day + "夜。";
+              }
+              syncStateViews(state);
+              board.setChannel("werewolf_tool_channel", [{
+                role: "user",
+                parts: [{ type: "text", text: "Emit the configured Werewolf lifecycle event exactly as specified." }]
+              }]);
+            }
+
+      - id: vote_retry
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const reason = String(state.vote_retry_reason || "请明确投一个仍存活、且不是自己的座位号。");
+            host.emit("token", { content: reason + "例如可以说“我投5号”。" });
+
+      - id: host_vote_result
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const text = String(state.vote_result_summary || "").trim();
+            if (text) {
+              board.setVar("host_vote_result_text", text);
+              host.emit("token", { content: text });
+            }
+
+      - id: host_day_announce
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function seatName(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+              return "";
+            }
+            const killed = Number(state.last_night_kill || 0);
+            const killedText = killed ? "昨夜" + killed + "号" + seatName(killed) + "死亡。" : "昨夜无人死亡。";
+            const alive = (state.alive || []).map(Number).sort(function(a, b) { return a - b; });
+            const aliveText = alive.map(function(id) { return id + "号" + seatName(id); }).join("、");
+            const first = alive.length ? alive[0] : 0;
+            const firstText = first ? "请" + first + "号" + seatName(first) + "开始发言。" : "";
+            const text = "现在是第" + (state.day || 1) + "天白天，" + killedText + "仍存活玩家按座位顺序发言：" + aliveText + "。" + firstText;
+            host.emit("token", { content: text });
+
+      - id: seat_1_lin_zhi_speak
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function seatName(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+              return "";
+            }
+            function seatRole(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            function chooseSeerTarget(seerSeat) {
+              const priority = [1, 5, 2, 4, 6, 7, 8];
+              for (const id of priority) {
+                if (id !== Number(seerSeat) && (state.alive || []).map(Number).indexOf(id) >= 0 && seatRole(id) === "werewolf") return id;
+              }
+              return 0;
+            }
+            function addPublic(line) {
+              const log = Array.isArray(state.public_log) ? state.public_log.slice() : [];
+              log.push(line);
+              state.public_log = log;
+            }
+            const killed = Number(state.last_night_kill || 0);
+            const deathText = killed > 0 ? "昨晚死的是" + killed + "号" + seatName(killed) + "。" : "昨晚无人死亡。";
+            let text = "我1号林知先发言。" + deathText + "我这里没有额外信息，只能先表水：我是好人，第一轮先听后面每个人怎么说，再看票型。";
+            if (seatRole(1) === "seer") {
+              const target = chooseSeerTarget(1);
+              if (target > 0) {
+                state.seer_results = Array.isArray(state.seer_results) ? state.seer_results : [];
+                const result = { day: Number(state.day || 1), seer: 1, target: target, camp: seatRole(target) === "werewolf" ? "狼人阵营" : "好人阵营" };
+                state.seer_results.push(result);
+                state.public_focus = "当前公开焦点：1号林知公开查验" + target + "号" + seatName(target) + "为" + result.camp + "。";
+                addPublic("第" + result.day + "天：1号林知公开报验，查验" + target + "号" + seatName(target) + "为" + result.camp + "。");
+                text = "我1号林知，预言家。" + deathText + "昨夜我查验" + target + "号" + seatName(target) + "，结果是" + result.camp + "。";
+              }
+            }
+            board.setVar("werewolf_game_state", state);
+            board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+            host.emit("token", { content: text });
+
+      - id: seat_2_ache_speak
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function seatName(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.name || "";
+              return "";
+            }
+            function addPublic(line) {
+              const log = Array.isArray(state.public_log) ? state.public_log.slice() : [];
+              log.push(line);
+              state.public_log = log;
+            }
+            function seatRole(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat.role || "";
+              return "";
+            }
+            const day = Number(state.day || 1);
+            const role = seatRole(2);
+            const result = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+              return Number(r.day) === day && Number(r.seer) === 2;
+            }).slice(-1)[0] || {};
+            function chooseSeerTarget(seerSeat) {
+              const priority = [1, 5, 2, 4, 6, 7, 8];
+              for (const id of priority) {
+                if (id !== Number(seerSeat) && (state.alive || []).map(Number).indexOf(id) >= 0 && seatRole(id) === "werewolf") return id;
+              }
+              return 0;
+            }
+            let target = Number(result.target || 0);
+            let text = "我2号阿澈发言。昨夜已经公布死亡信息，我先根据1号发言和后续票型观察，不急着定论。";
+            let camp = result.camp || "";
+            if (role === "seer" && target <= 0) {
+              target = chooseSeerTarget(2);
+              camp = target > 0 && seatRole(target) === "werewolf" ? "狼人阵营" : "好人阵营";
+              if (target > 0) {
+                state.seer_results = Array.isArray(state.seer_results) ? state.seer_results : [];
+                state.seer_results.push({ day: day, seer: 2, target: target, camp: camp });
+              }
+            }
+            if (role === "seer" && target > 0) {
+              state.public_focus = "当前公开焦点：2号阿澈公开查验" + target + "号" + seatName(target) + "为" + camp + "；第" + day + "天发言和投票主要围绕" + target + "号" + seatName(target) + "是否出局展开。";
+              addPublic("第" + day + "天：2号阿澈公开报验，查验" + target + "号" + seatName(target) + "为" + camp + "。");
+              text = "我2号阿澈，预言家。昨夜我查验" + target + "号" + seatName(target) + "，结果是" + camp + "。今天我建议先围绕" + target + "号发言和投票，大家重点看他的表水、反咬和跟票关系。";
+            }
+            board.setVar("werewolf_game_state", state);
+            board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+            host.emit("token", { content: text });
+
+      - id: prepare_user_speech
+        type: script
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            state.phase = "user_speech";
+            board.setVar("werewolf_phase", "user_speech");
+            board.setVar("werewolf_game_state", state);
+            board.setVar("werewolf_game_state_text", JSON.stringify({
+              phase: state.phase || "user_speech",
+              day: state.day || 0,
+              player: { seat: state.player_seat || 3 },
+              public_log: Array.isArray(state.public_log) ? state.public_log : [],
+              alive: Array.isArray(state.alive) ? state.alive : [],
+              last_night_kill: state.last_night_kill || 0,
+              last_exile: state.last_exile || 0
+            }, null, 2));
+            board.setChannel("user_prompt_channel", [{
+              role: "user",
+              parts: [{
+                type: "text",
+                text: [
+                  "主持人提示3号玩家发言。",
+                  "现在轮到3号玩家发言，可以用平民视角说明信谁、怀疑谁、理由是什么。"
+                ].join("\n"),
+              }]
+            }]);
+
+      - id: user_speech_prompt
+        type: script
+        publish: true
+        config:
+          source: |
+            const role = String(board.getVar("werewolf_player_role_label") || "平民");
+            const text = "轮到3号你发言。请用" + role + "视角说明你信谁、怀疑谁，以及理由。";
+            host.emit("token", { content: text });
+
+      - id: call_game_event
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 80
+          messages_channel: werewolf_tool_channel
+          tool_names:
+            - werewolf_game_event
+          system_prompt: |
+            You are a Werewolf lifecycle node. Call werewolf_game_event exactly once and output no text.
+
+            Use these values exactly. Do not infer, rename, translate, or summarize them.
+            - event_type: "${board.werewolf_pending_tool_event}"
+            - phase: "${board.werewolf_phase}"
+            - detail: "${board.werewolf_pending_tool_detail}"
+
+      - id: call_game_over_event
+        type: llm
+        publish: true
+        config:
+          model: extract_model
+          max_tokens: 80
+          messages_channel: werewolf_tool_channel
+          tool_names:
+            - werewolf_game_event
+          system_prompt: |
+            You are a Werewolf lifecycle node. Call werewolf_game_event exactly once and output no text.
+
+            Use these exact values:
+            - event_type: "game_over"
+            - phase: "ended"
+            - detail: "game_over_state_updated"
+
+      - id: write_game_audit
+        type: script
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const pendingEvent = state.pending_tool_event || "none";
+            const pendingDetail = state.pending_tool_detail || "";
+            const alive = Array.isArray(state.alive) ? state.alive.join(",") : "";
+            const publicLog = Array.isArray(state.public_log) ? state.public_log.slice(-4).join(" | ") : "";
+            function seatByID(id) {
+              const n = Number(id);
+              for (const seat of state.seats || []) if (Number(seat.id) === n) return seat;
+              return { id: n, name: String(n) + "号", role: "", alive: false, persona: "" };
+            }
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "");
+            }
+            function lastLinesForSeat(id) {
+              const n = Number(id);
+              const name = seatByID(n).name || "";
+              const log = Array.isArray(state.public_log) ? state.public_log : [];
+              return log.filter(function(line) {
+                return String(line || "").indexOf(String(n) + "号") >= 0 || (name && String(line || "").indexOf(name) >= 0);
+              }).slice(-4).join(" | ");
+            }
+            function seerLineForSeat(id) {
+              const n = Number(id);
+              const hits = (Array.isArray(state.seer_results) ? state.seer_results : []).filter(function(r) {
+                return Number(r.seer) === n || Number(r.target) === n;
+              }).slice(-3);
+              if (!hits.length) return "none";
+              return hits.map(function(r) {
+                return "day=" + r.day + ",seer=" + r.seer + ",target=" + r.target + ",camp=" + r.camp;
+              }).join(" | ");
+            }
+            function seatMemoryLine(id) {
+              const seat = seatByID(id);
+              return "seat_" + id + "_memory: " +
+                "seat=" + id +
+                "; name=" + (seat.name || "") +
+                "; role=" + roleLabel(seat.role || "") +
+                "; alive=" + (seat.alive === true ? "true" : "false") +
+                "; death_reason=" + (seat.death_reason || "none") +
+                "; death_day=" + (seat.death_day || "none") +
+                "; day=" + (state.day || 0) +
+                "; phase=" + (state.phase || "") +
+                "; last_exile=" + (state.last_exile || 0) +
+                "; last_night_kill=" + (state.last_night_kill || 0) +
+                "; seer_context=" + seerLineForSeat(id) +
+                "; public_context=" + (lastLinesForSeat(id) || "none");
+            }
+            board.setVar("tmp_game_progress_line",
+              "game_progress: phase=" + (state.phase || "") +
+              "; day=" + (state.day || 0) +
+              "; alive=" + alive +
+              "; winner=" + (state.winner || "none"));
+            board.setVar("tmp_public_timeline_line", "public_timeline: " + (publicLog || "none"));
+            board.setVar("tmp_resolution_log_line",
+              "resolution_log: event=" + pendingEvent +
+              "; last_event=" + (state.last_event || "") +
+              "; target=" + (state.last_target || "") +
+              "; detail=" + pendingDetail);
+            for (const id of [1, 2, 3, 4, 5, 6, 7, 8]) {
+              const line = seatMemoryLine(id);
+              board.setVar("tmp_seat_" + id + "_memory_line", line);
+              board.setVar("seat_" + id + "_memory", line);
+            }
+            state.pending_tool_event = "";
+            state.pending_tool_detail = "";
+            board.setVar("werewolf_game_state", state);
+            board.setVar("werewolf_game_state_text", JSON.stringify({
+              phase: state.phase || "",
+              day: state.day || 0,
+              player: { seat: state.player_seat || 3 },
+              public_log: Array.isArray(state.public_log) ? state.public_log : [],
+              alive: Array.isArray(state.alive) ? state.alive : [],
+              winner: state.winner || "",
+              public_focus: state.public_focus || ""
+            }, null, 2));
+            board.setVar("werewolf_public_focus", state.public_focus || "暂无");
+            board.setVar("werewolf_pending_tool_event", "");
+            board.setVar("werewolf_pending_tool_detail", "");
+            board.setVar("werewolf_phase", state.phase || "");
+
+      - id: post_game_seat_1_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(1);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我1号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(1) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_2_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(2);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我2号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(2) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_4_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(4);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我4号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(4) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_5_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(5);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我5号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(5) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_6_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(6);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我6号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(6) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_7_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(7);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我7号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(7) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_seat_8_free_chat
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            function roleLabel(role) {
+              const names = { werewolf: "狼人", seer: "预言家", witch: "女巫", hunter: "猎人", villager: "平民" };
+              return names[String(role || "")] || String(role || "未知");
+            }
+            function seatByID(id) {
+              for (const seat of state.seats || []) if (Number(seat.id) === Number(id)) return seat;
+              return { id: id, name: String(id) + "号", role: "", alive: false };
+            }
+            function recentPublicLine(id) {
+              const name = seatByID(id).name || "";
+              const lines = Array.isArray(state.public_log) ? state.public_log : [];
+              for (let i = lines.length - 1; i >= 0; i--) {
+                const line = String(lines[i] || "");
+                if (line.indexOf(String(id) + "号") >= 0 || (name && line.indexOf(name) >= 0)) return line;
+              }
+              return "暂无单独记录。";
+            }
+            const seat = seatByID(8);
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const status = seat.alive === true ? "还在场" : "已出局";
+            const text = "我8号" + (seat.name || "") + "复盘：我的身份是" + roleLabel(seat.role) + "，当前" + status + "。最近和我有关的公开记录是：" + recentPublicLine(8) + " 这局结果是" + winner + "获胜。";
+            host.emit("token", { content: text });
+
+      - id: post_game_host_wrap
+        type: script
+        publish: true
+        config:
+          source: |
+            const state = board.getVar("werewolf_game_state") || {};
+            const winner = state.winner === "good" ? "好人阵营" : (state.winner === "werewolf" ? "狼人阵营" : "本局");
+            const mode = String(board.getVar("post_game_mode") || "host_only");
+            let text = "这局已经结束，" + winner + "获胜。当前不会重新发牌或重开局，可以继续复盘刚才的发言、投票和身份安排。";
+            if (mode === "role_chain") text = "以上是各位玩家的赛后复盘。这局已经结束，" + winner + "获胜；后续只继续复盘本局，不重新发牌。";
+            host.emit("token", { content: text });
+
+    edges:
+      - from: load_game_state
+        to: route_setup
+      - from: route_setup
+        to: setup_game
+        condition: werewolf_route == "setup_game"
+      - from: route_setup
+        to: route_post_game_chat
+        condition: werewolf_route == "post_game_free_chat"
+      - from: route_post_game_chat
+        to: post_game_seat_1_free_chat
+        condition: post_game_mode == "role_chain"
+      - from: route_post_game_chat
+        to: post_game_host_wrap
+        condition: post_game_mode != "role_chain"
+      - from: route_setup
+        to: host_night_begin
+        condition: werewolf_route == "night_open"
+      - from: route_setup
+        to: host_day_announce
+        condition: werewolf_route == "day_open"
+      - from: route_setup
+        to: format_player_move
+        condition: werewolf_route == "user_speech" || werewolf_route == "vote"
+
+      - from: setup_game
+        to: host_opening
+      - from: host_opening
+        to: host_night_begin
+      - from: host_night_begin
+        to: host_werewolf_action
+      - from: host_werewolf_action
+        to: host_seer_action
+      - from: host_seer_action
+        to: host_witch_action
+      - from: host_witch_action
+        to: resolve_night
+      - from: resolve_night
+        to: call_game_event
+        condition: werewolf_pending_tool_event != ""
+      - from: resolve_night
+        to: write_game_audit
+        condition: werewolf_pending_tool_event == ""
+
+      - from: format_player_move
+        to: validate_user_speech
+        condition: werewolf_route == "user_speech"
+      - from: format_player_move
+        to: apply_vote
+        condition: werewolf_route == "vote"
+
+      - from: validate_user_speech
+        to: user_speech_retry
+        condition: speech_valid != "true"
+      - from: validate_user_speech
+        to: seat_4_xiaoman_speak
+        condition: speech_valid == "true" && seat_4_alive == "true"
+      - from: validate_user_speech
+        to: seat_5_zhoulan_speak
+        condition: speech_valid == "true" && seat_4_alive != "true" && seat_5_alive == "true"
+      - from: validate_user_speech
+        to: seat_6_chen_doctor_speak
+        condition: speech_valid == "true" && seat_4_alive != "true" && seat_5_alive != "true" && seat_6_alive == "true"
+      - from: validate_user_speech
+        to: seat_7_laozhao_speak
+        condition: speech_valid == "true" && seat_4_alive != "true" && seat_5_alive != "true" && seat_6_alive != "true" && seat_7_alive == "true"
+      - from: validate_user_speech
+        to: prepare_vote_phase
+        condition: speech_valid == "true" && seat_4_alive != "true" && seat_5_alive != "true" && seat_6_alive != "true" && seat_7_alive != "true" && seat_8_alive != "true"
+
+      - from: seat_4_xiaoman_speak
+        to: seat_5_zhoulan_speak
+        condition: seat_5_alive == "true"
+      - from: seat_4_xiaoman_speak
+        to: seat_6_chen_doctor_speak
+        condition: seat_5_alive != "true" && seat_6_alive == "true"
+      - from: seat_4_xiaoman_speak
+        to: seat_7_laozhao_speak
+        condition: seat_5_alive != "true" && seat_6_alive != "true" && seat_7_alive == "true"
+      - from: seat_4_xiaoman_speak
+        to: prepare_vote_phase
+        condition: seat_5_alive != "true" && seat_6_alive != "true" && seat_7_alive != "true" && seat_8_alive != "true"
+      - from: seat_5_zhoulan_speak
+        to: seat_6_chen_doctor_speak
+        condition: seat_6_alive == "true"
+      - from: seat_5_zhoulan_speak
+        to: seat_7_laozhao_speak
+        condition: seat_6_alive != "true" && seat_7_alive == "true"
+      - from: seat_5_zhoulan_speak
+        to: prepare_vote_phase
+        condition: seat_6_alive != "true" && seat_7_alive != "true" && seat_8_alive != "true"
+      - from: seat_6_chen_doctor_speak
+        to: seat_7_laozhao_speak
+        condition: seat_7_alive == "true"
+      - from: seat_6_chen_doctor_speak
+        to: prepare_vote_phase
+        condition: seat_7_alive != "true" && seat_8_alive != "true"
+      - from: seat_7_laozhao_speak
+        to: seat_8_suhe_speak
+        condition: seat_8_alive == "true"
+      - from: seat_7_laozhao_speak
+        to: prepare_vote_phase
+        condition: seat_8_alive != "true"
+      - from: seat_8_suhe_speak
+        to: prepare_vote_phase
+      - from: prepare_vote_phase
+        to: host_vote_prompt
+      - from: user_speech_retry
+        to: __end__
+      - from: host_vote_prompt
+        to: __end__
+
+      - from: apply_vote
+        to: vote_retry
+        condition: vote_valid != "true"
+      - from: apply_vote
+        to: host_vote_result
+        condition: vote_valid == "true"
+      - from: vote_retry
+        to: __end__
+      - from: host_vote_result
+        to: call_game_over_event
+        condition: werewolf_pending_tool_event == "game_over"
+      - from: host_vote_result
+        to: host_night_begin
+        condition: werewolf_phase == "night_open"
+      - from: host_vote_result
+        to: call_game_event
+        condition: werewolf_pending_tool_event != "" && werewolf_pending_tool_event != "game_over" && werewolf_phase != "night_open"
+      - from: host_vote_result
+        to: write_game_audit
+        condition: werewolf_pending_tool_event == "" && werewolf_phase != "night_open"
+
+      - from: call_game_event
+        to: write_game_audit
+      - from: call_game_over_event
+        to: write_game_audit
+      - from: write_game_audit
+        to: host_day_announce
+        condition: werewolf_phase == "day_open"
+      - from: write_game_audit
+        to: __end__
+        condition: werewolf_phase != "day_open"
+
+      - from: host_day_announce
+        to: seat_1_lin_zhi_speak
+        condition: seat_1_alive == "true"
+      - from: host_day_announce
+        to: seat_2_ache_speak
+        condition: seat_1_alive != "true" && seat_2_alive == "true"
+      - from: host_day_announce
+        to: prepare_user_speech
+        condition: seat_1_alive != "true" && seat_2_alive != "true"
+      - from: seat_1_lin_zhi_speak
+        to: seat_2_ache_speak
+        condition: seat_2_alive == "true"
+      - from: seat_1_lin_zhi_speak
+        to: prepare_user_speech
+        condition: seat_2_alive != "true"
+      - from: seat_2_ache_speak
+        to: prepare_user_speech
+      - from: prepare_user_speech
+        to: user_speech_prompt
+      - from: user_speech_prompt
+        to: call_game_event
+        condition: werewolf_pending_tool_event != ""
+      - from: user_speech_prompt
+        to: __end__
+        condition: werewolf_pending_tool_event == ""
+      - from: post_game_seat_1_free_chat
+        to: post_game_seat_2_free_chat
+      - from: post_game_seat_2_free_chat
+        to: post_game_seat_4_free_chat
+      - from: post_game_seat_4_free_chat
+        to: post_game_seat_5_free_chat
+      - from: post_game_seat_5_free_chat
+        to: post_game_seat_6_free_chat
+      - from: post_game_seat_6_free_chat
+        to: post_game_seat_7_free_chat
+      - from: post_game_seat_7_free_chat
+        to: post_game_seat_8_free_chat
+      - from: post_game_seat_8_free_chat
+        to: post_game_host_wrap
+      - from: post_game_host_wrap
+        to: __end__

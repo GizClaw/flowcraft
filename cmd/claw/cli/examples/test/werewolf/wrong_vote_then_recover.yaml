@@ -1,0 +1,8 @@
+name: werewolf_wrong_vote_then_recover
+description: A wrong vote should be corrected instead of advancing an impossible branch.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我先观望一下，听完后面再说。
+  - 我投票3号
+  - 我投票5号

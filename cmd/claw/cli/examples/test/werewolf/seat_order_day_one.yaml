@@ -1,0 +1,6 @@
+name: werewolf_seat_order_day_one
+description: Day one should be announced by host, then fixed seat nodes speak before and after the user.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我听完1号和2号发言后，先不急着定身份，后面的人继续按顺序发言。

@@ -1,0 +1,6 @@
+name: werewolf_day_discuss_to_vote
+description: Day speech should allow NPC tail speeches and move the day to voting.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我先听完前置位发言，暂时根据公开死亡和大家的表水判断，后置位继续聊，我等票型再决定。

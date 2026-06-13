@@ -1,0 +1,6 @@
+name: werewolf_fake_seer_claim_is_day_speech
+description: A villager can bluff as seer during day speech; the game should continue to later speakers.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我是预言家，昨晚查验1号是狼人。
