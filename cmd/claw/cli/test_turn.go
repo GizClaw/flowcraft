@@ -13,6 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/claw"
 )
 
+const testCloseTimeout = 15 * time.Second
+
 type testMetrics struct {
 	Workspace  string
 	StartedAt  time.Time
@@ -49,7 +51,7 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 		metrics.Elapsed = metrics.FinishedAt.Sub(metrics.StartedAt)
 		return metrics, fmt.Errorf("open test workspace: %w", err)
 	}
-	defer func() { _ = app.Close() }()
+	defer closeTestApp(app)
 	attachSimulatedToolHandler(app)
 
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
@@ -87,6 +89,15 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 		return finishTestMetrics(metrics), err
 	}
 	return finishTestMetrics(metrics), nil
+}
+
+func closeTestApp(app *claw.Claw) {
+	if app == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), testCloseTimeout)
+	defer cancel()
+	_ = app.CloseContext(ctx)
 }
 
 func finishTestMetrics(metrics testMetrics) testMetrics {
