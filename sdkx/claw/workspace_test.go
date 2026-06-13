@@ -66,6 +66,36 @@ func TestLoadConfigUsesFixedWorkspaceJSONFiles(t *testing.T) {
 	}
 }
 
+func TestLoadConfigPreservesExplicitRecallDisabled(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalWorkspace: %v", err)
+	}
+	raw := []byte(`
+memory:
+  enabled: true
+  recall:
+    enabled: false
+`)
+	if err := ws.Write(context.Background(), "config.yaml", raw); err != nil {
+		t.Fatalf("write config.yaml: %v", err)
+	}
+
+	got, err := loadConfig(context.Background(), ws)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if got.Memory.Recall.Enabled == nil {
+		t.Fatal("Memory.Recall.Enabled is nil, want explicit false")
+	}
+	if *got.Memory.Recall.Enabled {
+		t.Fatal("Memory.Recall.Enabled = true, want false")
+	}
+	if got.Memory.normalized(got.Agent.ID).Recall.enabled() {
+		t.Fatal("normalized memory recall is enabled, want disabled")
+	}
+}
+
 func TestLoadConfigPreservesGraphVariableRefsDuringEnvExpansion(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {

@@ -143,7 +143,7 @@ func (c *Claw) serveDebugMemory(w http.ResponseWriter) {
 			BoardFacts:       cfg.Write.BoardFacts,
 		},
 		Recall: debugMemoryRecallInfo{
-			Enabled:      cfg.Recall.Enabled,
+			Enabled:      cfg.Recall.enabled(),
 			TopK:         cfg.Recall.TopK,
 			Inject:       cfg.Recall.Inject,
 			BoardVar:     cfg.Recall.BoardVar,

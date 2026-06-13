@@ -107,6 +107,64 @@ func TestRoundTripInterruptsConcurrentSameContext(t *testing.T) {
 	}
 }
 
+func TestSendRoundEventReturnsWhenContextCanceled(t *testing.T) {
+	events := make(chan Event, 1)
+	events <- Event{Type: EventStatus, Content: "busy"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := sendRoundEvent(ctx, events, Event{Type: EventResult})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("sendRoundEvent error = %v, want context.Canceled", err)
+	}
+}
+
+func TestCloseContextWaitsForActiveRoundBeforeClosingMemory(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalWorkspace: %v", err)
+	}
+	llm := &controlledStreamLLM{
+		chunks:     []string{"hello", " world"},
+		blockAfter: 1,
+		blocked:    make(chan struct{}),
+	}
+	app := newTestClaw(t, ws, llm, nil)
+	mem := &closeCheckMemory{
+		app:    app,
+		closed: make(chan struct{}),
+	}
+	app.memory = &memoryRuntime{mem: mem}
+
+	resp, err := app.RoundTrip(Request{Text: "hi"})
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	ev, err := resp.Next()
+	if err != nil {
+		t.Fatalf("Next token: %v", err)
+	}
+	if ev.Type != EventToken {
+		t.Fatalf("first event = %s, want token", ev.Type)
+	}
+	select {
+	case <-llm.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not block")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := app.CloseContext(ctx); err != nil {
+		t.Fatalf("CloseContext: %v", err)
+	}
+	select {
+	case <-mem.closed:
+	default:
+		t.Fatal("memory was not closed")
+	}
+}
+
 func TestRoundTripPersistsContextState(t *testing.T) {
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())
 	if err != nil {
@@ -755,7 +813,7 @@ func TestBoardSeederCanInjectRecallMemoryIntoBoardVar(t *testing.T) {
 		mem:   mem,
 		scope: recall.Scope{RuntimeID: "rt", UserID: "u"},
 		cfg: MemoryConfig{Recall: MemoryRecallConfig{
-			Enabled:  true,
+			Enabled:  boolPtr(true),
 			TopK:     5,
 			Inject:   "board",
 			BoardVar: "persona_memory",
@@ -814,7 +872,7 @@ func TestBoardSeederWritesMultipleRecallProfiles(t *testing.T) {
 		mem:   mem,
 		scope: recall.Scope{RuntimeID: "rt", UserID: "u"},
 		cfg: MemoryConfig{Recall: MemoryRecallConfig{
-			Enabled: true,
+			Enabled: boolPtr(true),
 			Profiles: map[string]MemoryRecallProfileConfig{
 				"story": {
 					Output: "story_memory",
@@ -879,7 +937,7 @@ func TestBoardSeederSkipsEmptyRecallProfileQuery(t *testing.T) {
 		mem:   mem,
 		scope: recall.Scope{RuntimeID: "rt", UserID: "u"},
 		cfg: MemoryConfig{Recall: MemoryRecallConfig{
-			Enabled: true,
+			Enabled: boolPtr(true),
 			Profiles: map[string]MemoryRecallProfileConfig{
 				"story": {
 					Output: "story_memory",
@@ -1292,3 +1350,22 @@ func (m *recordingMemory) Penalize(context.Context, recall.Scope, string, float6
 }
 
 func (m *recordingMemory) Close() error { return nil }
+
+type closeCheckMemory struct {
+	recordingMemory
+
+	app    *Claw
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (m *closeCheckMemory) Close() error {
+	m.app.mu.Lock()
+	active := m.app.active
+	m.app.mu.Unlock()
+	if active != nil {
+		return fmt.Errorf("memory closed before active round finished")
+	}
+	m.once.Do(func() { close(m.closed) })
+	return nil
+}

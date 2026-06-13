@@ -152,17 +152,17 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 		agent.WithDependencies(c.dependencies()),
 	)
 	if err != nil {
-		events <- Event{Type: EventError, Err: err.Error(), IsError: true}
+		_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true})
 		return
 	}
 	if result != nil && result.Err != nil {
 		if errdefs.IsInterrupted(result.Err) && round.shouldCommitPartial() {
 			if err := round.commitPartial(ctx); err != nil {
-				events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+				_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
 				return
 			}
 		}
-		events <- Event{Type: EventError, Err: result.Err.Error(), IsError: true, Result: result}
+		_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: result.Err.Error(), IsError: true, Result: result})
 		return
 	}
 	if c.memory != nil {
@@ -170,23 +170,39 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 		if result != nil && result.LastBoard != nil {
 			boardVars = result.LastBoard.Vars()
 		}
-		events <- Event{Type: EventStatus, Content: "extracting"}
+		if err := sendRoundEvent(ctx, events, Event{Type: EventStatus, Content: "extracting"}); err != nil {
+			return
+		}
 		if err := c.memory.saveTurn(ctx, id, req.Text, streams.memoryAssistant(result), boardVars); err != nil {
-			events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+			_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
 			return
 		}
 	}
 	if c.history != nil {
 		if err := c.history.appendTurn(ctx, id, model.NewTextMessage(model.RoleUser, req.Text), streams.historyAssistants()); err != nil {
-			events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+			_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
 			return
 		}
 	}
 	if err := c.saveContextState(ctx, id, result, req.Inputs); err != nil {
-		events <- Event{Type: EventError, Err: err.Error(), IsError: true, Result: result}
+		_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
 		return
 	}
-	events <- Event{Type: EventResult, Result: result}
+	_ = sendRoundEvent(ctx, events, Event{Type: EventResult, Result: result})
+}
+
+func sendRoundEvent(ctx context.Context, events chan<- Event, ev Event) error {
+	select {
+	case events <- ev:
+		return nil
+	default:
+	}
+	select {
+	case events <- ev:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Claw) boardSeeder() agent.BoardSeeder {
@@ -576,6 +592,7 @@ type roundController struct {
 	userText    string
 	cancel      context.CancelFunc
 	interruptCh chan engine.Interrupt
+	doneCh      chan struct{}
 
 	mu              sync.Mutex
 	done            bool
@@ -593,6 +610,7 @@ func newRoundController(c *Claw, contextID, userText string, cancel context.Canc
 		userText:    userText,
 		cancel:      cancel,
 		interruptCh: make(chan engine.Interrupt, 1),
+		doneCh:      make(chan struct{}),
 		discard:     true,
 	}
 }
@@ -667,6 +685,23 @@ func (r *roundController) commitPartial(ctx context.Context) error {
 
 func (r *roundController) finish() {
 	r.mu.Lock()
+	if r.done {
+		r.mu.Unlock()
+		return
+	}
 	r.done = true
+	close(r.doneCh)
 	r.mu.Unlock()
+}
+
+func (r *roundController) wait(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	select {
+	case <-r.doneCh:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

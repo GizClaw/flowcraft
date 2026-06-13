@@ -84,7 +84,7 @@ func defaultConfig() Config {
 				Tier:             "general",
 			},
 			Recall: MemoryRecallConfig{
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				TopK:     5,
 				Inject:   "board",
 				BoardVar: "memory_context",

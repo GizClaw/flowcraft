@@ -86,7 +86,7 @@ type MemoryLaneConfig struct {
 }
 
 type MemoryRecallConfig struct {
-	Enabled        bool                                 `json:"enabled,omitempty"`
+	Enabled        *bool                                `json:"enabled,omitempty"`
 	TopK           int                                  `json:"top_k,omitempty"`
 	GraphEnabled   bool                                 `json:"graph_enabled,omitempty"`
 	IncludeRetired bool                                 `json:"include_retired,omitempty"`
@@ -256,7 +256,7 @@ func (m *memoryRuntime) recallBoardVars(ctx context.Context, query string) (map[
 	if m == nil || m.mem == nil {
 		return nil, nil
 	}
-	if !m.cfg.Recall.Enabled {
+	if !m.cfg.Recall.enabled() {
 		return nil, nil
 	}
 	profiles := m.recallProfiles()
@@ -778,8 +778,8 @@ func (m MemoryConfig) normalized(agentID string) MemoryConfig {
 	if out.Graph {
 		out.Recall.GraphEnabled = true
 	}
-	if out.Recall.Enabled == false {
-		out.Recall.Enabled = true
+	if out.Recall.Enabled == nil {
+		out.Recall.Enabled = boolPtr(true)
 	}
 	if out.SaveConversation {
 		out.Write.SaveConversation = true
@@ -788,6 +788,14 @@ func (m MemoryConfig) normalized(agentID string) MemoryConfig {
 		out.Extract.StageTimeout = "15s"
 	}
 	return out
+}
+
+func (c MemoryRecallConfig) enabled() bool {
+	return c.Enabled != nil && *c.Enabled
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func (c MemoryExtractConfig) stageTimeoutDuration() (time.Duration, error) {

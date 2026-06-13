@@ -84,11 +84,17 @@ func (c *Claw) CloseContext(ctx context.Context) error {
 	if c == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	c.mu.Lock()
 	active := c.active
 	c.mu.Unlock()
 	if active != nil {
 		active.interrupt(true)
+		if err := active.wait(ctx); err != nil {
+			return err
+		}
 	}
 	var errs []error
 	if c.memory != nil {
