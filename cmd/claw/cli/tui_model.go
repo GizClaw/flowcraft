@@ -367,7 +367,7 @@ func (m tuiModel) chatView(width, height int) string {
 		if msg.Role == "user" {
 			lines = append(lines, wrapLine("user: "+text, width-4)...)
 		} else {
-			lines = append(lines, wrapLine(tuiMessageLabel(msg)+": "+text, width-4)...)
+			lines = append(lines, wrapLine(tuiMessageLabel(msg)+" "+text, width-4)...)
 		}
 		lines = append(lines, "")
 	}

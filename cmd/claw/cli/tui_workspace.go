@@ -62,7 +62,15 @@ func listTUIRaidOptions() ([]tuiRaidOption, error) {
 	return out, nil
 }
 
+func createNewTUIWorkspaceFromRaid(raidName string) (tuiWorkspaceOption, error) {
+	return createTUIWorkspaceFromRaid(raidName, true)
+}
+
 func createOrOpenTUIWorkspaceFromRaid(raidName string) (tuiWorkspaceOption, error) {
+	return createTUIWorkspaceFromRaid(raidName, false)
+}
+
+func createTUIWorkspaceFromRaid(raidName string, reset bool) (tuiWorkspaceOption, error) {
 	raidName = strings.TrimSpace(raidName)
 	if raidName == "" {
 		return tuiWorkspaceOption{}, fmt.Errorf("raid name is required")
@@ -80,11 +88,20 @@ func createOrOpenTUIWorkspaceFromRaid(raidName string) (tuiWorkspaceOption, erro
 	}
 	id := tuiWorkspaceID("raid", source)
 	workspaceDir := filepath.Join(workspacesDir, id)
+	if reset {
+		if err := os.RemoveAll(workspaceDir); err != nil {
+			return tuiWorkspaceOption{}, fmt.Errorf("reset tui workspace: %w", err)
+		}
+	}
 	if err := os.MkdirAll(workspaceDir, 0o755); err != nil {
 		return tuiWorkspaceOption{}, err
 	}
 	configPath := filepath.Join(workspaceDir, configFileName)
-	if err := writeFileIfMissing(configPath, raw); err != nil {
+	if reset {
+		if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+			return tuiWorkspaceOption{}, err
+		}
+	} else if err := writeFileIfMissing(configPath, raw); err != nil {
 		return tuiWorkspaceOption{}, err
 	}
 	meta, err := readTUIWorkspaceMeta(workspaceDir)

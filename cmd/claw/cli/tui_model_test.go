@@ -23,7 +23,7 @@ func TestTUIModelRendersThreePaneWorkspace(t *testing.T) {
 	next, _ := model.Update(tea.WindowSizeMsg{Width: 120, Height: 32})
 	model = next.(tuiModel)
 	view := model.View()
-	for _, want := range []string{"Recall", "Chat", "Workspace", "Memory", "History", "user: hi", "<node>: hello"} {
+	for _, want := range []string{"Recall", "Chat", "Workspace", "Memory", "History", "user: hi", "<node> hello"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
@@ -210,7 +210,7 @@ func TestTUIModelRendersAssistantNodeID(t *testing.T) {
 	model := newTUIModel(nil, "")
 	model.messages = []tuiChatMessage{{Role: "assistant", Text: "hello", NodeID: "answer_node"}}
 	view := model.View()
-	if !strings.Contains(view, "<answer_node>: hello") {
+	if !strings.Contains(view, "<answer_node> hello") {
 		t.Fatalf("view missing node id:\n%s", view)
 	}
 	if strings.Contains(view, "assistant:") || strings.Contains(view, "answer_node:") || strings.Contains(view, "[answer_node]") {

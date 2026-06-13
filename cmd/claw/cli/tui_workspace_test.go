@@ -13,7 +13,7 @@ func TestCreateOrOpenTUIWorkspaceFromRaidCreatesHashedWorkspace(t *testing.T) {
 		t.Fatalf("ensureClawConfigDir: %v", err)
 	}
 
-	workspace, err := createOrOpenTUIWorkspaceFromRaid("chat")
+	workspace, err := createNewTUIWorkspaceFromRaid("chat")
 	if err != nil {
 		t.Fatalf("createOrOpenTUIWorkspaceFromRaid: %v", err)
 	}
@@ -33,6 +33,48 @@ func TestCreateOrOpenTUIWorkspaceFromRaidCreatesHashedWorkspace(t *testing.T) {
 	}
 	if meta.Kind != "raid" || meta.ConfigName != "chat" || meta.LastOpenedAt == "" {
 		t.Fatalf("metadata = %+v, want raid chat with last_opened", meta)
+	}
+}
+
+func TestCreateNewTUIWorkspaceFromRaidResetsExistingWorkspace(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("CLAW_CONFIG_DIR", root)
+	if err := ensureClawConfigDir(); err != nil {
+		t.Fatalf("ensureClawConfigDir: %v", err)
+	}
+	workspace, err := createNewTUIWorkspaceFromRaid("chat")
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	configPath := filepath.Join(workspace.Path, configFileName)
+	const custom = "agent:\n  id: edited\n"
+	if err := os.WriteFile(configPath, []byte(custom), 0o644); err != nil {
+		t.Fatalf("edit config: %v", err)
+	}
+	progressPath := filepath.Join(workspace.Path, "state", "contexts", "old.json")
+	if err := os.MkdirAll(filepath.Dir(progressPath), 0o755); err != nil {
+		t.Fatalf("create progress dir: %v", err)
+	}
+	if err := os.WriteFile(progressPath, []byte("old progress"), 0o644); err != nil {
+		t.Fatalf("write progress: %v", err)
+	}
+
+	resetWorkspace, err := createNewTUIWorkspaceFromRaid("chat")
+	if err != nil {
+		t.Fatalf("reset workspace: %v", err)
+	}
+	if resetWorkspace.Path != workspace.Path {
+		t.Fatalf("reset workspace path = %q, want %q", resetWorkspace.Path, workspace.Path)
+	}
+	if _, err := os.Stat(progressPath); !os.IsNotExist(err) {
+		t.Fatalf("progress path still exists or stat failed with non-not-exist: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if string(raw) == custom {
+		t.Fatal("config was not reset")
 	}
 }
 

@@ -47,7 +47,7 @@ func tuiNewCmd(args []string) error {
 	if err != nil || !ok {
 		return err
 	}
-	workspace, err := createOrOpenTUIWorkspaceFromRaid(selected.Value)
+	workspace, err := createNewTUIWorkspaceFromRaid(selected.Value)
 	if err != nil {
 		return err
 	}
