@@ -11,7 +11,6 @@ history:
 settings:
   generate_model: ${GENERATE_MODEL}
   extract_model: ${EXTRACT_MODEL}
-  embedding_model: ${EMBEDDING_MODEL}
 
 models:
   llm:
@@ -52,16 +51,6 @@ models:
       provider: openai
       model: gpt-5
       api_key: ${OPENAI_API_KEY}
-  embedding:
-    openai-small:
-      provider: openai
-      model: text-embedding-3-small
-      api_key: ${OPENAI_API_KEY}
-    qwen-v4:
-      provider: qwen
-      model: text-embedding-v4
-      api_key: ${QWEN_API_KEY}
-
 memory:
   enabled: true
   scope:
@@ -70,7 +59,7 @@ memory:
     agent_id: tom
   write:
     save_conversation: true
-    mode: async_semantic
+    mode: sync
     tier: general
   extract:
     enabled: true
@@ -143,7 +132,6 @@ memory:
         flush_interval: 60000000000
   embedding:
     enabled: false
-    model: embedding_model
 
 agent:
   id: tom
