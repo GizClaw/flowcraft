@@ -1,0 +1,7 @@
+name: poetry_adventure_li_bai_song_unlock
+description: Clearing Tang should unlock Song on the next turn.
+raid: poetry_adventure_li_bai
+turns:
+  - 开始古诗闯关
+  - 明月出天山
+  - 继续

@@ -1,0 +1,5 @@
+name: werewolf_opening_setup
+description: Starts a new Werewolf game and reveals the user as seat 3 villager.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀

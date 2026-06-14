@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1720" height="1080" viewBox="0 0 1720 1080" role="img" aria-labelledby="title desc">
+  <title id="title">werewolf DAG and memory layout</title>
+  <desc id="desc">Werewolf raid graph nodes and memory layout. Memory uses extract plus BM25 recall; embedding is disabled. The game includes explicit night host nodes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#344054"/>
+    </marker>
+    <style>
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; }
+      .node { fill: #ffffff; stroke: #98a2b3; stroke-width: 1.5; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .tool { fill: #f3ecff; stroke: #7c3aed; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .state { fill: #eef6ff; stroke: #0b6bcb; }
+      .end { fill: #f2f4f7; stroke: #667085; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .label { font: 700 12px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #667085; }
+      .edge { fill: none; stroke: #344054; stroke-width: 1.5; marker-end: url(#arrow); }
+      .edge-soft { fill: none; stroke: #667085; stroke-width: 1.25; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+      .edge-label { font: 11px Arial, sans-serif; fill: #344054; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1720" height="1080"/>
+  <text class="title" x="40" y="48">werewolf.svg</text>
+  <text class="small" x="40" y="72">DAG nodes plus memory layout. User is seat 3; role assignment and phase live in board state.</text>
+
+  <rect class="panel" x="40" y="104" width="1200" height="928" rx="8"/>
+  <text class="panel-title" x="68" y="138">agent DAG</text>
+  <text class="small" x="68" y="160">Only graph nodes and arcs are shown in this area.</text>
+
+  <rect class="node script" x="76" y="196" width="142" height="50" rx="8"/>
+  <text class="label" x="108" y="226">load_game_state</text>
+  <rect class="node script" x="270" y="196" width="122" height="50" rx="8"/>
+  <text class="label" x="304" y="226">route_setup</text>
+  <path class="edge" d="M 218 221 L 268 221"/>
+
+  <rect class="node script" x="78" y="304" width="122" height="50" rx="8"/>
+  <text class="label" x="112" y="334">setup_game</text>
+  <rect class="node script" x="252" y="304" width="128" height="50" rx="8"/>
+  <text class="label" x="286" y="334">host_opening</text>
+  <rect class="node llm" x="432" y="304" width="146" height="50" rx="8"/>
+  <text class="label" x="462" y="334">seat_1_lin_zhi</text>
+  <rect class="node llm" x="630" y="304" width="132" height="50" rx="8"/>
+  <text class="label" x="660" y="334">seat_2_ache</text>
+  <rect class="node script" x="814" y="304" width="156" height="50" rx="8"/>
+  <text class="label" x="842" y="334">prepare_user_speech</text>
+  <rect class="node script" x="1022" y="304" width="148" height="50" rx="8"/>
+  <text class="label" x="1052" y="334">user_speech_prompt</text>
+  <path class="edge" d="M 331 246 C 292 280 196 292 140 302"/>
+  <path class="edge" d="M 200 329 L 250 329"/>
+  <path class="edge" d="M 380 329 L 430 329"/>
+  <path class="edge" d="M 578 329 L 628 329"/>
+  <path class="edge" d="M 762 329 L 812 329"/>
+  <path class="edge" d="M 970 329 L 1020 329"/>
+
+  <rect class="node script" x="252" y="374" width="134" height="50" rx="8"/>
+  <text class="label" x="278" y="404">host_night</text>
+  <rect class="node script" x="432" y="374" width="146" height="50" rx="8"/>
+  <text class="label" x="456" y="404">wolf_action</text>
+  <rect class="node script" x="630" y="374" width="132" height="50" rx="8"/>
+  <text class="label" x="656" y="404">seer_action</text>
+  <rect class="node script" x="814" y="374" width="156" height="50" rx="8"/>
+  <text class="label" x="842" y="404">witch_action</text>
+  <rect class="node script" x="1022" y="374" width="148" height="50" rx="8"/>
+  <text class="label" x="1050" y="404">resolve_night</text>
+  <path class="edge" d="M 316 354 L 318 372"/>
+  <path class="edge" d="M 386 399 L 430 399"/>
+  <path class="edge" d="M 578 399 L 628 399"/>
+  <path class="edge" d="M 762 399 L 812 399"/>
+  <path class="edge" d="M 970 399 L 1020 399"/>
+  <path class="edge" d="M 1022 424 C 766 444 404 446 232 445"/>
+
+  <rect class="node script" x="78" y="420" width="152" height="50" rx="8"/>
+  <text class="label" x="108" y="450">host_day_announce</text>
+  <path class="edge" d="M 331 246 C 234 318 170 374 154 418"/>
+  <path class="edge" d="M 230 445 C 312 408 392 364 432 339"/>
+
+  <rect class="node llm" x="424" y="448" width="150" height="50" rx="8"/>
+  <text class="label" x="454" y="478">format_player_move</text>
+  <rect class="node script" x="628" y="448" width="158" height="50" rx="8"/>
+  <text class="label" x="658" y="478">validate_speech</text>
+  <rect class="node script" x="838" y="448" width="144" height="50" rx="8"/>
+  <text class="label" x="868" y="478">speech_retry</text>
+  <path class="edge" d="M 331 246 C 454 324 502 390 500 446"/>
+  <path class="edge" d="M 574 473 L 626 473"/>
+  <path class="edge" d="M 786 473 L 836 473"/>
+
+  <rect class="node llm" x="78" y="572" width="146" height="50" rx="8"/>
+  <text class="label" x="108" y="602">seat_4_xiaoman</text>
+  <rect class="node llm" x="276" y="572" width="144" height="50" rx="8"/>
+  <text class="label" x="306" y="602">seat_5_zhoulan</text>
+  <rect class="node llm" x="472" y="572" width="154" height="50" rx="8"/>
+  <text class="label" x="502" y="602">seat_6_chen</text>
+  <rect class="node llm" x="678" y="572" width="146" height="50" rx="8"/>
+  <text class="label" x="708" y="602">seat_7_laozhao</text>
+  <rect class="node llm" x="876" y="572" width="132" height="50" rx="8"/>
+  <text class="label" x="906" y="602">seat_8_suhe</text>
+  <rect class="node script" x="1060" y="572" width="148" height="50" rx="8"/>
+  <text class="label" x="1088" y="602">prepare_vote</text>
+  <path class="edge" d="M 707 498 C 596 548 282 560 152 570"/>
+  <path class="edge" d="M 224 597 L 274 597"/>
+  <path class="edge" d="M 420 597 L 470 597"/>
+  <path class="edge" d="M 626 597 L 676 597"/>
+  <path class="edge" d="M 824 597 L 874 597"/>
+  <path class="edge" d="M 1008 597 L 1058 597"/>
+
+  <rect class="node script" x="820" y="690" width="146" height="50" rx="8"/>
+  <text class="label" x="852" y="720">host_vote_prompt</text>
+  <path class="edge" d="M 1134 622 C 1080 662 1014 686 968 710"/>
+
+  <rect class="node script" x="424" y="792" width="132" height="50" rx="8"/>
+  <text class="label" x="462" y="822">apply_vote</text>
+  <rect class="node script" x="608" y="792" width="142" height="50" rx="8"/>
+  <text class="label" x="640" y="822">vote_result</text>
+  <rect class="node script" x="800" y="792" width="122" height="50" rx="8"/>
+  <text class="label" x="832" y="822">vote_retry</text>
+  <path class="edge" d="M 499 498 C 490 590 490 704 490 790"/>
+  <path class="edge" d="M 556 817 L 606 817"/>
+  <path class="edge" d="M 556 808 C 646 772 746 780 800 810"/>
+
+  <rect class="node tool" x="470" y="896" width="136" height="48" rx="8"/>
+  <text class="label" x="500" y="926">call_game_event</text>
+  <rect class="node tool" x="656" y="896" width="164" height="48" rx="8"/>
+  <text class="label" x="684" y="926">call_game_over</text>
+  <rect class="node script" x="870" y="896" width="140" height="48" rx="8"/>
+  <text class="label" x="900" y="926">write_audit</text>
+  <path class="edge" d="M 650 842 C 596 870 546 878 538 894"/>
+  <path class="edge" d="M 704 842 C 738 870 738 878 738 894"/>
+  <path class="edge" d="M 606 920 L 654 920"/>
+  <path class="edge" d="M 820 920 L 868 920"/>
+  <path class="edge" d="M 940 896 C 914 834 830 780 750 740"/>
+  <path class="edge" d="M 940 896 C 826 824 356 490 230 445"/>
+
+  <rect class="node script" x="78" y="930" width="154" height="50" rx="8"/>
+  <text class="label" x="106" y="960">route_post_game</text>
+  <path class="edge" d="M 331 246 C 198 474 154 760 154 928"/>
+  <rect class="node script" x="294" y="930" width="134" height="50" rx="8"/>
+  <text class="label" x="326" y="960">post_seat_1</text>
+  <rect class="node script" x="478" y="930" width="134" height="50" rx="8"/>
+  <text class="label" x="510" y="960">post_seat_2</text>
+  <rect class="node script" x="662" y="930" width="134" height="50" rx="8"/>
+  <text class="label" x="694" y="960">post_seats_4_8</text>
+  <rect class="node script" x="846" y="930" width="134" height="50" rx="8"/>
+  <text class="label" x="878" y="960">post_host_wrap</text>
+  <path class="edge" d="M 232 955 L 292 955"/>
+  <path class="edge" d="M 428 955 L 476 955"/>
+  <path class="edge" d="M 612 955 L 660 955"/>
+  <path class="edge" d="M 796 955 L 844 955"/>
+  <path class="edge-soft" d="M 232 942 C 488 884 704 886 846 936"/>
+  <text class="edge-label" x="452" y="904">host_only skips role chain</text>
+
+  <rect class="node end" x="1078" y="792" width="92" height="50" rx="8"/>
+  <text class="label" x="1102" y="822">__end__</text>
+  <path class="edge-soft" d="M 1170 329 C 1190 496 1164 674 1130 790"/>
+  <path class="edge-soft" d="M 982 473 C 1082 560 1122 688 1124 790"/>
+  <path class="edge-soft" d="M 966 715 C 1018 744 1078 770 1110 790"/>
+  <path class="edge-soft" d="M 1010 920 C 1062 892 1094 864 1112 842"/>
+  <path class="edge-soft" d="M 980 955 C 1052 926 1110 878 1120 842"/>
+
+  <rect class="panel" x="1276" y="104" width="404" height="424" rx="8"/>
+  <text class="panel-title" x="1304" y="138">memory layout</text>
+  <text class="small" x="1304" y="160">Write path: board facts + extract. Recall path: BM25 text search.</text>
+  <rect class="node memory" x="1304" y="196" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="224">game_progress</text>
+  <text class="tiny" x="1328" y="242">state lane: phase, day, alive, winner</text>
+  <rect class="node memory" x="1304" y="270" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="298">public_timeline</text>
+  <text class="tiny" x="1328" y="316">event lane: public deaths, speeches, votes</text>
+  <rect class="node memory" x="1304" y="344" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="372">seat_1_memory ... seat_8_memory</text>
+  <text class="tiny" x="1328" y="390">per-seat state lanes, written from board facts</text>
+  <rect class="node memory" x="1304" y="418" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="446">resolution_log</text>
+  <text class="tiny" x="1328" y="464">event lane: tool events and outcomes</text>
+  <text class="small" x="1304" y="504">embedding: disabled; no vector model configured</text>
+
+  <rect class="panel" x="1276" y="560" width="404" height="472" rx="8"/>
+  <text class="panel-title" x="1304" y="594">board state projection</text>
+  <text class="small" x="1304" y="616">Routing uses board state first; memory is continuity/audit context.</text>
+  <rect class="node state" x="1304" y="652" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="680">role_assignment</text>
+  <text class="tiny" x="1328" y="698">fixed seeded roles for 8 seats</text>
+  <rect class="node state" x="1304" y="726" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="754">phase_state</text>
+  <text class="tiny" x="1328" y="772">setup, night_open, day_open, user_speech, vote, ended</text>
+  <rect class="node state" x="1304" y="800" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="828">seat_state</text>
+  <text class="tiny" x="1328" y="846">alive seats, last night kill, last exile</text>
+  <rect class="node state" x="1304" y="874" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="902">public_focus</text>
+  <text class="tiny" x="1328" y="920">current public target and vote focus</text>
+  <rect class="node state" x="1304" y="948" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="976">public_log</text>
+  <text class="tiny" x="1328" y="994">player-visible log injected into speech context</text>
+  <rect class="node state" x="1304" y="1012" width="320" height="54" rx="8"/>
+  <text class="label" x="1328" y="1040">post_game_contract</text>
+  <text class="tiny" x="1328" y="1058">ended-state recap contract injected to post-game nodes</text>
+</svg>

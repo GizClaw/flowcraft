@@ -1,0 +1,6 @@
+name: music_missing_then_volume
+description: Missing music title should pause the queue, then continue to volume after the user provides the title.
+raid: match_route
+turns:
+  - 我要听歌，然后把音量调到30%
+  - 卡农

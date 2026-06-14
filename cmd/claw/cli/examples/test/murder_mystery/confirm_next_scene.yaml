@@ -1,0 +1,8 @@
+name: murder_mystery_confirm_next_scene
+description: After the GM suggests the next scene, short confirmation replies should execute that scene instead of repeating guidance.
+raid: murder_mystery
+turns:
+  - 开始游戏
+  - 我想看看留声机
+  - 好啊
+  - 去啊

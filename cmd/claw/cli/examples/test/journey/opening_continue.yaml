@@ -1,0 +1,7 @@
+name: journey_opening_continue
+description: Self-start Journey and continue the opening without a persona peer.
+raid: journey
+turns:
+  - ""
+  - 继续讲，慢一点，不要跳过中间情节
+  - 刚才讲到哪里了？接着那个地方继续

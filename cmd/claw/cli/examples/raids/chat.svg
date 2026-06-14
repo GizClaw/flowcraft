@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" role="img" aria-labelledby="title desc">
+  <title id="title">chat raid DAG and memory layout</title>
+  <desc id="desc">The chat raid has a two-node agent DAG and a separate semantic memory layout that recalls memory_context for prompt construction.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .store { fill: #f0f9ff; stroke: #0284c7; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .board { fill: #fef3c7; stroke: #d97706; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .label { font: 700 13px Arial, sans-serif; fill: #111827; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .soft-edge { fill: none; stroke: #64748b; stroke-width: 1.5; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+      .edge-label { font: 12px Arial, sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="760"/>
+  <text class="title" x="40" y="48">chat.svg</text>
+  <text class="small" x="40" y="72">A simple chat raid: recall memory, build a spoken-style prompt, answer, then persist conversation memory.</text>
+
+  <rect class="panel" x="48" y="110" width="650" height="590"/>
+  <text class="panel-title" x="76" y="146">agent DAG</text>
+  <text class="small" x="76" y="168">Only graph nodes and arcs from chat.yaml are shown in this panel.</text>
+
+  <rect class="node script" x="108" y="278" width="190" height="78"/>
+  <text class="label" x="154" y="308">style_prompt</text>
+  <text class="tiny" x="130" y="330">build system_prompt</text>
+  <text class="tiny" x="130" y="348">from style + memory</text>
+
+  <rect class="node llm" x="384" y="278" width="190" height="78"/>
+  <text class="label" x="456" y="308">answer</text>
+  <text class="tiny" x="418" y="330">generate_model</text>
+  <text class="tiny" x="418" y="348">publish response</text>
+
+  <rect class="node end" x="444" y="482" width="116" height="56"/>
+  <text class="label" x="480" y="506">__end__</text>
+  <text class="tiny" x="468" y="526">turn done</text>
+
+  <path class="edge" d="M 298 317 L 382 317"/>
+  <text class="edge-label" x="326" y="302">system_prompt</text>
+  <path class="edge" d="M 502 356 L 502 480"/>
+  <text class="edge-label" x="514" y="430">reply</text>
+
+  <rect class="node board" x="174" y="462" width="170" height="66"/>
+  <text class="label" x="216" y="488">board vars</text>
+  <text class="tiny" x="196" y="508">memory_context</text>
+  <text class="tiny" x="196" y="524">system_prompt</text>
+  <path class="soft-edge" d="M 260 462 L 202 358"/>
+  <text class="edge-label" x="194" y="420">read/write</text>
+
+  <rect class="panel" x="738" y="110" width="494" height="590"/>
+  <text class="panel-title" x="766" y="146">memory layout</text>
+  <text class="small" x="766" y="168">Semantic memory is outside the DAG. It recalls into board var memory_context before style_prompt runs.</text>
+
+  <rect class="node memory" x="788" y="222" width="178" height="72"/>
+  <text class="label" x="824" y="250">conversation</text>
+  <text class="tiny" x="816" y="272">save_conversation</text>
+
+  <rect class="node memory" x="1020" y="222" width="160" height="72"/>
+  <text class="label" x="1050" y="250">extract</text>
+  <text class="tiny" x="1042" y="272">two_pass facts</text>
+
+  <rect class="node store" x="878" y="366" width="212" height="88"/>
+  <text class="label" x="944" y="396">bbh store</text>
+  <text class="tiny" x="916" y="418">Badger metadata</text>
+  <text class="tiny" x="916" y="436">Bleve text + HNSW vector</text>
+
+  <rect class="node memory" x="788" y="528" width="178" height="72"/>
+  <text class="label" x="828" y="556">recall profile</text>
+  <text class="tiny" x="818" y="578">memory_context</text>
+
+  <rect class="node board" x="1020" y="528" width="160" height="72"/>
+  <text class="label" x="1060" y="556">board</text>
+  <text class="tiny" x="1044" y="578">memory_context</text>
+
+  <path class="edge" d="M 966 258 L 1018 258"/>
+  <text class="edge-label" x="970" y="242">async_semantic</text>
+  <path class="edge" d="M 1100 294 L 1016 364"/>
+  <text class="edge-label" x="1052" y="334">facts</text>
+  <path class="edge" d="M 930 454 L 882 526"/>
+  <text class="edge-label" x="840" y="494">top_k 5</text>
+  <path class="edge" d="M 966 564 L 1018 564"/>
+  <text class="edge-label" x="974" y="548">inject</text>
+
+  <path class="soft-edge" d="M 1020 564 C 860 620 610 610 344 510"/>
+  <text class="edge-label" x="674" y="622">available before DAG prompt construction</text>
+</svg>

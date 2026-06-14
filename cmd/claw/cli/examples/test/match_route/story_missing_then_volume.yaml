@@ -1,0 +1,6 @@
+name: story_missing_then_volume
+description: Story request is chat; the supported volume command should still route, then later text should continue as chat.
+raid: match_route
+turns:
+  - 我想听故事，然后小声点
+  - 太空

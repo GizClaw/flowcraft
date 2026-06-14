@@ -1,0 +1,7 @@
+name: chat_bm25_memory_recall
+description: Store a concrete user fact, distract with other chat, then ask for it using different wording; chat uses BM25-only recall.
+raid: chat
+turns:
+  - 记一下，我最喜欢的秘密颜色是青绿色，别把它说成蓝色。
+  - 先聊点别的，森林里的小松鼠今天会不会找到松果？
+  - 如果我要给一颗小石头涂我最喜欢的颜色，你觉得应该涂什么颜色？

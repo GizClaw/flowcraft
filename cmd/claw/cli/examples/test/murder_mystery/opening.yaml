@@ -1,0 +1,5 @@
+name: murder_mystery_opening
+description: Starts the case and should invite the player to investigate without revealing the culprit.
+raid: murder_mystery
+turns:
+  - 开始游戏

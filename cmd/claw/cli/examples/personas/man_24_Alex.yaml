@@ -1,0 +1,188 @@
+workspace:
+  memory_root: memory
+  state_root: state
+  history_root: history
+
+history:
+  enabled: true
+  kind: buffer
+  max_messages: 20
+
+settings:
+  generate_model: ${GENERATE_MODEL}
+  extract_model: ${EXTRACT_MODEL}
+
+models:
+  llm:
+    doubao-seed-2-0-lite-260215:
+      provider: bytedance
+      model: doubao-seed-2-0-lite-260215
+      api_key: ${BYTEDANCE_API_KEY}
+    MiniMax-M2.7-highspeed:
+      provider: minimax
+      model: MiniMax-M2.7-highspeed
+      api_key: ${MINIMAX_API_KEY}
+      base_url: ${MINIMAX_BASE_URL}
+    qwen-flash:
+      provider: qwen
+      model: qwen-flash
+      api_key: ${QWEN_API_KEY}
+    azure-gpt-5.4:
+      provider: azure
+      model: gpt-5.4
+      api_key: ${AZURE_OPENAI_API_KEY}
+      base_url: ${AZURE_OPENAI_BASE_URL}
+      config:
+        caps:
+          no_temperature: true
+    deepseek-v4-flash:
+      provider: deepseek
+      model: deepseek-v4-flash
+      api_key: ${DEEPSEEK_API_KEY}
+    deepseek-v4-pro:
+      provider: deepseek
+      model: deepseek-v4-pro
+      api_key: ${DEEPSEEK_API_KEY}
+    gpt-4o-mini:
+      provider: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    gpt-5:
+      provider: openai
+      model: gpt-5
+      api_key: ${OPENAI_API_KEY}
+memory:
+  enabled: true
+  scope:
+    runtime_id: persona-alex
+    user_id: local
+    agent_id: alex
+  write:
+    save_conversation: true
+    mode: sync
+    tier: general
+  extract:
+    enabled: true
+    model: extract_model
+    mode: two_pass
+    temperature: 0
+    schema_name: persona_memory
+    system_prompt: |
+      Extract durable facts about Alex's preferences, open questions, and current story state.
+      Do not preserve accidental long analysis, praise loops, or narrator wording as Alex's preference.
+      Prefer short facts that help Alex keep speaking like a person in a voice conversation.
+  layout:
+    lanes:
+      - name: persona_identity
+        kind: state
+        description: Stable identity and speech style for Alex.
+        extract: Capture only stable identity rules, not accidental long outputs.
+        recall: Use this lane to keep Alex concise, conversational, and age-appropriate.
+      - name: persona_preferences
+        kind: preference
+        description: Story interests, favorite characters, pacing preferences, and question style.
+        extract: Capture what Alex likes or dislikes about the story.
+        recall: Use this lane to choose the next short reaction or question.
+      - name: open_questions
+        kind: event
+        description: Questions Alex asked that are still relevant.
+        extract: Capture only the concrete question, not the surrounding commentary.
+        recall: Use this lane to avoid repeating questions and to follow up naturally.
+      - name: story_position
+        kind: state
+        description: The current plot point Alex is hearing about.
+        extract: Capture where the conversation is in the story.
+        recall: Use this lane only for continuity, not for style imitation.
+      - name: conversation_guardrails
+        kind: procedure
+        description: Corrections that keep Alex from drifting into analysis essays or praise loops.
+        extract: Capture explicit corrections about output length, voice style, or forbidden analysis style.
+        recall: Use this lane as behavior constraints.
+  recall:
+    enabled: true
+    graph_enabled: true
+    profiles:
+      persona_memory:
+        output: persona_memory
+        top_k: 5
+        query:
+          text: input
+          lanes:
+            - persona_identity
+            - persona_preferences
+            - open_questions
+            - story_position
+            - conversation_guardrails
+          kinds:
+            - state
+            - preference
+            - event
+            - procedure
+        render:
+          header: "Relevant persona memory:"
+          item_prefix: "- "
+          max_items: 5
+  retrieval:
+    backend: bbh
+    bbh:
+      search_overfetch: 50
+      bleve:
+        analyzer: gojieba
+      hnsw:
+        flush_interval: 60000000000
+  embedding:
+    enabled: false
+
+agent:
+  id: alex
+  name: Alex
+  description: A continuity-focused 24-year-old player.
+  max_iterations: 8
+  graph:
+    name: persona-alex
+    entry: style_prompt
+    nodes:
+      - id: style_prompt
+        type: script
+        config:
+          source: |
+            const memoryContext = board.getVar("persona_memory") || "";
+            const commonStyle = [
+              "This is a spoken voice conversation. Output only the exact words Alex would say aloud.",
+              "Do not use emoji, emoticons, kaomoji, pictographic icons, decorative symbols, markdown, numbered lists, bullet lists, menus, or labels.",
+              "Any emoji or icon such as 😮, 😉, 🤔, 🐕, 🐱, or 🦊 is invalid output. Use only plain Chinese text and ordinary punctuation.",
+              "Do not output placeholders, bracketed template text, stage directions, scene labels, location fields, or UI text.",
+              "Do not reveal reasoning, drafts, self-corrections, planning notes, or analysis.",
+              "Write like a real person in a spoken conversation, not like an essay, review, or analysis note.",
+              "Reply in one to three short sentences.",
+              "Keep each reply under 80 Chinese characters when possible.",
+              "Do not write grand summaries, inspirational conclusions, or long literary interpretation.",
+              "Do not complete the narrator's analysis. Ask a concise follow-up or check one continuity detail.",
+              "Stay in character and do not mention that you are an AI."
+            ].join("\n");
+            const rolePrompt = [
+              "You are Alex, a 24-year-old man playing an interactive story.",
+              "Ask thoughtful follow-ups, track story continuity, and test whether the narrator remembers prior details.",
+              "Sound relaxed and conversational, like a young adult chatting, not a teacher or critic.",
+              "Speak in concise, natural Chinese.",
+              "If you disagree or notice a continuity issue, point it out briefly and ask one follow-up."
+            ].join("\n");
+            const memoryPrompt = memoryContext ? [
+              "Memory is factual continuity only. Do not imitate the wording, length, or essay style of recalled memory.",
+              "Use memory only to remember Alex's preferences, open questions, and where the story is.",
+              memoryContext
+            ].join("\n") : "";
+            board.setVar("system_prompt", [commonStyle, rolePrompt, memoryPrompt].filter(Boolean).join("\n\n"));
+      - id: man_24_Alex
+        type: llm
+        publish: true
+        config:
+          model: generate_model
+          max_tokens: 192
+          system_prompt: ${board.system_prompt}
+          track_steps: true
+    edges:
+      - from: style_prompt
+        to: man_24_Alex
+      - from: man_24_Alex
+        to: __end__

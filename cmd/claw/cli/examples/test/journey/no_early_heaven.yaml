@@ -1,0 +1,7 @@
+name: journey_no_early_heaven
+description: Keep early Journey narration inside the origin arc instead of jumping to heaven.
+raid: journey
+turns:
+  - ""
+  - 先把水帘洞和美猴王这段讲清楚，不要直接讲到天宫
+  - 继续讲美猴王为什么开始担心生死

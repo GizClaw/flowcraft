@@ -1,0 +1,9 @@
+name: journey_later_arc_beats
+description: Exercise late Journey beat routing for kingdoms and arrival without falling back to broad summaries.
+raid: journey
+turns:
+  - ""
+  - 现在跳到比丘国救小孩那段，只讲开头，不要跳到灵山
+  - 现在讲火焰山和芭蕉扇，先讲火焰山挡路，不要直接讲取经成功
+  - 接着讲借芭蕉扇，不要总结完整西游
+  - 最后一难是不是通天河落水？讲这个，不要编黄风大王守灵山

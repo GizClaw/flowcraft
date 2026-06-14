@@ -1,0 +1,9 @@
+name: multi_role_storyteller_resolve_without_killing
+description: Push toward resolution; the blueprint requires the wolf demon to be subdued or sent away, not killed or replaced by a new enemy.
+raid: multi_role_storyteller
+turns:
+  - ""
+  - 让悟空赶紧开门，但是别乱杀，先看清楚门外人。
+  - 如果真是妖怪，就让唐僧提醒不要滥杀。
+  - 现在把这个黄毛狼妖收束掉，不要再冒出第二个妖怪。
+  - 事情结束了吗？破庙这一折还有没有新的敌人？

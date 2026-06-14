@@ -1,0 +1,5 @@
+name: match_route_volume_pct
+description: Absolute volume request should route to function_adjust_device_volume and emit set_device_volume.
+raid: match_route
+turns:
+  - 调整音量到30%

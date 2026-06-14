@@ -1,0 +1,5 @@
+name: stop_then_volume
+description: Stop request followed by volume adjustment should execute both commands.
+raid: match_route
+turns:
+  - 停止播放，然后把音量调到10%

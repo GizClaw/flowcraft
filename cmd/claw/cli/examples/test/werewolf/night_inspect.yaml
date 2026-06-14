@@ -1,0 +1,6 @@
+name: werewolf_no_user_night_action
+description: The user is a villager, so attempting a night action should be rejected.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我想夜里查验1号。

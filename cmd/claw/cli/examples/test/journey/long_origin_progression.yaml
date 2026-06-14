@@ -1,0 +1,12 @@
+name: journey_long_origin_progression
+description: Run more turns through the origin arc and check whether the storyteller progresses without jumping to heaven.
+raid: journey
+turns:
+  - ""
+  - 接着讲，他敢不敢进瀑布？
+  - 继续讲他怎么当上美猴王
+  - 继续，但不要跳到天宫，也不要讲取经
+  - 他为什么忽然不开心了？
+  - 接着讲他怎么决定出海
+  - 路上慢慢讲，不要一下子就拜师成功
+  - 现在讲他第一次见到祖师

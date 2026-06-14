@@ -1,0 +1,9 @@
+name: journey_persona_tom_dialogue
+description: Simulate Tom-style short questions and interruptions while Journey progress must continue through memory lanes.
+raid: journey
+turns:
+  - ""
+  - 刚出生眼睛就放金光？那玉帝管了吗？接着讲，不要讲太长。
+  - 那瀑布后面到底有什么？他真的进去了吗？
+  - 等下，不要从仙石重新讲。他已经进水帘洞了吧？然后呢？
+  - 那大家拜他当大王之后，他为什么又要出海找神仙？

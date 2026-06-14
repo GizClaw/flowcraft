@@ -1,0 +1,176 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1640" height="940" viewBox="0 0 1640 940" role="img" aria-labelledby="title desc">
+  <title id="title">journey DAG and memory layout</title>
+  <desc id="desc">The Journey raid has an intent-routing branch, story arc nodes, progress-writing nodes, and a separate memory layout with story progress and supporting context lanes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .control { fill: #fff1f2; stroke: #dc2626; }
+      .state { fill: #f7f1ff; stroke: #805ad5; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .store { fill: #f0f9ff; stroke: #0284c7; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .label { font: 700 12px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 10.5px Arial, sans-serif; fill: #64748b; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.7; marker-end: url(#arrow); }
+      .soft-edge { fill: none; stroke: #64748b; stroke-width: 1.4; stroke-dasharray: 5 5; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1640" height="940"/>
+  <text class="title" x="40" y="48">journey.svg</text>
+  <text class="small" x="40" y="72">Story progress is controlled by workspace state; memory lanes are supporting context and audit mirrors.</text>
+
+  <rect class="panel" x="48" y="104" width="1228" height="798"/>
+  <text class="panel-title" x="76" y="140">agent DAG</text>
+  <text class="small" x="76" y="162">Graph nodes and arcs from journey.yaml. Repeated arc-specific storyteller nodes are shown explicitly.</text>
+
+  <rect class="node script" x="82" y="430" width="116" height="56"/>
+  <text class="label" x="126" y="464">start</text>
+
+  <rect class="node script" x="244" y="430" width="170" height="56"/>
+  <text class="label" x="272" y="464">prepare_match_route</text>
+
+  <rect class="node llm" x="460" y="430" width="132" height="56"/>
+  <text class="label" x="490" y="464">format_intent</text>
+
+  <rect class="node script" x="638" y="430" width="146" height="56"/>
+  <text class="label" x="672" y="464">route_decision</text>
+
+  <rect class="node script" x="842" y="282" width="142" height="56"/>
+  <text class="label" x="872" y="316">accept_storytell</text>
+
+  <rect class="node control" x="842" y="578" width="142" height="56"/>
+  <text class="label" x="872" y="612">cancel_storytell</text>
+
+  <rect class="node script" x="1036" y="252" width="158" height="56"/>
+  <text class="label" x="1072" y="286">select_story_arc</text>
+
+  <rect class="node script" x="1036" y="330" width="158" height="56"/>
+  <text class="label" x="1062" y="364">prepare_story_context</text>
+
+  <rect class="node script" x="1036" y="558" width="174" height="56"/>
+  <text class="label" x="1066" y="592">reroute_start_storytell</text>
+
+  <rect class="node script" x="1036" y="432" width="158" height="56"/>
+  <text class="label" x="1076" y="466">start_storytell</text>
+
+  <rect class="node llm" x="96" y="206" width="160" height="48"/>
+  <text class="label" x="118" y="236">storyteller_origin</text>
+  <rect class="node llm" x="284" y="206" width="160" height="48"/>
+  <text class="label" x="308" y="236">storyteller_heaven</text>
+  <rect class="node llm" x="472" y="206" width="174" height="48"/>
+  <text class="label" x="494" y="236">storyteller_pilgrimage</text>
+  <rect class="node llm" x="674" y="206" width="160" height="48"/>
+  <text class="label" x="700" y="236">storyteller_trials</text>
+  <rect class="node llm" x="862" y="206" width="174" height="48"/>
+  <text class="label" x="884" y="236">storyteller_kingdoms</text>
+  <rect class="node llm" x="1064" y="206" width="160" height="48"/>
+  <text class="label" x="1088" y="236">storyteller_arrival</text>
+
+  <rect class="node llm" x="96" y="690" width="176" height="48"/>
+  <text class="label" x="110" y="720">reroute_storyteller_origin</text>
+  <rect class="node llm" x="300" y="690" width="176" height="48"/>
+  <text class="label" x="316" y="720">reroute_storyteller_heaven</text>
+  <rect class="node llm" x="504" y="690" width="190" height="48"/>
+  <text class="label" x="518" y="720">reroute_storyteller_pilgrimage</text>
+  <rect class="node llm" x="722" y="690" width="176" height="48"/>
+  <text class="label" x="738" y="720">reroute_storyteller_trials</text>
+  <rect class="node llm" x="926" y="690" width="190" height="48"/>
+  <text class="label" x="940" y="720">reroute_storyteller_kingdoms</text>
+  <rect class="node llm" x="1144" y="690" width="176" height="48"/>
+  <text class="label" x="1160" y="720">reroute_storyteller_arrival</text>
+
+  <rect class="node script" x="524" y="802" width="176" height="56"/>
+  <text class="label" x="554" y="836">prepare_story_progress</text>
+
+  <rect class="node script" x="746" y="802" width="158" height="56"/>
+  <text class="label" x="786" y="836">write_story_progress</text>
+
+  <rect class="node script" x="950" y="802" width="150" height="56"/>
+  <text class="label" x="984" y="836">reroute_state_after</text>
+
+  <rect class="node end" x="1146" y="802" width="94" height="56"/>
+  <text class="label" x="1172" y="836">__end__</text>
+
+  <path class="edge" d="M 198 458 L 242 458"/>
+  <path class="edge" d="M 414 458 L 458 458"/>
+  <path class="edge" d="M 592 458 L 636 458"/>
+  <path class="edge" d="M 784 442 C 814 370 824 318 840 310"/>
+  <path class="edge" d="M 784 474 C 816 540 824 604 840 606"/>
+  <path class="edge" d="M 984 310 L 1034 282"/>
+  <path class="edge" d="M 1115 308 L 1115 328"/>
+  <path class="edge" d="M 1115 386 L 1115 430"/>
+  <path class="edge" d="M 984 606 L 1034 586"/>
+  <path class="edge" d="M 1124 558 L 1124 490"/>
+
+  <path class="soft-edge" d="M 1115 432 C 930 300 430 292 176 256"/>
+  <path class="soft-edge" d="M 1115 432 C 930 314 500 292 364 256"/>
+  <path class="soft-edge" d="M 1115 432 C 940 330 620 292 560 256"/>
+  <path class="soft-edge" d="M 1115 432 C 964 344 760 292 754 256"/>
+  <path class="soft-edge" d="M 1115 432 C 998 356 950 292 949 256"/>
+  <path class="soft-edge" d="M 1115 432 C 1096 342 1136 292 1144 256"/>
+
+  <path class="soft-edge" d="M 1124 614 C 920 666 430 668 184 688"/>
+  <path class="soft-edge" d="M 1124 614 C 930 672 520 670 388 688"/>
+  <path class="soft-edge" d="M 1124 614 C 954 678 652 674 598 688"/>
+  <path class="soft-edge" d="M 1124 614 C 984 684 790 676 810 688"/>
+  <path class="soft-edge" d="M 1124 614 C 1014 690 1018 676 1021 688"/>
+  <path class="soft-edge" d="M 1124 614 C 1140 680 1224 668 1232 688"/>
+
+  <path class="edge" d="M 176 254 C 220 360 404 760 522 830"/>
+  <path class="edge" d="M 364 254 C 406 390 504 760 548 800"/>
+  <path class="edge" d="M 560 254 C 586 430 598 730 612 800"/>
+  <path class="edge" d="M 754 254 C 728 430 666 740 640 800"/>
+  <path class="edge" d="M 949 254 C 866 430 704 748 672 800"/>
+  <path class="edge" d="M 1144 254 C 1028 450 738 760 700 830"/>
+  <path class="edge" d="M 184 738 C 260 766 430 810 522 830"/>
+  <path class="edge" d="M 388 738 C 448 766 496 794 548 802"/>
+  <path class="edge" d="M 598 738 L 612 800"/>
+  <path class="edge" d="M 810 738 C 760 772 700 800 700 830"/>
+  <path class="edge" d="M 1021 738 C 922 784 794 820 702 830"/>
+  <path class="edge" d="M 1232 738 C 1072 792 852 824 702 830"/>
+  <path class="edge" d="M 700 830 L 744 830"/>
+  <path class="edge" d="M 904 830 L 948 830"/>
+  <path class="edge" d="M 1100 830 L 1144 830"/>
+
+  <rect class="panel" x="1316" y="104" width="286" height="798"/>
+  <text class="panel-title" x="1344" y="140">memory layout</text>
+  <text class="small" x="1344" y="162">Memory supports continuity; workspace story_progress_state controls routing.</text>
+
+  <rect class="node memory" x="1342" y="220" width="236" height="62"/>
+  <text class="label" x="1390" y="248">story_progress</text>
+  <text class="tiny" x="1364" y="268">audit mirror from board_facts</text>
+
+  <rect class="node memory" x="1342" y="310" width="236" height="62"/>
+  <text class="label" x="1398" y="338">story_facts</text>
+  <text class="tiny" x="1364" y="358">supporting narrative facts</text>
+
+  <rect class="node memory" x="1342" y="400" width="236" height="62"/>
+  <text class="label" x="1390" y="428">user_preferences</text>
+  <text class="tiny" x="1364" y="448">style and pacing preferences</text>
+
+  <rect class="node memory" x="1342" y="490" width="236" height="62"/>
+  <text class="label" x="1394" y="518">story_questions</text>
+  <text class="tiny" x="1364" y="538">answered digressions</text>
+
+  <rect class="node store" x="1342" y="602" width="236" height="84"/>
+  <text class="label" x="1404" y="632">bbh store</text>
+  <text class="tiny" x="1364" y="654">Bleve + HNSW</text>
+  <text class="tiny" x="1364" y="672">gojieba analyzer</text>
+
+  <rect class="node memory" x="1342" y="730" width="236" height="92"/>
+  <text class="label" x="1404" y="758">recall outputs</text>
+  <text class="tiny" x="1364" y="780">story_progress, story_memory</text>
+  <text class="tiny" x="1364" y="798">user_memory, question_memory, story_recent</text>
+</svg>

@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1540" height="900" viewBox="0 0 1540 900" role="img" aria-labelledby="title desc">
+  <title id="title">poetry_adventure_li_bai DAG and memory layout</title>
+  <desc id="desc">A linear dynasty checkpoint poetry adventure. The agent DAG matches poetry_adventure_li_bai.yaml; memory layout is separate.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      :root { color-scheme: light; }
+      .bg { fill: #f7f8fa; }
+      .panel { fill: #ffffff; stroke: #d0d5dd; stroke-width: 1.4; rx: 8; }
+      .node { fill: #ffffff; stroke: #94a3b8; stroke-width: 1.5; rx: 8; }
+      .script { fill: #eef4ff; stroke: #4f6fd7; }
+      .llm { fill: #fff8e8; stroke: #c98416; }
+      .tool { fill: #f3ecff; stroke: #7c3aed; }
+      .end { fill: #f1f3f6; stroke: #667085; }
+      .memory { fill: #eefaf5; stroke: #229469; }
+      .title { font: 700 24px Arial, sans-serif; fill: #111827; }
+      .panel-title { font: 700 16px Arial, sans-serif; fill: #111827; }
+      .small { font: 12px Arial, sans-serif; fill: #475569; }
+      .tiny { font: 11px Arial, sans-serif; fill: #64748b; }
+      .label { font: 700 13px Arial, sans-serif; fill: #111827; }
+      .edge { fill: none; stroke: #334155; stroke-width: 1.8; marker-end: url(#arrow); }
+      .edge-label { font: 12px Arial, sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1540" height="900"/>
+  <text class="title" x="40" y="48">poetry_adventure_li_bai.svg</text>
+  <text class="small" x="40" y="72">Clear Tang, Song, Yuan, and Ming checkpoints in order; correct answers award badges and unlock the next dynasty.</text>
+
+  <rect class="panel" x="48" y="104" width="1128" height="750"/>
+  <text class="panel-title" x="76" y="140">agent DAG</text>
+  <text class="small" x="76" y="162">Only graph nodes and arcs are shown here.</text>
+
+  <rect class="node script" x="96" y="196" width="184" height="62"/>
+  <text class="label" x="126" y="222">load_journey_state</text>
+  <text class="tiny" x="116" y="242">load checkpoint state</text>
+
+  <rect class="node script" x="344" y="196" width="184" height="62"/>
+  <text class="label" x="380" y="222">route_checkpoint</text>
+  <text class="tiny" x="370" y="242">scene, judge, finish</text>
+
+  <rect class="node llm" x="76" y="326" width="178" height="68"/>
+  <text class="label" x="116" y="354">tang_checkpoint</text>
+  <text class="tiny" x="100" y="376">Tang moon gate</text>
+
+  <rect class="node llm" x="292" y="326" width="178" height="68"/>
+  <text class="label" x="334" y="354">song_checkpoint</text>
+  <text class="tiny" x="316" y="376">Song river gate</text>
+
+  <rect class="node llm" x="508" y="326" width="178" height="68"/>
+  <text class="label" x="552" y="354">yuan_checkpoint</text>
+  <text class="tiny" x="530" y="376">Yuan dusk gate</text>
+
+  <rect class="node llm" x="724" y="326" width="178" height="68"/>
+  <text class="label" x="766" y="354">ming_checkpoint</text>
+  <text class="tiny" x="750" y="376">Ming courage gate</text>
+
+  <rect class="node llm" x="724" y="196" width="178" height="62"/>
+  <text class="label" x="768" y="222">journey_finish</text>
+  <text class="tiny" x="748" y="242">all badges collected</text>
+
+  <rect class="node llm" x="940" y="196" width="178" height="62"/>
+  <text class="label" x="970" y="222">finished_chat</text>
+  <text class="tiny" x="964" y="242">roleplay only</text>
+
+  <rect class="node llm" x="344" y="470" width="184" height="62"/>
+  <text class="label" x="382" y="496">judge_challenge</text>
+  <text class="tiny" x="372" y="516">judge child reply</text>
+
+  <rect class="node script" x="600" y="470" width="200" height="62"/>
+  <text class="label" x="632" y="496">apply_checkpoint_result</text>
+  <text class="tiny" x="634" y="516">pass or retry</text>
+
+  <rect class="node llm" x="96" y="612" width="184" height="62"/>
+  <text class="label" x="148" y="638">retry_hint</text>
+  <text class="tiny" x="122" y="658">same checkpoint</text>
+
+  <rect class="node llm" x="344" y="612" width="184" height="62"/>
+  <text class="label" x="376" y="638">checkpoint_clear</text>
+  <text class="tiny" x="370" y="658">gate opens</text>
+
+  <rect class="node tool" x="580" y="548" width="220" height="38"/>
+  <text class="label" x="600" y="572">call_tang_moon_badge</text>
+
+  <rect class="node tool" x="580" y="604" width="220" height="38"/>
+  <text class="label" x="600" y="628">call_song_river_badge</text>
+
+  <rect class="node tool" x="580" y="660" width="220" height="38"/>
+  <text class="label" x="600" y="684">call_yuan_dusk_badge</text>
+
+  <rect class="node tool" x="580" y="716" width="220" height="38"/>
+  <text class="label" x="596" y="740">call_ming_courage_badge</text>
+
+  <rect class="node script" x="856" y="612" width="184" height="62"/>
+  <text class="label" x="888" y="638">advance_checkpoint</text>
+  <text class="tiny" x="892" y="658">unlock next gate</text>
+
+  <rect class="node script" x="344" y="762" width="184" height="56"/>
+  <text class="label" x="378" y="786">write_poetry_audit</text>
+  <text class="tiny" x="372" y="806">mirror memory lanes</text>
+
+  <rect class="node end" x="600" y="762" width="126" height="56"/>
+  <text class="label" x="640" y="786">__end__</text>
+  <text class="tiny" x="630" y="806">turn complete</text>
+
+  <path class="edge" d="M 280 227 L 342 227"/>
+  <path class="edge" d="M 436 258 C 332 286 210 304 165 324"/>
+  <text class="edge-label" x="248" y="292">tang</text>
+  <path class="edge" d="M 436 258 C 402 290 384 306 381 324"/>
+  <text class="edge-label" x="392" y="300">song</text>
+  <path class="edge" d="M 436 258 C 508 290 576 306 597 324"/>
+  <text class="edge-label" x="520" y="300">yuan</text>
+  <path class="edge" d="M 436 258 C 648 288 778 306 813 324"/>
+  <text class="edge-label" x="680" y="292">ming</text>
+  <path class="edge" d="M 528 227 L 722 227"/>
+  <text class="edge-label" x="610" y="214">final clear</text>
+  <path class="edge" d="M 528 210 C 676 148 892 150 1028 194"/>
+  <text class="edge-label" x="724" y="160">already finished</text>
+  <path class="edge" d="M 436 258 L 436 468"/>
+  <text class="edge-label" x="448" y="430">child replied</text>
+
+  <path class="edge" d="M 165 394 C 190 540 260 720 342 790"/>
+  <path class="edge" d="M 381 394 C 380 540 394 704 420 760"/>
+  <path class="edge" d="M 597 394 C 570 540 514 708 474 760"/>
+  <path class="edge" d="M 813 394 C 720 560 590 720 528 790"/>
+  <path class="edge" d="M 902 227 C 970 332 872 690 530 790"/>
+  <path class="edge" d="M 1028 258 C 1004 420 802 724 530 790"/>
+
+  <path class="edge" d="M 528 501 L 598 501"/>
+  <path class="edge" d="M 600 501 C 418 548 296 602 282 643"/>
+  <text class="edge-label" x="374" y="578">retry</text>
+  <path class="edge" d="M 700 532 C 644 578 580 610 530 643"/>
+  <text class="edge-label" x="610" y="584">pass</text>
+  <path class="edge" d="M 528 643 C 548 590 560 568 578 567"/>
+  <path class="edge" d="M 528 643 C 552 626 560 623 578 623"/>
+  <path class="edge" d="M 528 643 C 552 670 560 679 578 679"/>
+  <path class="edge" d="M 528 643 C 548 710 560 735 578 735"/>
+  <path class="edge" d="M 800 567 C 830 580 844 606 854 643"/>
+  <path class="edge" d="M 800 623 C 824 628 838 636 854 643"/>
+  <path class="edge" d="M 800 679 C 824 672 838 654 854 643"/>
+  <path class="edge" d="M 800 735 C 830 714 844 682 854 643"/>
+  <path class="edge" d="M 948 674 C 902 730 794 772 728 790"/>
+  <path class="edge" d="M 948 612 C 928 474 890 320 814 260"/>
+  <text class="edge-label" x="932" y="440">final clear</text>
+  <path class="edge" d="M 280 643 C 306 710 336 754 342 790"/>
+  <path class="edge" d="M 528 790 L 598 790"/>
+
+  <rect class="panel" x="1216" y="104" width="286" height="750"/>
+  <text class="panel-title" x="1244" y="140">memory layout</text>
+  <text class="small" x="1244" y="162">Audit lanes mirror checkpoint progress and badge rewards.</text>
+
+  <rect class="node memory" x="1242" y="250" width="236" height="86"/>
+  <text class="label" x="1288" y="282">checkpoint_progress</text>
+  <text class="tiny" x="1262" y="304">current dynasty, cleared gates</text>
+
+  <rect class="node memory" x="1242" y="410" width="236" height="86"/>
+  <text class="label" x="1292" y="442">achievement_log</text>
+  <text class="tiny" x="1264" y="464">poem lines, stories, mistakes</text>
+
+  <rect class="node memory" x="1242" y="570" width="236" height="86"/>
+  <text class="label" x="1302" y="602">badge_events</text>
+  <text class="tiny" x="1264" y="624">dynasty badge tool calls</text>
+</svg>

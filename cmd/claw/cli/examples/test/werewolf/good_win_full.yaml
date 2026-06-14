@@ -1,0 +1,9 @@
+name: werewolf_multi_day_vote_flow
+description: Drive several day and vote rounds without assuming fixed role assignment.
+raid: examples/raids/werewolf.yaml
+turns:
+  - 开始狼人杀
+  - 我先根据公开发言怀疑5号，后面的人继续发言，我看票型再决定。
+  - 我投票5号
+  - 我继续根据昨晚死亡和上一轮票型发言，今天重点怀疑1号。
+  - 我投票1号

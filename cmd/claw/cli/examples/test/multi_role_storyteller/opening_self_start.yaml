@@ -1,0 +1,6 @@
+name: multi_role_storyteller_opening_self_start
+description: Empty input should self-start the fixed-cast rainy temple scene without labels or a different story.
+raid: multi_role_storyteller
+turns:
+  - ""
+  - 门外是谁？先别直接说答案，让悟空试探一下。

@@ -1,0 +1,11 @@
+name: journey_speculative_route_resume
+description: Stress speculative storytelling with continuation, digression, explicit reroute, and return-to-origin requests.
+raid: journey
+turns:
+  - ""
+  - 接着讲瀑布里面发生了什么，不要重新讲仙石
+  - 刚才讲到哪里了？用一句话回答，然后继续
+  - 先问一下，他这个时候已经叫孙悟空了吗？
+  - 好，回到刚才的水帘洞之后继续，不要跳到天宫
+  - 现在跳到三打白骨精，但只讲开头，不要总结完整故事
+  - 暂停白骨精，回到他第一次见到菩提祖师那里，慢慢讲他怎么拜师

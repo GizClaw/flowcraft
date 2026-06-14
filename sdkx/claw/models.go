@@ -1,0 +1,262 @@
+package claw
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+
+	"github.com/GizClaw/flowcraft/sdk/embedding"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/llm"
+
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/openai"
+	_ "github.com/GizClaw/flowcraft/sdkx/embedding/qwen"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/anthropic"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/azure"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/bytedance"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/deepseek"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/minimax"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/mock"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/ollama"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/openai"
+	_ "github.com/GizClaw/flowcraft/sdkx/llm/qwen"
+)
+
+// ModelsConfig defines named LLM and embedding clients.
+type ModelsConfig struct {
+	Chat      string                 `json:"chat,omitempty"`
+	Extractor string                 `json:"extractor,omitempty"`
+	Embedder  string                 `json:"embedder,omitempty"`
+	LLM       map[string]ModelConfig `json:"llm,omitempty"`
+	Embedding map[string]ModelConfig `json:"embedding,omitempty"`
+	// Embeddings is accepted as a plural spelling for config readability.
+	Embeddings map[string]ModelConfig `json:"embeddings,omitempty"`
+}
+
+// ModelSettingsConfig maps stable runtime model roles to named model
+// entries. The values may be selected by environment variables in
+// config.yaml while agent and memory configs keep referring to the
+// stable role keys.
+type ModelSettingsConfig struct {
+	GenerateModel  string `json:"generate_model,omitempty"`
+	ExtractModel   string `json:"extract_model,omitempty"`
+	EmbeddingModel string `json:"embedding_model,omitempty"`
+}
+
+func (s ModelSettingsConfig) empty() bool {
+	return strings.TrimSpace(s.GenerateModel) == "" &&
+		strings.TrimSpace(s.ExtractModel) == "" &&
+		strings.TrimSpace(s.EmbeddingModel) == ""
+}
+
+// ModelConfig is forwarded to provider registries after credential expansion.
+type ModelConfig struct {
+	Provider   string         `json:"provider,omitempty"`
+	Model      string         `json:"model,omitempty"`
+	APIKey     string         `json:"api_key,omitempty"`
+	APIKeyEnv  string         `json:"api_key_env,omitempty"`
+	BaseURL    string         `json:"base_url,omitempty"`
+	APIVersion string         `json:"api_version,omitempty"`
+	Region     string         `json:"region,omitempty"`
+	Spec       llm.ModelSpec  `json:"spec,omitempty"`
+	Config     map[string]any `json:"config,omitempty"`
+}
+
+func (c *Claw) chatModel(ctx context.Context) (llm.LLM, error) {
+	return c.model(ctx, c.cfg.Models.Chat)
+}
+
+func (c *Claw) extractorModel(ctx context.Context) (llm.LLM, bool, error) {
+	name := strings.TrimSpace(c.cfg.Models.Extractor)
+	if name == "" {
+		return nil, false, nil
+	}
+	client, err := c.model(ctx, name)
+	if err != nil {
+		return nil, false, err
+	}
+	return client, true, nil
+}
+
+func (c *Claw) embedder(ctx context.Context) (embedding.Embedder, bool, error) {
+	name := strings.TrimSpace(c.cfg.Models.Embedder)
+	if name == "" {
+		return nil, false, nil
+	}
+	emb, err := c.embedderByName(ctx, name)
+	if err != nil {
+		return nil, false, err
+	}
+	return emb, true, nil
+}
+
+func (c *Claw) embedderByName(_ context.Context, name string) (embedding.Embedder, error) {
+	name = c.cfg.settingRef(name)
+	cfg, ok := c.embeddingConfigs()[strings.TrimSpace(name)]
+	if !ok {
+		return nil, fmt.Errorf("claw: embedding model %q is not configured", name)
+	}
+	cfg.applyCredentialEnv()
+	return embedding.NewFromConfig(cfg.Provider, cfg.Model, cfg.providerConfig())
+}
+
+func (c *Claw) embeddingConfigs() map[string]ModelConfig {
+	if len(c.cfg.Models.Embeddings) == 0 {
+		return c.cfg.Models.Embedding
+	}
+	if len(c.cfg.Models.Embedding) == 0 {
+		return c.cfg.Models.Embeddings
+	}
+	out := make(map[string]ModelConfig, len(c.cfg.Models.Embedding)+len(c.cfg.Models.Embeddings))
+	for k, v := range c.cfg.Models.Embedding {
+		out[k] = v
+	}
+	for k, v := range c.cfg.Models.Embeddings {
+		out[k] = v
+	}
+	return out
+}
+
+func (c *Claw) model(ctx context.Context, name string) (llm.LLM, error) {
+	name = c.cfg.settingRef(name)
+	if c.resolver != nil {
+		return c.resolver.Resolve(ctx, name)
+	}
+	if name == "" {
+		return nil, fmt.Errorf("claw: model name is empty")
+	}
+	cfg, ok := c.cfg.Models.LLM[name]
+	if !ok {
+		return nil, fmt.Errorf("claw: llm model %q is not configured", name)
+	}
+	cfg.applyCredentialEnv()
+	return llm.NewFromConfig(cfg.Provider, cfg.Model, cfg.providerConfig())
+}
+
+func (c *Claw) buildResolver() llm.LLMResolver {
+	return modelAliasResolver{
+		models:   c.cfg.Models,
+		settings: c.cfg.Settings,
+		inner:    llm.DefaultResolver(modelStore{models: c.cfg.Models}, llm.WithFallbackModel(c.cfg.modelRef(c.cfg.Models.Chat))),
+	}
+}
+
+func (c Config) modelRef(name string) string {
+	name = c.settingRef(name)
+	cfg, ok := c.Models.LLM[strings.TrimSpace(name)]
+	if !ok || cfg.Provider == "" || cfg.Model == "" {
+		return name
+	}
+	return cfg.Provider + "/" + cfg.Model
+}
+
+func (m *ModelConfig) applyCredentialEnv() {
+	if m.APIKey == "" && m.APIKeyEnv != "" {
+		m.APIKey = os.Getenv(m.APIKeyEnv)
+	}
+}
+
+func (m ModelConfig) providerConfig() map[string]any {
+	out := make(map[string]any, len(m.Config)+4)
+	for k, v := range m.Config {
+		out[k] = v
+	}
+	if m.APIKey != "" {
+		out["api_key"] = m.APIKey
+	}
+	if m.BaseURL != "" {
+		out["base_url"] = m.BaseURL
+	}
+	if m.APIVersion != "" {
+		out["api_version"] = m.APIVersion
+	}
+	if m.Region != "" {
+		out["region"] = m.Region
+	}
+	return out
+}
+
+type modelAliasResolver struct {
+	models   ModelsConfig
+	settings ModelSettingsConfig
+	inner    llm.LLMResolver
+}
+
+func (r modelAliasResolver) Resolve(ctx context.Context, model string) (llm.LLM, error) {
+	if r.inner == nil {
+		return nil, errdefs.NotFoundf("claw: model resolver is not configured")
+	}
+	return r.inner.Resolve(ctx, r.modelRef(model))
+}
+
+func (r modelAliasResolver) InvalidateCache(opts ...llm.InvalidateOption) {
+	if invalidator, ok := r.inner.(interface {
+		InvalidateCache(...llm.InvalidateOption)
+	}); ok {
+		invalidator.InvalidateCache(opts...)
+	}
+}
+
+func (r modelAliasResolver) modelRef(name string) string {
+	name = settingRef(r.settings, name)
+	if name == "" || strings.Contains(name, "/") {
+		return name
+	}
+	cfg, ok := r.models.LLM[name]
+	if !ok || cfg.Provider == "" || cfg.Model == "" {
+		return name
+	}
+	return cfg.Provider + "/" + cfg.Model
+}
+
+func (c Config) settingRef(name string) string {
+	return settingRef(c.Settings, name)
+}
+
+func settingRef(settings ModelSettingsConfig, name string) string {
+	name = strings.TrimSpace(name)
+	switch name {
+	case "generate_model":
+		return firstNonEmpty(settings.GenerateModel, name)
+	case "extract_model":
+		return firstNonEmpty(settings.ExtractModel, name)
+	case "embedding_model":
+		return firstNonEmpty(settings.EmbeddingModel, name)
+	default:
+		return name
+	}
+}
+
+type modelStore struct {
+	models ModelsConfig
+}
+
+func (s modelStore) GetProviderConfig(_ context.Context, provider, _ string) (*llm.ProviderConfig, error) {
+	for _, cfg := range s.models.LLM {
+		if cfg.Provider != provider {
+			continue
+		}
+		return &llm.ProviderConfig{
+			Provider: provider,
+		}, nil
+	}
+	return nil, errdefs.NotFoundf("claw: provider %q is not configured", provider)
+}
+
+func (s modelStore) GetModelConfig(_ context.Context, provider, modelName string) (*llm.ModelConfig, error) {
+	for _, cfg := range s.models.LLM {
+		if cfg.Provider == provider && cfg.Model == modelName {
+			cfg.applyCredentialEnv()
+			return &llm.ModelConfig{
+				Provider:     provider,
+				Model:        modelName,
+				SpecOverride: cfg.Spec,
+				Extra:        cfg.providerConfig(),
+			}, nil
+		}
+	}
+	return nil, errdefs.NotFoundf("claw: model %s/%s is not configured", provider, modelName)
+}

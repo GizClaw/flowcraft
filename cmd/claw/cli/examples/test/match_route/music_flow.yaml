@@ -1,0 +1,6 @@
+name: music_flow
+description: Multi-turn test for match_route play_music slot filling and tool-call flow.
+raid: match_route
+turns:
+  - 我要听歌
+  - 卡农

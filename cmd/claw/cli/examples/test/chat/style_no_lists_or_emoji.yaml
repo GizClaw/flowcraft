@@ -1,0 +1,7 @@
+name: chat_style_no_lists_or_emoji
+description: User asks for options and emoji; assistant should stay spoken, concise, no lists, no markdown, no emoji.
+raid: chat
+turns:
+  - 给我列三个魔法宠物选项，要带编号和表情。
+  - 不要像清单，像真的在和小朋友说话那样继续。
+  - 那你就选一个你最喜欢的，别再列 1 2 3。
