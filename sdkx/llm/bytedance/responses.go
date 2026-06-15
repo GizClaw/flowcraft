@@ -30,7 +30,14 @@ func appendResponsesMessages(req *arkresponses.ResponsesRequest, msgs []llm.Mess
 
 	for _, msg := range msgs {
 		if msg.Role == llm.RoleSystem {
-			text := strings.TrimSpace(msg.Content())
+			var b strings.Builder
+			for _, part := range msg.Parts {
+				if part.Type != llm.PartText {
+					return errdefs.Validationf("bytedance: system message supports text parts only, got %s", part.Type)
+				}
+				b.WriteString(part.Text)
+			}
+			text := strings.TrimSpace(b.String())
 			if text == "" {
 				continue
 			}
@@ -57,7 +64,11 @@ func appendResponsesMessages(req *arkresponses.ResponsesRequest, msgs []llm.Mess
 		}
 
 		if msg.Role == llm.RoleAssistant && msg.HasToolCalls() {
-			if text := strings.TrimSpace(msg.Content()); text != "" {
+			assistantText, err := responsesTextContent(msg.Role, msg.Parts)
+			if err != nil {
+				return err
+			}
+			if text := strings.TrimSpace(assistantText); text != "" {
 				list.ListValue = append(list.ListValue, inputMessage(msg.Role, &arkresponses.MessageContent{
 					Union: &arkresponses.MessageContent_StringValue{StringValue: text},
 				}))
@@ -75,7 +86,10 @@ func appendResponsesMessages(req *arkresponses.ResponsesRequest, msgs []llm.Mess
 			continue
 		}
 
-		content, ok := messageContentForResponses(msg)
+		content, ok, err := messageContentForResponses(msg)
+		if err != nil {
+			return err
+		}
 		if !ok {
 			continue
 		}
@@ -105,7 +119,7 @@ func responsesRole(role llm.Role) arkresponses.MessageRole_Enum {
 	}
 }
 
-func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, bool) {
+func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, bool, error) {
 	var b strings.Builder
 	var items []*arkresponses.ContentItem
 	hasStructured := false
@@ -132,8 +146,13 @@ func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, 
 			b.WriteString(part.Text)
 		case llm.PartData:
 			if part.Data != nil {
-				raw, _ := json.Marshal(part.Data.Value)
-				b.Write(raw)
+				raw, err := json.Marshal(part.Data.Value)
+				if err != nil {
+					return nil, false, errdefs.Validationf("bytedance: marshal data part: %w", err)
+				}
+				hasStructured = true
+				flushText()
+				items = appendResponsesTextContent(items, responsesDataText(part.Data.MimeType, raw))
 			}
 		case llm.PartFile:
 			if part.File != nil {
@@ -158,18 +177,80 @@ func messageContentForResponses(msg llm.Message) (*arkresponses.MessageContent, 
 	if hasStructured {
 		flushText()
 		if len(items) == 0 {
-			return nil, false
+			return nil, false, nil
 		}
 		return &arkresponses.MessageContent{Union: &arkresponses.MessageContent_ListValue{
 			ListValue: &arkresponses.ContentItemList{ListValue: items},
-		}}, true
+		}}, true, nil
 	}
 
 	text := strings.TrimSpace(b.String())
 	if text == "" {
-		return nil, false
+		return nil, false, nil
 	}
-	return &arkresponses.MessageContent{Union: &arkresponses.MessageContent_StringValue{StringValue: text}}, true
+	return &arkresponses.MessageContent{Union: &arkresponses.MessageContent_StringValue{StringValue: text}}, true, nil
+}
+
+func appendResponsesTextContent(items []*arkresponses.ContentItem, text string) []*arkresponses.ContentItem {
+	if strings.TrimSpace(text) == "" {
+		return items
+	}
+	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_Text{
+		Text: &arkresponses.ContentItemText{
+			Type: arkresponses.ContentItemType_input_text,
+			Text: text,
+		},
+	}})
+}
+
+func responsesTextContent(role llm.Role, parts []llm.Part) (string, error) {
+	var b strings.Builder
+	needsBoundary := false
+	for _, part := range parts {
+		switch part.Type {
+		case llm.PartText:
+			if needsBoundary && part.Text != "" {
+				ensureResponsesTextBoundary(&b)
+			}
+			b.WriteString(part.Text)
+			needsBoundary = false
+		case llm.PartData:
+			if part.Data == nil {
+				continue
+			}
+			raw, err := json.Marshal(part.Data.Value)
+			if err != nil {
+				return "", errdefs.Validationf("bytedance: marshal data part in %s message: %w", role, err)
+			}
+			ensureResponsesTextBoundary(&b)
+			b.WriteString(responsesDataText(part.Data.MimeType, raw))
+			needsBoundary = true
+		}
+	}
+	return b.String(), nil
+}
+
+func responsesDataText(mime string, raw []byte) string {
+	mime = strings.TrimSpace(mime)
+	if mime == "" {
+		mime = "application/json"
+	}
+	return "ByteDance input data\nMIME type: " + mime + "\nJSON:\n" + string(raw)
+}
+
+func ensureResponsesTextBoundary(b *strings.Builder) {
+	if b.Len() == 0 {
+		return
+	}
+	s := b.String()
+	switch {
+	case strings.HasSuffix(s, "\n\n"):
+		return
+	case strings.HasSuffix(s, "\n"):
+		b.WriteByte('\n')
+	default:
+		b.WriteString("\n\n")
+	}
 }
 
 func appendImageContent(items []*arkresponses.ContentItem, url string) []*arkresponses.ContentItem {

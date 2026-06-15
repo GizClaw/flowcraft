@@ -25,6 +25,13 @@ func TestNewTagsProvider(t *testing.T) {
 	}
 }
 
+func TestProviderNilReceiverSafe(t *testing.T) {
+	var c *LLM
+	if got := c.Provider(); got != "deepseek" {
+		t.Fatalf("nil receiver Provider() = %q, want deepseek", got)
+	}
+}
+
 func TestCatalogDefaultsDisableThinking(t *testing.T) {
 	for _, model := range []string{"deepseek-v4-flash", "deepseek-v4-pro"} {
 		spec := llm.DefaultRegistry.LookupModelSpec("deepseek", model)
@@ -35,6 +42,12 @@ func TestCatalogDefaultsDisableThinking(t *testing.T) {
 		if got := thinking["type"]; got != "disabled" {
 			t.Fatalf("%s thinking.type = %#v, want disabled", model, got)
 		}
+	}
+}
+
+func TestDeepSeekResponsesProviderNotRegistered(t *testing.T) {
+	if _, err := llm.NewFromConfig("deepseek-responses", "deepseek-v4-flash", nil); err == nil {
+		t.Fatal("deepseek-responses should not be registered")
 	}
 }
 
@@ -91,6 +104,9 @@ func newDeepSeekCaptureClient(t *testing.T) (llm.LLM, <-chan map[string]any) {
 	t.Helper()
 	captured := make(chan map[string]any, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		if err := json.Unmarshal(raw, &body); err != nil {

@@ -18,12 +18,12 @@ func init() {
 
 const defaultAPIVersion = "2025-04-01-preview"
 
-// New creates an Azure OpenAI LLM instance.
-func New(model, apiKey, baseURL, apiVersion string) (*openai.LLM, error) {
+// New creates an Azure OpenAI Chat Completions LLM instance.
+func New(model, apiKey, baseURL, apiVersion string) (*openai.ChatLLM, error) {
 	if apiVersion == "" {
 		apiVersion = defaultAPIVersion
 	}
-	inner, err := openai.New(model, "", "", // apiKey/baseURL handled by azure options
+	inner, err := openai.NewChat(model, "", "", // apiKey/baseURL handled by azure options
 		azureClientOptions(apiKey, baseURL, apiVersion)...,
 	)
 	if err != nil {

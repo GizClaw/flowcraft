@@ -2,10 +2,12 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.25.0
 
-require github.com/GizClaw/flowcraft/sdk v0.4.2
+require (
+	github.com/GizClaw/flowcraft/memory v0.1.6
+	github.com/GizClaw/flowcraft/sdk v0.4.6
+)
 
 require (
-	github.com/GizClaw/flowcraft/memory v0.1.2
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anthropics/anthropic-sdk-go v1.26.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0

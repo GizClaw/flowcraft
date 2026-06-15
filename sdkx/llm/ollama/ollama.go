@@ -59,7 +59,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 	defer span.End()
 
 	options := llm.ApplyOptions(opts...)
-	msgs := convertMessages(messages)
+	msgs, err := convertMessages(messages)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return llm.Message{}, llm.TokenUsage{}, err
+	}
 
 	if strings.TrimSpace(c.model) == "" {
 		return llm.Message{}, llm.TokenUsage{}, errdefs.Validationf("ollama: model is required")
@@ -146,7 +151,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	))
 
 	options := llm.ApplyOptions(opts...)
-	msgs := convertMessages(messages)
+	msgs, err := convertMessages(messages)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		span.End()
+		return nil, err
+	}
 
 	if strings.TrimSpace(c.model) == "" {
 		span.End()
@@ -200,7 +211,7 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 
 // --- helpers ---
 
-func convertMessages(messages []llm.Message) []chatMessage {
+func convertMessages(messages []llm.Message) ([]chatMessage, error) {
 	out := make([]chatMessage, 0, len(messages))
 	for _, m := range messages {
 		switch m.Role {
@@ -208,9 +219,22 @@ func convertMessages(messages []llm.Message) []chatMessage {
 			for _, r := range m.ToolResults() {
 				out = append(out, chatMessage{Role: "tool", Content: r.Content})
 			}
+		case llm.RoleSystem:
+			var b strings.Builder
+			for _, p := range m.Parts {
+				if p.Type != llm.PartText {
+					return nil, errdefs.Validationf("ollama: system message supports text parts only, got %s", p.Type)
+				}
+				b.WriteString(p.Text)
+			}
+			out = append(out, chatMessage{Role: "system", Content: b.String()})
 		case llm.RoleAssistant:
+			text, images, err := convertContentParts(m.Parts)
+			if err != nil {
+				return nil, err
+			}
 			if m.HasToolCalls() {
-				msg := chatMessage{Role: "assistant", Content: m.Content()}
+				msg := chatMessage{Role: "assistant", Content: text}
 				for _, tc := range m.ToolCalls() {
 					var args map[string]any
 					if err := json.Unmarshal([]byte(tc.Arguments), &args); err != nil {
@@ -222,10 +246,17 @@ func convertMessages(messages []llm.Message) []chatMessage {
 				}
 				out = append(out, msg)
 			} else {
-				out = append(out, chatMessage{Role: "assistant", Content: m.Content()})
+				msg := chatMessage{Role: "assistant", Content: text}
+				if len(images) > 0 {
+					msg.Images = images
+				}
+				out = append(out, msg)
 			}
 		default:
-			text, images := convertContentParts(m.Parts)
+			text, images, err := convertContentParts(m.Parts)
+			if err != nil {
+				return nil, err
+			}
 			msg := chatMessage{Role: string(m.Role), Content: text}
 			if len(images) > 0 {
 				msg.Images = images
@@ -233,15 +264,20 @@ func convertMessages(messages []llm.Message) []chatMessage {
 			out = append(out, msg)
 		}
 	}
-	return out
+	return out, nil
 }
 
-func convertContentParts(parts []llm.Part) (text string, images []string) {
+func convertContentParts(parts []llm.Part) (text string, images []string, err error) {
 	var b strings.Builder
+	needsTextBoundary := false
 	for _, p := range parts {
 		switch p.Type {
 		case llm.PartText:
+			if needsTextBoundary && p.Text != "" {
+				ensureOllamaContentBoundary(&b)
+			}
 			b.WriteString(p.Text)
+			needsTextBoundary = false
 		case llm.PartImage:
 			if p.Image == nil {
 				continue
@@ -262,15 +298,45 @@ func convertContentParts(parts []llm.Part) (text string, images []string) {
 				}
 			} else if p.File != nil {
 				b.WriteString(p.File.URI)
+				needsTextBoundary = false
 			}
 		case llm.PartData:
 			if p.Data != nil {
-				raw, _ := json.Marshal(p.Data.Value)
+				raw, err := json.Marshal(p.Data.Value)
+				if err != nil {
+					return "", nil, errdefs.Validationf("ollama: marshal data part: %w", err)
+				}
+				ensureOllamaContentBoundary(&b)
+				b.WriteString("[ollama data]\n")
+				b.WriteString("mime_type: ")
+				mime := strings.TrimSpace(p.Data.MimeType)
+				if mime == "" {
+					mime = "application/json"
+				}
+				b.WriteString(mime)
+				b.WriteString("\njson:\n")
 				b.Write(raw)
+				b.WriteString("\n[/ollama data]")
+				needsTextBoundary = true
 			}
 		}
 	}
-	return b.String(), images
+	return b.String(), images, nil
+}
+
+func ensureOllamaContentBoundary(b *strings.Builder) {
+	if b.Len() == 0 {
+		return
+	}
+	s := b.String()
+	switch {
+	case strings.HasSuffix(s, "\n\n"):
+		return
+	case strings.HasSuffix(s, "\n"):
+		b.WriteByte('\n')
+	default:
+		b.WriteString("\n\n")
+	}
 }
 
 func normalizeImageToBase64(s string) (string, error) {

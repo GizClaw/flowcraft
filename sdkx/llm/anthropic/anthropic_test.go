@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -261,4 +262,121 @@ func TestGenerateStream_TransportError(t *testing.T) {
 	}
 	_ = stream.Err()
 	_ = stream.Close()
+}
+
+func TestConvertContentParts_DataPartUsesAnthropicTextBlock(t *testing.T) {
+	blocks, err := convertContentParts([]llm.Part{{
+		Type: llm.PartData,
+		Data: &llm.DataRef{
+			MimeType: "application/vnd.flowcraft.snapshot+json",
+			Value:    map[string]any{"k": "v"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("convertContentParts: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].OfText == nil {
+		t.Fatalf("expected one text block, got %#v", blocks)
+	}
+
+	text := blocks[0].OfText.Text
+	if !strings.Contains(text, "Claude input data") {
+		t.Fatalf("data block missing Claude label: %q", text)
+	}
+	if !strings.Contains(text, "MIME type: application/vnd.flowcraft.snapshot+json") {
+		t.Fatalf("data block missing mime_type: %q", text)
+	}
+	if !strings.Contains(text, "JSON:\n{\"k\":\"v\"}") {
+		t.Fatalf("data block missing JSON content: %q", text)
+	}
+}
+
+func TestConvertContentParts_DataPartDefaultsMimeType(t *testing.T) {
+	blocks, err := convertContentParts([]llm.Part{{
+		Type: llm.PartData,
+		Data: &llm.DataRef{Value: map[string]any{"ok": true}},
+	}})
+	if err != nil {
+		t.Fatalf("convertContentParts: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].OfText == nil {
+		t.Fatalf("expected one text block, got %#v", blocks)
+	}
+	if !strings.Contains(blocks[0].OfText.Text, "MIME type: application/json") {
+		t.Fatalf("empty mime_type should default to application/json: %q", blocks[0].OfText.Text)
+	}
+}
+
+func TestConvertContentParts_DataPartKeepsAdjacentTextBoundaries(t *testing.T) {
+	blocks, err := convertContentParts([]llm.Part{
+		{Type: llm.PartText, Text: "before"},
+		{Type: llm.PartData, Data: &llm.DataRef{Value: map[string]any{"n": float64(1)}}},
+		{Type: llm.PartText, Text: "after"},
+	})
+	if err != nil {
+		t.Fatalf("convertContentParts: %v", err)
+	}
+	if len(blocks) != 3 {
+		t.Fatalf("got %d blocks, want 3: %#v", len(blocks), blocks)
+	}
+	if blocks[0].OfText == nil || blocks[0].OfText.Text != "before" {
+		t.Fatalf("first text block changed: %#v", blocks[0])
+	}
+	if blocks[2].OfText == nil || blocks[2].OfText.Text != "after" {
+		t.Fatalf("last text block changed: %#v", blocks[2])
+	}
+	if blocks[1].OfText == nil {
+		t.Fatalf("data block should be text, got %#v", blocks[1])
+	}
+	text := blocks[1].OfText.Text
+	if strings.Contains(text, "before") || strings.Contains(text, "after") {
+		t.Fatalf("data block should stay in its own Anthropic text block: %#v", blocks)
+	}
+	if !strings.Contains(text, "Claude input data") {
+		t.Fatalf("data block missing Claude label: %q", text)
+	}
+}
+
+func TestConvertMessages_SystemPartDataValidation(t *testing.T) {
+	_, _, err := convertMessages([]llm.Message{{
+		Role: llm.RoleSystem,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "rules"},
+			{Type: llm.PartData, Data: &llm.DataRef{Value: map[string]any{"k": "v"}}},
+		},
+	}})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "system message") {
+		t.Fatalf("error should mention system message, got %q", err.Error())
+	}
+}
+
+func TestGenerate_DataPartMarshalErrorIsValidation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Errorf("request should not be sent after data part validation fails")
+	}))
+	defer srv.Close()
+
+	c, err := New("claude-3-sonnet-20240229", "test-key", srv.URL, nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	msgs := []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{{
+			Type: llm.PartData,
+			Data: &llm.DataRef{Value: map[string]any{"bad": math.NaN()}},
+		}},
+	}}
+
+	_, _, err = c.Generate(context.Background(), msgs)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("Generate error = %v, want Validation", err)
+	}
+	_, err = c.GenerateStream(context.Background(), msgs)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("GenerateStream error = %v, want Validation", err)
+	}
 }

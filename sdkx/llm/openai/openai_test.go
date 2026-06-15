@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -14,6 +15,89 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/openai/openai-go/option"
 )
+
+func TestNew_UsesResponsesAPI(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("path = %q, want /responses", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","created_at":0,"model":"gpt-test","output":[{"type":"message","id":"msg_1","status":"completed","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	c, err := New("gpt-test", "test-key", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	msg, usage, err := c.Generate(context.Background(), []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if msg.Content() != "ok" || usage.TotalTokens != 2 {
+		t.Fatalf("response = %q usage=%+v", msg.Content(), usage)
+	}
+	if got["model"] != "gpt-test" {
+		t.Fatalf("request body = %#v", got)
+	}
+}
+
+func TestOpenAIChatProviderUsesChatCompletionsAPI(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer srv.Close()
+
+	c, err := llm.NewFromConfig("openai-chat", "gpt-test", map[string]any{
+		"api_key":  "test-key",
+		"base_url": srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig: %v", err)
+	}
+	msg, usage, err := c.Generate(context.Background(), []llm.Message{llm.NewTextMessage(llm.RoleUser, "hi")})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if msg.Content() != "ok" || usage.TotalTokens != 2 || got["model"] != "gpt-test" {
+		t.Fatalf("response=%q usage=%+v body=%#v", msg.Content(), usage, got)
+	}
+}
+
+func TestProviderCatalogsSplitBySurface(t *testing.T) {
+	for _, tc := range []struct {
+		provider string
+		model    string
+	}{
+		{"openai", "gpt-5.5"},
+		{"openai-chat", "gpt-5.5"},
+		{"openai", "o3-pro"},
+		{"openai-chat", "o4-mini"},
+	} {
+		if _, ok := llm.DefaultRegistry.LookupModel(tc.provider, tc.model); !ok {
+			t.Fatalf("%s/%s not registered", tc.provider, tc.model)
+		}
+	}
+
+	if _, ok := llm.DefaultRegistry.LookupModel("openai-chat", "o3-pro"); ok {
+		t.Fatal("openai-chat/o3-pro must not be registered")
+	}
+	if spec := llm.DefaultRegistry.LookupModelSpec("openai-chat", "o3-pro"); !spec.IsZero() {
+		t.Fatalf("openai-chat/o3-pro spec = %+v, want zero", spec)
+	}
+}
 
 // TestGenerate_NilResp_NoPanic is the regression test for the
 // production panic at line 314 of openai.go (originally reported via
@@ -35,7 +119,7 @@ func TestGenerate_NilResp_NoPanic(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := New("test-model", "test-key", srv.URL)
+	c, err := NewChat("test-model", "test-key", srv.URL)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -70,7 +154,7 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := New("test-model", "test-key", srv.URL)
+	c, err := NewChat("test-model", "test-key", srv.URL)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -87,7 +171,7 @@ func TestGenerate_EmptyChoices(t *testing.T) {
 }
 
 func TestGenerate_ContextCanceledPreservesAbortedClassification(t *testing.T) {
-	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	c, err := NewChat("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -108,7 +192,7 @@ func TestGenerate_ContextCanceledPreservesAbortedClassification(t *testing.T) {
 }
 
 func TestGenerate_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
-	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	c, err := NewChat("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -129,7 +213,7 @@ func TestGenerate_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
 }
 
 func TestGenerateStream_ContextCanceledPreservesAbortedClassification(t *testing.T) {
-	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	c, err := NewChat("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -150,7 +234,7 @@ func TestGenerateStream_ContextCanceledPreservesAbortedClassification(t *testing
 }
 
 func TestGenerateStream_ContextDeadlinePreservesTimeoutClassification(t *testing.T) {
-	c, err := New("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
+	c, err := NewChat("test-model", "test-key", "http://127.0.0.1:1", option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -188,7 +272,7 @@ func TestGenerateStream_TransportError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c, err := New("test-model", "test-key", srv.URL)
+	c, err := NewChat("test-model", "test-key", srv.URL)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -208,7 +292,7 @@ func TestGenerateStream_TransportError(t *testing.T) {
 // TestNew_AcceptsExtraOpts pins the constructor extension point so
 // tests (and downstream wrappers like deepseek / qwen) keep working.
 func TestNew_AcceptsExtraOpts(t *testing.T) {
-	_, err := New("m", "k", "https://example.com/v1", option.WithMaxRetries(0))
+	_, err := NewChat("m", "k", "https://example.com/v1", option.WithMaxRetries(0))
 	if err != nil {
 		t.Fatalf("New rejected option.WithMaxRetries(0): %v", err)
 	}
