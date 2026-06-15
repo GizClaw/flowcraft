@@ -477,6 +477,11 @@ func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out 
 	for _, msg := range messages {
 		switch msg.Role {
 		case llm.RoleSystem:
+			for _, p := range msg.Parts {
+				if p.Type != llm.PartText {
+					return nil, nil, errdefs.Validationf("anthropic: system message supports text parts only, got %s", p.Type)
+				}
+			}
 			// One TextBlockParam per llm.Message{Role:System}: that
 			// is the cache-segmentation primitive shared with
 			// callers. Empty / whitespace-only segments are dropped
@@ -562,12 +567,27 @@ func convertContentParts(parts []llm.Part) ([]asdk.ContentBlockParamUnion, error
 			}
 		case llm.PartData:
 			if p.Data != nil {
-				b, _ := json.Marshal(p.Data.Value)
-				out = append(out, asdk.NewTextBlock(string(b)))
+				text, err := formatAnthropicDataPartText(p.Data)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, asdk.NewTextBlock(text))
 			}
 		}
 	}
 	return out, nil
+}
+
+func formatAnthropicDataPartText(data *llm.DataRef) (string, error) {
+	b, err := json.Marshal(data.Value)
+	if err != nil {
+		return "", errdefs.Validationf("anthropic: marshal data part: %v", err)
+	}
+	mime := strings.TrimSpace(data.MimeType)
+	if mime == "" {
+		mime = "application/json"
+	}
+	return fmt.Sprintf("Claude input data\nMIME type: %s\nJSON:\n%s", mime, string(b)), nil
 }
 
 func convertFilePartAnthropic(f *llm.FileRef) (*asdk.ContentBlockParamUnion, error) {

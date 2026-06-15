@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"context"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -158,18 +159,22 @@ func init() {
 
 const (
 	defaultBaseURL = "https://api.deepseek.com/v1"
-	defaultModel   = "deepseek-chat"
+	defaultModel   = "deepseek-v4-pro"
 )
 
-// New creates a DeepSeek LLM instance (OpenAI-compatible).
-func New(model, apiKey, baseURL string) (*openai.LLM, error) {
+type LLM struct {
+	inner *openai.ChatLLM
+}
+
+// New creates a DeepSeek LLM instance through the OpenAI-compatible Chat API.
+func New(model, apiKey, baseURL string) (*LLM, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	if model == "" {
 		model = defaultModel
 	}
-	inner, err := openai.New(model, apiKey, baseURL)
+	inner, err := openai.NewChat(model, apiKey, baseURL)
 	if err != nil {
 		return nil, err
 	}
@@ -177,11 +182,33 @@ func New(model, apiKey, baseURL string) (*openai.LLM, error) {
 	// is observable as its own bucket instead of getting silently
 	// aggregated under "openai" (the upstream HTTP transport). See
 	// sdkx/llm/openai/openai.go ▸ WithProviderName.
-	return inner.WithProviderName("deepseek").WithThinkingMapper(func(on bool) (string, any) {
-		typ := "disabled"
-		if on {
-			typ = "enabled"
-		}
-		return "thinking", map[string]any{"type": typ}
-	}), nil
+	inner.WithProviderName("deepseek")
+	return &LLM{inner: inner}, nil
+}
+
+func (q *LLM) Generate(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	return q.inner.Generate(ctx, msgs, injectChatThinking(opts)...)
+}
+
+func (q *LLM) GenerateStream(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
+	return q.inner.GenerateStream(ctx, msgs, injectChatThinking(opts)...)
+}
+
+func (q *LLM) Provider() string {
+	if q == nil || q.inner == nil {
+		return "deepseek"
+	}
+	return q.inner.Provider()
+}
+
+func injectChatThinking(opts []llm.GenerateOption) []llm.GenerateOption {
+	o := llm.ApplyOptions(opts...)
+	if o.Thinking == nil {
+		return opts
+	}
+	typ := "disabled"
+	if *o.Thinking {
+		typ = "enabled"
+	}
+	return append(opts, llm.WithExtra("thinking", map[string]any{"type": typ}))
 }

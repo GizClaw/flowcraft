@@ -1,11 +1,25 @@
 package ollama
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
+
+func mustConvertMessages(t *testing.T, msgs []llm.Message) []chatMessage {
+	t.Helper()
+	out, err := convertMessages(msgs)
+	if err != nil {
+		t.Fatalf("convertMessages: %v", err)
+	}
+	return out
+}
 
 func TestConvertMessages_TextOnly(t *testing.T) {
 	msgs := []llm.Message{
@@ -14,7 +28,7 @@ func TestConvertMessages_TextOnly(t *testing.T) {
 		llm.NewTextMessage(llm.RoleAssistant, "Hi there!"),
 	}
 
-	out := convertMessages(msgs)
+	out := mustConvertMessages(t, msgs)
 	if len(out) != 3 {
 		t.Fatalf("got %d messages, want 3", len(out))
 	}
@@ -34,7 +48,7 @@ func TestConvertMessages_WithToolCalls(t *testing.T) {
 		{ID: "call_1", Name: "get_weather", Arguments: `{"city":"NYC"}`},
 	})
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if len(out) != 1 {
 		t.Fatalf("got %d messages, want 1", len(out))
 	}
@@ -58,7 +72,7 @@ func TestConvertMessages_ToolCallInvalidJSON(t *testing.T) {
 		{ID: "call_1", Name: "do_thing", Arguments: `not valid json`},
 	})
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	tc := out[0].ToolCalls[0]
 	if tc.Function.Arguments["_raw"] != "not valid json" {
 		t.Errorf("expected _raw fallback, got %v", tc.Function.Arguments)
@@ -71,7 +85,7 @@ func TestConvertMessages_ToolResults(t *testing.T) {
 		{ToolCallID: "call_2", Content: "rainy, 55F"},
 	})
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if len(out) != 2 {
 		t.Fatalf("tool results should expand to %d messages, got %d", 2, len(out))
 	}
@@ -94,7 +108,7 @@ func TestConvertMessages_ImageParts(t *testing.T) {
 		},
 	}
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if len(out) != 1 {
 		t.Fatalf("got %d messages", len(out))
 	}
@@ -119,7 +133,7 @@ func TestConvertMessages_EmptyImageSkipped(t *testing.T) {
 		},
 	}
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if len(out[0].Images) != 0 {
 		t.Errorf("expected no images, got %d", len(out[0].Images))
 	}
@@ -361,9 +375,102 @@ func TestConvertContentParts_DataPart(t *testing.T) {
 		},
 	}
 
-	out := convertMessages([]llm.Message{msg})
-	if out[0].Content != `{"key":"value"}` {
+	out := mustConvertMessages(t, []llm.Message{msg})
+	if out[0].Content != "[ollama data]\nmime_type: application/json\njson:\n{\"key\":\"value\"}\n[/ollama data]" {
 		t.Errorf("content = %q", out[0].Content)
+	}
+}
+
+func TestConvertContentParts_DataPartBoundaries(t *testing.T) {
+	msg := llm.Message{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "before"},
+			{Type: llm.PartData, Data: &llm.DataRef{
+				MimeType: "application/vnd.flowcraft+json",
+				Value:    map[string]any{"first": "value"},
+			}},
+			{Type: llm.PartData, Data: &llm.DataRef{
+				Value: map[string]any{"second": "value"},
+			}},
+			{Type: llm.PartText, Text: "after"},
+		},
+	}
+
+	out := mustConvertMessages(t, []llm.Message{msg})
+	want := "before\n\n" +
+		"[ollama data]\n" +
+		"mime_type: application/vnd.flowcraft+json\n" +
+		"json:\n" +
+		"{\"first\":\"value\"}\n" +
+		"[/ollama data]\n\n" +
+		"[ollama data]\n" +
+		"mime_type: application/json\n" +
+		"json:\n" +
+		"{\"second\":\"value\"}\n" +
+		"[/ollama data]\n\n" +
+		"after"
+	if out[0].Content != want {
+		t.Fatalf("content = %q, want %q", out[0].Content, want)
+	}
+}
+
+func TestConvertMessages_DataPartMarshalErrorIsValidation(t *testing.T) {
+	_, err := convertMessages([]llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{{
+			Type: llm.PartData,
+			Data: &llm.DataRef{Value: map[string]any{"bad": func() {}}},
+		}},
+	}})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("err = %v, want Validation", err)
+	}
+}
+
+func TestConvertMessages_SystemPartDataValidation(t *testing.T) {
+	_, err := convertMessages([]llm.Message{{
+		Role: llm.RoleSystem,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "rules"},
+			{Type: llm.PartData, Data: &llm.DataRef{Value: map[string]any{"k": "v"}}},
+		},
+	}})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "system message") {
+		t.Fatalf("error should mention system message, got %q", err.Error())
+	}
+}
+
+func TestGenerate_DataPartMarshalErrorPropagates(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	c, err := New("llama3", srv.URL)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	bad := []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{{
+			Type: llm.PartData,
+			Data: &llm.DataRef{Value: map[string]any{"bad": func() {}}},
+		}},
+	}}
+
+	if _, _, err := c.Generate(context.Background(), bad); !errdefs.IsValidation(err) {
+		t.Fatalf("Generate err = %v, want Validation", err)
+	}
+	if _, err := c.GenerateStream(context.Background(), bad); !errdefs.IsValidation(err) {
+		t.Fatalf("GenerateStream err = %v, want Validation", err)
+	}
+	if called {
+		t.Fatal("server was called despite request conversion error")
 	}
 }
 
@@ -375,7 +482,7 @@ func TestConvertContentParts_FilePart(t *testing.T) {
 		},
 	}
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if out[0].Content != "gs://bucket/file.txt" {
 		t.Errorf("content = %q", out[0].Content)
 	}
@@ -389,7 +496,7 @@ func TestConvertContentParts_ImageFilePart(t *testing.T) {
 		},
 	}
 
-	out := convertMessages([]llm.Message{msg})
+	out := mustConvertMessages(t, []llm.Message{msg})
 	if len(out[0].Images) != 1 {
 		t.Fatalf("expected 1 image, got %d", len(out[0].Images))
 	}

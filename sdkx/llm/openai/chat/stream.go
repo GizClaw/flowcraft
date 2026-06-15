@@ -1,4 +1,4 @@
-package openai
+package chat
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
+	openaishared "github.com/GizClaw/flowcraft/sdkx/llm/openai/shared"
 
 	oai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/ssestream"
@@ -72,7 +73,7 @@ func (s *openaiStreamMessage) Next() bool {
 				if ctxErr := s.baseCtx.Err(); ctxErr != nil {
 					err = errdefs.FromContext(fmt.Errorf("%s.stream: %s: %w: %w", s.provider, time.Since(s.start).String(), err, ctxErr))
 				} else {
-					err = classifyAPIErrorWithProvider(s.provider, err)
+					err = openaishared.ClassifyAPIErrorWithProvider(s.provider, err)
 				}
 			}
 			s.mu.Lock()

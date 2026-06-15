@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	openaishared "github.com/GizClaw/flowcraft/sdkx/llm/openai/shared"
 )
 
 // TestProviderDefaultsToOpenAI guards the historical contract: direct
@@ -36,6 +37,17 @@ func TestWithProviderNameOverrides(t *testing.T) {
 	}
 }
 
+func TestChatProviderNameOverrides(t *testing.T) {
+	c, _ := NewChat("gpt-test", "k", "")
+	if got := c.Provider(); got != "openai" {
+		t.Fatalf("chat default provider = %q, want openai", got)
+	}
+	c.WithProviderName("azure")
+	if got := c.Provider(); got != "azure" {
+		t.Fatalf("chat provider override = %q, want azure", got)
+	}
+}
+
 // TestProviderNilReceiverSafe defends against a nil-LLM Provider() call
 // landing in a panic — the OTel hot path treats Provider() as
 // always-safe.
@@ -55,7 +67,7 @@ func TestProviderNilReceiverSafe(t *testing.T) {
 func TestClassifyAPIErrorMethodCarriesProvider(t *testing.T) {
 	c, _ := New("gpt-test", "k", "")
 	c.WithProviderName("deepseek")
-	got := c.classifyAPIError(errors.New("network: connection reset by peer"))
+	got := openaishared.ClassifyAPIErrorWithProvider(c.Provider(), errors.New("network: connection reset by peer"))
 	if !errdefs.IsNotAvailable(got) {
 		t.Fatalf("expected NotAvailable fallback, got %v", got)
 	}

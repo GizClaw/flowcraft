@@ -226,6 +226,116 @@ func TestGenerate_UsesResponsesFileContent(t *testing.T) {
 	}
 }
 
+func TestGenerate_UsesResponsesDataContentItems(t *testing.T) {
+	var got map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"output": []map[string]any{{
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]any{{"type": "output_text", "text": "ok"}},
+			}},
+		})
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, _, err = c.Generate(context.Background(), []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "before"},
+			{Type: llm.PartData, Data: &llm.DataRef{
+				MimeType: "application/vnd.flowcraft+json",
+				Value:    map[string]any{"first": "value"},
+			}},
+			{Type: llm.PartData, Data: &llm.DataRef{
+				Value: map[string]any{"second": "value"},
+			}},
+			{Type: llm.PartText, Text: "after"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	input := got["input"].([]any)
+	msg := input[0].(map[string]any)
+	content := msg["content"].([]any)
+	if len(content) != 4 {
+		t.Fatalf("content = %#v", content)
+	}
+	if text := content[0].(map[string]any); text["type"] != "input_text" || text["text"] != "before" {
+		t.Fatalf("first text content = %#v", text)
+	}
+	firstData := content[1].(map[string]any)
+	if firstData["type"] != "input_text" || firstData["text"] != "ByteDance input data\nMIME type: application/vnd.flowcraft+json\nJSON:\n{\"first\":\"value\"}" {
+		t.Fatalf("first data content = %#v", firstData)
+	}
+	secondData := content[2].(map[string]any)
+	if secondData["type"] != "input_text" || secondData["text"] != "ByteDance input data\nMIME type: application/json\nJSON:\n{\"second\":\"value\"}" {
+		t.Fatalf("second data content = %#v", secondData)
+	}
+	if text := content[3].(map[string]any); text["type"] != "input_text" || text["text"] != "after" {
+		t.Fatalf("last text content = %#v", text)
+	}
+}
+
+func TestBuildRequest_SystemPartDataValidation(t *testing.T) {
+	c, err := New("doubao-test", "test-key", "http://127.0.0.1", "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = c.buildRequest([]llm.Message{{
+		Role: llm.RoleSystem,
+		Parts: []llm.Part{
+			{Type: llm.PartText, Text: "rules"},
+			{Type: llm.PartData, Data: &llm.DataRef{Value: map[string]any{"k": "v"}}},
+		},
+	}}, llm.ApplyOptions())
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "system message") {
+		t.Fatalf("error should mention system message, got %q", err.Error())
+	}
+}
+
+func TestGenerate_ResponsesDataMarshalErrorIsValidation(t *testing.T) {
+	var called bool
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	c, err := New("doubao-test", "test-key", srv.URL, "", 0)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	bad := []llm.Message{{
+		Role: llm.RoleUser,
+		Parts: []llm.Part{{
+			Type: llm.PartData,
+			Data: &llm.DataRef{Value: map[string]any{"bad": func() {}}},
+		}},
+	}}
+
+	if _, _, err := c.Generate(context.Background(), bad); !errdefs.IsValidation(err) {
+		t.Fatalf("Generate err = %v, want Validation", err)
+	}
+	if _, err := c.GenerateStream(context.Background(), bad); !errdefs.IsValidation(err) {
+		t.Fatalf("GenerateStream err = %v, want Validation", err)
+	}
+	if called {
+		t.Fatal("server was called despite request conversion error")
+	}
+}
+
 func TestGenerateStream_ResponsesChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var got map[string]any

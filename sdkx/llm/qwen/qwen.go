@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdkx/llm/openai"
@@ -44,7 +45,7 @@ func init() {
 		llm.CapImageOutput, llm.CapAudioOutput,
 	)
 
-	llm.RegisterProviderModels("qwen", []llm.ModelInfo{
+	qwenModels := []llm.ModelInfo{
 		{
 			// Flagship; 256K context per Model Studio docs.
 			Label: "Qwen Max",
@@ -85,54 +86,69 @@ func init() {
 				Limits: llm.ModelLimits{MaxContextTokens: 1_000_000},
 			},
 		},
-	})
+	}
+	llm.RegisterProviderModels("qwen", qwenModels)
 }
 
 const (
-	defaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-	defaultModel   = "qwen-flash"
+	defaultResponsesBaseURL = "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1"
+	defaultModel            = "qwen-flash"
 )
 
-// LLM wraps openai.LLM to handle Qwen-specific parameters.
+// LLM wraps the OpenAI-compatible Responses adapter to handle Qwen-specific parameters.
 type LLM struct {
 	inner *openai.LLM
 }
 
-// New creates a Qwen LLM instance. Wraps openai.LLM to inject
-// enable_thinking based on GenerateOptions.Thinking.
+// New creates a Qwen LLM instance backed by DashScope's Responses API.
 func New(model, apiKey, baseURL string) (*LLM, error) {
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
 	if model == "" {
 		model = defaultModel
 	}
-	inner, err := openai.New(model, apiKey, baseURL)
+	inner, err := openai.New(model, apiKey, qwenResponsesBaseURL(baseURL))
 	if err != nil {
 		return nil, err
 	}
 	// Tag the OTel/metrics provider as "qwen" so dashboards split out
-	// Qwen traffic from the upstream openai.LLM that delegates the HTTP
-	// transport. See sdkx/llm/openai/openai.go ▸ WithProviderName for
-	// the contract.
+	// Qwen traffic from the upstream OpenAI-compatible transport. See
+	// sdkx/llm/openai/openai.go ▸ WithProviderName for the contract.
 	inner.WithProviderName("qwen")
 	return &LLM{inner: inner}, nil
 }
 
 func (q *LLM) Generate(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-	return q.inner.Generate(ctx, msgs, append(opts, injectThinking(opts))...)
+	return q.inner.Generate(ctx, msgs, injectResponsesThinking(opts)...)
 }
 
 func (q *LLM) GenerateStream(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
-	return q.inner.GenerateStream(ctx, msgs, append(opts, injectThinking(opts))...)
+	return q.inner.GenerateStream(ctx, msgs, injectResponsesThinking(opts)...)
 }
 
-// injectThinking maps GenerateOptions.Thinking to Qwen's enable_thinking
-// body field via Extra. When Thinking is nil, defaults to false (Qwen3
-// commercial models have thinking disabled by default, but some need
-// the field explicitly).
-func injectThinking(opts []llm.GenerateOption) llm.GenerateOption {
+func (q *LLM) Provider() string {
+	if q == nil || q.inner == nil {
+		return "qwen"
+	}
+	return q.inner.Provider()
+}
+
+func qwenResponsesBaseURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if baseURL == "" {
+		return defaultResponsesBaseURL
+	}
+	if strings.HasSuffix(baseURL, "/api/v2/apps/protocols/compatible-mode/v1") {
+		return baseURL
+	}
+	if before, ok := strings.CutSuffix(baseURL, "/compatible-mode/v1"); ok {
+		return before + "/api/v2/apps/protocols/compatible-mode/v1"
+	}
+	return baseURL
+}
+
+func injectResponsesThinking(opts []llm.GenerateOption) []llm.GenerateOption {
 	o := llm.ApplyOptions(opts...)
-	enable := o.Thinking != nil && *o.Thinking
-	return llm.WithExtra("enable_thinking", enable)
+	if o.Thinking == nil {
+		return append(opts, llm.WithExtra("enable_thinking", false))
+	}
+	return append(opts, llm.WithExtra("enable_thinking", *o.Thinking))
 }
