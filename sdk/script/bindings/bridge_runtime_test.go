@@ -27,13 +27,10 @@ import (
 // scriptnode does internally. Returned env is ready to be passed straight to
 // rt.Exec.
 func envWithRuntime(ctx context.Context, rt script.Runtime, fns ...bindings.BindingFunc) *script.Env {
-	host := map[string]any{}
-	for _, fn := range fns {
-		k, v := fn(ctx)
-		host[k] = v
-	}
-	host["runtime"] = bindings.RuntimeBinding(ctx, rt, host)
-	return &script.Env{Bindings: host}
+	return script.NewEnvBuilder(nil).
+		Add(fns...).
+		AddLate(bindings.NewRuntimeBridge(rt)).
+		Build(ctx)
 }
 
 func TestRuntimeBinding_ChildInheritsParentBindings(t *testing.T) {

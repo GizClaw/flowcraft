@@ -3,7 +3,7 @@ package scriptnode
 import (
 	"context"
 
-	"github.com/GizClaw/flowcraft/sdk/script/bindings"
+	"github.com/GizClaw/flowcraft/sdk/script"
 )
 
 // newNodeBridge exposes the current graph node's identity to scripts as
@@ -34,7 +34,7 @@ import (
 // Future fields (node.inputs(), node.outputs(), …) should land here
 // when scripts demonstrably need them; the bridge stays minimal until
 // then.
-func newNodeBridge(nodeID, nodeType string) bindings.BindingFunc {
+func newNodeBridge(nodeID, nodeType string) script.BindingFunc {
 	return func(_ context.Context) (string, any) {
 		return "node", map[string]any{
 			"id":   func() string { return nodeID },

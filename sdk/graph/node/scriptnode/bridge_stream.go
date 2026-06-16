@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/script/bindings"
+	"github.com/GizClaw/flowcraft/sdk/script"
 )
 
 const (
@@ -66,7 +66,7 @@ func (r *streamCleanupRegistry) Close() {
 //	stream.subscribe_node({ node_id: "planner", run_id: "...", buffer_size: 256 })
 //	stream.subscribe_node({ node_ids: ["planner", "executor"] })
 //	    -> { next, next_timeout_ms, current, close }
-func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
+func newStreamBridge(defaultRunID string, bus event.Bus) script.BindingFunc {
 	return func(callCtx context.Context) (string, any) {
 		if callCtx == nil {
 			callCtx = context.Background()

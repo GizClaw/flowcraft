@@ -1,6 +1,6 @@
 // Package node hosts the runtime-side primitives shared by every concrete
 // graph node implementation: the per-type Builder registry (Factory) and
-// the port declarations consumed by jsnode.
+// compatibility port declarations for custom type-only nodes.
 //
 // Concrete node implementations live in sub-packages and register their
 // builder explicitly into a Factory; this package no longer keeps any
@@ -31,6 +31,15 @@ type Factory struct {
 	mu              sync.RWMutex
 	builders        map[string]NodeBuilder
 	fallbackBuilder NodeBuilder
+	fallbackState   map[any]FallbackRegistration
+}
+
+// FallbackRegistration records which package installed a fallback wrapper.
+// Register helpers can use it to distinguish their own wrapper from a caller's
+// external fallback when they are registered more than once on the same factory.
+type FallbackRegistration struct {
+	External    NodeBuilder
+	InstalledPC uintptr
 }
 
 // NewFactory creates an empty Factory. Call RegisterBuilder (or the
@@ -61,6 +70,25 @@ func (f *Factory) Fallback() NodeBuilder {
 	f.mu.RLock()
 	defer f.mu.RUnlock()
 	return f.fallbackBuilder
+}
+
+// SetFallbackRegistration stores package-specific fallback wrapper state.
+// owner should be a comparable package-private value to avoid collisions.
+func (f *Factory) SetFallbackRegistration(owner any, registration FallbackRegistration) {
+	f.mu.Lock()
+	if f.fallbackState == nil {
+		f.fallbackState = map[any]FallbackRegistration{}
+	}
+	f.fallbackState[owner] = registration
+	f.mu.Unlock()
+}
+
+// FallbackRegistration returns fallback wrapper state previously stored for owner.
+func (f *Factory) FallbackRegistration(owner any) (FallbackRegistration, bool) {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	registration, ok := f.fallbackState[owner]
+	return registration, ok
 }
 
 // Build constructs a single node from its declarative definition. The

@@ -1,4 +1,6 @@
-// Package scripts embeds all built-in JS node scripts via embed.FS.
+// Package scripts owns only the embedded source for built-in JS graph nodes.
+// Graph-layer declarations such as node type, ports, and bridge requirements
+// live in sdk/graph/node/scriptnode's builtin catalog.
 package scripts
 
 import (

@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
@@ -20,39 +21,6 @@ func TestScriptNode_IDAndType(t *testing.T) {
 	}
 	if n.Type() != "router" {
 		t.Fatalf("Type() = %q", n.Type())
-	}
-}
-
-func TestScriptNode_PortResolution(t *testing.T) {
-	rt := jsrt.New(jsrt.WithPoolSize(1))
-	tests := []struct {
-		nodeType   string
-		wantInput  int
-		wantOutput int
-	}{
-		{"router", 1, 1},
-		{"ifelse", 1, 1},
-		{"template", 1, 1},
-		{"answer", 2, 1},
-		{"assigner", 1, 0},
-		{"loopguard", 0, 2},
-		{"aggregator", 1, 1},
-		{"gate", 1, 2},
-		{"context", 2, 0},
-		{"approval", 1, 1},
-		{"iteration", 2, 1},
-		{"unknown_type", 1, 1},
-	}
-	for _, tt := range tests {
-		t.Run(tt.nodeType, func(t *testing.T) {
-			n := New("test", tt.nodeType, "", nil, rt)
-			if len(n.InputPorts()) != tt.wantInput {
-				t.Fatalf("InputPorts len = %d, want %d", len(n.InputPorts()), tt.wantInput)
-			}
-			if len(n.OutputPorts()) != tt.wantOutput {
-				t.Fatalf("OutputPorts len = %d, want %d", len(n.OutputPorts()), tt.wantOutput)
-			}
-		})
 	}
 }
 
@@ -85,6 +53,38 @@ func TestScriptNode_ExecuteBoard(t *testing.T) {
 	v, ok := board.GetVar("result")
 	if !ok || v != "executed" {
 		t.Fatalf("result = %v, ok = %v", v, ok)
+	}
+}
+
+func TestScriptNode_RuntimeLateBindingOverridesExtraAndChildInheritsParentBindings(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(2))
+	src := `
+		var sig = runtime.execScript(
+			'if (extra.value() !== "from-extra") throw new Error("extra missing: " + extra.value());' +
+			'board.setVar("child_extra", extra.value());' +
+			'board.setVar("child_board", "ok");',
+			null
+		);
+		if (sig !== null) throw new Error("expected null signal, got " + JSON.stringify(sig));
+		board.setVar("parent_runtime", "ok");
+	`
+	fakeRuntimeBridge := bindings.BindingFunc(func(context.Context) (string, any) {
+		return "runtime", map[string]any{"execScript": "not-callable"}
+	})
+	n := New("runtime_late", "script", src, nil, rt, testValueBridge("from-extra"), fakeRuntimeBridge)
+
+	board := graph.NewBoard()
+	if err := n.ExecuteBoard(graph.ExecutionContext{Context: context.Background()}, board); err != nil {
+		t.Fatalf("ExecuteBoard: %v", err)
+	}
+	if got, _ := board.GetVar("parent_runtime"); got != "ok" {
+		t.Fatalf("parent_runtime = %v, want ok", got)
+	}
+	if got, _ := board.GetVar("child_board"); got != "ok" {
+		t.Fatalf("child_board = %v, want ok", got)
+	}
+	if got, _ := board.GetVar("child_extra"); got != "from-extra" {
+		t.Fatalf("child_extra = %v, want from-extra", got)
 	}
 }
 

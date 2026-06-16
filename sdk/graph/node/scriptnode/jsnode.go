@@ -7,7 +7,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/graph/node"
 	"github.com/GizClaw/flowcraft/sdk/script"
 	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 )
@@ -25,13 +24,13 @@ type ScriptNode struct {
 	config      map[string]any
 	runtime     script.Runtime
 	eventBus    event.Bus
-	extraBindFn []bindings.BindingFunc
+	extraBindFn []script.BindingFunc
 	inputPorts  []graph.Port
 	outputPorts []graph.Port
 }
 
 // New creates a ScriptNode with the given script and configuration.
-func New(id, nodeType, scriptSrc string, config map[string]any, rt script.Runtime, extras ...bindings.BindingFunc) *ScriptNode {
+func New(id, nodeType, scriptSrc string, config map[string]any, rt script.Runtime, extras ...script.BindingFunc) *ScriptNode {
 	n := &ScriptNode{
 		id:          id,
 		nodeType:    nodeType,
@@ -40,11 +39,7 @@ func New(id, nodeType, scriptSrc string, config map[string]any, rt script.Runtim
 		runtime:     rt,
 		extraBindFn: extras,
 	}
-	n.inputPorts, n.outputPorts = node.PortsForType(nodeType)
-	if n.inputPorts == nil && n.outputPorts == nil {
-		n.inputPorts = []graph.Port{{Name: "input", Type: graph.PortTypeAny}}
-		n.outputPorts = []graph.Port{{Name: "output", Type: graph.PortTypeAny}}
-	}
+	n.inputPorts, n.outputPorts = portsForScriptType(nodeType)
 	return n
 }
 
@@ -83,7 +78,7 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 	// The node id passed to NewHostBridge is still used internally as
 	// the askUser default source and for error annotations, but is no
 	// longer surfaced as a script-readable accessor (use node.id()).
-	allFns := []bindings.BindingFunc{
+	builder := script.NewEnvBuilder(n.config).Add(
 		bindings.NewBoardBridge(board),
 		bindings.NewExprBridge(),
 		bindings.NewHostBridge(ctx.Host, n.id, ctx.Publisher, bindings.WithHostRunID(ctx.RunID)),
@@ -98,20 +93,11 @@ func (n *ScriptNode) ExecuteBoard(ctx graph.ExecutionContext, board *graph.Board
 		// agent package.
 		bindings.NewRunInfoBridge(agent.RunInfoFromAttributes(ctx.RunID, ctx.Attributes)),
 		newNodeBridge(n.id, n.nodeType),
-	}
-	allFns = append(allFns, n.extraBindFn...)
+	)
+	builder.Add(n.extraBindFn...)
+	builder.AddLate(bindings.NewRuntimeBridge(n.runtime))
 
-	hostBindings := make(map[string]any, len(allFns)+1)
-	for _, fn := range allFns {
-		name, val := fn(callCtx)
-		hostBindings[name] = val
-	}
-	hostBindings["runtime"] = bindings.RuntimeBinding(callCtx, n.runtime, hostBindings)
-
-	env := &script.Env{
-		Config:   n.config,
-		Bindings: hostBindings,
-	}
+	env := builder.Build(callCtx)
 
 	sig, err := n.runtime.Exec(callCtx, n.id+".js", n.script, env)
 	if err != nil {
