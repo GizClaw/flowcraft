@@ -6,9 +6,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 )
 
-// Port declarations for jsnode and other "type-only" nodes that don't have
-// a Go-native struct to implement graph.PortDeclarable. Built-in jsnode
-// types register their ports here from their owning sub-package's init().
+// Port declarations for custom "type-only" nodes that don't have a Go-native
+// struct to implement graph.PortDeclarable. Built-in scriptnode types keep
+// their graph-layer declarations in scriptnode's builtin catalog; this global
+// table remains as an opt-in compatibility extension point for other packages.
 //
 // This is the entire schema surface that the engine actually needs at
 // runtime. UI metadata (label, icon, fields, runtime hints) lives elsewhere
@@ -24,7 +25,7 @@ var (
 
 // RegisterPorts declares the input/output port shape for a node type.
 // Safe for concurrent use. Re-registering a type overwrites the previous
-// entry. Intended to be called from init() of the owning sub-package.
+// entry. Prefer explicit setup over package init side effects for new code.
 func RegisterPorts(nodeType string, input, output []graph.Port) {
 	portsMu.Lock()
 	ports[nodeType] = struct{ input, output []graph.Port }{input: input, output: output}
@@ -36,10 +37,18 @@ func RegisterPorts(nodeType string, input, output []graph.Port) {
 // "unknown type" branch in scriptnode (which falls back to generic
 // input/output ports).
 func PortsForType(nodeType string) (input, output []graph.Port) {
+	input, output, _ = LookupPortsForType(nodeType)
+	return input, output
+}
+
+// LookupPortsForType returns the ports previously registered for nodeType and
+// reports whether a registration exists. The ok result lets callers distinguish
+// "not registered" from an explicit nil/nil port declaration.
+func LookupPortsForType(nodeType string) (input, output []graph.Port, ok bool) {
 	portsMu.RLock()
 	defer portsMu.RUnlock()
 	if p, ok := ports[nodeType]; ok {
-		return p.input, p.output
+		return p.input, p.output, true
 	}
-	return nil, nil
+	return nil, nil, false
 }

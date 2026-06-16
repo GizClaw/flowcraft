@@ -15,6 +15,18 @@ type nestedExecRuntime interface {
 	ExecNested(ctx context.Context, name, source string, env *script.Env) (*script.Signal, error)
 }
 
+// NewRuntimeBridge returns a late binding for global "runtime".
+// It captures env.Bindings so child scripts inherit the final parent bindings.
+func NewRuntimeBridge(rt script.Runtime) script.LateBindingFunc {
+	return func(ctx context.Context, env *script.Env) (string, any) {
+		var parentBindings map[string]any
+		if env != nil {
+			parentBindings = env.Bindings
+		}
+		return "runtime", RuntimeBinding(ctx, rt, parentBindings)
+	}
+}
+
 // RuntimeBinding returns the host object for global "runtime" (e.g. execScript).
 // Parent bindings are inherited by sub-scripts.
 func RuntimeBinding(ctx context.Context, rt script.Runtime, parentBindings map[string]any) map[string]any {

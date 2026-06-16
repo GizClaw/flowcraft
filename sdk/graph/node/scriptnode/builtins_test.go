@@ -11,6 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scripts"
+	"github.com/GizClaw/flowcraft/sdk/sandbox"
+	"github.com/GizClaw/flowcraft/sdk/script/bindings"
 	"github.com/GizClaw/flowcraft/sdk/script/jsrt"
 )
 
@@ -161,6 +163,62 @@ func TestBuiltin_Answer_NilPublisherIsNoOp(t *testing.T) {
 	}
 	if v, _ := board.GetVar("answer"); v != "hi" {
 		t.Fatalf("answer var = %v", v)
+	}
+}
+
+// ---------- context.js ----------
+
+type contextCommandRunner struct {
+	stdout   string
+	stderr   string
+	exitCode int
+}
+
+func (r contextCommandRunner) Exec(context.Context, string, []string, sandbox.ExecOptions) (*sandbox.ExecResult, error) {
+	return &sandbox.ExecResult{
+		Stdout:   r.stdout,
+		Stderr:   r.stderr,
+		ExitCode: r.exitCode,
+	}, nil
+}
+
+func TestBuiltin_Context_CommandFailureSignalsTypedError(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	runner := contextCommandRunner{stdout: "ignored", stderr: "command failed", exitCode: 2}
+	n := New("ctx1", "context", scripts.MustGet("context"), map[string]any{
+		"commands": []any{
+			map[string]any{"command": "false", "state_key": "cmd_out"},
+		},
+	}, rt, bindings.NewShellBridge(runner))
+
+	board := graph.NewBoard()
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, board)
+	if !errdefs.IsInternal(err) {
+		t.Fatalf("ExecuteBoard error = %v, want Internal", err)
+	}
+	if v, ok := board.GetVar("cmd_out"); ok && v != nil {
+		t.Fatalf("failed command stdout should not be written, got %v", v)
+	}
+}
+
+func TestBuiltin_Context_CommandUnavailableSignalsNotAvailable(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	runner := contextCommandRunner{stderr: "runner offline", exitCode: -1}
+	n := New("ctx_unavailable", "context", scripts.MustGet("context"), map[string]any{
+		"commands": []any{
+			map[string]any{"command": "tool status", "state_key": "cmd_out"},
+		},
+	}, rt, bindings.NewShellBridge(runner))
+
+	err := n.ExecuteBoard(graph.ExecutionContext{
+		Context: context.Background(),
+		RunID:   runIDForTests,
+	}, graph.NewBoard())
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("ExecuteBoard error = %v, want NotAvailable", err)
 	}
 }
 

@@ -3,11 +3,13 @@
 //
 // # Purpose
 //
-// bindings does two things: (1) expose Go-side interfaces as script-callable
-// globals/tables; (2) provide common presets to reduce boilerplate.
+// bindings exposes Go-side interfaces as script-callable globals/tables.
 // Business policy (who may call what, quotas, auth) belongs to the caller:
 // pass pre-trimmed dependencies or tighten capabilities via Options.
 // VM-agnostic: bindings never parses syntax; Lua/JS are handled by script sub-packages.
+// Env assembly primitives (script.BindingFunc, script.LateBindingFunc, and
+// script.EnvBuilder) live in sdk/script; this package keeps aliases and wrappers
+// as a compatibility layer while owning concrete bridges.
 //
 // # Dependency constraint
 //
@@ -18,7 +20,7 @@
 //
 // # Layering model
 //
-//  1. core: BindingFunc, BuildEnv — language-agnostic assembly primitives.
+//  1. core: compatibility aliases/wrappers for script BindingFunc/EnvBuilder.
 //  2. atomic bridges: one file per host capability, named New<Domain>Bridge;
 //     the injected global is typically the lowercase domain name (board, fs, …).
 //  3. expr subsystem: compiled-program LRU cache (see bridge_expr.go), transparent to scripts.
@@ -36,7 +38,7 @@
 // # Directory layout
 //
 //	doc.go            package-level design notes (this file)
-//	core.go           BindingFunc, BuildEnv
+//	core.go           compatibility aliases for script.BindingFunc / EnvBuilder
 //	bridge_board.go   board variables + typed message channels (engine.Board)
 //	bridge_expr.go    expr-lang expressions (eval) + LRU program cache
 //	bridge_shell.go   sandboxed subprocesses (allowlist via ShellOption)
@@ -60,10 +62,11 @@
 //
 //   - Graph ScriptNode: composes board+stream+expr+runtime in ExecuteBoard,
 //     then appends shell/fs per node type (see graph/node/scriptnode).
-//   - Engine / Agent: build the env directly with BuildEnv and the bridges
-//     you need; add NewLLMBridge when LLM access is required, and use
-//     NewRunInfoBridge(runInfo) to surface run/task/agent/context ids.
-//     There is no global preset — the four lines of BuildEnv are the preset.
+//   - Engine / Agent: build the env directly with script.NewEnvBuilder or
+//     script.BuildEnv and the bridges you need; add NewLLMBridge when LLM
+//     access is required, and use NewRunInfoBridge(runInfo) to surface
+//     run/task/agent/context ids. There is no global preset — the few lines of
+//     EnvBuilder assembly are the preset.
 //
 // # Checklist for adding a new bridge
 //
