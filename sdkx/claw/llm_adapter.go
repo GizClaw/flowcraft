@@ -52,18 +52,50 @@ func (m providerSafeLLM) GenerateStream(ctx context.Context, messages []llm.Mess
 func providerSafeMessages(messages []llm.Message) []llm.Message {
 	var out []llm.Message
 	for i, msg := range messages {
-		if !needsProviderSafeUserText(msg) {
+		safe, changed := providerSafeMessage(msg)
+		if !changed {
 			continue
 		}
 		if out == nil {
 			out = model.CloneMessages(messages)
 		}
-		out[i] = llm.NewTextMessage(llm.RoleUser, providerSafeEmptyUserText)
+		out[i] = safe
 	}
 	if out != nil {
 		return out
 	}
 	return messages
+}
+
+func providerSafeMessage(msg llm.Message) (llm.Message, bool) {
+	var changed bool
+	if parts, ok := stripClawHistoryXMLParts(msg.Parts); ok {
+		msg.Parts = parts
+		changed = true
+	}
+	if needsProviderSafeUserText(msg) {
+		return llm.NewTextMessage(llm.RoleUser, providerSafeEmptyUserText), true
+	}
+	return msg, changed
+}
+
+func stripClawHistoryXMLParts(parts []llm.Part) ([]llm.Part, bool) {
+	for i, part := range parts {
+		if !isClawHistoryXMLPart(part) {
+			continue
+		}
+		out := make([]llm.Part, 0, len(parts)-1)
+		for _, part := range parts[:i] {
+			out = append(out, part.Clone())
+		}
+		for _, part := range parts[i+1:] {
+			if !isClawHistoryXMLPart(part) {
+				out = append(out, part.Clone())
+			}
+		}
+		return out, true
+	}
+	return parts, false
 }
 
 func needsProviderSafeUserText(msg llm.Message) bool {

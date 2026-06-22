@@ -245,11 +245,78 @@ func TestRoundTripLoadsConfiguredHistoryByContextID(t *testing.T) {
 	if second[0].Role != model.RoleUser || second[0].Content() != "first question" {
 		t.Fatalf("message 0 = (%s, %q), want first user turn", second[0].Role, second[0].Content())
 	}
-	if second[1].Role != model.RoleAssistant || second[1].Content() != `<node id="answer" />first reply` {
-		t.Fatalf("message 1 = (%s, %q), want first assistant turn with node XML", second[1].Role, second[1].Content())
+	if second[1].Role != model.RoleAssistant || second[1].Content() != "first reply" {
+		t.Fatalf("message 1 = (%s, %q), want clean first assistant turn", second[1].Role, second[1].Content())
+	}
+	if got := clawHistoryXMLAttr(second[1], "node", "id"); got != "" {
+		t.Fatalf("provider-visible message retained node XML = %q", got)
 	}
 	if second[2].Role != model.RoleUser || second[2].Content() != "second question" {
 		t.Fatalf("message 2 = (%s, %q), want second user turn", second[2].Role, second[2].Content())
+	}
+}
+
+func TestRoundTripProviderHistoryStripsNodeXMLBeforeLaterReply(t *testing.T) {
+	ws, err := workspace.NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalWorkspace: %v", err)
+	}
+	llm := &historyEchoLLM{}
+	app := newTestClaw(t, ws, llm, func(cfg *Config) {
+		cfg.History.Enabled = true
+		cfg.History.Kind = "buffer"
+		cfg.History.MaxMessages = 10
+	})
+	defer app.Close()
+
+	resp, err := app.RoundTrip(Request{Text: "first question"})
+	if err != nil {
+		t.Fatalf("RoundTrip first: %v", err)
+	}
+	for {
+		if _, err := resp.Next(); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("Next first: %v", err)
+		}
+	}
+
+	history, err := app.history.load(context.Background(), app.contextID())
+	if err != nil {
+		t.Fatalf("load history: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("history messages = %d, want user + assistant: %+v", len(history), history)
+	}
+	if got := history[1].Content(); got != "first reply" {
+		t.Fatalf("persisted assistant content = %q, want first reply", got)
+	}
+	if got := clawHistoryXMLAttr(history[1], "node", "id"); got != "answer" {
+		t.Fatalf("persisted assistant node XML = %q, want answer", got)
+	}
+
+	resp, err = app.RoundTrip(Request{Text: "second question"})
+	if err != nil {
+		t.Fatalf("RoundTrip second: %v", err)
+	}
+	var streamed strings.Builder
+	for {
+		ev, err := resp.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("Next second: %v", err)
+		}
+		if ev.Type == EventToken {
+			streamed.WriteString(ev.Content)
+			if strings.Contains(ev.Content, "<node") {
+				t.Fatalf("token leaked node XML: %q", ev.Content)
+			}
+		}
+	}
+	if got := streamed.String(); got != "first reply / later reply" {
+		t.Fatalf("second reply = %q, want clean history echo", got)
 	}
 }
 
@@ -408,23 +475,21 @@ func TestRoundTripHistoryParsesSpeakerDirectiveIntoMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SeedBoard: %v", err)
 	}
+	var foundStructuredSpeaker bool
 	for _, msg := range board.Channel(engine.MainChannel) {
 		for _, part := range msg.Parts {
+			if part.Type == model.PartText && strings.Contains(part.Text, "<speaker") {
+				t.Fatalf("board history rendered speaker XML as visible text: %+v", msg)
+			}
 			if part.Type == clawHistoryXMLPartType {
-				t.Fatalf("board history should render XML metadata as text before LLM: %+v", msg)
+				if got, ok := parseXMLDirectiveAttr(part.Text, "speaker", "name"); ok && got == "沈知秋" {
+					foundStructuredSpeaker = true
+				}
 			}
 		}
 	}
-	foundRenderedSpeaker := false
-	for _, msg := range board.Channel(engine.MainChannel) {
-		for _, part := range msg.Parts {
-			if part.Type == model.PartText && part.Text == `<speaker name="沈知秋" />` {
-				foundRenderedSpeaker = true
-			}
-		}
-	}
-	if !foundRenderedSpeaker {
-		t.Fatalf("board history did not retain speaker XML as text: %+v", board.Channel(engine.MainChannel))
+	if !foundStructuredSpeaker {
+		t.Fatalf("board history did not retain speaker XML metadata: %+v", board.Channel(engine.MainChannel))
 	}
 }
 
@@ -1155,6 +1220,35 @@ func (c *capturingLLM) calls() [][]llm.Message {
 		out[i] = model.CloneMessages(msgs)
 	}
 	return out
+}
+
+type historyEchoLLM struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (h *historyEchoLLM) Generate(context.Context, []llm.Message, ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
+	return llm.Message{}, llm.TokenUsage{}, nil
+}
+
+func (h *historyEchoLLM) GenerateStream(_ context.Context, msgs []llm.Message, _ ...llm.GenerateOption) (llm.StreamMessage, error) {
+	h.mu.Lock()
+	h.calls++
+	call := h.calls
+	h.mu.Unlock()
+
+	reply := "first reply"
+	if call > 1 {
+		reply = "missing assistant history / later reply"
+		for _, msg := range msgs {
+			if msg.Role == llm.RoleAssistant {
+				reply = msg.Content() + " / later reply"
+				break
+			}
+		}
+	}
+	msg := llm.NewTextMessage(llm.RoleAssistant, reply)
+	return &sliceStream{msg: msg, chunks: []string{reply}}, nil
 }
 
 type toolCallLLM struct{}
