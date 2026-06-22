@@ -9,14 +9,13 @@ import (
 // Scope is the shared memory boundary carried by derived views and projections.
 //
 // RuntimeID and UserID define the hard partition. Empty UserID means global.
-// AgentID and evidence/view dimensions are soft filters layered on top.
+// AgentID and source dimensions are soft filters layered on top.
 type Scope struct {
 	RuntimeID      string
 	UserID         string
 	AgentID        string
 	ConversationID string
 	DatasetID      string
-	EntityID       string
 }
 
 // Validate checks the minimal invariant required to use a scope as a memory

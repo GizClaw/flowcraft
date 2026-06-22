@@ -4,15 +4,14 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/derive"
+	derivecontextpack "github.com/GizClaw/flowcraft/memory/derive/context"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
 	internalexecutor "github.com/GizClaw/flowcraft/memory/internal/executor"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	viewfact "github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	viewrecent "github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -25,32 +24,26 @@ type EmbeddingOptions struct {
 	Timeout time.Duration
 }
 
-// Deps contains the explicit stores, retrieval index, and services used
-// to construct a System. New does not create or choose any of these.
+// Deps contains the explicit stores, retrieval index, and services used to
+// construct a System. DocumentChunker and Summarizer are only required by
+// write-side derivation operations. When ContextPacker is nil, New installs the
+// default deterministic RRF context packer.
 type Deps struct {
 	MessageStore  sourcemessage.Store
 	DocumentStore sourcedocument.Store
 
-	SummaryStore        viewrecent.SummaryStore
-	ChunkStore          viewdocument.ChunkStore
-	ObservationStore    viewobservation.Store
-	FactStore           viewfact.Store
-	FactGraphStore      viewfact.GraphStore
-	EntityProfileStore  viewentity.ProfileStore
-	EntityTimelineStore viewentity.TimelineStore
+	SummaryStore    viewrecent.SummaryStore
+	ChunkStore      viewdocument.ChunkStore
+	EntityFactStore viewentityfact.Store
 
 	Index     retrieval.Index
 	Embedder  embedding.Embedder
 	Embedding EmbeddingOptions
 
-	DocumentChunker       derive.DocumentChunker
-	Summarizer            derive.Summarizer
-	ObservationExtractor  derive.ObservationExtractor
-	FactReconciler        derive.FactReconciler
-	FactGraphBuilder      derive.FactGraphBuilder
-	EntityProfileBuilder  derive.EntityProfileBuilder
-	EntityTimelineBuilder derive.EntityTimelineBuilder
-	ContextPacker         derive.ContextPacker
+	DocumentChunker     derive.DocumentChunker
+	Summarizer          derive.Summarizer
+	EntityFactExtractor derive.EntityFactExtractor
+	ContextPacker       derive.ContextPacker
 
 	JobStore         LifecycleJobStore
 	ReportStore      ReportStore
@@ -85,9 +78,11 @@ func New(spec Spec, deps Deps) (*System, error) {
 // NewFromAssembly constructs a system from a previously compiled assembly and
 // caller-provided dependencies.
 func newFromAssembly(assembly compiler.Assembly, deps Deps) (*System, error) {
+	deps = withDefaultDeps(deps)
 	writeAvailable := configuredWriteCapabilities(assembly, deps)
 	readAvailable := configuredReadCapabilities(assembly, deps)
-	plan, err := compilePlan(assembly, writeAvailable, readAvailable)
+	writePlanAvailable := configuredWritePlanCapabilities(assembly, deps)
+	plan, err := compilePlan(assembly, writePlanAvailable, readAvailable)
 	if err != nil {
 		return nil, err
 	}
@@ -112,6 +107,13 @@ func newFromAssembly(assembly compiler.Assembly, deps Deps) (*System, error) {
 	system.diagnosticRegistry = system.defaultDiagnosticProbeRegistry()
 	system.diagnosticRegistry.mergeFrom(deps.DiagnosticProbes)
 	return system, nil
+}
+
+func withDefaultDeps(deps Deps) Deps {
+	if deps.ContextPacker == nil {
+		deps.ContextPacker = derivecontextpack.RRFPacker{}
+	}
+	return deps
 }
 
 // Close releases resources owned by the system. Injected indexes are left open.
@@ -169,25 +171,17 @@ func executorDeps(assembly compiler.Assembly, deps Deps) internalexecutor.Deps {
 		MessageStore:  deps.MessageStore,
 		DocumentStore: deps.DocumentStore,
 
-		SummaryStore:        deps.SummaryStore,
-		ChunkStore:          deps.ChunkStore,
-		ObservationStore:    deps.ObservationStore,
-		FactStore:           deps.FactStore,
-		FactGraphStore:      deps.FactGraphStore,
-		EntityProfileStore:  deps.EntityProfileStore,
-		EntityTimelineStore: deps.EntityTimelineStore,
+		SummaryStore:    deps.SummaryStore,
+		ChunkStore:      deps.ChunkStore,
+		EntityFactStore: deps.EntityFactStore,
 
 		Index:            deps.Index,
 		Embedder:         deps.Embedder,
 		EmbeddingTimeout: deps.Embedding.Timeout,
 
-		DocumentChunker:       deps.DocumentChunker,
-		Summarizer:            deps.Summarizer,
-		ObservationExtractor:  deps.ObservationExtractor,
-		FactReconciler:        deps.FactReconciler,
-		FactGraphBuilder:      deps.FactGraphBuilder,
-		EntityProfileBuilder:  deps.EntityProfileBuilder,
-		EntityTimelineBuilder: deps.EntityTimelineBuilder,
-		ContextPacker:         deps.ContextPacker,
+		DocumentChunker:     deps.DocumentChunker,
+		Summarizer:          deps.Summarizer,
+		EntityFactExtractor: deps.EntityFactExtractor,
+		ContextPacker:       deps.ContextPacker,
 	}
 }

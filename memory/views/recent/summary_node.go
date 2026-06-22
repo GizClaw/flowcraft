@@ -11,6 +11,9 @@ import (
 type NodeID string
 
 // SummaryNode is one node in a summary DAG derived from MessageLog evidence.
+// ParentIDs identify direct summary-node inputs for DAG edges. In layered
+// compaction summaries, a condensed node's ParentIDs are the contiguous
+// same-depth child summary node IDs it compacted; leaf nodes have no parents.
 //
 // Metadata must be JSON-compatible. Values roundtrip through encoding/json, so
 // decoded maps use map[string]any, arrays use []any, and numbers use float64.

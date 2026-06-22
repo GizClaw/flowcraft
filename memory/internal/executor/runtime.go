@@ -9,9 +9,7 @@ import (
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -36,14 +34,10 @@ func New(deps Deps) (*Executor, error) {
 		projections: make(map[compiler.Capability]compiler.ProjectionAssembly, len(deps.Assembly.Projections)),
 		writers:     make(map[compiler.Capability]*indexed.Writer, len(deps.Assembly.Projections)),
 
-		documentChunker:       deps.DocumentChunker,
-		summarizer:            deps.Summarizer,
-		observationExtractor:  deps.ObservationExtractor,
-		factReconciler:        deps.FactReconciler,
-		factGraphBuilder:      deps.FactGraphBuilder,
-		entityProfileBuilder:  deps.EntityProfileBuilder,
-		entityTimelineBuilder: deps.EntityTimelineBuilder,
-		contextPacker:         deps.ContextPacker,
+		documentChunker:     deps.DocumentChunker,
+		summarizer:          deps.Summarizer,
+		entityFactExtractor: deps.EntityFactExtractor,
+		contextPacker:       deps.ContextPacker,
 	}
 
 	for _, view := range deps.Assembly.Views {
@@ -137,18 +131,12 @@ func (r *Executor) configureSources() error {
 }
 
 func (r *Executor) configureViews(deps Deps) error {
-	summaryFlow := r.shouldConfigureFlow(compiler.CapabilitySummaryDAG, deps.SummaryStore != nil, r.summarizer != nil)
-	observationFlow := r.shouldConfigureFlow(compiler.CapabilityObservationLedger, deps.ObservationStore != nil, r.observationExtractor != nil)
-	factFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityFactLedger, deps.FactStore != nil, r.factReconciler != nil)
-	factGraphFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityFactGraph, deps.FactGraphStore != nil, r.factGraphBuilder != nil)
-	entityProfileFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityEntityProfile, deps.EntityProfileStore != nil, r.entityProfileBuilder != nil)
-	entityTimelineFlow := r.shouldConfigureCompleteFlow(compiler.CapabilityEntityTimeline, deps.EntityTimelineStore != nil, r.entityTimelineBuilder != nil)
+	summaryFlow := r.shouldConfigureStoredView(compiler.CapabilitySummaryDAG, deps.SummaryStore != nil)
+	entityFactFlow := r.shouldConfigureStoredView(compiler.CapabilityEntityFactIndex, deps.EntityFactStore != nil)
 
-	if r.shouldConfigureRecentWindow(summaryFlow, observationFlow) {
+	if r.shouldConfigureRecentWindow(summaryFlow || entityFactFlow) {
 		if r.messageStore == nil {
-			if r.required(compiler.CapabilityRecentWindow) ||
-				summaryFlow ||
-				observationFlow {
+			if r.required(compiler.CapabilityRecentWindow) || summaryFlow || entityFactFlow {
 				return errdefs.Validationf("%s: message store is required for message-window capabilities", errPrefix)
 			}
 		} else {
@@ -163,30 +151,18 @@ func (r *Executor) configureViews(deps Deps) error {
 	if err := r.configureDocumentChunks(deps.ChunkStore); err != nil {
 		return err
 	}
-	if err := r.configureObservationLedger(deps.ObservationStore); err != nil {
+	if err := r.configureEntityFacts(deps.EntityFactStore); err != nil {
 		return err
 	}
-	if err := r.configureFactLedger(deps.FactStore, factFlow); err != nil {
-		return err
-	}
-	if err := r.configureFactGraph(deps.FactGraphStore, factGraphFlow); err != nil {
-		return err
-	}
-	if err := r.configureEntityProfile(deps.EntityProfileStore, entityProfileFlow); err != nil {
-		return err
-	}
-	return r.configureEntityTimeline(deps.EntityTimelineStore, entityTimelineFlow)
+	return nil
 }
 
 func (r *Executor) configureSummaryDAG(store recent.SummaryStore) error {
-	if !r.shouldConfigureFlow(compiler.CapabilitySummaryDAG, store != nil, r.summarizer != nil) {
+	if !r.shouldConfigureStoredView(compiler.CapabilitySummaryDAG, store != nil) {
 		return nil
 	}
 	if store == nil {
 		return errdefs.Validationf("%s: capability %q requires SummaryStore", errPrefix, compiler.CapabilitySummaryDAG)
-	}
-	if r.summarizer == nil {
-		return errdefs.Validationf("%s: capability %q requires Summarizer", errPrefix, compiler.CapabilitySummaryDAG)
 	}
 	view := r.enabled[compiler.CapabilitySummaryDAG]
 	r.summaryDAG = recent.NewSummaryDAG(store, recent.WithID(view.Descriptor.ID), recent.WithVersion(view.Descriptor.Version))
@@ -194,92 +170,26 @@ func (r *Executor) configureSummaryDAG(store recent.SummaryStore) error {
 }
 
 func (r *Executor) configureDocumentChunks(store viewdocument.ChunkStore) error {
-	if !r.shouldConfigureFlow(compiler.CapabilityDocumentChunks, store != nil, r.documentChunker != nil) {
+	if !r.shouldConfigureStoredView(compiler.CapabilityDocumentChunks, store != nil) {
 		return nil
 	}
 	if store == nil {
 		return errdefs.Validationf("%s: capability %q requires ChunkStore", errPrefix, compiler.CapabilityDocumentChunks)
-	}
-	if r.documentChunker == nil {
-		return errdefs.Validationf("%s: capability %q requires DocumentChunker", errPrefix, compiler.CapabilityDocumentChunks)
 	}
 	view := r.enabled[compiler.CapabilityDocumentChunks]
 	r.documentChunks = viewdocument.NewChunks(store, viewdocument.WithID(view.Descriptor.ID), viewdocument.WithVersion(view.Descriptor.Version))
 	return nil
 }
 
-func (r *Executor) configureObservationLedger(store viewobservation.Store) error {
-	if !r.shouldConfigureFlow(compiler.CapabilityObservationLedger, store != nil, r.observationExtractor != nil) {
+func (r *Executor) configureEntityFacts(store viewentityfact.Store) error {
+	if !r.shouldConfigureStoredView(compiler.CapabilityEntityFactIndex, store != nil) {
 		return nil
 	}
 	if store == nil {
-		return errdefs.Validationf("%s: capability %q requires ObservationStore", errPrefix, compiler.CapabilityObservationLedger)
+		return errdefs.Validationf("%s: capability %q requires EntityFactStore", errPrefix, compiler.CapabilityEntityFactIndex)
 	}
-	if r.observationExtractor == nil {
-		return errdefs.Validationf("%s: capability %q requires ObservationExtractor", errPrefix, compiler.CapabilityObservationLedger)
-	}
-	view := r.enabled[compiler.CapabilityObservationLedger]
-	r.observationLedger = viewobservation.NewLedger(store, viewobservation.WithID(view.Descriptor.ID), viewobservation.WithVersion(view.Descriptor.Version))
-	return nil
-}
-
-func (r *Executor) configureFactLedger(store fact.Store, configure bool) error {
-	if !configure {
-		return nil
-	}
-	if store == nil {
-		return errdefs.Validationf("%s: capability %q requires FactStore", errPrefix, compiler.CapabilityFactLedger)
-	}
-	if r.factReconciler == nil {
-		return errdefs.Validationf("%s: capability %q requires FactReconciler", errPrefix, compiler.CapabilityFactLedger)
-	}
-	view := r.enabled[compiler.CapabilityFactLedger]
-	r.factLedger = fact.NewLedger(store, fact.WithID(view.Descriptor.ID), fact.WithVersion(view.Descriptor.Version))
-	return nil
-}
-
-func (r *Executor) configureFactGraph(store fact.GraphStore, configure bool) error {
-	if !configure {
-		return nil
-	}
-	if store == nil {
-		return errdefs.Validationf("%s: capability %q requires FactGraphStore", errPrefix, compiler.CapabilityFactGraph)
-	}
-	if r.factGraphBuilder == nil {
-		return errdefs.Validationf("%s: capability %q requires FactGraphBuilder", errPrefix, compiler.CapabilityFactGraph)
-	}
-	view := r.enabled[compiler.CapabilityFactGraph]
-	r.factGraph = fact.NewGraph(store, fact.WithGraphID(view.Descriptor.ID), fact.WithGraphVersion(view.Descriptor.Version))
-	return nil
-}
-
-func (r *Executor) configureEntityProfile(store viewentity.ProfileStore, configure bool) error {
-	if !configure {
-		return nil
-	}
-	if store == nil {
-		return errdefs.Validationf("%s: capability %q requires EntityProfileStore", errPrefix, compiler.CapabilityEntityProfile)
-	}
-	if r.entityProfileBuilder == nil {
-		return errdefs.Validationf("%s: capability %q requires EntityProfileBuilder", errPrefix, compiler.CapabilityEntityProfile)
-	}
-	view := r.enabled[compiler.CapabilityEntityProfile]
-	r.entityProfile = viewentity.NewProfile(store, viewentity.WithProfileID(view.Descriptor.ID), viewentity.WithProfileVersion(view.Descriptor.Version))
-	return nil
-}
-
-func (r *Executor) configureEntityTimeline(store viewentity.TimelineStore, configure bool) error {
-	if !configure {
-		return nil
-	}
-	if store == nil {
-		return errdefs.Validationf("%s: capability %q requires EntityTimelineStore", errPrefix, compiler.CapabilityEntityTimeline)
-	}
-	if r.entityTimelineBuilder == nil {
-		return errdefs.Validationf("%s: capability %q requires EntityTimelineBuilder", errPrefix, compiler.CapabilityEntityTimeline)
-	}
-	view := r.enabled[compiler.CapabilityEntityTimeline]
-	r.entityTimeline = viewentity.NewTimeline(store, viewentity.WithTimelineID(view.Descriptor.ID), viewentity.WithTimelineVersion(view.Descriptor.Version))
+	view := r.enabled[compiler.CapabilityEntityFactIndex]
+	r.entityFacts = viewentityfact.NewGraph(store, viewentityfact.WithID(view.Descriptor.ID), viewentityfact.WithVersion(view.Descriptor.Version))
 	return nil
 }
 
@@ -342,44 +252,31 @@ func (r *Executor) projectionWritersToConfigure() ([]compiler.ProjectionAssembly
 
 func (r *Executor) projectionFlowConfigured(capability compiler.Capability) (configured bool, supported bool) {
 	switch capability {
+	case compiler.CapabilityMessageIndex:
+		return r.messageStore != nil, true
 	case compiler.CapabilityDocumentChunks:
 		return r.documentChunks != nil, true
 	case compiler.CapabilitySummaryDAG:
 		return r.summaryDAG != nil, true
-	case compiler.CapabilityObservationLedger:
-		return r.observationLedger != nil, true
-	case compiler.CapabilityFactLedger:
-		return r.factLedger != nil, true
-	case compiler.CapabilityFactGraph:
-		return r.factGraph != nil, true
-	case compiler.CapabilityEntityProfile:
-		return r.entityProfile != nil, true
-	case compiler.CapabilityEntityTimeline:
-		return r.entityTimeline != nil, true
+	case compiler.CapabilityEntityFactIndex:
+		return r.entityFacts != nil, true
 	default:
 		return false, false
 	}
 }
 
-func (r *Executor) shouldConfigureRecentWindow(summaryFlow, observationFlow bool) bool {
+func (r *Executor) shouldConfigureRecentWindow(summaryFlow bool) bool {
 	if _, ok := r.enabled[compiler.CapabilityRecentWindow]; ok {
 		return true
 	}
-	return summaryFlow || observationFlow
+	return summaryFlow
 }
 
-func (r *Executor) shouldConfigureFlow(capability compiler.Capability, storeAvailable bool, serviceAvailable bool) bool {
+func (r *Executor) shouldConfigureStoredView(capability compiler.Capability, storeAvailable bool) bool {
 	if _, ok := r.enabled[capability]; !ok {
 		return false
 	}
-	return r.required(capability) || storeAvailable || serviceAvailable
-}
-
-func (r *Executor) shouldConfigureCompleteFlow(capability compiler.Capability, storeAvailable bool, serviceAvailable bool) bool {
-	if _, ok := r.enabled[capability]; !ok {
-		return false
-	}
-	return r.required(capability) || (storeAvailable && serviceAvailable)
+	return r.required(capability) || storeAvailable
 }
 
 func (r *Executor) required(capability compiler.Capability) bool {

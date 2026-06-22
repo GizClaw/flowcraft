@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
+	"github.com/GizClaw/flowcraft/memory/text/analysis"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -67,7 +67,7 @@ type Config struct {
 	lockHeartbeat    time.Duration
 	now              func() time.Time
 	autoCompact      bool
-	tokenizer        tokenize.Tokenizer
+	analyzer         analysis.Analyzer
 
 	compactInterval time.Duration
 	compactMin      int
@@ -82,11 +82,11 @@ func defaultConfig() Config {
 		lockHeartbeat:    DefaultLockHeartbeat,
 		now:              time.Now,
 		autoCompact:      true,
-		// CJKBigram falls back to Simple for ASCII so
+		// CJKBigramAnalyzer falls back to Simple for ASCII so
 		// it is a strict superset; choosing it as default avoids
 		// "search returned 0 hits in Chinese" footguns at zero
 		// cost on English-only corpora.
-		tokenizer: &tokenize.CJKBigram{},
+		analyzer: &analysis.CJKBigramAnalyzer{},
 
 		compactInterval: DefaultCompactionInterval,
 		compactMin:      DefaultCompactionMinSegments,
@@ -188,15 +188,14 @@ func WithCompactionMaxSize(bytes int64) Option {
 	}
 }
 
-// WithTokenizer overrides the BM25 tokenizer used for query parsing
+// WithAnalyzer overrides the BM25 analyzer used for query parsing
 // and segment-local corpus rebuild. Both sides MUST use the same
-// tokenizer instance or query tokens won't match the indexed
-// corpus; passing a single Tokenizer for both is the only supported
-// configuration. Default is [tokenize.CJKBigram].
-func WithTokenizer(t tokenize.Tokenizer) Option {
+// analyzer instance or query tokens won't match the indexed corpus.
+// Default is [analysis.CJKBigramAnalyzer].
+func WithAnalyzer(a analysis.Analyzer) Option {
 	return func(c *Config) {
-		if t != nil {
-			c.tokenizer = t
+		if a != nil {
+			c.analyzer = a
 		}
 	}
 }

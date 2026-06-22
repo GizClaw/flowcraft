@@ -351,7 +351,6 @@ func TestUpsertDeepCopiesStagedDoc(t *testing.T) {
 	typedMap["labels"][0] = "after"
 	typedMap["labels"] = append(typedMap["labels"], "new")
 	typedSlice[0]["state"] = "after"
-	typedSlice = append(typedSlice, map[string]string{"state": "new"})
 	structValue.Tags[0] = "after"
 	structValue.Nested["state"] = "after"
 

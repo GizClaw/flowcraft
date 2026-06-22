@@ -1,0 +1,153 @@
+name: eval / locomo
+
+# ---------------------------------------------------------------------
+# LoCoMo memory eval: QA, event summarization, and caption-proxy
+# multimodal dialog generation. Requires the operator to stage
+# locomo10.json on the self-hosted eval runner.
+# ---------------------------------------------------------------------
+
+on:
+  workflow_dispatch:
+    inputs:
+      dataset:
+        description: "Path to locomo10.json"
+        required: true
+        default: "/var/lib/flowcraft-eval/datasets/locomo10.json"
+      answer_llm:
+        description: "LLM used for QA/event/dialog generation"
+        required: true
+        default: "azure_gpt54"
+      memory_llm:
+        description: "LLM used for memory observation extraction"
+        required: true
+        default: "azure_gpt54"
+      judge_llm:
+        description: "Reserved optional judge LLM"
+        required: false
+        default: ""
+      embedder:
+        description: "Optional embedder for hybrid retrieval"
+        required: false
+        default: ""
+      tasks:
+        description: "Comma-separated tasks: qa,event,dialog"
+        required: false
+        default: "qa,event,dialog"
+      limit_samples:
+        description: "Evaluate first N samples only (0 = all)"
+        required: false
+        default: "0"
+      limit_qa:
+        description: "Evaluate first N QA items per sample (0 = all)"
+        required: false
+        default: "0"
+      concurrency:
+        description: "Reserved concurrency hint; workspace writes are single-writer"
+        required: false
+        default: "1"
+      notify_progress_pct:
+        description: "Feishu milestone resolution (% of work; 0=off)"
+        required: false
+        default: "10"
+
+concurrency:
+  group: eval-locomo
+  cancel-in-progress: false
+
+env:
+  REPORT_DIR: /var/lib/flowcraft-eval/reports/locomo
+  WORKSPACE_DIR: /var/lib/flowcraft-eval/workspaces
+  RUN_TAG: locomo-${{ github.run_id }}
+
+jobs:
+  run:
+    runs-on: [self-hosted, flowcraft-eval]
+    timeout-minutes: 720
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load secrets from runner host
+        run: |
+          set -eu
+          test -f /etc/flowcraft-eval/.env
+          set -a
+          # shellcheck disable=SC1091
+          source /etc/flowcraft-eval/.env
+          set +a
+          while IFS= read -r key; do
+            [ -z "$key" ] && continue
+            value="${!key:-}"
+            [ -z "$value" ] && continue
+            while IFS= read -r line; do
+              [ -n "$line" ] && echo "::add-mask::$line"
+            done <<< "$value"
+            if [[ "$value" == *$'\n'* ]]; then
+              DELIM="EOF_${RANDOM}${RANDOM}"
+              {
+                echo "${key}<<${DELIM}"
+                echo "$value"
+                echo "$DELIM"
+              } >> "$GITHUB_ENV"
+            else
+              echo "${key}=${value}" >> "$GITHUB_ENV"
+            fi
+          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
+          cp /etc/flowcraft-eval/.env .env
+          chmod 600 .env
+
+      - name: Ensure output dirs
+        run: |
+          mkdir -p "$REPORT_DIR" "$WORKSPACE_DIR"
+          chmod 0750 "$REPORT_DIR" "$WORKSPACE_DIR" || true
+
+      - name: Verify dataset exists
+        run: |
+          set -eu
+          if [ ! -s "${{ inputs.dataset }}" ]; then
+            echo "Missing or empty: ${{ inputs.dataset }}"
+            echo "Stage locomo10.json under /var/lib/flowcraft-eval/datasets/."
+            exit 1
+          fi
+
+      - name: Build eval binary
+        run: |
+          cd eval
+          go build -trimpath -o /tmp/eval ./cmd/eval
+
+      - name: Run locomo
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          MEMORY_WORKSPACE: ${{ env.WORKSPACE_DIR }}/locomo-${{ github.run_id }}
+        run: |
+          set -eu
+          ARGS=(
+            locomo
+            --dataset "${{ inputs.dataset }}"
+            --workspace "$MEMORY_WORKSPACE"
+            --answer-llm "${{ inputs.answer_llm }}"
+            --memory-llm "${{ inputs.memory_llm }}"
+            --tasks "${{ inputs.tasks }}"
+            --limit-samples "${{ inputs.limit_samples }}"
+            --limit-qa "${{ inputs.limit_qa }}"
+            --concurrency "${{ inputs.concurrency }}"
+            --notify-name "$RUN_TAG"
+            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
+            --out "$REPORT_OUT"
+          )
+          if [ -n "${{ inputs.judge_llm }}" ]; then
+            ARGS+=(--judge-llm "${{ inputs.judge_llm }}")
+          fi
+          if [ -n "${{ inputs.embedder }}" ]; then
+            ARGS+=(--embedder "${{ inputs.embedder }}")
+          fi
+          /tmp/eval "${ARGS[@]}"
+
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: locomo-report-${{ github.run_id }}
+          path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+          if-no-files-found: warn
+          retention-days: 90
+

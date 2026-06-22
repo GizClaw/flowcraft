@@ -21,19 +21,18 @@ const windowErrPrefix = "memory/views/recent/window"
 // WindowBudget limits the size of a Window result.
 //
 // MaxMessages is currently the only supported budget. Token budget support is
-// intentionally left out of this skeleton until a tokenizer contract exists. A
-// non-positive MaxMessages means no explicit message limit after the effective
-// budget is selected.
+// intentionally left out of this skeleton until a tokenizer contract exists.
+// MaxMessages == 0 returns no messages, while MaxMessages < 0 means no limit.
 type WindowBudget struct {
 	MaxMessages int
 }
 
-// WindowRequest describes a recent message window load. A zero Budget uses the
-// view's default budget; use a negative MaxMessages to explicitly request no
-// limit when the default budget is limited.
+// WindowRequest describes a recent message window load. A nil Budget uses the
+// view's default budget; otherwise MaxMessages is interpreted directly, with 0
+// meaning no recent messages.
 type WindowRequest struct {
 	Scope    views.Scope
-	Budget   WindowBudget
+	Budget   *WindowBudget
 	AfterSeq uint64
 }
 
@@ -117,9 +116,10 @@ var _ views.View = (*Window)(nil)
 // NewWindow creates a recent-message view over store.
 func NewWindow(store message.Store, opts ...WindowOption) *Window {
 	v := &Window{
-		store:   store,
-		id:      DefaultWindowID,
-		version: DefaultWindowVersion,
+		store:         store,
+		id:            DefaultWindowID,
+		version:       DefaultWindowVersion,
+		defaultBudget: WindowBudget{MaxMessages: -1},
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -171,14 +171,17 @@ func (v *Window) Load(ctx context.Context, req WindowRequest) (WindowResult, err
 	}, nil
 }
 
-func (v *Window) effectiveBudget(req WindowBudget) WindowBudget {
-	if req == (WindowBudget{}) {
+func (v *Window) effectiveBudget(req *WindowBudget) WindowBudget {
+	if req == nil {
 		return v.defaultBudget
 	}
-	return req
+	return *req
 }
 
 func (v *Window) loadMessages(ctx context.Context, conversationID string, afterSeq uint64, limit int) ([]message.Message, error) {
+	if limit == 0 {
+		return nil, nil
+	}
 	if afterSeq > 0 {
 		return v.store.List(ctx, conversationID, message.ListOptions{
 			AfterSeq: afterSeq,
@@ -190,7 +193,7 @@ func (v *Window) loadMessages(ctx context.Context, conversationID string, afterS
 	if err != nil {
 		return nil, err
 	}
-	if limit <= 0 || len(messages) <= limit {
+	if limit < 0 || len(messages) <= limit {
 		return messages, nil
 	}
 	return messages[len(messages)-limit:], nil

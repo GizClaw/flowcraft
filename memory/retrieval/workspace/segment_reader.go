@@ -10,7 +10,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
+	"github.com/GizClaw/flowcraft/memory/text/analysis"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
@@ -20,7 +20,7 @@ import (
 // docs.offsets.bin + tombstones.bin + meta.json). BM25 corpus
 // statistics and per-doc tokens are NOT persisted: they are
 // derivatives of docs.jsonl that the reader rebuilds in memory on
-// first Search via [tokenize.Tokenizer]. This keeps tokenization logic in
+// first Search via [analysis.Analyzer]. This keeps analysis logic in
 // exactly one place at the cost of ~tens of milliseconds
 // per cold segment load — within the few-thousand-doc segment
 // budget the default flush threshold imposes.
@@ -53,7 +53,7 @@ type segmentReader struct {
 
 	bm25Once sync.Once
 	bm25Err  error
-	// docTokens parallels docs: docTokens[i] is the tokenizer
+	// docTokens parallels docs: docTokens[i] is the analyzer
 	// output for docs[i].Content. Held so [Index.Search] can both
 	// fold this segment's docs into a per-Search global corpus and
 	// score against that corpus without re-tokenizing.
@@ -198,7 +198,7 @@ func (r *segmentReader) loadDocs(ctx context.Context) error {
 //
 // loadBM25 is a no-op for tombstone-only segments — docTokens stays
 // nil, which the search loop treats as "no contribution".
-func (r *segmentReader) loadBM25(ctx context.Context, tok tokenize.Tokenizer) error {
+func (r *segmentReader) loadBM25(ctx context.Context, analyzer analysis.Analyzer) error {
 	if err := r.loadDocs(ctx); err != nil {
 		return err
 	}
@@ -208,7 +208,7 @@ func (r *segmentReader) loadBM25(ctx context.Context, tok tokenize.Tokenizer) er
 		}
 		docTokens := make([][]string, len(r.docs))
 		for i, d := range r.docs {
-			docTokens[i] = tok.Tokenize(d.Content)
+			docTokens[i] = analysis.Terms(analyzer.Analyze(d.Content, analysis.Options{Mode: analysis.ModeIndex}))
 		}
 		r.docTokens = docTokens
 	})

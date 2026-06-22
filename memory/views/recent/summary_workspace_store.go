@@ -21,7 +21,7 @@ import (
 // SummaryWorkspaceStore persists SummaryDAG nodes as JSON files in a workspace.
 //
 // Each node is stored under:
-// runtimes/{encodedRuntimeID}/users/{encodedUserID}/conversations/{encodedConversationID}/nodes/{encodedNodeID}.json
+// runtimes/{encodedRuntimeID}/users/{encodedUserID}/agents/{encodedAgentID}/conversations/{encodedConversationID}/nodes/{encodedNodeID}.json
 //
 // Concurrent writes to the same scoped workspace must go through one
 // SummaryWorkspaceStore instance. Cross-instance or cross-process writers
@@ -36,6 +36,7 @@ type SummaryWorkspaceStore struct {
 }
 
 var _ SummaryStore = (*SummaryWorkspaceStore)(nil)
+var _ SummaryNodeDeleter = (*SummaryWorkspaceStore)(nil)
 
 // defaultSummaryPathSegmentPrefix marks encoded workspace path segments. It is
 // not part of SummaryNode IDs, conversation IDs, or other business identifiers.
@@ -141,7 +142,7 @@ func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, scope views.Scope
 		if errdefs.IsNotFound(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("%s: list scope %q/%q/%q nodes: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, err)
+		return nil, fmt.Errorf("%s: list scope %q/%q/%q/%q nodes: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, err)
 	}
 
 	ids := make([]string, 0, len(entries))
@@ -183,6 +184,32 @@ func (s *SummaryWorkspaceStore) ListNodes(ctx context.Context, scope views.Scope
 	return out, nil
 }
 
+// DeleteNode removes one persisted summary node for a scoped conversation. It is
+// path-based and does not decode the node payload, so stale or incompatible node
+// contents do not block targeted cleanup.
+func (s *SummaryWorkspaceStore) DeleteNode(ctx context.Context, scope views.Scope, id NodeID) error {
+	if s.ws == nil {
+		return errdefs.Validationf("%s: workspace is required", summaryDAGErrPrefix)
+	}
+	if scope.ConversationID == "" || id == "" {
+		return nil
+	}
+	if err := validateSummaryScope(scope); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.ws.Delete(ctx, s.nodePath(scope, id)); err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("%s: delete node %q/%q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, id, err)
+	}
+	return nil
+}
+
 // DeleteScope removes all persisted summary nodes for a scoped conversation. It
 // is idempotent.
 func (s *SummaryWorkspaceStore) DeleteScope(ctx context.Context, scope views.Scope) error {
@@ -203,7 +230,7 @@ func (s *SummaryWorkspaceStore) DeleteScope(ctx context.Context, scope views.Sco
 		if errdefs.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("%s: delete scope %q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, err)
+		return fmt.Errorf("%s: delete scope %q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, err)
 	}
 	return nil
 }
@@ -221,12 +248,15 @@ func (s *SummaryWorkspaceStore) readNode(ctx context.Context, scope views.Scope,
 		if errdefs.IsNotFound(err) {
 			return SummaryNode{}, false, nil
 		}
-		return SummaryNode{}, false, fmt.Errorf("%s: read node %q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, id, err)
+		return SummaryNode{}, false, fmt.Errorf("%s: read node %q/%q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, id, err)
 	}
 
 	var node SummaryNode
 	if err := decodeSummaryNode(data, &node); err != nil {
-		return SummaryNode{}, false, fmt.Errorf("%s: decode node %q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.ConversationID, id, err)
+		return SummaryNode{}, false, fmt.Errorf("%s: decode node %q/%q/%q/%q/%q: %w", summaryDAGErrPrefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, id, err)
+	}
+	if !sameSummaryNodeScope(node.Scope, scope) {
+		return SummaryNode{}, false, nil
 	}
 	return node, true, nil
 }
@@ -261,8 +291,12 @@ func (s *SummaryWorkspaceStore) userDir(scope views.Scope) string {
 	return path.Join(s.runtimeDir(scope), "users", s.pathSegment(scope.UserID))
 }
 
+func (s *SummaryWorkspaceStore) agentDir(scope views.Scope) string {
+	return path.Join(s.userDir(scope), "agents", s.pathSegment(scope.AgentID))
+}
+
 func (s *SummaryWorkspaceStore) conversationDir(scope views.Scope) string {
-	return path.Join(s.userDir(scope), "conversations", s.pathSegment(scope.ConversationID))
+	return path.Join(s.agentDir(scope), "conversations", s.pathSegment(scope.ConversationID))
 }
 
 func (s *SummaryWorkspaceStore) nodesDir(scope views.Scope) string {
@@ -286,6 +320,13 @@ func (s *SummaryWorkspaceStore) rawPathSegment(segment string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+func sameSummaryNodeScope(left, right views.Scope) bool {
+	return left.RuntimeID == right.RuntimeID &&
+		left.UserID == right.UserID &&
+		left.AgentID == right.AgentID &&
+		left.ConversationID == right.ConversationID
 }
 
 type summaryNodeRecord struct {

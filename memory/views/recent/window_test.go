@@ -61,7 +61,7 @@ func TestWindow_LoadAfterSeqUsesForwardWindow(t *testing.T) {
 	got, err := view.Load(ctx, WindowRequest{
 		Scope:    testScope("conv-1"),
 		AfterSeq: 2,
-		Budget:   WindowBudget{MaxMessages: 2},
+		Budget:   &WindowBudget{MaxMessages: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -106,22 +106,29 @@ func TestWindow_LoadRequiresConversationID(t *testing.T) {
 	}
 }
 
-func TestWindow_LoadZeroBudgetReturnsAllMessages(t *testing.T) {
+func TestWindow_LoadZeroBudgetReturnsNoMessages(t *testing.T) {
 	ctx := context.Background()
 	store := message.NewWorkspaceStore(newTestWorkspace())
-	appended := appendMessages(t, ctx, store, "conv-1", "one", "two", "three")
+	appendMessages(t, ctx, store, "conv-1", "one", "two", "three")
 	view := NewWindow(store)
 
-	got, err := view.Load(ctx, windowRequest("conv-1"))
+	got, err := view.Load(ctx, WindowRequest{
+		Scope:  testScope("conv-1"),
+		Budget: &WindowBudget{MaxMessages: 0},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	assertMessageTexts(t, got.Messages, []string{"one", "two", "three"})
+	if len(got.Messages) != 0 {
+		t.Fatalf("Messages len = %d, want 0", len(got.Messages))
+	}
 	if got.Truncated {
 		t.Fatal("Truncated = true, want false")
 	}
-	assertSourceRefs(t, got.SourceRefs, appended)
+	if len(got.SourceRefs) != 0 {
+		t.Fatalf("SourceRefs len = %d, want 0", len(got.SourceRefs))
+	}
 }
 
 func TestWindow_LoadNegativeBudgetOverridesDefaultWithNoLimit(t *testing.T) {
@@ -132,7 +139,7 @@ func TestWindow_LoadNegativeBudgetOverridesDefaultWithNoLimit(t *testing.T) {
 
 	got, err := view.Load(ctx, WindowRequest{
 		Scope:  testScope("conv-1"),
-		Budget: WindowBudget{MaxMessages: -1},
+		Budget: &WindowBudget{MaxMessages: -1},
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -3,4803 +3,5212 @@ package memory_test
 import (
 	"context"
 	"errors"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"os"
-	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/GizClaw/flowcraft/memory"
 	"github.com/GizClaw/flowcraft/memory/derive"
-	"github.com/GizClaw/flowcraft/memory/internal/compiler"
+	derivedocument "github.com/GizClaw/flowcraft/memory/derive/document"
+	summaryderive "github.com/GizClaw/flowcraft/memory/derive/summary"
 	"github.com/GizClaw/flowcraft/memory/internal/projectors"
+	"github.com/GizClaw/flowcraft/memory/internal/views/indexed"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	retrievalworkspace "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
 	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-func TestDecodeYAMLAndJSONCompileEquivalentSpec(t *testing.T) {
-	yamlSpec := `
-sources:
-  - kind: message_log
-    required: true
-capabilities:
-  - capability: recent_window
-    required: true
-  - capability: observation_ledger
-    required: true
-  - capability: fact_ledger
-    purpose: durable claims
-projections:
-  - capability: observation_ledger
-    namespace: observations
-    required: true
-write_stages:
-  - name: extract_observations
-    async: true
-  - name: reconcile_facts
-    async: true
-read_stages:
-  - name: load_recent_messages
-  - name: retrieve_observations
-  - name: pack_context
-lifecycle:
-  - name: readiness
-  - name: queue_stats
-diagnostics:
-  - name: readiness
-`
-	jsonSpec := `{
-  "sources": [{"kind": "message_log", "required": true}],
-  "capabilities": [
-    {"capability": "recent_window", "required": true},
-    {"capability": "observation_ledger", "required": true},
-    {"capability": "fact_ledger", "purpose": "durable claims"}
-  ],
-  "projections": [{"capability": "observation_ledger", "namespace": "observations", "required": true}],
-  "write_stages": [{"name": "extract_observations", "async": true}, {"name": "reconcile_facts", "async": true}],
-  "read_stages": [{"name": "load_recent_messages"}, {"name": "retrieve_observations"}, {"name": "pack_context"}],
-  "lifecycle": [{"name": "readiness"}, {"name": "queue_stats"}],
-  "diagnostics": [{"name": "readiness"}]
-}`
-
-	gotYAML, err := memory.Decode(strings.NewReader(yamlSpec))
-	if err != nil {
-		t.Fatalf("Decode yaml error = %v", err)
-	}
-	gotJSON, err := memory.Decode(strings.NewReader(jsonSpec))
-	if err != nil {
-		t.Fatalf("Decode json error = %v", err)
-	}
-	if !reflect.DeepEqual(gotYAML, gotJSON) {
-		t.Fatalf("Decode yaml/json mismatch:\nyaml=%+v\njson=%+v", gotYAML, gotJSON)
-	}
-	var compilerSpec compiler.Spec = gotYAML
-	var publicSpec memory.Spec = compilerSpec
-	if !reflect.DeepEqual(publicSpec, gotYAML) {
-		t.Fatalf("memory.Spec is not compiler.Spec alias-compatible:\npublic=%+v\ncompiler=%+v", publicSpec, compilerSpec)
-	}
-	if err := memory.Compile(gotYAML); err != nil {
-		t.Fatalf("Compile yaml spec error = %v", err)
-	}
-	if err := memory.Compile(gotJSON); err != nil {
-		t.Fatalf("Compile json spec error = %v", err)
+func TestRemovedCapabilitiesAreRejected(t *testing.T) {
+	for _, capability := range []memory.Capability{
+		"observation_ledger",
+		"fact_ledger",
+		"fact_graph",
+		"entity_profile",
+		"entity_timeline",
+	} {
+		t.Run(string(capability), func(t *testing.T) {
+			err := memory.Compile(memory.Spec{
+				Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog}},
+				Capabilities: []memory.CapabilitySpec{{Capability: capability}},
+			})
+			if err == nil {
+				t.Fatalf("Compile() error = nil, want removed capability rejected")
+			}
+		})
 	}
 }
 
-func TestDecodeInvalidProjectionReturnsCompileError(t *testing.T) {
-	spec := `
-sources:
-  - kind: message_log
-capabilities:
-  - capability: recent_window
-projections:
-  - capability: observation_ledger
-    namespace: observations
-`
-	_, err := memory.Decode(strings.NewReader(spec))
+func TestRemovedStagesAreUnsupportedByFacadePlan(t *testing.T) {
+	for _, stage := range []string{
+		"extract_observations",
+		"reconcile_facts",
+		"build_fact_graph",
+		"build_entity_profiles",
+		"build_entity_timeline",
+		"retrieve_observations",
+		"retrieve_facts",
+		"retrieve_fact_graph",
+		"retrieve_entity_profiles",
+		"retrieve_entity_timeline",
+		"expand_fact_graph",
+	} {
+		t.Run(stage, func(t *testing.T) {
+			spec := memory.Spec{
+				Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+				Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+			}
+			if strings.HasPrefix(stage, "retrieve_") || stage == "expand_fact_graph" {
+				spec.ReadStages = []memory.StageSpec{{Name: stage}}
+			} else {
+				spec.WriteStages = []memory.StageSpec{{Name: stage}}
+			}
+			_, err := memory.New(spec, memory.Deps{MessageStore: newMessageStore()})
+			if err == nil || !errdefs.IsValidation(err) {
+				t.Fatalf("New() error = %v, want validation error", err)
+			}
+		})
+	}
+}
+
+func TestDefaultPlanContainsOnlySupportedStages(t *testing.T) {
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+	}, memory.Deps{MessageStore: newMessageStore()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	plan := mem.Plan()
+	if len(plan.Write) != 0 {
+		t.Fatalf("default Write = %+v, want no derived write stages", plan.Write)
+	}
+	stageNames := map[string]bool{}
+	for _, stage := range plan.Read {
+		stageNames[stage.Name] = true
+	}
+	if !stageNames["load_recent_messages"] || !stageNames["pack_context"] {
+		t.Fatalf("default Read = %+v, want recent load and pack", plan.Read)
+	}
+	for _, removed := range []string{"retrieve_facts", "retrieve_fact_graph", "retrieve_entity_profiles", "retrieve_entity_timeline"} {
+		if stageNames[removed] {
+			t.Fatalf("default Read includes removed stage %q: %+v", removed, plan.Read)
+		}
+	}
+	lifecycleStageNames := plannedStageNames(plan.Lifecycle)
+	for _, stage := range []string{"readiness", "queue_stats", "rebuild", "reload", "reconcile", "freshness_check", "drain", "shutdown"} {
+		if !lifecycleStageNames[stage] {
+			t.Fatalf("default Lifecycle = %+v, missing %q", plan.Lifecycle, stage)
+		}
+	}
+	diagnosticStageNames := plannedStageNames(plan.Diagnostics)
+	for _, stage := range []string{"freshness", "consistency", "trace", "readiness", "queue_stats"} {
+		if !diagnosticStageNames[stage] {
+			t.Fatalf("default Diagnostics = %+v, missing %q", plan.Diagnostics, stage)
+		}
+	}
+}
+
+func TestFreshnessDefaultPlanRunsSynchronouslyWithoutJobStore(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+	}, memory.Deps{MessageStore: newMessageStore()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"},
+	})
+	if err != nil {
+		t.Fatalf("Freshness() error = %v", err)
+	}
+	if result.Status != memory.LifecycleStatusCompleted || !result.Accepted || !result.Supported {
+		t.Fatalf("Freshness lifecycle report = %+v, want accepted supported completed", result.LifecycleExecutionReport)
+	}
+	if result.JobID != "" {
+		t.Fatalf("Freshness JobID = %q, want sync execution without queued job", result.JobID)
+	}
+	if result.Diagnostics.Stage != "freshness" || len(result.Checks) == 0 {
+		t.Fatalf("Freshness diagnostics = %+v, want freshness checks", result.Diagnostics)
+	}
+	if !hasDiagnosticCheck(result.Checks, "diagnostics.stage.freshness") {
+		t.Fatalf("Freshness checks = %+v, want freshness stage check", result.Checks)
+	}
+}
+
+func TestFreshnessCustomLifecycleDoesNotRequireDiagnosticsStage(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		Lifecycle:    []memory.StageSpec{{Name: "freshness_check"}},
+		Diagnostics:  []memory.StageSpec{{Name: "trace"}},
+	}, memory.Deps{MessageStore: newMessageStore()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"},
+	})
+	if err != nil {
+		t.Fatalf("Freshness() error = %v", err)
+	}
+	if result.Status != memory.LifecycleStatusCompleted || !result.Accepted || !result.Supported {
+		t.Fatalf("Freshness lifecycle report = %+v, want accepted supported completed", result.LifecycleExecutionReport)
+	}
+	if result.Diagnostics.Stage != "freshness" || !hasDiagnosticCheck(result.Checks, "diagnostics.stage.freshness") {
+		t.Fatalf("Freshness diagnostics = %+v, want freshness checks despite custom diagnostics plan", result.Diagnostics)
+	}
+
+	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"},
+		Stage: "freshness",
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics() error = %v", err)
+	}
+	if report.OK || report.Ready || !hasDiagnosticCheck(report.Checks, "diagnostics.stage.freshness") {
+		t.Fatalf("Diagnostics() report = %+v, want undeclared freshness diagnostics rejected", report)
+	}
+}
+
+func TestFreshnessDiagnosticStoreErrorFailsLifecycleReportMessage(t *testing.T) {
+	ctx := context.Background()
+	storeErr := errors.New("diagnostic report store failed")
+	reportStore := &diagnosticFailingReportStore{
+		delegate: memory.NewMemoryReportStore(),
+		err:      storeErr,
+	}
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+	}, memory.Deps{
+		MessageStore: newMessageStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	result, err := mem.Freshness(ctx, memory.FreshnessRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"},
+	})
+	if err == nil || !strings.Contains(err.Error(), storeErr.Error()) {
+		t.Fatalf("Freshness() error = %v, want %q", err, storeErr)
+	}
+	if result.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("Freshness status = %q, want failed", result.Status)
+	}
+	if !strings.Contains(result.Message, storeErr.Error()) || !strings.Contains(result.Summary, storeErr.Error()) {
+		t.Fatalf("Freshness message/summary = %q / %q, want diagnostic store error", result.Message, result.Summary)
+	}
+
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, result.TraceID)
+	if err != nil {
+		t.Fatalf("GetLifecycleReport() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("stored lifecycle report not found for trace %q", result.TraceID)
+	}
+	if stored.Status != memory.LifecycleStatusFailed || !strings.Contains(stored.Message, storeErr.Error()) || !strings.Contains(stored.Summary, storeErr.Error()) {
+		t.Fatalf("stored lifecycle report = %+v, want failed report with diagnostic store error", stored)
+	}
+}
+
+func TestDefaultDiagnosticsPlanRunsRegisteredProbes(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+	}, memory.Deps{MessageStore: newMessageStore()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	for _, stage := range []string{"freshness", "consistency", "trace"} {
+		t.Run(stage, func(t *testing.T) {
+			report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
+				Scope: memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"},
+				Stage: stage,
+			})
+			if err != nil {
+				t.Fatalf("Diagnostics(%q) error = %v", stage, err)
+			}
+			if !report.Ready || !report.OK {
+				t.Fatalf("Diagnostics(%q) = %+v, want ready OK", stage, report)
+			}
+			if hasDiagnosticCheck(report.Checks, "diagnostics.stage."+stage) {
+				return
+			}
+			t.Fatalf("Diagnostics(%q) checks = %+v, want stage check", stage, report.Checks)
+		})
+	}
+}
+
+func TestDocumentLifecycleEmptyCapabilitiesSelectConfiguredDocumentChunks(t *testing.T) {
+	ctx := context.Background()
+	mem, err := newDocumentChunkSystem()
+	if err != nil {
+		t.Fatalf("newDocumentChunkSystem() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+	documents := []memory.DocumentTarget{{DocumentID: "doc-1"}}
+
+	tests := map[string]func(context.Context) (memory.LifecycleExecutionReport, error){
+		"rebuild": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Rebuild(ctx, memory.RebuildRequest{Scope: scope, Documents: documents, DryRun: true})
+		},
+		"reload": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Reload(ctx, memory.ReloadRequest{Scope: scope, Documents: documents, DryRun: true})
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			report, err := run(ctx)
+			if err != nil {
+				t.Fatalf("%s error = %v", name, err)
+			}
+			if report.Status != memory.LifecycleStatusPlanned || !report.Accepted || !report.Supported {
+				t.Fatalf("%s report = %+v, want planned document_chunks dry-run", name, report)
+			}
+			if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityDocumentChunks) {
+				t.Fatalf("%s capabilities = %+v, want document_chunks selected", name, report.Operation.Capabilities)
+			}
+			if len(report.Steps) != 1 || report.Steps[0].Name != "document_chunks.target" {
+				t.Fatalf("%s steps = %+v, want document_chunks target path", name, report.Steps)
+			}
+		})
+	}
+}
+
+func TestDocumentLifecycleRebuildScanDocumentsUsesBoundedPages(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	if err := fixture.chunkStore.DeleteDocument(ctx, fixture.scope, "doc-1"); err != nil {
+		t.Fatalf("DeleteDocument(doc-1) error = %v", err)
+	}
+	if err := fixture.chunkStore.DeleteDocument(ctx, fixture.scope, "doc-2"); err != nil {
+		t.Fatalf("DeleteDocument(doc-2) error = %v", err)
+	}
+
+	first, err := fixture.mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("Rebuild(ScanDocuments first page) error = %v", err)
+	}
+	if first.Status != memory.LifecycleStatusEnqueued || first.JobID == "" {
+		t.Fatalf("Rebuild(ScanDocuments first page) = %+v, want enqueued page rebuild", first)
+	}
+	if len(first.Operation.Documents) != 1 || first.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("first page documents = %+v, want doc-1 only", first.Operation.Documents)
+	}
+	assertCheckpointBool(t, first.Checkpoint, "document_scan", true)
+	assertCheckpointInt(t, first.Checkpoint, "document_scan_scanned", 1)
+	assertCheckpointString(t, first.Checkpoint, "document_scan_next_page_token", "doc-1")
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(first scan rebuild) result = %+v error = %v, want completed", result, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-1", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) == 0 {
+		t.Fatalf("doc-1 chunks = %+v err = %v, want rebuilt chunks", chunks, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-2", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) != 0 {
+		t.Fatalf("doc-2 chunks = %+v err = %v, want second page untouched", chunks, err)
+	}
+
+	nextPageToken := first.Checkpoint["document_scan_next_page_token"].(string)
+	second, err := fixture.mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		PageSize:      1,
+		PageToken:     nextPageToken,
+	})
+	if err != nil {
+		t.Fatalf("Rebuild(ScanDocuments second page) error = %v", err)
+	}
+	if second.Status != memory.LifecycleStatusEnqueued || second.JobID == "" {
+		t.Fatalf("Rebuild(ScanDocuments second page) = %+v, want enqueued page rebuild", second)
+	}
+	if len(second.Operation.Documents) != 1 || second.Operation.Documents[0].DocumentID != "doc-2" {
+		t.Fatalf("second page documents = %+v, want doc-2 only", second.Operation.Documents)
+	}
+	assertCheckpointString(t, second.Checkpoint, "document_scan_page_token", nextPageToken)
+	assertCheckpointString(t, second.Checkpoint, "document_scan_next_page_token", "")
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(second scan rebuild) result = %+v error = %v, want completed", result, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-2", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) == 0 {
+		t.Fatalf("doc-2 chunks = %+v err = %v, want rebuilt chunks", chunks, err)
+	}
+}
+
+func TestDocumentLifecycleReloadScanDocumentsUsesBoundedPages(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	if err := fixture.chunkStore.DeleteDocument(ctx, fixture.scope, "doc-1"); err != nil {
+		t.Fatalf("DeleteDocument(doc-1) error = %v", err)
+	}
+	if err := fixture.chunkStore.DeleteDocument(ctx, fixture.scope, "doc-2"); err != nil {
+		t.Fatalf("DeleteDocument(doc-2) error = %v", err)
+	}
+
+	first, err := fixture.mem.Reload(ctx, memory.ReloadRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("Reload(ScanDocuments first page) error = %v", err)
+	}
+	if first.Status != memory.LifecycleStatusEnqueued || first.JobID == "" {
+		t.Fatalf("Reload(ScanDocuments first page) = %+v, want enqueued page reload", first)
+	}
+	if len(first.Operation.Documents) != 1 || first.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("first page documents = %+v, want doc-1 only", first.Operation.Documents)
+	}
+	assertCheckpointBool(t, first.Checkpoint, "document_scan", true)
+	assertCheckpointInt(t, first.Checkpoint, "document_scan_scanned", 1)
+	assertCheckpointString(t, first.Checkpoint, "document_scan_next_page_token", "doc-1")
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(first scan reload) result = %+v error = %v, want completed", result, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-1", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) == 0 {
+		t.Fatalf("doc-1 chunks = %+v err = %v, want reloaded chunks", chunks, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-2", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) != 0 {
+		t.Fatalf("doc-2 chunks = %+v err = %v, want second page untouched", chunks, err)
+	}
+
+	nextPageToken := first.Checkpoint["document_scan_next_page_token"].(string)
+	second, err := fixture.mem.Reload(ctx, memory.ReloadRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		PageSize:      1,
+		PageToken:     nextPageToken,
+	})
+	if err != nil {
+		t.Fatalf("Reload(ScanDocuments second page) error = %v", err)
+	}
+	if second.Status != memory.LifecycleStatusEnqueued || second.JobID == "" {
+		t.Fatalf("Reload(ScanDocuments second page) = %+v, want enqueued page reload", second)
+	}
+	if len(second.Operation.Documents) != 1 || second.Operation.Documents[0].DocumentID != "doc-2" {
+		t.Fatalf("second page documents = %+v, want doc-2 only", second.Operation.Documents)
+	}
+	assertCheckpointString(t, second.Checkpoint, "document_scan_page_token", nextPageToken)
+	assertCheckpointString(t, second.Checkpoint, "document_scan_next_page_token", "")
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(second scan reload) result = %+v error = %v, want completed", result, err)
+	}
+	if chunks, err := fixture.chunkStore.ListChunks(ctx, "doc-2", viewdocument.ListOptions{Scope: &fixture.scope}); err != nil || len(chunks) == 0 {
+		t.Fatalf("doc-2 chunks = %+v err = %v, want reloaded chunks", chunks, err)
+	}
+}
+
+func TestReconcileScanDocumentsDryRunPlansRepairWithoutChangingProjection(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	before := requireDocumentChunkStale(t, ctx, fixture)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		DryRun:        true,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(ScanDocuments DryRun) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+		t.Fatalf("Reconcile(ScanDocuments DryRun) = %+v, want planned repair", report)
+	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("dry-run scan documents = %+v, want doc-1", report.Operation.Documents)
+	}
+	assertCheckpointBool(t, report.Checkpoint, "document_scan", true)
+	assertCheckpointString(t, report.Checkpoint, "repair_targets_source", "document_scan")
+	assertCheckpointInt(t, report.Checkpoint, "repair_target_count", 1)
+	if !lifecycleStepPresent(report.Steps, "document_chunks.target") {
+		t.Fatalf("dry-run steps = %+v, want planned document_chunks repair", report.Steps)
+	}
+	after := requireDocumentChunkStale(t, ctx, fixture)
+	if before.Details["stale_records"] != after.Details["stale_records"] {
+		t.Fatalf("stale records changed after scan dry-run: before %+v after %+v", before.Details, after.Details)
+	}
+}
+
+func TestReconcileScanDocumentsRepairsOnlyScannedPage(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	makeProjectedDocumentStale(t, ctx, fixture)
+	makeProjectedDocumentStaleByID(t, ctx, fixture, "doc-2", "Babbage rewrote the second page of notes.")
+	requireDocumentChunkStaleCount(t, ctx, fixture, 2)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:         fixture.scope,
+		ScanDocuments: true,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(ScanDocuments) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(ScanDocuments) = %+v, want enqueued repair", report)
+	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("scan documents = %+v, want first page doc-1", report.Operation.Documents)
+	}
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(scan reconcile) result = %+v error = %v, want completed", result, err)
+	}
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport(scan reconcile) ok = %v err = %v, want stored report", ok, err)
+	}
+	assertCheckpointBool(t, stored.Checkpoint, "document_scan", true)
+	assertCheckpointString(t, stored.Checkpoint, "repair_targets_source", "document_scan")
+	assertCheckpointInt(t, stored.Checkpoint, "document_scan_scanned", 1)
+	assertCheckpointInt(t, stored.Checkpoint, "document_scan_repaired", 1)
+	requireDocumentChunkStaleCount(t, ctx, fixture, 1)
+}
+
+func TestReconcileScanDocumentsPrefersExplicitDocuments(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	makeProjectedDocumentStale(t, ctx, fixture)
+	makeProjectedDocumentStaleByID(t, ctx, fixture, "doc-2", "Babbage rewrote the second page of notes.")
+	requireDocumentChunkStaleCount(t, ctx, fixture, 2)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:         fixture.scope,
+		Documents:     []memory.DocumentTarget{{DocumentID: "doc-2"}},
+		ScanDocuments: true,
+		PageSize:      1,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(explicit Documents + ScanDocuments) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(explicit Documents + ScanDocuments) = %+v, want enqueued explicit repair", report)
+	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DocumentID != "doc-2" {
+		t.Fatalf("explicit documents = %+v, want doc-2 only", report.Operation.Documents)
+	}
+	if _, ok := report.Checkpoint["document_scan"]; ok {
+		t.Fatalf("checkpoint = %+v, want explicit documents to bypass document scan", report.Checkpoint)
+	}
+	assertCheckpointString(t, report.Checkpoint, "repair_targets_source", "explicit")
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(explicit over scan) result = %+v error = %v, want completed", result, err)
+	}
+	requireDocumentChunkStaleCount(t, ctx, fixture, 1)
+}
+
+func TestDocumentLifecycleScanDocumentsRequiresDatasetScope(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	scope := fixture.scope
+	scope.DatasetID = ""
+
+	report, err := fixture.mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:         scope,
+		Capabilities:  []memory.Capability{memory.CapabilityDocumentChunks},
+		ScanDocuments: true,
+		PageSize:      1,
+	})
 	if err == nil {
-		t.Fatal("Decode invalid spec error = nil, want compile validation error")
+		t.Fatalf("Rebuild(ScanDocuments without dataset) error = nil, report = %+v, want validation error", report)
+	}
+	if report.Status != memory.LifecycleStatusRejected || !strings.Contains(report.Message, "document scan requires scope.dataset_id") {
+		t.Fatalf("Rebuild(ScanDocuments without dataset) report = %+v, want rejected dataset validation", report)
+	}
+	if _, ok := report.Checkpoint["document_scan"]; ok {
+		t.Fatalf("checkpoint = %+v, want no document scan without dataset", report.Checkpoint)
 	}
 }
 
-func TestCompileValidatesSpec(t *testing.T) {
-	if err := memory.Compile(memory.Spec{
+func TestDocumentLifecycleScanDocumentsRejectsDiagnosticsPageToken(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	token := "diagproj:v1:not-a-document-id"
+
+	tests := map[string]func(context.Context) (memory.LifecycleExecutionReport, error){
+		"rebuild": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return fixture.mem.Rebuild(ctx, memory.RebuildRequest{Scope: fixture.scope, ScanDocuments: true, PageToken: token})
+		},
+		"reload": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return fixture.mem.Reload(ctx, memory.ReloadRequest{Scope: fixture.scope, ScanDocuments: true, PageToken: token})
+		},
+		"reconcile": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return fixture.mem.Reconcile(ctx, memory.ReconcileRequest{Scope: fixture.scope, ScanDocuments: true, PageToken: token})
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			report, err := run(ctx)
+			if err == nil || !errdefs.IsValidation(err) {
+				t.Fatalf("%s(ScanDocuments diagnostics token) error = %v, report = %+v, want validation error", name, err, report)
+			}
+			if report.Status != memory.LifecycleStatusRejected || !strings.Contains(report.Message, "invalid document scan page token") {
+				t.Fatalf("%s report = %+v, want rejected invalid document scan token", name, report)
+			}
+			if report.JobID != "" {
+				t.Fatalf("%s report = %+v, want no job enqueued", name, report)
+			}
+			if lifecycleStepPresent(report.Steps, "message_index.conversation") || lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+				t.Fatalf("%s steps = %+v, want no message/summary routing", name, report.Steps)
+			}
+		})
+	}
+}
+
+func TestDocumentLifecycleScanDocumentsFalseKeepsNoDocumentBehavior(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+
+	report, err := fixture.mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild(ScanDocuments false no documents) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusSkipped || report.JobID != "" {
+		t.Fatalf("Rebuild(ScanDocuments false no documents) = %+v, want existing skipped behavior", report)
+	}
+	if len(report.Operation.Documents) != 0 {
+		t.Fatalf("documents = %+v, want no implicit scan targets", report.Operation.Documents)
+	}
+	if _, ok := report.Checkpoint["document_scan"]; ok {
+		t.Fatalf("checkpoint = %+v, want no document scan marker", report.Checkpoint)
+	}
+	if !lifecycleSkippedStepPresent(report.Steps, "document_chunks.targets") {
+		t.Fatalf("steps = %+v, want no-document skipped step", report.Steps)
+	}
+}
+
+func TestDocumentLifecycleEmptyCapabilitiesDoNotSelectConversationViewsWithoutDocumentChunks(t *testing.T) {
+	ctx := context.Background()
+	mem, err := newLifecycleSelectionSystem(t, true)
+	if err != nil {
+		t.Fatalf("newLifecycleSelectionSystem() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:     scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-1"}},
+		DryRun:    true,
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Rebuild() error = %v, want document target unsupported without document_chunks", err)
+	}
+	if len(report.Operation.Capabilities) != 0 {
+		t.Fatalf("capabilities = %+v, want none when document_chunks is unavailable", report.Operation.Capabilities)
+	}
+	if lifecycleStepPresent(report.Steps, "message_index.conversation") || lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+		t.Fatalf("steps = %+v, want no message/summary routing for document target", report.Steps)
+	}
+}
+
+func TestDocumentLifecycleScanDocumentsDoesNotFallbackToConversationViewsWithoutDocumentChunks(t *testing.T) {
+	ctx := context.Background()
+	mem, err := newLifecycleSelectionSystem(t, true)
+	if err != nil {
+		t.Fatalf("newLifecycleSelectionSystem() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+
+	tests := map[string]func(context.Context) (memory.LifecycleExecutionReport, error){
+		"rebuild": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Rebuild(ctx, memory.RebuildRequest{Scope: scope, ScanDocuments: true, DryRun: true})
+		},
+		"reload": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Reload(ctx, memory.ReloadRequest{Scope: scope, ScanDocuments: true, DryRun: true})
+		},
+		"reconcile": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Reconcile(ctx, memory.ReconcileRequest{Scope: scope, ScanDocuments: true, DryRun: true})
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			report, err := run(ctx)
+			if err == nil || !errdefs.IsNotAvailable(err) {
+				t.Fatalf("%s(ScanDocuments without document_chunks) error = %v, report = %+v, want NotAvailable", name, err, report)
+			}
+			if report.Status != memory.LifecycleStatusUnsupported || report.JobID != "" {
+				t.Fatalf("%s report = %+v, want unsupported without enqueued job", name, report)
+			}
+			if !report.Operation.ScanDocuments {
+				t.Fatalf("%s operation = %+v, want ScanDocuments preserved", name, report.Operation)
+			}
+			if len(report.Operation.Documents) != 0 {
+				t.Fatalf("%s documents = %+v, want no document scan targets", name, report.Operation.Documents)
+			}
+			if lifecycleStepPresent(report.Steps, "message_index.conversation") || lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+				t.Fatalf("%s steps = %+v, want no message/summary routing", name, report.Steps)
+			}
+			if !lifecycleStepPresent(report.Steps, "document_chunks.scan") {
+				t.Fatalf("%s steps = %+v, want clear document_chunks scan rejection", name, report.Steps)
+			}
+		})
+	}
+}
+
+func TestDocumentLifecycleScanDocumentsEmptyPageDoesNotFallbackToConversationViews(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{
+			{Kind: memory.SourceDocumentStore, Required: true},
+			{Kind: memory.SourceMessageLog, Required: true},
+		},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityDocumentChunks, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityDocumentChunks, Namespace: "document_chunks", Required: true},
+			{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true},
+		},
+	}, memory.Deps{
+		DocumentStore:   sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/document")),
+		ChunkStore:      viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(root, "views/document_chunks")),
+		DocumentChunker: derivedocument.WholeDocumentChunker{},
+		MessageStore:    sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		SummaryStore:    recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag")),
+		Summarizer:      &recordingSummaryLifecycleSummarizer{},
+		Index:           index,
+		JobStore:        memory.NewMemoryJobStore(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "empty-dataset"}
+
+	tests := map[string]func(context.Context) (memory.LifecycleExecutionReport, error){
+		"rebuild": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Rebuild(ctx, memory.RebuildRequest{Scope: scope, ScanDocuments: true, PageSize: 1})
+		},
+		"reload": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Reload(ctx, memory.ReloadRequest{Scope: scope, ScanDocuments: true, PageSize: 1})
+		},
+		"reconcile": func(ctx context.Context) (memory.LifecycleExecutionReport, error) {
+			return mem.Reconcile(ctx, memory.ReconcileRequest{Scope: scope, ScanDocuments: true, PageSize: 1})
+		},
+	}
+	for name, run := range tests {
+		t.Run(name, func(t *testing.T) {
+			report, err := run(ctx)
+			if err != nil {
+				t.Fatalf("%s(ScanDocuments empty page) error = %v", name, err)
+			}
+			if report.Status != memory.LifecycleStatusSkipped || report.JobID != "" {
+				t.Fatalf("%s report = %+v, want skipped empty document scan without job", name, report)
+			}
+			if !report.Operation.ScanDocuments {
+				t.Fatalf("%s operation = %+v, want ScanDocuments preserved", name, report.Operation)
+			}
+			if len(report.Operation.Documents) != 0 {
+				t.Fatalf("%s documents = %+v, want empty scan page", name, report.Operation.Documents)
+			}
+			if len(report.Operation.Capabilities) != 1 || report.Operation.Capabilities[0] != memory.CapabilityDocumentChunks {
+				t.Fatalf("%s capabilities = %+v, want only document_chunks", name, report.Operation.Capabilities)
+			}
+			assertCheckpointBool(t, report.Checkpoint, "document_scan", true)
+			assertCheckpointInt(t, report.Checkpoint, "document_scan_scanned", 0)
+			if !lifecycleSkippedStepPresent(report.Steps, "document_chunks.scan") {
+				t.Fatalf("%s steps = %+v, want skipped document_chunks scan", name, report.Steps)
+			}
+			if lifecycleStepPresent(report.Steps, "message_index.conversation") || lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+				t.Fatalf("%s steps = %+v, want no message/summary routing", name, report.Steps)
+			}
+		})
+	}
+}
+
+func TestLifecycleRebuildReloadMessageIndexConversation(t *testing.T) {
+	ctx := context.Background()
+	for _, action := range []string{"rebuild", "reload"} {
+		t.Run(action, func(t *testing.T) {
+			root := sdkworkspace.NewMemWorkspace()
+			index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+			if err != nil {
+				t.Fatalf("retrieval workspace: %v", err)
+			}
+			t.Cleanup(func() { _ = index.Close() })
+			msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+			mem, err := memory.New(memory.Spec{
+				Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+				Capabilities: []memory.CapabilitySpec{
+					{Capability: memory.CapabilityRecentWindow, Required: true},
+					{Capability: memory.CapabilityMessageIndex, Required: true},
+				},
+				Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+				ReadStages: []memory.StageSpec{
+					{Name: "load_recent_messages"},
+					{Name: "retrieve_messages"},
+					{Name: "pack_context"},
+				},
+			}, memory.Deps{
+				MessageStore: msgStore,
+				Index:        index,
+				JobStore:     memory.NewMemoryJobStore(),
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+			if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+				ConversationID: scope.ConversationID,
+				Messages: []sourcemessage.Message{{
+					ID:       "dia-1",
+					Message:  model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+					Metadata: map[string]any{"speaker": "Ada"},
+				}},
+			}); err != nil {
+				t.Fatalf("Append() error = %v", err)
+			}
+
+			report, err := runLifecycleRequest(ctx, mem, action, scope, []memory.Capability{memory.CapabilityMessageIndex})
+			if err != nil {
+				t.Fatalf("%s request error = %v", action, err)
+			}
+			if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+				t.Fatalf("%s report = %+v, want enqueued job", action, report)
+			}
+			result, err := mem.RunOnce(ctx)
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if !result.Completed {
+				t.Fatalf("RunOnce() result = %+v, want completed", result)
+			}
+
+			pack, err := mem.PackContext(ctx, memory.ContextRequest{
+				Scope: scope,
+				Query: "blue notebook lamp",
+				TopK:  3,
+			})
+			if err != nil {
+				t.Fatalf("PackContext() error = %v", err)
+			}
+			if len(pack.MessageHits) == 0 || pack.MessageHits[0].Message.ID != "dia-1" {
+				t.Fatalf("MessageHits = %+v, want rebuilt searchable source message", pack.MessageHits)
+			}
+		})
+	}
+}
+
+func TestMessageIndexLifecycleCleanupKeepsOtherAgentProjection(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	mem, err := memory.New(memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
 		Capabilities: []memory.CapabilitySpec{
 			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
 		},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-			Required:   true,
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent-a", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
 		}},
 	}); err != nil {
-		t.Fatalf("Compile error = %v", err)
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	scopeB := scope
+	scopeB.AgentID = "agent-b"
+	agentBRecord := sourceMessageRecord(t, scopeB, sourcemessage.Message{
+		ID:             "dia-1",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "Agent B projection must survive agent A rebuild."),
+	})
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{agentBRecord}); err != nil {
+		t.Fatalf("seed agent-b projection error = %v", err)
+	}
+
+	if _, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	}); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+	}
+	agentBDoc, ok, err := index.Get(ctx, namespace, agentBRecord.ID)
+	if err != nil || !ok {
+		t.Fatalf("other agent projection after cleanup ok = %v err = %v, want retained", ok, err)
+	}
+	if got, want := agentBDoc.Metadata[projectors.MetadataAgentIDKey], "agent-b"; got != want {
+		t.Fatalf("other agent projection metadata[%q] = %v, want %q", projectors.MetadataAgentIDKey, got, want)
+	}
+	if !strings.Contains(agentBDoc.Content, "Agent B projection") {
+		t.Fatalf("other agent projection content = %q, want agent-b content retained", agentBDoc.Content)
 	}
 }
 
-func TestMemoryFacadeAppendMessageAndPackContextFromYAMLStages(t *testing.T) {
+func TestMessageIndexLifecycleCleanupEmptyAgentDatasetKeepsScopedProjectionPartitions(t *testing.T) {
 	ctx := context.Background()
-	specYAML := `
-sources:
-  - kind: message_log
-    required: true
-capabilities:
-  - capability: recent_window
-    required: true
-  - capability: observation_ledger
-    required: true
-  - capability: fact_ledger
-    required: true
-  - capability: fact_graph
-    required: true
-projections:
-  - capability: observation_ledger
-    namespace: observations
-    required: true
-  - capability: fact_ledger
-    namespace: facts
-    required: true
-  - capability: fact_graph
-    namespace: fact_graph
-    required: true
-write_stages:
-  - name: append_message
-  - name: extract_observations
-  - name: reconcile_facts
-  - name: build_fact_graph
-read_stages:
-  - name: load_recent_messages
-  - name: retrieve_observations
-  - name: retrieve_facts
-  - name: retrieve_fact_graph
-  - name: pack_context
-`
-	spec, err := memory.Decode(strings.NewReader(specYAML))
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("Decode high-level yaml spec error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
 	}
-	extractor := &fakeObservationExtractor{}
-	reconciler := &fakeFactReconciler{}
-	graphBuilder := &fakeFactGraphBuilder{}
-	deps := newDeps(t)
-	deps.ObservationExtractor = extractor
-	deps.FactReconciler = reconciler
-	deps.FactGraphBuilder = graphBuilder
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-current",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	currentRecord := sourceMessageRecord(t, scope, messages[0])
+	staleEmptyRecord := sourceMessageRecord(t, scope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "stale empty-agent projection"),
+	})
+	agentAScope := scope
+	agentAScope.AgentID = "agent-a"
+	agentARecord := sourceMessageRecord(t, agentAScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "agent-a projection must survive empty-agent cleanup"),
+	})
+	agentBScope := scope
+	agentBScope.AgentID = "agent-b"
+	agentBRecord := sourceMessageRecord(t, agentBScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "agent-b projection must survive empty-agent cleanup"),
+	})
+	datasetScope := scope
+	datasetScope.DatasetID = "dataset-a"
+	datasetRecord := sourceMessageRecord(t, datasetScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "dataset projection must survive empty-dataset cleanup"),
+	})
+	missingPartitionDoc := retrieval.Doc{
+		ID:      "legacy-missing-agent-dataset",
+		Content: "legacy projection with missing agent and dataset metadata",
+		Metadata: map[string]any{
+			projectors.MetadataViewKindKey:       "message_index",
+			projectors.MetadataRecordTypeKey:     projectors.RecordTypeSourceMessage,
+			projectors.MetadataConversationIDKey: scope.ConversationID,
+		},
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleEmptyRecord, agentARecord, agentBRecord, datasetRecord}); err != nil {
+		t.Fatalf("seed projections error = %v", err)
+	}
+	if err := index.Upsert(ctx, namespace, []retrieval.Doc{missingPartitionDoc}); err != nil {
+		t.Fatalf("seed missing partition projection error = %v", err)
+	}
 
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New error = %v", err)
+	if _, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	}); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
 	}
-	t.Cleanup(func() {
-		if err := mem.Close(); err != nil {
-			t.Fatalf("Close error = %v", err)
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+	}
+	for label, id := range map[string]string{
+		"stale empty partition":   staleEmptyRecord.ID,
+		"missing partition stale": missingPartitionDoc.ID,
+	} {
+		if ok, err := projectionDocExists(ctx, index, namespace, id); err != nil || ok {
+			t.Fatalf("%s projection exists = %v err = %v, want deleted", label, ok, err)
 		}
-	})
-	if mem.MessageStore() == nil {
-		t.Fatal("MessageStore() = nil, want injected store")
 	}
-	if mem.RetrievalIndex() == nil {
-		t.Fatal("RetrievalIndex() = nil, want injected index")
-	}
-	assertNamespace(t, mem, memory.CapabilityObservationLedger, "observations")
-	assertNamespace(t, mem, memory.CapabilityFactLedger, "facts")
-	assertNamespace(t, mem, memory.CapabilityFactGraph, "fact_graph")
-	plan := mem.Plan()
-	if got, want := len(plan.Write), 4; got != want {
-		t.Fatalf("Plan().Write len = %d, want %d", got, want)
-	}
-	if plan.Write[2].Name != "reconcile_facts" || plan.Write[2].Capability != memory.CapabilityFactLedger {
-		t.Fatalf("Plan().Write[2] = %+v, want fact reconciliation stage with capability", plan.Write[2])
-	}
-	if got, want := len(plan.Lifecycle), 4; got != want {
-		t.Fatalf("Plan().Lifecycle len = %d, want default lifecycle %d", got, want)
-	}
-
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-1"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage error = %v", err)
-	}
-	if len(result.Observations) != 1 || result.Observations[0].ID != "obs-1" || extractor.calls != 1 {
-		t.Fatalf("AppendMessage observations = %+v, calls=%d; want one adapted observation", result.Observations, extractor.calls)
-	}
-	if got := result.Observations[0].Scope; got != testScope("conv-1") {
-		t.Fatalf("AppendMessage scope = %+v, want %+v", got, testScope("conv-1"))
-	}
-	if len(result.Facts) != 1 || result.Facts[0].ID != "fact-1" || reconciler.calls != 1 {
-		t.Fatalf("AppendMessage facts = %+v, calls=%d; want one adapted fact", result.Facts, reconciler.calls)
-	}
-	if result.FactGraph == nil || len(result.FactGraph.Nodes) != 2 || len(result.FactGraph.Edges) != 1 || graphBuilder.calls != 1 {
-		t.Fatalf("AppendMessage graph = %+v, calls=%d; want two nodes and one edge", result.FactGraph, graphBuilder.calls)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-1"),
-		Query: "Ada tea likes",
-		TopK:  5,
-	})
-	if err != nil {
-		t.Fatalf("PackContext error = %v", err)
-	}
-	if len(pack.Window.Messages) != 1 {
-		t.Fatalf("PackContext Window.Messages len = %d, want 1", len(pack.Window.Messages))
-	}
-	if len(pack.ObservationHits) != 1 || pack.ObservationHits[0].Observation.ID != result.Observations[0].ID {
-		t.Fatalf("PackContext ObservationHits = %+v, want hydrated observation", pack.ObservationHits)
-	}
-	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.ID != result.Facts[0].ID {
-		t.Fatalf("PackContext FactHits = %+v, want hydrated fact", pack.FactHits)
-	}
-	if len(pack.FactGraphHits) != len(result.FactGraph.Nodes)+len(result.FactGraph.Edges) {
-		t.Fatalf("PackContext FactGraphHits len = %d, want %d: %+v", len(pack.FactGraphHits), len(result.FactGraph.Nodes)+len(result.FactGraph.Edges), pack.FactGraphHits)
-	}
-	if len(pack.Items) < 4 {
-		t.Fatalf("PackContext Items = %+v, want recent plus stage-selected retrieval items", pack.Items)
-	}
-}
-
-func TestMemoryFacadePackContextUsesHybridQueryEmbedding(t *testing.T) {
-	ctx := context.Background()
-	index := &recordingSearchIndex{
-		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
-	}
-	embedder := &fakeMemoryEmbedder{embedVector: []float32{0.1, 0.2}}
-	deps := newDeps(t)
-	deps.Index = index
-	deps.Embedder = embedder
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-
-	mem, err := memory.New(queryEmbeddingSpec(), deps)
-	if err != nil {
-		t.Fatalf("New(query embedding memory) error = %v", err)
-	}
-	_, err = mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-embed"),
-		Query: " Ada tea ",
-		TopK:  3,
-	})
-	if err != nil {
-		t.Fatalf("PackContext() error = %v", err)
-	}
-
-	if len(embedder.embedTexts) != 1 || embedder.embedTexts[0] != "Ada tea" {
-		t.Fatalf("Embed texts = %q, want one normalized query", embedder.embedTexts)
-	}
-	if len(index.searchRequests) != 2 {
-		t.Fatalf("Search requests len = %d, want observation and fact searches", len(index.searchRequests))
-	}
-	for i, req := range index.searchRequests {
-		if req.QueryText != "Ada tea" || req.TopK != 3 {
-			t.Fatalf("Search request[%d] text/topK = %q/%d, want normalized query and TopK", i, req.QueryText, req.TopK)
-		}
-		if got := req.QueryVector; len(got) != 2 || got[0] != 0.1 || got[1] != 0.2 {
-			t.Fatalf("Search request[%d] QueryVector = %v, want query embedding", i, got)
-		}
-		if req.HybridMode != retrieval.HybridDefault {
-			t.Fatalf("Search request[%d] HybridMode = %q, want HybridDefault", i, req.HybridMode)
+	for label, id := range map[string]string{
+		"current": currentRecord.ID,
+		"agent-a": agentARecord.ID,
+		"agent-b": agentBRecord.ID,
+		"dataset": datasetRecord.ID,
+	} {
+		if ok, err := projectionDocExists(ctx, index, namespace, id); err != nil || !ok {
+			t.Fatalf("%s projection exists = %v err = %v, want retained", label, ok, err)
 		}
 	}
 }
 
-func TestMemoryFacadePackContextQueryEmbeddingTimeoutReturnsDeadlineExceeded(t *testing.T) {
+func TestMessageIndexLifecycleCleanupFallsBackWhenDeleteByFilterUnavailable(t *testing.T) {
 	ctx := context.Background()
-	index := &recordingSearchIndex{
-		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
-	}
-	embedder := &fakeMemoryEmbedder{blockEmbedUntilContextDone: true}
-	deps := newDeps(t)
-	deps.Index = index
-	deps.Embedder = embedder
-	deps.Embedding = memory.EmbeddingOptions{Timeout: time.Nanosecond}
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
+	for _, action := range []string{"rebuild", "reload"} {
+		t.Run(action, func(t *testing.T) {
+			root := sdkworkspace.NewMemWorkspace()
+			baseIndex, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+			if err != nil {
+				t.Fatalf("retrieval workspace: %v", err)
+			}
+			t.Cleanup(func() { _ = baseIndex.Close() })
+			index := &deleteByFilterUnavailableLifecycleIndex{Index: baseIndex}
+			msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+			reportStore := memory.NewMemoryReportStore()
+			mem, err := memory.New(memory.Spec{
+				Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+				Capabilities: []memory.CapabilitySpec{
+					{Capability: memory.CapabilityRecentWindow, Required: true},
+					{Capability: memory.CapabilityMessageIndex, Required: true},
+				},
+				Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+			}, memory.Deps{
+				MessageStore: msgStore,
+				Index:        index,
+				JobStore:     memory.NewMemoryJobStore(),
+				ReportStore:  reportStore,
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent-a", ConversationID: "conv"}
+			messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+				ConversationID: scope.ConversationID,
+				Messages: []sourcemessage.Message{{
+					ID:      "dia-current",
+					Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+				}},
+			})
+			if err != nil {
+				t.Fatalf("Append() error = %v", err)
+			}
+			namespace, err := projectors.ScopedNamespace("message_index", scope)
+			if err != nil {
+				t.Fatalf("ScopedNamespace() error = %v", err)
+			}
+			currentRecord := sourceMessageRecord(t, scope, messages[0])
+			staleRecord := sourceMessageRecord(t, scope, sourcemessage.Message{
+				ID:             "dia-stale",
+				ConversationID: scope.ConversationID,
+				Message:        model.NewTextMessage(model.RoleUser, "stale message projection"),
+			})
+			otherAgentScope := scope
+			otherAgentScope.AgentID = "agent-b"
+			otherAgentRecord := sourceMessageRecord(t, otherAgentScope, sourcemessage.Message{
+				ID:             "dia-stale",
+				ConversationID: scope.ConversationID,
+				Message:        model.NewTextMessage(model.RoleUser, "other agent projection must survive"),
+			})
+			otherConversationScope := scope
+			otherConversationScope.ConversationID = "other-conv"
+			otherConversationRecord := sourceMessageRecord(t, otherConversationScope, sourcemessage.Message{
+				ID:             "dia-stale",
+				ConversationID: otherConversationScope.ConversationID,
+				Message:        model.NewTextMessage(model.RoleUser, "other conversation projection must survive"),
+			})
+			writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+			if err != nil {
+				t.Fatalf("NewWriter() error = %v", err)
+			}
+			if err := writer.Upsert(ctx, []indexed.Record{staleRecord, otherAgentRecord, otherConversationRecord}); err != nil {
+				t.Fatalf("seed projections error = %v", err)
+			}
 
-	mem, err := memory.New(queryEmbeddingSpec(), deps)
-	if err != nil {
-		t.Fatalf("New(query embedding timeout memory) error = %v", err)
-	}
-	_, err = mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-embed-timeout"),
-		Query: "Ada tea",
-		TopK:  3,
-	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("PackContext(timeout) error = %v, want deadline exceeded", err)
-	}
-	if len(index.searchRequests) != 0 {
-		t.Fatalf("Search requests len = %d, want none after embedding timeout", len(index.searchRequests))
+			report, err := runLifecycleRequest(ctx, mem, action, scope, []memory.Capability{memory.CapabilityMessageIndex})
+			if err != nil {
+				t.Fatalf("%s request error = %v", action, err)
+			}
+			if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+				t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+			}
+			stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+			if err != nil || !ok {
+				t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+			}
+			step := requireLifecycleStep(t, stored.Steps, "message_index.conversation")
+			if got, want := step.Details["cleanup_mode"], "list_delete"; got != want {
+				t.Fatalf("cleanup_mode = %v, want %q; step=%+v", got, want, step)
+			}
+			if got, want := stored.Checkpoint["cleanup_mode"], "list_delete"; got != want {
+				t.Fatalf("checkpoint cleanup_mode = %v, want %q; checkpoint=%+v", got, want, stored.Checkpoint)
+			}
+			if ok, err := projectionDocExists(ctx, baseIndex, namespace, staleRecord.ID); err != nil || ok {
+				t.Fatalf("stale projection exists = %v err = %v, want deleted", ok, err)
+			}
+			for label, id := range map[string]string{
+				"current":            currentRecord.ID,
+				"other agent":        otherAgentRecord.ID,
+				"other conversation": otherConversationRecord.ID,
+			} {
+				if ok, err := projectionDocExists(ctx, baseIndex, namespace, id); err != nil || !ok {
+					t.Fatalf("%s projection exists = %v err = %v, want retained", label, ok, err)
+				}
+			}
+		})
 	}
 }
 
-func TestMemoryFacadePackContextWithoutEmbedderUsesQueryTextOnly(t *testing.T) {
+func TestMessageIndexLifecycleCleanupFallbackEmptyAgentDatasetKeepsScopedProjectionPartitions(t *testing.T) {
 	ctx := context.Background()
-	index := &recordingSearchIndex{
-		caps: retrieval.Capabilities{BM25: true, Vector: true, Hybrid: true},
-	}
-	deps := newDeps(t)
-	deps.Index = index
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-
-	mem, err := memory.New(queryEmbeddingSpec(), deps)
+	root := sdkworkspace.NewMemWorkspace()
+	baseIndex, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("New(query text memory) error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
 	}
-	_, err = mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-text"),
-		Query: "Ada tea",
-		TopK:  3,
+	t.Cleanup(func() { _ = baseIndex.Close() })
+	index := &deleteByFilterUnavailableLifecycleIndex{Index: baseIndex}
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
 	})
 	if err != nil {
-		t.Fatalf("PackContext() error = %v", err)
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-current",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	currentRecord := sourceMessageRecord(t, scope, messages[0])
+	staleEmptyRecord := sourceMessageRecord(t, scope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "stale empty-agent projection"),
+	})
+	agentAScope := scope
+	agentAScope.AgentID = "agent-a"
+	agentARecord := sourceMessageRecord(t, agentAScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "agent-a projection must survive empty-agent cleanup"),
+	})
+	agentBScope := scope
+	agentBScope.AgentID = "agent-b"
+	agentBRecord := sourceMessageRecord(t, agentBScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "agent-b projection must survive empty-agent cleanup"),
+	})
+	datasetScope := scope
+	datasetScope.DatasetID = "dataset-a"
+	datasetRecord := sourceMessageRecord(t, datasetScope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "dataset projection must survive empty-dataset cleanup"),
+	})
+	missingPartitionDoc := retrieval.Doc{
+		ID:      "legacy-missing-agent-dataset",
+		Content: "legacy projection with missing agent and dataset metadata",
+		Metadata: map[string]any{
+			projectors.MetadataViewKindKey:       "message_index",
+			projectors.MetadataRecordTypeKey:     projectors.RecordTypeSourceMessage,
+			projectors.MetadataConversationIDKey: scope.ConversationID,
+		},
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleEmptyRecord, agentARecord, agentBRecord, datasetRecord}); err != nil {
+		t.Fatalf("seed projections error = %v", err)
+	}
+	if err := baseIndex.Upsert(ctx, namespace, []retrieval.Doc{missingPartitionDoc}); err != nil {
+		t.Fatalf("seed missing partition projection error = %v", err)
 	}
 
-	if len(index.searchRequests) != 2 {
-		t.Fatalf("Search requests len = %d, want observation and fact searches", len(index.searchRequests))
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
 	}
-	for i, req := range index.searchRequests {
-		if req.QueryText != "Ada tea" || len(req.QueryVector) != 0 {
-			t.Fatalf("Search request[%d] = %+v, want QueryText only", i, req)
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "message_index.conversation")
+	if got, want := step.Details["cleanup_mode"], "list_delete"; got != want {
+		t.Fatalf("cleanup_mode = %v, want %q; step=%+v", got, want, step)
+	}
+	for label, id := range map[string]string{
+		"stale empty partition":   staleEmptyRecord.ID,
+		"missing partition stale": missingPartitionDoc.ID,
+	} {
+		if ok, err := projectionDocExists(ctx, baseIndex, namespace, id); err != nil || ok {
+			t.Fatalf("%s projection exists = %v err = %v, want deleted", label, ok, err)
+		}
+	}
+	for label, id := range map[string]string{
+		"current": currentRecord.ID,
+		"agent-a": agentARecord.ID,
+		"agent-b": agentBRecord.ID,
+		"dataset": datasetRecord.ID,
+	} {
+		if ok, err := projectionDocExists(ctx, baseIndex, namespace, id); err != nil || !ok {
+			t.Fatalf("%s projection exists = %v err = %v, want retained", label, ok, err)
 		}
 	}
 }
 
-func TestMemoryFacadePackContextOnlyReturnsActiveFacts(t *testing.T) {
+func TestLifecycleRebuildReloadSummaryDAGConversation(t *testing.T) {
 	ctx := context.Background()
-	specYAML := `
-sources:
-  - kind: message_log
-    required: true
-capabilities:
-  - capability: recent_window
-    required: true
-  - capability: observation_ledger
-    required: true
-  - capability: fact_ledger
-    required: true
-projections:
-  - capability: fact_ledger
-    namespace: facts
-    required: true
-write_stages:
-  - name: append_message
-  - name: extract_observations
-  - name: reconcile_facts
-read_stages:
-  - name: load_recent_messages
-  - name: retrieve_facts
-  - name: pack_context
-`
-	spec, err := memory.Decode(strings.NewReader(specYAML))
-	if err != nil {
-		t.Fatalf("Decode lifecycle yaml spec error = %v", err)
-	}
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = lifecycleFactReconciler{}
+	for _, action := range []string{"rebuild", "reload"} {
+		t.Run(action, func(t *testing.T) {
+			root := sdkworkspace.NewMemWorkspace()
+			index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+			if err != nil {
+				t.Fatalf("retrieval workspace: %v", err)
+			}
+			t.Cleanup(func() { _ = index.Close() })
+			msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+			summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+			summarizer := &recordingSummaryLifecycleSummarizer{}
+			mem, err := memory.New(memory.Spec{
+				Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+				Capabilities: []memory.CapabilitySpec{
+					{Capability: memory.CapabilityRecentWindow, Required: true},
+					{Capability: memory.CapabilitySummaryDAG, Required: true},
+				},
+				Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+				ReadStages: []memory.StageSpec{
+					{Name: "load_recent_messages"},
+					{Name: "retrieve_summaries"},
+					{Name: "pack_context"},
+				},
+			}, memory.Deps{
+				MessageStore: msgStore,
+				SummaryStore: summaryStore,
+				Summarizer:   summarizer,
+				Index:        index,
+				JobStore:     memory.NewMemoryJobStore(),
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+			if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+				ConversationID: scope.ConversationID,
+				Messages: []sourcemessage.Message{{
+					ID:      "dia-1",
+					Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+				}},
+			}); err != nil {
+				t.Fatalf("Append() error = %v", err)
+			}
 
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := mem.Close(); err != nil {
-			t.Fatalf("Close error = %v", err)
-		}
-	})
-
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-1"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage error = %v", err)
-	}
-	if len(result.Facts) != 4 {
-		t.Fatalf("AppendMessage facts = %+v, want active plus three non-active ledger records", result.Facts)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-1"),
-		Query: "Ada likes tea",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext error = %v", err)
-	}
-	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.ID != "fact-active" {
-		t.Fatalf("PackContext FactHits = %+v, want only active fact", pack.FactHits)
-	}
-	var factItems int
-	for _, item := range pack.Items {
-		if item.Kind != derive.ContextItemFact {
-			continue
-		}
-		factItems++
-		if item.Fact == nil || item.Fact.ID != "fact-active" || item.Fact.Status != fact.FactActive {
-			t.Fatalf("PackContext fact item = %+v, want only active fact item", item)
-		}
-	}
-	if factItems != 1 {
-		t.Fatalf("PackContext fact item count = %d, want 1 active fact item; items=%+v", factItems, pack.Items)
+			report, err := runLifecycleRequest(ctx, mem, action, scope, []memory.Capability{memory.CapabilitySummaryDAG})
+			if err != nil {
+				t.Fatalf("%s request error = %v", action, err)
+			}
+			if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+				t.Fatalf("%s report = %+v, want enqueued job", action, report)
+			}
+			result, err := mem.RunOnce(ctx)
+			if err != nil {
+				t.Fatalf("RunOnce() error = %v", err)
+			}
+			if !result.Completed {
+				t.Fatalf("RunOnce() result = %+v, want completed", result)
+			}
+			if summarizer.calls != 1 {
+				t.Fatalf("summarizer calls = %d, want 1", summarizer.calls)
+			}
+			nodes, err := summaryStore.ListNodes(ctx, scope, recent.ListOptions{})
+			if err != nil {
+				t.Fatalf("ListNodes() error = %v", err)
+			}
+			if len(nodes) != 1 || !strings.Contains(nodes[0].Summary, "lantern") {
+				t.Fatalf("Summary nodes = %+v, want persisted lantern summary", nodes)
+			}
+			pack, err := mem.PackContext(ctx, memory.ContextRequest{
+				Scope: scope,
+				Query: "lantern",
+				TopK:  3,
+			})
+			if err != nil {
+				t.Fatalf("PackContext() error = %v", err)
+			}
+			if len(pack.SummaryHits) == 0 || pack.SummaryHits[0].Node.ID != nodes[0].ID {
+				t.Fatalf("SummaryHits = %+v, want rebuilt searchable summary", pack.SummaryHits)
+			}
+		})
 	}
 }
 
-func TestMemoryFacadeEntityProfileAndTimelinePackContext(t *testing.T) {
+func TestSummaryDAGLifecycleRebuildFailureKeepsExistingSummaryAndProjection(t *testing.T) {
 	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
-	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
-	mem, err := memory.New(entityRetrievalSpec(), deps)
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("New entity memory error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
 	}
-
-	scope := testScope("conv-entity")
-	scope.EntityID = "user:ada"
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		TraceID:  "trace-async-write",
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage entity stages error = %v", err)
-	}
-	if len(result.EntityProfiles) != 1 || result.EntityProfiles[0].Scope != scope {
-		t.Fatalf("AppendMessage EntityProfiles = %+v, want scoped profile", result.EntityProfiles)
-	}
-	if len(result.EntityEvents) != 1 || result.EntityEvents[0].Scope != scope {
-		t.Fatalf("AppendMessage EntityEvents = %+v, want scoped event", result.EntityEvents)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scope,
-		Query: "Ada tea",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext entity stages error = %v", err)
-	}
-	if len(pack.EntityProfileHits) != 1 || pack.EntityProfileHits[0].Profile.ID != result.EntityProfiles[0].ID {
-		t.Fatalf("EntityProfileHits = %+v, want hydrated profile", pack.EntityProfileHits)
-	}
-	if len(pack.EntityTimelineHits) != 1 || pack.EntityTimelineHits[0].Event.ID != result.EntityEvents[0].ID {
-		t.Fatalf("EntityTimelineHits = %+v, want hydrated event", pack.EntityTimelineHits)
-	}
-	kinds := map[derive.ContextItemKind]bool{}
-	for _, item := range pack.Items {
-		kinds[item.Kind] = true
-	}
-	if !kinds[derive.ContextItemEntityProfile] || !kinds[derive.ContextItemEntityTimeline] {
-		t.Fatalf("PackContext Items = %+v, want entity profile and timeline items", pack.Items)
-	}
-}
-
-func TestMemoryFacadeWriteStageDAGRunsReadyStagesConcurrently(t *testing.T) {
-	ctx := context.Background()
-	spec := memory.Spec{
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	summarizer := &failingSummaryLifecycleSummarizer{err: errors.New("summarizer boom")}
+	mem, err := memory.New(memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
 		Capabilities: []memory.CapabilitySpec{
 			{Capability: memory.CapabilityRecentWindow, Required: true},
 			{Capability: memory.CapabilitySummaryDAG, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
 		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true},
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-		},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "build_summary_dag"},
-			{Name: "extract_observations"},
-		},
-	}
-	release := make(chan struct{})
-	summaryStarted := make(chan struct{})
-	observationsStarted := make(chan struct{})
-	deps := newDeps(t)
-	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
-	deps.Summarizer = &blockingSummarizer{started: summaryStarted, release: release}
-	deps.ObservationExtractor = &blockingObservationExtractor{started: observationsStarted, release: release}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New DAG concurrency spec error = %v", err)
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    testScope("conv-dag-concurrent"),
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		})
-		done <- err
-	}()
-
-	waitClosed(t, summaryStarted, "summary stage start")
-	waitClosed(t, observationsStarted, "observation stage start")
-	close(release)
-	if err := waitErr(t, done, "AppendMessage"); err != nil {
-		t.Fatalf("AppendMessage error = %v", err)
-	}
-}
-
-func TestMemoryFacadeWriteStageDAGExecutesSharedDependenciesOnce(t *testing.T) {
-	ctx := context.Background()
-	spec := entityRetrievalSpec()
-	spec.WriteStages = []memory.StageSpec{
-		{Name: "append_message"},
-		{Name: "build_entity_profiles"},
-		{Name: "build_entity_timeline"},
-	}
-	extractor := &fakeObservationExtractor{}
-	reconciler := &fakeFactReconciler{}
-	graphBuilder := &fakeFactGraphBuilder{}
-	deps := newDeps(t)
-	deps.ObservationExtractor = extractor
-	deps.FactReconciler = reconciler
-	deps.FactGraphBuilder = graphBuilder
-	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
-	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New DAG dependency spec error = %v", err)
-	}
-
-	scope := testScope("conv-dag-shared-deps")
-	scope.EntityID = "user:ada"
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   summarizer,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
 	})
 	if err != nil {
-		t.Fatalf("AppendMessage shared dependencies error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
-	if extractor.calls != 1 || reconciler.calls != 1 || graphBuilder.calls != 1 {
-		t.Fatalf("dependency calls = extractor:%d reconciler:%d graph:%d, want all one", extractor.calls, reconciler.calls, graphBuilder.calls)
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
 	}
-	if len(result.EntityProfiles) != 1 || len(result.EntityEvents) != 1 {
-		t.Fatalf("AppendMessage entities = profiles:%+v events:%+v, want both outputs", result.EntityProfiles, result.EntityEvents)
+	oldNode := summaryLifecycleNode(scope, "summary-old", "old summary that must survive failure")
+	if _, err := summaryStore.PutNode(ctx, oldNode); err != nil {
+		t.Fatalf("PutNode(old) error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	record, err := projectors.SummaryNode(oldNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(old) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{record}); err != nil {
+		t.Fatalf("seed old summary projection error = %v", err)
+	}
+
+	if _, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	}); err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err == nil || !strings.Contains(err.Error(), summarizer.err.Error()) || result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want summarizer failure", result, err)
+	}
+	nodes, err := summaryStore.ListNodes(ctx, scope, recent.ListOptions{})
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != oldNode.ID {
+		t.Fatalf("Summary nodes after failed rebuild = %+v, want old node retained", nodes)
+	}
+	if _, ok, err := index.Get(ctx, namespace, record.ID); err != nil || !ok {
+		t.Fatalf("old summary projection after failed rebuild ok = %v err = %v, want retained", ok, err)
 	}
 }
 
-func TestMemoryFacadeWriteStageDAGPropagatesUpstreamError(t *testing.T) {
+func TestSummaryDAGLifecycleCleanupKeepsOtherAgentProjection(t *testing.T) {
 	ctx := context.Background()
-	wantErr := errors.New("extract observations failed")
-	extractor := &failingObservationExtractor{err: wantErr}
-	reconciler := &fakeFactReconciler{}
-	graphBuilder := &fakeFactGraphBuilder{}
-	deps := newDeps(t)
-	deps.ObservationExtractor = extractor
-	deps.FactReconciler = reconciler
-	deps.FactGraphBuilder = graphBuilder
-	mem, err := memory.New(semanticRetrievalSpec(), deps)
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("New DAG error spec error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
 	}
-
-	_, err = mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-dag-error"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("AppendMessage error = %v, want %v", err, wantErr)
-	}
-	if extractor.calls != 1 {
-		t.Fatalf("extractor calls = %d, want 1", extractor.calls)
-	}
-	if reconciler.calls != 0 || graphBuilder.calls != 0 {
-		t.Fatalf("downstream calls = reconciler:%d graph:%d, want none", reconciler.calls, graphBuilder.calls)
-	}
-}
-
-func TestMemoryFacadeEntityRetrievalScopeIsolation(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
-	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
-	mem, err := memory.New(entityRetrievalSpec(), deps)
-	if err != nil {
-		t.Fatalf("New scoped entity memory error = %v", err)
-	}
-
-	scopeOne := testScope("conv-entity")
-	scopeOne.EntityID = "entity-1"
-	scopeOtherRuntime := scopeOne
-	scopeOtherRuntime.RuntimeID = "runtime-2"
-	scopeOtherUser := scopeOne
-	scopeOtherUser.UserID = "user-2"
-	scopeOtherEntity := scopeOne
-	scopeOtherEntity.EntityID = "entity-2"
-	for _, scope := range []memory.Scope{scopeOne, scopeOtherRuntime, scopeOtherUser, scopeOtherEntity} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    scope,
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		}); err != nil {
-			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
-		}
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scopeOne,
-		Query: "Ada tea",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext scoped entity retrieval error = %v", err)
-	}
-	if len(pack.EntityProfileHits) != 1 || pack.EntityProfileHits[0].Profile.Scope != scopeOne {
-		t.Fatalf("EntityProfileHits = %+v, want only scope one", pack.EntityProfileHits)
-	}
-	if len(pack.EntityTimelineHits) != 1 || pack.EntityTimelineHits[0].Event.Scope != scopeOne {
-		t.Fatalf("EntityTimelineHits = %+v, want only scope one", pack.EntityTimelineHits)
-	}
-}
-
-func TestMemoryFacadeDefaultsEmptyWriteAndReadStages(t *testing.T) {
-	ctx := context.Background()
-	spec := memory.Spec{
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
 		Capabilities: []memory.CapabilitySpec{
 			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-			{Capability: memory.CapabilityFactLedger, Required: true},
-			{Capability: memory.CapabilityFactGraph, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
 		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
-			{Capability: memory.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "retrieve_summaries"},
+			{Name: "pack_context"},
 		},
-	}
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New default-stage memory error = %v", err)
-	}
-
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-1"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
 	})
 	if err != nil {
-		t.Fatalf("AppendMessage default stages error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
-	if len(result.Observations) != 1 || len(result.Facts) != 1 || result.FactGraph == nil {
-		t.Fatalf("AppendMessage default result = %+v, want observation, fact, and graph", result)
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent-a", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	scopeB := scope
+	scopeB.AgentID = "agent-b"
+	staleNode := summaryLifecycleNode(scope, "summary-stale", "stale Agent A summary must be deleted.")
+	if _, err := summaryStore.PutNode(ctx, staleNode); err != nil {
+		t.Fatalf("PutNode(stale) error = %v", err)
+	}
+	agentBNode := summaryLifecycleNode(scopeB, "summary-conv", "Agent B summary must survive agent A rebuild.")
+	if _, err := summaryStore.PutNode(ctx, agentBNode); err != nil {
+		t.Fatalf("PutNode(agent-b) error = %v", err)
+	}
+	otherConversationScope := scope
+	otherConversationScope.ConversationID = "conv-other"
+	otherConversationNode := summaryLifecycleNode(otherConversationScope, "summary-stale", "other conversation summary must survive.")
+	if _, err := summaryStore.PutNode(ctx, otherConversationNode); err != nil {
+		t.Fatalf("PutNode(other conversation) error = %v", err)
+	}
+	staleRecord, err := projectors.SummaryNode(staleNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(stale) error = %v", err)
+	}
+	agentBRecord, err := projectors.SummaryNode(agentBNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(agent-b) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleRecord, agentBRecord}); err != nil {
+		t.Fatalf("seed summary projections error = %v", err)
 	}
 
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: testScope("conv-1"), Query: "Ada tea likes"})
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
 	if err != nil {
-		t.Fatalf("PackContext default stages error = %v", err)
+		t.Fatalf("Rebuild() error = %v", err)
 	}
-	if len(pack.ObservationHits) != 1 || len(pack.FactHits) != 1 || len(pack.FactGraphHits) == 0 {
-		t.Fatalf("PackContext default hits = obs:%d facts:%d graph:%d, want all configured projections", len(pack.ObservationHits), len(pack.FactHits), len(pack.FactGraphHits))
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if got, want := step.Details["stale_store_cleanup"], "delete_node"; got != want {
+		t.Fatalf("stale_store_cleanup = %v, want %q; step=%+v", got, want, step)
+	}
+	assertStepDetailInt(t, step, "canonical_stale_candidates", 1)
+	assertStepDetailInt(t, step, "canonical_stale_deleted", 1)
+	assertCheckpointString(t, stored.Checkpoint, "canonical_cleanup_mode", "delete_node")
+	assertCheckpointInt(t, stored.Checkpoint, "canonical_stale_deleted", 1)
+	if _, ok, err := summaryStore.GetNode(ctx, scope, staleNode.ID); err != nil || ok {
+		t.Fatalf("stale canonical summary ok = %v err = %v, want deleted", ok, err)
+	}
+	currentNode, ok, err := summaryStore.GetNode(ctx, scope, recent.NodeID("summary-"+scope.ConversationID))
+	if err != nil || !ok {
+		t.Fatalf("current canonical summary ok = %v err = %v, want retained", ok, err)
+	}
+	currentRecord, err := projectors.SummaryNode(currentNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(current) error = %v", err)
+	}
+	if ok, err := projectionDocExists(ctx, index, namespace, staleRecord.ID); err != nil || ok {
+		t.Fatalf("stale summary projection after cleanup ok = %v err = %v, want deleted", ok, err)
+	}
+	if ok, err := projectionDocExists(ctx, index, namespace, currentRecord.ID); err != nil || !ok {
+		t.Fatalf("current summary projection after cleanup ok = %v err = %v, want retained", ok, err)
+	}
+	agentBDoc, ok, err := index.Get(ctx, namespace, agentBRecord.ID)
+	if err != nil || !ok {
+		t.Fatalf("other agent summary projection after cleanup ok = %v err = %v, want retained", ok, err)
+	}
+	if got, want := agentBDoc.Metadata[projectors.MetadataAgentIDKey], "agent-b"; got != want {
+		t.Fatalf("other agent summary metadata[%q] = %v, want %q", projectors.MetadataAgentIDKey, got, want)
+	}
+	if !strings.Contains(agentBDoc.Content, "Agent B summary") {
+		t.Fatalf("other agent summary content = %q, want agent-b content retained", agentBDoc.Content)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: scopeB,
+		Query: "Agent B summary",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext(agent-b) error = %v", err)
+	}
+	if len(pack.SummaryHits) == 0 {
+		t.Fatalf("PackContext(agent-b) SummaryHits = %+v, want agent-b summary", pack.SummaryHits)
+	}
+	gotNode := pack.SummaryHits[0].Node
+	if gotNode.Scope.AgentID != "agent-b" || gotNode.Summary != agentBNode.Summary {
+		t.Fatalf("PackContext(agent-b) hydrated node = %+v, want agent-b summary %q", gotNode, agentBNode.Summary)
+	}
+	if got, ok, err := summaryStore.GetNode(ctx, scopeB, agentBNode.ID); err != nil || !ok || got.Summary != agentBNode.Summary {
+		t.Fatalf("agent-b canonical summary after cleanup = %+v ok %v err %v, want retained", got, ok, err)
+	}
+	if got, ok, err := summaryStore.GetNode(ctx, otherConversationScope, otherConversationNode.ID); err != nil || !ok || got.Summary != otherConversationNode.Summary {
+		t.Fatalf("other conversation canonical summary after cleanup = %+v ok %v err %v, want retained", got, ok, err)
 	}
 }
 
-func TestMemoryFacadeDefaultsEntityStagesWhenAvailable(t *testing.T) {
-	spec := entityRetrievalSpec()
-	spec.WriteStages = nil
-	spec.ReadStages = nil
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	deps.EntityProfileBuilder = &fakeEntityProfileBuilder{}
-	deps.EntityTimelineBuilder = &fakeEntityTimelineBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New default entity stage memory error = %v", err)
-	}
-
-	plan := mem.Plan()
-	if !plannedStageNamed(plan.Write, "build_entity_profiles") || !plannedStageNamed(plan.Write, "build_entity_timeline") {
-		t.Fatalf("Plan().Write = %+v, want default entity write stages", plan.Write)
-	}
-	if !plannedStageNamed(plan.Read, "retrieve_entity_profiles") || !plannedStageNamed(plan.Read, "retrieve_entity_timeline") {
-		t.Fatalf("Plan().Read = %+v, want default entity read stages", plan.Read)
-	}
-}
-
-func TestMemoryFacadeImportDocumentStoresChunksAndPacksScopedContext(t *testing.T) {
+func TestSummaryDAGLifecycleProjectionCleanupFallsBackWhenDeleteByFilterUnavailable(t *testing.T) {
 	ctx := context.Background()
-	chunker := &fakeDocumentChunker{}
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = chunker
-	mem, err := memory.New(documentRetrievalSpec(), deps)
+	root := sdkworkspace.NewMemWorkspace()
+	baseIndex, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("New document memory error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = baseIndex.Close() })
+	index := &deleteByFilterUnavailableLifecycleIndex{Index: baseIndex}
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "retrieve_summaries"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	staleNode := summaryLifecycleNode(scope, "summary-stale", "stale summary projection")
+	if _, err := summaryStore.PutNode(ctx, staleNode); err != nil {
+		t.Fatalf("PutNode(stale) error = %v", err)
+	}
+	staleRecord, err := projectors.SummaryNode(staleNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(stale) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleRecord}); err != nil {
+		t.Fatalf("seed stale summary projection error = %v", err)
 	}
 
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
-	result, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if got, want := step.Details["cleanup_mode"], "list_delete"; got != want {
+		t.Fatalf("cleanup_mode = %v, want %q; step=%+v", got, want, step)
+	}
+	if got, want := step.Details["stale_store_cleanup"], "delete_node"; got != want {
+		t.Fatalf("stale_store_cleanup = %v, want %q; step=%+v", got, want, step)
+	}
+	assertStepDetailInt(t, step, "canonical_stale_candidates", 1)
+	assertStepDetailInt(t, step, "canonical_stale_deleted", 1)
+	assertCheckpointString(t, stored.Checkpoint, "canonical_cleanup_mode", "delete_node")
+	if ok, err := projectionDocExists(ctx, baseIndex, namespace, staleRecord.ID); err != nil || ok {
+		t.Fatalf("stale summary projection exists = %v err = %v, want deleted", ok, err)
+	}
+	if _, ok, err := summaryStore.GetNode(ctx, scope, staleNode.ID); err != nil || ok {
+		t.Fatalf("stale canonical summary exists = %v err = %v, want deleted", ok, err)
+	}
+	nodes, err := summaryStore.ListNodes(ctx, scope, recent.ListOptions{})
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	var currentProjectionID string
+	for _, node := range nodes {
+		if node.ID == recent.NodeID("summary-"+scope.ConversationID) {
+			record, err := projectors.SummaryNode(node)
+			if err != nil {
+				t.Fatalf("SummaryNode(current) error = %v", err)
+			}
+			currentProjectionID = record.ID
+		}
+	}
+	if currentProjectionID == "" {
+		t.Fatalf("Summary nodes = %+v, want rebuilt current node", nodes)
+	}
+	if ok, err := projectionDocExists(ctx, baseIndex, namespace, currentProjectionID); err != nil || !ok {
+		t.Fatalf("current summary projection exists = %v err = %v, want retained", ok, err)
+	}
+}
+
+func TestSummaryDAGLifecycleDeleteNodeFailureReportsFailedAndKeepsProjections(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	baseSummaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	summaryStore := &failingSummaryDeleteStore{
+		SummaryStore: baseSummaryStore,
+		err:          errors.New("delete node boom"),
+	}
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	staleNode := summaryLifecycleNode(scope, "summary-stale", "stale summary should remain after delete failure")
+	if _, err := summaryStore.PutNode(ctx, staleNode); err != nil {
+		t.Fatalf("PutNode(stale) error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	staleRecord, err := projectors.SummaryNode(staleNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(stale) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleRecord}); err != nil {
+		t.Fatalf("seed stale summary projection error = %v", err)
+	}
+
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err == nil || !strings.Contains(err.Error(), summaryStore.err.Error()) || result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want delete failure", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("stored status = %q, want failed; report=%+v", stored.Status, stored)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if step.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("step status = %q, want failed; step=%+v", step.Status, step)
+	}
+	if got, want := step.Details["stale_store_cleanup"], "failed"; got != want {
+		t.Fatalf("stale_store_cleanup = %v, want %q; step=%+v", got, want, step)
+	}
+	assertStepDetailInt(t, step, "canonical_stale_candidates", 1)
+	assertStepDetailInt(t, step, "canonical_stale_deleted", 0)
+	assertCheckpointString(t, stored.Checkpoint, "canonical_cleanup_mode", "failed")
+	if _, ok, err := summaryStore.GetNode(ctx, scope, staleNode.ID); err != nil || !ok {
+		t.Fatalf("stale canonical summary ok = %v err = %v, want retained", ok, err)
+	}
+	currentNode, ok, err := summaryStore.GetNode(ctx, scope, recent.NodeID("summary-"+scope.ConversationID))
+	if err != nil || !ok {
+		t.Fatalf("current canonical summary ok = %v err = %v, want retained", ok, err)
+	}
+	currentRecord, err := projectors.SummaryNode(currentNode)
+	if err != nil {
+		t.Fatalf("SummaryNode(current) error = %v", err)
+	}
+	if ok, err := projectionDocExists(ctx, index, namespace, staleRecord.ID); err != nil || !ok {
+		t.Fatalf("stale summary projection after delete failure ok = %v err = %v, want retained", ok, err)
+	}
+	if ok, err := projectionDocExists(ctx, index, namespace, currentRecord.ID); err != nil || !ok {
+		t.Fatalf("current summary projection after delete failure ok = %v err = %v, want retained", ok, err)
+	}
+}
+
+func TestSummaryDAGLifecycleCanonicalCleanupDegradesWhenDeleteNodeUnsupported(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	baseSummaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	summaryStore := summaryStoreWithoutTargetDelete{SummaryStore: baseSummaryStore}
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	staleNode := summaryLifecycleNode(scope, "summary-stale", "stale summary remains when targeted delete is unsupported")
+	if _, err := summaryStore.PutNode(ctx, staleNode); err != nil {
+		t.Fatalf("PutNode(stale) error = %v", err)
+	}
+
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed degraded cleanup", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if got, want := step.Details["stale_store_cleanup"], "skipped_degraded"; got != want {
+		t.Fatalf("stale_store_cleanup = %v, want %q; step=%+v", got, want, step)
+	}
+	if got, want := step.Details["canonical_cleanup_mode"], "skipped_degraded"; got != want {
+		t.Fatalf("canonical_cleanup_mode = %v, want %q; step=%+v", got, want, step)
+	}
+	assertStepDetailInt(t, step, "canonical_stale_candidates", 1)
+	assertStepDetailInt(t, step, "canonical_stale_deleted", 0)
+	assertCheckpointString(t, stored.Checkpoint, "canonical_cleanup_mode", "skipped_degraded")
+	if _, ok, err := summaryStore.GetNode(ctx, scope, staleNode.ID); err != nil || !ok {
+		t.Fatalf("stale canonical summary ok = %v err = %v, want retained", ok, err)
+	}
+	if _, ok, err := summaryStore.GetNode(ctx, scope, recent.NodeID("summary-"+scope.ConversationID)); err != nil || !ok {
+		t.Fatalf("current canonical summary ok = %v err = %v, want retained", ok, err)
+	}
+}
+
+func TestMessageIndexLifecycleCleanupDegradesWhenListDeleteUnsupported(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	baseIndex, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = baseIndex.Close() })
+	index := &deleteByFilterUnavailableLifecycleIndex{
+		Index:     baseIndex,
+		listErr:   errdefs.NotAvailablef("test: list unsupported"),
+		deleteErr: errdefs.NotAvailablef("test: delete unsupported"),
+	}
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-current",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace() error = %v", err)
+	}
+	currentRecord := sourceMessageRecord(t, scope, messages[0])
+	staleRecord := sourceMessageRecord(t, scope, sourcemessage.Message{
+		ID:             "dia-stale",
+		ConversationID: scope.ConversationID,
+		Message:        model.NewTextMessage(model.RoleUser, "stale message projection"),
+	})
+	writer, err := indexed.NewWriter(baseIndex, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{staleRecord}); err != nil {
+		t.Fatalf("seed stale projection error = %v", err)
+	}
+
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want degraded completion", result, err)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "message_index.conversation")
+	if got, want := step.Details["cleanup_mode"], "skipped_degraded"; got != want {
+		t.Fatalf("cleanup_mode = %v, want %q; step=%+v", got, want, step)
+	}
+	if got, want := stored.Checkpoint["cleanup_mode"], "skipped_degraded"; got != want {
+		t.Fatalf("checkpoint cleanup_mode = %v, want %q; checkpoint=%+v", got, want, stored.Checkpoint)
+	}
+	for label, id := range map[string]string{
+		"current": currentRecord.ID,
+		"stale":   staleRecord.ID,
+	} {
+		if ok, err := projectionDocExists(ctx, baseIndex, namespace, id); err != nil || !ok {
+			t.Fatalf("%s projection exists = %v err = %v, want retained", label, ok, err)
+		}
+	}
+}
+
+func TestMessageIndexLifecycleCleanupPlainUnsupportedTextListErrorFails(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	baseIndex, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = baseIndex.Close() })
+	listErr := errors.New("test: backend not supported while listing projections")
+	index := &deleteByFilterUnavailableLifecycleIndex{
+		Index:   baseIndex,
+		listErr: listErr,
+	}
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-current",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	result, err := mem.RunOnce(ctx)
+	if err == nil || !strings.Contains(err.Error(), listErr.Error()) {
+		t.Fatalf("RunOnce() result = %+v error = %v, want list backend failure", result, err)
+	}
+	if result.Completed {
+		t.Fatalf("RunOnce() result = %+v, want failed job", result)
+	}
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("stored status = %q, want failed; report=%+v", stored.Status, stored)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "message_index.conversation")
+	if step.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("step status = %q, want failed; step=%+v", step.Status, step)
+	}
+	if got := step.Details["stale_projection_scan"]; got != "list_failed" {
+		t.Fatalf("stale_projection_scan = %v, want list_failed; step=%+v", got, step)
+	}
+	if got := step.Details["cleanup_mode"]; got == "skipped_degraded" {
+		t.Fatalf("cleanup_mode = %v, want backend failure not degraded; step=%+v", got, step)
+	}
+}
+
+func TestLifecycleEmptyCapabilitiesSelectConversationDerivedViews(t *testing.T) {
+	ctx := context.Background()
+	messageOnly, err := newLifecycleSelectionSystem(t, false)
+	if err != nil {
+		t.Fatalf("newLifecycleSelectionSystem(messageOnly) error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	report, err := messageOnly.Rebuild(ctx, memory.RebuildRequest{Scope: scope, DryRun: true})
+	if err != nil {
+		t.Fatalf("Rebuild(messageOnly) error = %v", err)
+	}
+	if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityMessageIndex) || capabilityPresent(report.Operation.Capabilities, memory.CapabilitySummaryDAG) {
+		t.Fatalf("messageOnly capabilities = %+v, want only message_index", report.Operation.Capabilities)
+	}
+
+	messageAndSummary, err := newLifecycleSelectionSystem(t, true)
+	if err != nil {
+		t.Fatalf("newLifecycleSelectionSystem(messageAndSummary) error = %v", err)
+	}
+	report, err = messageAndSummary.Reload(ctx, memory.ReloadRequest{Scope: scope, DryRun: true})
+	if err != nil {
+		t.Fatalf("Reload(messageAndSummary) error = %v", err)
+	}
+	if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityMessageIndex) || !capabilityPresent(report.Operation.Capabilities, memory.CapabilitySummaryDAG) {
+		t.Fatalf("messageAndSummary capabilities = %+v, want message_index and summary_dag", report.Operation.Capabilities)
+	}
+	if !lifecycleStepPresent(report.Steps, "message_index.conversation") || !lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+		t.Fatalf("steps = %+v, want message and summary dry-run steps", report.Steps)
+	}
+}
+
+func TestLifecycleConversationDerivedViewsRequireConversationScope(t *testing.T) {
+	ctx := context.Background()
+	mem, err := newLifecycleSelectionSystem(t, true)
+	if err != nil {
+		t.Fatalf("newLifecycleSelectionSystem() error = %v", err)
+	}
+	report, err := mem.Rebuild(ctx, memory.RebuildRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user"},
+		Capabilities: []memory.Capability{
+			memory.CapabilityMessageIndex,
+			memory.CapabilitySummaryDAG,
+		},
+		DryRun: true,
+	})
+	if err != nil {
+		t.Fatalf("Rebuild() error = %v", err)
+	}
+	if report.Status == memory.LifecycleStatusCompleted || report.Status == memory.LifecycleStatusEnqueued {
+		t.Fatalf("Rebuild report = %+v, want skipped/not enqueued without conversation_id", report)
+	}
+	if !lifecycleSkippedStepPresent(report.Steps, "message_index.scope") || !lifecycleSkippedStepPresent(report.Steps, "summary_dag.scope") {
+		t.Fatalf("steps = %+v, want skipped scope steps", report.Steps)
+	}
+}
+
+func TestAppendMessageAndPackRecentContext(t *testing.T) {
+	ctx := context.Background()
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{MessageStore: newMessageStore()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope: scope,
+		Messages: []sourcemessage.Message{{
+			Message: model.NewTextMessage(model.RoleUser, "hello"),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+	if len(result.Jobs) != 0 {
+		t.Fatalf("AppendMessage Jobs = %+v, want none", result.Jobs)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: scope})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if len(pack.Items) != 1 || pack.Items[0].Text != "user: hello" {
+		t.Fatalf("PackContext Items = %+v, want recent message", pack.Items)
+	}
+}
+
+func TestAppendMessageIndexesAndRetrievesSourceMessages(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	defer func() { _ = index.Close() }()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+		WriteStages: []memory.StageSpec{
+			{Name: "append_message"},
+			{Name: "index_messages"},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_messages"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		Index:        index,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+	_, err = mem.AppendMessage(ctx, memory.AppendMessageRequest{
+		Scope: scope,
+		Messages: []sourcemessage.Message{
+			{
+				ID:       "dia-1",
+				Message:  model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+				Metadata: map[string]any{"dia_id": "dia-1", "speaker": "Ada"},
+			},
+			{
+				ID:       "dia-2",
+				Message:  model.NewTextMessage(model.RoleUser, "Ben talked about lunch."),
+				Metadata: map[string]any{"dia_id": "dia-2", "speaker": "Ben"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage() error = %v", err)
+	}
+
+	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+		Scope: scope,
+		Query: "blue notebook lamp",
+		TopK:  3,
+		Window: recent.WindowRequest{Budget: &recent.WindowBudget{
+			MaxMessages: 1,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("PackContext() error = %v", err)
+	}
+	if len(pack.MessageHits) == 0 {
+		t.Fatalf("MessageHits = 0, want source message retrieval hit")
+	}
+	if pack.MessageHits[0].Message.ID != "dia-1" {
+		t.Fatalf("first MessageHit = %q, want dia-1", pack.MessageHits[0].Message.ID)
+	}
+	if len(pack.Items) == 0 || pack.Items[0].Message == nil || pack.Items[0].Message.ID != "dia-1" || pack.Items[0].Retrieval == nil {
+		t.Fatalf("first context item = %+v, want retrieval-backed dia-1 source message", pack.Items)
+	}
+}
+
+func TestImportDocumentWithoutChunkerReturnsNotAvailableWhenDefaultPlanIncludesChunks(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	documentStore := sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/document"))
+	chunkStore := viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(root, "views/document_chunks"))
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceDocumentStore, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityDocumentChunks, Required: true}},
+		Projections:  []memory.ProjectionSpec{{Capability: memory.CapabilityDocumentChunks, Namespace: "document_chunks", Required: true}},
+	}, memory.Deps{
+		DocumentStore: documentStore,
+		ChunkStore:    chunkStore,
+		Index:         index,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if !plannedStageNames(mem.Plan().Write)["chunk_document"] {
+		t.Fatalf("default Write = %+v, want chunk_document despite missing chunker", mem.Plan().Write)
+	}
+
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
+	_, err = mem.ImportDocument(ctx, memory.ImportDocumentRequest{
 		Scope: scope,
 		Document: sourcedocument.Document{
 			ID:      "doc-1",
-			Content: "flowcraft document indexing recalls chunkable runtime memory",
+			Content: "Ada stored the field notes in the cedar box.",
 		},
 	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("ImportDocument() error = %v, want NotAvailable without DocumentChunker", err)
+	}
+	chunks, err := chunkStore.ListChunks(ctx, "doc-1", viewdocument.ListOptions{Scope: &scope})
 	if err != nil {
-		t.Fatalf("ImportDocument error = %v", err)
+		t.Fatalf("ListChunks() error = %v", err)
 	}
-	if len(result.Chunks) != 1 || result.Chunks[0].Scope.DatasetID != "dataset-1" || result.Chunks[0].DocumentID != "doc-1" {
-		t.Fatalf("ImportDocument chunks = %+v, want stored dataset-1/doc-1 chunk", result.Chunks)
-	}
-	if chunker.calls != 1 {
-		t.Fatalf("chunker calls = %d, want 1", chunker.calls)
-	}
-	stored, ok, err := mem.DocumentStore().Get(ctx, "dataset-1", "doc-1")
-	if err != nil || !ok {
-		t.Fatalf("DocumentStore.Get ok=%v err=%v, want stored canonical document", ok, err)
-	}
-	if stored.DatasetID != "dataset-1" || stored.ID != "doc-1" || stored.Version == 0 || stored.ContentHash == "" {
-		t.Fatalf("stored document = %+v, want canonical fields assigned", stored)
-	}
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "doc_chunks")
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scope,
-		Query: "chunkable runtime memory",
-		TopK:  5,
-	})
-	if err != nil {
-		t.Fatalf("PackContext document retrieval error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || pack.DocumentHits[0].Chunk.DocumentID != "doc-1" {
-		t.Fatalf("DocumentHits = %+v, want imported document chunk", pack.DocumentHits)
-	}
-	if len(pack.Items) != 1 || pack.Items[0].Kind != derive.ContextItemDocumentChunk {
-		t.Fatalf("PackContext Items = %+v, want document chunk item only", pack.Items)
+	if len(chunks) != 0 {
+		t.Fatalf("chunks = %+v, want no derived chunks after NotAvailable", chunks)
 	}
 }
 
-func TestMemoryFacadeImportDocumentScopesDocumentProjectionByUser(t *testing.T) {
+func TestAppendMessageWithoutSummarizerReturnsNotAvailableAfterMessageIndex(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	mem, err := memory.New(documentRetrievalSpec(), deps)
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("New scoped document memory error = %v", err)
+		t.Fatalf("retrieval workspace: %v", err)
 	}
-
-	scopeOne := testScope("conv-doc")
-	scopeOne.DatasetID = "dataset-1"
-	scopeTwo := scopeOne
-	scopeTwo.UserID = "user-2"
-	for _, entry := range []struct {
-		scope memory.Scope
-		id    string
-	}{
-		{scope: scopeOne, id: "doc-user-1"},
-		{scope: scopeTwo, id: "doc-user-2"},
-	} {
-		_, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-			Scope: entry.scope,
-			Document: sourcedocument.Document{
-				ID:      entry.id,
-				Content: "same document text about scoped projection recall",
-			},
-		})
-		if err != nil {
-			t.Fatalf("ImportDocument scope %+v error = %v", entry.scope, err)
-		}
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scopeOne,
-		Query: "scoped projection recall",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext scoped document retrieval error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || pack.DocumentHits[0].Chunk.DocumentID != "doc-user-1" {
-		t.Fatalf("DocumentHits = %+v, want only user-1 document", pack.DocumentHits)
-	}
-}
-
-func TestMemoryFacadePackContextFiltersDocumentsByDataset(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	mem, err := memory.New(documentRetrievalSpec(), deps)
-	if err != nil {
-		t.Fatalf("New dataset document memory error = %v", err)
-	}
-
-	scopeA := testScope("conv-doc")
-	scopeA.DatasetID = "dataset-a"
-	scopeB := scopeA
-	scopeB.DatasetID = "dataset-b"
-	for _, entry := range []struct {
-		scope memory.Scope
-		id    string
-	}{
-		{scope: scopeA, id: "doc-a"},
-		{scope: scopeB, id: "doc-b"},
-	} {
-		_, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-			Scope: entry.scope,
-			Document: sourcedocument.Document{
-				ID:      entry.id,
-				Content: "shared dataset filter document recall",
-			},
-		})
-		if err != nil {
-			t.Fatalf("ImportDocument dataset %+v error = %v", entry.scope, err)
-		}
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scopeA,
-		Query: "dataset filter document recall",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext dataset document retrieval error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || pack.DocumentHits[0].Chunk.Scope.DatasetID != "dataset-a" {
-		t.Fatalf("DocumentHits = %+v, want only dataset-a", pack.DocumentHits)
-	}
-}
-
-func TestMemoryFacadeImportDocumentNormalizesScopeAndDocumentDataset(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	mem, err := memory.New(documentRetrievalSpec(), deps)
-	if err != nil {
-		t.Fatalf("New normalized document memory error = %v", err)
-	}
-
-	rawScope := testScope(" conv-doc ")
-	rawScope.RuntimeID = " runtime-1 "
-	rawScope.UserID = " user-1 "
-	rawScope.DatasetID = " dataset-1 "
-	result, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope: rawScope,
-		Document: sourcedocument.Document{
-			DatasetID: " dataset-1 ",
-			ID:        " doc-1 ",
-			Content:   "trimmed dataset document recall",
-		},
-	})
-	if err != nil {
-		t.Fatalf("ImportDocument normalized scope error = %v", err)
-	}
-	wantScope := testScope("conv-doc")
-	wantScope.DatasetID = "dataset-1"
-	if len(result.Chunks) != 1 || result.Chunks[0].Scope != wantScope {
-		t.Fatalf("ImportDocument chunks = %+v, want normalized scope %+v", result.Chunks, wantScope)
-	}
-	if _, ok, err := mem.DocumentStore().Get(ctx, "dataset-1", "doc-1"); err != nil || !ok {
-		t.Fatalf("DocumentStore.Get normalized document ok = %v err %v, want true nil", ok, err)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: rawScope,
-		Query: "trimmed dataset document recall",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext normalized document scope error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || pack.DocumentHits[0].Chunk.Scope != wantScope {
-		t.Fatalf("DocumentHits = %+v, want normalized scope %+v", pack.DocumentHits, wantScope)
-	}
-}
-
-func TestMemoryFacadeImportDocumentValidationAndDependencyErrors(t *testing.T) {
-	ctx := context.Background()
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
-
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	mem, err := memory.New(documentRetrievalSpec(), deps)
-	if err != nil {
-		t.Fatalf("New document memory error = %v", err)
-	}
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope: scope,
-		Document: sourcedocument.Document{
-			DatasetID: "other-dataset",
-			ID:        "doc-1",
-			Content:   "conflicting dataset",
-		},
-	}); err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "does not match scope dataset_id") {
-		t.Fatalf("ImportDocument dataset conflict err = %v, want validation conflict", err)
-	}
-
-	missingStoreDeps := newDocumentDeps(t)
-	missingStoreDeps.DocumentStore = nil
-	missingStoreDeps.DocumentChunker = &fakeDocumentChunker{}
-	missingStore, err := memory.New(documentStoreOnlySpec(), missingStoreDeps)
-	if err != nil {
-		t.Fatalf("New missing document store memory error = %v", err)
-	}
-	if _, err := missingStore.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-1", Content: "missing store"},
-	}); err == nil || !errdefs.IsNotAvailable(err) || !strings.Contains(err.Error(), "document store is not configured") {
-		t.Fatalf("ImportDocument missing store err = %v, want NotAvailable", err)
-	}
-
-	missingChunkDeps := newDocumentDeps(t)
-	missingChunkDeps.ChunkStore = nil
-	missingChunkDeps.DocumentChunker = nil
-	missingChunks, err := memory.New(documentChunkStageSpec(), missingChunkDeps)
-	if err != nil {
-		t.Fatalf("New missing chunk flow memory error = %v", err)
-	}
-	if _, err := missingChunks.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-1", Content: "missing chunk flow"},
-	}); err == nil || !errdefs.IsNotAvailable(err) || !strings.Contains(err.Error(), "chunk_document") {
-		t.Fatalf("ImportDocument missing chunk flow err = %v, want chunk_document NotAvailable", err)
-	}
-
-	missingIndexDeps := newDocumentDeps(t)
-	missingIndexDeps.Index = nil
-	missingIndexDeps.DocumentChunker = &fakeDocumentChunker{}
-	if _, err := memory.New(documentRetrievalSpec(), missingIndexDeps); err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "projections require Index") {
-		t.Fatalf("New missing index err = %v, want projection validation error", err)
-	}
-}
-
-func TestMemoryFacadeContextPackerCanChangePackedItems(t *testing.T) {
-	ctx := context.Background()
-	scope := testScope("conv-1")
-	packer := &fakeMemoryContextPacker{
-		fn: func(input derive.ContextPackInput) (derive.ContextPackOutput, error) {
-			if input.Scope != scope {
-				t.Fatalf("ContextPacker Scope = %+v, want %+v", input.Scope, scope)
-			}
-			if input.Query != "Ada tea" {
-				t.Fatalf("ContextPacker Query = %q, want Ada tea", input.Query)
-			}
-			if len(input.Window.Messages) != 1 || len(input.Items) != 1 {
-				t.Fatalf("ContextPacker input window/items = %d/%d, want 1/1", len(input.Window.Messages), len(input.Items))
-			}
-			item := input.Items[0]
-			item.Text = "hook-selected context"
-			return derive.ContextPackOutput{Items: []derive.ContextItem{item}}, nil
-		},
-	}
-	deps := newDeps(t)
-	deps.ContextPacker = packer
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
 	mem, err := memory.New(memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
 		Capabilities: []memory.CapabilitySpec{
 			{Capability: memory.CapabilityRecentWindow, Required: true},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "pack_context"},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New(context packer facade) error = %v", err)
-	}
-	if _, err := mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
-		ConversationID: scope.ConversationID,
-		Messages:       []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	}); err != nil {
-		t.Fatalf("Append message error = %v", err)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: scope, Query: "Ada tea"})
-	if err != nil {
-		t.Fatalf("PackContext() error = %v", err)
-	}
-	if packer.calls != 1 {
-		t.Fatalf("ContextPacker calls = %d, want 1", packer.calls)
-	}
-	if len(pack.Items) != 1 || pack.Items[0].Text != "hook-selected context" {
-		t.Fatalf("PackContext Items = %+v, want hook-selected item", pack.Items)
-	}
-}
-
-func TestMemoryFacadePackContextFiltersSemanticRetrievalByScope(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New scoped semantic memory error = %v", err)
-	}
-
-	scopeOne := testScope("conv-1")
-	scopeTwo := scopeOne
-	scopeTwo.UserID = "user-2"
-	for _, scope := range []memory.Scope{scopeOne, scopeTwo} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    scope,
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		}); err != nil {
-			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
-		}
-	}
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "observations")
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "facts")
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "fact_graph")
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scopeOne,
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext scoped semantic retrieval error = %v", err)
-	}
-	if len(pack.ObservationHits) != 1 || pack.ObservationHits[0].Observation.Scope != scopeOne {
-		t.Fatalf("ObservationHits = %+v, want only scope one", pack.ObservationHits)
-	}
-	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.Scope != scopeOne {
-		t.Fatalf("FactHits = %+v, want only scope one", pack.FactHits)
-	}
-	for _, hit := range pack.FactGraphHits {
-		if hit.Node != nil && hit.Node.Scope != scopeOne {
-			t.Fatalf("FactGraph node hit scope = %+v, want %+v", hit.Node.Scope, scopeOne)
-		}
-		if hit.Edge != nil && hit.Edge.Scope != scopeOne {
-			t.Fatalf("FactGraph edge hit scope = %+v, want %+v", hit.Edge.Scope, scopeOne)
-		}
-	}
-}
-
-func TestMemoryFacadeRetrieveAndExpandFactGraphMergeWithoutOverwrite(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	spec.ReadStages = []memory.StageSpec{
-		{Name: "load_recent_messages"},
-		{Name: "retrieve_fact_graph"},
-		{Name: "expand_fact_graph"},
-		{Name: "pack_context"},
-	}
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New retrieve+expand memory error = %v", err)
-	}
-
-	scope := testScope("conv-expand")
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage retrieve+expand error = %v", err)
-	}
-	if result.FactGraph == nil || len(result.FactGraph.Nodes) == 0 {
-		t.Fatalf("AppendMessage graph = %+v, want seed node", result.FactGraph)
-	}
-	seed := result.FactGraph.Nodes[0]
-	expandedNode := fact.Node{
-		ID:         fact.NodeID(scopedID("node-expanded", scope)),
-		Scope:      scope,
-		Kind:       fact.NodeEntity,
-		Label:      "Expanded Neighbor",
-		FactRefs:   seed.FactRefs,
-		SourceRefs: seed.SourceRefs,
-		Signature:  seed.Signature,
-	}
-	if _, err := deps.FactGraphStore.PutNode(ctx, expandedNode); err != nil {
-		t.Fatalf("Put expanded node error = %v", err)
-	}
-	expandedEdge := fact.Edge{
-		ID:         fact.EdgeID(scopedID("edge-expanded", scope)),
-		Scope:      scope,
-		From:       expandedNode.ID,
-		To:         seed.ID,
-		Predicate:  "related_to",
-		Status:     fact.FactActive,
-		Confidence: 1,
-		FactRefs:   seed.FactRefs,
-		SourceRefs: seed.SourceRefs,
-		Signature:  seed.Signature,
-	}
-	if _, err := deps.FactGraphStore.PutEdge(ctx, expandedEdge); err != nil {
-		t.Fatalf("Put expanded edge error = %v", err)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scope,
-		Query: "Ada",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext retrieve+expand error = %v", err)
-	}
-	var expandedNodeHits, expandedEdgeHits, seedNodeHits int
-	for _, hit := range pack.FactGraphHits {
-		if hit.Node != nil && hit.Node.ID == seed.ID {
-			seedNodeHits++
-		}
-		if hit.Node != nil && hit.Node.ID == expandedNode.ID && hit.Expanded && hit.Depth == 1 && hit.SeedNodeID == seed.ID {
-			expandedNodeHits++
-		}
-		if hit.Edge != nil && hit.Edge.ID == expandedEdge.ID && hit.Expanded && hit.Depth == 1 && hit.SeedNodeID == seed.ID {
-			expandedEdgeHits++
-		}
-	}
-	if seedNodeHits != 1 {
-		t.Fatalf("seed node hits = %d, want stable deduped seed; hits=%+v", seedNodeHits, pack.FactGraphHits)
-	}
-	if expandedNodeHits != 1 || expandedEdgeHits != 1 {
-		t.Fatalf("expanded hits node:%d edge:%d, want one each from expand_fact_graph; hits=%+v", expandedNodeHits, expandedEdgeHits, pack.FactGraphHits)
-	}
-}
-
-func TestMemoryFacadePackContextReturnsOnlyActiveFacts(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{statuses: []fact.FactStatus{
-		fact.FactActive,
-		fact.FactRetracted,
-		fact.FactSuperseded,
-		fact.FactConflict,
-	}}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New active-only semantic memory error = %v", err)
-	}
-
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-1"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage active-only facts error = %v", err)
-	}
-	if len(result.Facts) != 4 {
-		t.Fatalf("AppendMessage facts = %+v, want active plus non-active ledger facts", result.Facts)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-1"),
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext active-only facts error = %v", err)
-	}
-	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.Status != fact.FactActive {
-		t.Fatalf("FactHits = %+v, want only active fact", pack.FactHits)
-	}
-	for _, item := range pack.Items {
-		if item.Kind == derive.ContextItemFact && (item.Fact == nil || item.Fact.Status != fact.FactActive) {
-			t.Fatalf("PackContext fact item = %+v, want only active fact items", item)
-		}
-	}
-}
-
-func TestMemoryFacadeSemanticRetrievalSeparatesGlobalAndUserPartitions(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New global partition memory error = %v", err)
-	}
-
-	userScope := testScope("conv-global")
-	globalScope := userScope
-	globalScope.UserID = ""
-	for _, scope := range []memory.Scope{userScope, globalScope} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    scope,
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		}); err != nil {
-			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
-		}
-	}
-
-	userPack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: userScope,
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext user partition error = %v", err)
-	}
-	if len(userPack.ObservationHits) != 1 || userPack.ObservationHits[0].Observation.Scope != userScope {
-		t.Fatalf("user ObservationHits = %+v, want only user scope", userPack.ObservationHits)
-	}
-	if len(userPack.FactHits) != 1 || userPack.FactHits[0].Fact.Scope != userScope {
-		t.Fatalf("user FactHits = %+v, want only user scope", userPack.FactHits)
-	}
-
-	globalPack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: globalScope,
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext global partition error = %v", err)
-	}
-	if len(globalPack.ObservationHits) != 1 || globalPack.ObservationHits[0].Observation.Scope != globalScope {
-		t.Fatalf("global ObservationHits = %+v, want only global scope", globalPack.ObservationHits)
-	}
-	if len(globalPack.FactHits) != 1 || globalPack.FactHits[0].Fact.Scope != globalScope {
-		t.Fatalf("global FactHits = %+v, want only global scope", globalPack.FactHits)
-	}
-}
-
-func TestMemoryFacadePackContextAgentSoftIsolation(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New agent scoped memory error = %v", err)
-	}
-
-	shared := testScope("conv-1")
-	agentA := shared
-	agentA.AgentID = "agent-a"
-	agentB := shared
-	agentB.AgentID = "agent-b"
-	for _, scope := range []memory.Scope{shared, agentA, agentB} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    scope,
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		}); err != nil {
-			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
-		}
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: agentA,
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext agent scoped retrieval error = %v", err)
-	}
-	gotAgents := map[string]bool{}
-	for _, hit := range pack.ObservationHits {
-		gotAgents[hit.Observation.Scope.AgentID] = true
-	}
-	if len(pack.ObservationHits) != 2 || !gotAgents[""] || !gotAgents["agent-a"] || gotAgents["agent-b"] {
-		t.Fatalf("Observation agent hits = %+v, want shared and agent-a only", pack.ObservationHits)
-	}
-	for _, hit := range pack.FactHits {
-		if hit.Fact.Scope.AgentID == "agent-b" {
-			t.Fatalf("FactHits included other agent: %+v", pack.FactHits)
-		}
-	}
-}
-
-func TestMemoryFacadeNormalizesScopeBeforeWritingAndReading(t *testing.T) {
-	ctx := context.Background()
-	spec := semanticRetrievalSpec()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New normalized scope memory error = %v", err)
-	}
-
-	rawScope := memory.Scope{
-		RuntimeID:      " runtime-1 ",
-		UserID:         " user-1 ",
-		AgentID:        " agent-1 ",
-		ConversationID: " conv-normalized ",
-		DatasetID:      " dataset-1 ",
-		EntityID:       " entity-1 ",
-	}
-	wantScope := memory.Scope{
-		RuntimeID:      "runtime-1",
-		UserID:         "user-1",
-		AgentID:        "agent-1",
-		ConversationID: "conv-normalized",
-		DatasetID:      "dataset-1",
-		EntityID:       "entity-1",
-	}
-	if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    rawScope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	}); err != nil {
-		t.Fatalf("AppendMessage normalized scope error = %v", err)
-	}
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: rawScope,
-		Query: "Ada tea likes",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext normalized scope error = %v", err)
-	}
-	if len(pack.ObservationHits) != 1 || pack.ObservationHits[0].Observation.Scope != wantScope {
-		t.Fatalf("ObservationHits = %+v, want normalized scope %+v", pack.ObservationHits, wantScope)
-	}
-	if len(pack.FactHits) != 1 || pack.FactHits[0].Fact.Scope != wantScope {
-		t.Fatalf("FactHits = %+v, want normalized scope %+v", pack.FactHits, wantScope)
-	}
-}
-
-func TestMemoryFacadePackContextFiltersSummaryByConversation(t *testing.T) {
-	ctx := context.Background()
-	spec := memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
 			{Capability: memory.CapabilitySummaryDAG, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true}},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "build_summary_dag"},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_summaries"},
-			{Name: "pack_context"},
-		},
-	}
-	deps := newDeps(t)
-	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
-	deps.Summarizer = &fakeSummarizer{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New summary memory error = %v", err)
-	}
-	for _, conversationID := range []string{"conv-1", "conv-2"} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    testScope(conversationID),
-			Messages: []sourcemessage.Message{messageWithText("summary should mention runtime memory")},
-		}); err != nil {
-			t.Fatalf("AppendMessage %s error = %v", conversationID, err)
-		}
-	}
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "summaries")
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: testScope("conv-1"),
-		Query: "runtime summary",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext summary scoped retrieval error = %v", err)
-	}
-	if len(pack.SummaryHits) != 1 || pack.SummaryHits[0].Node.Scope.ConversationID != "conv-1" {
-		t.Fatalf("SummaryHits = %+v, want only conv-1", pack.SummaryHits)
-	}
-}
-
-func TestMemoryFacadeSummaryDAGUsesScopedPartitions(t *testing.T) {
-	ctx := context.Background()
-	spec := memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilitySummaryDAG, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true}},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "build_summary_dag"},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_summaries"},
-			{Name: "pack_context"},
-		},
-	}
-	deps := newDeps(t)
-	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
-	deps.Summarizer = &fakeSummarizer{}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New summary scoped memory error = %v", err)
-	}
-
-	scopeOne := testScope("shared-conv")
-	scopeTwo := scopeOne
-	scopeTwo.UserID = "user-2"
-	for _, scope := range []memory.Scope{scopeOne, scopeTwo} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    scope,
-			Messages: []sourcemessage.Message{messageWithText("summary should mention runtime memory")},
-		}); err != nil {
-			t.Fatalf("AppendMessage scope %+v error = %v", scope, err)
-		}
-	}
-	assertBaseNamespaceEmpty(t, ctx, mem.RetrievalIndex(), "summaries")
-
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scopeOne,
-		Query: "runtime summary",
-		TopK:  10,
-	})
-	if err != nil {
-		t.Fatalf("PackContext summary partition error = %v", err)
-	}
-	if len(pack.SummaryHits) != 1 || pack.SummaryHits[0].Node.Scope != scopeOne {
-		t.Fatalf("SummaryHits = %+v, want only scope one", pack.SummaryHits)
-	}
-}
-
-func TestMemoryFacadeAsyncWriteStagesDrainIntoReadPath(t *testing.T) {
-	ctx := context.Background()
-	spec := memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-			{Capability: memory.CapabilityFactLedger, Required: true},
-			{Capability: memory.CapabilityFactGraph, Required: true},
 		},
 		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
-			{Capability: memory.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
+			{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true},
 		},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "extract_observations", Async: true},
-			{Name: "reconcile_facts", Async: true},
-			{Name: "build_fact_graph", Async: true},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_observations"},
-			{Name: "retrieve_facts"},
-			{Name: "retrieve_fact_graph"},
-			{Name: "pack_context"},
-		},
-	}
-	extractor := &fakeObservationExtractor{}
-	deps := newDeps(t)
-	deps.ObservationExtractor = extractor
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	jobStore := newRecordingJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New async memory error = %v", err)
-	}
-
-	scope := testScope("conv-1")
-	scope.AgentID = "agent-1"
-	scope.DatasetID = "dataset-1"
-	scope.EntityID = "entity-1"
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		TraceID:  "trace-async-write",
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Index:        index,
 	})
 	if err != nil {
-		t.Fatalf("AppendMessage async error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
-	if len(result.Jobs) != 1 || result.Jobs[0] == "" {
-		t.Fatalf("AppendMessage Jobs = %+v, want one queued job", result.Jobs)
-	}
-	if len(jobStore.jobs) != 1 || jobStore.jobs[0].Scope != scope || jobStore.jobs[0].TraceID != "trace-async-write" {
-		t.Fatalf("queued job = %+v, want full scope %+v and trace", jobStore.jobs, scope)
-	}
-	storedReport, ok, err := reportStore.GetLifecycleReport(ctx, "trace-async-write")
-	if err != nil || !ok || storedReport.Status != memory.LifecycleStatusEnqueued || storedReport.JobID != result.Jobs[0] {
-		t.Fatalf("async write enqueue report = %+v ok=%v err=%v, want enqueued trace report", storedReport, ok, err)
-	}
-	if len(result.Observations) != 0 || len(result.Facts) != 0 || result.FactGraph != nil {
-		t.Fatalf("AppendMessage async sync outputs = %+v, want none before job store runs", result)
-	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats before drain error = %v", err)
-	}
-	if stats.Pending != 1 || stats.Completed != 0 {
-		t.Fatalf("QueueStats before drain = %+v, want one pending", stats)
+	stages := plannedStageNames(mem.Plan().Write)
+	if !stages["index_messages"] || !stages["build_summary_dag"] {
+		t.Fatalf("default Write = %+v, want message_index and summary_dag stages despite missing summarizer", mem.Plan().Write)
 	}
 
-	before, err := mem.PackContext(ctx, memory.ContextRequest{Scope: scope, Query: "Ada tea likes"})
-	if err != nil {
-		t.Fatalf("PackContext before drain error = %v", err)
-	}
-	if len(before.ObservationHits) != 0 || len(before.FactHits) != 0 || len(before.FactGraphHits) != 0 {
-		t.Fatalf("PackContext before drain hits = obs:%d facts:%d graph:%d, want no derived hits", len(before.ObservationHits), len(before.FactHits), len(before.FactGraphHits))
-	}
-
-	if err := mem.Drain(ctx); err != nil {
-		t.Fatalf("Drain error = %v", err)
-	}
-	stats, err = mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats after drain error = %v", err)
-	}
-	if stats.Pending != 0 || stats.Completed != 1 || stats.Failed != 0 {
-		t.Fatalf("QueueStats after drain = %+v, want one completed", stats)
-	}
-	storedReport, ok, err = reportStore.GetLifecycleReport(ctx, "trace-async-write")
-	if err != nil || !ok || storedReport.Status != memory.LifecycleStatusCompleted || storedReport.TraceID != "trace-async-write" {
-		t.Fatalf("async write completed report = %+v ok=%v err=%v, want completed trace report", storedReport, ok, err)
-	}
-	if extractor.calls != 1 {
-		t.Fatalf("extractor calls after async drain = %d, want 1", extractor.calls)
-	}
-	after, err := mem.PackContext(ctx, memory.ContextRequest{Scope: scope, Query: "Ada tea likes"})
-	if err != nil {
-		t.Fatalf("PackContext after drain error = %v", err)
-	}
-	if len(after.ObservationHits) != 1 || len(after.FactHits) != 1 || len(after.FactGraphHits) == 0 {
-		t.Fatalf("PackContext after drain hits = obs:%d facts:%d graph:%d, want derived hits", len(after.ObservationHits), len(after.FactHits), len(after.FactGraphHits))
-	}
-}
-
-func TestMemoryFacadeWriteStageAsyncDependencyValidation(t *testing.T) {
-	tests := []struct {
-		name     string
-		stages   []memory.StageSpec
-		wantErr  bool
-		contains []string
-	}{
-		{
-			name: "extract observations async before sync reconcile is invalid",
-			stages: []memory.StageSpec{
-				{Name: "append_message"},
-				{Name: "extract_observations", Async: true},
-				{Name: "reconcile_facts"},
-			},
-			wantErr:  true,
-			contains: []string{"reconcile_facts", "extract_observations"},
-		},
-		{
-			name: "reconcile facts async before sync graph is invalid",
-			stages: []memory.StageSpec{
-				{Name: "append_message"},
-				{Name: "extract_observations"},
-				{Name: "reconcile_facts", Async: true},
-				{Name: "build_fact_graph"},
-			},
-			wantErr:  true,
-			contains: []string{"build_fact_graph", "reconcile_facts"},
-		},
-		{
-			name: "sync extract before async reconcile and graph is valid",
-			stages: []memory.StageSpec{
-				{Name: "append_message"},
-				{Name: "extract_observations"},
-				{Name: "reconcile_facts", Async: true},
-				{Name: "build_fact_graph", Async: true},
-			},
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			spec := semanticRetrievalSpec()
-			spec.WriteStages = tc.stages
-			deps := newDeps(t)
-			deps.ObservationExtractor = &fakeObservationExtractor{}
-			deps.FactReconciler = &fakeFactReconciler{}
-			deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-			deps.JobStore = memory.NewMemoryJobStore()
-
-			mem, err := memory.New(spec, deps)
-			if tc.wantErr {
-				if err == nil || !errdefs.IsValidation(err) {
-					t.Fatalf("New async dependency spec err = %v, want validation error", err)
-				}
-				for _, want := range tc.contains {
-					if !strings.Contains(err.Error(), want) {
-						t.Fatalf("New async dependency spec err = %v, want message containing %q", err, want)
-					}
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("New async dependency spec error = %v", err)
-			}
-			t.Cleanup(func() {
-				if err := mem.Close(); err != nil {
-					t.Fatalf("Close error = %v", err)
-				}
-			})
-		})
-	}
-}
-
-func TestMemoryFacadeAsyncWriteStagesRequireJobStore(t *testing.T) {
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	_, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-		},
-		WriteStages: []memory.StageSpec{{Name: "extract_observations", Async: true}},
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), "async write stages require JobStore") {
-		t.Fatalf("New async without job store err = %v, want job store validation error", err)
-	}
-}
-
-func TestMemoryFacadeRunOnceDrainAndShutdownJobStore(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = memory.NewMemoryJobStore()
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-		},
-		WriteStages: []memory.StageSpec{{Name: "extract_observations", Async: true}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New job store memory error = %v", err)
-	}
-	for _, conversationID := range []string{"conv-1", "conv-2"} {
-		if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-			Scope:    testScope(conversationID),
-			Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-		}); err != nil {
-			t.Fatalf("AppendMessage %s error = %v", conversationID, err)
-		}
-	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats pending error = %v", err)
-	}
-	if stats.Pending != 2 {
-		t.Fatalf("QueueStats pending = %+v, want two pending", stats)
-	}
-	result, err := mem.RunOnce(ctx)
-	if err != nil {
-		t.Fatalf("RunOnce error = %v", err)
-	}
-	if !result.Completed || result.JobID == "" || result.Error != "" {
-		t.Fatalf("RunOnce result = %+v, want completed job", result)
-	}
-	stats, err = mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats after RunOnce error = %v", err)
-	}
-	if stats.Pending != 1 || stats.Completed != 1 {
-		t.Fatalf("QueueStats after RunOnce = %+v, want one pending and one completed", stats)
-	}
-	if err := mem.Drain(ctx); err != nil {
-		t.Fatalf("Drain remaining jobs error = %v", err)
-	}
-	if err := mem.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown error = %v", err)
-	}
-}
-
-func TestMemoryFacadeCancelJobWritesReport(t *testing.T) {
-	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-		},
-		WriteStages: []memory.StageSpec{{Name: "extract_observations", Async: true}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New cancel job memory error = %v", err)
-	}
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		TraceID:  "trace-cancel-append",
-		Scope:    testScope("conv-cancel"),
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage cancel setup error = %v", err)
-	}
-	if len(result.Jobs) != 1 {
-		t.Fatalf("AppendMessage cancel jobs = %+v, want one job", result.Jobs)
-	}
-	if err := mem.CancelJob(ctx, result.Jobs[0], "operator cancelled"); err != nil {
-		t.Fatalf("CancelJob error = %v", err)
-	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats after CancelJob error = %v", err)
-	}
-	if stats.Pending != 0 || stats.Cancelled != 1 || stats.CancelledByKind[memory.LifecycleJobKindWriteChain] != 1 {
-		t.Fatalf("QueueStats after CancelJob = %+v, want cancelled write_chain job", stats)
-	}
-	reports, err := reportStore.ListLifecycleReports(ctx)
-	if err != nil {
-		t.Fatalf("ListLifecycleReports after CancelJob error = %v", err)
-	}
-	if len(reports) != 1 || reports[0].Status != memory.LifecycleStatusCancelled || reports[0].JobID != result.Jobs[0] || reports[0].TraceID != "trace-cancel-append" {
-		t.Fatalf("CancelJob reports = %+v, want one cancelled report on append trace", reports)
-	}
-	stored, ok, err := reportStore.GetLifecycleReport(ctx, "trace-cancel-append")
-	if err != nil || !ok || stored.Status != memory.LifecycleStatusCancelled || stored.JobID != result.Jobs[0] {
-		t.Fatalf("CancelJob stored trace report = %+v ok=%v err=%v, want cancelled report", stored, ok, err)
-	}
-}
-
-func TestMemoryFacadeUnknownRequiredStageErrors(t *testing.T) {
-	deps := newDeps(t)
-	_, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		WriteStages:  []memory.StageSpec{{Name: "invent_memories"}},
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), `unsupported write stage "invent_memories"`) {
-		t.Fatalf("New unknown write stage err = %v, want unsupported stage error", err)
-	}
-
-	_, err = memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		ReadStages:   []memory.StageSpec{{Name: "retrieve_moon_phase"}},
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), `unsupported read stage "retrieve_moon_phase"`) {
-		t.Fatalf("New unknown read stage err = %v, want unsupported stage error", err)
-	}
-
-	_, err = memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Lifecycle:    []memory.StageSpec{{Name: "compact"}},
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), `unsupported lifecycle stage "compact"`) {
-		t.Fatalf("New required unsupported lifecycle stage err = %v, want unsupported lifecycle error", err)
-	}
-}
-
-func TestMemoryFacadeOptionalUnknownStageSkipped(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		WriteStages:  []memory.StageSpec{{Name: "future_write_stage", Optional: true}},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "future_read_stage", Optional: true},
-			{Name: "pack_context"},
-		},
-		Lifecycle: []memory.StageSpec{
-			{Name: "readiness"},
-			{Name: "compact", Optional: true},
-			{Name: "future_lifecycle_stage", Optional: true},
-			{Name: "shutdown"},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New optional unknown stages error = %v", err)
-	}
-	if got, want := len(mem.Plan().Lifecycle), 2; got != want {
-		t.Fatalf("Plan().Lifecycle len = %d, want optional unsupported stages skipped to %d", got, want)
-	}
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    testScope("conv-1"),
-		Messages: []sourcemessage.Message{messageWithText("window only")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage with optional unknown stage error = %v", err)
-	}
-	if len(result.Observations) != 0 || len(result.Facts) != 0 || result.FactGraph != nil {
-		t.Fatalf("AppendMessage optional unknown result = %+v, want no derived records", result)
-	}
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: testScope("conv-1")})
-	if err != nil {
-		t.Fatalf("PackContext with optional unknown stage error = %v", err)
-	}
-	if len(pack.Items) != 1 || pack.Items[0].Kind != derive.ContextItemRecentMessage {
-		t.Fatalf("PackContext optional unknown Items = %+v, want recent message only", pack.Items)
-	}
-}
-
-func TestMemoryFacadeReadStageCannotBeAsync(t *testing.T) {
-	deps := newDeps(t)
-	_, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		ReadStages:   []memory.StageSpec{{Name: "load_recent_messages", Async: true}},
-	}, deps)
-	if err == nil || !strings.Contains(err.Error(), `read stage "load_recent_messages" cannot be async`) {
-		t.Fatalf("New async read stage err = %v, want validation error", err)
-	}
-}
-
-func TestMemoryFacadeRetrievalReadStageRequiresQuery(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true}},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_observations"},
-			{Name: "pack_context"},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New query validation memory error = %v", err)
-	}
-	if _, err := mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
-		ConversationID: "conv-1",
-		Messages:       []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	}); err != nil {
-		t.Fatalf("Append setup message error = %v", err)
-	}
-	_, err = mem.PackContext(ctx, memory.ContextRequest{Scope: testScope("conv-1")})
-	if err == nil || !strings.Contains(err.Error(), `read stage "retrieve_observations" requires query`) {
-		t.Fatalf("PackContext empty query err = %v, want query validation error", err)
-	}
-}
-
-func TestMemoryFacadeContextRequestRejectsConflictingWindowScope(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New window scope validation memory error = %v", err)
-	}
-
-	scope := testScope("conv-1")
-	scope.AgentID = "agent-1"
-	scope.DatasetID = "dataset-1"
-	scope.EntityID = "entity-1"
-	if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("window scope validation")},
-	}); err != nil {
-		t.Fatalf("AppendMessage setup error = %v", err)
-	}
-
-	matchingWindowScope := memory.Scope{ConversationID: " conv-1 ", UserID: " user-1 "}
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	_, err = mem.AppendMessage(ctx, memory.AppendMessageRequest{
 		Scope: scope,
-		Window: recent.WindowRequest{
-			Scope:  matchingWindowScope,
-			Budget: recent.WindowBudget{MaxMessages: 1},
-		},
-	})
-	if err != nil {
-		t.Fatalf("PackContext matching nested window scope error = %v", err)
-	}
-	if len(pack.Window.Messages) != 1 {
-		t.Fatalf("PackContext matching nested window scope messages = %d, want 1", len(pack.Window.Messages))
-	}
-
-	tests := []struct {
-		name  string
-		scope memory.Scope
-		want  string
-	}{
-		{name: "runtime", scope: memory.Scope{RuntimeID: "runtime-2"}, want: "window runtime_id"},
-		{name: "user", scope: memory.Scope{UserID: "user-2"}, want: "window user_id"},
-		{name: "agent", scope: memory.Scope{AgentID: "agent-2"}, want: "window agent_id"},
-		{name: "conversation", scope: memory.Scope{ConversationID: "conv-2"}, want: "window conversation_id"},
-		{name: "dataset", scope: memory.Scope{DatasetID: "dataset-2"}, want: "window dataset_id"},
-		{name: "entity", scope: memory.Scope{EntityID: "entity-2"}, want: "window entity_id"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := mem.PackContext(ctx, memory.ContextRequest{
-				Scope:  scope,
-				Window: recent.WindowRequest{Scope: tc.scope},
-			})
-			if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("PackContext conflicting window scope err = %v, want validation containing %q", err, tc.want)
-			}
-		})
-	}
-}
-
-func TestMemoryFacadeReadinessReportsMissingDependencies(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationStore = nil
-	deps.ObservationExtractor = nil
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityObservationLedger},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New readiness memory error = %v", err)
-	}
-	report, err := mem.Readiness(ctx)
-	if err != nil {
-		t.Fatalf("Readiness error = %v", err)
-	}
-	if report.Ready {
-		t.Fatalf("Readiness Ready = true, want false for missing optional capability deps: %+v", report)
-	}
-	assertReadinessCheck(t, report, "capability.observation_ledger.store", false)
-	assertReadinessCheck(t, report, "capability.observation_ledger.service", false)
-}
-
-func TestMemoryFacadeDiagnosticsFreshnessReturnsStructuredChecks(t *testing.T) {
-	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Diagnostics:  []memory.StageSpec{{Name: "freshness"}},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New diagnostics memory error = %v", err)
-	}
-
-	rawScope := memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "}
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{Scope: rawScope})
-	if err != nil {
-		t.Fatalf("Diagnostics freshness error = %v", err)
-	}
-	wantScope := memory.Scope{RuntimeID: "runtime-1", UserID: "user-1", ConversationID: "conv-1"}
-	if !report.Ready || !report.OK || report.Stage != "freshness" || report.Scope != wantScope {
-		t.Fatalf("Diagnostics report = %+v, want ready/ok freshness with normalized scope %+v", report, wantScope)
-	}
-	if !reflect.DeepEqual(report.Capabilities, []memory.Capability{memory.CapabilityRecentWindow}) {
-		t.Fatalf("Diagnostics capabilities = %+v, want recent_window default from assembly", report.Capabilities)
-	}
-	assertDiagnosticCheck(t, report, "system.configured", memory.DiagnosticStatusOK, true)
-	assertDiagnosticCheck(t, report, "capability.recent_window.message_store", memory.DiagnosticStatusOK, true)
-}
-
-func TestMemoryFacadeDiagnosticsReportsMissingProjectionDependencies(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.Index = nil
-	deps.ObservationStore = nil
-	deps.ObservationExtractor = nil
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityObservationLedger},
-		},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
 		}},
-		Diagnostics: []memory.StageSpec{{Name: "freshness"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New diagnostics missing deps memory error = %v", err)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        testScope("conv-1"),
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
 	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("AppendMessage() error = %v, want NotAvailable without Summarizer", err)
+	}
+	messages, err := msgStore.List(ctx, scope.ConversationID, sourcemessage.ListOptions{})
 	if err != nil {
-		t.Fatalf("Diagnostics missing deps error = %v", err)
+		t.Fatalf("List() error = %v", err)
 	}
-	if report.Ready || report.OK {
-		t.Fatalf("Diagnostics missing deps report = %+v, want not ready/ok", report)
+	if len(messages) != 1 {
+		t.Fatalf("messages = %+v, want appended source message retained", messages)
 	}
-	assertDiagnosticCheck(t, report, "capability.observation_ledger.store", memory.DiagnosticStatusError, false)
-	assertDiagnosticCheck(t, report, "capability.observation_ledger.service", memory.DiagnosticStatusError, false)
-	assertDiagnosticCheck(t, report, "projection.observation_ledger.index", memory.DiagnosticStatusError, false)
-	assertDiagnosticCheck(t, report, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true)
-}
-
-func TestMemoryFacadeDiagnosticsUsesNormalizedHardPartitionScope(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityObservationLedger},
-		},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-		}},
-		Diagnostics: []memory.StageSpec{{Name: "freshness"}},
-	}, deps)
+	messageNamespace, err := projectors.ScopedNamespace("message_index", scope)
 	if err != nil {
-		t.Fatalf("New diagnostics partition memory error = %v", err)
+		t.Fatalf("ScopedNamespace(message_index) error = %v", err)
 	}
-
-	userReport, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "},
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
-	})
+	record := sourceMessageRecord(t, scope, messages[0])
+	if _, ok, err := index.Get(ctx, messageNamespace, record.ID); err != nil || !ok {
+		t.Fatalf("message projection exists = %v err = %v, want message_index stage to complete before summary failure", ok, err)
+	}
+	nodes, err := summaryStore.ListNodes(ctx, scope, recent.ListOptions{})
 	if err != nil {
-		t.Fatalf("Diagnostics user scope error = %v", err)
+		t.Fatalf("ListNodes() error = %v", err)
 	}
-	globalReport, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        memory.Scope{RuntimeID: " runtime-1 ", ConversationID: " conv-1 "},
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
-	})
-	if err != nil {
-		t.Fatalf("Diagnostics global scope error = %v", err)
-	}
-	if userReport.Scope != testScope("conv-1") {
-		t.Fatalf("Diagnostics user scope = %+v, want normalized %+v", userReport.Scope, testScope("conv-1"))
-	}
-	wantGlobalScope := testScope("conv-1")
-	wantGlobalScope.UserID = ""
-	if globalReport.Scope != wantGlobalScope {
-		t.Fatalf("Diagnostics global scope = %+v, want normalized %+v", globalReport.Scope, wantGlobalScope)
-	}
-	userNamespace := diagnosticDetailString(t, assertDiagnosticCheck(t, userReport, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true), "scoped_namespace")
-	globalNamespace := diagnosticDetailString(t, assertDiagnosticCheck(t, globalReport, "projection.observation_ledger.scoped_namespace", memory.DiagnosticStatusOK, true), "scoped_namespace")
-	if userNamespace == globalNamespace {
-		t.Fatalf("scoped namespaces matched for user/global partitions: %q", userNamespace)
+	if len(nodes) != 0 {
+		t.Fatalf("summary nodes = %+v, want no summary nodes after NotAvailable", nodes)
 	}
 }
 
-func TestMemoryFacadeDiagnosticsRequiresDeclaredStage(t *testing.T) {
+func TestFreshnessScansProjectionMetadata(t *testing.T) {
 	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New diagnostics unavailable memory error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{Scope: testScope("conv-1")})
-	if err == nil || !errdefs.IsNotAvailable(err) || report.OK || report.Ready {
-		t.Fatalf("Diagnostics undeclared report=%+v err=%v, want undeclared NotAvailable", report, err)
-	}
-	assertDiagnosticCheck(t, report, "diagnostics.stage.freshness", memory.DiagnosticStatusError, false)
-}
-
-func TestMemoryFacadeDiagnosticsQueueStatsRunsWithoutJobStore(t *testing.T) {
-	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Diagnostics:  []memory.StageSpec{{Name: "queue_stats"}},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New diagnostics unsupported memory error = %v", err)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope: testScope("conv-1"),
-		Stage: "queue_stats",
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
 	})
 	if err != nil {
-		t.Fatalf("Diagnostics queue_stats without JobStore error = %v", err)
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
 	}
-	if !report.OK || !report.Ready {
-		t.Fatalf("Diagnostics queue_stats without JobStore report=%+v, want ready/ok empty queue", report)
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.freshness_metadata")
+	if !report.Ready || !report.OK || !check.OK {
+		t.Fatalf("freshness report/check = %+v / %+v, want OK", report, check)
 	}
-	check := assertDiagnosticCheck(t, report, "diagnostics.stage.queue_stats", memory.DiagnosticStatusOK, true)
-	if diagnosticDetailInt(t, check, "pending") != 0 || diagnosticDetailInt(t, check, "completed") != 0 || diagnosticDetailInt(t, check, "attempts") != 0 {
-		t.Fatalf("queue_stats empty details = %+v, want zero counters", check.Details)
+	assertDiagnosticDetailInt(t, check, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, check, "missing_source_refs", 0)
+	assertDiagnosticDetailInt(t, check, "invalid_source_refs", 0)
+	assertDiagnosticDetailInt(t, check, "missing_signature", 0)
+	assertDiagnosticDetailInt(t, check, "invalid_signature", 0)
+	staleness := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.staleness")
+	if !staleness.OK {
+		t.Fatalf("staleness check = %+v, want OK", staleness)
 	}
+	assertDiagnosticDetailInt(t, staleness, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, staleness, "records_compared", 1)
+	assertDiagnosticDetailInt(t, staleness, "stale_records", 0)
 }
 
-func TestMemoryFacadeDiagnosticsQueueStatsReportsJobCounters(t *testing.T) {
+func TestDocumentChunkReadAvailabilityDoesNotRequireChunker(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	deps := newDeps(t)
-	deps.JobStore = jobStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Diagnostics:  []memory.StageSpec{{Name: "queue_stats"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New diagnostics queue_stats counters memory error = %v", err)
-	}
-	completedID, err := jobStore.Enqueue(ctx, memory.LifecycleJob{Kind: memory.LifecycleJobKindWriteChain, Scope: testScope("conv-queue")})
-	if err != nil {
-		t.Fatalf("Enqueue completed job error = %v", err)
-	}
-	claimed, ok, err := jobStore.Claim(ctx, "worker-queue", time.Minute)
-	if err != nil || !ok || claimed.ID != completedID {
-		t.Fatalf("Claim completed job = %+v ok=%v err=%v, want job %q", claimed, ok, err, completedID)
-	}
-	if err := jobStore.Complete(ctx, completedID, "worker-queue", memory.LifecycleJobResult{Completed: true}); err != nil {
-		t.Fatalf("Complete job error = %v", err)
-	}
-	if _, err := jobStore.Enqueue(ctx, memory.LifecycleJob{Kind: memory.LifecycleJobKindReconcile, Scope: testScope("conv-queue")}); err != nil {
-		t.Fatalf("Enqueue pending job error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope: testScope("conv-queue"),
-		Stage: "queue_stats",
+	readOnly, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceDocumentStore, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityDocumentChunks, Required: true}},
+		Projections:  []memory.ProjectionSpec{{Capability: memory.CapabilityDocumentChunks, Namespace: "document_chunks", Required: true}},
+	}, memory.Deps{
+		DocumentStore: fixture.documentStore,
+		ChunkStore:    fixture.chunkStore,
+		Index:         fixture.index,
 	})
 	if err != nil {
-		t.Fatalf("Diagnostics queue_stats counters error = %v", err)
-	}
-	check := assertDiagnosticCheck(t, report, "diagnostics.stage.queue_stats", memory.DiagnosticStatusOK, true)
-	if diagnosticDetailInt(t, check, "pending") != 1 || diagnosticDetailInt(t, check, "completed") != 1 || diagnosticDetailInt(t, check, "attempts") != 1 {
-		t.Fatalf("queue_stats details = %+v, want pending/completed/attempt counters", check.Details)
-	}
-	queued, ok := check.Details["queued_by_kind"].(map[string]int)
-	if !ok || queued[string(memory.LifecycleJobKindReconcile)] != 1 || queued[string(memory.LifecycleJobKindWriteChain)] != 1 {
-		t.Fatalf("queued_by_kind = %#v, want reconcile and write_chain counts", check.Details["queued_by_kind"])
-	}
-	completed, ok := check.Details["completed_by_kind"].(map[string]int)
-	if !ok || completed[string(memory.LifecycleJobKindWriteChain)] != 1 {
-		t.Fatalf("completed_by_kind = %#v, want write_chain count", check.Details["completed_by_kind"])
-	}
-}
-
-func TestMemoryFacadeDiagnosticsRegistryInvokesDeclaredProbe(t *testing.T) {
-	ctx := context.Background()
-	probe := &fakeDiagnosticProbe{}
-	registry := memory.NewDiagnosticProbeRegistry()
-	registry.Register("trace", "custom", probe)
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.DiagnosticProbes = registry
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Diagnostics:  []memory.StageSpec{{Name: "trace"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New diagnostics registry memory error = %v", err)
+		t.Fatalf("New(read-only without chunker) error = %v", err)
 	}
 
-	traceID := memory.TraceID("trace-diagnostic-custom")
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		TraceID: traceID,
-		Scope:   testScope("conv-1"),
-		Stage:   "trace",
+	report, err := readOnly.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
 	})
 	if err != nil {
-		t.Fatalf("Diagnostics registry trace error = %v", err)
+		t.Fatalf("Diagnostics(freshness without chunker) error = %v", err)
 	}
-	if report.TraceID != traceID || probe.calls != 1 || probe.stage != "trace" || probe.scope != testScope("conv-1") || probe.trace != traceID {
-		t.Fatalf("custom probe report=%+v calls=%d stage=%q scope=%+v trace=%q, want one normalized trace call", report, probe.calls, probe.stage, probe.scope, probe.trace)
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.freshness_metadata")
+	if !report.Ready || !check.OK {
+		t.Fatalf("freshness without chunker = %+v / %+v, want read checks ready and OK", report, check)
 	}
-	assertDiagnosticCheck(t, report, "diagnostics.probe.custom", memory.DiagnosticStatusOK, true)
-	stored, ok, err := reportStore.GetDiagnosticReport(ctx, traceID)
-	if err != nil || !ok || stored.TraceID != traceID || stored.Stage != "trace" {
-		t.Fatalf("stored diagnostic report = %+v ok=%v err=%v, want trace report", stored, ok, err)
+	writeWarning := requireDiagnosticCheck(t, report.Checks, "write_readiness.document_chunks")
+	if writeWarning.Status != memory.DiagnosticStatusWarning || writeWarning.Severity != memory.DiagnosticSeverityWarning || writeWarning.OK {
+		t.Fatalf("write readiness warning = %+v, want warning without failing Ready", writeWarning)
 	}
-}
-
-func TestMemoryFacadeTraceDiagnosticsReturnsStructuredDetails(t *testing.T) {
-	ctx := context.Background()
-	traceID := memory.TraceID("trace-control-plane")
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-		}},
-		Diagnostics: []memory.StageSpec{{Name: "trace"}},
-	}, deps)
+	if hasDiagnosticCheck(report.Checks, "capability.document_chunks.service") {
+		t.Fatalf("freshness checks = %+v, want no write-side chunker dependency check", report.Checks)
+	}
+	readiness, err := readOnly.Readiness(ctx)
 	if err != nil {
-		t.Fatalf("New trace diagnostics memory error = %v", err)
+		t.Fatalf("Readiness(without chunker) error = %v", err)
 	}
-	if err := reportStore.PutLifecycleReport(ctx, memory.LifecycleExecutionReport{
-		TraceID: traceID,
-		Operation: memory.LifecycleOperation{
-			TraceID: traceID,
-			Action:  memory.LifecycleActionFreshnessCheck,
-		},
-		Accepted:   true,
-		Supported:  true,
-		Status:     memory.LifecycleStatusCompleted,
-		JobID:      "memory-job-control",
-		Message:    "freshness lifecycle completed",
-		Steps:      []memory.LifecycleStep{{Name: "freshness_check", Status: memory.LifecycleStatusCompleted, Completed: true}},
-		Checkpoint: map[string]any{"check_count": 3},
-	}); err != nil {
-		t.Fatalf("PutLifecycleReport trace control error = %v", err)
-	}
-	if err := reportStore.PutDiagnosticReport(ctx, memory.DiagnosticReport{
-		TraceID: traceID,
-		Stage:   "freshness",
-		Ready:   true,
-		OK:      true,
-		Message: "freshness diagnostics completed",
-		Checks: []memory.DiagnosticCheck{{
-			Name:     "diagnostics.stage.freshness",
-			Status:   memory.DiagnosticStatusOK,
-			OK:       true,
-			Severity: memory.DiagnosticSeverityInfo,
-			Message:  "freshness diagnostics stage is available",
-		}},
-	}); err != nil {
-		t.Fatalf("PutDiagnosticReport trace control error = %v", err)
-	}
-	completedID, err := jobStore.Enqueue(ctx, memory.LifecycleJob{Kind: memory.LifecycleJobKindFreshnessCheck, Scope: testScope("conv-1"), TraceID: traceID})
-	if err != nil {
-		t.Fatalf("Enqueue completed trace job error = %v", err)
-	}
-	claimed, ok, err := jobStore.Claim(ctx, "worker-trace-control", time.Minute)
-	if err != nil || !ok || claimed.ID != completedID {
-		t.Fatalf("Claim trace job = %+v ok=%v err=%v, want job %q", claimed, ok, err, completedID)
-	}
-	if err := jobStore.Complete(ctx, completedID, "worker-trace-control", memory.LifecycleJobResult{Completed: true}); err != nil {
-		t.Fatalf("Complete trace job error = %v", err)
-	}
-	if _, err := jobStore.Enqueue(ctx, memory.LifecycleJob{Kind: memory.LifecycleJobKindReconcile, Scope: testScope("conv-1"), TraceID: traceID}); err != nil {
-		t.Fatalf("Enqueue pending trace job error = %v", err)
+	readinessWarning := requireReadinessCheck(t, readiness.Checks, "write_readiness.document_chunks")
+	if !readiness.Ready || readinessWarning.Ready || readinessWarning.Severity != memory.DiagnosticSeverityWarning {
+		t.Fatalf("Readiness(without chunker) = %+v, warning = %+v, want Ready with write warning", readiness, readinessWarning)
 	}
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		TraceID:      traceID,
-		Scope:        testScope("conv-1"),
-		Stage:        "trace",
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
-	})
-	if err != nil {
-		t.Fatalf("Diagnostics trace error = %v", err)
-	}
-	if !report.Ready || !report.OK || report.Stage != "trace" || report.TraceID == "" {
-		t.Fatalf("trace report = %+v, want ready/ok trace", report)
-	}
-	assertDiagnosticCheck(t, report, "diagnostics.stage.trace", memory.DiagnosticStatusOK, true)
-	planCheck := assertDiagnosticCheck(t, report, "trace.plan", memory.DiagnosticStatusOK, true)
-	if got := planCheck.Details["diagnostic_stages"]; got == nil {
-		t.Fatalf("trace.plan diagnostic_stages missing: %+v", planCheck)
-	}
-	reportStoreCheck := assertDiagnosticCheck(t, report, "trace.report_store", memory.DiagnosticStatusOK, true)
-	if reportStoreCheck.Details["report_store_configured"] != true || reportStoreCheck.Details["lifecycle_report_found"] != true || reportStoreCheck.Details["diagnostic_report_found"] != true {
-		t.Fatalf("trace.report_store details = %+v, want configured lifecycle+diagnostic reports", reportStoreCheck.Details)
-	}
-	lifecycleSummary, ok := reportStoreCheck.Details["lifecycle_report"].(map[string]any)
-	if !ok || lifecycleSummary["status"] != string(memory.LifecycleStatusCompleted) || lifecycleSummary["message"] != "freshness lifecycle completed" || lifecycleSummary["job_id"] != "memory-job-control" || lifecycleSummary["check_count"] != 3 {
-		t.Fatalf("trace lifecycle report summary = %#v, want completed status/message/job/check_count", reportStoreCheck.Details["lifecycle_report"])
-	}
-	diagnosticSummary, ok := reportStoreCheck.Details["diagnostic_report"].(map[string]any)
-	if !ok || diagnosticSummary["status"] != string(memory.DiagnosticStatusOK) || diagnosticSummary["message"] != "freshness diagnostics completed" || diagnosticSummary["check_count"] != 1 {
-		t.Fatalf("trace diagnostic report summary = %#v, want ok message/check_count", reportStoreCheck.Details["diagnostic_report"])
-	}
-	queueCheck := assertDiagnosticCheck(t, report, "trace.queue_stats", memory.DiagnosticStatusOK, true)
-	if queueCheck.Details["job_store_configured"] != true || queueCheck.Details["queue_stats_configured"] != true {
-		t.Fatalf("trace.queue_stats configured details = %+v, want job store configured", queueCheck.Details)
-	}
-	if diagnosticDetailInt(t, queueCheck, "pending") != 1 || diagnosticDetailInt(t, queueCheck, "running") != 0 || diagnosticDetailInt(t, queueCheck, "completed") != 1 || diagnosticDetailInt(t, queueCheck, "failed") != 0 || diagnosticDetailInt(t, queueCheck, "cancelled") != 0 || diagnosticDetailInt(t, queueCheck, "attempts") != 1 {
-		t.Fatalf("trace.queue_stats details = %+v, want pending/completed/attempt counters", queueCheck.Details)
-	}
-	projectionCheck := assertDiagnosticCheck(t, report, "trace.projections", memory.DiagnosticStatusOK, true)
-	projections, ok := projectionCheck.Details[string(memory.CapabilityObservationLedger)].(map[string]any)
-	if !ok || projections["scoped_namespace"] == "" || projections["filter"] == nil {
-		t.Fatalf("trace.projections details = %+v, want scoped namespace and filter for observation ledger", projectionCheck.Details)
-	}
-}
-
-func TestMemoryFacadeConsistencyDiagnosticsRequiresDeclaredStage(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	mem, err := memory.New(documentRetrievalSpec(), deps)
-	if err != nil {
-		t.Fatalf("New consistency undeclared memory error = %v", err)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        documentScope("dataset-1"),
-		Stage:        "consistency",
+	freshness, err := readOnly.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        fixture.scope,
 		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
 	})
-	if err == nil || !errdefs.IsNotAvailable(err) || report.OK || report.Ready {
-		t.Fatalf("Consistency diagnostics undeclared report=%+v err=%v, want NotAvailable", report, err)
+	if err != nil {
+		t.Fatalf("Freshness(without chunker) error = %v", err)
 	}
-	assertDiagnosticCheck(t, report, "diagnostics.stage.consistency", memory.DiagnosticStatusError, false)
+	if freshness.Status != memory.LifecycleStatusCompleted || !freshness.Ready || freshness.OK {
+		t.Fatalf("Freshness(without chunker) = %+v, want completed with write warning and Ready=true", freshness)
+	}
+	if warning := requireDiagnosticCheck(t, freshness.Checks, "write_readiness.document_chunks"); warning.Severity != memory.DiagnosticSeverityWarning {
+		t.Fatalf("Freshness write warning = %+v, want warning severity", warning)
+	}
+
+	rebuild, err := readOnly.Rebuild(ctx, memory.RebuildRequest{
+		Scope:     fixture.scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-1"}},
+		DryRun:    true,
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Rebuild(without chunker) error = %v, report = %+v, want NotAvailable", err, rebuild)
+	}
 }
 
-func TestMemoryFacadeConsistencyDiagnosticsRequiresExplicitCapabilities(t *testing.T) {
+func TestSummaryDAGReadAvailabilityDoesNotRequireSummarizer(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency empty capability memory error = %v", err)
-	}
+	fixture := newProjectedSummaryFixture(t, ctx)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope: documentScope("dataset-1"),
-		Stage: "consistency",
+	readOnly, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+	}, memory.Deps{
+		MessageStore: fixture.mem.MessageStore(),
+		SummaryStore: fixture.summaryStore,
+		Index:        fixture.index,
 	})
 	if err != nil {
-		t.Fatalf("Consistency empty capability diagnostics error = %v", err)
+		t.Fatalf("New(read-only without summarizer) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.capabilities", memory.DiagnosticStatusError, false)
-	if check.RepairHint == "" {
-		t.Fatalf("consistency.capabilities RepairHint empty: %+v", check)
+
+	report, err := readOnly.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness without summarizer) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.freshness_metadata")
+	if !report.Ready || !check.OK {
+		t.Fatalf("freshness without summarizer = %+v / %+v, want read checks ready and OK", report, check)
+	}
+	writeWarning := requireDiagnosticCheck(t, report.Checks, "write_readiness.summary_dag")
+	if writeWarning.Status != memory.DiagnosticStatusWarning || writeWarning.Severity != memory.DiagnosticSeverityWarning || writeWarning.OK {
+		t.Fatalf("write readiness warning = %+v, want warning without failing Ready", writeWarning)
+	}
+	if hasDiagnosticCheck(report.Checks, "capability.summary_dag.service") {
+		t.Fatalf("freshness checks = %+v, want no write-side summarizer dependency check", report.Checks)
+	}
+	readiness, err := readOnly.Readiness(ctx)
+	if err != nil {
+		t.Fatalf("Readiness(without summarizer) error = %v", err)
+	}
+	readinessWarning := requireReadinessCheck(t, readiness.Checks, "write_readiness.summary_dag")
+	if !readiness.Ready || readinessWarning.Ready || readinessWarning.Severity != memory.DiagnosticSeverityWarning {
+		t.Fatalf("Readiness(without summarizer) = %+v, warning = %+v, want Ready with write warning", readiness, readinessWarning)
+	}
+
+	freshness, err := readOnly.Freshness(ctx, memory.FreshnessRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
+	if err != nil {
+		t.Fatalf("Freshness(without summarizer) error = %v", err)
+	}
+	if freshness.Status != memory.LifecycleStatusCompleted || !freshness.Ready || freshness.OK {
+		t.Fatalf("Freshness(without summarizer) = %+v, want completed with write warning and Ready=true", freshness)
+	}
+	if warning := requireDiagnosticCheck(t, freshness.Checks, "write_readiness.summary_dag"); warning.Severity != memory.DiagnosticSeverityWarning {
+		t.Fatalf("Freshness write warning = %+v, want warning severity", warning)
+	}
+
+	pack, err := readOnly.PackContext(ctx, memory.ContextRequest{
+		Scope: fixture.scope,
+		Query: "summary",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext(without summarizer) error = %v", err)
+	}
+	if len(pack.SummaryHits) == 0 || pack.SummaryHits[0].Node.ID != fixture.node.ID {
+		t.Fatalf("SummaryHits = %+v, want existing summary node", pack.SummaryHits)
+	}
+
+	rebuild, err := readOnly.Rebuild(ctx, memory.RebuildRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		DryRun:       true,
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Rebuild(without summarizer) error = %v, report = %+v, want NotAvailable", err, rebuild)
 	}
 }
 
-func TestMemoryFacadeConsistencyProjectionHydratesDocumentChunks(t *testing.T) {
+func TestFreshnessReportsStaleDocumentChunkViewRecordWarning(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency projection memory error = %v", err)
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	chunk, ok, err := fixture.chunkStore.GetChunk(ctx, fixture.scope, "doc-1", viewdocument.ChunkID("whole"))
+	if err != nil || !ok {
+		t.Fatalf("GetChunk() ok = %v err = %v, want existing chunk", ok, err)
 	}
-	scope := documentScope("dataset-1")
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-ok", Content: "consistent document chunk projection"},
-	}); err != nil {
-		t.Fatalf("ImportDocument consistency ok error = %v", err)
+	chunk.Signature.TransformSignature = "test:canonical-chunk-updated"
+	if _, err := fixture.chunkStore.PutChunk(ctx, chunk); err != nil {
+		t.Fatalf("PutChunk(updated canonical chunk) error = %v", err)
 	}
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.view_freshness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("view_freshness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+	assertDiagnosticDetailString(t, check, "first_stale_doc_id", projectors.DocumentChunkRecordID(fixture.scope.DatasetID, "doc-1", viewdocument.ChunkID("whole")))
+	assertDiagnosticDetailString(t, check, "first_stale_reason", "signature")
+}
+
+func TestFreshnessReportsStaleSummaryViewRecordWarning(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+	node := fixture.node
+	node.Signature.TransformSignature = "test-summary-lifecycle:new"
+	if _, err := fixture.summaryStore.PutNode(ctx, node); err != nil {
+		t.Fatalf("PutNode(updated canonical summary) error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.view_freshness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("view_freshness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+	assertDiagnosticDetailString(t, check, "first_stale_reason", "signature")
+}
+
+func TestFreshnessMessageViewFreshnessComparesSourceRefs(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedMessageFixture(t, ctx)
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	metadata := requireDiagnosticCheck(t, report.Checks, "projection.message_index.freshness_metadata")
+	if metadata.Status != memory.DiagnosticStatusWarning || metadata.Severity != memory.DiagnosticSeverityWarning || metadata.OK {
+		t.Fatalf("freshness metadata check = %+v, want missing signature warning", metadata)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.message_index.view_freshness")
+	if !check.OK {
+		t.Fatalf("view_freshness check = %+v, want OK despite missing message signature", check)
+	}
+	sourceStaleness := requireDiagnosticCheck(t, report.Checks, "projection.message_index.source_staleness")
+	if !sourceStaleness.OK {
+		t.Fatalf("source_staleness check = %+v, want OK for valid canonical source", sourceStaleness)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want missing signature warning only", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 0)
+	assertDiagnosticDetailInt(t, sourceStaleness, "records_compared", 1)
+	assertDiagnosticDetailInt(t, sourceStaleness, "stale_records", 0)
+}
+
+func TestFreshnessReportsStaleMessageViewRecordWarning(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedMessageFixture(t, ctx)
+	if err := fixture.index.Delete(ctx, fixture.namespace, []string{fixture.recordID}); err != nil {
+		t.Fatalf("Delete valid projection doc error = %v", err)
+	}
+	writer, err := indexed.NewWriter(fixture.index, indexed.Binding{Namespace: fixture.namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	wrongRef := views.SourceRef{
+		Kind: views.SourceMessage,
+		Message: &views.MessageSourceRef{
+			ConversationID: fixture.scope.ConversationID,
+			MessageID:      "dia-wrong",
+		},
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{{
+		ID:         fixture.recordID,
+		Text:       "projection points at the wrong source ref",
+		Metadata:   diagnosticProjectionMetadata(fixture.scope, memory.CapabilityMessageIndex, fixture.message.ID, 0),
+		SourceRefs: []views.SourceRef{wrongRef},
+	}}); err != nil {
+		t.Fatalf("Upsert stale message projection doc error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.message_index.view_freshness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("view_freshness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+	assertDiagnosticDetailString(t, check, "first_stale_doc_id", fixture.recordID)
+	assertDiagnosticDetailString(t, check, "first_stale_reason", "source_refs")
+}
+
+func TestFreshnessReportsStaleMessageSourceWarningWhenCanonicalMissing(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedMessageFixture(t, ctx)
+	if err := fixture.mem.MessageStore().DeleteConversation(ctx, fixture.scope.ConversationID); err != nil {
+		t.Fatalf("DeleteConversation() error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.message_index.source_staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("source_staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "canonical_misses", 1)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+}
+
+func TestFreshnessSummarySourceStalenessValidProjectionOK(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+	if !report.Ready || !report.OK || !check.OK {
+		t.Fatalf("freshness report/source_staleness check = %+v / %+v, want OK", report, check)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "stale_records", 0)
+}
+
+func TestFreshnessReportsStaleSummarySourceWarningWhenCanonicalMissing(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+	if err := fixture.mem.MessageStore().DeleteConversation(ctx, fixture.scope.ConversationID); err != nil {
+		t.Fatalf("DeleteConversation() error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("source_staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "canonical_misses", 1)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+}
+
+func TestFreshnessReportsStaleSummarySourceWarningWhenCanonicalChanged(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+	addSummarySourceContentHash(t, ctx, fixture)
+	if err := fixture.mem.MessageStore().DeleteConversation(ctx, fixture.scope.ConversationID); err != nil {
+		t.Fatalf("DeleteConversation() error = %v", err)
+	}
+	if _, err := fixture.mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: fixture.scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a changed brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append(changed canonical message) error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("source_staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "canonical_misses", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+}
+
+func TestFreshnessReportsStaleSummarySourceWarningWhenSourceRevisionUnresolved(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sourceKey string
+	}{
+		{name: "malformed_source_key", sourceKey: "{not-json"},
+		{name: "unresolvable_source_key", sourceKey: `{"schema":"opaque.source_ref.v1","kind":"message","message":{"conversation_id":"conv","message_id":"dia-1"}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			fixture := newProjectedSummaryFixture(t, ctx)
+			node := fixture.node
+			node.Signature.SourceRevisions[0].SourceKey = tc.sourceKey
+			putProjectedSummaryNode(t, ctx, fixture, node)
+
+			report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+				Scope:        fixture.scope,
+				Stage:        "freshness",
+				Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+				PageSize:     10,
+			})
+			if err != nil {
+				t.Fatalf("Diagnostics(freshness) error = %v", err)
+			}
+			check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+			if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+				t.Fatalf("source_staleness check = %+v, want stale warning", check)
+			}
+			if !report.Ready || report.OK {
+				t.Fatalf("freshness report = %+v, want invalid lineage warning to keep Ready but fail OK", report)
+			}
+			assertDiagnosticDetailInt(t, check, "records_compared", 0)
+			assertDiagnosticDetailInt(t, check, "records_skipped", 1)
+			assertDiagnosticDetailInt(t, check, "missing_source_revisions", 1)
+			assertDiagnosticDetailInt(t, check, "invalid_source_revisions", 1)
+			assertDiagnosticDetailInt(t, check, "compare_errors", 0)
+		})
+	}
+}
+
+func TestFreshnessReportsStaleSummarySourceWarningWhenSourceRevisionNotInSourceRefs(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+	messages, err := fixture.mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: fixture.scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-2",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a silver compass."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append(mismatched source message) error = %v", err)
+	}
+	mismatchedRef := views.SourceRef{
+		Kind: views.SourceMessage,
+		Message: &views.MessageSourceRef{
+			ConversationID: fixture.scope.ConversationID,
+			MessageID:      messages[0].ID,
+		},
+	}
+	node := fixture.node
+	node.Signature.SourceRevisions[0].SourceKey = mismatchedRef.StableKey()
+	node.Signature.SourceRevisions[0].Revision = strconv.FormatUint(messages[0].Seq, 10)
+	putProjectedSummaryNode(t, ctx, fixture, node)
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("source_staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want mismatched lineage warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "invalid_source_revisions", 1)
+	assertDiagnosticDetailInt(t, check, "canonical_misses", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 0)
+	assertDiagnosticDetailInt(t, check, "compare_errors", 0)
+}
+
+func TestFreshnessReportsStaleSummarySourceWarningWhenSourceRefMissingRevision(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedSummaryFixture(t, ctx)
+	messages, err := fixture.mem.MessageStore().Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: fixture.scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-2",
+			Message: model.NewTextMessage(model.RoleUser, "Ada also found a silver compass."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append(uncovered source message) error = %v", err)
+	}
+	uncoveredRef := views.SourceRef{
+		Kind: views.SourceMessage,
+		Message: &views.MessageSourceRef{
+			ConversationID: fixture.scope.ConversationID,
+			MessageID:      messages[0].ID,
+		},
+	}
+	node := fixture.node
+	node.SourceRefs = append(append([]views.SourceRef(nil), node.SourceRefs...), uncoveredRef)
+	putProjectedSummaryNode(t, ctx, fixture, node)
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.source_staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("source_staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want missing source revision warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "records_skipped", 0)
+	assertDiagnosticDetailInt(t, check, "missing_source_revisions", 1)
+	assertDiagnosticDetailInt(t, check, "invalid_source_revisions", 0)
+	assertDiagnosticDetailInt(t, check, "canonical_misses", 0)
+	assertDiagnosticDetailInt(t, check, "stale_records", 0)
+	assertDiagnosticDetailInt(t, check, "compare_errors", 0)
+}
+
+func TestFreshnessReportsStaleDocumentChunkProjectionWarning(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	if _, err := fixture.documentStore.Put(ctx, sourcedocument.PutRequest{
+		Document: sourcedocument.Document{
+			DatasetID: fixture.scope.DatasetID,
+			ID:        "doc-1",
+			Content:   "Ada moved the updated field notes into the cedar box.",
+		},
+	}); err != nil {
+		t.Fatalf("Put updated canonical document error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.staleness")
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("staleness check = %+v, want stale warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want stale warning to keep Ready but fail OK", report)
+	}
+	if check.RepairHint != "rebuild document_chunks for affected documents" {
+		t.Fatalf("RepairHint = %q, want rebuild hint", check.RepairHint)
+	}
+	assertDiagnosticDetailInt(t, check, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, check, "records_compared", 1)
+	assertDiagnosticDetailInt(t, check, "stale_records", 1)
+}
+
+func TestFreshnessMissingSignatureSkipsDocumentChunkStalenessCompare(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	if err := fixture.index.Delete(ctx, fixture.namespace, []string{
+		projectors.DocumentChunkRecordID(fixture.scope.DatasetID, "doc-1", viewdocument.ChunkID("whole")),
+	}); err != nil {
+		t.Fatalf("Delete valid projection doc error = %v", err)
+	}
+	ref := views.SourceRef{
+		Kind: views.SourceDocument,
+		Document: &views.DocumentSourceRef{
+			DatasetID:  fixture.scope.DatasetID,
+			DocumentID: "doc-1",
+		},
+	}
+	writer, err := indexed.NewWriter(fixture.index, indexed.Binding{Namespace: fixture.namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{{
+		ID:         "missing-signature",
+		Text:       "projection missing indexed signature",
+		Metadata:   diagnosticProjectionMetadata(fixture.scope, memory.CapabilityDocumentChunks, "missing-signature", 0),
+		SourceRefs: []views.SourceRef{ref},
+	}}); err != nil {
+		t.Fatalf("Upsert missing signature projection doc error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	metadata := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.freshness_metadata")
+	if metadata.Status != memory.DiagnosticStatusWarning || metadata.Severity != memory.DiagnosticSeverityWarning || metadata.OK {
+		t.Fatalf("freshness metadata check = %+v, want missing signature warning", metadata)
+	}
+	staleness := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.staleness")
+	if !staleness.OK {
+		t.Fatalf("staleness check = %+v, want OK when missing signature is skipped", staleness)
+	}
+	assertDiagnosticDetailInt(t, staleness, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, staleness, "records_compared", 0)
+	assertDiagnosticDetailInt(t, staleness, "records_skipped", 1)
+	assertDiagnosticDetailInt(t, staleness, "stale_records", 0)
+}
+
+func TestFreshnessMissingProjectionMetadataWarningKeepsReady(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	if err := fixture.index.Upsert(ctx, fixture.namespace, []retrieval.Doc{{
+		ID:      "missing-metadata",
+		Content: "projection missing indexed freshness metadata",
+		Metadata: map[string]any{
+			projectors.MetadataViewKindKey:   "document_chunks",
+			projectors.MetadataRecordTypeKey: projectors.RecordTypeDocumentChunk,
+			projectors.MetadataRuntimeIDKey:  fixture.scope.RuntimeID,
+			projectors.MetadataUserIDKey:     fixture.scope.UserID,
+			projectors.MetadataAgentIDKey:    fixture.scope.AgentID,
+			projectors.MetadataDatasetIDKey:  fixture.scope.DatasetID,
+			projectors.MetadataDocumentIDKey: "doc-1",
+			projectors.MetadataChunkIDKey:    "missing-metadata",
+		},
+	}}); err != nil {
+		t.Fatalf("Upsert missing metadata projection doc error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.freshness_metadata")
+	if check.Status != memory.DiagnosticStatusWarning || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("freshness metadata check = %+v, want warning", check)
+	}
+	if !report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want warning to keep Ready but fail OK", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_scanned", 2)
+	assertDiagnosticDetailInt(t, check, "missing_source_refs", 1)
+	assertDiagnosticDetailInt(t, check, "missing_signature", 1)
+}
+
+func TestFreshnessReportsProjectionMetadataIssues(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	if err := fixture.index.Upsert(ctx, fixture.namespace, []retrieval.Doc{{
+		ID:      "bad-metadata",
+		Content: "projection with bad indexed metadata",
+		Metadata: map[string]any{
+			projectors.MetadataViewKindKey:   "document_chunks",
+			projectors.MetadataRecordTypeKey: projectors.RecordTypeDocumentChunk,
+			projectors.MetadataRuntimeIDKey:  fixture.scope.RuntimeID,
+			projectors.MetadataUserIDKey:     fixture.scope.UserID,
+			projectors.MetadataAgentIDKey:    fixture.scope.AgentID,
+			projectors.MetadataDatasetIDKey:  fixture.scope.DatasetID,
+			projectors.MetadataDocumentIDKey: "doc-1",
+			projectors.MetadataChunkIDKey:    "bad-metadata",
+			indexed.MetadataSourceRefsKey: []any{
+				map[string]any{"kind": "document"},
+			},
+		},
+	}}); err != nil {
+		t.Fatalf("Upsert bad metadata projection doc error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.freshness_metadata")
+	if check.Status != memory.DiagnosticStatusError || check.Severity != memory.DiagnosticSeverityError || check.OK {
+		t.Fatalf("freshness metadata check = %+v, want error", check)
+	}
+	if report.Ready || report.OK {
+		t.Fatalf("freshness report = %+v, want invalid metadata to fail readiness", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_scanned", 2)
+	assertDiagnosticDetailInt(t, check, "invalid_source_refs", 1)
+	assertDiagnosticDetailInt(t, check, "missing_signature", 1)
+	viewFreshness := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.view_freshness")
+	if !viewFreshness.OK {
+		t.Fatalf("view_freshness check = %+v, want OK because invalid metadata is handled by metadata check", viewFreshness)
+	}
+	assertDiagnosticDetailInt(t, viewFreshness, "records_scanned", 2)
+	assertDiagnosticDetailInt(t, viewFreshness, "records_compared", 1)
+	assertDiagnosticDetailInt(t, viewFreshness, "records_skipped", 1)
+	assertDiagnosticDetailInt(t, viewFreshness, "stale_records", 0)
+}
+
+func TestConsistencyReportsProjectionHydrationMiss(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	if err := fixture.index.Upsert(ctx, fixture.namespace, []retrieval.Doc{danglingDocumentChunkProjectionDoc(fixture.scope)}); err != nil {
+		t.Fatalf("Upsert dangling projection doc error = %v", err)
+	}
+
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
 		Stage:        "consistency",
 		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
 		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
 		PageSize:     10,
 	})
 	if err != nil {
-		t.Fatalf("Consistency projection diagnostics error = %v", err)
+		t.Fatalf("Diagnostics(consistency) error = %v", err)
 	}
-	if !report.OK || !report.Ready || report.NextPageToken != "" {
-		t.Fatalf("Consistency projection report = %+v, want ok without next page", report)
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.hydration")
+	if check.Status != memory.DiagnosticStatusError || check.Severity != memory.DiagnosticSeverityError || check.OK {
+		t.Fatalf("hydration check = %+v, want error", check)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.document_chunks.record", memory.DiagnosticStatusOK, true)
-	if check.RepairHint != "" || check.Details["hydrate_state"] != "found" {
-		t.Fatalf("projection consistency check = %+v, want hydrated without repair hint", check)
+	if report.Ready || report.OK {
+		t.Fatalf("consistency report = %+v, want hydration miss to fail readiness", report)
+	}
+	assertDiagnosticDetailInt(t, check, "records_scanned", 2)
+	assertDiagnosticDetailInt(t, check, "records_hydrated", 1)
+	assertDiagnosticDetailInt(t, check, "hydrate_misses", 1)
+	if check.RepairHint != "rebuild document_chunks for affected documents" {
+		t.Fatalf("RepairHint = %q, want document_chunks rebuild hint", check.RepairHint)
+	}
+	if check.Target.DatasetID != fixture.scope.DatasetID || check.Target.DocumentID != "missing-doc" {
+		t.Fatalf("Target = %+v, want missing-doc document target", check.Target)
 	}
 }
 
-func TestMemoryFacadeConsistencyProjectionReportsMissingSemanticRecord(t *testing.T) {
+func TestConsistencyHydratesValidProjection(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency missing semantic memory error = %v", err)
-	}
-	scope := documentScope("dataset-1")
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-missing-semantic", Content: "missing semantic document chunk"},
-	}); err != nil {
-		t.Fatalf("ImportDocument missing semantic error = %v", err)
-	}
-	if err := deps.ChunkStore.DeleteDocument(ctx, scope, "doc-missing-semantic"); err != nil {
-		t.Fatalf("DeleteDocument missing semantic error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
 		Stage:        "consistency",
 		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
 		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
+		PageSize:     10,
 	})
 	if err != nil {
-		t.Fatalf("Consistency missing semantic diagnostics error = %v", err)
+		t.Fatalf("Diagnostics(consistency) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.document_chunks.record", memory.DiagnosticStatusMissing, false)
-	if !strings.Contains(check.RepairHint, "reload document_chunks target=dataset-1/doc-missing-semantic") {
-		t.Fatalf("missing semantic RepairHint = %q, want reload target hint", check.RepairHint)
+	check := requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.hydration")
+	if !report.Ready || !report.OK || !check.OK {
+		t.Fatalf("consistency report/check = %+v / %+v, want OK", report, check)
+	}
+	assertDiagnosticDetailInt(t, check, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, check, "records_hydrated", 1)
+	assertDiagnosticDetailInt(t, check, "hydrate_misses", 0)
+	assertDiagnosticDetailInt(t, check, "hydrate_errors", 0)
+}
+
+func TestReconcileDocumentTargetRepairsStaleDocumentChunks(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	requireDocumentChunkStale(t, ctx, fixture)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:     fixture.scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-1"}},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile() report = %+v, want enqueued explicit repair", report)
+	}
+	if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityDocumentChunks) {
+		t.Fatalf("Capabilities = %+v, want document_chunks selected", report.Operation.Capabilities)
+	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DatasetID != fixture.scope.DatasetID || report.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("Documents = %+v, want normalized doc-1 target", report.Operation.Documents)
+	}
+	if len(report.Operation.Targets) != 1 || report.Operation.Targets[0].DocumentID != "doc-1" {
+		t.Fatalf("Targets = %+v, want document lifecycle target", report.Operation.Targets)
+	}
+
+	result, err := fixture.mem.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if !result.Completed {
+		t.Fatalf("RunOnce() result = %+v, want completed", result)
+	}
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want stored final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final Reconcile status = %q, want completed: %+v", stored.Status, stored)
+	}
+	if !lifecycleStepPresent(stored.Steps, "projection.document_chunks.hydration") || !lifecycleStepPresent(stored.Steps, "document_chunks.target") {
+		t.Fatalf("final Reconcile steps = %+v, want diagnostics and repaired target", stored.Steps)
+	}
+	if !lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.hydration", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.hydration", "post-repair") {
+		t.Fatalf("final Reconcile steps = %+v, want pre/post repair diagnostics", stored.Steps)
+	}
+	assertCheckpointBool(t, stored.Checkpoint, "post_repair_ok", true)
+	requireDocumentChunkFresh(t, ctx, fixture)
+}
+
+func TestReconcileDocumentTargetDryRunPlansRepairWithoutChangingStaleProjection(t *testing.T) {
+	ctx := context.Background()
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	before := requireDocumentChunkStale(t, ctx, fixture)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:     fixture.scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-1"}},
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(DryRun) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+		t.Fatalf("Reconcile(DryRun) report = %+v, want planned without queued job", report)
+	}
+	if !lifecycleStepPresent(report.Steps, "projection.document_chunks.hydration") || !lifecycleStepPresent(report.Steps, "document_chunks.target") {
+		t.Fatalf("DryRun steps = %+v, want diagnostics and planned target repair", report.Steps)
+	}
+	if got := report.Operation.IdempotencyKey; got == "" {
+		t.Fatalf("IdempotencyKey is empty, want normalized operation key")
+	}
+	other, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:     fixture.scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-2"}},
+		DryRun:    true,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(DryRun doc-2) error = %v", err)
+	}
+	if report.Operation.IdempotencyKey == other.Operation.IdempotencyKey {
+		t.Fatalf("IdempotencyKey = %q for different document targets, want different keys", report.Operation.IdempotencyKey)
+	}
+
+	after := requireDocumentChunkStale(t, ctx, fixture)
+	if before.Details["stale_records"] != after.Details["stale_records"] {
+		t.Fatalf("stale records changed after dry-run: before %+v after %+v", before.Details, after.Details)
 	}
 }
 
-func TestMemoryFacadeConsistencyProjectionReportsMismatchedScopeMetadata(t *testing.T) {
+func TestReconcileAutoRepairDryRunPlansAffectedDocumentChunksFromDiagnosticsPage(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency stale scope memory error = %v", err)
-	}
-	scope := documentScope("dataset-1")
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-stale-scope", Content: "stale projection scope metadata"},
-	}); err != nil {
-		t.Fatalf("ImportDocument stale scope error = %v", err)
-	}
-	namespace := scopedProjectionNamespace(t, mem, memory.CapabilityDocumentChunks, scope)
-	resp, err := deps.Index.List(ctx, namespace, retrieval.ListRequest{PageSize: 10, OrderBy: retrieval.OrderByIDAsc})
-	if err != nil || len(resp.Items) != 1 {
-		t.Fatalf("List projection docs len=%d err=%v, want one", len(resp.Items), err)
-	}
-	stale := resp.Items[0]
-	stale.Metadata[projectors.MetadataUserIDKey] = "other-user"
-	if err := deps.Index.Upsert(ctx, namespace, []retrieval.Doc{stale}); err != nil {
-		t.Fatalf("Upsert stale projection metadata error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	before := requireDocumentChunkStale(t, ctx, fixture)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:      fixture.scope,
+		AutoRepair: true,
+		DryRun:     true,
+		PageSize:   10,
 	})
 	if err != nil {
-		t.Fatalf("Consistency stale scope diagnostics error = %v", err)
+		t.Fatalf("Reconcile(AutoRepair DryRun) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.document_chunks.record", memory.DiagnosticStatusStale, false)
-	if check.RepairHint == "" || check.Details["scope_mismatches"] == nil {
-		t.Fatalf("stale scope check = %+v, want mismatch details and repair hint", check)
+	if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+		t.Fatalf("Reconcile(AutoRepair DryRun) report = %+v, want planned without queued job", report)
+	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("AutoRepair DryRun documents = %+v, want affected doc-1", report.Operation.Documents)
+	}
+	if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityDocumentChunks) {
+		t.Fatalf("AutoRepair DryRun capabilities = %+v, want document_chunks", report.Operation.Capabilities)
+	}
+	if !lifecycleStepPresent(report.Steps, "projection.document_chunks.staleness") || !lifecycleStepPresent(report.Steps, "document_chunks.target") {
+		t.Fatalf("AutoRepair DryRun steps = %+v, want diagnostics and planned document repair", report.Steps)
+	}
+	assertCheckpointString(t, report.Checkpoint, "repair_targets_source", "diagnostics_page")
+	assertCheckpointInt(t, report.Checkpoint, "repair_target_count", 1)
+
+	after := requireDocumentChunkStale(t, ctx, fixture)
+	if before.Details["stale_records"] != after.Details["stale_records"] {
+		t.Fatalf("stale records changed after auto-repair dry-run: before %+v after %+v", before.Details, after.Details)
 	}
 }
 
-func TestMemoryFacadeConsistencyProjectionHydratesSummaryDAG(t *testing.T) {
+func TestReconcileAutoRepairRepairsAffectedDocumentChunksFromDiagnosticsPage(t *testing.T) {
 	ctx := context.Background()
-	deps := newDeps(t)
-	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
-	deps.Summarizer = &fakeSummarizer{}
-	spec := memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilitySummaryDAG, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true}},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "build_summary_dag"},
-		},
-		Diagnostics: []memory.StageSpec{{Name: "consistency"}},
-	}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New summary hydrate diagnostics memory error = %v", err)
-	}
-	scope := testScope("conv-summary-hydrate")
-	if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	}); err != nil {
-		t.Fatalf("AppendMessage summary hydrate error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	requireDocumentChunkStale(t, ctx, fixture)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:      fixture.scope,
+		AutoRepair: true,
+		PageSize:   10,
 	})
 	if err != nil {
-		t.Fatalf("Consistency summary hydrate diagnostics error = %v", err)
+		t.Fatalf("Reconcile(AutoRepair) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.summary_dag.record", memory.DiagnosticStatusOK, true)
-	if check.Details["hydrate_state"] != "found" || check.Details["node_id"] == "" {
-		t.Fatalf("summary hydrate check = %+v, want found node", check)
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(AutoRepair) report = %+v, want enqueued auto repair", report)
 	}
+	assertCheckpointString(t, report.Checkpoint, "repair_targets_source", "diagnostics_page")
 
-	if err := deps.SummaryStore.DeleteScope(ctx, scope); err != nil {
-		t.Fatalf("Delete summary scope error = %v", err)
-	}
-	missing, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-	})
+	result, err := fixture.mem.RunOnce(ctx)
 	if err != nil {
-		t.Fatalf("Consistency missing summary diagnostics error = %v", err)
+		t.Fatalf("RunOnce(AutoRepair) error = %v", err)
 	}
-	check = assertDiagnosticCheck(t, missing, "consistency.projection.summary_dag.record", memory.DiagnosticStatusMissing, false)
-	if check.RepairHint == "" || check.Details["hydrate_state"] != "missing_semantic_record" {
-		t.Fatalf("missing summary hydrate check = %+v, want missing semantic record with repair hint", check)
+	if !result.Completed {
+		t.Fatalf("RunOnce(AutoRepair) result = %+v, want completed", result)
 	}
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want stored final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final AutoRepair status = %q, want completed: %+v", stored.Status, stored)
+	}
+	if len(stored.Operation.Documents) != 1 || stored.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("final AutoRepair documents = %+v, want bounded affected doc-1", stored.Operation.Documents)
+	}
+	if !lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.staleness", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.staleness", "post-repair") ||
+		!lifecycleStepPresent(stored.Steps, "document_chunks.target") {
+		t.Fatalf("final AutoRepair steps = %+v, want pre/repair/post document_chunks flow", stored.Steps)
+	}
+	assertCheckpointString(t, stored.Checkpoint, "repair_targets_source", "diagnostics_page")
+	assertCheckpointBool(t, stored.Checkpoint, "post_repair_ok", true)
+	requireDocumentChunkFresh(t, ctx, fixture)
 }
 
-func TestMemoryFacadeConsistencyProjectionReportsMissingSummaryProjection(t *testing.T) {
+func TestReconcileAutoRepairUsesOnlyCurrentDiagnosticsPage(t *testing.T) {
 	ctx := context.Background()
-	deps := newDeps(t)
-	deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.NewMemWorkspace())
-	deps.Summarizer = &fakeSummarizer{}
-	spec := memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilitySummaryDAG, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summaries", Required: true}},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "build_summary_dag"},
-		},
-		Diagnostics: []memory.StageSpec{{Name: "consistency"}},
-	}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New missing summary projection diagnostics memory error = %v", err)
-	}
-	scope := testScope("conv-summary-missing-projection")
-	if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	}); err != nil {
-		t.Fatalf("AppendMessage missing summary projection error = %v", err)
-	}
-	nodes, err := deps.SummaryStore.ListNodes(ctx, scope, recent.ListOptions{Limit: 10})
-	if err != nil || len(nodes) != 1 {
-		t.Fatalf("ListNodes len=%d err=%v, want one summary node", len(nodes), err)
-	}
-	projected, err := projectors.SummaryNode(nodes[0])
-	if err != nil {
-		t.Fatalf("Project summary node error = %v", err)
-	}
-	namespace := scopedProjectionNamespace(t, mem, memory.CapabilitySummaryDAG, scope)
-	if err := deps.Index.Delete(ctx, namespace, []string{projected.ID}); err != nil {
-		t.Fatalf("Delete summary projection error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	makeProjectedDocumentStale(t, ctx, fixture)
+	makeProjectedDocumentStaleByID(t, ctx, fixture, "doc-2", "Babbage rewrote the second page of notes.")
+	requireDocumentChunkStaleCount(t, ctx, fixture, 2)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:      fixture.scope,
+		AutoRepair: true,
+		PageSize:   1,
 	})
 	if err != nil {
-		t.Fatalf("Consistency missing summary projection diagnostics error = %v", err)
+		t.Fatalf("Reconcile(AutoRepair PageSize=1) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.summary_dag.record", memory.DiagnosticStatusMissing, false)
-	if check.Details["semantic_state"] != "missing_projection_record" || check.Details["record_id"] != projected.ID || check.RepairHint == "" {
-		t.Fatalf("missing summary projection check = %+v, want semantic missing projection with repair hint", check)
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(AutoRepair PageSize=1) report = %+v, want enqueued first-page repair", report)
 	}
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(AutoRepair first page) result = %+v error = %v, want completed first-page repair", result, err)
+	}
+	firstStored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport(first page) ok = %v err = %v, want stored final report", ok, err)
+	}
+	if firstStored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final first-page AutoRepair status = %q, want completed: %+v", firstStored.Status, firstStored)
+	}
+	if len(firstStored.Operation.Documents) != 1 {
+		t.Fatalf("final first-page AutoRepair documents = %+v, want exactly one current-page target", firstStored.Operation.Documents)
+	}
+	firstDocID := firstStored.Operation.Documents[0].DocumentID
+	assertCheckpointString(t, firstStored.Checkpoint, "repair_targets_source", "diagnostics_page")
+	assertCheckpointInt(t, firstStored.Checkpoint, "repair_target_count", 1)
+	nextPageToken, ok := firstStored.Checkpoint["pre_repair_next_page_token"].(string)
+	if !ok || nextPageToken == "" {
+		t.Fatalf("final first-page AutoRepair checkpoint = %+v, want pre_repair_next_page_token from bounded diagnostics page", firstStored.Checkpoint)
+	}
+	requireDocumentChunkStaleCount(t, ctx, fixture, 1)
+
+	second, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:      fixture.scope,
+		AutoRepair: true,
+		PageSize:   1,
+		PageToken:  nextPageToken,
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(AutoRepair PageSize=1 second page) error = %v", err)
+	}
+	if second.Status != memory.LifecycleStatusEnqueued || second.JobID == "" {
+		t.Fatalf("Reconcile(AutoRepair PageSize=1 second page) report = %+v, want enqueued second-page repair", second)
+	}
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(AutoRepair second page) result = %+v error = %v, want completed second-page repair", result, err)
+	}
+	secondStored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, second.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport(second page) ok = %v err = %v, want stored final report", ok, err)
+	}
+	if secondStored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final second-page AutoRepair status = %q, want completed: %+v", secondStored.Status, secondStored)
+	}
+	if secondStored.Operation.PageToken != nextPageToken {
+		t.Fatalf("final second-page AutoRepair PageToken = %q, want first page token %q", secondStored.Operation.PageToken, nextPageToken)
+	}
+	if len(secondStored.Operation.Documents) != 1 {
+		t.Fatalf("final second-page AutoRepair documents = %+v, want exactly one second-page target", secondStored.Operation.Documents)
+	}
+	secondDocID := secondStored.Operation.Documents[0].DocumentID
+	if secondDocID == firstDocID {
+		t.Fatalf("second AutoRepair document = %q, want a different second-page target than first page", secondDocID)
+	}
+	assertCheckpointString(t, secondStored.Checkpoint, "repair_targets_source", "diagnostics_page")
+	assertCheckpointInt(t, secondStored.Checkpoint, "repair_target_count", 1)
+	requireDocumentChunkStaleCount(t, ctx, fixture, 0)
 }
 
-func TestMemoryFacadeConsistencyProjectionHydratesFactLedgerAndReportsScopeMismatch(t *testing.T) {
+func TestReconcileAutoRepairPrefersExplicitDocuments(t *testing.T) {
 	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	spec := semanticRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New fact hydrate diagnostics memory error = %v", err)
-	}
-	scope := testScope("conv-fact-hydrate")
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage fact hydrate error = %v", err)
-	}
-	if len(result.Facts) != 1 {
-		t.Fatalf("AppendMessage facts = %+v, want one fact", result.Facts)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	importProjectedDocument(t, ctx, fixture, "doc-2", "Babbage filed a second page of notes.")
+	makeProjectedDocumentStale(t, ctx, fixture)
+	makeProjectedDocumentStaleByID(t, ctx, fixture, "doc-2", "Babbage rewrote the second page of notes.")
+	requireDocumentChunkStaleCount(t, ctx, fixture, 2)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:      fixture.scope,
+		Documents:  []memory.DocumentTarget{{DocumentID: "doc-1"}},
+		AutoRepair: true,
+		PageSize:   10,
 	})
 	if err != nil {
-		t.Fatalf("Consistency fact hydrate diagnostics error = %v", err)
+		t.Fatalf("Reconcile(AutoRepair explicit Documents) error = %v", err)
 	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.fact_ledger.record", memory.DiagnosticStatusOK, true)
-	if check.Details["hydrate_state"] != "found" || check.Details["fact_id"] == "" {
-		t.Fatalf("fact hydrate check = %+v, want found fact", check)
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(AutoRepair explicit Documents) report = %+v, want enqueued explicit repair", report)
 	}
+	if len(report.Operation.Documents) != 1 || report.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("explicit AutoRepair documents = %+v, want only explicit doc-1", report.Operation.Documents)
+	}
+	assertCheckpointString(t, report.Checkpoint, "repair_targets_source", "explicit")
 
-	staleFact := result.Facts[0]
-	staleFact.Scope.UserID = "other-user"
-	if _, err := deps.FactStore.Put(ctx, staleFact); err != nil {
-		t.Fatalf("Put stale-scope fact error = %v", err)
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce(AutoRepair explicit Documents) result = %+v error = %v, want completed explicit repair", result, err)
 	}
-	stale, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-	})
-	if err != nil {
-		t.Fatalf("Consistency stale fact diagnostics error = %v", err)
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want stored final report", ok, err)
 	}
-	check = assertDiagnosticCheck(t, stale, "consistency.projection.fact_ledger.record", memory.DiagnosticStatusStale, false)
-	if check.RepairHint == "" || check.Details["hydrate_scope_mismatches"] == nil {
-		t.Fatalf("stale fact hydrate check = %+v, want scope mismatch details and repair hint", check)
+	if len(stored.Operation.Documents) != 1 || stored.Operation.Documents[0].DocumentID != "doc-1" {
+		t.Fatalf("final explicit AutoRepair documents = %+v, want only explicit doc-1", stored.Operation.Documents)
 	}
+	assertCheckpointString(t, stored.Checkpoint, "repair_targets_source", "explicit")
+	requireDocumentChunkStaleCount(t, ctx, fixture, 1)
 }
 
-func TestMemoryFacadeConsistencyProjectionReportsMissingFactProjection(t *testing.T) {
+func TestReconcileDryRunWithoutDocumentsRunsDiagnosticsOnly(t *testing.T) {
 	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	spec := semanticRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New missing fact projection diagnostics memory error = %v", err)
-	}
-	scope := testScope("conv-fact-missing-projection")
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage missing fact projection error = %v", err)
-	}
-	if len(result.Facts) != 1 {
-		t.Fatalf("AppendMessage facts = %+v, want one fact", result.Facts)
-	}
-	projected, err := projectors.FactRecord(result.Facts[0])
-	if err != nil {
-		t.Fatalf("Project fact record error = %v", err)
-	}
-	namespace := scopedProjectionNamespace(t, mem, memory.CapabilityFactLedger, scope)
-	if err := deps.Index.Delete(ctx, namespace, []string{projected.ID}); err != nil {
-		t.Fatalf("Delete fact projection error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
 
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-	})
-	if err != nil {
-		t.Fatalf("Consistency missing fact projection diagnostics error = %v", err)
-	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.fact_ledger.record", memory.DiagnosticStatusMissing, false)
-	if check.Details["semantic_state"] != "missing_projection_record" || check.Details["record_id"] != projected.ID || check.RepairHint == "" {
-		t.Fatalf("missing fact projection check = %+v, want semantic missing projection with repair hint", check)
-	}
-}
-
-func TestMemoryFacadeConsistencyProjectionHydratesFactGraphAndReportsMissingEdge(t *testing.T) {
-	ctx := context.Background()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.FactReconciler = &fakeFactReconciler{}
-	deps.FactGraphBuilder = &fakeFactGraphBuilder{}
-	spec := semanticRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New fact graph hydrate diagnostics memory error = %v", err)
-	}
-	scope := testScope("conv-graph-hydrate")
-	result, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{
-		Scope:    scope,
-		Messages: []sourcemessage.Message{messageWithText("Ada likes tea.")},
-	})
-	if err != nil {
-		t.Fatalf("AppendMessage fact graph hydrate error = %v", err)
-	}
-	if result.FactGraph == nil || len(result.FactGraph.Edges) != 1 {
-		t.Fatalf("AppendMessage fact graph = %+v, want one edge", result.FactGraph)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityFactGraph},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-	})
-	if err != nil {
-		t.Fatalf("Consistency fact graph hydrate diagnostics error = %v", err)
-	}
-	check := assertDiagnosticCheck(t, report, "consistency.projection.fact_graph.record", memory.DiagnosticStatusOK, true)
-	if check.Details["hydrate_state"] != "found" {
-		t.Fatalf("fact graph hydrate check = %+v, want found record", check)
-	}
-
-	if err := deps.FactGraphStore.DeleteEdge(ctx, result.FactGraph.Edges[0].ID); err != nil {
-		t.Fatalf("Delete fact graph edge error = %v", err)
-	}
-	missing, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityFactGraph},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-	})
-	if err != nil {
-		t.Fatalf("Consistency missing fact graph diagnostics error = %v", err)
-	}
-	check = assertDiagnosticCheckByStatus(t, missing, "consistency.projection.fact_graph.record", memory.DiagnosticStatusMissing, false)
-	if check.RepairHint == "" || check.Details["hydrate_state"] != "missing_semantic_record" || check.Details["edge_id"] == "" {
-		t.Fatalf("missing fact graph hydrate check = %+v, want missing edge with repair hint", check)
-	}
-}
-
-func TestMemoryFacadeConsistencySourceViewReportsStaleDocumentChunk(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency stale source view memory error = %v", err)
-	}
-	scope := documentScope("dataset-1")
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-stale-source", Content: "fresh source view content"},
-	}); err != nil {
-		t.Fatalf("ImportDocument stale source error = %v", err)
-	}
-	if _, err := deps.DocumentStore.Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-stale-source",
-		Content:   "updated source view content",
-	}}); err != nil {
-		t.Fatalf("Put updated canonical document error = %v", err)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckSourceView},
-	})
-	if err != nil {
-		t.Fatalf("Consistency stale source view diagnostics error = %v", err)
-	}
-	check := assertDiagnosticCheck(t, report, "consistency.source_view.document_chunks.record", memory.DiagnosticStatusStale, false)
-	if !strings.Contains(check.RepairHint, "reload document_chunks target=dataset-1/doc-stale-source") {
-		t.Fatalf("stale source RepairHint = %q, want reload target hint", check.RepairHint)
-	}
-}
-
-func TestMemoryFacadeConsistencySourceViewReportsMissingDocument(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency missing source document memory error = %v", err)
-	}
-	scope := documentScope("dataset-1")
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope:    scope,
-		Document: sourcedocument.Document{ID: "doc-missing-source", Content: "missing canonical source view"},
-	}); err != nil {
-		t.Fatalf("ImportDocument missing source error = %v", err)
-	}
-	documentStore, ok := deps.DocumentStore.(*sourcedocument.WorkspaceStore)
-	if !ok {
-		t.Fatalf("DocumentStore type = %T, want *WorkspaceStore", deps.DocumentStore)
-	}
-	if err := documentStore.Delete(ctx, "dataset-1", "doc-missing-source"); err != nil {
-		t.Fatalf("Delete canonical document error = %v", err)
-	}
-
-	report, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckSourceView},
-	})
-	if err != nil {
-		t.Fatalf("Consistency missing source diagnostics error = %v", err)
-	}
-	check := assertDiagnosticCheck(t, report, "consistency.source_view.document_chunks.record", memory.DiagnosticStatusMissing, false)
-	if check.RepairHint == "" || check.Details["state"] != "missing_document" {
-		t.Fatalf("missing document check = %+v, want state and repair hint", check)
-	}
-}
-
-func TestMemoryFacadeConsistencyPaginationReturnsNextPageToken(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Diagnostics = []memory.StageSpec{{Name: "consistency"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New consistency pagination memory error = %v", err)
-	}
-	scope := documentScope("dataset-1")
-	for _, id := range []string{"doc-page-1", "doc-page-2"} {
-		if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-			Scope:    scope,
-			Document: sourcedocument.Document{ID: id, Content: "paginated consistency " + id},
-		}); err != nil {
-			t.Fatalf("ImportDocument pagination %s error = %v", id, err)
-		}
-	}
-
-	first, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-		PageSize:     1,
-	})
-	if err != nil {
-		t.Fatalf("Consistency first page diagnostics error = %v", err)
-	}
-	if first.NextPageToken == "" {
-		t.Fatalf("first consistency page NextPageToken empty; report=%+v", first)
-	}
-	assertDiagnosticCheck(t, first, "consistency.projection.document_chunks.record", memory.DiagnosticStatusOK, true)
-
-	second, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Stage:        "consistency",
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Consistency:  []memory.ConsistencyCheckKind{memory.ConsistencyCheckProjection},
-		PageSize:     1,
-		PageToken:    first.NextPageToken,
-	})
-	if err != nil {
-		t.Fatalf("Consistency second page diagnostics error = %v", err)
-	}
-	if second.NextPageToken != "" {
-		t.Fatalf("second consistency page NextPageToken = %q, want empty", second.NextPageToken)
-	}
-	assertDiagnosticCheck(t, second, "consistency.projection.document_chunks.record", memory.DiagnosticStatusOK, true)
-}
-
-func TestMemoryFacadeFreshnessDryRunIncludesDiagnosticChecks(t *testing.T) {
-	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Lifecycle: []memory.StageSpec{
-			{Name: "freshness_check"},
-		},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New freshness diagnostics memory error = %v", err)
-	}
-
-	result, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		Scope:  memory.Scope{RuntimeID: " runtime-1 ", UserID: " user-1 ", ConversationID: " conv-1 "},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:  fixture.scope,
 		DryRun: true,
 	})
 	if err != nil {
-		t.Fatalf("Freshness dry-run error = %v", err)
+		t.Fatalf("Reconcile(DryRun no documents) error = %v", err)
 	}
-	if result.Operation.ID == "" || !result.Supported || !result.Accepted || result.Status != memory.LifecycleStatusPlanned || !result.Operation.DryRun || result.Operation.Action != memory.LifecycleActionFreshnessCheck || !result.Ready || !result.OK {
-		t.Fatalf("Freshness dry-run result = %+v, want lifecycle plus ready diagnostics", result)
+	if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+		t.Fatalf("Reconcile(DryRun no documents) report = %+v, want planned without queued job", report)
 	}
-	if result.Operation.Scope != testScope("conv-1") || result.Diagnostics.Scope != testScope("conv-1") {
-		t.Fatalf("Freshness scopes = lifecycle %+v diagnostics %+v, want normalized", result.Operation.Scope, result.Diagnostics.Scope)
+	if !lifecycleStepPresent(report.Steps, "diagnostics.stage.consistency") || !lifecycleStepPresent(report.Steps, "projection.document_chunks.hydration") {
+		t.Fatalf("DryRun no-doc steps = %+v, want consistency diagnostics checks", report.Steps)
 	}
-	assertDiagnosticCheck(t, result.Diagnostics, "diagnostics.stage.freshness", memory.DiagnosticStatusOK, true)
-	assertFreshnessCheck(t, result, "capability.recent_window.message_store", memory.DiagnosticStatusOK, true)
+	if lifecycleStepPresent(report.Steps, "lifecycle_substrate") || strings.Contains(report.Message, "no runner registered yet") {
+		t.Fatalf("DryRun no-doc report = %+v, want diagnostics-only report without substrate placeholder", report)
+	}
+	if lifecycleStepPresent(report.Steps, "document_chunks.target") {
+		t.Fatalf("DryRun no-doc steps = %+v, want no repair target without Documents", report.Steps)
+	}
 }
 
-func TestMemoryFacadeFreshnessLifecycleRunnerCompletesAndStoresReports(t *testing.T) {
+func TestReconcileWithoutDocumentsRunsDiagnosticsOnly(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Lifecycle:    []memory.StageSpec{{Name: "freshness_check"}},
-		Diagnostics:  []memory.StageSpec{{Name: "freshness"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New freshness runner memory error = %v", err)
-	}
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
 
-	traceID := memory.TraceID("trace-freshness-runner-ok")
-	enqueued, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		TraceID: traceID,
-		Scope:   testScope("conv-1"),
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
 	})
 	if err != nil {
-		t.Fatalf("Freshness enqueue error = %v", err)
+		t.Fatalf("Reconcile() error = %v", err)
 	}
-	if !enqueued.Accepted || enqueued.Status != memory.LifecycleStatusEnqueued || enqueued.JobID == "" || enqueued.Operation.Action != memory.LifecycleActionFreshnessCheck {
-		t.Fatalf("Freshness enqueue report = %+v, want enqueued freshness_check job", enqueued)
+	if report.Status != memory.LifecycleStatusEnqueued {
+		t.Fatalf("Reconcile() status = %q, want enqueued diagnostics job", report.Status)
 	}
-	run, err := mem.RunOnce(ctx)
-	if err != nil {
-		t.Fatalf("RunOnce freshness runner error = %v", err)
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want diagnostics-only completion", result, err)
 	}
-	if !run.Completed || run.JobID != enqueued.JobID || run.Kind != memory.LifecycleJobKindFreshnessCheck || run.Error != "" {
-		t.Fatalf("RunOnce freshness result = %+v, want completed freshness_check job", run)
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want stored final report", ok, err)
 	}
-	storedLifecycle, ok, err := reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || storedLifecycle.Status != memory.LifecycleStatusCompleted || storedLifecycle.JobID != enqueued.JobID || storedLifecycle.RunID == "" {
-		t.Fatalf("stored freshness lifecycle report = %+v ok=%v err=%v, want completed report", storedLifecycle, ok, err)
+	if lifecycleStepPresent(stored.Steps, "document_chunks.target") {
+		t.Fatalf("Reconcile steps = %+v, want no repair target without Documents", stored.Steps)
 	}
-	if storedLifecycle.Checkpoint["ready"] != true || storedLifecycle.Checkpoint["ok"] != true || storedLifecycle.Checkpoint["check_count"] != len(storedLifecycle.Steps) || storedLifecycle.Checkpoint["warning_count"] != 0 {
-		t.Fatalf("freshness lifecycle checkpoint = %+v steps=%d, want ready/ok counts", storedLifecycle.Checkpoint, len(storedLifecycle.Steps))
-	}
-	storedDiagnostic, ok, err := reportStore.GetDiagnosticReport(ctx, traceID)
-	if err != nil || !ok || storedDiagnostic.Stage != "freshness" || !storedDiagnostic.OK {
-		t.Fatalf("stored freshness diagnostic report = %+v ok=%v err=%v, want ok freshness report", storedDiagnostic, ok, err)
-	}
-	assertDiagnosticCheck(t, storedDiagnostic, "diagnostics.stage.freshness", memory.DiagnosticStatusOK, true)
+	requireDocumentChunkStale(t, ctx, fixture)
 }
 
-func TestMemoryFacadeFreshnessLifecycleRunnerFailsOnDiagnosticErrors(t *testing.T) {
+func TestReconcileDocumentTargetRepairFailsWhenPostDiagnosticsStillError(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.Index = nil
-	deps.ObservationStore = nil
-	deps.ObservationExtractor = nil
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityObservationLedger}},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-		}},
-		Lifecycle:   []memory.StageSpec{{Name: "freshness_check"}},
-		Diagnostics: []memory.StageSpec{{Name: "freshness"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New failing freshness runner memory error = %v", err)
+	fixture := newProjectedDocumentChunkFixture(t, ctx)
+	makeProjectedDocumentStale(t, ctx, fixture)
+	if err := fixture.index.Upsert(ctx, fixture.namespace, []retrieval.Doc{danglingDocumentChunkProjectionDoc(fixture.scope)}); err != nil {
+		t.Fatalf("Upsert dangling projection doc error = %v", err)
 	}
 
-	traceID := memory.TraceID("trace-freshness-runner-failed")
-	jobID, err := jobStore.Enqueue(ctx, memory.LifecycleJob{
-		TraceID:      traceID,
-		OperationID:  "lifecycle-op-freshness-failed",
-		Kind:         memory.LifecycleJobKindFreshnessCheck,
-		Scope:        testScope("conv-1"),
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
-		MaxAttempts:  1,
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:     fixture.scope,
+		Documents: []memory.DocumentTarget{{DocumentID: "doc-1"}},
 	})
 	if err != nil {
-		t.Fatalf("enqueue failing freshness job error = %v", err)
+		t.Fatalf("Reconcile() error = %v", err)
 	}
-	run, err := mem.RunOnce(ctx)
-	if err == nil || run.Completed || run.JobID != jobID || run.Kind != memory.LifecycleJobKindFreshnessCheck || run.Error == "" {
-		t.Fatalf("RunOnce failing freshness result=%+v err=%v, want failed job error", run, err)
+	if report.Status != memory.LifecycleStatusEnqueued {
+		t.Fatalf("Reconcile() report = %+v, want enqueued repair", report)
 	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats failing freshness error = %v", err)
+	result, err := fixture.mem.RunOnce(ctx)
+	if err == nil || result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want post diagnostics failure", result, err)
 	}
-	if stats.Failed != 1 || stats.FailedByKind[memory.LifecycleJobKindFreshnessCheck] != 1 {
-		t.Fatalf("QueueStats failing freshness = %+v, want one failed freshness_check job", stats)
+	stored, ok, storeErr := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if storeErr != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want stored final report", ok, storeErr)
 	}
-	storedLifecycle, ok, err := reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || storedLifecycle.Status != memory.LifecycleStatusFailed || storedLifecycle.JobID != jobID {
-		t.Fatalf("stored failed freshness lifecycle report = %+v ok=%v err=%v, want failed report", storedLifecycle, ok, err)
+	if stored.Status != memory.LifecycleStatusFailed {
+		t.Fatalf("final Reconcile status = %q, want failed: %+v", stored.Status, stored)
 	}
-	if storedLifecycle.Checkpoint["ready"] != false || storedLifecycle.Checkpoint["ok"] != false || storedLifecycle.Checkpoint["check_count"] != len(storedLifecycle.Steps) {
-		t.Fatalf("failed freshness checkpoint = %+v steps=%d, want failed diagnostics counts", storedLifecycle.Checkpoint, len(storedLifecycle.Steps))
+	if !lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.hydration", "pre-repair") ||
+		!lifecycleFailedStepPresentWithDiagnosticPhase(stored.Steps, "projection.document_chunks.hydration", "post-repair") {
+		t.Fatalf("final Reconcile steps = %+v, want pre diagnostics and failed post diagnostics", stored.Steps)
 	}
-	storedDiagnostic, ok, err := reportStore.GetDiagnosticReport(ctx, traceID)
-	if err != nil || !ok || storedDiagnostic.Stage != "freshness" || storedDiagnostic.OK {
-		t.Fatalf("stored failed freshness diagnostic report = %+v ok=%v err=%v, want failed freshness report", storedDiagnostic, ok, err)
+	if !lifecycleStepPresent(stored.Steps, "document_chunks.target") {
+		t.Fatalf("final Reconcile steps = %+v, want repaired explicit target before post failure", stored.Steps)
 	}
-	assertDiagnosticCheck(t, storedDiagnostic, "capability.observation_ledger.service", memory.DiagnosticStatusError, false)
+	assertCheckpointBool(t, stored.Checkpoint, "post_repair_ok", false)
 }
 
-func TestMemoryFacadeReconcileLifecycleRunnerRunsConsistencyDiagnostics(t *testing.T) {
+func TestReconcileMessageIndexCapabilityRepairsMissingProjection(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityObservationLedger}},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-		}},
-		Lifecycle:   []memory.StageSpec{{Name: "reconcile"}},
-		Diagnostics: []memory.StageSpec{{Name: "consistency"}},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New reconcile runner memory error = %v", err)
+	fixture := newProjectedMessageFixture(t, ctx)
+	if err := fixture.index.Delete(ctx, fixture.namespace, []string{fixture.recordID}); err != nil {
+		t.Fatalf("Delete message projection error = %v", err)
 	}
 
-	traceID := memory.TraceID("trace-reconcile-runner-ok")
-	enqueued, err := mem.Reconcile(ctx, memory.ReconcileRequest{
-		TraceID:      traceID,
-		Scope:        testScope("conv-1"),
-		Capabilities: []memory.Capability{memory.CapabilityObservationLedger},
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
 	})
 	if err != nil {
-		t.Fatalf("Reconcile enqueue error = %v", err)
+		t.Fatalf("Reconcile(message_index) error = %v", err)
 	}
-	if !enqueued.Accepted || enqueued.Status != memory.LifecycleStatusEnqueued || enqueued.JobID == "" || enqueued.Operation.Action != memory.LifecycleActionReconcile {
-		t.Fatalf("Reconcile enqueue report = %+v, want enqueued reconcile job", enqueued)
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(message_index) report = %+v, want enqueued repair", report)
 	}
-	run, err := mem.RunOnce(ctx)
-	if err != nil {
-		t.Fatalf("RunOnce reconcile runner error = %v", err)
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed message_index repair", result, err)
 	}
-	if !run.Completed || run.JobID != enqueued.JobID || run.Kind != memory.LifecycleJobKindReconcile || run.Error != "" {
-		t.Fatalf("RunOnce reconcile result = %+v, want completed reconcile job", run)
+
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
 	}
-	storedLifecycle, ok, err := reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || storedLifecycle.Status != memory.LifecycleStatusCompleted || storedLifecycle.JobID != enqueued.JobID || storedLifecycle.RunID == "" {
-		t.Fatalf("stored reconcile lifecycle report = %+v ok=%v err=%v, want completed report", storedLifecycle, ok, err)
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final Reconcile status = %q, want completed: %+v", stored.Status, stored)
 	}
-	if storedLifecycle.Checkpoint["ready"] != true || storedLifecycle.Checkpoint["ok"] != true || storedLifecycle.Checkpoint["check_count"] != len(storedLifecycle.Steps) || storedLifecycle.Checkpoint["repair_hint_count"] != 1 {
-		t.Fatalf("reconcile lifecycle checkpoint = %+v steps=%d, want ready/ok consistency counts", storedLifecycle.Checkpoint, len(storedLifecycle.Steps))
+	if !lifecycleStepPresent(stored.Steps, "message_index.conversation") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.message_index.hydration", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.message_index.hydration", "post-repair") {
+		t.Fatalf("final Reconcile steps = %+v, want pre/repair/post message_index steps", stored.Steps)
 	}
-	storedDiagnostic, ok, err := reportStore.GetDiagnosticReport(ctx, traceID)
-	if err != nil || !ok || storedDiagnostic.Stage != "consistency" || !storedDiagnostic.OK {
-		t.Fatalf("stored reconcile diagnostic report = %+v ok=%v err=%v, want ok consistency report", storedDiagnostic, ok, err)
+	if !checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilityMessageIndex)) {
+		t.Fatalf("checkpoint = %+v, want repaired message_index capability", stored.Checkpoint)
 	}
-	assertDiagnosticCheck(t, storedDiagnostic, "diagnostics.stage.consistency", memory.DiagnosticStatusOK, true)
-	assertDiagnosticCheck(t, storedDiagnostic, "consistency.projection.observation_ledger.page", memory.DiagnosticStatusOK, true)
-	assertDiagnosticCheck(t, storedDiagnostic, "consistency.source_view.observation_ledger", memory.DiagnosticStatusNotImplemented, true)
+	requireMessageIndexSearchableAndConsistent(t, ctx, fixture)
 }
 
-func TestMemoryFacadeReconcileLifecycleRunnerFailsOnMissingCapabilities(t *testing.T) {
+func TestReconcileSummaryDAGCapabilityRepairsMissingProjection(t *testing.T) {
 	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	reportStore := memory.NewMemoryReportStore()
-	deps := newDeps(t)
-	deps.ObservationExtractor = &fakeObservationExtractor{}
-	deps.JobStore = jobStore
-	deps.ReportStore = reportStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityObservationLedger}},
-		Projections: []memory.ProjectionSpec{{
-			Capability: memory.CapabilityObservationLedger,
-			Namespace:  "observations",
-		}},
-		Lifecycle:   []memory.StageSpec{{Name: "reconcile"}},
-		Diagnostics: []memory.StageSpec{{Name: "consistency"}},
-	}, deps)
+	fixture := newProjectedSummaryFixture(t, ctx)
+	record, err := projectors.SummaryNode(fixture.node)
 	if err != nil {
-		t.Fatalf("New failing reconcile runner memory error = %v", err)
+		t.Fatalf("SummaryNode() error = %v", err)
+	}
+	if err := fixture.index.Delete(ctx, fixture.namespace, []string{record.ID}); err != nil {
+		t.Fatalf("Delete summary projection error = %v", err)
 	}
 
-	traceID := memory.TraceID("trace-reconcile-runner-failed")
-	enqueued, err := mem.Reconcile(ctx, memory.ReconcileRequest{
-		TraceID: traceID,
-		Scope:   testScope("conv-1"),
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
 	})
 	if err != nil {
-		t.Fatalf("Reconcile missing-capability enqueue error = %v", err)
+		t.Fatalf("Reconcile(summary_dag) error = %v", err)
 	}
-	run, err := mem.RunOnce(ctx)
-	if err == nil || run.Completed || run.JobID != enqueued.JobID || run.Kind != memory.LifecycleJobKindReconcile || run.Error == "" {
-		t.Fatalf("RunOnce failing reconcile result=%+v err=%v, want failed job error", run, err)
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(summary_dag) report = %+v, want enqueued repair", report)
 	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats failing reconcile error = %v", err)
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed summary_dag repair", result, err)
 	}
-	if stats.Failed != 1 || stats.FailedByKind[memory.LifecycleJobKindReconcile] != 1 {
-		t.Fatalf("QueueStats failing reconcile = %+v, want one failed reconcile job", stats)
+
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
 	}
-	storedLifecycle, ok, err := reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || storedLifecycle.Status != memory.LifecycleStatusFailed || storedLifecycle.JobID != enqueued.JobID {
-		t.Fatalf("stored failed reconcile lifecycle report = %+v ok=%v err=%v, want failed report", storedLifecycle, ok, err)
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final Reconcile status = %q, want completed: %+v", stored.Status, stored)
 	}
-	if storedLifecycle.Checkpoint["ready"] != false || storedLifecycle.Checkpoint["ok"] != false || storedLifecycle.Checkpoint["check_count"] != len(storedLifecycle.Steps) || storedLifecycle.Checkpoint["repair_hint_count"] != 1 {
-		t.Fatalf("failed reconcile checkpoint = %+v steps=%d, want failed diagnostics counts", storedLifecycle.Checkpoint, len(storedLifecycle.Steps))
+	if !lifecycleStepPresent(stored.Steps, "summary_dag.conversation") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.summary_dag.hydration", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.summary_dag.hydration", "post-repair") {
+		t.Fatalf("final Reconcile steps = %+v, want pre/repair/post summary_dag steps", stored.Steps)
 	}
-	storedDiagnostic, ok, err := reportStore.GetDiagnosticReport(ctx, traceID)
-	if err != nil || !ok || storedDiagnostic.Stage != "consistency" || storedDiagnostic.OK {
-		t.Fatalf("stored failed reconcile diagnostic report = %+v ok=%v err=%v, want failed consistency report", storedDiagnostic, ok, err)
+	if !checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilitySummaryDAG)) {
+		t.Fatalf("checkpoint = %+v, want repaired summary_dag capability", stored.Checkpoint)
 	}
-	assertDiagnosticCheck(t, storedDiagnostic, "consistency.capabilities", memory.DiagnosticStatusError, false)
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if got, want := step.Details["stale_store_cleanup"], "delete_node"; got != want {
+		t.Fatalf("stale_store_cleanup = %v, want %q; step=%+v", got, want, step)
+	}
+	assertStepDetailInt(t, step, "canonical_stale_candidates", 1)
+	assertStepDetailInt(t, step, "canonical_stale_deleted", 1)
+	assertCheckpointString(t, stored.Checkpoint, "canonical_cleanup_mode", "delete_node")
+	if _, ok, err := fixture.summaryStore.GetNode(ctx, fixture.scope, fixture.node.ID); err != nil || ok {
+		t.Fatalf("stale canonical summary after reconcile ok = %v err = %v, want deleted", ok, err)
+	}
+	if _, ok, err := fixture.summaryStore.GetNode(ctx, fixture.scope, recent.NodeID("summary-"+fixture.scope.ConversationID)); err != nil || !ok {
+		t.Fatalf("current canonical summary after reconcile ok = %v err = %v, want retained", ok, err)
+	}
+	requireSummaryDAGSearchableAndConsistent(t, ctx, fixture)
 }
 
-func TestMemoryFacadeDocumentTargetFreshnessReportsFreshStaleAndMissing(t *testing.T) {
+func TestReconcileEmptyCapabilitiesRepairsConversationDerivedViews(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Lifecycle = []memory.StageSpec{{Name: "freshness_check"}}
-	spec.Diagnostics = []memory.StageSpec{{Name: "freshness"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New document freshness memory error = %v", err)
+	fixture := newProjectedConversationFixture(t, ctx)
+	if err := fixture.index.Delete(ctx, fixture.messageNamespace, []string{fixture.messageRecordID}); err != nil {
+		t.Fatalf("Delete message projection error = %v", err)
 	}
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
-	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
-		Scope: scope,
-		Document: sourcedocument.Document{
-			ID:      "doc-fresh",
-			Content: "fresh document target content",
+	if err := fixture.index.Delete(ctx, fixture.summaryNamespace, []string{fixture.summaryRecordID}); err != nil {
+		t.Fatalf("Delete summary projection error = %v", err)
+	}
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{Scope: fixture.scope})
+	if err != nil {
+		t.Fatalf("Reconcile(empty capabilities) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(empty capabilities) report = %+v, want enqueued repair", report)
+	}
+	if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityMessageIndex) ||
+		!capabilityPresent(report.Operation.Capabilities, memory.CapabilitySummaryDAG) {
+		t.Fatalf("Capabilities = %+v, want message_index and summary_dag auto-selected", report.Operation.Capabilities)
+	}
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed conversation repair", result, err)
+	}
+
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final Reconcile status = %q, want completed: %+v", stored.Status, stored)
+	}
+	if !lifecycleStepPresent(stored.Steps, "message_index.conversation") ||
+		!lifecycleStepPresent(stored.Steps, "summary_dag.conversation") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.message_index.hydration", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.summary_dag.hydration", "pre-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.message_index.hydration", "post-repair") ||
+		!lifecycleStepPresentWithDiagnosticPhase(stored.Steps, "projection.summary_dag.hydration", "post-repair") {
+		t.Fatalf("final Reconcile steps = %+v, want pre/repair/post conversation repair steps", stored.Steps)
+	}
+	assertCheckpointBool(t, stored.Checkpoint, "post_repair_ok", true)
+	assertCheckpointInt(t, stored.Checkpoint, "repair_capability_count", 2)
+	if !checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilityMessageIndex)) ||
+		!checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilitySummaryDAG)) {
+		t.Fatalf("checkpoint = %+v, want both repaired conversation capabilities", stored.Checkpoint)
+	}
+
+	requireMessageIndexSearchableAndConsistent(t, ctx, projectedMessageFixture{
+		mem:         fixture.mem,
+		index:       fixture.index,
+		reportStore: fixture.reportStore,
+		scope:       fixture.scope,
+		namespace:   fixture.messageNamespace,
+		message:     fixture.message,
+		recordID:    fixture.messageRecordID,
+	})
+	requireSummaryDAGSearchableAndConsistent(t, ctx, projectedSummaryFixture{
+		mem:          fixture.mem,
+		index:        fixture.index,
+		summaryStore: fixture.summaryStore,
+		reportStore:  fixture.reportStore,
+		scope:        fixture.scope,
+		namespace:    fixture.summaryNamespace,
+		node:         fixture.summaryNode,
+	})
+}
+
+func TestReconcileMessageIndexRepairRebuildsAcrossBatchBoundary(t *testing.T) {
+	ctx := context.Background()
+	const messageCount = 513 // lifecycleMessageIndexBatchSize + 1.
+	fixture := newMessageIndexBatchFixture(t, ctx, messageCount)
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(message_index batch) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(message_index batch) report = %+v, want enqueued repair", report)
+	}
+	if result, err := fixture.mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want completed batch repair", result, err)
+	}
+
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusCompleted {
+		t.Fatalf("final Reconcile status = %q, want completed: %+v", stored.Status, stored)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "message_index.conversation")
+	assertStepDetailInt(t, step, "message_count", messageCount)
+	assertCheckpointBool(t, stored.Checkpoint, "post_repair_ok", true)
+
+	docs := listProjectionDocs(t, ctx, fixture.index, fixture.namespace)
+	if len(docs) != messageCount {
+		t.Fatalf("message projection doc count = %d, want %d", len(docs), messageCount)
+	}
+	seen := make(map[string]bool, len(docs))
+	for _, doc := range docs {
+		id, _ := doc.Metadata[projectors.MetadataMessageIDKey].(string)
+		if id == "" {
+			t.Fatalf("message projection doc %q metadata = %+v, missing message id", doc.ID, doc.Metadata)
+		}
+		if seen[id] {
+			t.Fatalf("message projection contains duplicate message id %q", id)
+		}
+		seen[id] = true
+	}
+	for _, id := range fixture.messageIDs {
+		if !seen[id] {
+			t.Fatalf("message projection missing id %q across batch boundary", id)
+		}
+	}
+}
+
+func TestReconcileSummaryDAGRepairFailureKeepsExistingSummaryAndProjection(t *testing.T) {
+	ctx := context.Background()
+	summarizer := &failingSummaryLifecycleSummarizer{err: errors.New("summarizer boom")}
+	fixture := newProjectedSummaryFixtureWithSummarizer(t, ctx, summarizer)
+	record, err := projectors.SummaryNode(fixture.node)
+	if err != nil {
+		t.Fatalf("SummaryNode() error = %v", err)
+	}
+
+	report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope:        fixture.scope,
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile(summary_dag failure) error = %v", err)
+	}
+	if report.Status != memory.LifecycleStatusEnqueued || report.JobID == "" {
+		t.Fatalf("Reconcile(summary_dag failure) report = %+v, want enqueued repair", report)
+	}
+	if result, err := fixture.mem.RunOnce(ctx); err == nil || !strings.Contains(err.Error(), summarizer.err.Error()) || result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want summarizer failure", result, err)
+	}
+
+	stored, ok, err := fixture.reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
+	}
+	if stored.Status != memory.LifecycleStatusFailed || !strings.Contains(stored.Message, "reconcile repair failed") {
+		t.Fatalf("final Reconcile report = %+v, want failed repair message", stored)
+	}
+	step := requireLifecycleStep(t, stored.Steps, "summary_dag.conversation")
+	if step.Status != memory.LifecycleStatusFailed || !strings.Contains(step.Details["error"].(string), summarizer.err.Error()) {
+		t.Fatalf("summary_dag repair step = %+v, want failed step with summarizer error", step)
+	}
+	assertCheckpointInt(t, stored.Checkpoint, "repair_failed", 1)
+	if !checkpointStringSliceContains(stored.Checkpoint, "failed_capabilities", string(memory.CapabilitySummaryDAG)) {
+		t.Fatalf("checkpoint = %+v, want failed summary_dag capability", stored.Checkpoint)
+	}
+	nodes, err := fixture.summaryStore.ListNodes(ctx, fixture.scope, recent.ListOptions{})
+	if err != nil {
+		t.Fatalf("ListNodes() error = %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != fixture.node.ID || nodes[0].Summary != fixture.node.Summary {
+		t.Fatalf("Summary nodes after failed reconcile = %+v, want old node retained", nodes)
+	}
+	if ok, err := projectionDocExists(ctx, fixture.index, fixture.namespace, record.ID); err != nil || !ok {
+		t.Fatalf("old summary projection after failed reconcile ok = %v err = %v, want retained", ok, err)
+	}
+}
+
+func TestReconcileDryRunPlansConversationRepairsWithoutChangingProjection(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("message_index", func(t *testing.T) {
+		fixture := newProjectedMessageFixture(t, ctx)
+		if err := fixture.index.Delete(ctx, fixture.namespace, []string{fixture.recordID}); err != nil {
+			t.Fatalf("Delete message projection error = %v", err)
+		}
+		report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+			Scope:  fixture.scope,
+			DryRun: true,
+		})
+		if err != nil {
+			t.Fatalf("Reconcile(message_index dry-run) error = %v", err)
+		}
+		if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+			t.Fatalf("Reconcile(message_index dry-run) report = %+v, want planned without job", report)
+		}
+		if !capabilityPresent(report.Operation.Capabilities, memory.CapabilityMessageIndex) ||
+			!lifecycleStepPresent(report.Steps, "message_index.conversation") {
+			t.Fatalf("DryRun message_index report = %+v, want derived message repair plan", report)
+		}
+		if ok, err := projectionDocExists(ctx, fixture.index, fixture.namespace, fixture.recordID); err != nil || ok {
+			t.Fatalf("message projection after dry-run ok = %v err = %v, want still missing", ok, err)
+		}
+	})
+
+	t.Run("summary_dag", func(t *testing.T) {
+		fixture := newProjectedSummaryFixture(t, ctx)
+		record, err := projectors.SummaryNode(fixture.node)
+		if err != nil {
+			t.Fatalf("SummaryNode() error = %v", err)
+		}
+		if err := fixture.index.Delete(ctx, fixture.namespace, []string{record.ID}); err != nil {
+			t.Fatalf("Delete summary projection error = %v", err)
+		}
+		report, err := fixture.mem.Reconcile(ctx, memory.ReconcileRequest{
+			Scope:  fixture.scope,
+			DryRun: true,
+		})
+		if err != nil {
+			t.Fatalf("Reconcile(summary_dag dry-run) error = %v", err)
+		}
+		if report.Status != memory.LifecycleStatusPlanned || report.JobID != "" {
+			t.Fatalf("Reconcile(summary_dag dry-run) report = %+v, want planned without job", report)
+		}
+		if !capabilityPresent(report.Operation.Capabilities, memory.CapabilitySummaryDAG) ||
+			!lifecycleStepPresent(report.Steps, "summary_dag.conversation") {
+			t.Fatalf("DryRun summary_dag report = %+v, want derived summary repair plan", report)
+		}
+		if ok, err := projectionDocExists(ctx, fixture.index, fixture.namespace, record.ID); err != nil || ok {
+			t.Fatalf("summary projection after dry-run ok = %v err = %v, want still missing", ok, err)
+		}
+	})
+}
+
+func TestReconcileConversationRepairsRequireConversationScope(t *testing.T) {
+	ctx := context.Background()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
 		},
-	}); err != nil {
-		t.Fatalf("ImportDocument fresh error = %v", err)
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true},
+		},
+	}, memory.Deps{
+		MessageStore: sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		SummaryStore: recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag")),
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
 	}
 
-	fresh, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
-		DryRun:       true,
+	report, err := mem.Reconcile(ctx, memory.ReconcileRequest{
+		Scope: memory.Scope{RuntimeID: "rt", UserID: "user"},
+		Capabilities: []memory.Capability{
+			memory.CapabilityMessageIndex,
+			memory.CapabilitySummaryDAG,
+		},
 	})
 	if err != nil {
-		t.Fatalf("Freshness fresh target error = %v", err)
+		t.Fatalf("Reconcile(no conversation) error = %v", err)
 	}
-	freshCheck := assertFreshnessCheck(t, fresh, "freshness.document_chunks.target", memory.DiagnosticStatusOK, true)
-	if state := freshCheck.Details["state"]; state != "fresh" {
-		t.Fatalf("fresh state = %#v, want fresh; check=%+v", state, freshCheck)
+	if report.Status != memory.LifecycleStatusEnqueued {
+		t.Fatalf("Reconcile(no conversation) report = %+v, want enqueued skipped repair job", report)
 	}
-	if got := freshCheck.Details["chunk_count"]; got != 1 {
-		t.Fatalf("fresh chunk_count = %#v, want 1", got)
+	if result, err := mem.RunOnce(ctx); err != nil || !result.Completed {
+		t.Fatalf("RunOnce() result = %+v error = %v, want skipped repair completion", result, err)
 	}
-	diagnostics, err := mem.Diagnostics(ctx, memory.DiagnosticRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
-	})
-	if err != nil {
-		t.Fatalf("Diagnostics targeted freshness error = %v", err)
+	stored, ok, err := reportStore.GetLifecycleReport(ctx, report.TraceID)
+	if err != nil || !ok {
+		t.Fatalf("GetLifecycleReport() ok = %v err = %v, want final report", ok, err)
 	}
-	assertDiagnosticCheck(t, diagnostics, "freshness.document_chunks.target", memory.DiagnosticStatusOK, true)
-
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-fresh",
-		Content:   "updated canonical document target content",
-	}}); err != nil {
-		t.Fatalf("Put stale canonical document error = %v", err)
+	if stored.Status != memory.LifecycleStatusSkipped {
+		t.Fatalf("final Reconcile status = %q, want skipped: %+v", stored.Status, stored)
 	}
-	stale, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-fresh"}},
-		DryRun:       true,
-	})
-	if err != nil {
-		t.Fatalf("Freshness stale target error = %v", err)
+	if !lifecycleSkippedStepPresent(stored.Steps, "message_index.conversation") ||
+		!lifecycleSkippedStepPresent(stored.Steps, "summary_dag.conversation") {
+		t.Fatalf("final Reconcile steps = %+v, want skipped conversation repair steps", stored.Steps)
 	}
-	if stale.OK || stale.Ready {
-		t.Fatalf("stale freshness = %+v, want not ok/ready", stale)
+	if checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilityMessageIndex)) ||
+		checkpointStringSliceContains(stored.Checkpoint, "repaired_capabilities", string(memory.CapabilitySummaryDAG)) {
+		t.Fatalf("checkpoint = %+v, want no repaired conversation capabilities", stored.Checkpoint)
 	}
-	assertFreshnessCheck(t, stale, "freshness.document_chunks.target", memory.DiagnosticStatusStale, false)
-
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-no-chunks",
-		Content:   "canonical document without chunks",
-	}}); err != nil {
-		t.Fatalf("Put missing chunks document error = %v", err)
-	}
-	missingChunks, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-no-chunks"}},
-		DryRun:       true,
-	})
-	if err != nil {
-		t.Fatalf("Freshness missing chunks error = %v", err)
-	}
-	missingChunksCheck := assertFreshnessCheck(t, missingChunks, "freshness.document_chunks.target", memory.DiagnosticStatusMissing, false)
-	if state := missingChunksCheck.Details["state"]; state != "missing_chunks" {
-		t.Fatalf("missing chunks state = %#v, want missing_chunks", state)
-	}
-
-	missingDoc, err := mem.Freshness(ctx, memory.FreshnessRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-missing"}},
-		DryRun:       true,
-	})
-	if err != nil {
-		t.Fatalf("Freshness missing document error = %v", err)
-	}
-	missingDocCheck := assertFreshnessCheck(t, missingDoc, "freshness.document_chunks.target", memory.DiagnosticStatusMissing, false)
-	if state := missingDocCheck.Details["state"]; state != "missing_document" {
-		t.Fatalf("missing document state = %#v, want missing_document", state)
+	if !checkpointStringSliceContains(stored.Checkpoint, "skipped_capabilities", string(memory.CapabilityMessageIndex)) ||
+		!checkpointStringSliceContains(stored.Checkpoint, "skipped_capabilities", string(memory.CapabilitySummaryDAG)) {
+		t.Fatalf("checkpoint = %+v, want skipped conversation capabilities", stored.Checkpoint)
 	}
 }
 
-func TestMemoryFacadeDocumentTargetReloadAndRebuildDryRunPlansTargets(t *testing.T) {
+func TestDiagnosticProjectionPaginationUsesCompositeTokenPerCapability(t *testing.T) {
 	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	spec := documentRetrievalSpec()
-	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}, {Name: "rebuild"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New document lifecycle memory error = %v", err)
-	}
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
-	targets := []memory.DocumentTarget{{DocumentID: "doc-1"}}
+	fixture := newDualProjectionFixture(t, ctx)
 
-	reload, err := mem.Reload(ctx, memory.ReloadRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    targets,
-		DryRun:       true,
+	first, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope: fixture.scope,
+		Stage: "freshness",
+		Capabilities: []memory.Capability{
+			memory.CapabilityMessageIndex,
+			memory.CapabilityDocumentChunks,
+		},
+		PageSize: 1,
 	})
 	if err != nil {
-		t.Fatalf("Reload dry-run target error = %v", err)
+		t.Fatalf("Diagnostics(first) error = %v", err)
 	}
-	if reload.Operation.ID == "" || reload.Operation.Action != memory.LifecycleActionReload || !reload.Operation.DryRun || reload.Status != memory.LifecycleStatusPlanned || !reload.Accepted || !reload.Supported || len(reload.Steps) != 1 || reload.Steps[0].Completed {
-		t.Fatalf("Reload dry-run = %+v, want one planned target step", reload)
+	if !strings.HasPrefix(first.NextPageToken, "diagproj:v1:") {
+		t.Fatalf("first NextPageToken = %q, want diagnostics composite token", first.NextPageToken)
 	}
-	if reload.Operation.Documents[0] != (memory.DocumentTarget{DatasetID: "dataset-1", DocumentID: "doc-1"}) {
-		t.Fatalf("Reload documents = %+v, want normalized dataset target", reload.Operation.Documents)
+	firstMessage := requireDiagnosticCheck(t, first.Checks, "projection.message_index.freshness_metadata")
+	firstDocument := requireDiagnosticCheck(t, first.Checks, "projection.document_chunks.freshness_metadata")
+	if !first.Ready || !firstMessage.OK || !firstDocument.OK {
+		t.Fatalf("first diagnostics = %+v, checks = %+v / %+v, want ready pagination checks", first, firstMessage, firstDocument)
 	}
-	if len(reload.Operation.Targets) != 1 || reload.Operation.Targets[0].DocumentID != "doc-1" || reload.Operation.Targets[0].DatasetID != "dataset-1" {
-		t.Fatalf("Reload targets = %+v, want normalized document target", reload.Operation.Targets)
-	}
-	if got := reload.Steps[0].Details["chunk_count"]; got != 0 {
-		t.Fatalf("Reload dry-run chunk_count = %#v, want 0", got)
-	}
+	assertDiagnosticDetailInt(t, firstMessage, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, firstDocument, "records_scanned", 1)
+	assertDiagnosticDetailString(t, firstMessage, "namespace", fixture.messageNamespace)
+	assertDiagnosticDetailString(t, firstDocument, "namespace", fixture.documentNamespace)
 
-	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    targets,
-		DryRun:       true,
+	second, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope: fixture.scope,
+		Stage: "freshness",
+		Capabilities: []memory.Capability{
+			memory.CapabilityMessageIndex,
+			memory.CapabilityDocumentChunks,
+		},
+		PageSize:  1,
+		PageToken: first.NextPageToken,
 	})
 	if err != nil {
-		t.Fatalf("Rebuild dry-run target error = %v", err)
+		t.Fatalf("Diagnostics(second) error = %v", err)
 	}
-	if rebuild.Operation.ID == "" || rebuild.Operation.Action != memory.LifecycleActionRebuild || !rebuild.Operation.DryRun || rebuild.Status != memory.LifecycleStatusPlanned || !rebuild.Accepted || !rebuild.Supported || len(rebuild.Steps) != 1 || rebuild.Steps[0].Completed {
-		t.Fatalf("Rebuild dry-run = %+v, want one planned target step", rebuild)
+	secondMessage := requireDiagnosticCheck(t, second.Checks, "projection.message_index.freshness_metadata")
+	secondDocument := requireDiagnosticCheck(t, second.Checks, "projection.document_chunks.freshness_metadata")
+	if !second.Ready || !secondMessage.OK || !secondDocument.OK {
+		t.Fatalf("second diagnostics = %+v, checks = %+v / %+v, want ready pagination checks", second, secondMessage, secondDocument)
 	}
-
-	noTargets, err := mem.Reload(ctx, memory.ReloadRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		DryRun:       true,
-	})
-	if err != nil {
-		t.Fatalf("Reload dry-run no targets error = %v", err)
+	if second.NextPageToken != "" {
+		t.Fatalf("second NextPageToken = %q, want pagination complete", second.NextPageToken)
 	}
-	if !noTargets.Accepted || noTargets.Status != memory.LifecycleStatusSkipped || len(noTargets.Steps) != 1 || !strings.Contains(noTargets.Message, "no full scan") {
-		t.Fatalf("Reload dry-run no targets = %+v, want explicit no-full-scan plan", noTargets)
-	}
+	assertDiagnosticDetailInt(t, secondMessage, "records_scanned", 1)
+	assertDiagnosticDetailInt(t, secondDocument, "records_scanned", 1)
+	assertDiagnosticDetailString(t, secondMessage, "namespace", fixture.messageNamespace)
+	assertDiagnosticDetailString(t, secondDocument, "namespace", fixture.documentNamespace)
 }
 
-func TestMemoryFacadeDocumentTargetReloadAndRebuildDrainReindexesUpdatedText(t *testing.T) {
-	ctx := context.Background()
-	chunker := &fakeDocumentChunker{}
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = chunker
-	deps.JobStore = memory.NewMemoryJobStore()
+func newMessageStore() sourcemessage.Store {
+	return sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(sdkworkspace.NewMemWorkspace(), "sources/message"))
+}
+
+func newDocumentChunkSystem() (*memory.System, error) {
+	root := sdkworkspace.NewMemWorkspace()
+	return memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceDocumentStore, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityDocumentChunks, Required: true}},
+	}, memory.Deps{
+		DocumentStore:   sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/document")),
+		ChunkStore:      viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(root, "views/document_chunks")),
+		DocumentChunker: derivedocument.WholeDocumentChunker{},
+	})
+}
+
+type projectedDocumentChunkFixture struct {
+	mem           *memory.System
+	index         retrieval.Index
+	documentStore sourcedocument.Store
+	chunkStore    viewdocument.ChunkStore
+	reportStore   *memory.MemoryReportStore
+	scope         memory.Scope
+	namespace     string
+}
+
+type projectedSummaryFixture struct {
+	mem          *memory.System
+	index        retrieval.Index
+	summaryStore recent.SummaryStore
+	reportStore  *memory.MemoryReportStore
+	scope        memory.Scope
+	namespace    string
+	node         recent.SummaryNode
+}
+
+type projectedMessageFixture struct {
+	mem         *memory.System
+	index       retrieval.Index
+	reportStore *memory.MemoryReportStore
+	scope       memory.Scope
+	namespace   string
+	message     sourcemessage.Message
+	recordID    string
+}
+
+type projectedConversationFixture struct {
+	mem              *memory.System
+	index            retrieval.Index
+	summaryStore     recent.SummaryStore
+	reportStore      *memory.MemoryReportStore
+	scope            memory.Scope
+	messageNamespace string
+	summaryNamespace string
+	message          sourcemessage.Message
+	messageRecordID  string
+	summaryNode      recent.SummaryNode
+	summaryRecordID  string
+}
+
+type messageIndexBatchFixture struct {
+	mem         *memory.System
+	index       retrieval.Index
+	reportStore *memory.MemoryReportStore
+	scope       memory.Scope
+	namespace   string
+	messageIDs  []string
+}
+
+type dualProjectionFixture struct {
+	mem               *memory.System
+	scope             memory.Scope
+	messageNamespace  string
+	documentNamespace string
+}
+
+func newProjectedDocumentChunkFixture(t *testing.T, ctx context.Context) projectedDocumentChunkFixture {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	documentStore := sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/document"))
+	chunkStore := viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(root, "views/document_chunks"))
 	reportStore := memory.NewMemoryReportStore()
-	deps.ReportStore = reportStore
-	spec := documentRetrievalSpec()
-	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}, {Name: "rebuild"}}
-	mem, err := memory.New(spec, deps)
+	mem, err := memory.New(memory.Spec{
+		Sources:      []memory.SourceSpec{{Kind: memory.SourceDocumentStore, Required: true}},
+		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityDocumentChunks, Required: true}},
+		Projections:  []memory.ProjectionSpec{{Capability: memory.CapabilityDocumentChunks, Namespace: "document_chunks", Required: true}},
+		WriteStages:  []memory.StageSpec{{Name: "chunk_document"}},
+	}, memory.Deps{
+		DocumentStore:   documentStore,
+		ChunkStore:      chunkStore,
+		Index:           index,
+		DocumentChunker: derivedocument.WholeDocumentChunker{},
+		JobStore:        memory.NewMemoryJobStore(),
+		ReportStore:     reportStore,
+	})
 	if err != nil {
-		t.Fatalf("New document reload memory error = %v", err)
+		t.Fatalf("New() error = %v", err)
 	}
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
+	scope := memory.Scope{
+		RuntimeID:      "rt",
+		UserID:         "user",
+		AgentID:        "agent",
+		ConversationID: "conv",
+		DatasetID:      "dataset",
+	}
 	if _, err := mem.ImportDocument(ctx, memory.ImportDocumentRequest{
 		Scope: scope,
 		Document: sourcedocument.Document{
 			ID:      "doc-1",
-			Content: "old reload target text",
+			Content: "Ada stored the field notes in the cedar box.",
 		},
 	}); err != nil {
-		t.Fatalf("ImportDocument initial error = %v", err)
+		t.Fatalf("ImportDocument() error = %v", err)
 	}
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-1",
-		Content:   "updated reload target needle text",
-	}}); err != nil {
-		t.Fatalf("Put updated canonical document error = %v", err)
-	}
-
-	traceID := memory.TraceID("trace-reload-doc-1")
-	reload, err := mem.Reload(ctx, memory.ReloadRequest{
-		TraceID:      traceID,
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
-	})
+	namespace, err := projectors.ScopedNamespace("document_chunks", scope)
 	if err != nil {
-		t.Fatalf("Reload target error = %v", err)
+		t.Fatalf("ScopedNamespace() error = %v", err)
 	}
-	if !reload.Accepted || reload.Status != memory.LifecycleStatusEnqueued || reload.JobID == "" || len(reload.Steps) != 1 || reload.Steps[0].Completed {
-		t.Fatalf("Reload target report = %+v, want enqueued target job", reload)
-	}
-	if reload.TraceID != traceID || reload.Operation.TraceID != traceID {
-		t.Fatalf("Reload trace = report %q operation %q, want %q", reload.TraceID, reload.Operation.TraceID, traceID)
-	}
-	stored, ok, err := reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || stored.Status != memory.LifecycleStatusEnqueued || stored.JobID != reload.JobID {
-		t.Fatalf("stored reload dispatch report = %+v ok=%v err=%v, want enqueued report", stored, ok, err)
-	}
-	if chunker.calls != 1 {
-		t.Fatalf("chunker calls before reload drain = %d, want import only", chunker.calls)
-	}
-	run, err := mem.RunOnce(ctx)
-	if err != nil {
-		t.Fatalf("RunOnce reload target error = %v", err)
-	}
-	if !run.Completed || run.JobID != reload.JobID || run.Kind != memory.LifecycleJobKindReload {
-		t.Fatalf("RunOnce reload result = %+v, want completed reload job", run)
-	}
-	stored, ok, err = reportStore.GetLifecycleReport(ctx, traceID)
-	if err != nil || !ok || stored.Status != memory.LifecycleStatusCompleted || stored.JobID != reload.JobID || stored.TraceID != traceID {
-		t.Fatalf("stored reload run report = %+v ok=%v err=%v, want completed trace report", stored, ok, err)
-	}
-	if chunker.calls != 2 {
-		t.Fatalf("chunker calls after reload drain = %d, want import plus reload", chunker.calls)
-	}
-	pack, err := mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scope,
-		Query: "updated reload needle",
-		TopK:  5,
-	})
-	if err != nil {
-		t.Fatalf("PackContext after reload error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || !strings.Contains(pack.DocumentHits[0].Chunk.Text, "updated reload target needle text") {
-		t.Fatalf("DocumentHits after reload = %+v, want updated chunk text", pack.DocumentHits)
-	}
-
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-1",
-		Content:   "updated rebuild target needle text",
-	}}); err != nil {
-		t.Fatalf("Put rebuild canonical document error = %v", err)
-	}
-	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
-	})
-	if err != nil {
-		t.Fatalf("Rebuild target error = %v", err)
-	}
-	if !rebuild.Accepted || rebuild.Status != memory.LifecycleStatusEnqueued || rebuild.JobID == "" {
-		t.Fatalf("Rebuild target report = %+v, want enqueued target job", rebuild)
-	}
-	if err := mem.Drain(ctx); err != nil {
-		t.Fatalf("Drain rebuild target error = %v", err)
-	}
-	if chunker.calls != 3 {
-		t.Fatalf("chunker calls after rebuild drain = %d, want import plus reload plus rebuild", chunker.calls)
-	}
-	pack, err = mem.PackContext(ctx, memory.ContextRequest{
-		Scope: scope,
-		Query: "updated rebuild needle",
-		TopK:  5,
-	})
-	if err != nil {
-		t.Fatalf("PackContext after rebuild error = %v", err)
-	}
-	if len(pack.DocumentHits) != 1 || !strings.Contains(pack.DocumentHits[0].Chunk.Text, "updated rebuild target needle text") {
-		t.Fatalf("DocumentHits after rebuild = %+v, want updated chunk text", pack.DocumentHits)
-	}
+	return projectedDocumentChunkFixture{mem: mem, index: index, documentStore: documentStore, chunkStore: chunkStore, reportStore: reportStore, scope: scope, namespace: namespace}
 }
 
-func TestMemoryFacadeDocumentTargetRunnerErrorMarksJobFailed(t *testing.T) {
-	ctx := context.Background()
-	jobStore := memory.NewMemoryJobStore()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	deps.JobStore = jobStore
-	spec := documentRetrievalSpec()
-	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New document reload failure memory error = %v", err)
-	}
-	scope := testScope("conv-doc")
-	scope.DatasetID = "dataset-1"
-
-	reload, err := mem.Reload(ctx, memory.ReloadRequest{
-		Scope:        scope,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-missing"}},
-	})
-	if err != nil {
-		t.Fatalf("Reload missing target enqueue error = %v", err)
-	}
-	if reload.Status != memory.LifecycleStatusEnqueued || reload.JobID == "" {
-		t.Fatalf("Reload missing target report = %+v, want enqueued job", reload)
-	}
-	result, err := mem.RunOnce(ctx)
-	if err == nil {
-		t.Fatalf("RunOnce missing target err = nil, want runner error; result=%+v", result)
-	}
-	if result.Completed || result.JobID != reload.JobID || result.Error == "" {
-		t.Fatalf("RunOnce missing target result = %+v, want failed job result", result)
-	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats after failed reload error = %v", err)
-	}
-	if stats.Pending != 0 || stats.Completed != 0 || stats.Failed != 1 {
-		t.Fatalf("QueueStats after failed reload = %+v, want one failed job", stats)
-	}
-}
-
-func TestMemoryFacadeDocumentTargetReloadKeepsRuntimeUserHardPartitions(t *testing.T) {
-	ctx := context.Background()
-	deps := newDocumentDeps(t)
-	deps.DocumentChunker = &fakeDocumentChunker{}
-	deps.JobStore = memory.NewMemoryJobStore()
-	spec := documentRetrievalSpec()
-	spec.Lifecycle = []memory.StageSpec{{Name: "reload"}}
-	mem, err := memory.New(spec, deps)
-	if err != nil {
-		t.Fatalf("New partitioned reload memory error = %v", err)
-	}
-	userOne := testScope("conv-doc")
-	userOne.DatasetID = "dataset-1"
-	userTwo := userOne
-	userTwo.UserID = "user-2"
-
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-1",
-		Content:   "user one partition text",
-	}}); err != nil {
-		t.Fatalf("Put user one canonical document error = %v", err)
-	}
-	if _, err := mem.Reload(ctx, memory.ReloadRequest{
-		Scope:        userOne,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
-	}); err != nil {
-		t.Fatalf("Reload user one target error = %v", err)
-	}
-	if err := mem.Drain(ctx); err != nil {
-		t.Fatalf("Drain user one reload error = %v", err)
-	}
-	if _, err := mem.DocumentStore().Put(ctx, sourcedocument.PutRequest{Document: sourcedocument.Document{
-		DatasetID: "dataset-1",
-		ID:        "doc-1",
-		Content:   "user two partition text",
-	}}); err != nil {
-		t.Fatalf("Put user two canonical document error = %v", err)
-	}
-	if _, err := mem.Reload(ctx, memory.ReloadRequest{
-		Scope:        userTwo,
-		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
-		Documents:    []memory.DocumentTarget{{DocumentID: "doc-1"}},
-	}); err != nil {
-		t.Fatalf("Reload user two target error = %v", err)
-	}
-	if err := mem.Drain(ctx); err != nil {
-		t.Fatalf("Drain user two reload error = %v", err)
-	}
-
-	userOnePack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: userOne, Query: "user one partition", TopK: 5})
-	if err != nil {
-		t.Fatalf("PackContext user one error = %v", err)
-	}
-	if len(userOnePack.DocumentHits) != 1 || !strings.Contains(userOnePack.DocumentHits[0].Chunk.Text, "user one partition text") {
-		t.Fatalf("user one DocumentHits = %+v, want user one partition chunk", userOnePack.DocumentHits)
-	}
-	userTwoPack, err := mem.PackContext(ctx, memory.ContextRequest{Scope: userTwo, Query: "user two partition", TopK: 5})
-	if err != nil {
-		t.Fatalf("PackContext user two error = %v", err)
-	}
-	if len(userTwoPack.DocumentHits) != 1 || !strings.Contains(userTwoPack.DocumentHits[0].Chunk.Text, "user two partition text") {
-		t.Fatalf("user two DocumentHits = %+v, want user two partition chunk", userTwoPack.DocumentHits)
-	}
-}
-
-func TestMemoryFacadeRebuildAndReconcileDryRunReturnPlannedReports(t *testing.T) {
-	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Lifecycle: []memory.StageSpec{
-			{Name: "readiness"},
-			{Name: "rebuild"},
-			{Name: "reconcile"},
-		},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New dry-run lifecycle memory error = %v", err)
-	}
-
-	rawScope := memory.Scope{
-		RuntimeID:      " runtime-1 ",
-		UserID:         " user-1 ",
-		AgentID:        " agent-1 ",
-		ConversationID: " conv-1 ",
-		DatasetID:      " dataset-1 ",
-		EntityID:       " entity-1 ",
-	}
-	wantScope := memory.Scope{
-		RuntimeID:      "runtime-1",
-		UserID:         "user-1",
-		AgentID:        "agent-1",
-		ConversationID: "conv-1",
-		DatasetID:      "dataset-1",
-		EntityID:       "entity-1",
-	}
-	capabilities := []memory.Capability{memory.CapabilityObservationLedger, memory.CapabilityFactGraph}
-	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
-		Scope:        rawScope,
-		Capabilities: capabilities,
-		DryRun:       true,
-		Reason:       " operator requested ",
-	})
-	if err != nil {
-		t.Fatalf("Rebuild dry-run error = %v", err)
-	}
-	if rebuild.Operation.ID == "" || rebuild.Operation.PlanDigest == "" || rebuild.Operation.IdempotencyKey == "" || !rebuild.Supported || !rebuild.Accepted || rebuild.Status != memory.LifecycleStatusPlanned || !rebuild.Operation.DryRun || rebuild.Operation.Action != memory.LifecycleActionRebuild {
-		t.Fatalf("Rebuild dry-run report = %+v, want supported accepted dry-run rebuild", rebuild)
-	}
-	if rebuild.Operation.Scope != wantScope || !reflect.DeepEqual(rebuild.Operation.Capabilities, capabilities) {
-		t.Fatalf("Rebuild dry-run scope/capabilities = %+v/%+v, want %+v/%+v", rebuild.Operation.Scope, rebuild.Operation.Capabilities, wantScope, capabilities)
-	}
-	if rebuild.JobID != "" || rebuild.Operation.Reason != "operator requested" || !strings.Contains(rebuild.Message, "planned") {
-		t.Fatalf("Rebuild dry-run job/reason/message = %+v/%q/%q, want no job, trimmed reason, planned message", rebuild.JobID, rebuild.Operation.Reason, rebuild.Message)
-	}
-	if len(rebuild.Steps) != 1 || !rebuild.Steps[0].Planned || rebuild.Steps[0].Completed {
-		t.Fatalf("Rebuild dry-run steps = %+v, want one planned substrate step", rebuild.Steps)
-	}
-
-	reconcile, err := mem.Reconcile(ctx, memory.ReconcileRequest{
-		Scope:        rawScope,
-		Capabilities: []memory.Capability{memory.CapabilityFactLedger},
-		DryRun:       true,
-	})
-	if err != nil {
-		t.Fatalf("Reconcile dry-run error = %v", err)
-	}
-	if reconcile.Operation.ID == "" || !reconcile.Supported || !reconcile.Accepted || reconcile.Status != memory.LifecycleStatusPlanned || !reconcile.Operation.DryRun || reconcile.Operation.Action != memory.LifecycleActionReconcile {
-		t.Fatalf("Reconcile dry-run report = %+v, want supported accepted dry-run reconcile", reconcile)
-	}
-	if reconcile.Operation.Scope != wantScope || !reflect.DeepEqual(reconcile.Operation.Capabilities, []memory.Capability{memory.CapabilityFactLedger}) {
-		t.Fatalf("Reconcile dry-run scope/capabilities = %+v/%+v, want %+v/fact_ledger", reconcile.Operation.Scope, reconcile.Operation.Capabilities, wantScope)
-	}
-}
-
-func TestMemoryFacadeNoRunnerLifecycleActionDoesNotEnqueue(t *testing.T) {
-	ctx := context.Background()
-	jobStore := newRecordingJobStore()
-	deps := newDeps(t)
-	deps.JobStore = jobStore
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-		Lifecycle: []memory.StageSpec{
-			{Name: "rebuild"},
-		},
-	}, deps)
-	if err != nil {
-		t.Fatalf("New lifecycle job store memory error = %v", err)
-	}
-	rawScope := memory.Scope{
-		RuntimeID:      " runtime-1 ",
-		UserID:         " user-1 ",
-		AgentID:        " agent-1 ",
-		ConversationID: " conv-1 ",
-		DatasetID:      " dataset-1 ",
-		EntityID:       " entity-1 ",
-	}
-	wantScope := memory.Scope{
-		RuntimeID:      "runtime-1",
-		UserID:         "user-1",
-		AgentID:        "agent-1",
-		ConversationID: "conv-1",
-		DatasetID:      "dataset-1",
-		EntityID:       "entity-1",
-	}
-	rebuildCapabilities := []memory.Capability{memory.CapabilityObservationLedger, memory.CapabilityFactGraph}
-	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{
-		Scope:        rawScope,
-		Capabilities: rebuildCapabilities,
-		Reason:       "rebuild substrate",
-	})
-	if err == nil || !errdefs.IsNotAvailable(err) {
-		t.Fatalf("Rebuild no-runner err = %v, want NotAvailable", err)
-	}
-	if !rebuild.Supported || rebuild.Accepted || rebuild.Status != memory.LifecycleStatusUnsupported || rebuild.Operation.DryRun || rebuild.JobID != "" {
-		t.Fatalf("Rebuild no-runner report = %+v, want unsupported without job", rebuild)
-	}
-	if rebuild.Operation.Scope != wantScope || !reflect.DeepEqual(rebuild.Operation.Capabilities, rebuildCapabilities) {
-		t.Fatalf("rebuild normalized scope/capabilities = %+v/%+v, want %+v/%+v", rebuild.Operation.Scope, rebuild.Operation.Capabilities, wantScope, rebuildCapabilities)
-	}
-	stats, err := mem.QueueStats(ctx)
-	if err != nil {
-		t.Fatalf("QueueStats after no-runner lifecycle error = %v", err)
-	}
-	if len(jobStore.jobs) != 0 || stats.Pending != 0 || stats.Completed != 0 || stats.Failed != 0 {
-		t.Fatalf("no-runner jobs=%d stats=%+v, want nothing enqueued", len(jobStore.jobs), stats)
-	}
-}
-
-func TestMemoryFacadeRebuildAndReconcileRequireDeclaredLifecycleStages(t *testing.T) {
-	ctx := context.Background()
-	mem, err := memory.New(memory.Spec{
-		Sources:      []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{{Capability: memory.CapabilityRecentWindow, Required: true}},
-	}, newDeps(t))
-	if err != nil {
-		t.Fatalf("New lifecycle unavailable memory error = %v", err)
-	}
-	rebuild, err := mem.Rebuild(ctx, memory.RebuildRequest{Scope: testScope("conv-1")})
-	if err == nil || !errdefs.IsNotAvailable(err) || rebuild.Supported || rebuild.Accepted || rebuild.Status != memory.LifecycleStatusUnsupported || rebuild.Operation.Action != memory.LifecycleActionRebuild {
-		t.Fatalf("Rebuild result=%+v err=%v, want undeclared NotAvailable", rebuild, err)
-	}
-	reconcile, err := mem.Reconcile(ctx, memory.ReconcileRequest{Scope: testScope("conv-1")})
-	if err == nil || !errdefs.IsNotAvailable(err) || reconcile.Supported || reconcile.Accepted || reconcile.Status != memory.LifecycleStatusUnsupported || reconcile.Operation.Action != memory.LifecycleActionReconcile {
-		t.Fatalf("Reconcile result=%+v err=%v, want undeclared NotAvailable", reconcile, err)
-	}
-}
-
-func TestNoPublicRecipeHelpers(t *testing.T) {
-	files := parseCurrentMemoryPackage(t)
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || fn.Recv != nil || !fn.Name.IsExported() {
-				continue
-			}
-			name := fn.Name.Name
-			if name == "LongAssistantRecipe" || name == "KnowledgeHeavyRecipe" || strings.HasSuffix(name, "Recipe") {
-				t.Fatalf("unexpected public recipe helper %s", name)
-			}
-		}
-	}
-}
-
-func TestSystemDoesNotExposeVerticalExecutorMethods(t *testing.T) {
-	forbidden := map[string]bool{
-		"IndexDocument":        true,
-		"SearchDocumentChunks": true,
-		"BuildSummaryDAG":      true,
-		"SearchSummaryNodes":   true,
-		"ExtractObservations":  true,
-		"SearchObservations":   true,
-		"ReconcileFacts":       true,
-		"SearchFacts":          true,
-		"BuildFactGraph":       true,
-		"SearchFactGraph":      true,
-		"PackContextRaw":       true,
-	}
-
-	files := parseCurrentMemoryPackage(t)
-	for _, file := range files {
-		for _, decl := range file.Decls {
-			fn, ok := decl.(*ast.FuncDecl)
-			if !ok || !isSystemReceiver(fn) {
-				continue
-			}
-			if forbidden[fn.Name.Name] {
-				t.Fatalf("System exposes low-level executor method %s", fn.Name.Name)
-			}
-		}
-	}
-}
-
-func TestPublicRootDoesNotReExportInternalExecutorOrDeriveDTOs(t *testing.T) {
-	const executorImportPath = "github.com/GizClaw/flowcraft/memory/internal/executor"
-
-	forbiddenExecutorAliases := map[string]bool{
-		"DocumentChunkSearchResponse":  true,
-		"SummaryNodeSearchResponse":    true,
-		"ObservationSearchResponse":    true,
-		"FactSearchResponse":           true,
-		"FactGraphBuildResult":         true,
-		"FactGraphSearchResponse":      true,
-		"EntityProfileSearchResponse":  true,
-		"EntityTimelineSearchResponse": true,
-		"ContextPack":                  true,
-	}
-	forbiddenRootDeriveTypes := map[string]bool{
-		"DocumentChunker":         true,
-		"DocumentChunkInput":      true,
-		"Summarizer":              true,
-		"SummaryInput":            true,
-		"ObservationExtractor":    true,
-		"ObservationInput":        true,
-		"FactReconciler":          true,
-		"FactReconcileInput":      true,
-		"FactGraphBuilder":        true,
-		"FactGraphInput":          true,
-		"FactGraphOutput":         true,
-		"EntityProfileBuilder":    true,
-		"EntityProfileInput":      true,
-		"EntityTimelineBuilder":   true,
-		"EntityTimelineInput":     true,
-		"ContextPacker":           true,
-		"DocumentChunkSearchHit":  true,
-		"SummaryNodeSearchHit":    true,
-		"ObservationSearchHit":    true,
-		"FactSearchHit":           true,
-		"FactGraphSearchHit":      true,
-		"EntityProfileSearchHit":  true,
-		"EntityTimelineSearchHit": true,
-		"ContextPackInput":        true,
-		"ContextPackOutput":       true,
-		"ContextItemKind":         true,
-		"ContextItem":             true,
-	}
-	forbiddenRootDeriveConstants := map[string]bool{
-		"ContextItemRecentMessage":  true,
-		"ContextItemSummaryNode":    true,
-		"ContextItemDocumentChunk":  true,
-		"ContextItemObservation":    true,
-		"ContextItemFact":           true,
-		"ContextItemFactGraphNode":  true,
-		"ContextItemFactGraphEdge":  true,
-		"ContextItemEntityProfile":  true,
-		"ContextItemEntityTimeline": true,
-	}
-
-	files := parseCurrentMemoryPackage(t)
-	for filename, file := range files {
-		executorImports := map[string]bool{}
-		for _, imp := range file.Imports {
-			path, err := strconv.Unquote(imp.Path.Value)
-			if err != nil {
-				t.Fatalf("unquote import path %s: %v", imp.Path.Value, err)
-			}
-			if path != executorImportPath {
-				continue
-			}
-			name := filepath.Base(path)
-			if imp.Name != nil {
-				name = imp.Name.Name
-			}
-			executorImports[name] = true
-		}
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok {
-				continue
-			}
-			switch gen.Tok {
-			case token.TYPE:
-				for _, spec := range gen.Specs {
-					typeSpec := spec.(*ast.TypeSpec)
-					if !typeSpec.Name.IsExported() || !typeSpec.Assign.IsValid() {
-						continue
-					}
-					name := typeSpec.Name.Name
-					if forbiddenRootDeriveTypes[name] {
-						t.Fatalf("public derive type alias %s must not be re-exported from root memory package; import memory/derive directly (found in %s)", name, filename)
-					}
-					if forbiddenExecutorAliases[name] {
-						selector, ok := typeSpec.Type.(*ast.SelectorExpr)
-						if !ok || !isImportedSelector(selector, executorImports) {
-							continue
-						}
-						t.Fatalf("public type alias %s must not re-export internal executor DTO %s.%s (found in %s)", name, selector.X.(*ast.Ident).Name, selector.Sel.Name, filename)
-					}
-				}
-			case token.CONST:
-				for _, spec := range gen.Specs {
-					valueSpec := spec.(*ast.ValueSpec)
-					for _, nameIdent := range valueSpec.Names {
-						if !nameIdent.IsExported() {
-							continue
-						}
-						if forbiddenRootDeriveConstants[nameIdent.Name] {
-							t.Fatalf("public derive constant alias %s must not be re-exported from root memory package; import memory/derive directly (found in %s)", nameIdent.Name, filename)
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func TestPublicRequestTypesDoNotExposeNamespaceOverrides(t *testing.T) {
-	files := parseCurrentMemoryPackage(t)
-
-	for filename, file := range files {
-		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.TYPE {
-				continue
-			}
-			for _, spec := range gen.Specs {
-				typeSpec := spec.(*ast.TypeSpec)
-				name := typeSpec.Name.Name
-				if name == "PackContextRequest" {
-					t.Fatalf("public PackContextRequest exposed in %s; use ContextRequest facade instead", filename)
-				}
-				if !typeSpec.Name.IsExported() {
-					continue
-				}
-				guardNamespaceFields := strings.HasSuffix(name, "Request") || name == "ContextPackInput" || name == "ContextPackOutput"
-				if !guardNamespaceFields {
-					continue
-				}
-				structType, ok := typeSpec.Type.(*ast.StructType)
-				if !ok {
-					continue
-				}
-				for _, field := range structType.Fields.List {
-					for _, fieldName := range field.Names {
-						if strings.Contains(fieldName.Name, "Namespace") {
-							t.Fatalf("public request %s exposes namespace override field %s in %s", name, fieldName.Name, filename)
-						}
-					}
-				}
-			}
-		}
-	}
-}
-
-func parseCurrentMemoryPackage(t *testing.T) map[string]*ast.File {
+func newProjectedSummaryFixture(t *testing.T, ctx context.Context) projectedSummaryFixture {
 	t.Helper()
+	return newProjectedSummaryFixtureWithSummarizer(t, ctx, &recordingSummaryLifecycleSummarizer{})
+}
 
-	fs := token.NewFileSet()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("ReadDir error = %v", err)
+func newProjectedSummaryFixtureWithSummarizer(t *testing.T, ctx context.Context, summarizer derive.Summarizer) projectedSummaryFixture {
+	t.Helper()
+	if summarizer == nil {
+		summarizer = &recordingSummaryLifecycleSummarizer{}
 	}
-	files := map[string]*ast.File{}
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_summaries"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   summarizer,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada found a brass lantern."),
+		}},
+	}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	node := summaryLifecycleNode(scope, "summary-1", "summary before canonical mutation")
+	if _, err := summaryStore.PutNode(ctx, node); err != nil {
+		t.Fatalf("PutNode() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(summary_dag) error = %v", err)
+	}
+	record, err := projectors.SummaryNode(node)
+	if err != nil {
+		t.Fatalf("SummaryNode() error = %v", err)
+	}
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{record}); err != nil {
+		t.Fatalf("Upsert summary projection error = %v", err)
+	}
+	return projectedSummaryFixture{mem: mem, index: index, summaryStore: summaryStore, reportStore: reportStore, scope: scope, namespace: namespace, node: node}
+}
+
+func newProjectedConversationFixture(t *testing.T, ctx context.Context) projectedConversationFixture {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	summaryStore := recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true},
+			{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_messages"},
+			{Name: "retrieve_summaries"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		SummaryStore: summaryStore,
+		Summarizer:   &recordingSummaryLifecycleSummarizer{},
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp and found a brass lantern."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	messageNamespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(message_index) error = %v", err)
+	}
+	messageRecord := sourceMessageRecord(t, scope, messages[0])
+	summaryNamespace, err := projectors.ScopedNamespace("summary_dag", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(summary_dag) error = %v", err)
+	}
+	summaryNode := summaryLifecycleNode(scope, "summary-1", "Conversation summary: Ada found a brass lantern.")
+	if _, err := summaryStore.PutNode(ctx, summaryNode); err != nil {
+		t.Fatalf("PutNode() error = %v", err)
+	}
+	summaryRecord, err := projectors.SummaryNode(summaryNode)
+	if err != nil {
+		t.Fatalf("SummaryNode() error = %v", err)
+	}
+	messageWriter, err := indexed.NewWriter(index, indexed.Binding{Namespace: messageNamespace})
+	if err != nil {
+		t.Fatalf("NewWriter(message) error = %v", err)
+	}
+	if err := messageWriter.Upsert(ctx, []indexed.Record{messageRecord}); err != nil {
+		t.Fatalf("Upsert message projection error = %v", err)
+	}
+	summaryWriter, err := indexed.NewWriter(index, indexed.Binding{Namespace: summaryNamespace})
+	if err != nil {
+		t.Fatalf("NewWriter(summary) error = %v", err)
+	}
+	if err := summaryWriter.Upsert(ctx, []indexed.Record{summaryRecord}); err != nil {
+		t.Fatalf("Upsert summary projection error = %v", err)
+	}
+	return projectedConversationFixture{
+		mem:              mem,
+		index:            index,
+		summaryStore:     summaryStore,
+		reportStore:      reportStore,
+		scope:            scope,
+		messageNamespace: messageNamespace,
+		summaryNamespace: summaryNamespace,
+		message:          messages[0],
+		messageRecordID:  messageRecord.ID,
+		summaryNode:      summaryNode,
+		summaryRecordID:  summaryRecord.ID,
+	}
+}
+
+func newMessageIndexBatchFixture(t *testing.T, ctx context.Context, count int) messageIndexBatchFixture {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_messages"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	inputs := make([]sourcemessage.Message, 0, count)
+	messageIDs := make([]string, 0, count)
+	for i := 1; i <= count; i++ {
+		id := "batch-" + strconv.Itoa(i)
+		messageIDs = append(messageIDs, id)
+		inputs = append(inputs, sourcemessage.Message{
+			ID:      id,
+			Message: model.NewTextMessage(model.RoleUser, "batch boundary message "+strconv.Itoa(i)),
+		})
+	}
+	if _, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages:       inputs,
+	}); err != nil {
+		t.Fatalf("Append(batch messages) error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(message_index) error = %v", err)
+	}
+	return messageIndexBatchFixture{
+		mem:         mem,
+		index:       index,
+		reportStore: reportStore,
+		scope:       scope,
+		namespace:   namespace,
+		messageIDs:  messageIDs,
+	}
+}
+
+func newProjectedMessageFixture(t *testing.T, ctx context.Context) projectedMessageFixture {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	msgStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	reportStore := memory.NewMemoryReportStore()
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "retrieve_messages"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore: msgStore,
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
+		ReportStore:  reportStore,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", AgentID: "agent", ConversationID: "conv"}
+	messages, err := msgStore.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages: []sourcemessage.Message{{
+			ID:      "dia-1",
+			Message: model.NewTextMessage(model.RoleUser, "Ada hid the blue notebook beside the lamp."),
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	namespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(message_index) error = %v", err)
+	}
+	record := sourceMessageRecord(t, scope, messages[0])
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter() error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{record}); err != nil {
+		t.Fatalf("Upsert message projection error = %v", err)
+	}
+	return projectedMessageFixture{mem: mem, index: index, reportStore: reportStore, scope: scope, namespace: namespace, message: messages[0], recordID: record.ID}
+}
+
+func addSummarySourceContentHash(t *testing.T, ctx context.Context, fixture projectedSummaryFixture) {
+	t.Helper()
+	msg, ok, err := fixture.mem.MessageStore().Get(ctx, fixture.scope.ConversationID, "dia-1")
+	if err != nil || !ok {
+		t.Fatalf("Get(summary source message) ok = %v err = %v, want existing message", ok, err)
+	}
+	node := fixture.node
+	if len(node.Signature.SourceRevisions) == 0 {
+		t.Fatalf("summary node has no source revisions")
+	}
+	node.Signature.SourceRevisions[0].ContentHash = summaryderive.MessageContentHash(msg)
+	if _, err := fixture.summaryStore.PutNode(ctx, node); err != nil {
+		t.Fatalf("PutNode(summary with source content hash) error = %v", err)
+	}
+	record, err := projectors.SummaryNode(node)
+	if err != nil {
+		t.Fatalf("SummaryNode(summary with source content hash) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(fixture.index, indexed.Binding{Namespace: fixture.namespace})
+	if err != nil {
+		t.Fatalf("NewWriter(summary source content hash) error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{record}); err != nil {
+		t.Fatalf("Upsert summary projection with source content hash error = %v", err)
+	}
+}
+
+func putProjectedSummaryNode(t *testing.T, ctx context.Context, fixture projectedSummaryFixture, node recent.SummaryNode) {
+	t.Helper()
+	put, err := fixture.summaryStore.PutNode(ctx, node)
+	if err != nil {
+		t.Fatalf("PutNode(projected summary) error = %v", err)
+	}
+	record, err := projectors.SummaryNode(put)
+	if err != nil {
+		t.Fatalf("SummaryNode(projected summary) error = %v", err)
+	}
+	writer, err := indexed.NewWriter(fixture.index, indexed.Binding{Namespace: fixture.namespace})
+	if err != nil {
+		t.Fatalf("NewWriter(projected summary) error = %v", err)
+	}
+	if err := writer.Upsert(ctx, []indexed.Record{record}); err != nil {
+		t.Fatalf("Upsert projected summary error = %v", err)
+	}
+}
+
+func makeProjectedDocumentStale(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture) {
+	t.Helper()
+	makeProjectedDocumentStaleByID(t, ctx, fixture, "doc-1", "Ada moved the updated field notes into the cedar box.")
+}
+
+func importProjectedDocument(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture, documentID, content string) {
+	t.Helper()
+	if _, err := fixture.mem.ImportDocument(ctx, memory.ImportDocumentRequest{
+		Scope: fixture.scope,
+		Document: sourcedocument.Document{
+			ID:      documentID,
+			Content: content,
+		},
+	}); err != nil {
+		t.Fatalf("ImportDocument(%s) error = %v", documentID, err)
+	}
+}
+
+func makeProjectedDocumentStaleByID(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture, documentID, content string) {
+	t.Helper()
+	if _, err := fixture.documentStore.Put(ctx, sourcedocument.PutRequest{
+		Document: sourcedocument.Document{
+			DatasetID: fixture.scope.DatasetID,
+			ID:        documentID,
+			Content:   content,
+		},
+	}); err != nil {
+		t.Fatalf("Put updated canonical document %s error = %v", documentID, err)
+	}
+}
+
+func requireDocumentChunkStale(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture) memory.DiagnosticCheck {
+	t.Helper()
+	check := requireDocumentChunkFreshnessCheck(t, ctx, fixture)
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("staleness check = %+v, want stale warning", check)
+	}
+	return check
+}
+
+func requireDocumentChunkFresh(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture) memory.DiagnosticCheck {
+	t.Helper()
+	check := requireDocumentChunkFreshnessCheck(t, ctx, fixture)
+	if !check.OK || check.Status != memory.DiagnosticStatusOK {
+		t.Fatalf("staleness check = %+v, want OK", check)
+	}
+	return check
+}
+
+func requireDocumentChunkStaleCount(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture, want int) memory.DiagnosticCheck {
+	t.Helper()
+	check := requireDocumentChunkFreshnessCheck(t, ctx, fixture)
+	if want == 0 {
+		if !check.OK || check.Status != memory.DiagnosticStatusOK {
+			t.Fatalf("staleness check = %+v, want OK", check)
 		}
-		filename := filepath.Join(".", name)
-		file, err := parser.ParseFile(fs, filename, nil, 0)
+		return check
+	}
+	if check.Status != memory.DiagnosticStatusStale || check.Severity != memory.DiagnosticSeverityWarning || check.OK {
+		t.Fatalf("staleness check = %+v, want stale warning", check)
+	}
+	assertDiagnosticDetailInt(t, check, "stale_records", want)
+	return check
+}
+
+func requireDocumentChunkFreshnessCheck(t *testing.T, ctx context.Context, fixture projectedDocumentChunkFixture) memory.DiagnosticCheck {
+	t.Helper()
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "freshness",
+		Capabilities: []memory.Capability{memory.CapabilityDocumentChunks},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(freshness) error = %v", err)
+	}
+	return requireDiagnosticCheck(t, report.Checks, "projection.document_chunks.staleness")
+}
+
+func requireMessageIndexSearchableAndConsistent(t *testing.T, ctx context.Context, fixture projectedMessageFixture) {
+	t.Helper()
+	pack, err := fixture.mem.PackContext(ctx, memory.ContextRequest{
+		Scope: fixture.scope,
+		Query: "blue notebook lamp",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext(message_index) error = %v", err)
+	}
+	if len(pack.MessageHits) == 0 || pack.MessageHits[0].Message.ID != fixture.message.ID {
+		t.Fatalf("MessageHits = %+v, want repaired searchable message %q", pack.MessageHits, fixture.message.ID)
+	}
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "consistency",
+		Capabilities: []memory.Capability{memory.CapabilityMessageIndex},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(message_index consistency) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.message_index.hydration")
+	if !report.Ready || !report.OK || !check.OK {
+		t.Fatalf("message_index consistency report/check = %+v / %+v, want OK", report, check)
+	}
+}
+
+func requireSummaryDAGSearchableAndConsistent(t *testing.T, ctx context.Context, fixture projectedSummaryFixture) {
+	t.Helper()
+	pack, err := fixture.mem.PackContext(ctx, memory.ContextRequest{
+		Scope: fixture.scope,
+		Query: "lantern",
+		TopK:  3,
+	})
+	if err != nil {
+		t.Fatalf("PackContext(summary_dag) error = %v", err)
+	}
+	if len(pack.SummaryHits) == 0 || !strings.Contains(pack.SummaryHits[0].Node.Summary, "lantern") {
+		t.Fatalf("SummaryHits = %+v, want repaired searchable lantern summary", pack.SummaryHits)
+	}
+	report, err := fixture.mem.Diagnostics(ctx, memory.DiagnosticRequest{
+		Scope:        fixture.scope,
+		Stage:        "consistency",
+		Capabilities: []memory.Capability{memory.CapabilitySummaryDAG},
+		PageSize:     10,
+	})
+	if err != nil {
+		t.Fatalf("Diagnostics(summary_dag consistency) error = %v", err)
+	}
+	check := requireDiagnosticCheck(t, report.Checks, "projection.summary_dag.hydration")
+	if !report.Ready || !report.OK || !check.OK {
+		t.Fatalf("summary_dag consistency report/check = %+v / %+v, want OK", report, check)
+	}
+}
+
+func projectionDocExists(ctx context.Context, index retrieval.Index, namespace, id string) (bool, error) {
+	resp, err := index.List(ctx, namespace, retrieval.ListRequest{
+		PageSize: 100,
+		OrderBy:  retrieval.OrderByIDAsc,
+	})
+	if err != nil || resp == nil {
+		return false, err
+	}
+	for _, doc := range resp.Items {
+		if doc.ID == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func newDualProjectionFixture(t *testing.T, ctx context.Context) dualProjectionFixture {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
+	if err != nil {
+		t.Fatalf("retrieval workspace: %v", err)
+	}
+	t.Cleanup(func() { _ = index.Close() })
+	documentStore := sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/document"))
+	messageStore := sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message"))
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{
+			{Kind: memory.SourceMessageLog, Required: true},
+			{Kind: memory.SourceDocumentStore, Required: true},
+		},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityMessageIndex, Required: true},
+			{Capability: memory.CapabilityDocumentChunks, Required: true},
+		},
+		Projections: []memory.ProjectionSpec{
+			{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true},
+			{Capability: memory.CapabilityDocumentChunks, Namespace: "document_chunks", Required: true},
+		},
+	}, memory.Deps{
+		MessageStore:  messageStore,
+		DocumentStore: documentStore,
+		ChunkStore:    viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(root, "views/document_chunks")),
+		Index:         index,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	scope := memory.Scope{
+		RuntimeID:      "rt",
+		UserID:         "user",
+		AgentID:        "agent",
+		ConversationID: "conv",
+		DatasetID:      "dataset",
+	}
+	messageNamespace, err := projectors.ScopedNamespace("message_index", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(message_index) error = %v", err)
+	}
+	documentNamespace, err := projectors.ScopedNamespace("document_chunks", scope)
+	if err != nil {
+		t.Fatalf("ScopedNamespace(document_chunks) error = %v", err)
+	}
+	for _, id := range []string{"chunk-a", "chunk-b"} {
+		if _, err := documentStore.Put(ctx, sourcedocument.PutRequest{
+			Document: sourcedocument.Document{
+				DatasetID: scope.DatasetID,
+				ID:        id,
+				Content:   "fresh projection " + id,
+			},
+		}); err != nil {
+			t.Fatalf("Put canonical document %q error = %v", id, err)
+		}
+	}
+	writeFreshMessageProjectionRecords(t, ctx, index, messageNamespace, messageStore, scope, "message", 2)
+	writeFreshProjectionRecords(t, ctx, index, documentNamespace, memory.CapabilityDocumentChunks, scope, "chunk", 2)
+	return dualProjectionFixture{
+		mem:               mem,
+		scope:             scope,
+		messageNamespace:  messageNamespace,
+		documentNamespace: documentNamespace,
+	}
+}
+
+func writeFreshMessageProjectionRecords(t *testing.T, ctx context.Context, index retrieval.Index, namespace string, store sourcemessage.Store, scope memory.Scope, prefix string, count int) {
+	t.Helper()
+	inputs := make([]sourcemessage.Message, 0, count)
+	for i := range count {
+		id := prefix + "-" + string(rune('a'+i))
+		inputs = append(inputs, sourcemessage.Message{
+			ID:      id,
+			Message: model.NewTextMessage(model.RoleUser, "fresh projection "+id),
+		})
+	}
+	messages, err := store.Append(ctx, sourcemessage.AppendRequest{
+		ConversationID: scope.ConversationID,
+		Messages:       inputs,
+	})
+	if err != nil {
+		t.Fatalf("Append(%s messages) error = %v", prefix, err)
+	}
+	records := make([]indexed.Record, 0, len(messages))
+	for _, msg := range messages {
+		messageRecords, err := projectors.SourceMessageRecords(scope, msg)
 		if err != nil {
-			t.Fatalf("ParseFile %s error = %v", filename, err)
+			t.Fatalf("SourceMessageRecords(%s) error = %v", msg.ID, err)
 		}
-		if file.Name.Name != "memory" {
-			continue
+		for _, record := range messageRecords {
+			record.Signature = views.ViewSignature{
+				ViewID: views.ID(memory.CapabilityMessageIndex),
+				SourceRevisions: []views.SourceRevision{{
+					Kind:      views.SourceMessage,
+					SourceKey: record.SourceRefs[0].StableKey(),
+					Revision:  strconv.FormatUint(msg.Seq, 10),
+				}},
+				TransformSignature: "test:v1",
+			}
+			records = append(records, record)
 		}
-		files[filename] = file
 	}
-	if len(files) == 0 {
-		t.Fatal("package memory not found")
-	}
-	return files
-}
-
-func isImportedSelector(selector *ast.SelectorExpr, imports map[string]bool) bool {
-	ident, ok := selector.X.(*ast.Ident)
-	return ok && imports[ident.Name]
-}
-
-func isSystemReceiver(fn *ast.FuncDecl) bool {
-	if fn.Recv == nil || len(fn.Recv.List) == 0 {
-		return false
-	}
-	expr := fn.Recv.List[0].Type
-	if ptr, ok := expr.(*ast.StarExpr); ok {
-		expr = ptr.X
-	}
-	ident, ok := expr.(*ast.Ident)
-	return ok && ident.Name == "System"
-}
-
-type recordingJobStore struct {
-	*memory.MemoryJobStore
-	jobs []memory.LifecycleJob
-}
-
-func newRecordingJobStore() *recordingJobStore {
-	return &recordingJobStore{MemoryJobStore: memory.NewMemoryJobStore()}
-}
-
-func (s *recordingJobStore) Enqueue(ctx context.Context, job memory.LifecycleJob) (memory.LifecycleJobID, error) {
-	s.jobs = append(s.jobs, job)
-	return s.MemoryJobStore.Enqueue(ctx, job)
-}
-
-func newDeps(t *testing.T) memory.Deps {
-	t.Helper()
-	ws := sdkworkspace.NewMemWorkspace()
-	index, err := retrievalworkspace.New(sdkworkspace.Sub(ws, "retrieval"))
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
 	if err != nil {
-		t.Fatalf("create retrieval index error = %v", err)
+		t.Fatalf("NewWriter(%s) error = %v", namespace, err)
 	}
-	t.Cleanup(func() {
-		if err := index.Close(); err != nil {
-			t.Fatalf("close retrieval index error = %v", err)
+	if err := writer.Upsert(ctx, records); err != nil {
+		t.Fatalf("Upsert(%s) error = %v", namespace, err)
+	}
+}
+
+func writeFreshProjectionRecords(t *testing.T, ctx context.Context, index retrieval.Index, namespace string, capability memory.Capability, scope memory.Scope, prefix string, count int) {
+	t.Helper()
+	writer, err := indexed.NewWriter(index, indexed.Binding{Namespace: namespace})
+	if err != nil {
+		t.Fatalf("NewWriter(%s) error = %v", namespace, err)
+	}
+	records := make([]indexed.Record, 0, count)
+	for i := range count {
+		id := prefix + "-" + string(rune('a'+i))
+		ref := diagnosticSourceRef(scope, capability, id)
+		records = append(records, indexed.Record{
+			ID:         id,
+			Text:       "fresh projection " + id,
+			Metadata:   diagnosticProjectionMetadata(scope, capability, id, i),
+			SourceRefs: []views.SourceRef{ref},
+			Signature: views.ViewSignature{
+				ViewID: views.ID(capability),
+				SourceRevisions: []views.SourceRevision{{
+					Kind:      ref.Kind,
+					SourceKey: ref.StableKey(),
+					Revision:  "1",
+				}},
+				TransformSignature: "test:v1",
+			},
+		})
+	}
+	if err := writer.Upsert(ctx, records); err != nil {
+		t.Fatalf("Upsert(%s) error = %v", namespace, err)
+	}
+}
+
+func diagnosticSourceRef(scope memory.Scope, capability memory.Capability, id string) views.SourceRef {
+	switch capability {
+	case memory.CapabilityMessageIndex:
+		return views.SourceRef{
+			Kind: views.SourceMessage,
+			Message: &views.MessageSourceRef{
+				ConversationID: scope.ConversationID,
+				MessageID:      id,
+			},
 		}
-	})
-	return memory.Deps{
-		MessageStore:        sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/message")),
-		ObservationStore:    viewobservation.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/observation_ledger")),
-		FactStore:           fact.NewLedgerWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_ledger")),
-		FactGraphStore:      fact.NewGraphWorkspaceStore(sdkworkspace.Sub(ws, "views/fact_graph")),
-		EntityProfileStore:  viewentity.NewProfileWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_profile")),
-		EntityTimelineStore: viewentity.NewTimelineWorkspaceStore(sdkworkspace.Sub(ws, "views/entity_timeline")),
-		Index:               index,
+	default:
+		return views.SourceRef{
+			Kind: views.SourceDocument,
+			Document: &views.DocumentSourceRef{
+				DatasetID:  scope.DatasetID,
+				DocumentID: id,
+			},
+		}
 	}
 }
 
-func newDocumentDeps(t *testing.T) memory.Deps {
-	t.Helper()
-	deps := newDeps(t)
-	ws := sdkworkspace.NewMemWorkspace()
-	deps.DocumentStore = sourcedocument.NewWorkspaceStore(sdkworkspace.Sub(ws, "sources/document"))
-	deps.ChunkStore = viewdocument.NewChunkWorkspaceStore(sdkworkspace.Sub(ws, "views/document_chunks"))
-	return deps
+func diagnosticProjectionMetadata(scope memory.Scope, capability memory.Capability, id string, seq int) map[string]any {
+	metadata := map[string]any{
+		projectors.MetadataRuntimeIDKey: scope.RuntimeID,
+		projectors.MetadataUserIDKey:    scope.UserID,
+		projectors.MetadataAgentIDKey:   scope.AgentID,
+		projectors.MetadataDatasetIDKey: scope.DatasetID,
+	}
+	switch capability {
+	case memory.CapabilityMessageIndex:
+		metadata[projectors.MetadataViewKindKey] = "message_index"
+		metadata[projectors.MetadataRecordTypeKey] = projectors.RecordTypeSourceMessage
+		metadata[projectors.MetadataConversationIDKey] = scope.ConversationID
+		metadata[projectors.MetadataMessageIDKey] = id
+		metadata[projectors.MetadataMessageSeqKey] = seq
+	default:
+		metadata[projectors.MetadataViewKindKey] = "document_chunks"
+		metadata[projectors.MetadataRecordTypeKey] = projectors.RecordTypeDocumentChunk
+		metadata[projectors.MetadataDocumentIDKey] = "doc-" + id
+		metadata[projectors.MetadataChunkIDKey] = id
+	}
+	return metadata
 }
 
-func assertNamespace(t *testing.T, rt *memory.System, capability memory.Capability, want string) {
-	t.Helper()
-	got, ok := rt.ProjectionNamespace(capability)
-	if !ok {
-		t.Fatalf("ProjectionNamespace(%q) ok = false", capability)
-	}
-	if got != want {
-		t.Fatalf("ProjectionNamespace(%q) = %q, want %q", capability, got, want)
+func danglingDocumentChunkProjectionDoc(scope memory.Scope) retrieval.Doc {
+	return retrieval.Doc{
+		ID:      "dangling-chunk",
+		Content: "projection whose canonical chunk is missing",
+		Metadata: map[string]any{
+			projectors.MetadataViewKindKey:       "document_chunks",
+			projectors.MetadataRecordTypeKey:     projectors.RecordTypeDocumentChunk,
+			projectors.MetadataRuntimeIDKey:      scope.RuntimeID,
+			projectors.MetadataUserIDKey:         scope.UserID,
+			projectors.MetadataAgentIDKey:        scope.AgentID,
+			projectors.MetadataConversationIDKey: scope.ConversationID,
+			projectors.MetadataDatasetIDKey:      scope.DatasetID,
+			projectors.MetadataDocumentIDKey:     "missing-doc",
+			projectors.MetadataChunkIDKey:        "missing-chunk",
+		},
 	}
 }
 
-func plannedStageNamed(stages []memory.PlannedStage, name string) bool {
+func plannedStageNames(stages []memory.PlannedStage) map[string]bool {
+	names := make(map[string]bool, len(stages))
 	for _, stage := range stages {
-		if stage.Name == name {
+		names[stage.Name] = true
+	}
+	return names
+}
+
+func hasDiagnosticCheck(checks []memory.DiagnosticCheck, name string) bool {
+	for _, check := range checks {
+		if check.Name == name {
 			return true
 		}
 	}
 	return false
 }
 
-func assertBaseNamespaceEmpty(t *testing.T, ctx context.Context, index retrieval.Index, namespace string) {
-	t.Helper()
-	resp, err := index.Search(ctx, namespace, retrieval.SearchRequest{QueryText: "Ada tea likes", TopK: 10})
-	if err != nil {
-		t.Fatalf("Search base namespace %q error = %v", namespace, err)
-	}
-	if resp != nil && len(resp.Hits) != 0 {
-		t.Fatalf("Search base namespace %q hits = %+v, want none", namespace, resp.Hits)
-	}
-}
-
-func assertReadinessCheck(t *testing.T, report memory.ReadinessReport, name string, ready bool) {
-	t.Helper()
-	for _, check := range report.Checks {
-		if check.Name == name {
-			if check.Ready != ready {
-				t.Fatalf("Readiness check %q Ready = %v, want %v; report=%+v", name, check.Ready, ready, report)
-			}
-			return
-		}
-	}
-	t.Fatalf("Readiness check %q missing from report %+v", name, report)
-}
-
-func assertDiagnosticCheck(t *testing.T, report memory.DiagnosticReport, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
-	t.Helper()
-	return assertDiagnosticCheckIn(t, report.Checks, name, status, ok)
-}
-
-func assertFreshnessCheck(t *testing.T, result memory.FreshnessResult, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
-	t.Helper()
-	return assertDiagnosticCheckIn(t, result.Checks, name, status, ok)
-}
-
-func assertDiagnosticCheckIn(t *testing.T, checks []memory.DiagnosticCheck, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
+func requireReadinessCheck(t *testing.T, checks []memory.ReadinessCheck, name string) memory.ReadinessCheck {
 	t.Helper()
 	for _, check := range checks {
 		if check.Name == name {
-			if check.Status != status || check.OK != ok {
-				t.Fatalf("Diagnostic check %q = status %q ok %v, want status %q ok %v; check=%+v", name, check.Status, check.OK, status, ok, check)
-			}
 			return check
 		}
 	}
-	t.Fatalf("Diagnostic check %q missing from checks %+v", name, checks)
-	return memory.DiagnosticCheck{}
+	t.Fatalf("readiness checks = %+v, want %q", checks, name)
+	return memory.ReadinessCheck{}
 }
 
-func diagnosticDetailString(t *testing.T, check memory.DiagnosticCheck, key string) string {
-	t.Helper()
-	got, ok := check.Details[key].(string)
-	if !ok || got == "" {
-		t.Fatalf("Diagnostic check %q details[%q] = %#v, want non-empty string", check.Name, key, check.Details[key])
-	}
-	return got
-}
-
-func diagnosticDetailInt(t *testing.T, check memory.DiagnosticCheck, key string) int {
-	t.Helper()
-	got, ok := check.Details[key].(int)
-	if !ok {
-		t.Fatalf("Diagnostic check %q details[%q] = %#v, want int", check.Name, key, check.Details[key])
-	}
-	return got
-}
-
-func assertDiagnosticCheckByStatus(t *testing.T, report memory.DiagnosticReport, name string, status memory.DiagnosticStatus, ok bool) memory.DiagnosticCheck {
-	t.Helper()
-	for _, check := range report.Checks {
-		if check.Name == name && check.Status == status && check.OK == ok {
-			return check
+func lifecycleStepPresent(steps []memory.LifecycleStep, name string) bool {
+	for _, step := range steps {
+		if step.Name == name {
+			return true
 		}
 	}
-	t.Fatalf("Diagnostic check %q with status %q ok %v missing from checks %+v", name, status, ok, report.Checks)
-	return memory.DiagnosticCheck{}
+	return false
 }
 
-func messageWithText(text string) sourcemessage.Message {
-	return sourcemessage.Message{
-		Message: model.Message{
-			Role: model.RoleUser,
-			Parts: []model.Part{{
-				Type: model.PartText,
-				Text: text,
-			}},
-		},
-	}
-}
-
-func waitClosed(t *testing.T, ch <-chan struct{}, name string) {
+func requireLifecycleStep(t *testing.T, steps []memory.LifecycleStep, name string) memory.LifecycleStep {
 	t.Helper()
-	select {
-	case <-ch:
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %s", name)
+	for _, step := range steps {
+		if step.Name == name {
+			return step
+		}
+	}
+	t.Fatalf("lifecycle steps = %+v, want %q", steps, name)
+	return memory.LifecycleStep{}
+}
+
+func lifecycleStepPresentWithDiagnosticPhase(steps []memory.LifecycleStep, name, phase string) bool {
+	for _, step := range steps {
+		if step.Name == name && step.Details["diagnostic_phase"] == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func lifecycleFailedStepPresentWithDiagnosticPhase(steps []memory.LifecycleStep, name, phase string) bool {
+	for _, step := range steps {
+		if step.Name == name && step.Status == memory.LifecycleStatusFailed && step.Details["diagnostic_phase"] == phase {
+			return true
+		}
+	}
+	return false
+}
+
+func lifecycleSkippedStepPresent(steps []memory.LifecycleStep, name string) bool {
+	for _, step := range steps {
+		if step.Name == name && (step.Skipped || step.Status == memory.LifecycleStatusSkipped) {
+			return true
+		}
+	}
+	return false
+}
+
+func runLifecycleRequest(ctx context.Context, mem *memory.System, action string, scope memory.Scope, capabilities []memory.Capability) (memory.LifecycleExecutionReport, error) {
+	switch action {
+	case "rebuild":
+		return mem.Rebuild(ctx, memory.RebuildRequest{Scope: scope, Capabilities: capabilities})
+	case "reload":
+		return mem.Reload(ctx, memory.ReloadRequest{Scope: scope, Capabilities: capabilities})
+	default:
+		return memory.LifecycleExecutionReport{}, errdefs.Validationf("unknown lifecycle action %q", action)
 	}
 }
 
-func waitErr(t *testing.T, ch <-chan error, name string) error {
+func newLifecycleSelectionSystem(t *testing.T, includeSummary bool) (*memory.System, error) {
 	t.Helper()
-	select {
-	case err := <-ch:
-		return err
-	case <-time.After(time.Second):
-		t.Fatalf("timed out waiting for %s", name)
-		return nil
-	}
-}
-
-func testScope(conversationID string) memory.Scope {
-	return memory.Scope{
-		RuntimeID:      "runtime-1",
-		UserID:         "user-1",
-		ConversationID: conversationID,
-	}
-}
-
-func documentScope(datasetID string) memory.Scope {
-	scope := testScope("conv-doc")
-	scope.DatasetID = datasetID
-	return scope
-}
-
-func scopedProjectionNamespace(t *testing.T, mem *memory.System, capability memory.Capability, scope memory.Scope) string {
-	t.Helper()
-	base, ok := mem.ProjectionNamespace(capability)
-	if !ok {
-		t.Fatalf("ProjectionNamespace(%q) ok = false", capability)
-	}
-	namespace, err := projectors.ScopedNamespace(base, scope)
+	root := sdkworkspace.NewMemWorkspace()
+	index, err := retrievalworkspace.New(sdkworkspace.Sub(root, "retrieval"))
 	if err != nil {
-		t.Fatalf("ScopedNamespace(%q, %+v) error = %v", base, scope, err)
+		return nil, err
 	}
-	return namespace
-}
-
-type fakeDiagnosticProbe struct {
-	calls int
-	stage string
-	scope memory.Scope
-	trace memory.TraceID
-}
-
-func (f *fakeDiagnosticProbe) Run(_ context.Context, req memory.DiagnosticProbeRequest) (memory.DiagnosticProbeResult, error) {
-	f.calls++
-	f.stage = req.Stage
-	f.scope = req.Scope
-	f.trace = req.TraceID
-	return memory.DiagnosticProbeResult{
-		Checks: []memory.DiagnosticCheck{{
-			Name:     "diagnostics.probe.custom",
-			Status:   memory.DiagnosticStatusOK,
-			OK:       true,
-			Severity: memory.DiagnosticSeverityInfo,
-			Message:  "custom probe ran",
-			Details: map[string]any{
-				"stage": req.Stage,
-			},
-		}},
-	}, nil
-}
-
-func documentRetrievalSpec() memory.Spec {
-	return memory.Spec{
-		Sources: []memory.SourceSpec{
-			{Kind: memory.SourceMessageLog, Required: true},
-			{Kind: memory.SourceDocumentStore, Required: true},
-		},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityDocumentChunks, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityDocumentChunks, Namespace: "doc_chunks", Required: true},
-		},
-	}
-}
-
-func documentStoreOnlySpec() memory.Spec {
-	return memory.Spec{
-		Sources: []memory.SourceSpec{
-			{Kind: memory.SourceDocumentStore},
-		},
-	}
-}
-
-func documentChunkStageSpec() memory.Spec {
-	return memory.Spec{
-		Sources: []memory.SourceSpec{
-			{Kind: memory.SourceDocumentStore},
-		},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityDocumentChunks},
-		},
-		WriteStages: []memory.StageSpec{
-			{Name: "chunk_document"},
-		},
-	}
-}
-
-func semanticRetrievalSpec() memory.Spec {
-	return memory.Spec{
+	t.Cleanup(func() { _ = index.Close() })
+	spec := memory.Spec{
 		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
 		Capabilities: []memory.CapabilitySpec{
 			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-			{Capability: memory.CapabilityFactLedger, Required: true},
-			{Capability: memory.CapabilityFactGraph, Required: true},
+			{Capability: memory.CapabilityMessageIndex, Required: true},
 		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
-			{Capability: memory.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
-		},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "extract_observations"},
-			{Name: "reconcile_facts"},
-			{Name: "build_fact_graph"},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_observations"},
-			{Name: "retrieve_facts"},
-			{Name: "retrieve_fact_graph"},
-			{Name: "pack_context"},
-		},
+		Projections: []memory.ProjectionSpec{{Capability: memory.CapabilityMessageIndex, Namespace: "message_index", Required: true}},
 	}
-}
-
-func queryEmbeddingSpec() memory.Spec {
-	return memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-			{Capability: memory.CapabilityFactLedger, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_observations"},
-			{Name: "retrieve_facts"},
-			{Name: "pack_context"},
-		},
+	deps := memory.Deps{
+		MessageStore: sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		Index:        index,
+		JobStore:     memory.NewMemoryJobStore(),
 	}
-}
-
-func entityRetrievalSpec() memory.Spec {
-	return memory.Spec{
-		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
-		Capabilities: []memory.CapabilitySpec{
-			{Capability: memory.CapabilityRecentWindow, Required: true},
-			{Capability: memory.CapabilityObservationLedger, Required: true},
-			{Capability: memory.CapabilityFactLedger, Required: true},
-			{Capability: memory.CapabilityFactGraph, Required: true},
-			{Capability: memory.CapabilityEntityProfile, Required: true},
-			{Capability: memory.CapabilityEntityTimeline, Required: true},
-		},
-		Projections: []memory.ProjectionSpec{
-			{Capability: memory.CapabilityObservationLedger, Namespace: "observations", Required: true},
-			{Capability: memory.CapabilityFactLedger, Namespace: "facts", Required: true},
-			{Capability: memory.CapabilityFactGraph, Namespace: "fact_graph", Required: true},
-			{Capability: memory.CapabilityEntityProfile, Namespace: "entity_profiles", Required: true},
-			{Capability: memory.CapabilityEntityTimeline, Namespace: "entity_timeline", Required: true},
-		},
-		WriteStages: []memory.StageSpec{
-			{Name: "append_message"},
-			{Name: "extract_observations"},
-			{Name: "reconcile_facts"},
-			{Name: "build_fact_graph"},
-			{Name: "build_entity_profiles"},
-			{Name: "build_entity_timeline"},
-		},
-		ReadStages: []memory.StageSpec{
-			{Name: "load_recent_messages"},
-			{Name: "retrieve_observations"},
-			{Name: "retrieve_facts"},
-			{Name: "retrieve_fact_graph"},
-			{Name: "retrieve_entity_profiles"},
-			{Name: "retrieve_entity_timeline"},
-			{Name: "pack_context"},
-		},
+	if includeSummary {
+		spec.Capabilities = append(spec.Capabilities, memory.CapabilitySpec{Capability: memory.CapabilitySummaryDAG, Required: true})
+		spec.Projections = append(spec.Projections, memory.ProjectionSpec{Capability: memory.CapabilitySummaryDAG, Namespace: "summary_dag", Required: true})
+		deps.SummaryStore = recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag"))
+		deps.Summarizer = &recordingSummaryLifecycleSummarizer{}
 	}
+	mem, err := memory.New(spec, deps)
+	if err != nil {
+		_ = index.Close()
+		return nil, err
+	}
+	return mem, nil
 }
 
-type fakeObservationExtractor struct {
+type recordingSummaryLifecycleSummarizer struct {
 	calls int
 }
 
-type fakeDocumentChunker struct {
-	calls int
-}
-
-type fakeSummarizer struct{}
-
-type blockingSummarizer struct {
-	started chan struct{}
-	release <-chan struct{}
-	once    sync.Once
-}
-
-type blockingObservationExtractor struct {
-	started chan struct{}
-	release <-chan struct{}
-	once    sync.Once
-	base    fakeObservationExtractor
-}
-
-type failingObservationExtractor struct {
-	err   error
-	calls int
-}
-
-type fakeMemoryContextPacker struct {
-	calls int
-	input derive.ContextPackInput
-	fn    func(derive.ContextPackInput) (derive.ContextPackOutput, error)
-}
-
-func (f *fakeDocumentChunker) ChunkDocument(_ context.Context, input derive.DocumentChunkInput) ([]viewdocument.Chunk, error) {
-	f.calls++
-	if strings.TrimSpace(input.Document.Content) == "" {
+func (s *recordingSummaryLifecycleSummarizer) Summarize(_ context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {
+	s.calls++
+	if len(input.Window.Messages) == 0 || len(input.Window.SourceRefs) == 0 {
 		return nil, nil
 	}
-	doc := input.Document
-	span := views.Span{Start: 0, End: len(doc.Content)}
-	ref := views.SourceRef{
-		Kind: views.SourceDocument,
-		Document: &views.DocumentSourceRef{
-			DatasetID:   doc.DatasetID,
-			DocumentID:  doc.ID,
-			Version:     strconv.FormatUint(doc.Version, 10),
-			ContentHash: doc.ContentHash,
-			Span:        &span,
-		},
-	}
-	return []viewdocument.Chunk{{
-		ID:         "whole",
-		Scope:      input.Scope,
-		DocumentID: doc.ID,
-		Layer: viewdocument.Layer{
-			Name:               "whole_document",
-			Version:            "v1",
-			TransformSignature: "test-whole-document:v1",
-		},
-		Ordinal:   0,
-		Span:      span,
-		Text:      doc.Content,
-		SourceRef: ref,
-		Signature: views.ViewSignature{
-			ViewID: input.View.ID,
-			SourceRevisions: []views.SourceRevision{{
-				Kind:        views.SourceDocument,
-				SourceKey:   ref.StableKey(),
-				Revision:    strconv.FormatUint(doc.Version, 10),
-				ContentHash: doc.ContentHash,
-				ObservedAt:  doc.UpdatedAt,
-			}},
-			TransformSignature: "test-whole-document:v1",
-		},
-	}}, nil
-}
-
-func (f *fakeMemoryContextPacker) PackContext(_ context.Context, input derive.ContextPackInput) (derive.ContextPackOutput, error) {
-	f.calls++
-	f.input = input
-	if f.fn != nil {
-		return f.fn(input)
-	}
-	return derive.ContextPackOutput{Items: input.Items}, nil
-}
-
-type fakeMemoryEmbedder struct {
-	embedTexts                 []string
-	batchTexts                 []string
-	embedVector                []float32
-	batchVectors               [][]float32
-	blockEmbedUntilContextDone bool
-}
-
-func (f *fakeMemoryEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
-	f.embedTexts = append(f.embedTexts, text)
-	if f.blockEmbedUntilContextDone {
-		<-ctx.Done()
-		return nil, ctx.Err()
-	}
-	return append([]float32(nil), f.embedVector...), nil
-}
-
-func (f *fakeMemoryEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
-	f.batchTexts = append(f.batchTexts, texts...)
-	if f.batchVectors == nil {
-		vectors := make([][]float32, len(texts))
-		for i := range vectors {
-			vectors[i] = append([]float32(nil), f.embedVector...)
+	sourceRefs := append([]views.SourceRef(nil), input.Window.SourceRefs...)
+	revisions := make([]views.SourceRevision, 0, len(sourceRefs))
+	for _, ref := range sourceRefs {
+		key, err := ref.StableKeyE()
+		if err != nil {
+			return nil, err
 		}
-		return vectors, nil
-	}
-	vectors := make([][]float32, len(f.batchVectors))
-	for i, vector := range f.batchVectors {
-		vectors[i] = append([]float32(nil), vector...)
-	}
-	return vectors, nil
-}
-
-type recordingSearchIndex struct {
-	mu             sync.Mutex
-	caps           retrieval.Capabilities
-	searchRequests []retrieval.SearchRequest
-	searchSpaces   []string
-	upsertDocs     []retrieval.Doc
-}
-
-func (idx *recordingSearchIndex) Upsert(_ context.Context, _ string, docs []retrieval.Doc) error {
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	for _, doc := range docs {
-		idx.upsertDocs = append(idx.upsertDocs, retrieval.CloneDoc(doc))
-	}
-	return nil
-}
-
-func (idx *recordingSearchIndex) Delete(context.Context, string, []string) error {
-	return nil
-}
-
-func (idx *recordingSearchIndex) Search(_ context.Context, namespace string, req retrieval.SearchRequest) (*retrieval.SearchResponse, error) {
-	req.QueryVector = append([]float32(nil), req.QueryVector...)
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-	idx.searchSpaces = append(idx.searchSpaces, namespace)
-	idx.searchRequests = append(idx.searchRequests, req)
-	return &retrieval.SearchResponse{}, nil
-}
-
-func (idx *recordingSearchIndex) List(context.Context, string, retrieval.ListRequest) (*retrieval.ListResponse, error) {
-	return &retrieval.ListResponse{}, nil
-}
-
-func (idx *recordingSearchIndex) Capabilities() retrieval.Capabilities {
-	return idx.caps
-}
-
-func (idx *recordingSearchIndex) Close() error {
-	return nil
-}
-
-func (f *blockingSummarizer) Summarize(ctx context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {
-	f.once.Do(func() { close(f.started) })
-	select {
-	case <-f.release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return (&fakeSummarizer{}).Summarize(ctx, input)
-}
-
-func (f *fakeSummarizer) Summarize(_ context.Context, input derive.SummaryInput) ([]recent.SummaryNode, error) {
-	if len(input.Window.Messages) == 0 {
-		return nil, nil
-	}
-	sourceRefs := input.Window.SourceRefs
-	return []recent.SummaryNode{{
-		ID:         "summary-1",
-		Scope:      input.Scope,
-		SourceRefs: sourceRefs,
-		Summary:    "runtime summary about memory",
-		Level:      1,
-		Signature: views.ViewSignature{
-			ViewID:             input.View.ID,
-			SourceRevisions:    messageRevisions(input.Window.Messages, sourceRefs),
-			TransformSignature: "fake-summary:v1",
-		},
-	}}, nil
-}
-
-func (f *blockingObservationExtractor) ExtractObservations(ctx context.Context, input derive.ObservationInput) ([]viewobservation.Observation, error) {
-	f.once.Do(func() { close(f.started) })
-	select {
-	case <-f.release:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return f.base.ExtractObservations(ctx, input)
-}
-
-func (f *failingObservationExtractor) ExtractObservations(context.Context, derive.ObservationInput) ([]viewobservation.Observation, error) {
-	f.calls++
-	return nil, f.err
-}
-
-func (f *fakeObservationExtractor) ExtractObservations(_ context.Context, input derive.ObservationInput) ([]viewobservation.Observation, error) {
-	f.calls++
-	if len(input.Window.Messages) == 0 {
-		return nil, nil
-	}
-	sourceRefs := input.Window.SourceRefs
-	return []viewobservation.Observation{{
-		ID:         scopedID("obs", input.Scope),
-		Scope:      input.Scope,
-		Subject:    "user:ada",
-		Predicate:  "likes",
-		Object:     "tea",
-		Confidence: 0.9,
-		SourceRefs: sourceRefs,
-		Signature: views.ViewSignature{
-			ViewID:             input.View.ID,
-			SourceRevisions:    messageRevisions(input.Window.Messages, sourceRefs),
-			TransformSignature: "fake-observation:v1",
-		},
-	}}, nil
-}
-
-type fakeFactReconciler struct {
-	calls     int
-	lastInput derive.FactReconcileInput
-	statuses  []fact.FactStatus
-}
-
-func (f *fakeFactReconciler) ReconcileFacts(_ context.Context, input derive.FactReconcileInput) ([]fact.Fact, error) {
-	f.calls++
-	f.lastInput = input
-	if len(input.Observations) == 0 {
-		return nil, nil
-	}
-	obs := input.Observations[0]
-	statuses := f.statuses
-	if len(statuses) == 0 {
-		statuses = []fact.FactStatus{fact.FactActive}
-	}
-	facts := make([]fact.Fact, 0, len(statuses))
-	baseID := fact.FactID(scopedID("fact", obs.Scope))
-	for i, status := range statuses {
-		id := baseID
-		if i > 0 {
-			id = fact.FactID(string(baseID) + "-" + string(status))
-		}
-		facts = append(facts, fact.Fact{
-			ID:         id,
-			Scope:      obs.Scope,
-			Subject:    obs.Subject,
-			Predicate:  obs.Predicate,
-			Object:     obs.Object,
-			Status:     status,
-			Confidence: obs.Confidence,
-			ObservationRefs: []fact.ObservationRef{{
-				ObservationID: obs.ID,
-			}},
-			SourceRefs: obs.SourceRefs,
-			Signature: views.ViewSignature{
-				ViewID: input.View.ID,
-				UpstreamViewRefs: []views.UpstreamViewRef{{
-					ViewID:          obs.Signature.ViewID,
-					OutputSignature: obs.Signature.TransformSignature,
-					RecordKey:       obs.ID,
-				}},
-				TransformSignature: "fake-fact:v1",
-				DiagnosticSignatures: map[string]string{
-					"reconciler": "fake-fact:v1",
-				},
-			},
-		})
-	}
-	return facts, nil
-}
-
-type lifecycleFactReconciler struct{}
-
-func (l lifecycleFactReconciler) ReconcileFacts(_ context.Context, input derive.FactReconcileInput) ([]fact.Fact, error) {
-	if len(input.Observations) == 0 {
-		return nil, nil
-	}
-	obs := input.Observations[0]
-	statuses := []struct {
-		id     fact.FactID
-		status fact.FactStatus
-	}{
-		{id: "fact-active", status: fact.FactActive},
-		{id: "fact-retracted", status: fact.FactRetracted},
-		{id: "fact-superseded", status: fact.FactSuperseded},
-		{id: "fact-conflict", status: fact.FactConflict},
-	}
-	out := make([]fact.Fact, 0, len(statuses))
-	for _, status := range statuses {
-		out = append(out, fact.Fact{
-			ID:         status.id,
-			Scope:      obs.Scope,
-			Subject:    obs.Subject,
-			Predicate:  obs.Predicate,
-			Object:     obs.Object,
-			Status:     status.status,
-			Confidence: obs.Confidence,
-			ObservationRefs: []fact.ObservationRef{{
-				ObservationID: obs.ID,
-			}},
-			SourceRefs: obs.SourceRefs,
-			Signature: views.ViewSignature{
-				ViewID: input.View.ID,
-				UpstreamViewRefs: []views.UpstreamViewRef{{
-					ViewID:          obs.Signature.ViewID,
-					OutputSignature: obs.Signature.TransformSignature,
-					RecordKey:       obs.ID,
-				}},
-				TransformSignature: "lifecycle-fact:v1",
-			},
-		})
-	}
-	return out, nil
-}
-
-type fakeFactGraphBuilder struct {
-	calls int
-}
-
-func (f *fakeFactGraphBuilder) BuildFactGraph(_ context.Context, input derive.FactGraphInput) (derive.FactGraphOutput, error) {
-	f.calls++
-	if len(input.Facts) == 0 {
-		return derive.FactGraphOutput{}, nil
-	}
-	record := input.Facts[0]
-	sourceRefs := record.SourceRefs
-	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
-	subjectNodeID := fact.NodeID(scopedID("node-subject", record.Scope))
-	objectNodeID := fact.NodeID(scopedID("node-object", record.Scope))
-	signature := views.ViewSignature{
-		ViewID: input.View.ID,
-		UpstreamViewRefs: []views.UpstreamViewRef{{
-			ViewID:          record.Signature.ViewID,
-			OutputSignature: record.Signature.TransformSignature,
-			RecordKey:       string(record.ID),
-		}},
-		TransformSignature: "fake-fact-graph:v1",
-		DiagnosticSignatures: map[string]string{
-			"projector": "fake-fact-graph:v1",
-		},
-	}
-	return derive.FactGraphOutput{
-		Nodes: []fact.Node{
-			{
-				ID:         subjectNodeID,
-				Scope:      record.Scope,
-				Kind:       fact.NodeEntity,
-				Label:      "Ada",
-				Aliases:    []string{record.Subject},
-				FactRefs:   factRefs,
-				SourceRefs: sourceRefs,
-				Signature:  signature,
-			},
-			{
-				ID:         objectNodeID,
-				Scope:      record.Scope,
-				Kind:       fact.NodeValue,
-				Label:      record.Object,
-				FactRefs:   factRefs,
-				SourceRefs: sourceRefs,
-				Signature:  signature,
-			},
-		},
-		Edges: []fact.Edge{{
-			ID:         fact.EdgeID(scopedID("edge", record.Scope)),
-			Scope:      record.Scope,
-			From:       subjectNodeID,
-			To:         objectNodeID,
-			Predicate:  record.Predicate,
-			Status:     fact.FactActive,
-			Confidence: record.Confidence,
-			FactRefs:   factRefs,
-			SourceRefs: sourceRefs,
-			Signature:  signature,
-		}},
-	}, nil
-}
-
-type fakeEntityProfileBuilder struct {
-	calls int
-}
-
-func (f *fakeEntityProfileBuilder) BuildEntityProfiles(_ context.Context, input derive.EntityProfileInput) ([]viewentity.ProfileRecord, error) {
-	f.calls++
-	if len(input.Facts) == 0 {
-		return nil, nil
-	}
-	record := input.Facts[0]
-	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
-	return []viewentity.ProfileRecord{{
-		ID:         viewentity.ProfileID("profile-" + safeIDPart(input.Scope.EntityID)),
-		Scope:      input.Scope,
-		Label:      "Ada",
-		Summary:    "Ada likes tea profile",
-		Slots:      []viewentity.Slot{{Name: "likes", Value: "tea", Confidence: 0.9, FactRefs: factRefs}},
-		FactRefs:   factRefs,
-		SourceRefs: record.SourceRefs,
-		Signature: views.ViewSignature{
-			ViewID: input.View.ID,
-			UpstreamViewRefs: []views.UpstreamViewRef{{
-				ViewID:          upstreamEntityViewID(input.Graph, record),
-				OutputSignature: upstreamEntitySignature(input.Graph, record),
-				RecordKey:       string(record.ID),
-			}},
-			TransformSignature: "fake-entity-profile:v1",
-		},
-	}}, nil
-}
-
-type fakeEntityTimelineBuilder struct {
-	calls int
-}
-
-func (f *fakeEntityTimelineBuilder) BuildEntityTimeline(_ context.Context, input derive.EntityTimelineInput) ([]viewentity.Event, error) {
-	f.calls++
-	if len(input.Facts) == 0 {
-		return nil, nil
-	}
-	record := input.Facts[0]
-	factRefs := []fact.FactRef{{FactID: record.ID, Role: "supporting_fact"}}
-	return []viewentity.Event{{
-		ID:          viewentity.EventID("event-" + safeIDPart(input.Scope.EntityID)),
-		Scope:       input.Scope,
-		Title:       "Ada likes tea event",
-		Description: "Ada likes tea",
-		FactRefs:    factRefs,
-		SourceRefs:  record.SourceRefs,
-		Signature: views.ViewSignature{
-			ViewID: input.View.ID,
-			UpstreamViewRefs: []views.UpstreamViewRef{{
-				ViewID:          upstreamEntityViewID(input.Graph, record),
-				OutputSignature: upstreamEntitySignature(input.Graph, record),
-				RecordKey:       string(record.ID),
-			}},
-			TransformSignature: "fake-entity-timeline:v1",
-		},
-	}}, nil
-}
-
-func upstreamEntityViewID(graph derive.FactGraphOutput, record fact.Fact) views.ID {
-	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.ViewID != "" {
-		return graph.Nodes[0].Signature.ViewID
-	}
-	return record.Signature.ViewID
-}
-
-func upstreamEntitySignature(graph derive.FactGraphOutput, record fact.Fact) string {
-	if len(graph.Nodes) > 0 && graph.Nodes[0].Signature.TransformSignature != "" {
-		return graph.Nodes[0].Signature.TransformSignature
-	}
-	return record.Signature.TransformSignature
-}
-
-func scopedID(prefix string, scope memory.Scope) string {
-	if scope == testScope("conv-1") {
-		switch prefix {
-		case "obs":
-			return "obs-1"
-		case "fact":
-			return "fact-1"
-		case "node-subject":
-			return "node-subject"
-		case "node-object":
-			return "node-object"
-		case "edge":
-			return "edge-1"
-		}
-	}
-	parts := []string{prefix, scope.RuntimeID, scope.UserID, scope.AgentID, scope.ConversationID, scope.EntityID}
-	for i, part := range parts {
-		if part == "" {
-			parts[i] = "global"
-			continue
-		}
-		parts[i] = safeIDPart(part)
-	}
-	return strings.Join(parts, "-")
-}
-
-func safeIDPart(part string) string {
-	return strings.NewReplacer(":", "-", "/", "-", " ", "-").Replace(part)
-}
-
-func messageRevisions(messages []sourcemessage.Message, refs []views.SourceRef) []views.SourceRevision {
-	revisions := make([]views.SourceRevision, 0, len(messages))
-	for i, msg := range messages {
 		revisions = append(revisions, views.SourceRevision{
 			Kind:      views.SourceMessage,
-			SourceKey: refs[i].StableKey(),
-			Revision:  strconv.FormatUint(msg.Seq, 10),
+			SourceKey: key,
+			Revision:  "1",
 		})
 	}
-	return revisions
+	return []recent.SummaryNode{{
+		ID:         recent.NodeID("summary-" + input.Scope.ConversationID),
+		Scope:      input.Scope,
+		SourceRefs: sourceRefs,
+		Summary:    "Conversation summary: Ada found a brass lantern.",
+		Level:      0,
+		Signature: views.ViewSignature{
+			ViewID:             input.View.ID,
+			SourceRevisions:    revisions,
+			TransformSignature: "test-summary-lifecycle:v1",
+		},
+	}}, nil
+}
+
+type failingSummaryLifecycleSummarizer struct {
+	calls int
+	err   error
+}
+
+func (s *failingSummaryLifecycleSummarizer) Summarize(_ context.Context, _ derive.SummaryInput) ([]recent.SummaryNode, error) {
+	s.calls++
+	return nil, s.err
+}
+
+type summaryStoreWithoutTargetDelete struct {
+	recent.SummaryStore
+}
+
+type failingSummaryDeleteStore struct {
+	recent.SummaryStore
+	err error
+}
+
+func (s *failingSummaryDeleteStore) DeleteNode(context.Context, views.Scope, recent.NodeID) error {
+	return s.err
+}
+
+func summaryLifecycleNode(scope memory.Scope, id recent.NodeID, summary string) recent.SummaryNode {
+	ref := views.SourceRef{
+		Kind:    views.SourceMessage,
+		Message: &views.MessageSourceRef{ConversationID: scope.ConversationID, MessageID: "dia-1"},
+	}
+	return recent.SummaryNode{
+		ID:         id,
+		Scope:      scope,
+		SourceRefs: []views.SourceRef{ref},
+		Summary:    summary,
+		Level:      0,
+		Signature: views.ViewSignature{
+			ViewID: "summary_dag",
+			SourceRevisions: []views.SourceRevision{{
+				Kind:      views.SourceMessage,
+				SourceKey: ref.StableKey(),
+				Revision:  "1",
+			}},
+			TransformSignature: "test-summary-lifecycle:old",
+		},
+	}
+}
+
+func requireDiagnosticCheck(t *testing.T, checks []memory.DiagnosticCheck, name string) memory.DiagnosticCheck {
+	t.Helper()
+	for _, check := range checks {
+		if check.Name == name {
+			return check
+		}
+	}
+	t.Fatalf("diagnostic checks = %+v, want %q", checks, name)
+	return memory.DiagnosticCheck{}
+}
+
+func assertCheckpointBool(t *testing.T, checkpoint map[string]any, key string, want bool) {
+	t.Helper()
+	got, ok := checkpoint[key]
+	if !ok {
+		t.Fatalf("checkpoint = %+v, missing %q", checkpoint, key)
+	}
+	value, ok := got.(bool)
+	if !ok || value != want {
+		t.Fatalf("checkpoint[%q] = %T(%v), want %v", key, got, got, want)
+	}
+}
+
+func assertCheckpointInt(t *testing.T, checkpoint map[string]any, key string, want int) {
+	t.Helper()
+	got, ok := checkpoint[key]
+	if !ok {
+		t.Fatalf("checkpoint = %+v, missing %q", checkpoint, key)
+	}
+	assertAnyInt(t, "checkpoint["+key+"]", got, want)
+}
+
+func assertCheckpointString(t *testing.T, checkpoint map[string]any, key, want string) {
+	t.Helper()
+	got, ok := checkpoint[key]
+	if !ok {
+		t.Fatalf("checkpoint = %+v, missing %q", checkpoint, key)
+	}
+	value, ok := got.(string)
+	if !ok || value != want {
+		t.Fatalf("checkpoint[%q] = %T(%v), want %q", key, got, got, want)
+	}
+}
+
+func assertStepDetailInt(t *testing.T, step memory.LifecycleStep, key string, want int) {
+	t.Helper()
+	got, ok := step.Details[key]
+	if !ok {
+		t.Fatalf("%s details = %+v, missing %q", step.Name, step.Details, key)
+	}
+	assertAnyInt(t, step.Name+" details["+key+"]", got, want)
+}
+
+func assertAnyInt(t *testing.T, label string, got any, want int) {
+	t.Helper()
+	switch value := got.(type) {
+	case int:
+		if value == want {
+			return
+		}
+	case int64:
+		if value == int64(want) {
+			return
+		}
+	case uint64:
+		if value == uint64(want) {
+			return
+		}
+	case float64:
+		if value == float64(want) {
+			return
+		}
+	}
+	t.Fatalf("%s = %T(%v), want %d", label, got, got, want)
+}
+
+func checkpointStringSliceContains(checkpoint map[string]any, key, want string) bool {
+	if checkpoint == nil {
+		return false
+	}
+	got, ok := checkpoint[key]
+	if !ok {
+		return false
+	}
+	values, ok := got.([]string)
+	if !ok {
+		return false
+	}
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func listProjectionDocs(t *testing.T, ctx context.Context, index retrieval.Index, namespace string) []retrieval.Doc {
+	t.Helper()
+	resp, err := index.List(ctx, namespace, retrieval.ListRequest{
+		PageSize: 10000,
+		OrderBy:  retrieval.OrderByIDAsc,
+	})
+	if err != nil {
+		t.Fatalf("List(%s) error = %v", namespace, err)
+	}
+	if resp == nil {
+		t.Fatalf("List(%s) returned nil response", namespace)
+	}
+	if resp.NextPageToken != "" {
+		t.Fatalf("List(%s) NextPageToken = %q, want complete page", namespace, resp.NextPageToken)
+	}
+	return resp.Items
+}
+
+func sourceMessageRecord(t *testing.T, scope memory.Scope, msg sourcemessage.Message) indexed.Record {
+	t.Helper()
+	records, err := projectors.SourceMessageRecords(scope, msg)
+	if err != nil {
+		t.Fatalf("SourceMessageRecords(%s) error = %v", msg.ID, err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("SourceMessageRecords(%s) len = %d, want 1", msg.ID, len(records))
+	}
+	return records[0]
+}
+
+func assertDiagnosticDetailInt(t *testing.T, check memory.DiagnosticCheck, key string, want int) {
+	t.Helper()
+	got, ok := check.Details[key]
+	if !ok {
+		t.Fatalf("%s details = %+v, missing %q", check.Name, check.Details, key)
+	}
+	switch value := got.(type) {
+	case int:
+		if value != want {
+			t.Fatalf("%s details[%q] = %d, want %d", check.Name, key, value, want)
+		}
+	case int64:
+		if value != int64(want) {
+			t.Fatalf("%s details[%q] = %d, want %d", check.Name, key, value, want)
+		}
+	default:
+		t.Fatalf("%s details[%q] = %T(%v), want int %d", check.Name, key, got, got, want)
+	}
+}
+
+func assertDiagnosticDetailString(t *testing.T, check memory.DiagnosticCheck, key, want string) {
+	t.Helper()
+	got, ok := check.Details[key]
+	if !ok {
+		t.Fatalf("%s details = %+v, missing %q", check.Name, check.Details, key)
+	}
+	value, ok := got.(string)
+	if !ok || value != want {
+		t.Fatalf("%s details[%q] = %T(%v), want %q", check.Name, key, got, got, want)
+	}
+}
+
+func capabilityPresent(capabilities []memory.Capability, capability memory.Capability) bool {
+	for _, candidate := range capabilities {
+		if candidate == capability {
+			return true
+		}
+	}
+	return false
+}
+
+type diagnosticFailingReportStore struct {
+	delegate *memory.MemoryReportStore
+	err      error
+}
+
+func (s *diagnosticFailingReportStore) PutLifecycleReport(ctx context.Context, report memory.LifecycleExecutionReport) error {
+	return s.delegate.PutLifecycleReport(ctx, report)
+}
+
+func (s *diagnosticFailingReportStore) GetLifecycleReport(ctx context.Context, traceID memory.TraceID) (memory.LifecycleExecutionReport, bool, error) {
+	return s.delegate.GetLifecycleReport(ctx, traceID)
+}
+
+func (s *diagnosticFailingReportStore) ListLifecycleReports(ctx context.Context) ([]memory.LifecycleExecutionReport, error) {
+	return s.delegate.ListLifecycleReports(ctx)
+}
+
+func (s *diagnosticFailingReportStore) PutDiagnosticReport(context.Context, memory.DiagnosticReport) error {
+	return s.err
+}
+
+func (s *diagnosticFailingReportStore) GetDiagnosticReport(ctx context.Context, traceID memory.TraceID) (memory.DiagnosticReport, bool, error) {
+	return s.delegate.GetDiagnosticReport(ctx, traceID)
+}
+
+func (s *diagnosticFailingReportStore) ListDiagnosticReports(ctx context.Context) ([]memory.DiagnosticReport, error) {
+	return s.delegate.ListDiagnosticReports(ctx)
+}
+
+type deleteByFilterUnavailableLifecycleIndex struct {
+	retrieval.Index
+	listErr   error
+	deleteErr error
+}
+
+func (i *deleteByFilterUnavailableLifecycleIndex) DeleteByFilter(context.Context, string, retrieval.Filter) (int64, error) {
+	return 0, errdefs.NotAvailablef("test: delete by filter unsupported")
+}
+
+func (i *deleteByFilterUnavailableLifecycleIndex) List(ctx context.Context, namespace string, req retrieval.ListRequest) (*retrieval.ListResponse, error) {
+	if i.listErr != nil {
+		return nil, i.listErr
+	}
+	return i.Index.List(ctx, namespace, req)
+}
+
+func (i *deleteByFilterUnavailableLifecycleIndex) Delete(ctx context.Context, namespace string, ids []string) error {
+	if i.deleteErr != nil {
+		return i.deleteErr
+	}
+	return i.Index.Delete(ctx, namespace, ids)
 }

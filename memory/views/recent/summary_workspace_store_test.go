@@ -44,6 +44,9 @@ func TestSummaryDAGNilStoreReturnsValidationError(t *testing.T) {
 	if _, err := dag.ListNodes(ctx, testNodeScope("conversation-1"), ListOptions{}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListNodes nil store error = %v, want validation", err)
 	}
+	if err := dag.DeleteNode(ctx, testNodeScope("conversation-1"), "node-1"); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("DeleteNode nil store error = %v, want validation", err)
+	}
 	if err := dag.DeleteScope(ctx, testNodeScope("conversation-1")); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteScope nil store error = %v, want validation", err)
 	}
@@ -85,6 +88,22 @@ func TestSummaryWorkspaceStorePutGetListDeleteScopeRoundTrip(t *testing.T) {
 	}
 	if !ok || fromDAG.ID != "node-1" {
 		t.Fatalf("SummaryDAG GetNode = %+v ok %v, want node-1 true", fromDAG, ok)
+	}
+
+	if err := dag.DeleteNode(ctx, scope, "missing-node"); err != nil {
+		t.Fatalf("DeleteNode missing error = %v, want nil", err)
+	}
+	if _, ok, err := store.GetNode(ctx, scope, "node-1"); err != nil || !ok {
+		t.Fatalf("GetNode after missing DeleteNode = ok %v err %v, want true nil", ok, err)
+	}
+	if err := dag.DeleteNode(ctx, scope, "node-1"); err != nil {
+		t.Fatalf("DeleteNode error = %v", err)
+	}
+	if _, ok, err := store.GetNode(ctx, scope, "node-1"); err != nil || ok {
+		t.Fatalf("GetNode after DeleteNode = ok %v err %v, want false nil", ok, err)
+	}
+	if _, err := store.PutNode(ctx, node); err != nil {
+		t.Fatalf("PutNode after DeleteNode error = %v", err)
 	}
 
 	if err := store.DeleteScope(ctx, scope); err != nil {
@@ -151,6 +170,147 @@ func TestSummaryWorkspaceStoreHardPartitionsSameConversation(t *testing.T) {
 	}
 	if !ok || gotTwo.Summary != "summary for user two" {
 		t.Fatalf("GetNode user two after user one delete = %+v ok %v, want kept", gotTwo, ok)
+	}
+}
+
+func TestSummaryDAGDeleteNodeReportsUnsupportedStore(t *testing.T) {
+	ctx := context.Background()
+	store := summaryStoreWithoutDeleteNode{SummaryStore: NewSummaryWorkspaceStore(workspace.NewMemWorkspace())}
+	dag := NewSummaryDAG(store)
+	if _, err := store.PutNode(ctx, validNode("conversation-1", "node-1")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := dag.DeleteNode(ctx, testNodeScope("conversation-1"), "node-1")
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("DeleteNode unsupported error = %v, want NotAvailable", err)
+	}
+	if _, ok, err := store.GetNode(ctx, testNodeScope("conversation-1"), "node-1"); err != nil || !ok {
+		t.Fatalf("GetNode after unsupported DeleteNode = ok %v err %v, want retained", ok, err)
+	}
+}
+
+func TestSummaryWorkspaceStorePartitionsSameConversationByAgent(t *testing.T) {
+	ctx := context.Background()
+	store := NewSummaryWorkspaceStore(workspace.NewMemWorkspace())
+
+	emptyAgent := testNodeScope("conversation-1")
+	agentA := emptyAgent
+	agentA.AgentID = "agent-a"
+	agentB := emptyAgent
+	agentB.AgentID = "agent-b"
+
+	nodeEmpty := validNode("conversation-1", "node-1")
+	nodeEmpty.Scope = emptyAgent
+	nodeEmpty.Summary = "summary for empty agent"
+	nodeA := validNode("conversation-1", "node-1")
+	nodeA.Scope = agentA
+	nodeA.Summary = "summary for agent a"
+	nodeB := validNode("conversation-1", "node-1")
+	nodeB.Scope = agentB
+	nodeB.Summary = "summary for agent b"
+
+	for _, node := range []SummaryNode{nodeEmpty, nodeA, nodeB} {
+		if _, err := store.PutNode(ctx, node); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name  string
+		scope views.Scope
+		want  string
+	}{
+		{name: "empty-agent", scope: emptyAgent, want: "summary for empty agent"},
+		{name: "agent-a", scope: agentA, want: "summary for agent a"},
+		{name: "agent-b", scope: agentB, want: "summary for agent b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok, err := store.GetNode(ctx, tc.scope, "node-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !ok || got.Summary != tc.want || got.Scope.AgentID != tc.scope.AgentID {
+				t.Fatalf("GetNode(%s) = %+v ok %v, want %q", tc.name, got, ok, tc.want)
+			}
+			listed, err := store.ListNodes(ctx, tc.scope, ListOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(listed) != 1 || listed[0].Summary != tc.want || listed[0].Scope.AgentID != tc.scope.AgentID {
+				t.Fatalf("ListNodes(%s) = %+v, want only %q", tc.name, listed, tc.want)
+			}
+		})
+	}
+
+	if err := store.DeleteScope(ctx, agentA); err != nil {
+		t.Fatal(err)
+	}
+	if listed, err := store.ListNodes(ctx, agentA, ListOptions{}); err != nil || len(listed) != 0 {
+		t.Fatalf("ListNodes deleted agent-a = %d err %v, want 0 nil", len(listed), err)
+	}
+	for _, tc := range []struct {
+		name  string
+		scope views.Scope
+		want  string
+	}{
+		{name: "empty-agent", scope: emptyAgent, want: "summary for empty agent"},
+		{name: "agent-b", scope: agentB, want: "summary for agent b"},
+	} {
+		got, ok, err := store.GetNode(ctx, tc.scope, "node-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok || got.Summary != tc.want {
+			t.Fatalf("GetNode(%s) after agent-a delete = %+v ok %v, want kept", tc.name, got, ok)
+		}
+	}
+}
+
+func TestSummaryWorkspaceStoreDeleteNodeIsScoped(t *testing.T) {
+	ctx := context.Background()
+	store := NewSummaryWorkspaceStore(workspace.NewMemWorkspace())
+
+	base := testNodeScope("conversation-1")
+	otherAgent := base
+	otherAgent.AgentID = "agent-b"
+	otherConversation := base
+	otherConversation.ConversationID = "conversation-2"
+
+	node := validNode(base.ConversationID, "node-1")
+	node.Scope = base
+	sibling := validNode(base.ConversationID, "node-2")
+	sibling.Scope = base
+	agentNode := validNode(base.ConversationID, "node-1")
+	agentNode.Scope = otherAgent
+	conversationNode := validNode(otherConversation.ConversationID, "node-1")
+	conversationNode.Scope = otherConversation
+
+	for _, candidate := range []SummaryNode{node, sibling, agentNode, conversationNode} {
+		if _, err := store.PutNode(ctx, candidate); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.DeleteNode(ctx, base, "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.GetNode(ctx, base, "node-1"); err != nil || ok {
+		t.Fatalf("deleted node ok = %v err = %v, want false nil", ok, err)
+	}
+	for _, tc := range []struct {
+		name  string
+		scope views.Scope
+		id    NodeID
+	}{
+		{name: "sibling", scope: base, id: "node-2"},
+		{name: "other-agent", scope: otherAgent, id: "node-1"},
+		{name: "other-conversation", scope: otherConversation, id: "node-1"},
+	} {
+		got, ok, err := store.GetNode(ctx, tc.scope, tc.id)
+		if err != nil || !ok || got.ID != tc.id {
+			t.Fatalf("%s after DeleteNode = %+v ok %v err %v, want retained", tc.name, got, ok, err)
+		}
 	}
 }
 
@@ -347,11 +507,13 @@ func TestSummaryWorkspaceStorePathSafeIDsRoundTripAndTargetedDelete(t *testing.T
 			scope := testNodeScope(tc.conversationID)
 			runtimeSegment := store.pathSegment(scope.RuntimeID)
 			userSegment := store.pathSegment(scope.UserID)
-			encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
+			agentSegment := store.pathSegment(scope.AgentID)
+			assertSafeWorkspaceSegment(t, store, agentSegment, scope.AgentID, "sdag_")
+			encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/agents/" + agentSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
 			if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 				t.Fatalf("encoded node exists = %v err %v, want true nil", exists, err)
 			}
-			rawPath := "runtimes/" + scope.RuntimeID + "/users/" + scope.UserID + "/conversations/" + tc.conversationID + "/nodes/" + string(tc.nodeID) + ".json"
+			rawPath := "runtimes/" + scope.RuntimeID + "/users/" + scope.UserID + "/agents/" + scope.AgentID + "/conversations/" + tc.conversationID + "/nodes/" + string(tc.nodeID) + ".json"
 			if rawPath != encodedPath {
 				if exists, err := ws.Exists(ctx, rawPath); err != nil || exists {
 					t.Fatalf("raw node path %q exists = %v err %v, want false nil", rawPath, exists, err)
@@ -400,7 +562,9 @@ func TestSummaryWorkspaceStoreCustomPathSegmentPrefix(t *testing.T) {
 
 	runtimeSegment := store.pathSegment(node.Scope.RuntimeID)
 	userSegment := store.pathSegment(node.Scope.UserID)
-	encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
+	agentSegment := store.pathSegment(node.Scope.AgentID)
+	assertSafeWorkspaceSegment(t, store, agentSegment, node.Scope.AgentID, "custom_")
+	encodedPath := "runtimes/" + runtimeSegment + "/users/" + userSegment + "/agents/" + agentSegment + "/conversations/" + conversationSegment + "/nodes/" + nodeSegment + ".json"
 	if exists, err := ws.Exists(ctx, encodedPath); err != nil || !exists {
 		t.Fatalf("custom-prefixed node exists = %v err %v, want true nil", exists, err)
 	}
@@ -534,4 +698,8 @@ func assertSafeWorkspaceSegment(t *testing.T, store *SummaryWorkspaceStore, segm
 	if decoded != raw {
 		t.Fatalf("rawPathSegment(%q) = %q, want %q", segment, decoded, raw)
 	}
+}
+
+type summaryStoreWithoutDeleteNode struct {
+	SummaryStore
 }

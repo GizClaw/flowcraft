@@ -14,14 +14,11 @@ const (
 type Capability = compiler.Capability
 
 const (
-	CapabilityRecentWindow      Capability = compiler.CapabilityRecentWindow
-	CapabilitySummaryDAG        Capability = compiler.CapabilitySummaryDAG
-	CapabilityDocumentChunks    Capability = compiler.CapabilityDocumentChunks
-	CapabilityObservationLedger Capability = compiler.CapabilityObservationLedger
-	CapabilityFactLedger        Capability = compiler.CapabilityFactLedger
-	CapabilityFactGraph         Capability = compiler.CapabilityFactGraph
-	CapabilityEntityProfile     Capability = compiler.CapabilityEntityProfile
-	CapabilityEntityTimeline    Capability = compiler.CapabilityEntityTimeline
+	CapabilityRecentWindow    Capability = compiler.CapabilityRecentWindow
+	CapabilitySummaryDAG      Capability = compiler.CapabilitySummaryDAG
+	CapabilityDocumentChunks  Capability = compiler.CapabilityDocumentChunks
+	CapabilityMessageIndex    Capability = compiler.CapabilityMessageIndex
+	CapabilityEntityFactIndex Capability = compiler.CapabilityEntityFactIndex
 )
 
 // Spec declares the sources, capabilities, projections, and stage names needed

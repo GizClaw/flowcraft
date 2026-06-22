@@ -9,14 +9,11 @@ type ID string
 type Kind string
 
 const (
-	KindRecentWindow      Kind = "recent_window"
-	KindSummaryDAG        Kind = "summary_dag"
-	KindObservationLedger Kind = "observation_ledger"
-	KindFactLedger        Kind = "fact_ledger"
-	KindFactGraph         Kind = "fact_graph"
-	KindEntityProfile     Kind = "entity_profile"
-	KindEntityTimeline    Kind = "entity_timeline"
-	KindDocumentChunks    Kind = "document_chunks"
+	KindRecentWindow   Kind = "recent_window"
+	KindSummaryDAG     Kind = "summary_dag"
+	KindDocumentChunks Kind = "document_chunks"
+	KindMessageIndex   Kind = "message_index"
+	KindEntityFacts    Kind = "entity_facts"
 )
 
 // Descriptor declares a derived view's public identity.
@@ -51,12 +48,9 @@ func validViewKind(kind Kind) bool {
 	switch kind {
 	case KindRecentWindow,
 		KindSummaryDAG,
-		KindObservationLedger,
-		KindFactLedger,
-		KindFactGraph,
-		KindEntityProfile,
-		KindEntityTimeline,
-		KindDocumentChunks:
+		KindDocumentChunks,
+		KindMessageIndex,
+		KindEntityFacts:
 		return true
 	default:
 		return false

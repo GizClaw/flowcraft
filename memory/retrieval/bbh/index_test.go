@@ -71,6 +71,40 @@ func TestOpenBleveStatError(t *testing.T) {
 	}
 }
 
+func TestBackgroundFlushErrorHandlerReportsTimerFailure(t *testing.T) {
+	errs := make(chan error, 1)
+	sh := &shard{
+		namespace: "ns",
+		graph: &hnsw.SavedGraph[string]{
+			Graph: hnsw.NewGraph[string](),
+			Path:  filepath.Join(t.TempDir(), "missing", "graph"),
+		},
+		graphDirty: true,
+		flushStop:  make(chan struct{}),
+		flushDone:  make(chan error, 1),
+	}
+	sh.graph.Add(hnsw.MakeNode("a", []float32{1, 0}))
+	go sh.flushLoop(time.Millisecond, func(err error) {
+		select {
+		case errs <- err:
+		default:
+		}
+	})
+	defer func() {
+		close(sh.flushStop)
+		<-sh.flushDone
+	}()
+
+	select {
+	case err := <-errs:
+		if err == nil || !strings.Contains(err.Error(), `flush hnsw namespace "ns"`) {
+			t.Fatalf("background flush error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("background flush error handler was not called")
+	}
+}
+
 func TestEnsureShardOpenBleveError(t *testing.T) {
 	idx := openInternalIndex(t, t.TempDir())
 	if err := os.WriteFile(filepath.Join(idx.root, bleveDir, safeToken("broken")), []byte("not an index"), 0o644); err != nil {

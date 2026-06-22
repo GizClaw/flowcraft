@@ -19,6 +19,8 @@ type ChunkStore interface {
 	PutChunk(ctx context.Context, chunk Chunk) (Chunk, error)
 	GetChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) (Chunk, bool, error)
 	ListChunks(ctx context.Context, documentID string, opts ListOptions) ([]Chunk, error)
+	// DeleteChunk deletes one chunk id for the document across layers.
+	DeleteChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) error
 	// DeleteDocument deletes all chunks for the document across layers.
 	DeleteDocument(ctx context.Context, scope views.Scope, documentID string) error
 	// DeleteDataset deletes all chunks for the dataset across layers.

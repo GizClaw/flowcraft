@@ -18,8 +18,8 @@ import (
 // Score computes the BM25 score for a document (already tokenized)
 // against the query keywords.
 //
-// Callers should tokenize content and queries in the tokenize package,
-// then pass the resulting slices here.
+// Callers should analyze content and queries in the analysis package, then pass
+// the resulting term slices here.
 func Score(docTokens, queryKeywords []string, corpus *CorpusStats, opts ...ScoreOption) float64 {
 	if len(docTokens) == 0 || len(queryKeywords) == 0 || corpus == nil || corpus.DocCount == 0 {
 		return 0

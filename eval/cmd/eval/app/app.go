@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/GizClaw/flowcraft/eval/internal/cliflags"
+	"github.com/GizClaw/flowcraft/eval/locomo"
 	"github.com/GizClaw/flowcraft/eval/simpleqa"
 )
 
@@ -24,6 +25,7 @@ var rootCmd = &cobra.Command{
 
 Available suites:
   eval simpleqa              SimpleQA short-form factuality + calibration
+  eval locomo                LoCoMo memory QA + event + caption-proxy dialog
 
 Notification + global behaviour is controlled by --notify-* / --env-file
 flags shown on every subcommand.`,
@@ -44,6 +46,7 @@ func init() {
 	// The suite owns its RegisterCobra so flag changes stay confined
 	// to the suite package. The root just hands over shared globals.
 	simpleqa.RegisterCobra(rootCmd, Global)
+	locomo.RegisterCobra(rootCmd, Global)
 }
 
 // Execute runs the root command. main.go handles the os.Exit dance.

@@ -49,12 +49,3 @@ func cloneDocumentTargets(in []DocumentTarget) []DocumentTarget {
 func documentTargetLabel(target DocumentTarget) string {
 	return fmt.Sprintf("%s/%s", target.DatasetID, target.DocumentID)
 }
-
-func capabilitySelected(capabilities []Capability, capability Capability) bool {
-	for _, candidate := range capabilities {
-		if Capability(strings.TrimSpace(string(candidate))) == capability {
-			return true
-		}
-	}
-	return false
-}

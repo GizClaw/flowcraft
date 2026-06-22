@@ -3,6 +3,7 @@ package executor
 import (
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
 	"github.com/GizClaw/flowcraft/memory/internal/views/indexed"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
@@ -10,22 +11,14 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/embedding"
 )
 
 const errPrefix = "memory/internal/executor"
 
-const (
-	defaultFactGraphExpansionDepth    = 1
-	defaultFactGraphExpansionMaxNodes = 25
-	defaultFactGraphExpansionMaxEdges = 50
-)
-
-// Deps contains the canonical stores, semantic view stores, retrieval index,
+// Deps contains the canonical stores, retained view stores, retrieval index,
 // and capability services used to construct one memory executor.
 type Deps struct {
 	Assembly compiler.Assembly
@@ -33,26 +26,18 @@ type Deps struct {
 	MessageStore  sourcemessage.Store
 	DocumentStore sourcedocument.Store
 
-	SummaryStore        recent.SummaryStore
-	ChunkStore          viewdocument.ChunkStore
-	ObservationStore    viewobservation.Store
-	FactStore           fact.Store
-	FactGraphStore      fact.GraphStore
-	EntityProfileStore  viewentity.ProfileStore
-	EntityTimelineStore viewentity.TimelineStore
+	SummaryStore    recent.SummaryStore
+	ChunkStore      viewdocument.ChunkStore
+	EntityFactStore viewentityfact.Store
 
 	Index            retrieval.Index
 	Embedder         embedding.Embedder
 	EmbeddingTimeout time.Duration
 
-	DocumentChunker       DocumentChunker
-	Summarizer            Summarizer
-	ObservationExtractor  ObservationExtractor
-	FactReconciler        FactReconciler
-	FactGraphBuilder      FactGraphBuilder
-	EntityProfileBuilder  EntityProfileBuilder
-	EntityTimelineBuilder EntityTimelineBuilder
-	ContextPacker         ContextPacker
+	DocumentChunker     derive.DocumentChunker
+	Summarizer          derive.Summarizer
+	EntityFactExtractor derive.EntityFactExtractor
+	ContextPacker       derive.ContextPacker
 }
 
 // Executor is the single internal capability runner assembled from compiler output.
@@ -62,14 +47,10 @@ type Executor struct {
 	messageStore  sourcemessage.Store
 	documentStore sourcedocument.Store
 
-	recentWindow      *recent.Window
-	summaryDAG        *recent.SummaryDAG
-	documentChunks    *viewdocument.Chunks
-	observationLedger *viewobservation.Ledger
-	factLedger        *fact.Ledger
-	factGraph         *fact.Graph
-	entityProfile     *viewentity.Profile
-	entityTimeline    *viewentity.Timeline
+	recentWindow   *recent.Window
+	summaryDAG     *recent.SummaryDAG
+	documentChunks *viewdocument.Chunks
+	entityFacts    *viewentityfact.Graph
 
 	index            retrieval.Index
 	embedder         embedding.Embedder
@@ -79,84 +60,33 @@ type Executor struct {
 	projections map[compiler.Capability]compiler.ProjectionAssembly
 	writers     map[compiler.Capability]*indexed.Writer
 
-	documentChunker       DocumentChunker
-	summarizer            Summarizer
-	observationExtractor  ObservationExtractor
-	factReconciler        FactReconciler
-	factGraphBuilder      FactGraphBuilder
-	entityProfileBuilder  EntityProfileBuilder
-	entityTimelineBuilder EntityTimelineBuilder
-	contextPacker         ContextPacker
+	documentChunker     derive.DocumentChunker
+	summarizer          derive.Summarizer
+	entityFactExtractor derive.EntityFactExtractor
+	contextPacker       derive.ContextPacker
 }
 
 // DocumentChunkSearchResponse hydrates document chunk search hits.
 type DocumentChunkSearchResponse struct {
-	Hits []DocumentChunkSearchHit
+	Hits []derive.DocumentChunkSearchHit
 	Took time.Duration
 }
 
 // SummaryNodeSearchResponse hydrates summary node search hits.
 type SummaryNodeSearchResponse struct {
-	Hits []SummaryNodeSearchHit
+	Hits []derive.SummaryNodeSearchHit
 	Took time.Duration
 }
 
-// ObservationSearchResponse hydrates observation search hits.
-type ObservationSearchResponse struct {
-	Hits []ObservationSearchHit
+// EntityFactSearchResponse hydrates entity fact search hits.
+type EntityFactSearchResponse struct {
+	Hits []derive.EntityFactSearchHit
 	Took time.Duration
 }
 
-// FactSearchResponse hydrates fact ledger search hits.
-type FactSearchResponse struct {
-	Hits []FactSearchHit
-	Took time.Duration
-}
-
-// FactGraphBuildResult contains the stored graph records produced from facts.
-type FactGraphBuildResult struct {
-	Nodes []fact.Node
-	Edges []fact.Edge
-}
-
-// FactGraphSearchResponse hydrates fact graph search hits.
-type FactGraphSearchResponse struct {
-	Hits []FactGraphSearchHit
-	Took time.Duration
-}
-
-// FactGraphExpansionOptions bounds read-time graph expansion from projection seeds.
-type FactGraphExpansionOptions struct {
-	Depth    int
-	MaxNodes int
-	MaxEdges int
-}
-
-// FactGraphExpansionRequest searches projection seeds, then hydrates a bounded
-// depth-1 graph neighborhood from the fact graph store.
-type FactGraphExpansionRequest struct {
-	Scope     views.Scope
-	Search    retrieval.SearchRequest
-	Namespace string
-	Options   FactGraphExpansionOptions
-}
-
-// EntityBuildInput carries fact and graph evidence for entity profile/timeline builders.
-type EntityBuildInput struct {
-	Scope views.Scope
-	Facts []fact.Fact
-	Graph *FactGraphBuildResult
-}
-
-// EntityProfileSearchResponse hydrates entity profile search hits.
-type EntityProfileSearchResponse struct {
-	Hits []EntityProfileSearchHit
-	Took time.Duration
-}
-
-// EntityTimelineSearchResponse hydrates entity timeline search hits.
-type EntityTimelineSearchResponse struct {
-	Hits []EntityTimelineSearchHit
+// SourceMessageSearchResponse hydrates source message search hits.
+type SourceMessageSearchResponse struct {
+	Hits []derive.SourceMessageSearchHit
 	Took time.Duration
 }
 
@@ -165,35 +95,37 @@ type PackContextRequest struct {
 	Scope views.Scope
 	Query string
 
-	Window               recent.WindowRequest
-	SummarySearch        *retrieval.SearchRequest
-	DocumentSearch       *retrieval.SearchRequest
-	ObservationSearch    *retrieval.SearchRequest
-	FactSearch           *retrieval.SearchRequest
-	FactGraphSearch      *retrieval.SearchRequest
-	FactGraphExpansion   *FactGraphExpansionRequest
-	EntityProfileSearch  *retrieval.SearchRequest
-	EntityTimelineSearch *retrieval.SearchRequest
+	Window           recent.WindowRequest
+	MessageSearch    *retrieval.SearchRequest
+	SummarySearch    *retrieval.SearchRequest
+	DocumentSearch   *retrieval.SearchRequest
+	EntityFactSearch *retrieval.SearchRequest
 
-	SummaryNamespace        string
-	DocumentNamespace       string
-	ObservationNamespace    string
-	FactNamespace           string
-	FactGraphNamespace      string
-	EntityProfileNamespace  string
-	EntityTimelineNamespace string
+	SummaryRetrieval SummaryRetrievalConfig
+
+	MessageNamespace    string
+	SummaryNamespace    string
+	DocumentNamespace   string
+	EntityFactNamespace string
+}
+
+// SummaryRetrievalConfig controls read-time SummaryDAG retrieval behavior.
+type SummaryRetrievalConfig struct {
+	// DrillDownMaxDepth bounds ParentIDs traversal after an initial summary hit.
+	// A negative value means traverse until a terminal/leaf node; zero disables
+	// drill-down; positive values allow that many child-selection steps.
+	DrillDownMaxDepth int
+	// DrillDownChildTopK is the number of child summaries retained per layer.
+	DrillDownChildTopK int
 }
 
 // ContextPack is a minimal deterministic composition of recent messages and
 // explicitly requested retrieval results.
 type ContextPack struct {
-	Window             recent.WindowResult
-	SummaryHits        []SummaryNodeSearchHit
-	DocumentHits       []DocumentChunkSearchHit
-	ObservationHits    []ObservationSearchHit
-	FactHits           []FactSearchHit
-	FactGraphHits      []FactGraphSearchHit
-	EntityProfileHits  []EntityProfileSearchHit
-	EntityTimelineHits []EntityTimelineSearchHit
-	Items              []ContextItem
+	Window       recent.WindowResult
+	MessageHits  []derive.SourceMessageSearchHit
+	SummaryHits  []derive.SummaryNodeSearchHit
+	DocumentHits []derive.DocumentChunkSearchHit
+	EntityHits   []derive.EntityFactSearchHit
+	Items        []derive.ContextItem
 }

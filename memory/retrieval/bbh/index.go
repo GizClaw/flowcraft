@@ -46,12 +46,13 @@ type localRoot interface {
 // Index implements retrieval.Index using a shared Badger doc store plus
 // per-namespace Bleve and HNSW indexes.
 type Index struct {
-	db      *badger.DB
-	root    string
-	cfg     Config
-	closed  atomic.Bool
-	shardMu sync.Mutex
-	shards  map[string]*shard
+	db                          *badger.DB
+	root                        string
+	cfg                         Config
+	backgroundFlushErrorHandler func(error)
+	closed                      atomic.Bool
+	shardMu                     sync.Mutex
+	shards                      map[string]*shard
 }
 
 type shard struct {
@@ -88,7 +89,8 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Index, error) {
 		return nil, errdefs.Validationf("retrieval/bbh: workspace must expose local Root()")
 	}
 	root := lr.Root()
-	cfg, err := resolveConfig(root, opts)
+	optionState := resolveOptionState(opts)
+	cfg, err := resolveConfigFromState(root, optionState)
 	if err != nil {
 		return nil, err
 	}
@@ -106,10 +108,11 @@ func New(ws sdkworkspace.Workspace, opts ...Option) (*Index, error) {
 		return nil, fmt.Errorf("retrieval/bbh: open badger: %w", err)
 	}
 	return &Index{
-		db:     db,
-		root:   root,
-		cfg:    cfg,
-		shards: make(map[string]*shard),
+		db:                          db,
+		root:                        root,
+		cfg:                         cfg,
+		backgroundFlushErrorHandler: optionState.backgroundFlushErrorHandler,
+		shards:                      make(map[string]*shard),
 	}, nil
 }
 
@@ -217,12 +220,12 @@ func (idx *Index) ensureShard(namespace string) (*shard, error) {
 		flushStop: make(chan struct{}),
 		flushDone: make(chan error, 1),
 	}
-	go sh.flushLoop(idx.cfg.HNSW.FlushInterval.Duration)
+	go sh.flushLoop(idx.cfg.HNSW.FlushInterval.Duration, idx.backgroundFlushErrorHandler)
 	idx.shards[namespace] = sh
 	return sh, nil
 }
 
-func (sh *shard) flushLoop(interval time.Duration) {
+func (sh *shard) flushLoop(interval time.Duration, reportError func(error)) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -230,22 +233,28 @@ func (sh *shard) flushLoop(interval time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			if err := sh.flushGraph(); err != nil {
-				lastErr = err
-			} else {
-				lastErr = nil
+			lastErr = wrapShardFlushErr(sh.namespace, sh.flushGraph())
+			if lastErr != nil && reportError != nil {
+				reportError(lastErr)
 			}
 		case <-sh.flushStop:
-			if err := sh.flushGraph(); err == nil {
-				lastErr = nil
+			if err := wrapShardFlushErr(sh.namespace, sh.flushGraph()); err != nil {
+				lastErr = errors.Join(lastErr, err)
 			} else {
-				lastErr = err
+				lastErr = nil
 			}
 			sh.flushDone <- lastErr
 			close(sh.flushDone)
 			return
 		}
 	}
+}
+
+func wrapShardFlushErr(namespace string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("retrieval/bbh: flush hnsw namespace %q: %w", namespace, err)
 }
 
 func (sh *shard) flushGraph() error {

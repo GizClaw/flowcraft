@@ -208,6 +208,65 @@ func TestWriterUpsertVectorizesMissingRecordVectors(t *testing.T) {
 	}
 }
 
+func TestWriterTruncatesOnlyEmbeddingInput(t *testing.T) {
+	index := &fakeIndex{}
+	embedder := &fakeEmbedder{
+		batchVectors: [][]float32{{1, 2}},
+	}
+	writer, err := NewWriter(index, validBinding(), WithEmbedder(embedder), WithVectorize(true))
+	if err != nil {
+		t.Fatalf("NewWriter(vectorized) error = %v", err)
+	}
+
+	longText := strings.Repeat("x", maxEmbeddingInputRunes+100)
+	if err := writer.Upsert(context.Background(), []Record{{ID: "long", Text: longText}}); err != nil {
+		t.Fatalf("Upsert(long text) error = %v", err)
+	}
+
+	if got := len([]rune(embedder.batchTexts[0])); got != maxEmbeddingInputRunes {
+		t.Fatalf("embedded text runes = %d, want %d", got, maxEmbeddingInputRunes)
+	}
+	if strings.Contains(embedder.batchTexts[0], "embedding input truncated") {
+		t.Fatalf("embedded text contains truncation marker")
+	}
+	if got := index.upsertDocs[0].Content; got != longText {
+		t.Fatalf("doc content was truncated: len=%d want=%d", len(got), len(longText))
+	}
+}
+
+func TestWriterUpsertChunksEmbeddingBatches(t *testing.T) {
+	index := &fakeIndex{}
+	embedder := &fakeEmbedder{}
+	var records []Record
+	for i := range 25 {
+		records = append(records, Record{
+			ID:   "needs-vector-" + string(rune('a'+i)),
+			Text: "text " + string(rune('a'+i)),
+		})
+		embedder.batchVectors = append(embedder.batchVectors, []float32{float32(i)})
+	}
+	writer, err := NewWriter(index, validBinding(), WithEmbedder(embedder), WithVectorize(true))
+	if err != nil {
+		t.Fatalf("NewWriter(vectorized) error = %v", err)
+	}
+
+	if err := writer.Upsert(context.Background(), records); err != nil {
+		t.Fatalf("Upsert(chunked vectorized) error = %v", err)
+	}
+
+	if got, want := len(embedder.batchCalls), 3; got != want {
+		t.Fatalf("EmbedBatch calls = %d, want %d", got, want)
+	}
+	if got := []int{len(embedder.batchCalls[0]), len(embedder.batchCalls[1]), len(embedder.batchCalls[2])}; !reflect.DeepEqual(got, []int{10, 10, 5}) {
+		t.Fatalf("EmbedBatch chunk sizes = %v, want [10 10 5]", got)
+	}
+	for i, doc := range index.upsertDocs {
+		if len(doc.Vector) != 1 || doc.Vector[0] != float32(i) {
+			t.Fatalf("doc[%d].Vector = %v, want [%d]", i, doc.Vector, i)
+		}
+	}
+}
+
 func TestWriterUpsertEmbeddingTimeoutReturnsDeadlineExceeded(t *testing.T) {
 	index := &fakeIndex{}
 	writer, err := NewWriter(
@@ -645,7 +704,9 @@ func (f *droppableFakeIndex) Drop(_ context.Context, namespace string) error {
 
 type fakeEmbedder struct {
 	batchTexts   []string
+	batchCalls   [][]string
 	batchVectors [][]float32
+	nextVector   int
 }
 
 func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
@@ -654,9 +715,12 @@ func (f *fakeEmbedder) Embed(context.Context, string) ([]float32, error) {
 
 func (f *fakeEmbedder) EmbedBatch(_ context.Context, texts []string) ([][]float32, error) {
 	f.batchTexts = append(f.batchTexts, texts...)
-	vectors := make([][]float32, len(f.batchVectors))
-	for i, vector := range f.batchVectors {
+	f.batchCalls = append(f.batchCalls, append([]string(nil), texts...))
+	vectors := make([][]float32, len(texts))
+	for i := range texts {
+		vector := f.batchVectors[f.nextVector]
 		vectors[i] = append([]float32(nil), vector...)
+		f.nextVector++
 	}
 	return vectors, nil
 }

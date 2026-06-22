@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	sourcedocument "github.com/GizClaw/flowcraft/memory/sources/document"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -34,9 +35,10 @@ type ReadinessReport struct {
 
 // ReadinessCheck is one structured dependency or control-plane check.
 type ReadinessCheck struct {
-	Name    string
-	Ready   bool
-	Message string
+	Name     string
+	Ready    bool
+	Severity DiagnosticSeverity
+	Message  string
 }
 
 // RebuildRequest describes a requested derived-view rebuild scope.
@@ -45,7 +47,10 @@ type RebuildRequest struct {
 	Scope          Scope
 	Capabilities   []Capability
 	Documents      []DocumentTarget
+	ScanDocuments  bool
 	DryRun         bool
+	PageSize       int
+	PageToken      string
 	Reason         string
 	IdempotencyKey string
 }
@@ -55,7 +60,12 @@ type ReconcileRequest struct {
 	TraceID        TraceID
 	Scope          Scope
 	Capabilities   []Capability
+	Documents      []DocumentTarget
+	AutoRepair     bool
+	ScanDocuments  bool
 	DryRun         bool
+	PageSize       int
+	PageToken      string
 	Reason         string
 	IdempotencyKey string
 }
@@ -66,7 +76,10 @@ type ReloadRequest struct {
 	Scope          Scope
 	Capabilities   []Capability
 	Documents      []DocumentTarget
+	ScanDocuments  bool
 	DryRun         bool
+	PageSize       int
+	PageToken      string
 	Reason         string
 	IdempotencyKey string
 }
@@ -148,7 +161,11 @@ type LifecycleOperation struct {
 	Documents      []DocumentTarget
 	Targets        []LifecycleTarget
 	Reason         string
+	AutoRepair     bool
+	ScanDocuments  bool
 	DryRun         bool
+	PageSize       int
+	PageToken      string
 	RequestedAt    time.Time
 	PlanDigest     string
 	IdempotencyKey string
@@ -205,10 +222,15 @@ type LifecycleStep struct {
 func (r *System) Readiness(_ context.Context) (ReadinessReport, error) {
 	report := ReadinessReport{Ready: true}
 	add := func(name string, ready bool, message string) {
+		severity := DiagnosticSeverityInfo
+		if !ready {
+			severity = DiagnosticSeverityError
+		}
 		report.Checks = append(report.Checks, ReadinessCheck{
-			Name:    name,
-			Ready:   ready,
-			Message: message,
+			Name:     name,
+			Ready:    ready,
+			Severity: severity,
+			Message:  message,
 		})
 		if !ready {
 			report.Ready = false
@@ -230,6 +252,7 @@ func (r *System) Readiness(_ context.Context) (ReadinessReport, error) {
 	for _, capability := range r.assembly.Capabilities() {
 		r.addCapabilityReadiness(&report, capability)
 	}
+	r.addWriteDependencyReadiness(&report)
 	if len(r.assembly.Projections) > 0 {
 		add("retrieval.index", r.deps.Index != nil, dependencyMessage("Index", r.deps.Index != nil))
 	}
@@ -446,7 +469,10 @@ func (r *System) Rebuild(ctx context.Context, req RebuildRequest) (LifecycleExec
 		Scope:          req.Scope,
 		Capabilities:   req.Capabilities,
 		Documents:      req.Documents,
+		ScanDocuments:  req.ScanDocuments,
 		DryRun:         req.DryRun,
+		PageSize:       req.PageSize,
+		PageToken:      req.PageToken,
 		Reason:         req.Reason,
 		IdempotencyKey: req.IdempotencyKey,
 	})
@@ -454,14 +480,7 @@ func (r *System) Rebuild(ctx context.Context, req RebuildRequest) (LifecycleExec
 
 // Reconcile plans or enqueues cross-view reconciliation substrate work.
 func (r *System) Reconcile(ctx context.Context, req ReconcileRequest) (LifecycleExecutionReport, error) {
-	return r.dispatchLifecycle(ctx, LifecycleActionReconcile, lifecycleDispatchRequest{
-		TraceID:        req.TraceID,
-		Scope:          req.Scope,
-		Capabilities:   req.Capabilities,
-		DryRun:         req.DryRun,
-		Reason:         req.Reason,
-		IdempotencyKey: req.IdempotencyKey,
-	})
+	return r.dispatchLifecycle(ctx, LifecycleActionReconcile, lifecycleDispatchRequest(req))
 }
 
 // Reload plans or enqueues lifecycle reload substrate work.
@@ -471,15 +490,19 @@ func (r *System) Reload(ctx context.Context, req ReloadRequest) (LifecycleExecut
 		Scope:          req.Scope,
 		Capabilities:   req.Capabilities,
 		Documents:      req.Documents,
+		ScanDocuments:  req.ScanDocuments,
 		DryRun:         req.DryRun,
+		PageSize:       req.PageSize,
+		PageToken:      req.PageToken,
 		Reason:         req.Reason,
 		IdempotencyKey: req.IdempotencyKey,
 	})
 }
 
-// Freshness plans or enqueues lifecycle freshness-check substrate work.
+// Freshness runs bounded freshness diagnostics synchronously and returns a
+// lifecycle-shaped control-plane report for callers that do not run workers.
 func (r *System) Freshness(ctx context.Context, req FreshnessRequest) (FreshnessResult, error) {
-	report, err := r.dispatchLifecycle(ctx, LifecycleActionFreshnessCheck, lifecycleDispatchRequest{
+	report, diagnostics, err := r.dispatchFreshnessLifecycle(ctx, lifecycleDispatchRequest{
 		TraceID:        req.TraceID,
 		Scope:          req.Scope,
 		Capabilities:   req.Capabilities,
@@ -489,25 +512,8 @@ func (r *System) Freshness(ctx context.Context, req FreshnessRequest) (Freshness
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	freshness := FreshnessResult{LifecycleExecutionReport: report}
-	if err != nil {
-		return freshness, err
-	}
-	diagnostics, err := r.runDiagnosticProbes(ctx, DiagnosticRequest{
-		TraceID:      report.TraceID,
-		Scope:        report.Operation.Scope,
-		Capabilities: report.Operation.Capabilities,
-		Documents:    report.Operation.Documents,
-		Stage:        diagnosticStageFreshness,
-	}, false)
-	if err != nil {
-		return freshness, err
-	}
-	freshness.Ready = diagnostics.Ready
-	freshness.OK = diagnostics.OK
-	freshness.Checks = cloneDiagnosticChecks(diagnostics.Checks)
-	freshness.Warnings = append([]string(nil), diagnostics.Warnings...)
-	freshness.Diagnostics = diagnostics
-	return freshness, nil
+	applyDiagnosticsToFreshnessResult(&freshness, diagnostics)
+	return freshness, err
 }
 
 type lifecycleDispatchRequest struct {
@@ -515,7 +521,11 @@ type lifecycleDispatchRequest struct {
 	Scope          Scope
 	Capabilities   []Capability
 	Documents      []DocumentTarget
+	AutoRepair     bool
+	ScanDocuments  bool
 	DryRun         bool
+	PageSize       int
+	PageToken      string
 	Reason         string
 	IdempotencyKey string
 }
@@ -538,6 +548,12 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 	scope := normalizeScope(req.Scope)
 	report.Operation.Scope = scope
 	report.Operation.PlanDigest = r.lifecyclePlanDigest()
+	if action == LifecycleActionReconcile || req.ScanDocuments {
+		report.Operation.AutoRepair = req.AutoRepair
+		report.Operation.PageSize = normalizeDiagnosticPageSize(req.PageSize)
+		report.Operation.PageToken = strings.TrimSpace(req.PageToken)
+	}
+	report.Operation.ScanDocuments = req.ScanDocuments
 	if err := scope.Validate(); err != nil {
 		report.Status = LifecycleStatusRejected
 		report.Message = "invalid scope"
@@ -549,8 +565,51 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 		report.Message = "invalid document targets"
 		return report, err
 	}
+	documentScanRequested := req.ScanDocuments && len(documents) == 0
+	if req.ScanDocuments && documentScanPageTokenLooksDiagnostic(req.PageToken) {
+		report.Status = LifecycleStatusRejected
+		report.Message = "invalid document scan page token"
+		return report, errdefs.Validationf("memory: document scan page token must be a source document id, not a diagnostics projection page token")
+	}
+	if documentScanRequested && scope.DatasetID == "" {
+		report.Status = LifecycleStatusRejected
+		report.Message = "document scan requires scope.dataset_id"
+		return report, errdefs.Validationf("memory: document scan requires scope.dataset_id; refusing to scan all datasets")
+	}
+	if documentScanRequested && !r.documentScanCapabilitySelected(req.Capabilities) {
+		report.Status = LifecycleStatusUnsupported
+		report.Message = "document scan requires document_chunks capability"
+		report.Steps = []LifecycleStep{lifecycleCapabilityStep("document_chunks.scan", CapabilityDocumentChunks, LifecycleStatusUnsupported, "ScanDocuments requires the document_chunks capability; message_index and summary_dag are not valid document scan targets")}
+		return report, errdefs.NotAvailablef("memory: document scan requires document_chunks capability")
+	}
+	if documentScanRequested && !r.lifecycleCapabilityAvailable(CapabilityDocumentChunks) {
+		report.Status = LifecycleStatusUnsupported
+		report.Message = "document_chunks capability is not configured for document scan"
+		report.Steps = []LifecycleStep{lifecycleCapabilityStep("document_chunks.configure", CapabilityDocumentChunks, LifecycleStatusUnsupported, "DocumentStore, ChunkStore, DocumentChunker, and document_chunks projection are required for document scan")}
+		return report, errdefs.NotAvailablef("memory: document_chunks capability is not configured for document scan")
+	}
+	if documentScanRequested {
+		page, err := r.scanDocumentTargetsPage(ctx, scope, req.PageSize, req.PageToken)
+		if err != nil {
+			report.Status = LifecycleStatusFailed
+			report.Message = err.Error()
+			return report, err
+		}
+		documents = page.Documents
+		report.Operation.ScanDocuments = true
+		report.Operation.PageSize = page.PageSize
+		report.Operation.PageToken = page.PageToken
+		applyDocumentScanCheckpoint(&report, page)
+	} else if len(documents) > 0 {
+		report.Operation.ScanDocuments = false
+	}
 	report.Operation.Documents = documents
 	report.Operation.Targets = lifecycleTargetsForDocuments(documents)
+	if documentScanRequested {
+		report.Operation.Capabilities = []Capability{CapabilityDocumentChunks}
+	} else {
+		report.Operation.Capabilities = r.normalizeLifecycleOperationCapabilities(action, req.Capabilities, scope, documents)
+	}
 	report.Operation.IdempotencyKey = lifecycleIdempotencyKey(report.Operation, req.IdempotencyKey)
 	if !r.lifecycleActionDeclared(action) {
 		report.Status = LifecycleStatusUnsupported
@@ -559,7 +618,17 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 	}
 
 	report.Supported = true
-	if handled, err := r.dispatchDocumentChunkLifecycle(ctx, action, &report); handled || err != nil {
+	if report.Operation.ScanDocuments && len(report.Operation.Documents) == 0 {
+		report.Accepted = true
+		report.Status = LifecycleStatusSkipped
+		report.Steps = []LifecycleStep{emptyDocumentScanLifecycleStep(report.Operation)}
+		report.Message = fmt.Sprintf("%s skipped; document scan returned no documents for requested page", action)
+		return report, nil
+	}
+	if action == LifecycleActionReconcile && report.Operation.DryRun {
+		return r.dispatchReconcileDryRun(ctx, &report)
+	}
+	if handled, err := r.dispatchDerivedViewLifecycle(ctx, action, &report); handled || err != nil {
 		return report, err
 	}
 	if req.DryRun {
@@ -570,6 +639,8 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 	}
 
 	jobID := lifecycleJobIDForOperation(report.Operation.ID)
+	checkpoint := lifecycleJobCheckpoint(report.Operation)
+	checkpoint = mergeLifecycleCheckpoints(checkpoint, report.Checkpoint)
 	job := LifecycleJob{
 		ID:           jobID,
 		TraceID:      report.TraceID,
@@ -581,6 +652,7 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 		Reason:       report.Operation.Reason,
 		Stages:       []PlannedStage{{Name: string(action)}},
 		MaxAttempts:  1,
+		Checkpoint:   checkpoint,
 	}
 	if _, ok := r.lifecycleRunner(job.Kind); !ok {
 		report.Status = LifecycleStatusUnsupported
@@ -601,23 +673,102 @@ func (r *System) dispatchLifecycle(ctx context.Context, action LifecycleAction, 
 	report.Accepted = true
 	report.Status = LifecycleStatusEnqueued
 	report.JobID = enqueuedID
+	if len(checkpoint) > 0 {
+		report.Checkpoint = cloneCheckpoint(checkpoint)
+	}
 	report.Message = fmt.Sprintf("%s lifecycle job enqueued", action)
 	return report, nil
+}
+
+func (r *System) dispatchFreshnessLifecycle(ctx context.Context, req lifecycleDispatchRequest) (report LifecycleExecutionReport, diagnostics DiagnosticReport, err error) {
+	action := LifecycleActionFreshnessCheck
+	report = newLifecycleExecutionReport(action, req)
+	defer func() {
+		finalizeLifecycleExecutionReport(&report)
+		if storeErr := r.putLifecycleReport(ctx, report); storeErr != nil {
+			err = errors.Join(err, storeErr)
+		}
+	}()
+
+	if r == nil || r.inner == nil {
+		report.Status = LifecycleStatusRejected
+		report.Message = "system is not configured"
+		return report, diagnostics, errdefs.NotAvailablef("memory: system is not configured")
+	}
+
+	scope := normalizeScope(req.Scope)
+	report.Operation.Scope = scope
+	report.Operation.PlanDigest = r.lifecyclePlanDigest()
+	if err := scope.Validate(); err != nil {
+		report.Status = LifecycleStatusRejected
+		report.Message = "invalid scope"
+		return report, diagnostics, errdefs.Validationf("memory: invalid scope: %w", err)
+	}
+	documents, err := normalizeDocumentTargets(scope, req.Documents)
+	if err != nil {
+		report.Status = LifecycleStatusRejected
+		report.Message = "invalid document targets"
+		return report, diagnostics, err
+	}
+	report.Operation.Documents = documents
+	report.Operation.Targets = lifecycleTargetsForDocuments(documents)
+	report.Operation.Capabilities = r.normalizeLifecycleOperationCapabilities(action, req.Capabilities, scope, documents)
+	report.Operation.IdempotencyKey = lifecycleIdempotencyKey(report.Operation, req.IdempotencyKey)
+	if !r.lifecycleActionDeclared(action) {
+		report.Status = LifecycleStatusUnsupported
+		report.Message = fmt.Sprintf("lifecycle action %q is not declared by the plan", action)
+		return report, diagnostics, errdefs.NotAvailablef("memory: lifecycle action %q is not declared by the plan", action)
+	}
+
+	report.Supported = true
+	report.Steps = nil
+	diagnostics, err = r.runDiagnosticProbes(ctx, DiagnosticRequest{
+		TraceID:      report.TraceID,
+		Scope:        report.Operation.Scope,
+		Capabilities: report.Operation.Capabilities,
+		Documents:    report.Operation.Documents,
+		Stage:        diagnosticStageFreshness,
+	}, false)
+	applyDiagnosticsToLifecycleReport(&report, diagnostics)
+	if err != nil {
+		report.Status = LifecycleStatusFailed
+		report.Message = err.Error()
+		report.Summary = err.Error()
+		return report, diagnostics, err
+	}
+	if !diagnostics.OK && diagnosticsHasErrorSeverity(diagnostics) {
+		err = fmt.Errorf("memory: freshness diagnostics failed: %s", diagnostics.Message)
+		report.Status = LifecycleStatusFailed
+		if report.Message == "" || report.Message == "diagnostics reported issues" {
+			report.Message = err.Error()
+		}
+		return report, diagnostics, err
+	}
+
+	report.Status = LifecycleStatusCompleted
+	if report.Message == "" {
+		report.Message = "freshness diagnostics completed"
+	}
+	return report, diagnostics, nil
 }
 
 func newLifecycleExecutionReport(action LifecycleAction, req lifecycleDispatchRequest) LifecycleExecutionReport {
 	now := time.Now()
 	traceID := ensureTraceID(req.TraceID)
 	operation := LifecycleOperation{
-		ID:           newOperationID(),
-		TraceID:      traceID,
-		Action:       action,
-		Scope:        normalizeScope(req.Scope),
-		Capabilities: cloneCapabilities(req.Capabilities),
-		Documents:    cloneDocumentTargets(req.Documents),
-		Reason:       strings.TrimSpace(req.Reason),
-		DryRun:       req.DryRun,
-		RequestedAt:  now,
+		ID:            newOperationID(),
+		TraceID:       traceID,
+		Action:        action,
+		Scope:         normalizeScope(req.Scope),
+		Capabilities:  cloneCapabilities(req.Capabilities),
+		Documents:     cloneDocumentTargets(req.Documents),
+		Reason:        strings.TrimSpace(req.Reason),
+		AutoRepair:    req.AutoRepair,
+		ScanDocuments: req.ScanDocuments,
+		DryRun:        req.DryRun,
+		PageSize:      req.PageSize,
+		PageToken:     strings.TrimSpace(req.PageToken),
+		RequestedAt:   now,
 	}
 	operation.Targets = lifecycleTargetsForDocuments(operation.Documents)
 	operation.IdempotencyKey = lifecycleIdempotencyKey(operation, req.IdempotencyKey)
@@ -635,81 +786,133 @@ func newLifecycleExecutionReport(action LifecycleAction, req lifecycleDispatchRe
 	}
 }
 
-func (r *System) dispatchDocumentChunkLifecycle(ctx context.Context, action LifecycleAction, report *LifecycleExecutionReport) (bool, error) {
+func (r *System) dispatchDerivedViewLifecycle(ctx context.Context, action LifecycleAction, report *LifecycleExecutionReport) (bool, error) {
 	if action != LifecycleActionReload && action != LifecycleActionRebuild {
 		return false, nil
 	}
-	if !capabilitySelected(report.Operation.Capabilities, CapabilityDocumentChunks) {
-		return false, nil
+	capabilities := selectedDerivedViewLifecycleCapabilities(report.Operation.Capabilities)
+	if len(capabilities) == 0 {
+		report.Steps = nil
+		report.Accepted = true
+		report.Status = LifecycleStatusUnsupported
+		report.Message = fmt.Sprintf("no derived-view capabilities selected for %s", action)
+		report.Steps = append(report.Steps, LifecycleStep{
+			Name:    "derived_views.capabilities",
+			Status:  LifecycleStatusUnsupported,
+			Planned: true,
+			Message: "rebuild/reload requires document_chunks, message_index, or summary_dag",
+		})
+		return true, errdefs.NotAvailablef("memory: no derived-view capabilities selected for %s", action)
 	}
 
 	report.Steps = nil
-	if len(report.Operation.Documents) == 0 {
-		report.Accepted = true
-		report.Status = LifecycleStatusSkipped
-		report.Message = "document_chunks reload/rebuild requires explicit document targets; no full scan was planned"
-		report.Steps = append(report.Steps, LifecycleStep{
-			Name:    "document_chunks.targets",
-			Status:  LifecycleStatusSkipped,
-			Planned: true,
-			Skipped: true,
-			Message: "no document targets supplied; full document scans are intentionally unsupported",
-			Details: map[string]any{
-				"capability": string(CapabilityDocumentChunks),
-			},
-		})
-		return true, nil
+	var runnable bool
+	var skipped int
+	var unsupportedErr error
+	for _, capability := range capabilities {
+		switch capability {
+		case CapabilityDocumentChunks:
+			if !r.lifecycleCapabilityAvailable(CapabilityDocumentChunks) {
+				unsupportedErr = errors.Join(unsupportedErr, errdefs.NotAvailablef("memory: document_chunks capability is not configured for targeted %s", action))
+				report.Steps = append(report.Steps, lifecycleCapabilityStep("document_chunks.configure", CapabilityDocumentChunks, LifecycleStatusUnsupported, "DocumentStore, ChunkStore, and DocumentChunker are required for targeted reload/rebuild"))
+				continue
+			}
+			if len(report.Operation.Documents) == 0 {
+				skipped++
+				report.Steps = append(report.Steps, LifecycleStep{
+					Name:    "document_chunks.targets",
+					Status:  LifecycleStatusSkipped,
+					Planned: true,
+					Skipped: true,
+					Message: "no document targets supplied; full document scans are intentionally unsupported",
+					Details: map[string]any{
+						"capability": string(CapabilityDocumentChunks),
+					},
+				})
+				continue
+			}
+			runnable = true
+			if report.Operation.DryRun {
+				for _, target := range report.Operation.Documents {
+					report.Steps = append(report.Steps, LifecycleStep{
+						Name:    "document_chunks.target",
+						Status:  LifecycleStatusPlanned,
+						Planned: true,
+						Message: fmt.Sprintf("would re-index document %s", documentTargetLabel(target)),
+						Details: map[string]any{
+							"capability":  string(CapabilityDocumentChunks),
+							"dataset_id":  target.DatasetID,
+							"document_id": target.DocumentID,
+							"chunk_count": 0,
+						},
+					})
+				}
+			} else {
+				for _, target := range report.Operation.Documents {
+					report.Steps = append(report.Steps, LifecycleStep{
+						Name:    "document_chunks.target",
+						Status:  LifecycleStatusPlanned,
+						Planned: true,
+						Message: fmt.Sprintf("will re-index document %s asynchronously", documentTargetLabel(target)),
+						Details: map[string]any{
+							"capability":  string(CapabilityDocumentChunks),
+							"dataset_id":  target.DatasetID,
+							"document_id": target.DocumentID,
+						},
+					})
+				}
+			}
+		case CapabilityMessageIndex:
+			if !r.lifecycleCapabilityAvailable(CapabilityMessageIndex) {
+				unsupportedErr = errors.Join(unsupportedErr, errdefs.NotAvailablef("memory: message_index capability is not configured for scoped %s", action))
+				report.Steps = append(report.Steps, lifecycleCapabilityStep("message_index.configure", CapabilityMessageIndex, LifecycleStatusUnsupported, "MessageStore and message_index projection are required for scoped reload/rebuild"))
+				continue
+			}
+			if report.Operation.Scope.ConversationID == "" {
+				skipped++
+				report.Steps = append(report.Steps, lifecycleCapabilityStep("message_index.scope", CapabilityMessageIndex, LifecycleStatusSkipped, "conversation_id is required; full message scans are intentionally unsupported"))
+				continue
+			}
+			runnable = true
+			report.Steps = append(report.Steps, lifecycleCapabilityStep("message_index.conversation", CapabilityMessageIndex, lifecycleDryRunStatus(report.Operation.DryRun), lifecyclePlannedMessage(report.Operation.DryRun, "message_index", report.Operation.Scope.ConversationID)))
+		case CapabilitySummaryDAG:
+			if !r.lifecycleCapabilityAvailable(CapabilitySummaryDAG) {
+				unsupportedErr = errors.Join(unsupportedErr, errdefs.NotAvailablef("memory: summary_dag capability is not configured for scoped %s", action))
+				report.Steps = append(report.Steps, lifecycleCapabilityStep("summary_dag.configure", CapabilitySummaryDAG, LifecycleStatusUnsupported, "MessageStore, SummaryStore, Summarizer, and summary_dag projection are required for scoped reload/rebuild"))
+				continue
+			}
+			if report.Operation.Scope.ConversationID == "" {
+				skipped++
+				report.Steps = append(report.Steps, lifecycleCapabilityStep("summary_dag.scope", CapabilitySummaryDAG, LifecycleStatusSkipped, "conversation_id is required; full summary scans are intentionally unsupported"))
+				continue
+			}
+			runnable = true
+			report.Steps = append(report.Steps, lifecycleCapabilityStep("summary_dag.conversation", CapabilitySummaryDAG, lifecycleDryRunStatus(report.Operation.DryRun), lifecyclePlannedMessage(report.Operation.DryRun, "summary_dag", report.Operation.Scope.ConversationID)))
+		}
 	}
-
-	if !r.writeAvailable[CapabilityDocumentChunks] {
+	if unsupportedErr != nil {
+		report.Accepted = true
 		report.Status = LifecycleStatusUnsupported
-		report.Message = "document_chunks capability is not configured for writes"
-		report.Steps = append(report.Steps, LifecycleStep{
-			Name:    "document_chunks.configure",
-			Status:  LifecycleStatusUnsupported,
-			Planned: true,
-			Message: "DocumentStore, ChunkStore, and DocumentChunker are required for targeted reload/rebuild",
-			Details: map[string]any{
-				"capability": string(CapabilityDocumentChunks),
-			},
-		})
-		return true, errdefs.NotAvailablef("memory: document_chunks capability is not configured for targeted %s", action)
+		report.Message = unsupportedErr.Error()
+		return true, unsupportedErr
 	}
-
-	if report.Operation.DryRun {
+	if !runnable {
 		report.Accepted = true
-		report.Status = LifecycleStatusPlanned
-		report.Message = fmt.Sprintf("%s planned for %d document target(s)", action, len(report.Operation.Documents))
-		for _, target := range report.Operation.Documents {
-			report.Steps = append(report.Steps, LifecycleStep{
-				Name:    "document_chunks.target",
-				Status:  LifecycleStatusPlanned,
-				Planned: true,
-				Message: fmt.Sprintf("would re-index document %s", documentTargetLabel(target)),
-				Details: map[string]any{
-					"capability":  string(CapabilityDocumentChunks),
-					"dataset_id":  target.DatasetID,
-					"document_id": target.DocumentID,
-					"chunk_count": 0,
-				},
-			})
+		report.Supported = true
+		report.Status = LifecycleStatusSkipped
+		report.Message = fmt.Sprintf("%s skipped; scoped targets were not sufficient", action)
+		if skipped == 0 {
+			report.Message = fmt.Sprintf("%s skipped; no full scan was planned", action)
 		}
 		return true, nil
 	}
-
-	for _, target := range report.Operation.Documents {
-		report.Steps = append(report.Steps, LifecycleStep{
-			Name:    "document_chunks.target",
-			Status:  LifecycleStatusPlanned,
-			Planned: true,
-			Message: fmt.Sprintf("will re-index document %s asynchronously", documentTargetLabel(target)),
-			Details: map[string]any{
-				"capability":  string(CapabilityDocumentChunks),
-				"dataset_id":  target.DatasetID,
-				"document_id": target.DocumentID,
-			},
-		})
+	if report.Operation.DryRun {
+		report.Accepted = true
+		report.Status = LifecycleStatusPlanned
+		report.Message = fmt.Sprintf("%s planned for %d derived-view capability(s)", action, len(capabilities))
+		return true, nil
 	}
+
 	jobID := lifecycleJobIDForOperation(report.Operation.ID)
 	job := LifecycleJob{
 		ID:           jobID,
@@ -720,18 +923,19 @@ func (r *System) dispatchDocumentChunkLifecycle(ctx context.Context, action Life
 		Capabilities: cloneCapabilities(report.Operation.Capabilities),
 		Documents:    cloneDocumentTargets(report.Operation.Documents),
 		Reason:       report.Operation.Reason,
-		Stages:       []PlannedStage{{Name: string(action), Capability: CapabilityDocumentChunks}},
+		Stages:       lifecycleDerivedViewPlannedStages(capabilities),
 		MaxAttempts:  1,
+		Checkpoint:   cloneCheckpoint(report.Checkpoint),
 	}
 	if _, ok := r.lifecycleRunner(job.Kind); !ok {
 		report.Status = LifecycleStatusUnsupported
-		report.Message = fmt.Sprintf("no lifecycle runner registered for document_chunks %s", action)
-		return true, errdefs.NotAvailablef("memory: no lifecycle runner registered for document_chunks %s", action)
+		report.Message = fmt.Sprintf("no lifecycle runner registered for derived-view %s", action)
+		return true, errdefs.NotAvailablef("memory: no lifecycle runner registered for derived-view %s", action)
 	}
 	if r.jobStore == nil {
 		report.Status = LifecycleStatusFailed
 		report.Message = "job store is not configured"
-		return true, errdefs.NotAvailablef("memory: job store is not configured for document_chunks %s", action)
+		return true, errdefs.NotAvailablef("memory: job store is not configured for derived-view %s", action)
 	}
 	enqueuedID, err := r.jobStore.Enqueue(ctx, job)
 	if err != nil {
@@ -742,8 +946,162 @@ func (r *System) dispatchDocumentChunkLifecycle(ctx context.Context, action Life
 	report.Accepted = true
 	report.Status = LifecycleStatusEnqueued
 	report.JobID = enqueuedID
-	report.Message = fmt.Sprintf("%s enqueued for %d document target(s)", action, len(report.Operation.Documents))
+	if len(report.Checkpoint) > 0 {
+		report.Checkpoint = cloneCheckpoint(report.Checkpoint)
+	}
+	report.Message = fmt.Sprintf("%s enqueued for %d derived-view capability(s)", action, len(capabilities))
 	return true, nil
+}
+
+func lifecycleCapabilityStep(name string, capability Capability, status LifecycleExecutionStatus, message string) LifecycleStep {
+	step := LifecycleStep{
+		Name:    name,
+		Status:  status,
+		Planned: true,
+		Message: message,
+		Details: map[string]any{
+			"capability": string(capability),
+		},
+	}
+	if status == LifecycleStatusSkipped {
+		step.Skipped = true
+	}
+	return step
+}
+
+func emptyDocumentScanLifecycleStep(operation LifecycleOperation) LifecycleStep {
+	step := lifecycleCapabilityStep("document_chunks.scan", CapabilityDocumentChunks, LifecycleStatusSkipped, "document scan returned no documents for requested page; no document_chunks work was planned")
+	step.Details["dataset_id"] = operation.Scope.DatasetID
+	step.Details["page_size"] = operation.PageSize
+	if operation.PageToken != "" {
+		step.Details["page_token"] = operation.PageToken
+	}
+	return step
+}
+
+func lifecycleDryRunStatus(dryRun bool) LifecycleExecutionStatus {
+	if dryRun {
+		return LifecycleStatusPlanned
+	}
+	return LifecycleStatusEnqueued
+}
+
+func lifecyclePlannedMessage(dryRun bool, capability, conversationID string) string {
+	if dryRun {
+		return fmt.Sprintf("would rebuild %s for conversation %s", capability, conversationID)
+	}
+	return fmt.Sprintf("will rebuild %s for conversation %s asynchronously", capability, conversationID)
+}
+
+type documentScanPage struct {
+	Documents     []DocumentTarget
+	PageSize      int
+	PageToken     string
+	NextPageToken string
+	Scanned       int
+}
+
+func (r *System) documentScanCapabilitySelected(requested []Capability) bool {
+	capabilities := dedupeCapabilities(requested)
+	if len(capabilities) == 0 {
+		return r != nil && r.assembly.HasCapability(CapabilityDocumentChunks)
+	}
+	for _, capability := range capabilities {
+		if capability == CapabilityDocumentChunks {
+			return true
+		}
+	}
+	return false
+}
+
+func documentScanPageTokenLooksDiagnostic(pageToken string) bool {
+	return strings.HasPrefix(strings.TrimSpace(pageToken), diagnosticProjectionPageTokenPrefix)
+}
+
+func (r *System) scanDocumentTargetsPage(ctx context.Context, scope Scope, pageSize int, pageToken string) (documentScanPage, error) {
+	if r == nil || r.deps.DocumentStore == nil {
+		return documentScanPage{}, errdefs.NotAvailablef("memory: document store is not configured for document scan")
+	}
+	datasetID := strings.TrimSpace(scope.DatasetID)
+	if datasetID == "" {
+		return documentScanPage{}, errdefs.Validationf("memory: document scan requires scope.dataset_id; refusing to scan all datasets")
+	}
+	normalizedPageSize := normalizeDiagnosticPageSize(pageSize)
+	normalizedPageToken := strings.TrimSpace(pageToken)
+	docs, err := r.deps.DocumentStore.List(ctx, datasetID, sourcedocument.ListOptions{
+		AfterID: normalizedPageToken,
+		Limit:   normalizedPageSize + 1,
+	})
+	if err != nil {
+		return documentScanPage{}, err
+	}
+	page := documentScanPage{
+		PageSize:  normalizedPageSize,
+		PageToken: normalizedPageToken,
+	}
+	if len(docs) > normalizedPageSize {
+		page.NextPageToken = docs[normalizedPageSize-1].ID
+		docs = docs[:normalizedPageSize]
+	}
+	page.Documents = make([]DocumentTarget, 0, len(docs))
+	for _, doc := range docs {
+		if strings.TrimSpace(doc.ID) == "" {
+			continue
+		}
+		targetDatasetID := strings.TrimSpace(doc.DatasetID)
+		if targetDatasetID == "" {
+			targetDatasetID = datasetID
+		}
+		page.Documents = append(page.Documents, DocumentTarget{
+			DatasetID:  targetDatasetID,
+			DocumentID: strings.TrimSpace(doc.ID),
+		})
+	}
+	page.Scanned = len(page.Documents)
+	return page, nil
+}
+
+func applyDocumentScanCheckpoint(report *LifecycleExecutionReport, page documentScanPage) {
+	if report == nil {
+		return
+	}
+	if report.Checkpoint == nil {
+		report.Checkpoint = map[string]any{}
+	}
+	report.Checkpoint["document_scan"] = true
+	report.Checkpoint["document_scan_page_size"] = page.PageSize
+	report.Checkpoint["document_scan_scanned"] = page.Scanned
+	report.Checkpoint["document_scan_next_page_token"] = page.NextPageToken
+	if page.PageToken != "" {
+		report.Checkpoint["document_scan_page_token"] = page.PageToken
+	}
+}
+
+func (r *System) normalizeLifecycleOperationCapabilities(action LifecycleAction, requested []Capability, scope Scope, documents []DocumentTarget) []Capability {
+	capabilities := dedupeCapabilities(requested)
+	if len(capabilities) > 0 {
+		return capabilities
+	}
+	switch action {
+	case LifecycleActionRebuild, LifecycleActionReload, LifecycleActionReconcile:
+		if len(documents) > 0 {
+			if r != nil && r.assembly.HasCapability(CapabilityDocumentChunks) {
+				return []Capability{CapabilityDocumentChunks}
+			}
+			return nil
+		}
+		if normalizeScope(scope).ConversationID != "" && r != nil {
+			var out []Capability
+			if r.lifecycleCapabilityAvailable(CapabilityMessageIndex) {
+				out = append(out, CapabilityMessageIndex)
+			}
+			if r.lifecycleCapabilityAvailable(CapabilitySummaryDAG) {
+				out = append(out, CapabilitySummaryDAG)
+			}
+			return out
+		}
+	}
+	return nil
 }
 
 func (r *System) lifecycleActionDeclared(action LifecycleAction) bool {
@@ -753,6 +1111,17 @@ func (r *System) lifecycleActionDeclared(action LifecycleAction) bool {
 		}
 	}
 	return false
+}
+
+func applyDiagnosticsToFreshnessResult(freshness *FreshnessResult, diagnostics DiagnosticReport) {
+	if freshness == nil || diagnostics.Stage == "" {
+		return
+	}
+	freshness.Ready = diagnostics.Ready
+	freshness.OK = diagnostics.OK
+	freshness.Checks = cloneDiagnosticChecks(diagnostics.Checks)
+	freshness.Warnings = append([]string(nil), diagnostics.Warnings...)
+	freshness.Diagnostics = diagnostics
 }
 
 func newOperationID() OperationID {
@@ -816,11 +1185,61 @@ func lifecycleIdempotencyKey(operation LifecycleOperation, requested string) str
 	builder.WriteByte('|')
 	builder.WriteString(strconv.FormatBool(operation.DryRun))
 	builder.WriteByte('|')
+	builder.WriteString(strconv.FormatBool(operation.AutoRepair))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.FormatBool(operation.ScanDocuments))
+	builder.WriteByte('|')
+	builder.WriteString(strconv.Itoa(operation.PageSize))
+	builder.WriteByte('|')
+	builder.WriteString(operation.PageToken)
+	builder.WriteByte('|')
 	builder.WriteString(operation.Reason)
 	builder.WriteByte('|')
 	builder.WriteString(operation.PlanDigest)
 	sum := sha256.Sum256([]byte(builder.String()))
 	return "sha256:" + hex.EncodeToString(sum[:16])
+}
+
+func lifecycleJobCheckpoint(operation LifecycleOperation) map[string]any {
+	if operation.Action != LifecycleActionReconcile {
+		return nil
+	}
+	checkpoint := map[string]any{
+		"auto_repair":           operation.AutoRepair,
+		"repair_targets_source": reconcileRepairTargetsSource(operation.AutoRepair, operation.ScanDocuments, operation.Documents),
+		"diagnostics_page_size": operation.PageSize,
+	}
+	if operation.PageToken != "" && !operation.ScanDocuments {
+		checkpoint["diagnostics_page_token"] = operation.PageToken
+	}
+	return checkpoint
+}
+
+func reconcileRepairTargetsSource(autoRepair, documentScan bool, documents []DocumentTarget) string {
+	if len(documents) > 0 {
+		if documentScan {
+			return "document_scan"
+		}
+		return "explicit"
+	}
+	if documentScan {
+		return "document_scan"
+	}
+	if autoRepair {
+		return "diagnostics_page"
+	}
+	return "none"
+}
+
+func mergeLifecycleCheckpoints(left, right map[string]any) map[string]any {
+	if len(left) == 0 {
+		return cloneCheckpoint(right)
+	}
+	out := cloneCheckpoint(left)
+	for key, value := range right {
+		out[key] = value
+	}
+	return out
 }
 
 func scopeDigestInput(scope Scope) string {
@@ -830,7 +1249,6 @@ func scopeDigestInput(scope Scope) string {
 		scope.AgentID,
 		scope.ConversationID,
 		scope.DatasetID,
-		scope.EntityID,
 	}, "/")
 }
 
@@ -900,10 +1318,15 @@ func cloneCapabilities(in []Capability) []Capability {
 
 func (r *System) addCapabilityReadiness(report *ReadinessReport, capability Capability) {
 	add := func(name string, ready bool, message string) {
+		severity := DiagnosticSeverityInfo
+		if !ready {
+			severity = DiagnosticSeverityError
+		}
 		report.Checks = append(report.Checks, ReadinessCheck{
-			Name:    name,
-			Ready:   ready,
-			Message: message,
+			Name:     name,
+			Ready:    ready,
+			Severity: severity,
+			Message:  message,
 		})
 		if !ready {
 			report.Ready = false
@@ -915,27 +1338,36 @@ func (r *System) addCapabilityReadiness(report *ReadinessReport, capability Capa
 		add("capability.recent_window.message_store", r.deps.MessageStore != nil, dependencyMessage("MessageStore", r.deps.MessageStore != nil))
 	case CapabilitySummaryDAG:
 		add("capability.summary_dag.store", r.deps.SummaryStore != nil, dependencyMessage("SummaryStore", r.deps.SummaryStore != nil))
-		add("capability.summary_dag.service", r.deps.Summarizer != nil, dependencyMessage("Summarizer", r.deps.Summarizer != nil))
 	case CapabilityDocumentChunks:
 		add("capability.document_chunks.store", r.deps.ChunkStore != nil, dependencyMessage("ChunkStore", r.deps.ChunkStore != nil))
-		add("capability.document_chunks.service", r.deps.DocumentChunker != nil, dependencyMessage("DocumentChunker", r.deps.DocumentChunker != nil))
-	case CapabilityObservationLedger:
-		add("capability.observation_ledger.store", r.deps.ObservationStore != nil, dependencyMessage("ObservationStore", r.deps.ObservationStore != nil))
-		add("capability.observation_ledger.service", r.deps.ObservationExtractor != nil, dependencyMessage("ObservationExtractor", r.deps.ObservationExtractor != nil))
-	case CapabilityFactLedger:
-		add("capability.fact_ledger.store", r.deps.FactStore != nil, dependencyMessage("FactStore", r.deps.FactStore != nil))
-		add("capability.fact_ledger.service", r.deps.FactReconciler != nil, dependencyMessage("FactReconciler", r.deps.FactReconciler != nil))
-	case CapabilityFactGraph:
-		add("capability.fact_graph.store", r.deps.FactGraphStore != nil, dependencyMessage("FactGraphStore", r.deps.FactGraphStore != nil))
-		add("capability.fact_graph.service", r.deps.FactGraphBuilder != nil, dependencyMessage("FactGraphBuilder", r.deps.FactGraphBuilder != nil))
-	case CapabilityEntityProfile:
-		add("capability.entity_profile.store", r.deps.EntityProfileStore != nil, dependencyMessage("EntityProfileStore", r.deps.EntityProfileStore != nil))
-		add("capability.entity_profile.service", r.deps.EntityProfileBuilder != nil, dependencyMessage("EntityProfileBuilder", r.deps.EntityProfileBuilder != nil))
-	case CapabilityEntityTimeline:
-		add("capability.entity_timeline.store", r.deps.EntityTimelineStore != nil, dependencyMessage("EntityTimelineStore", r.deps.EntityTimelineStore != nil))
-		add("capability.entity_timeline.service", r.deps.EntityTimelineBuilder != nil, dependencyMessage("EntityTimelineBuilder", r.deps.EntityTimelineBuilder != nil))
 	default:
 		add(fmt.Sprintf("capability.%s", capability), false, "capability is not implemented by the root facade")
+	}
+}
+
+func (r *System) addWriteDependencyReadiness(report *ReadinessReport) {
+	if r == nil || report == nil {
+		return
+	}
+	addWarning := func(name, dependency string) {
+		report.Checks = append(report.Checks, ReadinessCheck{
+			Name:     name,
+			Ready:    false,
+			Severity: DiagnosticSeverityWarning,
+			Message:  dependency + " missing; writes for this capability will return NotAvailable",
+		})
+	}
+	for _, stage := range r.plan.Write {
+		switch stage.Name {
+		case writeStageChunkDocument:
+			if !stage.Optional && !r.writeAvailable[CapabilityDocumentChunks] && r.deps.DocumentChunker == nil {
+				addWarning("write_readiness.document_chunks", "DocumentChunker")
+			}
+		case writeStageBuildSummaryDAG:
+			if !stage.Optional && !r.writeAvailable[CapabilitySummaryDAG] && r.deps.Summarizer == nil {
+				addWarning("write_readiness.summary_dag", "Summarizer")
+			}
+		}
 	}
 }
 

@@ -2,32 +2,29 @@ package executor
 
 import (
 	"context"
+	"maps"
 	"strings"
-	"time"
 
+	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 )
 
 func (r *Executor) applyContextPacker(ctx context.Context, req PackContextRequest, pack *ContextPack) error {
-	output, err := r.contextPacker.PackContext(ctx, cloneContextPackInput(ContextPackInput{
-		Scope:              contextPackScope(req),
-		Query:              contextPackQuery(req),
-		Window:             pack.Window,
-		Items:              pack.Items,
-		SummaryHits:        pack.SummaryHits,
-		DocumentHits:       pack.DocumentHits,
-		ObservationHits:    pack.ObservationHits,
-		FactHits:           pack.FactHits,
-		FactGraphHits:      pack.FactGraphHits,
-		EntityProfileHits:  pack.EntityProfileHits,
-		EntityTimelineHits: pack.EntityTimelineHits,
+	output, err := r.contextPacker.PackContext(ctx, cloneContextPackInput(derive.ContextPackInput{
+		Scope:          contextPackScope(req),
+		Query:          contextPackQuery(req),
+		Window:         pack.Window,
+		SourceMessages: sourceMessageResolver{store: r.messageStore},
+		Items:          pack.Items,
+		MessageHits:    pack.MessageHits,
+		SummaryHits:    pack.SummaryHits,
+		DocumentHits:   pack.DocumentHits,
+		EntityHits:     pack.EntityHits,
 	}))
 	if err != nil {
 		return err
@@ -48,22 +45,10 @@ func contextPackQuery(req PackContextRequest) string {
 		return req.Query
 	}
 	for _, search := range []*retrieval.SearchRequest{
+		req.MessageSearch,
 		req.SummarySearch,
 		req.DocumentSearch,
-		req.ObservationSearch,
-		req.FactSearch,
-		req.FactGraphSearch,
-	} {
-		if search != nil && strings.TrimSpace(search.QueryText) != "" {
-			return search.QueryText
-		}
-	}
-	if req.FactGraphExpansion != nil && strings.TrimSpace(req.FactGraphExpansion.Search.QueryText) != "" {
-		return req.FactGraphExpansion.Search.QueryText
-	}
-	for _, search := range []*retrieval.SearchRequest{
-		req.EntityProfileSearch,
-		req.EntityTimelineSearch,
+		req.EntityFactSearch,
 	} {
 		if search != nil && strings.TrimSpace(search.QueryText) != "" {
 			return search.QueryText
@@ -72,17 +57,25 @@ func contextPackQuery(req PackContextRequest) string {
 	return ""
 }
 
-func cloneContextPackInput(in ContextPackInput) ContextPackInput {
+type sourceMessageResolver struct {
+	store sourcemessage.Store
+}
+
+func (r sourceMessageResolver) GetSourceMessage(ctx context.Context, conversationID, messageID string) (sourcemessage.Message, bool, error) {
+	if r.store == nil {
+		return sourcemessage.Message{}, false, nil
+	}
+	return r.store.Get(ctx, conversationID, messageID)
+}
+
+func cloneContextPackInput(in derive.ContextPackInput) derive.ContextPackInput {
 	out := in
 	out.Window = cloneWindowResult(in.Window)
 	out.Items = cloneContextItems(in.Items)
+	out.MessageHits = cloneSourceMessageSearchHits(in.MessageHits)
 	out.SummaryHits = cloneSummaryNodeSearchHits(in.SummaryHits)
 	out.DocumentHits = cloneDocumentChunkSearchHits(in.DocumentHits)
-	out.ObservationHits = cloneObservationSearchHits(in.ObservationHits)
-	out.FactHits = cloneFactSearchHits(in.FactHits)
-	out.FactGraphHits = cloneFactGraphSearchHits(in.FactGraphHits)
-	out.EntityProfileHits = cloneEntityProfileSearchHits(in.EntityProfileHits)
-	out.EntityTimelineHits = cloneEntityTimelineSearchHits(in.EntityTimelineHits)
+	out.EntityHits = cloneEntityFactSearchHits(in.EntityHits)
 	return out
 }
 
@@ -98,18 +91,18 @@ func cloneWindowResult(in recent.WindowResult) recent.WindowResult {
 	return out
 }
 
-func cloneContextItems(in []ContextItem) []ContextItem {
+func cloneContextItems(in []derive.ContextItem) []derive.ContextItem {
 	if in == nil {
 		return nil
 	}
-	out := make([]ContextItem, len(in))
+	out := make([]derive.ContextItem, len(in))
 	for i, item := range in {
 		out[i] = cloneContextItem(item)
 	}
 	return out
 }
 
-func cloneContextItem(in ContextItem) ContextItem {
+func cloneContextItem(in derive.ContextItem) derive.ContextItem {
 	out := in
 	if in.Message != nil {
 		msg := cloneMessage(*in.Message)
@@ -123,29 +116,9 @@ func cloneContextItem(in ContextItem) ContextItem {
 		chunk := cloneDocumentChunk(*in.DocumentChunk)
 		out.DocumentChunk = &chunk
 	}
-	if in.Observation != nil {
-		observation := cloneObservation(*in.Observation)
-		out.Observation = &observation
-	}
-	if in.Fact != nil {
-		record := cloneFact(*in.Fact)
-		out.Fact = &record
-	}
-	if in.FactGraphNode != nil {
-		node := cloneFactGraphNode(*in.FactGraphNode)
-		out.FactGraphNode = &node
-	}
-	if in.FactGraphEdge != nil {
-		edge := cloneFactGraphEdge(*in.FactGraphEdge)
-		out.FactGraphEdge = &edge
-	}
-	if in.EntityProfile != nil {
-		profile := cloneEntityProfile(*in.EntityProfile)
-		out.EntityProfile = &profile
-	}
-	if in.EntityEvent != nil {
-		event := cloneEntityEvent(*in.EntityEvent)
-		out.EntityEvent = &event
+	if in.EntityFact != nil {
+		fact := cloneEntityFact(*in.EntityFact)
+		out.EntityFact = &fact
 	}
 	if in.Retrieval != nil {
 		hit := cloneRetrievalHit(*in.Retrieval)
@@ -154,13 +127,27 @@ func cloneContextItem(in ContextItem) ContextItem {
 	return out
 }
 
-func cloneSummaryNodeSearchHits(in []SummaryNodeSearchHit) []SummaryNodeSearchHit {
+func cloneSourceMessageSearchHits(in []derive.SourceMessageSearchHit) []derive.SourceMessageSearchHit {
 	if in == nil {
 		return nil
 	}
-	out := make([]SummaryNodeSearchHit, len(in))
+	out := make([]derive.SourceMessageSearchHit, len(in))
 	for i, hit := range in {
-		out[i] = SummaryNodeSearchHit{
+		out[i] = derive.SourceMessageSearchHit{
+			Retrieval: cloneRetrievalHit(hit.Retrieval),
+			Message:   cloneMessage(hit.Message),
+		}
+	}
+	return out
+}
+
+func cloneSummaryNodeSearchHits(in []derive.SummaryNodeSearchHit) []derive.SummaryNodeSearchHit {
+	if in == nil {
+		return nil
+	}
+	out := make([]derive.SummaryNodeSearchHit, len(in))
+	for i, hit := range in {
+		out[i] = derive.SummaryNodeSearchHit{
 			Retrieval: cloneRetrievalHit(hit.Retrieval),
 			Node:      cloneSummaryNode(hit.Node),
 		}
@@ -168,13 +155,13 @@ func cloneSummaryNodeSearchHits(in []SummaryNodeSearchHit) []SummaryNodeSearchHi
 	return out
 }
 
-func cloneDocumentChunkSearchHits(in []DocumentChunkSearchHit) []DocumentChunkSearchHit {
+func cloneDocumentChunkSearchHits(in []derive.DocumentChunkSearchHit) []derive.DocumentChunkSearchHit {
 	if in == nil {
 		return nil
 	}
-	out := make([]DocumentChunkSearchHit, len(in))
+	out := make([]derive.DocumentChunkSearchHit, len(in))
 	for i, hit := range in {
-		out[i] = DocumentChunkSearchHit{
+		out[i] = derive.DocumentChunkSearchHit{
 			Retrieval: cloneRetrievalHit(hit.Retrieval),
 			Chunk:     cloneDocumentChunk(hit.Chunk),
 		}
@@ -182,77 +169,15 @@ func cloneDocumentChunkSearchHits(in []DocumentChunkSearchHit) []DocumentChunkSe
 	return out
 }
 
-func cloneObservationSearchHits(in []ObservationSearchHit) []ObservationSearchHit {
+func cloneEntityFactSearchHits(in []derive.EntityFactSearchHit) []derive.EntityFactSearchHit {
 	if in == nil {
 		return nil
 	}
-	out := make([]ObservationSearchHit, len(in))
+	out := make([]derive.EntityFactSearchHit, len(in))
 	for i, hit := range in {
-		out[i] = ObservationSearchHit{
-			Retrieval:   cloneRetrievalHit(hit.Retrieval),
-			Observation: cloneObservation(hit.Observation),
-		}
-	}
-	return out
-}
-
-func cloneFactSearchHits(in []FactSearchHit) []FactSearchHit {
-	if in == nil {
-		return nil
-	}
-	out := make([]FactSearchHit, len(in))
-	for i, hit := range in {
-		out[i] = FactSearchHit{
+		out[i] = derive.EntityFactSearchHit{
 			Retrieval: cloneRetrievalHit(hit.Retrieval),
-			Fact:      cloneFact(hit.Fact),
-		}
-	}
-	return out
-}
-
-func cloneFactGraphSearchHits(in []FactGraphSearchHit) []FactGraphSearchHit {
-	if in == nil {
-		return nil
-	}
-	out := make([]FactGraphSearchHit, len(in))
-	for i, hit := range in {
-		out[i] = hit
-		out[i].Retrieval = cloneRetrievalHit(hit.Retrieval)
-		if hit.Node != nil {
-			node := cloneFactGraphNode(*hit.Node)
-			out[i].Node = &node
-		}
-		if hit.Edge != nil {
-			edge := cloneFactGraphEdge(*hit.Edge)
-			out[i].Edge = &edge
-		}
-	}
-	return out
-}
-
-func cloneEntityProfileSearchHits(in []EntityProfileSearchHit) []EntityProfileSearchHit {
-	if in == nil {
-		return nil
-	}
-	out := make([]EntityProfileSearchHit, len(in))
-	for i, hit := range in {
-		out[i] = EntityProfileSearchHit{
-			Retrieval: cloneRetrievalHit(hit.Retrieval),
-			Profile:   cloneEntityProfile(hit.Profile),
-		}
-	}
-	return out
-}
-
-func cloneEntityTimelineSearchHits(in []EntityTimelineSearchHit) []EntityTimelineSearchHit {
-	if in == nil {
-		return nil
-	}
-	out := make([]EntityTimelineSearchHit, len(in))
-	for i, hit := range in {
-		out[i] = EntityTimelineSearchHit{
-			Retrieval: cloneRetrievalHit(hit.Retrieval),
-			Event:     cloneEntityEvent(hit.Event),
+			Fact:      cloneEntityFact(hit.Fact),
 		}
 	}
 	return out
@@ -287,82 +212,8 @@ func cloneDocumentChunk(in viewdocument.Chunk) viewdocument.Chunk {
 	return out
 }
 
-func cloneObservation(in viewobservation.Observation) viewobservation.Observation {
-	out := in
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
-}
-
-func cloneFact(in fact.Fact) fact.Fact {
-	out := in
-	out.Supersedes = append([]fact.FactID(nil), in.Supersedes...)
-	out.SupersededBy = append([]fact.FactID(nil), in.SupersededBy...)
-	out.ConflictWith = append([]fact.FactID(nil), in.ConflictWith...)
-	out.ValidFrom = cloneTimePtr(in.ValidFrom)
-	out.ValidUntil = cloneTimePtr(in.ValidUntil)
-	out.RetractedAt = cloneTimePtr(in.RetractedAt)
-	out.ResolvedAt = cloneTimePtr(in.ResolvedAt)
-	if in.ObservationRefs != nil {
-		out.ObservationRefs = append([]fact.ObservationRef(nil), in.ObservationRefs...)
-	}
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
-}
-
-func cloneFactGraphNode(in fact.Node) fact.Node {
-	out := in
-	if in.Aliases != nil {
-		out.Aliases = append([]string(nil), in.Aliases...)
-	}
-	out.FactRefs = cloneFactRefs(in.FactRefs)
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
-}
-
-func cloneFactGraphEdge(in fact.Edge) fact.Edge {
-	out := in
-	out.ValidFrom = cloneTimePtr(in.ValidFrom)
-	out.ValidUntil = cloneTimePtr(in.ValidUntil)
-	out.FactRefs = cloneFactRefs(in.FactRefs)
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
-}
-
-func cloneEntityProfile(in viewentity.ProfileRecord) viewentity.ProfileRecord {
-	out := in
-	if in.Slots != nil {
-		out.Slots = make([]viewentity.Slot, len(in.Slots))
-		for i, slot := range in.Slots {
-			out.Slots[i] = slot
-			out.Slots[i].FactRefs = cloneFactRefs(slot.FactRefs)
-			out.Slots[i].Metadata = cloneAnyMap(slot.Metadata)
-		}
-	}
-	out.FactRefs = cloneFactRefs(in.FactRefs)
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
-}
-
-func cloneEntityEvent(in viewentity.Event) viewentity.Event {
-	out := in
-	out.OccurredAt = cloneTimePtr(in.OccurredAt)
-	out.ValidFrom = cloneTimePtr(in.ValidFrom)
-	out.ValidUntil = cloneTimePtr(in.ValidUntil)
-	out.FactRefs = cloneFactRefs(in.FactRefs)
-	out.SourceRefs = cloneSourceRefs(in.SourceRefs)
-	out.Signature = cloneViewSignature(in.Signature)
-	out.Metadata = cloneAnyMap(in.Metadata)
-	return out
+func cloneEntityFact(in viewentityfact.Fact) viewentityfact.Fact {
+	return viewentityfact.CloneFact(in)
 }
 
 func cloneRetrievalHit(in retrieval.Hit) retrieval.Hit {
@@ -385,18 +236,9 @@ func cloneRetrievalDoc(in retrieval.Doc) retrieval.Doc {
 	out.Metadata = cloneAnyMap(in.Metadata)
 	if in.SparseVector != nil {
 		out.SparseVector = make(map[string]float32, len(in.SparseVector))
-		for k, v := range in.SparseVector {
-			out.SparseVector[k] = v
-		}
+		maps.Copy(out.SparseVector, in.SparseVector)
 	}
 	return out
-}
-
-func cloneFactRefs(in []fact.FactRef) []fact.FactRef {
-	if in == nil {
-		return nil
-	}
-	return append([]fact.FactRef(nil), in...)
 }
 
 func cloneSourceRefs(in []views.SourceRef) []views.SourceRef {
@@ -446,14 +288,6 @@ func cloneViewSignature(in views.ViewSignature) views.ViewSignature {
 		}
 	}
 	return out
-}
-
-func cloneTimePtr(in *time.Time) *time.Time {
-	if in == nil {
-		return nil
-	}
-	out := *in
-	return &out
 }
 
 func cloneAnyMap(in map[string]any) map[string]any {

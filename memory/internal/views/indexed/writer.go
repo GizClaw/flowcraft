@@ -10,6 +10,11 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
+const (
+	defaultEmbeddingBatchSize = 10
+	maxEmbeddingInputRunes    = 8192
+)
+
 // Writer writes indexed projection records to the bound retrieval namespace.
 type Writer struct {
 	index            retrieval.Index
@@ -98,7 +103,7 @@ func (w *Writer) fillVectors(ctx context.Context, records []Record) error {
 		if len(record.Vector) > 0 {
 			continue
 		}
-		texts = append(texts, record.Text)
+		texts = append(texts, embeddingInputText(record.Text))
 		recordIndexes = append(recordIndexes, i)
 	}
 	if len(texts) == 0 {
@@ -110,17 +115,28 @@ func (w *Writer) fillVectors(ctx context.Context, records []Record) error {
 		embedCtx, cancel = context.WithTimeout(ctx, w.embeddingTimeout)
 		defer cancel()
 	}
-	vectors, err := w.embedder.EmbedBatch(embedCtx, texts)
-	if err != nil {
-		return fmt.Errorf("%s: embed projection records: %w", errPrefix, err)
-	}
-	if len(vectors) != len(texts) {
-		return errdefs.Validationf("%s: embed projection records returned %d vectors for %d texts", errPrefix, len(vectors), len(texts))
-	}
-	for i, vector := range vectors {
-		records[recordIndexes[i]].Vector = append([]float32(nil), vector...)
+	for start := 0; start < len(texts); start += defaultEmbeddingBatchSize {
+		end := min(start+defaultEmbeddingBatchSize, len(texts))
+		vectors, err := w.embedder.EmbedBatch(embedCtx, texts[start:end])
+		if err != nil {
+			return fmt.Errorf("%s: embed projection records: %w", errPrefix, err)
+		}
+		if len(vectors) != end-start {
+			return errdefs.Validationf("%s: embed projection records returned %d vectors for %d texts", errPrefix, len(vectors), end-start)
+		}
+		for i, vector := range vectors {
+			records[recordIndexes[start+i]].Vector = append([]float32(nil), vector...)
+		}
 	}
 	return nil
+}
+
+func embeddingInputText(text string) string {
+	runes := []rune(text)
+	if len(runes) <= maxEmbeddingInputRunes {
+		return text
+	}
+	return string(runes[:maxEmbeddingInputRunes])
 }
 
 // Delete removes records by id from the bound namespace.

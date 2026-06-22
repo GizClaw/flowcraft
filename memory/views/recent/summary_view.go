@@ -83,3 +83,16 @@ func (d *SummaryDAG) DeleteScope(ctx context.Context, scope views.Scope) error {
 	}
 	return d.store.DeleteScope(ctx, scope)
 }
+
+// DeleteNode removes one summary node by scope and node id when the backing
+// store supports targeted deletion.
+func (d *SummaryDAG) DeleteNode(ctx context.Context, scope views.Scope, id NodeID) error {
+	if d.store == nil {
+		return errdefs.Validationf("%s: store is required", summaryDAGErrPrefix)
+	}
+	deleter, ok := d.store.(SummaryNodeDeleter)
+	if !ok {
+		return errdefs.NotAvailablef("%s: store does not support targeted node delete", summaryDAGErrPrefix)
+	}
+	return deleter.DeleteNode(ctx, scope, id)
+}

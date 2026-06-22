@@ -26,6 +26,9 @@ func TestChunkWorkspaceStoreNilWorkspaceReturnsValidationError(t *testing.T) {
 	if _, err := store.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListChunks nil workspace error = %v, want validation", err)
 	}
+	if err := store.DeleteChunk(ctx, scope, "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("DeleteChunk nil workspace error = %v, want validation", err)
+	}
 	if err := store.DeleteDocument(ctx, scope, "doc-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDocument nil workspace error = %v, want validation", err)
 	}
@@ -252,6 +255,46 @@ func TestChunkWorkspaceStoreDeleteDocumentRemovesAllLayers(t *testing.T) {
 	}
 }
 
+func TestChunkWorkspaceStoreDeleteChunkRemovesOnlyMatchingIDAcrossLayers(t *testing.T) {
+	ctx := context.Background()
+	store := NewChunkWorkspaceStore(workspace.NewMemWorkspace())
+	scope := testScope("dataset-1")
+	layerA := testLayer()
+	layerB := Layer{Name: "semantic", Version: "v2", TransformSignature: "semantic:v2"}
+
+	for _, chunk := range []Chunk{
+		chunkWithScope("dataset-1", "doc-1", layerA, "delete-me"),
+		chunkWithScope("dataset-1", "doc-1", layerB, "keep-me"),
+		chunkWithScope("dataset-1", "doc-2", layerA, "delete-me"),
+		chunkWithScope("dataset-2", "doc-1", layerA, "delete-me"),
+	} {
+		if _, err := store.PutChunk(ctx, chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := store.DeleteChunk(ctx, scope, "doc-1", "delete-me"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteChunk(ctx, scope, "doc-1", "delete-me"); err != nil {
+		t.Fatalf("DeleteChunk second call error = %v, want idempotent success", err)
+	}
+
+	if got, ok, err := store.GetChunk(ctx, scope, "doc-1", "delete-me"); err != nil || ok {
+		t.Fatalf("GetChunk deleted got=%+v ok=%v err=%v, want miss", got, ok, err)
+	}
+	if got, ok, err := store.GetChunk(ctx, scope, "doc-1", "keep-me"); err != nil || !ok {
+		t.Fatalf("GetChunk kept same document got=%+v ok=%v err=%v, want hit", got, ok, err)
+	}
+	if got, ok, err := store.GetChunk(ctx, scope, "doc-2", "delete-me"); err != nil || !ok {
+		t.Fatalf("GetChunk kept other document got=%+v ok=%v err=%v, want hit", got, ok, err)
+	}
+	scope2 := testScope("dataset-2")
+	if got, ok, err := store.GetChunk(ctx, scope2, "doc-1", "delete-me"); err != nil || !ok {
+		t.Fatalf("GetChunk kept other dataset got=%+v ok=%v err=%v, want hit", got, ok, err)
+	}
+}
+
 func TestChunkWorkspaceStoreDeleteDatasetRemovesAllDocuments(t *testing.T) {
 	ctx := context.Background()
 	store := NewChunkWorkspaceStore(workspace.NewMemWorkspace())
@@ -426,6 +469,15 @@ func TestChunkWorkspaceStoreValidationErrors(t *testing.T) {
 		{name: "list missing document", run: func() error {
 			_, err := store.ListChunks(ctx, "", ListOptions{Scope: scopePtr(testScope("dataset-1"))})
 			return err
+		}},
+		{name: "delete chunk missing dataset", run: func() error {
+			return store.DeleteChunk(ctx, testScope(""), "doc-1", "chunk-1")
+		}},
+		{name: "delete chunk missing document", run: func() error {
+			return store.DeleteChunk(ctx, testScope("dataset-1"), "", "chunk-1")
+		}},
+		{name: "delete chunk missing id", run: func() error {
+			return store.DeleteChunk(ctx, testScope("dataset-1"), "doc-1", "")
 		}},
 		{name: "delete document missing dataset", run: func() error {
 			return store.DeleteDocument(ctx, testScope(""), "doc-1")

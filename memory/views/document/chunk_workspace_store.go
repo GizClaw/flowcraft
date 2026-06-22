@@ -197,6 +197,41 @@ func (s *ChunkWorkspaceStore) ListChunks(ctx context.Context, documentID string,
 	return out, nil
 }
 
+// DeleteChunk removes one chunk id for a document across layers. It is
+// idempotent and does not decode chunk contents, so cleanup can proceed even if
+// stale payloads are no longer valid.
+func (s *ChunkWorkspaceStore) DeleteChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) error {
+	if s.ws == nil {
+		return errdefs.Validationf("%s: workspace is required", chunksErrPrefix)
+	}
+	if err := validateDatasetScope(scope); err != nil {
+		return err
+	}
+	if documentID == "" {
+		return errdefs.Validationf("%s: document_id is required", chunksErrPrefix)
+	}
+	if id == "" {
+		return errdefs.Validationf("%s: chunk id is required", chunksErrPrefix)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	candidates, err := s.chunkCandidates(ctx, scope, documentID)
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		if candidate.id != id {
+			continue
+		}
+		if err := s.ws.Delete(ctx, candidate.path); err != nil && !errdefs.IsNotFound(err) {
+			return fmt.Errorf("%s: delete chunk %q/%q/%q: %w", chunksErrPrefix, scope.DatasetID, documentID, id, err)
+		}
+	}
+	return nil
+}
+
 func (s *ChunkWorkspaceStore) staleChunkIDPathsLocked(ctx context.Context, scope views.Scope, documentID string, id ChunkID, keepPath string) ([]string, error) {
 	candidates, err := s.chunkCandidates(ctx, scope, documentID)
 	if err != nil {

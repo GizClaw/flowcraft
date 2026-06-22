@@ -99,8 +99,9 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 }
 
 type optionState struct {
-	config         *Config
-	configFilePath string
+	config                      *Config
+	configFilePath              string
+	backgroundFlushErrorHandler func(error)
 }
 
 // Option configures an Index.
@@ -123,14 +124,30 @@ func WithConfigFilePath(path string) Option {
 	}
 }
 
-func resolveConfig(root string, opts []Option) (Config, error) {
+// WithBackgroundFlushErrorHandler reports failures from the asynchronous HNSW
+// checkpoint flush loop. Close still returns the most recent unresolved flush
+// error so callers have a synchronous fallback.
+func WithBackgroundFlushErrorHandler(handler func(error)) Option {
+	return func(o *optionState) {
+		o.backgroundFlushErrorHandler = handler
+	}
+}
+
+func resolveOptionState(opts []Option) optionState {
 	state := optionState{}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(&state)
 		}
 	}
+	return state
+}
 
+func resolveConfig(root string, opts []Option) (Config, error) {
+	return resolveConfigFromState(root, resolveOptionState(opts))
+}
+
+func resolveConfigFromState(root string, state optionState) (Config, error) {
 	cfg := defaultConfig()
 	switch {
 	case state.config != nil:

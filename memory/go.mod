@@ -8,7 +8,6 @@ require (
 	github.com/coder/hnsw v0.6.1
 	github.com/dgraph-io/badger/v4 v4.9.1
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/kljensen/snowball v0.10.0
 	github.com/yanyiwu/gojieba v1.4.7
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.1

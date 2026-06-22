@@ -9,8 +9,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	hybridparams "github.com/GizClaw/flowcraft/memory/retrieval/internal/hybrid"
 	"github.com/GizClaw/flowcraft/memory/retrieval/scoring"
+	"github.com/GizClaw/flowcraft/memory/text/analysis"
 	"github.com/GizClaw/flowcraft/memory/text/bm25"
-	"github.com/GizClaw/flowcraft/memory/text/tokenize"
 )
 
 // Search runs a single-modality or hybrid retrieval against ns.
@@ -26,7 +26,7 @@ import (
 //     content.
 //  3. BM25 scoring uses a per-Search GLOBAL corpus aggregated from
 //     every live (non-tombstoned, not-overridden) segment +
-//     memtable doc. Each segment caches its [tokenize.Tokenizer]
+//     memtable doc. Each segment caches its [analysis.Analyzer]
 //     output via [segmentReader.loadBM25]; Search folds those
 //     tokens (plus freshly-tokenized memtable docs) into a single
 //     [bm25.CorpusStats] before scoring. This matches the retrieval
@@ -90,7 +90,7 @@ func (idx *Index) Search(
 	manifestSnap := st.manifest
 	memSnap := snapshotMemtable(st.memtable)
 
-	keywords := tokenize.ExtractKeywords(req.QueryText, idx.cfg.tokenizer)
+	keywords := analysis.ExtractKeywords(req.QueryText, idx.cfg.analyzer)
 	queryVec := req.QueryVector
 
 	// Phase 1: walk the snapshot newest-first, collecting one
@@ -113,7 +113,7 @@ func (idx *Index) Search(
 		}
 		ld := &liveDoc{doc: cloneDoc(*it.doc)}
 		if hasText {
-			ld.tokens = idx.cfg.tokenizer.Tokenize(it.doc.Content)
+			ld.tokens = analyzeTerms(idx.cfg.analyzer, it.doc.Content, analysis.ModeIndex)
 		}
 		live[it.id] = ld
 	}
@@ -139,7 +139,7 @@ func (idx *Index) Search(
 			return nil, err
 		}
 		if hasText {
-			if err := seg.loadBM25(ctx, idx.cfg.tokenizer); err != nil {
+			if err := seg.loadBM25(ctx, idx.cfg.analyzer); err != nil {
 				return nil, err
 			}
 		}
@@ -215,6 +215,13 @@ func (idx *Index) Search(
 type liveDoc struct {
 	doc    retrieval.Doc
 	tokens []string
+}
+
+func analyzeTerms(analyzer analysis.Analyzer, text string, mode analysis.Mode) []string {
+	if analyzer == nil {
+		return nil
+	}
+	return analysis.Terms(analyzer.Analyze(text, analysis.Options{Mode: mode}))
 }
 
 // partial holds the per-doc accumulated lane scores during a Search.

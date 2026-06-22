@@ -182,3 +182,11 @@ func TestMemoryJobStoreFailRetriesUntilMaxAttempts(t *testing.T) {
 		t.Fatalf("Stats after terminal fail = %+v, want failed after max attempts", stats)
 	}
 }
+
+func testScope(conversationID string) memory.Scope {
+	return memory.Scope{
+		RuntimeID:      "rt",
+		UserID:         "user",
+		ConversationID: conversationID,
+	}
+}

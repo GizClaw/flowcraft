@@ -1,4 +1,4 @@
-// Package derive defines shared memory domain derivation and hook contracts.
+// Package derive defines shared memory derivation and hook contracts.
 package derive
 
 import (
@@ -9,13 +9,11 @@ import (
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	viewfact "github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	viewrecent "github.com/GizClaw/flowcraft/memory/views/recent"
 )
 
-// DocumentChunker derives semantic chunk records from a canonical document.
+// DocumentChunker derives chunk records from a canonical document.
 type DocumentChunker interface {
 	ChunkDocument(context.Context, DocumentChunkInput) ([]viewdocument.Chunk, error)
 }
@@ -34,142 +32,87 @@ type Summarizer interface {
 
 // SummaryInput is the evidence and view identity provided to a summary service.
 type SummaryInput struct {
-	View   views.Descriptor
-	Scope  views.Scope
-	Window viewrecent.WindowResult
+	View    views.Descriptor
+	Scope   views.Scope
+	Window  viewrecent.WindowResult
+	Current []viewrecent.SummaryNode
+	Policy  SummaryPolicy
 }
 
-// ObservationExtractor derives observation records from a recent message window.
-type ObservationExtractor interface {
-	ExtractObservations(context.Context, ObservationInput) ([]viewobservation.Observation, error)
+// EntityFactExtractor derives canonical entities and source-backed facts from
+// message windows.
+type EntityFactExtractor interface {
+	ExtractEntityFacts(context.Context, EntityFactInput) (EntityFactOutput, error)
 }
 
-// ObservationInput is the evidence, target scope, and view identity provided to
-// an observation extraction service.
-type ObservationInput struct {
-	View   views.Descriptor
-	Window viewrecent.WindowResult
-	Scope  viewobservation.Scope
+// EntityFactInput is the evidence and current graph state provided to an
+// entity/fact extraction service.
+type EntityFactInput struct {
+	View            views.Descriptor
+	Scope           views.Scope
+	Window          viewrecent.WindowResult
+	CurrentEntities []viewentityfact.Entity
+	CurrentFacts    []viewentityfact.Fact
 }
 
-// FactReconciler derives durable facts from observation ledger outputs.
-type FactReconciler interface {
-	ReconcileFacts(context.Context, FactReconcileInput) ([]viewfact.Fact, error)
+// EntityFactOutput contains newly derived or updated entity-linked facts.
+type EntityFactOutput struct {
+	Entities []viewentityfact.Entity
+	Facts    []viewentityfact.Fact
 }
 
-// FactReconcileInput is the evidence and view identity provided to a fact reconciler.
-type FactReconcileInput struct {
-	View         views.Descriptor
-	Scope        views.Scope
-	Observations []viewobservation.Observation
-	Current      []viewfact.Fact
+// SourceMessageResolver provides read-only access to canonical source messages
+// referenced by derived memories during context packing.
+type SourceMessageResolver interface {
+	GetSourceMessage(ctx context.Context, conversationID, messageID string) (sourcemessage.Message, bool, error)
 }
 
-// FactGraphBuilder derives graph nodes and edges from reconciled facts.
-type FactGraphBuilder interface {
-	BuildFactGraph(context.Context, FactGraphInput) (FactGraphOutput, error)
+// SummaryPolicy configures summary-buffer style summarization.
+type SummaryPolicy struct {
+	// MaxRawMessages is the maximum recent raw message buffer size. A zero value
+	// lets the summarizer choose its default.
+	MaxRawMessages int
+	// PreserveRecentMessages is the number of newest messages left as raw
+	// window context instead of folded into a new summary. A zero value lets the
+	// summarizer choose its default.
+	PreserveRecentMessages int
+	// MaxSummaryBytes caps deterministic summary text length. A zero value lets
+	// the summarizer choose its default.
+	MaxSummaryBytes int
 }
 
-// FactGraphInput is the evidence and view identity provided to a fact graph builder.
-type FactGraphInput struct {
-	View  views.Descriptor
-	Facts []viewfact.Fact
-}
-
-// FactGraphOutput is the graph records produced by a FactGraphBuilder.
-type FactGraphOutput struct {
-	Nodes []viewfact.Node
-	Edges []viewfact.Edge
-}
-
-// EntityProfileBuilder derives entity profile records from fact graph and fact
-// ledger outputs. It receives evidence from the executor; builders must not read stores.
-type EntityProfileBuilder interface {
-	BuildEntityProfiles(context.Context, EntityProfileInput) ([]viewentity.ProfileRecord, error)
-}
-
-// EntityProfileInput is the evidence and view identity provided to an entity profile builder.
-type EntityProfileInput struct {
-	View  views.Descriptor
-	Scope views.Scope
-	Facts []viewfact.Fact
-	Graph FactGraphOutput
-}
-
-// EntityTimelineBuilder derives entity timeline events from fact graph and fact
-// ledger outputs. It receives evidence from the executor; builders must not read stores.
-type EntityTimelineBuilder interface {
-	BuildEntityTimeline(context.Context, EntityTimelineInput) ([]viewentity.Event, error)
-}
-
-// EntityTimelineInput is the evidence and view identity provided to an entity timeline builder.
-type EntityTimelineInput struct {
-	View  views.Descriptor
-	Scope views.Scope
-	Facts []viewfact.Fact
-	Graph FactGraphOutput
-}
-
-// DocumentChunkSearchHit pairs a retrieval hit with its semantic chunk record.
+// DocumentChunkSearchHit pairs a retrieval hit with its chunk record.
 type DocumentChunkSearchHit struct {
 	Retrieval retrieval.Hit
 	Chunk     viewdocument.Chunk
 }
 
-// SummaryNodeSearchHit pairs a retrieval hit with its semantic summary node.
+// SummaryNodeSearchHit pairs a retrieval hit with its summary node.
 type SummaryNodeSearchHit struct {
 	Retrieval retrieval.Hit
 	Node      viewrecent.SummaryNode
 }
 
-// ObservationSearchHit pairs a retrieval hit with its semantic observation.
-type ObservationSearchHit struct {
-	Retrieval   retrieval.Hit
-	Observation viewobservation.Observation
-}
-
-// FactSearchHit pairs a retrieval hit with its semantic fact record.
-type FactSearchHit struct {
+// EntityFactSearchHit pairs a retrieval hit with its fact record.
+type EntityFactSearchHit struct {
 	Retrieval retrieval.Hit
-	Fact      viewfact.Fact
+	Fact      viewentityfact.Fact
 }
 
-// FactGraphSearchHit pairs a retrieval hit with either a graph node or edge.
-type FactGraphSearchHit struct {
-	Retrieval  retrieval.Hit
-	Node       *viewfact.Node
-	Edge       *viewfact.Edge
-	Expanded   bool
-	Depth      int
-	SeedNodeID viewfact.NodeID
-	SeedEdgeID viewfact.EdgeID
-}
-
-// EntityProfileSearchHit pairs a retrieval hit with its semantic entity profile.
-type EntityProfileSearchHit struct {
+// SourceMessageSearchHit pairs a retrieval hit with its canonical source message.
+type SourceMessageSearchHit struct {
 	Retrieval retrieval.Hit
-	Profile   viewentity.ProfileRecord
-}
-
-// EntityTimelineSearchHit pairs a retrieval hit with its semantic entity timeline event.
-type EntityTimelineSearchHit struct {
-	Retrieval retrieval.Hit
-	Event     viewentity.Event
+	Message   sourcemessage.Message
 }
 
 // ContextItemKind identifies the source of a packed context item.
 type ContextItemKind string
 
 const (
-	ContextItemRecentMessage  ContextItemKind = "recent_message"
-	ContextItemSummaryNode    ContextItemKind = "summary_node"
-	ContextItemDocumentChunk  ContextItemKind = "document_chunk"
-	ContextItemObservation    ContextItemKind = "observation"
-	ContextItemFact           ContextItemKind = "fact"
-	ContextItemFactGraphNode  ContextItemKind = "fact_graph_node"
-	ContextItemFactGraphEdge  ContextItemKind = "fact_graph_edge"
-	ContextItemEntityProfile  ContextItemKind = "entity_profile"
-	ContextItemEntityTimeline ContextItemKind = "entity_timeline"
+	ContextItemRecentMessage ContextItemKind = "recent_message"
+	ContextItemSummaryNode   ContextItemKind = "summary_node"
+	ContextItemDocumentChunk ContextItemKind = "document_chunk"
+	ContextItemEntityFact    ContextItemKind = "entity_fact"
 )
 
 // ContextItem is one rendered, hydrated item in a context pack.
@@ -179,12 +122,7 @@ type ContextItem struct {
 	Message       *sourcemessage.Message
 	SummaryNode   *viewrecent.SummaryNode
 	DocumentChunk *viewdocument.Chunk
-	Observation   *viewobservation.Observation
-	Fact          *viewfact.Fact
-	FactGraphNode *viewfact.Node
-	FactGraphEdge *viewfact.Edge
-	EntityProfile *viewentity.ProfileRecord
-	EntityEvent   *viewentity.Event
+	EntityFact    *viewentityfact.Fact
 	Retrieval     *retrieval.Hit
 }
 
@@ -196,17 +134,15 @@ type ContextPacker interface {
 
 // ContextPackInput carries deterministic candidate evidence for a packer hook.
 type ContextPackInput struct {
-	Scope              views.Scope
-	Query              string
-	Window             viewrecent.WindowResult
-	Items              []ContextItem
-	SummaryHits        []SummaryNodeSearchHit
-	DocumentHits       []DocumentChunkSearchHit
-	ObservationHits    []ObservationSearchHit
-	FactHits           []FactSearchHit
-	FactGraphHits      []FactGraphSearchHit
-	EntityProfileHits  []EntityProfileSearchHit
-	EntityTimelineHits []EntityTimelineSearchHit
+	Scope          views.Scope
+	Query          string
+	Window         viewrecent.WindowResult
+	SourceMessages SourceMessageResolver
+	Items          []ContextItem
+	MessageHits    []SourceMessageSearchHit
+	SummaryHits    []SummaryNodeSearchHit
+	DocumentHits   []DocumentChunkSearchHit
+	EntityHits     []EntityFactSearchHit
 }
 
 // ContextPackOutput contains the final items selected by a packer hook.

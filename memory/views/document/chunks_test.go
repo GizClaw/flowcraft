@@ -40,6 +40,9 @@ func TestChunksNilStoreReturnsValidationError(t *testing.T) {
 	if _, err := chunks.ListChunks(ctx, "doc-1", ListOptions{Scope: &scope}); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("ListChunks nil store error = %v, want validation", err)
 	}
+	if err := chunks.DeleteChunk(ctx, scope, "doc-1", "chunk-1"); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("DeleteChunk nil store error = %v, want validation", err)
+	}
 	if err := chunks.DeleteDocument(ctx, scope, "doc-1"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("DeleteDocument nil store error = %v, want validation", err)
 	}
@@ -152,6 +155,12 @@ func TestChunksDelegatesAndClones(t *testing.T) {
 	mutateChunkNested(&listed[0], "list-mutated")
 	assertChunkNestedValue(t, store.listResult[0], "original")
 
+	if err := view.DeleteChunk(ctx, scope, "doc-1", "chunk-1"); err != nil {
+		t.Fatal(err)
+	}
+	if store.deleteChunkScope != scope || store.deleteChunkDocumentID != "doc-1" || store.deleteChunkID != "chunk-1" {
+		t.Fatalf("DeleteChunk args = %+v/%q/%q", store.deleteChunkScope, store.deleteChunkDocumentID, store.deleteChunkID)
+	}
 	if err := view.DeleteDocument(ctx, scope, "doc-1"); err != nil {
 		t.Fatal(err)
 	}
@@ -322,9 +331,12 @@ type fakeChunkStore struct {
 	listCalls  []fakeListCall
 	listResult []Chunk
 
-	deleteDocumentScope views.Scope
-	deleteDocumentID    string
-	deleteDatasetScope  views.Scope
+	deleteChunkScope      views.Scope
+	deleteChunkDocumentID string
+	deleteChunkID         ChunkID
+	deleteDocumentScope   views.Scope
+	deleteDocumentID      string
+	deleteDatasetScope    views.Scope
 }
 
 type fakeListCall struct {
@@ -347,6 +359,13 @@ func (s *fakeChunkStore) GetChunk(_ context.Context, scope views.Scope, document
 func (s *fakeChunkStore) ListChunks(_ context.Context, documentID string, opts ListOptions) ([]Chunk, error) {
 	s.listCalls = append(s.listCalls, fakeListCall{documentID: documentID, opts: opts})
 	return s.listResult, nil
+}
+
+func (s *fakeChunkStore) DeleteChunk(_ context.Context, scope views.Scope, documentID string, id ChunkID) error {
+	s.deleteChunkScope = scope
+	s.deleteChunkDocumentID = documentID
+	s.deleteChunkID = id
+	return nil
 }
 
 func (s *fakeChunkStore) DeleteDocument(_ context.Context, scope views.Scope, documentID string) error {

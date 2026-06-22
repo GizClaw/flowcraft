@@ -1,13 +1,13 @@
 package compiler
 
 import (
+	"maps"
+
 	"github.com/GizClaw/flowcraft/memory/internal/projectors"
 	"github.com/GizClaw/flowcraft/memory/internal/views/indexed"
 	"github.com/GizClaw/flowcraft/memory/views"
 	"github.com/GizClaw/flowcraft/memory/views/document"
-	"github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	"github.com/GizClaw/flowcraft/memory/views/observation"
+	"github.com/GizClaw/flowcraft/memory/views/entityfact"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -26,14 +26,11 @@ const (
 type Capability string
 
 const (
-	CapabilityRecentWindow      Capability = "recent_window"
-	CapabilitySummaryDAG        Capability = "summary_dag"
-	CapabilityDocumentChunks    Capability = "document_chunks"
-	CapabilityObservationLedger Capability = "observation_ledger"
-	CapabilityFactLedger        Capability = "fact_ledger"
-	CapabilityFactGraph         Capability = "fact_graph"
-	CapabilityEntityProfile     Capability = "entity_profile"
-	CapabilityEntityTimeline    Capability = "entity_timeline"
+	CapabilityRecentWindow    Capability = "recent_window"
+	CapabilitySummaryDAG      Capability = "summary_dag"
+	CapabilityDocumentChunks  Capability = "document_chunks"
+	CapabilityMessageIndex    Capability = "message_index"
+	CapabilityEntityFactIndex Capability = "entity_fact_index"
 )
 
 // Spec declares the capabilities a memory runtime needs without naming a
@@ -71,9 +68,10 @@ type ProjectionRequest struct {
 
 // StageSpec declares a named assembly stage without runtime behavior.
 type StageSpec struct {
-	Name     string `json:"name" yaml:"name"`
-	Async    bool   `json:"async,omitempty" yaml:"async,omitempty"`
-	Optional bool   `json:"optional,omitempty" yaml:"optional,omitempty"`
+	Name     string         `json:"name" yaml:"name"`
+	Async    bool           `json:"async,omitempty" yaml:"async,omitempty"`
+	Optional bool           `json:"optional,omitempty" yaml:"optional,omitempty"`
+	Config   map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
 }
 
 // Assembly is the validated internal plan produced from a Spec.
@@ -253,16 +251,10 @@ func descriptorForCapability(capability Capability) (views.Descriptor, error) {
 		return viewDescriptor(views.KindSummaryDAG, recent.DefaultSummaryDAGID, recent.DefaultSummaryDAGVersion), nil
 	case CapabilityDocumentChunks:
 		return viewDescriptor(views.KindDocumentChunks, document.DefaultChunksID, document.DefaultChunksVersion), nil
-	case CapabilityObservationLedger:
-		return viewDescriptor(views.KindObservationLedger, observation.DefaultLedgerID, observation.DefaultLedgerVersion), nil
-	case CapabilityFactLedger:
-		return viewDescriptor(views.KindFactLedger, fact.DefaultLedgerID, fact.DefaultLedgerVersion), nil
-	case CapabilityFactGraph:
-		return viewDescriptor(views.KindFactGraph, fact.DefaultGraphID, fact.DefaultGraphVersion), nil
-	case CapabilityEntityProfile:
-		return viewDescriptor(views.KindEntityProfile, entity.DefaultProfileID, entity.DefaultProfileVersion), nil
-	case CapabilityEntityTimeline:
-		return viewDescriptor(views.KindEntityTimeline, entity.DefaultTimelineID, entity.DefaultTimelineVersion), nil
+	case CapabilityMessageIndex:
+		return viewDescriptor(views.KindMessageIndex, views.ID("message_index"), "v1"), nil
+	case CapabilityEntityFactIndex:
+		return viewDescriptor(views.KindEntityFacts, entityfact.DefaultEntityFactsID, entityfact.DefaultEntityFactsVersion), nil
 	default:
 		return views.Descriptor{}, errdefs.Validationf("%s: unknown capability %q", errPrefix, capability)
 	}
@@ -284,6 +276,12 @@ type projectionTemplate struct {
 
 func projectionTemplateForCapability(capability Capability) (projectionTemplate, error) {
 	switch capability {
+	case CapabilityMessageIndex:
+		return projectionTemplate{
+			recordTypes: []string{projectors.RecordTypeSourceMessage},
+			viewKind:    views.KindMessageIndex,
+			projectors:  []string{"SourceMessageRecords"},
+		}, nil
 	case CapabilityDocumentChunks:
 		return projectionTemplate{
 			recordTypes: []string{projectors.RecordTypeDocumentChunk},
@@ -296,35 +294,11 @@ func projectionTemplateForCapability(capability Capability) (projectionTemplate,
 			viewKind:    views.KindSummaryDAG,
 			projectors:  []string{"SummaryNode"},
 		}, nil
-	case CapabilityObservationLedger:
+	case CapabilityEntityFactIndex:
 		return projectionTemplate{
-			recordTypes: []string{projectors.RecordTypeObservation},
-			viewKind:    views.KindObservationLedger,
-			projectors:  []string{"Observation"},
-		}, nil
-	case CapabilityFactLedger:
-		return projectionTemplate{
-			recordTypes: []string{projectors.RecordTypeFact},
-			viewKind:    views.KindFactLedger,
-			projectors:  []string{"FactRecord"},
-		}, nil
-	case CapabilityFactGraph:
-		return projectionTemplate{
-			recordTypes: []string{projectors.RecordTypeFactNode, projectors.RecordTypeFactEdge},
-			viewKind:    views.KindFactGraph,
-			projectors:  []string{"FactNode", "FactEdge"},
-		}, nil
-	case CapabilityEntityProfile:
-		return projectionTemplate{
-			recordTypes: []string{projectors.RecordTypeEntityProfile},
-			viewKind:    views.KindEntityProfile,
-			projectors:  []string{"EntityProfile"},
-		}, nil
-	case CapabilityEntityTimeline:
-		return projectionTemplate{
-			recordTypes: []string{projectors.RecordTypeEntityEvent},
-			viewKind:    views.KindEntityTimeline,
-			projectors:  []string{"EntityEvent"},
+			recordTypes: []string{projectors.RecordTypeEntityFact},
+			viewKind:    views.KindEntityFacts,
+			projectors:  []string{"EntityFact"},
 		}, nil
 	default:
 		return projectionTemplate{}, errdefs.Validationf("%s: capability %q does not support indexed projection", errPrefix, capability)
@@ -378,23 +352,13 @@ func validateCapabilityDependencies(sources []SourceSpec, capabilities map[Capab
 	if err := requireSource(capabilities, CapabilityDocumentChunks, enabledSources, SourceDocumentStore); err != nil {
 		return err
 	}
-	if _, ok := capabilities[CapabilityObservationLedger]; ok {
-		if _, hasMessageLog := enabledSources[SourceMessageLog]; !hasMessageLog {
-			if _, hasDocumentStore := enabledSources[SourceDocumentStore]; !hasDocumentStore {
-				return errdefs.Validationf("%s: capability %q requires source %q or %q", errPrefix, CapabilityObservationLedger, SourceMessageLog, SourceDocumentStore)
-			}
-		}
-	}
-	if err := requireCapability(capabilities, CapabilityFactLedger, CapabilityObservationLedger); err != nil {
+	if err := requireSource(capabilities, CapabilityMessageIndex, enabledSources, SourceMessageLog); err != nil {
 		return err
 	}
-	if err := requireCapability(capabilities, CapabilityFactGraph, CapabilityFactLedger); err != nil {
+	if err := requireSource(capabilities, CapabilityEntityFactIndex, enabledSources, SourceMessageLog); err != nil {
 		return err
 	}
-	if err := requireCapability(capabilities, CapabilityEntityProfile, CapabilityFactGraph); err != nil {
-		return err
-	}
-	return requireCapability(capabilities, CapabilityEntityTimeline, CapabilityFactGraph)
+	return nil
 }
 
 func requireSource(capabilities map[Capability]CapabilitySpec, capability Capability, sources map[SourceKind]struct{}, source SourceKind) error {
@@ -405,16 +369,6 @@ func requireSource(capabilities map[Capability]CapabilitySpec, capability Capabi
 		return nil
 	}
 	return errdefs.Validationf("%s: capability %q requires source %q", errPrefix, capability, source)
-}
-
-func requireCapability(capabilities map[Capability]CapabilitySpec, capability Capability, dependency Capability) error {
-	if _, ok := capabilities[capability]; !ok {
-		return nil
-	}
-	if _, ok := capabilities[dependency]; ok {
-		return nil
-	}
-	return errdefs.Validationf("%s: capability %q requires capability %q", errPrefix, capability, dependency)
 }
 
 func validateProjectionRequests(requests []ProjectionRequest, enabled map[Capability]CapabilitySpec) error {
@@ -535,11 +489,8 @@ func knownCapability(capability Capability) bool {
 	case CapabilityRecentWindow,
 		CapabilitySummaryDAG,
 		CapabilityDocumentChunks,
-		CapabilityObservationLedger,
-		CapabilityFactLedger,
-		CapabilityFactGraph,
-		CapabilityEntityProfile,
-		CapabilityEntityTimeline:
+		CapabilityMessageIndex,
+		CapabilityEntityFactIndex:
 		return true
 	default:
 		return false
@@ -560,6 +511,9 @@ func cloneStageSpecs(in []StageSpec) []StageSpec {
 		return nil
 	}
 	out := make([]StageSpec, len(in))
-	copy(out, in)
+	for i, spec := range in {
+		out[i] = spec
+		out[i].Config = maps.Clone(spec.Config)
+	}
 	return out
 }

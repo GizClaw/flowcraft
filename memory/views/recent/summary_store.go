@@ -24,6 +24,12 @@ type SummaryStore interface {
 	DeleteScope(ctx context.Context, scope views.Scope) error
 }
 
+// SummaryNodeDeleter is implemented by stores that can remove one scoped
+// summary node without dropping the rest of the conversation.
+type SummaryNodeDeleter interface {
+	DeleteNode(ctx context.Context, scope views.Scope, id NodeID) error
+}
+
 func validateSummaryNode(node SummaryNode) error {
 	if node.ID == "" {
 		return errdefs.Validationf("%s: summary node id is required", summaryDAGErrPrefix)

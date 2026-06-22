@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"maps"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
@@ -23,6 +24,7 @@ type PlannedStage struct {
 	Async      bool
 	Optional   bool
 	Capability Capability
+	Config     map[string]any
 }
 
 const (
@@ -113,6 +115,10 @@ func compileLifecyclePlan(assembly compiler.Assembly) ([]PlannedStage, error) {
 		stages = []StageSpec{
 			{Name: lifecycleStageReadiness},
 			{Name: lifecycleStageQueueStats},
+			{Name: lifecycleStageRebuild},
+			{Name: lifecycleStageReload},
+			{Name: lifecycleStageReconcile},
+			{Name: lifecycleStageFreshnessCheck},
 			{Name: lifecycleStageDrain},
 			{Name: lifecycleStageShutdown},
 		}
@@ -132,6 +138,15 @@ func compileLifecyclePlan(assembly compiler.Assembly) ([]PlannedStage, error) {
 
 func compileDiagnosticsPlan(assembly compiler.Assembly) ([]PlannedStage, error) {
 	stages := assembly.Diagnostics
+	if len(stages) == 0 {
+		stages = []StageSpec{
+			{Name: diagnosticStageFreshness},
+			{Name: diagnosticStageConsistency},
+			{Name: diagnosticStageTrace},
+			{Name: lifecycleStageReadiness},
+			{Name: lifecycleStageQueueStats},
+		}
+	}
 	plan := make([]PlannedStage, 0, len(stages))
 	for _, stage := range stages {
 		planned, ok, err := planDiagnosticsStage(stage)
@@ -165,6 +180,7 @@ func planWriteStage(stage StageSpec, available map[Capability]bool) (PlannedStag
 		Async:      stage.Async,
 		Optional:   stage.Optional,
 		Capability: capability,
+		Config:     maps.Clone(stage.Config),
 	}, true, nil
 }
 
@@ -190,6 +206,7 @@ func planReadStage(stage StageSpec, available map[Capability]bool) (PlannedStage
 		Name:       name,
 		Optional:   stage.Optional,
 		Capability: capability,
+		Config:     maps.Clone(stage.Config),
 	}, true, nil
 }
 
@@ -205,7 +222,7 @@ func planLifecycleStage(stage StageSpec) (PlannedStage, bool, error) {
 		return PlannedStage{}, false, errdefs.Validationf("memory: lifecycle stage %q cannot be async", stage.Name)
 	}
 	if isSupportedLifecycleStage(name) {
-		return PlannedStage{Name: name, Optional: stage.Optional}, true, nil
+		return PlannedStage{Name: name, Optional: stage.Optional, Config: maps.Clone(stage.Config)}, true, nil
 	}
 	if isToleratedOptionalLifecycleName(name) && stage.Optional {
 		return PlannedStage{}, false, nil
@@ -229,7 +246,7 @@ func planDiagnosticsStage(stage StageSpec) (PlannedStage, bool, error) {
 	}
 	switch name {
 	case lifecycleStageReadiness, lifecycleStageQueueStats, diagnosticStageTrace, diagnosticStageFreshness, diagnosticStageConsistency:
-		return PlannedStage{Name: name, Optional: stage.Optional}, true, nil
+		return PlannedStage{Name: name, Optional: stage.Optional, Config: maps.Clone(stage.Config)}, true, nil
 	default:
 		if stage.Optional {
 			return PlannedStage{}, false, nil
@@ -243,49 +260,31 @@ func defaultWritePlan(available map[Capability]bool) []StageSpec {
 	if available[CapabilityDocumentChunks] {
 		stages = append(stages, StageSpec{Name: writeStageChunkDocument})
 	}
+	if available[CapabilityMessageIndex] {
+		stages = append(stages, StageSpec{Name: writeStageIndexMessages})
+	}
 	if available[CapabilitySummaryDAG] {
 		stages = append(stages, StageSpec{Name: writeStageBuildSummaryDAG})
 	}
-	if available[CapabilityObservationLedger] {
-		stages = append(stages, StageSpec{Name: writeStageExtractObservations})
-	}
-	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] {
-		stages = append(stages, StageSpec{Name: writeStageReconcileFacts})
-	}
-	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] {
-		stages = append(stages, StageSpec{Name: writeStageBuildFactGraph})
-	}
-	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] && available[CapabilityEntityProfile] {
-		stages = append(stages, StageSpec{Name: writeStageBuildEntityProfiles})
-	}
-	if available[CapabilityObservationLedger] && available[CapabilityFactLedger] && available[CapabilityFactGraph] && available[CapabilityEntityTimeline] {
-		stages = append(stages, StageSpec{Name: writeStageBuildEntityTimeline})
+	if available[CapabilityEntityFactIndex] {
+		stages = append(stages, StageSpec{Name: writeStageBuildEntityFacts})
 	}
 	return stages
 }
 
 func defaultReadPlan(available map[Capability]bool) []StageSpec {
 	stages := []StageSpec{{Name: readStageLoadRecentMessages}}
+	if available[CapabilityMessageIndex] {
+		stages = append(stages, StageSpec{Name: readStageRetrieveMessages})
+	}
 	if available[CapabilitySummaryDAG] {
 		stages = append(stages, StageSpec{Name: readStageRetrieveSummaries})
 	}
+	if available[CapabilityEntityFactIndex] {
+		stages = append(stages, StageSpec{Name: readStageRetrieveEntityFacts})
+	}
 	if available[CapabilityDocumentChunks] {
 		stages = append(stages, StageSpec{Name: readStageRetrieveDocuments})
-	}
-	if available[CapabilityObservationLedger] {
-		stages = append(stages, StageSpec{Name: readStageRetrieveObs})
-	}
-	if available[CapabilityFactLedger] {
-		stages = append(stages, StageSpec{Name: readStageRetrieveFacts})
-	}
-	if available[CapabilityFactGraph] {
-		stages = append(stages, StageSpec{Name: readStageRetrieveFactGraph})
-	}
-	if available[CapabilityEntityProfile] {
-		stages = append(stages, StageSpec{Name: readStageRetrieveEntityProfiles})
-	}
-	if available[CapabilityEntityTimeline] {
-		stages = append(stages, StageSpec{Name: readStageRetrieveEntityTimeline})
 	}
 	return append(stages, StageSpec{Name: readStagePackContext})
 }
@@ -294,12 +293,9 @@ func isSupportedWriteStage(name string) bool {
 	switch name {
 	case writeStageAppendMessage,
 		writeStageChunkDocument,
-		writeStageExtractObservations,
-		writeStageReconcileFacts,
-		writeStageBuildFactGraph,
-		writeStageBuildEntityProfiles,
-		writeStageBuildEntityTimeline,
-		writeStageBuildSummaryDAG:
+		writeStageIndexMessages,
+		writeStageBuildSummaryDAG,
+		writeStageBuildEntityFacts:
 		return true
 	default:
 		return false
@@ -309,14 +305,10 @@ func isSupportedWriteStage(name string) bool {
 func isSupportedReadStage(name string) bool {
 	switch name {
 	case readStageLoadRecentMessages,
+		readStageRetrieveMessages,
 		readStageRetrieveSummaries,
+		readStageRetrieveEntityFacts,
 		readStageRetrieveDocuments,
-		readStageRetrieveObs,
-		readStageRetrieveFacts,
-		readStageRetrieveFactGraph,
-		readStageRetrieveEntityProfiles,
-		readStageRetrieveEntityTimeline,
-		readStageExpandFactGraph,
 		readStagePackContext:
 		return true
 	default:
@@ -351,20 +343,14 @@ func isToleratedOptionalLifecycleName(name string) bool {
 
 func writeStageCapability(name string) (Capability, bool) {
 	switch name {
+	case writeStageIndexMessages:
+		return CapabilityMessageIndex, true
 	case writeStageChunkDocument:
 		return CapabilityDocumentChunks, true
 	case writeStageBuildSummaryDAG:
 		return CapabilitySummaryDAG, true
-	case writeStageExtractObservations:
-		return CapabilityObservationLedger, true
-	case writeStageReconcileFacts:
-		return CapabilityFactLedger, true
-	case writeStageBuildFactGraph:
-		return CapabilityFactGraph, true
-	case writeStageBuildEntityProfiles:
-		return CapabilityEntityProfile, true
-	case writeStageBuildEntityTimeline:
-		return CapabilityEntityTimeline, true
+	case writeStageBuildEntityFacts:
+		return CapabilityEntityFactIndex, true
 	default:
 		return "", false
 	}
@@ -391,34 +377,19 @@ func validateWriteStageAsyncDependencies(stages []PlannedStage) error {
 }
 
 func writeStageDependencies(name string) []string {
-	switch name {
-	case writeStageReconcileFacts:
-		return []string{writeStageExtractObservations}
-	case writeStageBuildFactGraph:
-		return []string{writeStageReconcileFacts}
-	case writeStageBuildEntityProfiles, writeStageBuildEntityTimeline:
-		return []string{writeStageReconcileFacts, writeStageBuildFactGraph}
-	default:
-		return nil
-	}
+	return nil
 }
 
 func readStageCapability(name string) (Capability, bool) {
 	switch name {
+	case readStageRetrieveMessages:
+		return CapabilityMessageIndex, true
 	case readStageRetrieveSummaries:
 		return CapabilitySummaryDAG, true
+	case readStageRetrieveEntityFacts:
+		return CapabilityEntityFactIndex, true
 	case readStageRetrieveDocuments:
 		return CapabilityDocumentChunks, true
-	case readStageRetrieveObs:
-		return CapabilityObservationLedger, true
-	case readStageRetrieveFacts:
-		return CapabilityFactLedger, true
-	case readStageRetrieveFactGraph, readStageExpandFactGraph:
-		return CapabilityFactGraph, true
-	case readStageRetrieveEntityProfiles:
-		return CapabilityEntityProfile, true
-	case readStageRetrieveEntityTimeline:
-		return CapabilityEntityTimeline, true
 	default:
 		return "", false
 	}
@@ -438,7 +409,10 @@ func clonePlannedStages(in []PlannedStage) []PlannedStage {
 		return nil
 	}
 	out := make([]PlannedStage, len(in))
-	copy(out, in)
+	for i, stage := range in {
+		out[i] = stage
+		out[i].Config = maps.Clone(stage.Config)
+	}
 	return out
 }
 

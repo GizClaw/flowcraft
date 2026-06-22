@@ -252,8 +252,8 @@ func TestDescriptorAndRegistry(t *testing.T) {
 		t.Fatalf("Descriptor.Validate(valid) error = %v", err)
 	}
 	for _, descriptor := range []Descriptor{
-		{ID: ID("entity-profile"), Kind: KindEntityProfile, Version: "v1"},
-		{ID: ID("entity-timeline"), Kind: KindEntityTimeline, Version: "v1"},
+		{ID: ID("summary"), Kind: KindSummaryDAG, Version: "v1"},
+		{ID: ID("document-chunks"), Kind: KindDocumentChunks, Version: "v1"},
 	} {
 		if err := descriptor.Validate(); err != nil {
 			t.Fatalf("Descriptor.Validate(%+v) error = %v", descriptor, err)
@@ -282,11 +282,11 @@ func TestDescriptorAndRegistry(t *testing.T) {
 	if got, ok := registry.View(valid.ID); !ok || got != valid {
 		t.Fatalf("View(%q) = %+v ok %v, want registered descriptor", valid.ID, got, ok)
 	}
-	if err := registry.RegisterView(Descriptor{ID: ID("fact"), Kind: KindFactLedger, Version: "v1"}); err != nil {
-		t.Fatalf("RegisterView(fact) error = %v", err)
+	if err := registry.RegisterView(Descriptor{ID: ID("document"), Kind: KindDocumentChunks, Version: "v1"}); err != nil {
+		t.Fatalf("RegisterView(document) error = %v", err)
 	}
 	listed := registry.ListViews()
-	if len(listed) != 2 || listed[0].ID != ID("fact") || listed[1].ID != ID("recent") {
+	if len(listed) != 2 || listed[0].ID != ID("document") || listed[1].ID != ID("recent") {
 		t.Fatalf("ListViews() = %+v, want sorted by ID", listed)
 	}
 }

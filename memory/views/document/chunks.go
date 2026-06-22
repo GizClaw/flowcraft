@@ -87,6 +87,14 @@ func (c *Chunks) ListChunks(ctx context.Context, documentID string, opts ListOpt
 	return cloneChunks(chunks), nil
 }
 
+// DeleteChunk removes one chunk id for a canonical document.
+func (c *Chunks) DeleteChunk(ctx context.Context, scope views.Scope, documentID string, id ChunkID) error {
+	if c.store == nil {
+		return errdefs.Validationf("%s: store is required", chunksErrPrefix)
+	}
+	return c.store.DeleteChunk(ctx, scope, documentID, id)
+}
+
 // DeleteDocument removes all chunks for a canonical document.
 func (c *Chunks) DeleteDocument(ctx context.Context, scope views.Scope, documentID string) error {
 	if c.store == nil {

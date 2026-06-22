@@ -2,21 +2,124 @@ package executor
 
 import (
 	"context"
-	"strconv"
+	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/internal/compiler"
 	"github.com/GizClaw/flowcraft/memory/internal/projectors"
 	"github.com/GizClaw/flowcraft/memory/internal/views/indexed"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
+	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/memory/views"
 	viewdocument "github.com/GizClaw/flowcraft/memory/views/document"
-	viewentity "github.com/GizClaw/flowcraft/memory/views/entity"
-	"github.com/GizClaw/flowcraft/memory/views/fact"
-	viewobservation "github.com/GizClaw/flowcraft/memory/views/observation"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 	"github.com/GizClaw/flowcraft/memory/views/recent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
+
+// IndexMessages writes canonical source messages into the message projection.
+func (r *Executor) IndexMessages(ctx context.Context, req recent.WindowRequest, namespaceOverride string) ([]sourcemessage.Message, error) {
+	if err := r.requireMessageIndex(); err != nil {
+		return nil, err
+	}
+	if err := req.Scope.Validate(); err != nil {
+		return nil, errdefs.Validationf("%s: invalid message scope: %w", errPrefix, err)
+	}
+	if req.Scope.ConversationID == "" {
+		return nil, errdefs.Validationf("%s: conversation_id is required", errPrefix)
+	}
+	messages, err := r.messageStore.List(ctx, req.Scope.ConversationID, sourcemessage.ListOptions{
+		AfterSeq: req.AfterSeq,
+		Limit:    req.Budget.MaxMessages,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		return nil, nil
+	}
+	writer, err := r.writerFor(compiler.CapabilityMessageIndex, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	if writer != nil {
+		records := make([]indexed.Record, 0, len(messages))
+		for _, msg := range messages {
+			messageRecords, err := projectors.SourceMessageRecords(req.Scope, msg)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, messageRecords...)
+		}
+		if err := writer.Upsert(ctx, records); err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
+}
+
+// SearchSourceMessages searches the source message projection namespace and
+// hydrates every hit from the canonical message store.
+func (r *Executor) SearchSourceMessages(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*SourceMessageSearchResponse, error) {
+	if err := r.requireMessageSearch(); err != nil {
+		return nil, err
+	}
+	namespace, err := r.namespaceForSearch(compiler.CapabilityMessageIndex, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	messageTopK := req.TopK
+	searchReq := req
+	searchReq.TopK = sourceMessageChunkSearchTopK(req.TopK)
+	resp, err := r.index.Search(ctx, namespace, searchReq)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityMessageIndex)
+	}
+	out := &SourceMessageSearchResponse{Took: resp.Took, Hits: make([]derive.SourceMessageSearchHit, 0, len(resp.Hits))}
+	seen := map[string]struct{}{}
+	for _, hit := range resp.Hits {
+		conversationID, err := metadataString(hit, projectors.MetadataConversationIDKey)
+		if err != nil {
+			return nil, err
+		}
+		messageID, err := metadataString(hit, projectors.MetadataMessageIDKey)
+		if err != nil {
+			return nil, err
+		}
+		key := conversationID + "\x00" + messageID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		msg, ok, err := r.messageStore.Get(ctx, conversationID, messageID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errdefs.NotAvailablef("%s: hydrate source message hit %q: message %q/%q not found", errPrefix, hit.Doc.ID, conversationID, messageID)
+		}
+		out.Hits = append(out.Hits, derive.SourceMessageSearchHit{
+			Retrieval: retrieval.CloneHit(hit),
+			Message:   msg,
+		})
+		if messageTopK > 0 && len(out.Hits) >= messageTopK {
+			break
+		}
+	}
+	return out, nil
+}
+
+func sourceMessageChunkSearchTopK(topK int) int {
+	if topK <= 0 {
+		return topK
+	}
+	return topK * 4
+}
 
 // IndexDocument chunks a canonical document and writes any configured
 // projection to namespaceOverride instead of the compiler-bound namespace.
@@ -39,7 +142,31 @@ func (r *Executor) IndexDocument(ctx context.Context, scope views.Scope, documen
 		return nil, errdefs.NotFoundf("%s: document %q/%q not found", errPrefix, datasetID, documentID)
 	}
 
-	chunks, err := r.documentChunker.ChunkDocument(ctx, DocumentChunkInput{
+	oldChunks, err := r.documentChunks.ListChunks(ctx, documentID, viewdocument.ListOptions{Scope: &scope})
+	if err != nil {
+		return nil, err
+	}
+	writer, err := r.writerFor(compiler.CapabilityDocumentChunks, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	oldRecordIDs := make([]string, 0, len(oldChunks))
+	oldRecordIDSet := make(map[string]struct{}, len(oldChunks))
+	oldChunkIDs := make([]viewdocument.ChunkID, 0, len(oldChunks))
+	oldChunkIDSet := make(map[viewdocument.ChunkID]struct{}, len(oldChunks))
+	for _, chunk := range oldChunks {
+		if _, ok := oldChunkIDSet[chunk.ID]; !ok {
+			oldChunkIDs = append(oldChunkIDs, chunk.ID)
+			oldChunkIDSet[chunk.ID] = struct{}{}
+		}
+		recordID := projectors.DocumentChunkRecordID(chunk.Scope.DatasetID, chunk.DocumentID, chunk.ID)
+		if _, ok := oldRecordIDSet[recordID]; !ok {
+			oldRecordIDs = append(oldRecordIDs, recordID)
+			oldRecordIDSet[recordID] = struct{}{}
+		}
+	}
+
+	chunks, err := r.documentChunker.ChunkDocument(ctx, derive.DocumentChunkInput{
 		View:     r.documentChunks.Descriptor(),
 		Scope:    scope,
 		Document: doc,
@@ -49,17 +176,16 @@ func (r *Executor) IndexDocument(ctx context.Context, scope views.Scope, documen
 	}
 
 	stored := make([]viewdocument.Chunk, 0, len(chunks))
+	newChunkIDs := make(map[viewdocument.ChunkID]struct{}, len(chunks))
 	for _, chunk := range chunks {
 		written, err := r.documentChunks.PutChunk(ctx, chunk)
 		if err != nil {
 			return nil, err
 		}
 		stored = append(stored, written)
+		newChunkIDs[written.ID] = struct{}{}
 	}
-	writer, err := r.writerFor(compiler.CapabilityDocumentChunks, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
+	newRecordIDSet := make(map[string]struct{}, len(stored))
 	if writer != nil {
 		records := make([]indexed.Record, 0, len(stored))
 		for _, chunk := range stored {
@@ -68,16 +194,41 @@ func (r *Executor) IndexDocument(ctx context.Context, scope views.Scope, documen
 				return nil, err
 			}
 			records = append(records, record)
+			newRecordIDSet[record.ID] = struct{}{}
 		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
+		if len(records) > 0 {
+			if err := writer.Upsert(ctx, records); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if writer != nil {
+		staleRecordIDs := make([]string, 0, len(oldRecordIDs))
+		for _, id := range oldRecordIDs {
+			if _, ok := newRecordIDSet[id]; ok {
+				continue
+			}
+			staleRecordIDs = append(staleRecordIDs, id)
+		}
+		if len(staleRecordIDs) > 0 {
+			if err := writer.Delete(ctx, staleRecordIDs); err != nil {
+				return stored, fmt.Errorf("%s: document chunks rebuilt but delete stale projection records for document %q/%q failed: %w", errPrefix, datasetID, documentID, err)
+			}
+		}
+	}
+	for _, id := range oldChunkIDs {
+		if _, ok := newChunkIDs[id]; ok {
+			continue
+		}
+		if err := r.documentChunks.DeleteChunk(ctx, scope, documentID, id); err != nil {
+			return stored, fmt.Errorf("%s: document chunks rebuilt but delete stale chunks for document %q/%q failed: %w", errPrefix, datasetID, documentID, err)
 		}
 	}
 	return stored, nil
 }
 
 // SearchDocumentChunks searches the document chunk projection namespace and
-// hydrates every hit from the semantic chunk store.
+// hydrates every hit from the chunk store.
 func (r *Executor) SearchDocumentChunks(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*DocumentChunkSearchResponse, error) {
 	if err := r.requireDocumentChunkSearch(); err != nil {
 		return nil, err
@@ -93,7 +244,7 @@ func (r *Executor) SearchDocumentChunks(ctx context.Context, req retrieval.Searc
 	if resp == nil {
 		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityDocumentChunks)
 	}
-	out := &DocumentChunkSearchResponse{Took: resp.Took, Hits: make([]DocumentChunkSearchHit, 0, len(resp.Hits))}
+	out := &DocumentChunkSearchResponse{Took: resp.Took, Hits: make([]derive.DocumentChunkSearchHit, 0, len(resp.Hits))}
 	for _, hit := range resp.Hits {
 		datasetID, err := metadataString(hit, projectors.MetadataDatasetIDKey)
 		if err != nil {
@@ -119,7 +270,7 @@ func (r *Executor) SearchDocumentChunks(ctx context.Context, req retrieval.Searc
 		if !ok {
 			return nil, errdefs.NotAvailablef("%s: hydrate document chunk hit %q: chunk %q/%q/%q not found", errPrefix, hit.Doc.ID, datasetID, documentID, chunkID)
 		}
-		out.Hits = append(out.Hits, DocumentChunkSearchHit{
+		out.Hits = append(out.Hits, derive.DocumentChunkSearchHit{
 			Retrieval: retrieval.CloneHit(hit),
 			Chunk:     chunk,
 		})
@@ -136,10 +287,15 @@ func (r *Executor) BuildSummaryDAG(ctx context.Context, req recent.WindowRequest
 	if err != nil {
 		return nil, err
 	}
-	nodes, err := r.summarizer.Summarize(ctx, SummaryInput{
-		View:   r.summaryDAG.Descriptor(),
-		Scope:  req.Scope,
-		Window: window,
+	current, err := r.summaryDAG.ListNodes(ctx, req.Scope, recent.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := r.summarizer.Summarize(ctx, derive.SummaryInput{
+		View:    r.summaryDAG.Descriptor(),
+		Scope:   req.Scope,
+		Window:  window,
+		Current: current,
 	})
 	if err != nil {
 		return nil, err
@@ -173,12 +329,119 @@ func (r *Executor) BuildSummaryDAG(ctx context.Context, req recent.WindowRequest
 	return stored, nil
 }
 
-// SearchSummaryNodes searches the SummaryDAG projection namespace and hydrates
-// every hit from the SummaryDAG store.
-func (r *Executor) SearchSummaryNodes(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*SummaryNodeSearchResponse, error) {
+// BuildEntityFacts derives entity-linked facts from a recent message window.
+func (r *Executor) BuildEntityFacts(ctx context.Context, req recent.WindowRequest, namespaceOverride string) ([]viewentityfact.Fact, error) {
+	if err := r.requireEntityFacts(); err != nil {
+		return nil, err
+	}
+	window, err := r.recentWindow.Load(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	currentEntities, err := r.entityFacts.ListEntities(ctx, req.Scope, viewentityfact.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	currentFacts, err := r.entityFacts.ListFacts(ctx, req.Scope, viewentityfact.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	derived, err := r.entityFactExtractor.ExtractEntityFacts(ctx, derive.EntityFactInput{
+		View:            r.entityFacts.Descriptor(),
+		Scope:           req.Scope,
+		Window:          window,
+		CurrentEntities: currentEntities,
+		CurrentFacts:    currentFacts,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entity := range derived.Entities {
+		if _, err := r.entityFacts.PutEntity(ctx, entity); err != nil {
+			return nil, err
+		}
+	}
+	stored := make([]viewentityfact.Fact, 0, len(derived.Facts))
+	for _, fact := range derived.Facts {
+		written, err := r.entityFacts.PutFact(ctx, fact)
+		if err != nil {
+			return nil, err
+		}
+		stored = append(stored, written)
+	}
+	writer, err := r.writerFor(compiler.CapabilityEntityFactIndex, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	if writer != nil {
+		records := make([]indexed.Record, 0, len(stored))
+		for _, fact := range stored {
+			record, err := projectors.EntityFact(fact)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, record)
+		}
+		if len(records) > 0 {
+			if err := writer.Upsert(ctx, records); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return stored, nil
+}
+
+// SearchEntityFacts searches the entity fact projection namespace and hydrates
+// every hit from the entity fact store.
+func (r *Executor) SearchEntityFacts(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*EntityFactSearchResponse, error) {
+	if err := r.requireEntityFactSearch(); err != nil {
+		return nil, err
+	}
+	namespace, err := r.namespaceForSearch(compiler.CapabilityEntityFactIndex, namespaceOverride)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := r.index.Search(ctx, namespace, req)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityEntityFactIndex)
+	}
+	out := &EntityFactSearchResponse{Took: resp.Took, Hits: make([]derive.EntityFactSearchHit, 0, len(resp.Hits))}
+	for _, hit := range resp.Hits {
+		scope, err := metadataScope(hit)
+		if err != nil {
+			return nil, err
+		}
+		factID, err := metadataString(hit, projectors.MetadataFactIDKey)
+		if err != nil {
+			return nil, err
+		}
+		fact, ok, err := r.entityFacts.GetFact(ctx, scope, viewentityfact.FactID(factID))
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, errdefs.NotAvailablef("%s: hydrate entity fact hit %q: fact %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.ConversationID, factID)
+		}
+		out.Hits = append(out.Hits, derive.EntityFactSearchHit{
+			Retrieval: retrieval.CloneHit(hit),
+			Fact:      fact,
+		})
+	}
+	return out, nil
+}
+
+// SearchSummaryNodes searches the SummaryDAG projection namespace, optionally
+// drilling high-level compaction hits down through ParentIDs before returning
+// hydrated summary hits.
+func (r *Executor) SearchSummaryNodes(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string, cfg SummaryRetrievalConfig) (*SummaryNodeSearchResponse, error) {
 	if err := r.requireSummaryNodeSearch(); err != nil {
 		return nil, err
 	}
+	cfg = normalizeSummaryRetrievalConfig(cfg)
 	namespace, err := r.namespaceForSearch(compiler.CapabilitySummaryDAG, namespaceOverride)
 	if err != nil {
 		return nil, err
@@ -190,876 +453,265 @@ func (r *Executor) SearchSummaryNodes(ctx context.Context, req retrieval.SearchR
 	if resp == nil {
 		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilitySummaryDAG)
 	}
-	out := &SummaryNodeSearchResponse{Took: resp.Took, Hits: make([]SummaryNodeSearchHit, 0, len(resp.Hits))}
+	out := &SummaryNodeSearchResponse{Took: resp.Took, Hits: make([]derive.SummaryNodeSearchHit, 0, len(resp.Hits))}
 	for _, hit := range resp.Hits {
-		scope, err := metadataScope(hit)
+		hydrated, err := r.hydrateSummarySearchHit(ctx, hit)
 		if err != nil {
 			return nil, err
 		}
-		nodeID, err := metadataString(hit, projectors.MetadataNodeIDKey)
+		drilled, err := r.drillDownSummarySearchHit(ctx, namespace, req, cfg, hydrated)
 		if err != nil {
 			return nil, err
 		}
-		node, ok, err := r.summaryDAG.GetNode(ctx, scope, recent.NodeID(nodeID))
+		out.Hits = append(out.Hits, drilled...)
+	}
+	out.Hits = dedupeSummaryNodeSearchHits(out.Hits, req.TopK)
+	return out, nil
+}
+
+const (
+	defaultSummaryDrillDownMaxDepth  = -1
+	defaultSummaryDrillDownChildTopK = 2
+)
+
+func normalizeSummaryRetrievalConfig(cfg SummaryRetrievalConfig) SummaryRetrievalConfig {
+	if cfg.DrillDownChildTopK <= 0 {
+		cfg.DrillDownChildTopK = defaultSummaryDrillDownChildTopK
+	}
+	return cfg
+}
+
+func (r *Executor) hydrateSummarySearchHit(ctx context.Context, hit retrieval.Hit) (derive.SummaryNodeSearchHit, error) {
+	scope, err := metadataScope(hit)
+	if err != nil {
+		return derive.SummaryNodeSearchHit{}, err
+	}
+	nodeID, err := metadataString(hit, projectors.MetadataNodeIDKey)
+	if err != nil {
+		return derive.SummaryNodeSearchHit{}, err
+	}
+	node, ok, err := r.summaryDAG.GetNode(ctx, scope, recent.NodeID(nodeID))
+	if err != nil {
+		return derive.SummaryNodeSearchHit{}, err
+	}
+	if !ok {
+		return derive.SummaryNodeSearchHit{}, errdefs.NotAvailablef("%s: hydrate summary hit %q: node %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.ConversationID, nodeID)
+	}
+	return derive.SummaryNodeSearchHit{
+		Retrieval: retrieval.CloneHit(hit),
+		Node:      node,
+	}, nil
+}
+
+func (r *Executor) drillDownSummarySearchHit(ctx context.Context, namespace string, req retrieval.SearchRequest, cfg SummaryRetrievalConfig, hit derive.SummaryNodeSearchHit) ([]derive.SummaryNodeSearchHit, error) {
+	if cfg.DrillDownMaxDepth == 0 || strings.TrimSpace(req.QueryText) == "" || len(hit.Node.ParentIDs) == 0 {
+		return []derive.SummaryNodeSearchHit{hit}, nil
+	}
+	children, err := r.searchSummaryChildren(ctx, namespace, req, cfg, hit)
+	if err != nil {
+		return nil, err
+	}
+	if len(children) == 0 {
+		return []derive.SummaryNodeSearchHit{hit}, nil
+	}
+	out := make([]derive.SummaryNodeSearchHit, 0, len(children))
+	nextCfg := cfg
+	if nextCfg.DrillDownMaxDepth > 0 {
+		nextCfg.DrillDownMaxDepth--
+	}
+	for _, child := range children {
+		drilled, err := r.drillDownSummarySearchHit(ctx, namespace, req, nextCfg, child)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, drilled...)
+	}
+	return out, nil
+}
+
+func (r *Executor) searchSummaryChildren(ctx context.Context, namespace string, req retrieval.SearchRequest, cfg SummaryRetrievalConfig, parent derive.SummaryNodeSearchHit) ([]derive.SummaryNodeSearchHit, error) {
+	childIDs := make([]any, 0, len(parent.Node.ParentIDs))
+	for _, id := range parent.Node.ParentIDs {
+		childIDs = append(childIDs, string(id))
+	}
+	childReq := req
+	childReq.TopK = min(cfg.DrillDownChildTopK, len(childIDs))
+	childReq.Filter = combineSearchFilters(req.Filter, retrieval.Filter{
+		In: map[string][]any{projectors.MetadataNodeIDKey: childIDs},
+	})
+
+	resp, err := r.index.Search(ctx, namespace, childReq)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, errdefs.NotAvailablef("%s: child search projection for capability %q returned nil response", errPrefix, compiler.CapabilitySummaryDAG)
+	}
+
+	children := make([]derive.SummaryNodeSearchHit, 0, len(resp.Hits))
+	for _, hit := range resp.Hits {
+		child, err := r.hydrateSummarySearchHit(ctx, hit)
+		if err != nil {
+			return nil, err
+		}
+		child.Retrieval = summaryChildPathHit(parent.Retrieval, child.Retrieval)
+		children = append(children, child)
+	}
+	if len(children) > 0 {
+		return children, nil
+	}
+	return r.fallbackSummaryChildren(ctx, req.QueryText, cfg, parent)
+}
+
+func (r *Executor) fallbackSummaryChildren(ctx context.Context, query string, cfg SummaryRetrievalConfig, parent derive.SummaryNodeSearchHit) ([]derive.SummaryNodeSearchHit, error) {
+	children := make([]derive.SummaryNodeSearchHit, 0, len(parent.Node.ParentIDs))
+	for _, id := range parent.Node.ParentIDs {
+		node, ok, err := r.summaryDAG.GetNode(ctx, parent.Node.Scope, id)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, errdefs.NotAvailablef("%s: hydrate summary hit %q: node %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.ConversationID, nodeID)
+			return nil, errdefs.NotAvailablef("%s: hydrate summary child %q of %q not found", errPrefix, id, parent.Node.ID)
 		}
-		out.Hits = append(out.Hits, SummaryNodeSearchHit{
-			Retrieval: retrieval.CloneHit(hit),
+		score := lexicalSummaryScore(query, node.Summary)
+		children = append(children, derive.SummaryNodeSearchHit{
+			Retrieval: fallbackSummaryChildHit(parent.Retrieval, node, score),
 			Node:      node,
 		})
 	}
-	return out, nil
-}
-
-// ExtractObservations derives observations and writes any configured
-// projection to namespaceOverride instead of the compiler-bound namespace.
-func (r *Executor) ExtractObservations(ctx context.Context, req recent.WindowRequest, scope viewobservation.Scope, namespaceOverride string) ([]viewobservation.Observation, error) {
-	if err := r.requireObservationLedger(); err != nil {
-		return nil, err
-	}
-	window, err := r.recentWindow.Load(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	observations, err := r.observationExtractor.ExtractObservations(ctx, ObservationInput{
-		View:   r.observationLedger.Descriptor(),
-		Window: window,
-		Scope:  scope,
+	sort.SliceStable(children, func(i, j int) bool {
+		if children[i].Retrieval.Score != children[j].Retrieval.Score {
+			return children[i].Retrieval.Score > children[j].Retrieval.Score
+		}
+		return children[i].Node.ID < children[j].Node.ID
 	})
-	if err != nil {
-		return nil, err
+	if len(children) > cfg.DrillDownChildTopK {
+		children = children[:cfg.DrillDownChildTopK]
 	}
-
-	stored := make([]viewobservation.Observation, 0, len(observations))
-	for _, observation := range observations {
-		written, err := r.observationLedger.Put(ctx, observation)
-		if err != nil {
-			return nil, err
-		}
-		stored = append(stored, written)
-	}
-	writer, err := r.writerFor(compiler.CapabilityObservationLedger, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	if writer != nil {
-		records := make([]indexed.Record, 0, len(stored))
-		for _, observation := range stored {
-			record, err := projectors.Observation(observation)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, record)
-		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
-		}
-	}
-	return stored, nil
+	return children, nil
 }
 
-// SearchObservations searches the observation projection namespace and hydrates
-// every hit from the observation ledger.
-func (r *Executor) SearchObservations(ctx context.Context, req retrieval.SearchRequest) (*ObservationSearchResponse, error) {
-	return r.searchObservations(ctx, req, "")
+func combineSearchFilters(left, right retrieval.Filter) retrieval.Filter {
+	if filterEmpty(left) {
+		return right
+	}
+	if filterEmpty(right) {
+		return left
+	}
+	return retrieval.Filter{And: []retrieval.Filter{left, right}}
 }
 
-func (r *Executor) searchObservations(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*ObservationSearchResponse, error) {
-	if err := r.requireObservationSearch(); err != nil {
-		return nil, err
-	}
-	namespace, err := r.namespaceForSearch(compiler.CapabilityObservationLedger, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.index.Search(ctx, namespace, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityObservationLedger)
-	}
-	out := &ObservationSearchResponse{Took: resp.Took, Hits: make([]ObservationSearchHit, 0, len(resp.Hits))}
-	for _, hit := range resp.Hits {
-		observationID, err := metadataString(hit, projectors.MetadataObservationIDKey)
-		if err != nil {
-			return nil, err
-		}
-		observation, ok, err := r.observationLedger.Get(ctx, observationID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, errdefs.NotAvailablef("%s: hydrate observation hit %q: observation %q not found", errPrefix, hit.Doc.ID, observationID)
-		}
-		out.Hits = append(out.Hits, ObservationSearchHit{
-			Retrieval:   retrieval.CloneHit(hit),
-			Observation: observation,
-		})
-	}
-	return out, nil
+func filterEmpty(f retrieval.Filter) bool {
+	return len(f.And) == 0 &&
+		len(f.Or) == 0 &&
+		f.Not == nil &&
+		len(f.Eq) == 0 &&
+		len(f.Neq) == 0 &&
+		len(f.In) == 0 &&
+		len(f.NotIn) == 0 &&
+		len(f.Range) == 0 &&
+		len(f.Exists) == 0 &&
+		len(f.Missing) == 0 &&
+		len(f.Match) == 0 &&
+		len(f.Contains) == 0 &&
+		len(f.IContains) == 0 &&
+		len(f.ContainsAny) == 0 &&
+		len(f.ContainsAll) == 0
 }
 
-// ReconcileFacts derives fact records from observations, stores them, and
-// projects them when a fact ledger projection is configured.
-func (r *Executor) ReconcileFacts(ctx context.Context, observations []viewobservation.Observation) ([]fact.Fact, error) {
-	return r.ReconcileFactsScoped(ctx, observations, "")
+func summaryChildPathHit(parent, child retrieval.Hit) retrieval.Hit {
+	out := retrieval.CloneHit(child)
+	out.Score = 0.7*child.Score + 0.3*parent.Score
+	if out.Doc.Metadata == nil {
+		out.Doc.Metadata = map[string]any{}
+	}
+	if parentID, ok := parent.Doc.Metadata[projectors.MetadataNodeIDKey]; ok {
+		out.Doc.Metadata["summary_drilldown_parent_node_id"] = parentID
+	}
+	out.Doc.Metadata["summary_drilldown_parent_score"] = parent.Score
+	return out
 }
 
-// ReconcileFactsScoped stores reconciled facts and writes any configured
-// projection to namespaceOverride instead of the compiler-bound namespace.
-func (r *Executor) ReconcileFactsScoped(ctx context.Context, observations []viewobservation.Observation, namespaceOverride string) ([]fact.Fact, error) {
-	if err := r.requireFactLedger(); err != nil {
-		return nil, err
+func fallbackSummaryChildHit(parent retrieval.Hit, node recent.SummaryNode, score float64) retrieval.Hit {
+	out := retrieval.CloneHit(parent)
+	out.Score = 0.7*score + 0.3*parent.Score
+	out.Distance = 0
+	out.Doc.ID = string(node.ID)
+	out.Doc.Content = node.Summary
+	out.Doc.Metadata = cloneAnyMap(parent.Doc.Metadata)
+	if out.Doc.Metadata == nil {
+		out.Doc.Metadata = map[string]any{}
 	}
-	scope, err := factReconcileScope(observations)
-	if err != nil {
-		return nil, err
+	out.Doc.Metadata[projectors.MetadataNodeIDKey] = string(node.ID)
+	if parentID, ok := parent.Doc.Metadata[projectors.MetadataNodeIDKey]; ok {
+		out.Doc.Metadata["summary_drilldown_parent_node_id"] = parentID
 	}
-	var current []fact.Fact
-	if !scope.IsZero() {
-		current, err = r.factLedger.List(ctx, fact.ListOptions{Scope: scope, ActiveOnly: true})
-		if err != nil {
-			return nil, err
-		}
-	}
-	facts, err := r.factReconciler.ReconcileFacts(ctx, FactReconcileInput{
-		View:         r.factLedger.Descriptor(),
-		Scope:        scope,
-		Observations: observations,
-		Current:      current,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	stored := make([]fact.Fact, 0, len(facts))
-	for _, record := range facts {
-		written, err := r.factLedger.Put(ctx, record)
-		if err != nil {
-			return nil, err
-		}
-		stored = append(stored, written)
-	}
-	writer, err := r.writerFor(compiler.CapabilityFactLedger, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	if writer != nil {
-		records := make([]indexed.Record, 0, len(stored))
-		for _, record := range stored {
-			if !isActiveFact(record) {
-				continue
-			}
-			projected, err := projectors.FactRecord(record)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, projected)
-		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
-		}
-	}
-	return stored, nil
+	out.Doc.Metadata["summary_drilldown_parent_score"] = parent.Score
+	out.Scores = cloneFloat64MapWithCapacity(parent.Scores, 1)
+	out.Scores["summary_drilldown_lexical"] = score
+	return out
 }
 
-// SearchFacts searches the fact ledger projection namespace and hydrates every
-// hit from the fact ledger.
-func (r *Executor) SearchFacts(ctx context.Context, req retrieval.SearchRequest) (*FactSearchResponse, error) {
-	return r.searchFacts(ctx, req, "")
-}
-
-func (r *Executor) searchFacts(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*FactSearchResponse, error) {
-	if err := r.requireFactSearch(); err != nil {
-		return nil, err
-	}
-	namespace, err := r.namespaceForSearch(compiler.CapabilityFactLedger, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.index.Search(ctx, namespace, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityFactLedger)
-	}
-	out := &FactSearchResponse{Took: resp.Took, Hits: make([]FactSearchHit, 0, len(resp.Hits))}
-	for _, hit := range resp.Hits {
-		factID, err := metadataString(hit, projectors.MetadataFactIDKey)
-		if err != nil {
-			return nil, err
-		}
-		record, ok, err := r.factLedger.Get(ctx, fact.FactID(factID))
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, errdefs.NotAvailablef("%s: hydrate fact hit %q: fact %q not found", errPrefix, hit.Doc.ID, factID)
-		}
-		if !isActiveFact(record) {
-			continue
-		}
-		out.Hits = append(out.Hits, FactSearchHit{
-			Retrieval: retrieval.CloneHit(hit),
-			Fact:      record,
-		})
-	}
-	return out, nil
-}
-
-// BuildFactGraph derives graph records from facts, stores them, and projects
-// nodes and edges when a fact graph projection is configured.
-func (r *Executor) BuildFactGraph(ctx context.Context, facts []fact.Fact) (*FactGraphBuildResult, error) {
-	return r.BuildFactGraphScoped(ctx, facts, "")
-}
-
-// BuildFactGraphScoped stores graph records and writes any configured
-// projection to namespaceOverride instead of the compiler-bound namespace.
-func (r *Executor) BuildFactGraphScoped(ctx context.Context, facts []fact.Fact, namespaceOverride string) (*FactGraphBuildResult, error) {
-	if err := r.requireFactGraph(); err != nil {
-		return nil, err
-	}
-	facts = activeFacts(facts)
-	output, err := r.factGraphBuilder.BuildFactGraph(ctx, FactGraphInput{
-		View:  r.factGraph.Descriptor(),
-		Facts: facts,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	result := &FactGraphBuildResult{
-		Nodes: make([]fact.Node, 0, len(output.Nodes)),
-		Edges: make([]fact.Edge, 0, len(output.Edges)),
-	}
-	for _, node := range output.Nodes {
-		written, err := r.factGraph.PutNode(ctx, node)
-		if err != nil {
-			return nil, err
-		}
-		result.Nodes = append(result.Nodes, written)
-	}
-	for _, edge := range output.Edges {
-		written, err := r.factGraph.PutEdge(ctx, edge)
-		if err != nil {
-			return nil, err
-		}
-		result.Edges = append(result.Edges, written)
-	}
-	writer, err := r.writerFor(compiler.CapabilityFactGraph, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	if writer != nil {
-		records := make([]indexed.Record, 0, len(result.Nodes)+len(result.Edges))
-		for _, node := range result.Nodes {
-			projected, err := projectors.FactNode(node)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, projected)
-		}
-		for _, edge := range result.Edges {
-			projected, err := projectors.FactEdge(edge)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, projected)
-		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
-		}
-	}
-	return result, nil
-}
-
-// SearchFactGraph searches the fact graph projection namespace and hydrates node
-// and edge hits from the graph store.
-func (r *Executor) SearchFactGraph(ctx context.Context, req retrieval.SearchRequest) (*FactGraphSearchResponse, error) {
-	return r.searchFactGraph(ctx, req, "")
-}
-
-func (r *Executor) searchFactGraph(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*FactGraphSearchResponse, error) {
-	if err := r.requireFactGraphSearch(); err != nil {
-		return nil, err
-	}
-	namespace, err := r.namespaceForSearch(compiler.CapabilityFactGraph, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.index.Search(ctx, namespace, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityFactGraph)
-	}
-	out := &FactGraphSearchResponse{Took: resp.Took, Hits: make([]FactGraphSearchHit, 0, len(resp.Hits))}
-	for _, hit := range resp.Hits {
-		recordType, err := metadataString(hit, projectors.MetadataRecordTypeKey)
-		if err != nil {
-			return nil, err
-		}
-		switch recordType {
-		case projectors.RecordTypeFactNode:
-			nodeID, err := metadataString(hit, projectors.MetadataNodeIDKey)
-			if err != nil {
-				return nil, err
-			}
-			node, ok, err := r.factGraph.GetNode(ctx, fact.NodeID(nodeID))
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, errdefs.NotAvailablef("%s: hydrate fact graph hit %q: node %q not found", errPrefix, hit.Doc.ID, nodeID)
-			}
-			out.Hits = append(out.Hits, FactGraphSearchHit{
-				Retrieval: retrieval.CloneHit(hit),
-				Node:      &node,
-			})
-		case projectors.RecordTypeFactEdge:
-			edgeID, err := metadataString(hit, projectors.MetadataEdgeIDKey)
-			if err != nil {
-				return nil, err
-			}
-			edge, ok, err := r.factGraph.GetEdge(ctx, fact.EdgeID(edgeID))
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				return nil, errdefs.NotAvailablef("%s: hydrate fact graph hit %q: edge %q not found", errPrefix, hit.Doc.ID, edgeID)
-			}
-			out.Hits = append(out.Hits, FactGraphSearchHit{
-				Retrieval: retrieval.CloneHit(hit),
-				Edge:      &edge,
-			})
-		default:
-			return nil, errdefs.NotAvailablef("%s: hydrate fact graph hit %q: unknown record type %q", errPrefix, hit.Doc.ID, recordType)
-		}
-	}
-	return out, nil
-}
-
-func (r *Executor) expandFactGraph(ctx context.Context, req FactGraphExpansionRequest) (*FactGraphSearchResponse, error) {
-	options := normalizeFactGraphExpansionOptions(req.Options)
-	if options.Depth <= 0 {
-		return &FactGraphSearchResponse{}, nil
-	}
-
-	seeds, err := r.searchFactGraph(ctx, req.Search, req.Namespace)
-	if err != nil {
-		return nil, err
-	}
-	if seeds == nil || len(seeds.Hits) == 0 {
-		return &FactGraphSearchResponse{}, nil
-	}
-
-	active := fact.FactActive
-	state := &factGraphExpansionState{
-		scope:    req.Scope,
-		maxNodes: options.MaxNodes,
-		maxEdges: options.MaxEdges,
-		seen:     map[string]bool{},
-	}
-	for _, seed := range seeds.Hits {
-		switch {
-		case seed.Node != nil:
-			if !factGraphScopeMatches(req.Scope, seed.Node.Scope) {
-				continue
-			}
-			state.add(seed)
-			if state.edgesFull() {
-				continue
-			}
-			outgoing, err := r.factGraph.ListEdges(ctx, fact.EdgeListOptions{
-				From:   seed.Node.ID,
-				Status: &active,
-			})
-			if err != nil {
-				return nil, err
-			}
-			if err := r.expandFactGraphNodeEdges(ctx, state, seed.Node.ID, outgoing, true); err != nil {
-				return nil, err
-			}
-			if state.edgesFull() {
-				continue
-			}
-			incoming, err := r.factGraph.ListEdges(ctx, fact.EdgeListOptions{
-				To:     seed.Node.ID,
-				Status: &active,
-			})
-			if err != nil {
-				return nil, err
-			}
-			if err := r.expandFactGraphNodeEdges(ctx, state, seed.Node.ID, incoming, false); err != nil {
-				return nil, err
-			}
-		case seed.Edge != nil:
-			edge := *seed.Edge
-			if !factGraphScopeMatches(req.Scope, edge.Scope) {
-				continue
-			}
-			if !isActiveFactGraphEdge(edge) {
-				continue
-			}
-			state.add(seed)
-			if _, err := r.addFactGraphEndpoint(ctx, state, edge.From, FactGraphSearchHit{
-				Expanded:   true,
-				Depth:      1,
-				SeedEdgeID: edge.ID,
-			}); err != nil {
-				return nil, err
-			}
-			if _, err := r.addFactGraphEndpoint(ctx, state, edge.To, FactGraphSearchHit{
-				Expanded:   true,
-				Depth:      1,
-				SeedEdgeID: edge.ID,
-			}); err != nil {
-				return nil, err
-			}
-		}
-	}
-	return &FactGraphSearchResponse{Hits: state.hits, Took: seeds.Took}, nil
-}
-
-func (r *Executor) expandFactGraphNodeEdges(ctx context.Context, state *factGraphExpansionState, seedID fact.NodeID, edges []fact.Edge, outgoing bool) error {
-	for _, edge := range edges {
-		if state.edgesFull() {
-			return nil
-		}
-		if !isActiveFactGraphEdge(edge) || !factGraphScopeMatches(state.scope, edge.Scope) {
-			continue
-		}
-		otherID := edge.From
-		if outgoing {
-			otherID = edge.To
-		}
-		if state.nodesFull() && !state.seen["node:"+string(otherID)] {
-			continue
-		}
-		otherNode, ok, err := r.getScopedFactGraphNode(ctx, state.scope, otherID)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			continue
-		}
-		state.add(FactGraphSearchHit{
-			Edge:       &edge,
-			Expanded:   true,
-			Depth:      1,
-			SeedNodeID: seedID,
-		})
-		state.add(FactGraphSearchHit{
-			Node:       &otherNode,
-			Expanded:   true,
-			Depth:      1,
-			SeedNodeID: seedID,
-		})
-	}
-	return nil
-}
-
-func (r *Executor) addFactGraphEndpoint(ctx context.Context, state *factGraphExpansionState, nodeID fact.NodeID, hit FactGraphSearchHit) (bool, error) {
-	if state.nodesFull() {
-		return false, nil
-	}
-	node, ok, err := r.getScopedFactGraphNode(ctx, state.scope, nodeID)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, nil
-	}
-	hit.Node = &node
-	state.add(hit)
-	return true, nil
-}
-
-func (r *Executor) getScopedFactGraphNode(ctx context.Context, scope views.Scope, nodeID fact.NodeID) (fact.Node, bool, error) {
-	node, ok, err := r.factGraph.GetNode(ctx, nodeID)
-	if err != nil {
-		return fact.Node{}, false, err
-	}
-	if !ok || !factGraphScopeMatches(scope, node.Scope) {
-		return fact.Node{}, false, nil
-	}
-	return node, true, nil
-}
-
-type factGraphExpansionState struct {
-	scope    views.Scope
-	maxNodes int
-	maxEdges int
-	nodes    int
-	edges    int
-	seen     map[string]bool
-	hits     []FactGraphSearchHit
-}
-
-func (s *factGraphExpansionState) add(hit FactGraphSearchHit) {
-	key := factGraphSearchHitKey(hit)
-	if key != "" {
-		if s.seen[key] {
-			return
-		}
-		if hit.Node != nil && s.nodesFull() {
-			return
-		}
-		if hit.Edge != nil && s.edgesFull() {
-			return
-		}
-		s.seen[key] = true
-	}
-	if hit.Node != nil {
-		s.nodes++
-	}
-	if hit.Edge != nil {
-		s.edges++
-	}
-	s.hits = append(s.hits, hit)
-}
-
-func (s *factGraphExpansionState) nodesFull() bool {
-	return s.maxNodes > 0 && s.nodes >= s.maxNodes
-}
-
-func (s *factGraphExpansionState) edgesFull() bool {
-	return s.maxEdges > 0 && s.edges >= s.maxEdges
-}
-
-func normalizeFactGraphExpansionOptions(in FactGraphExpansionOptions) FactGraphExpansionOptions {
-	out := in
-	if out.Depth <= 0 {
-		out.Depth = defaultFactGraphExpansionDepth
-	}
-	if out.Depth > defaultFactGraphExpansionDepth {
-		out.Depth = defaultFactGraphExpansionDepth
-	}
-	if out.MaxNodes <= 0 {
-		out.MaxNodes = defaultFactGraphExpansionMaxNodes
-	}
-	if out.MaxEdges <= 0 {
-		out.MaxEdges = defaultFactGraphExpansionMaxEdges
+func cloneFloat64MapWithCapacity(in map[string]float64, extra int) map[string]float64 {
+	out := make(map[string]float64, len(in)+extra)
+	for key, value := range in {
+		out[key] = value
 	}
 	return out
 }
 
-func isActiveFactGraphEdge(edge fact.Edge) bool {
-	return edge.Status == fact.FactActive
+func lexicalSummaryScore(query, text string) float64 {
+	queryTokens := summaryScoreTokens(query)
+	if len(queryTokens) == 0 {
+		return 0
+	}
+	textTokens := summaryScoreTokenSet(text)
+	matches := 0
+	for token := range queryTokens {
+		if textTokens[token] {
+			matches++
+		}
+	}
+	return float64(matches) / float64(len(queryTokens))
 }
 
-// BuildEntityProfiles derives profile records from fact/graph evidence, stores
-// them, and projects them when an entity profile projection is configured.
-func (r *Executor) BuildEntityProfiles(ctx context.Context, input EntityBuildInput) ([]viewentity.ProfileRecord, error) {
-	return r.BuildEntityProfilesScoped(ctx, input, "")
+func summaryScoreTokens(text string) map[string]bool {
+	tokens := summaryScoreTokenSet(text)
+	for token := range tokens {
+		if len(token) < 3 {
+			delete(tokens, token)
+		}
+	}
+	return tokens
 }
 
-// BuildEntityProfilesScoped stores profile records and writes any configured
-// projection to namespaceOverride instead of the compiler-bound namespace.
-func (r *Executor) BuildEntityProfilesScoped(ctx context.Context, input EntityBuildInput, namespaceOverride string) ([]viewentity.ProfileRecord, error) {
-	if err := r.requireEntityProfile(); err != nil {
-		return nil, err
-	}
-	if err := input.Scope.Validate(); err != nil {
-		return nil, errdefs.Validationf("%s: invalid entity profile scope: %w", errPrefix, err)
-	}
-	input.Facts = activeFacts(input.Facts)
-	records, err := r.entityProfileBuilder.BuildEntityProfiles(ctx, EntityProfileInput{
-		View:  r.entityProfile.Descriptor(),
-		Scope: input.Scope,
-		Facts: input.Facts,
-		Graph: entityGraphOutput(input.Graph),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	stored := make([]viewentity.ProfileRecord, 0, len(records))
-	for _, record := range records {
-		written, err := r.entityProfile.Put(ctx, record)
-		if err != nil {
-			return nil, err
-		}
-		stored = append(stored, written)
-	}
-	writer, err := r.writerFor(compiler.CapabilityEntityProfile, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	if writer != nil {
-		records := make([]indexed.Record, 0, len(stored))
-		for _, record := range stored {
-			projected, err := projectors.EntityProfile(record)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, projected)
-		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
+func summaryScoreTokenSet(text string) map[string]bool {
+	tokens := map[string]bool{}
+	for _, field := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			tokens[field] = true
 		}
 	}
-	return stored, nil
+	return tokens
 }
 
-// SearchEntityProfiles searches the entity profile projection namespace and
-// hydrates every hit from the semantic profile store.
-func (r *Executor) SearchEntityProfiles(ctx context.Context, req retrieval.SearchRequest) (*EntityProfileSearchResponse, error) {
-	return r.searchEntityProfiles(ctx, req, "")
-}
-
-func (r *Executor) searchEntityProfiles(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*EntityProfileSearchResponse, error) {
-	if err := r.requireEntityProfileSearch(); err != nil {
-		return nil, err
-	}
-	namespace, err := r.namespaceForSearch(compiler.CapabilityEntityProfile, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.index.Search(ctx, namespace, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityEntityProfile)
-	}
-	out := &EntityProfileSearchResponse{Took: resp.Took, Hits: make([]EntityProfileSearchHit, 0, len(resp.Hits))}
-	for _, hit := range resp.Hits {
-		scope, err := metadataScope(hit)
-		if err != nil {
-			return nil, err
+func dedupeSummaryNodeSearchHits(hits []derive.SummaryNodeSearchHit, limit int) []derive.SummaryNodeSearchHit {
+	out := make([]derive.SummaryNodeSearchHit, 0, len(hits))
+	seen := map[recent.NodeID]bool{}
+	for _, hit := range hits {
+		if seen[hit.Node.ID] {
+			continue
 		}
-		profileID, err := metadataString(hit, projectors.MetadataProfileIDKey)
-		if err != nil {
-			return nil, err
-		}
-		record, ok, err := r.entityProfile.Get(ctx, scope, viewentity.ProfileID(profileID))
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, errdefs.NotAvailablef("%s: hydrate entity profile hit %q: profile %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.EntityID, profileID)
-		}
-		out.Hits = append(out.Hits, EntityProfileSearchHit{
-			Retrieval: retrieval.CloneHit(hit),
-			Profile:   record,
-		})
-	}
-	return out, nil
-}
-
-// BuildEntityTimeline derives timeline events from fact/graph evidence, stores
-// them, and projects them when an entity timeline projection is configured.
-func (r *Executor) BuildEntityTimeline(ctx context.Context, input EntityBuildInput) ([]viewentity.Event, error) {
-	return r.BuildEntityTimelineScoped(ctx, input, "")
-}
-
-// BuildEntityTimelineScoped stores timeline events and writes any configured
-// projection to namespaceOverride instead of the compiler-bound namespace.
-func (r *Executor) BuildEntityTimelineScoped(ctx context.Context, input EntityBuildInput, namespaceOverride string) ([]viewentity.Event, error) {
-	if err := r.requireEntityTimeline(); err != nil {
-		return nil, err
-	}
-	if err := input.Scope.Validate(); err != nil {
-		return nil, errdefs.Validationf("%s: invalid entity timeline scope: %w", errPrefix, err)
-	}
-	input.Facts = activeFacts(input.Facts)
-	events, err := r.entityTimelineBuilder.BuildEntityTimeline(ctx, EntityTimelineInput{
-		View:  r.entityTimeline.Descriptor(),
-		Scope: input.Scope,
-		Facts: input.Facts,
-		Graph: entityGraphOutput(input.Graph),
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	stored := make([]viewentity.Event, 0, len(events))
-	for _, event := range events {
-		written, err := r.entityTimeline.Put(ctx, event)
-		if err != nil {
-			return nil, err
-		}
-		stored = append(stored, written)
-	}
-	writer, err := r.writerFor(compiler.CapabilityEntityTimeline, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	if writer != nil {
-		records := make([]indexed.Record, 0, len(stored))
-		for _, event := range stored {
-			projected, err := projectors.EntityEvent(event)
-			if err != nil {
-				return nil, err
-			}
-			records = append(records, projected)
-		}
-		if err := writer.Upsert(ctx, records); err != nil {
-			return nil, err
-		}
-	}
-	return stored, nil
-}
-
-// SearchEntityTimeline searches the entity timeline projection namespace and
-// hydrates every hit from the semantic timeline store.
-func (r *Executor) SearchEntityTimeline(ctx context.Context, req retrieval.SearchRequest) (*EntityTimelineSearchResponse, error) {
-	return r.searchEntityTimeline(ctx, req, "")
-}
-
-func (r *Executor) searchEntityTimeline(ctx context.Context, req retrieval.SearchRequest, namespaceOverride string) (*EntityTimelineSearchResponse, error) {
-	if err := r.requireEntityTimelineSearch(); err != nil {
-		return nil, err
-	}
-	namespace, err := r.namespaceForSearch(compiler.CapabilityEntityTimeline, namespaceOverride)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := r.index.Search(ctx, namespace, req)
-	if err != nil {
-		return nil, err
-	}
-	if resp == nil {
-		return nil, errdefs.NotAvailablef("%s: search projection for capability %q returned nil response", errPrefix, compiler.CapabilityEntityTimeline)
-	}
-	out := &EntityTimelineSearchResponse{Took: resp.Took, Hits: make([]EntityTimelineSearchHit, 0, len(resp.Hits))}
-	for _, hit := range resp.Hits {
-		scope, err := metadataScope(hit)
-		if err != nil {
-			return nil, err
-		}
-		eventID, err := metadataString(hit, projectors.MetadataEventIDKey)
-		if err != nil {
-			return nil, err
-		}
-		event, ok, err := r.entityTimeline.Get(ctx, scope, viewentity.EventID(eventID))
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, errdefs.NotAvailablef("%s: hydrate entity timeline hit %q: event %q/%q/%q/%q not found", errPrefix, hit.Doc.ID, scope.RuntimeID, scope.UserID, scope.EntityID, eventID)
-		}
-		out.Hits = append(out.Hits, EntityTimelineSearchHit{
-			Retrieval: retrieval.CloneHit(hit),
-			Event:     event,
-		})
-	}
-	return out, nil
-}
-
-func entityGraphOutput(graph *FactGraphBuildResult) FactGraphOutput {
-	if graph == nil {
-		return FactGraphOutput{}
-	}
-	return FactGraphOutput{
-		Nodes: graph.Nodes,
-		Edges: graph.Edges,
-	}
-}
-
-func factReconcileScope(observations []viewobservation.Observation) (views.Scope, error) {
-	if len(observations) == 0 {
-		return views.Scope{}, nil
-	}
-	scope := observations[0].Scope
-	if err := scope.Validate(); err != nil {
-		return views.Scope{}, errdefs.Validationf("%s: invalid fact reconcile scope: %w", errPrefix, err)
-	}
-	for _, observation := range observations[1:] {
-		if observation.Scope != scope {
-			return views.Scope{}, errdefs.Validationf("%s: observations must share one scope for fact reconciliation", errPrefix)
-		}
-	}
-	return scope, nil
-}
-
-func activeFacts(in []fact.Fact) []fact.Fact {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]fact.Fact, 0, len(in))
-	for _, record := range in {
-		if isActiveFact(record) {
-			out = append(out, record)
+		seen[hit.Node.ID] = true
+		out = append(out, hit)
+		if limit > 0 && len(out) >= limit {
+			break
 		}
 	}
 	return out
-}
-
-func isActiveFact(record fact.Fact) bool {
-	return record.Status == "" || record.Status == fact.FactActive
-}
-
-// WholeDocumentChunker is a deterministic chunker useful for tests and simple
-// callers that explicitly opt in. New never installs it automatically.
-type WholeDocumentChunker struct {
-	Layer              viewdocument.Layer
-	TransformSignature string
-}
-
-func (c WholeDocumentChunker) ChunkDocument(_ context.Context, input DocumentChunkInput) ([]viewdocument.Chunk, error) {
-	if strings.TrimSpace(input.Document.Content) == "" {
-		return nil, nil
-	}
-	layer := c.Layer
-	if layer.Name == "" {
-		layer.Name = "whole_document"
-	}
-	if layer.Version == "" {
-		layer.Version = "v1"
-	}
-	transformSignature := c.TransformSignature
-	if transformSignature == "" {
-		transformSignature = layer.TransformSignature
-	}
-	if transformSignature == "" {
-		transformSignature = "whole_document:v1"
-	}
-	if layer.TransformSignature == "" {
-		layer.TransformSignature = transformSignature
-	}
-
-	doc := input.Document
-	span := views.Span{Start: 0, End: len(doc.Content)}
-	ref := views.SourceRef{
-		Kind: views.SourceDocument,
-		Document: &views.DocumentSourceRef{
-			DatasetID:   doc.DatasetID,
-			DocumentID:  doc.ID,
-			Version:     strconv.FormatUint(doc.Version, 10),
-			ContentHash: doc.ContentHash,
-			Span:        &span,
-		},
-	}
-	return []viewdocument.Chunk{{
-		ID:         "whole",
-		Scope:      input.Scope,
-		DocumentID: doc.ID,
-		Layer:      layer,
-		Ordinal:    0,
-		Span:       span,
-		Text:       doc.Content,
-		SourceRef:  ref,
-		Signature: views.ViewSignature{
-			ViewID: input.View.ID,
-			SourceRevisions: []views.SourceRevision{{
-				Kind:        views.SourceDocument,
-				SourceKey:   ref.StableKey(),
-				Revision:    strconv.FormatUint(doc.Version, 10),
-				ContentHash: doc.ContentHash,
-				ObservedAt:  doc.UpdatedAt,
-			}},
-			TransformSignature: transformSignature,
-		},
-	}}, nil
 }
 
 func (r *Executor) requireDocumentChunks() error {
@@ -1076,6 +728,23 @@ func (r *Executor) requireDocumentChunks() error {
 		return errdefs.NotAvailablef("%s: DocumentChunker is not configured", errPrefix)
 	}
 	return nil
+}
+
+func (r *Executor) requireMessageIndex() error {
+	if _, ok := r.enabled[compiler.CapabilityMessageIndex]; !ok {
+		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityMessageIndex)
+	}
+	if r.messageStore == nil {
+		return errdefs.NotAvailablef("%s: message store is not configured", errPrefix)
+	}
+	return r.requireProjection(compiler.CapabilityMessageIndex)
+}
+
+func (r *Executor) requireMessageSearch() error {
+	if r.messageStore == nil {
+		return errdefs.NotAvailablef("%s: message store is not configured", errPrefix)
+	}
+	return r.requireProjection(compiler.CapabilityMessageIndex)
 }
 
 func (r *Executor) requireDocumentChunkSearch() error {
@@ -1108,107 +777,27 @@ func (r *Executor) requireSummaryNodeSearch() error {
 	return r.requireProjection(compiler.CapabilitySummaryDAG)
 }
 
-func (r *Executor) requireObservationLedger() error {
-	if _, ok := r.enabled[compiler.CapabilityObservationLedger]; !ok {
-		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityObservationLedger)
+func (r *Executor) requireEntityFacts() error {
+	if _, ok := r.enabled[compiler.CapabilityEntityFactIndex]; !ok {
+		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityEntityFactIndex)
 	}
 	if r.recentWindow == nil {
 		return errdefs.NotAvailablef("%s: recent window is not configured", errPrefix)
 	}
-	if r.observationLedger == nil {
-		return errdefs.NotAvailablef("%s: observation ledger view is not configured", errPrefix)
+	if r.entityFacts == nil {
+		return errdefs.NotAvailablef("%s: entity facts view is not configured", errPrefix)
 	}
-	if r.observationExtractor == nil {
-		return errdefs.NotAvailablef("%s: ObservationExtractor is not configured", errPrefix)
-	}
-	return nil
-}
-
-func (r *Executor) requireObservationSearch() error {
-	if r.observationLedger == nil {
-		return errdefs.NotAvailablef("%s: observation ledger view is not configured", errPrefix)
-	}
-	return r.requireProjection(compiler.CapabilityObservationLedger)
-}
-
-func (r *Executor) requireFactLedger() error {
-	if _, ok := r.enabled[compiler.CapabilityFactLedger]; !ok {
-		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityFactLedger)
-	}
-	if r.factLedger == nil {
-		return errdefs.NotAvailablef("%s: fact ledger view is not configured", errPrefix)
-	}
-	if r.factReconciler == nil {
-		return errdefs.NotAvailablef("%s: FactReconciler is not configured", errPrefix)
+	if r.entityFactExtractor == nil {
+		return errdefs.NotAvailablef("%s: EntityFactExtractor is not configured", errPrefix)
 	}
 	return nil
 }
 
-func (r *Executor) requireFactSearch() error {
-	if r.factLedger == nil {
-		return errdefs.NotAvailablef("%s: fact ledger view is not configured", errPrefix)
+func (r *Executor) requireEntityFactSearch() error {
+	if r.entityFacts == nil {
+		return errdefs.NotAvailablef("%s: entity facts view is not configured", errPrefix)
 	}
-	return r.requireProjection(compiler.CapabilityFactLedger)
-}
-
-func (r *Executor) requireFactGraph() error {
-	if _, ok := r.enabled[compiler.CapabilityFactGraph]; !ok {
-		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityFactGraph)
-	}
-	if r.factGraph == nil {
-		return errdefs.NotAvailablef("%s: fact graph view is not configured", errPrefix)
-	}
-	if r.factGraphBuilder == nil {
-		return errdefs.NotAvailablef("%s: FactGraphBuilder is not configured", errPrefix)
-	}
-	return nil
-}
-
-func (r *Executor) requireFactGraphSearch() error {
-	if r.factGraph == nil {
-		return errdefs.NotAvailablef("%s: fact graph view is not configured", errPrefix)
-	}
-	return r.requireProjection(compiler.CapabilityFactGraph)
-}
-
-func (r *Executor) requireEntityProfile() error {
-	if _, ok := r.enabled[compiler.CapabilityEntityProfile]; !ok {
-		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityEntityProfile)
-	}
-	if r.entityProfile == nil {
-		return errdefs.NotAvailablef("%s: entity profile view is not configured", errPrefix)
-	}
-	if r.entityProfileBuilder == nil {
-		return errdefs.NotAvailablef("%s: EntityProfileBuilder is not configured", errPrefix)
-	}
-	return nil
-}
-
-func (r *Executor) requireEntityProfileSearch() error {
-	if r.entityProfile == nil {
-		return errdefs.NotAvailablef("%s: entity profile view is not configured", errPrefix)
-	}
-	return r.requireProjection(compiler.CapabilityEntityProfile)
-}
-
-func (r *Executor) requireEntityTimeline() error {
-	if _, ok := r.enabled[compiler.CapabilityEntityTimeline]; !ok {
-		return errdefs.NotAvailablef("%s: capability %q is not configured", errPrefix, compiler.CapabilityEntityTimeline)
-	}
-	if r.entityTimeline == nil {
-		return errdefs.NotAvailablef("%s: entity timeline view is not configured", errPrefix)
-	}
-	if r.entityTimelineBuilder == nil {
-		return errdefs.NotAvailablef("%s: EntityTimelineBuilder is not configured", errPrefix)
-	}
-	return nil
-}
-
-func (r *Executor) requireEntityTimelineSearch() error {
-	if r.entityTimeline == nil {
-		return errdefs.NotAvailablef("%s: entity timeline view is not configured", errPrefix)
-	}
-	return r.requireProjection(compiler.CapabilityEntityTimeline)
+	return r.requireProjection(compiler.CapabilityEntityFactIndex)
 }
 
 func (r *Executor) requireProjection(capability compiler.Capability) error {
@@ -1267,7 +856,6 @@ func metadataScope(hit retrieval.Hit) (views.Scope, error) {
 		AgentID:        metadataOptionalString(hit, projectors.MetadataAgentIDKey),
 		ConversationID: metadataOptionalString(hit, projectors.MetadataConversationIDKey),
 		DatasetID:      metadataOptionalString(hit, projectors.MetadataDatasetIDKey),
-		EntityID:       metadataOptionalString(hit, projectors.MetadataEntityIDKey),
 	}, nil
 }
 
