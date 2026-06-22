@@ -224,7 +224,7 @@ func (c *Claw) boardSeeder() agent.BoardSeeder {
 				return nil, fmt.Errorf("claw: load history: %w", err)
 			}
 			if len(prior) > 0 {
-				board.SetChannel(engine.MainChannel, renderClawHistoryXML(prior))
+				board.SetChannel(engine.MainChannel, prior)
 			}
 		}
 		if c.memory != nil {
@@ -502,20 +502,6 @@ func withClawHistoryXML(msg model.Message, nodeID, speakerName string) model.Mes
 	}
 	msg.Parts = append(meta, msg.Parts...)
 	return msg
-}
-
-func renderClawHistoryXML(messages []model.Message) []model.Message {
-	out := make([]model.Message, 0, len(messages))
-	for _, msg := range messages {
-		cp := msg.Clone()
-		for i, part := range cp.Parts {
-			if part.Type == clawHistoryXMLPartType {
-				cp.Parts[i].Type = model.PartText
-			}
-		}
-		out = append(out, cp)
-	}
-	return out
 }
 
 func isClawHistoryXMLPart(part model.Part) bool {
