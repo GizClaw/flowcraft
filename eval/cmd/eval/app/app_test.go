@@ -66,7 +66,7 @@ func TestLocomoHelpAdvertisesLoCoMoTuningFlags(t *testing.T) {
 		t.Fatalf("locomo help: %v", err)
 	}
 	help := out.String()
-	for _, flag := range []string{"--per-call-timeout", "--qa-top-k"} {
+	for _, flag := range []string{"--per-call-timeout", "--qa-top-k", "--qa-graph-expanded-max-source", "--run-id"} {
 		if !strings.Contains(help, flag) {
 			t.Fatalf("locomo help does not advertise %s:\n%s", flag, help)
 		}

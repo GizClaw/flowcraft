@@ -15,6 +15,7 @@ import (
 )
 
 const defaultQATopK = tasks.DefaultQATopK
+const defaultQAGraphExpandedMaxSource = tasks.DefaultQAGraphExpandedMaxSource
 
 type Event struct {
 	Kind   string
@@ -29,24 +30,26 @@ type EventHook func(ctx context.Context, e Event)
 type ReportHook func(ctx context.Context, rep *locomoreport.Report) error
 
 type Options struct {
-	Memory              *memory.System
-	AnswerLLM           llm.LLM
-	JudgeLLM            llm.LLM
-	WorkspaceRoot       string
-	RunID               string
-	Tasks               []locomoreport.Task
-	LimitSamples        int
-	LimitQA             int
-	ExcludeQACategories []int
-	QATopK              int
-	LimitTurns          int
-	Concurrency         int
-	QAConcurrency       int
-	MaxSamples          int
-	Hook                EventHook
-	ProgressPct         int
-	PerCallTimeout      time.Duration
-	ReportHook          ReportHook
+	Memory                   *memory.System
+	AnswerLLM                llm.LLM
+	JudgeLLM                 llm.LLM
+	WorkspaceRoot            string
+	RunID                    string
+	Tasks                    []locomoreport.Task
+	LimitSamples             int
+	LimitQA                  int
+	ExcludeQACategories      []int
+	QATopK                   int
+	QAGraphExpandedMaxSource int
+	LimitTurns               int
+	ReuseIngested            bool
+	Concurrency              int
+	QAConcurrency            int
+	MaxSamples               int
+	Hook                     EventHook
+	ProgressPct              int
+	PerCallTimeout           time.Duration
+	ReportHook               ReportHook
 }
 
 func ParseTasks(spec string) ([]locomoreport.Task, error) {
@@ -86,15 +89,18 @@ func Run(ctx context.Context, ds *dataset.Dataset, opts Options) (*locomoreport.
 	if opts.Memory == nil {
 		return nil, fmt.Errorf("locomo: Options.Memory is required")
 	}
-	if opts.AnswerLLM == nil {
-		return nil, fmt.Errorf("locomo: Options.AnswerLLM is required")
-	}
 	normalizeRunOptions(&opts)
 	tasks := opts.Tasks
 	if len(tasks) == 0 {
 		tasks = []locomoreport.Task{locomoreport.TaskQA, locomoreport.TaskEvent, locomoreport.TaskDialog}
 	}
 	taskSet := taskSet(tasks)
+	if opts.AnswerLLM == nil && (taskSet[locomoreport.TaskEvent] || taskSet[locomoreport.TaskDialog]) {
+		return nil, fmt.Errorf("locomo: Options.AnswerLLM is required for event/dialog tasks")
+	}
+	if opts.AnswerLLM == nil && opts.JudgeLLM != nil {
+		return nil, fmt.Errorf("locomo: Options.AnswerLLM is required when Options.JudgeLLM is set")
+	}
 	samples := limitedSamples(ds.Samples, opts.LimitSamples)
 
 	rep := newReport(ds, opts, tasks, samples, taskSet)
@@ -128,6 +134,9 @@ func normalizeRunOptions(opts *Options) {
 	if opts.QATopK <= 0 {
 		opts.QATopK = defaultQATopK
 	}
+	if opts.QAGraphExpandedMaxSource < 0 {
+		opts.QAGraphExpandedMaxSource = defaultQAGraphExpandedMaxSource
+	}
 }
 
 func taskSet(tasks []locomoreport.Task) map[locomoreport.Task]bool {
@@ -147,16 +156,19 @@ func limitedSamples(samples []dataset.Sample, limit int) []dataset.Sample {
 
 func newReport(ds *dataset.Dataset, opts Options, tasks []locomoreport.Task, samples []dataset.Sample, tasksEnabled map[locomoreport.Task]bool) *locomoreport.Report {
 	return locomoreport.New(ds.Name, opts.WorkspaceRoot, tasks, len(samples), map[string]any{
-		"limit_samples":         opts.LimitSamples,
-		"limit_qa":              opts.LimitQA,
-		"exclude_qa_categories": append([]int(nil), opts.ExcludeQACategories...),
-		"qa_top_k":              opts.QATopK,
-		"limit_turns":           opts.LimitTurns,
-		"concurrency":           opts.Concurrency,
-		"qa_concurrency":        opts.QAConcurrency,
-		"n_samples":             len(samples),
-		"per_call_timeout_ms":   opts.PerCallTimeout.Milliseconds(),
-		"judge_enabled":         opts.JudgeLLM != nil,
+		"limit_samples":                opts.LimitSamples,
+		"limit_qa":                     opts.LimitQA,
+		"exclude_qa_categories":        append([]int(nil), opts.ExcludeQACategories...),
+		"qa_top_k":                     opts.QATopK,
+		"qa_graph_expanded_max_source": opts.QAGraphExpandedMaxSource,
+		"limit_turns":                  opts.LimitTurns,
+		"reuse_ingested":               opts.ReuseIngested,
+		"run_id":                       opts.RunID,
+		"concurrency":                  opts.Concurrency,
+		"qa_concurrency":               opts.QAConcurrency,
+		"n_samples":                    len(samples),
+		"per_call_timeout_ms":          opts.PerCallTimeout.Milliseconds(),
+		"judge_enabled":                opts.JudgeLLM != nil,
 	}, tasksEnabled)
 }
 

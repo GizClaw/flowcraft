@@ -124,6 +124,70 @@ func TestRunAggregatesAllTasks(t *testing.T) {
 	}
 }
 
+func TestRunQARetrievalOnlyWithoutAnswerLLM(t *testing.T) {
+	ds := mustSyntheticDataset(t)
+	root := t.TempDir()
+	mem, closeMem, err := localmem.Build(localmem.MemoryOptions{
+		WorkspaceRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("BuildLocalMemory: %v", err)
+	}
+	defer func() { _ = closeMem() }()
+	rep, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-retrieval-only",
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+		Concurrency:   1,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.QAMetrics == nil || rep.QAMetrics.N != 1 {
+		t.Fatalf("qa metrics = %+v, want one QA row", rep.QAMetrics)
+	}
+	if rep.QAMetrics.EvidenceRecallAtK != 1 {
+		t.Fatalf("evidence recall = %.3f, want 1", rep.QAMetrics.EvidenceRecallAtK)
+	}
+	row := rep.Samples[0].QA[0]
+	if row.Predicted != "" || row.F1 != 0 || row.Judge != nil {
+		t.Fatalf("retrieval-only row predicted=%q f1=%.3f judge=%+v, want no answer fields", row.Predicted, row.F1, row.Judge)
+	}
+	if row.HitCounts == nil || row.HitCounts.SourceMessages == 0 {
+		t.Fatalf("hit counts = %+v, want retrieval context counts", row.HitCounts)
+	}
+}
+
+func TestRunRequiresAnswerLLMForEventDialogAndJudge(t *testing.T) {
+	ds := mustSyntheticDataset(t)
+	root := t.TempDir()
+	mem, closeMem, err := localmem.Build(localmem.MemoryOptions{
+		WorkspaceRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("BuildLocalMemory: %v", err)
+	}
+	defer func() { _ = closeMem() }()
+	if _, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-event-needs-answer",
+		Tasks:         []locomoreport.Task{locomoreport.TaskEvent},
+	}); err == nil || !strings.Contains(err.Error(), "AnswerLLM is required for event/dialog") {
+		t.Fatalf("event without answer error = %v, want answer requirement", err)
+	}
+	if _, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		JudgeLLM:      &scriptedLLM{},
+		WorkspaceRoot: root,
+		RunID:         "run-judge-needs-answer",
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+	}); err == nil || !strings.Contains(err.Error(), "AnswerLLM is required when Options.JudgeLLM is set") {
+		t.Fatalf("judge without answer error = %v, want answer requirement", err)
+	}
+}
+
 func TestRunAppliesAndReportsPerCallTimeout(t *testing.T) {
 	ds := mustSyntheticDataset(t)
 	root := t.TempDir()
@@ -536,6 +600,95 @@ func TestRunBatchesSourceMessageIngestWhenDialogIsDisabled(t *testing.T) {
 	}
 }
 
+func TestRunReusesCompleteIngestForStableRunID(t *testing.T) {
+	ds := mustSyntheticDataset(t)
+	root := t.TempDir()
+	mem, closeMem, err := localmem.Build(localmem.MemoryOptions{
+		WorkspaceRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("BuildLocalMemory: %v", err)
+	}
+	defer func() { _ = closeMem() }()
+	first, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-reuse",
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+		Concurrency:   1,
+	})
+	if err != nil {
+		t.Fatalf("initial Run: %v", err)
+	}
+	if first.QAMetrics == nil || first.QAMetrics.N != 1 {
+		t.Fatalf("initial QA metrics = %+v, want one QA row", first.QAMetrics)
+	}
+	scope := locomosource.SampleScope("run-reuse", ds.Name, ds.Samples[0])
+	messages, err := mem.MessageStore().List(context.Background(), scope.ConversationID, sourcemessage.ListOptions{})
+	if err != nil {
+		t.Fatalf("List messages: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("initial ingested messages = %d, want full synthetic sample", len(messages))
+	}
+	second, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-reuse",
+		ReuseIngested: true,
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+		Concurrency:   1,
+	})
+	if err != nil {
+		t.Fatalf("reuse Run: %v", err)
+	}
+	if second.QAMetrics == nil || second.QAMetrics.N != 1 {
+		t.Fatalf("reuse QA metrics = %+v, want one QA row", second.QAMetrics)
+	}
+	messages, err = mem.MessageStore().List(context.Background(), scope.ConversationID, sourcemessage.ListOptions{})
+	if err != nil {
+		t.Fatalf("List messages after reuse: %v", err)
+	}
+	if len(messages) != 4 {
+		t.Fatalf("messages after reuse = %d, want unchanged full synthetic sample", len(messages))
+	}
+	if got := second.Options["reuse_ingested"]; got != true {
+		t.Fatalf("reuse_ingested option = %v, want true", got)
+	}
+}
+
+func TestRunRejectsPartialReusableIngest(t *testing.T) {
+	ds := mustSyntheticDataset(t)
+	root := t.TempDir()
+	mem, closeMem, err := localmem.Build(localmem.MemoryOptions{
+		WorkspaceRoot: root,
+	})
+	if err != nil {
+		t.Fatalf("BuildLocalMemory: %v", err)
+	}
+	defer func() { _ = closeMem() }()
+	if _, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-partial-reuse",
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+		LimitTurns:    1,
+		Concurrency:   1,
+	}); err != nil {
+		t.Fatalf("partial initial Run: %v", err)
+	}
+	if _, err := Run(context.Background(), ds, Options{
+		Memory:        mem,
+		WorkspaceRoot: root,
+		RunID:         "run-partial-reuse",
+		ReuseIngested: true,
+		Tasks:         []locomoreport.Task{locomoreport.TaskQA},
+		Concurrency:   1,
+	}); err == nil || !strings.Contains(err.Error(), "partial ingest") {
+		t.Fatalf("reuse partial error = %v, want partial ingest error", err)
+	}
+}
+
 func TestParseTasks(t *testing.T) {
 	tasks, err := ParseTasks("qa,events,caption_proxy")
 	if err != nil {
@@ -630,7 +783,7 @@ func syntheticJSON() string {
 }
 
 func TestSummaryLineUsesEnabledTasks(t *testing.T) {
-	if got := locomoreport.SummaryLine(&locomoreport.Report{QAMetrics: &locomoreport.QAMetrics{AverageF1: 1}}); !strings.Contains(got, "qa_f1=1.000") {
+	if got := locomoreport.SummaryLine(&locomoreport.Report{QAMetrics: &locomoreport.QAMetrics{AverageF1: 1, EvidenceRecallAtK: 0.5}}); !strings.Contains(got, "qa_f1=1.000") || !strings.Contains(got, "evidence_recall_at_k=0.500") {
 		t.Fatalf("summaryLine = %q, want QA metric", got)
 	}
 }

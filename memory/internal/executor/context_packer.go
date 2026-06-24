@@ -16,15 +16,17 @@ import (
 
 func (r *Executor) applyContextPacker(ctx context.Context, req PackContextRequest, pack *ContextPack) error {
 	output, err := r.contextPacker.PackContext(ctx, cloneContextPackInput(derive.ContextPackInput{
-		Scope:          contextPackScope(req),
-		Query:          contextPackQuery(req),
-		Window:         pack.Window,
-		SourceMessages: sourceMessageResolver{store: r.messageStore},
-		Items:          pack.Items,
-		MessageHits:    pack.MessageHits,
-		SummaryHits:    pack.SummaryHits,
-		DocumentHits:   pack.DocumentHits,
-		EntityHits:     pack.EntityHits,
+		Scope:              contextPackScope(req),
+		Query:              contextPackQuery(req),
+		Options:            req.PackOptions,
+		Window:             pack.Window,
+		SourceMessages:     sourceMessageResolver{store: r.messageStore},
+		EntityGraphSources: entityGraphSourceResolver{store: r.entityFacts},
+		Items:              pack.Items,
+		MessageHits:        pack.MessageHits,
+		SummaryHits:        pack.SummaryHits,
+		DocumentHits:       pack.DocumentHits,
+		EntityHits:         pack.EntityHits,
 	}))
 	if err != nil {
 		return err
@@ -66,6 +68,52 @@ func (r sourceMessageResolver) GetSourceMessage(ctx context.Context, conversatio
 		return sourcemessage.Message{}, false, nil
 	}
 	return r.store.Get(ctx, conversationID, messageID)
+}
+
+func (r sourceMessageResolver) GetSourceMessageNeighbors(ctx context.Context, conversationID, messageID string, before, after int) ([]sourcemessage.Message, error) {
+	if r.store == nil || conversationID == "" || messageID == "" || (before <= 0 && after <= 0) {
+		return nil, nil
+	}
+	messages, err := r.store.List(ctx, conversationID, sourcemessage.ListOptions{})
+	if err != nil {
+		return nil, err
+	}
+	anchor := -1
+	for i, msg := range messages {
+		if msg.ID == messageID {
+			anchor = i
+			break
+		}
+	}
+	if anchor < 0 {
+		return nil, nil
+	}
+	var out []sourcemessage.Message
+	maxDistance := max(after, before)
+	for distance := 1; distance <= maxDistance; distance++ {
+		if distance <= before {
+			if idx := anchor - distance; idx >= 0 {
+				out = append(out, cloneMessage(messages[idx]))
+			}
+		}
+		if distance <= after {
+			if idx := anchor + distance; idx < len(messages) {
+				out = append(out, cloneMessage(messages[idx]))
+			}
+		}
+	}
+	return out, nil
+}
+
+type entityGraphSourceResolver struct {
+	store viewentityfact.Store
+}
+
+func (r entityGraphSourceResolver) ExpandGraphSources(ctx context.Context, scope views.Scope, seedFacts []viewentityfact.GraphSeedFact, opts viewentityfact.GraphExpansionOptions) (viewentityfact.GraphExpansionResult, error) {
+	if r.store == nil {
+		return viewentityfact.GraphExpansionResult{}, nil
+	}
+	return viewentityfact.ExpandGraphSources(ctx, r.store, scope, seedFacts, opts)
 }
 
 func cloneContextPackInput(in derive.ContextPackInput) derive.ContextPackInput {
@@ -185,7 +233,7 @@ func cloneEntityFactSearchHits(in []derive.EntityFactSearchHit) []derive.EntityF
 
 func cloneMessage(in sourcemessage.Message) sourcemessage.Message {
 	out := in
-	out.Message = in.Message.Clone()
+	out.Message = in.Clone()
 	out.Metadata = cloneAnyMap(in.Metadata)
 	if in.SpanRefs != nil {
 		out.SpanRefs = append([]sourcemessage.SpanRef(nil), in.SpanRefs...)
@@ -221,9 +269,7 @@ func cloneRetrievalHit(in retrieval.Hit) retrieval.Hit {
 	out.Doc = cloneRetrievalDoc(in.Doc)
 	if in.Scores != nil {
 		out.Scores = make(map[string]float64, len(in.Scores))
-		for k, v := range in.Scores {
-			out.Scores[k] = v
-		}
+		maps.Copy(out.Scores, in.Scores)
 	}
 	return out
 }
@@ -283,9 +329,7 @@ func cloneViewSignature(in views.ViewSignature) views.ViewSignature {
 	}
 	if in.DiagnosticSignatures != nil {
 		out.DiagnosticSignatures = make(map[string]string, len(in.DiagnosticSignatures))
-		for k, v := range in.DiagnosticSignatures {
-			out.DiagnosticSignatures[k] = v
-		}
+		maps.Copy(out.DiagnosticSignatures, in.DiagnosticSignatures)
 	}
 	return out
 }

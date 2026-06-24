@@ -53,7 +53,7 @@ func Build(opts MemoryOptions) (*memory.System, func() error, error) {
 			MaxMessagesPerCall:   48,
 			Timeout:              opts.PerCallTimeout,
 		}
-		entityExtractor = deriveentityfact.LLMExtractor{
+		entityExtractor = deriveentityfact.AgentExtractor{
 			LLM:                opts.MemoryLLM,
 			MaxMessagesPerCall: 16,
 			Timeout:            opts.PerCallTimeout,
@@ -69,17 +69,33 @@ func Build(opts MemoryOptions) (*memory.System, func() error, error) {
 		Embedding:           memory.EmbeddingOptions{Timeout: opts.PerCallTimeout},
 		Summarizer:          summarizer,
 		EntityFactExtractor: entityExtractor,
-		ContextPacker: derivecontextpack.SourceBackedReservePacker{
-			MaxReserveMessages:   4,
-			MaxSourceRefsPerHit:  3,
-			MinQueryTokens:       5,
-			MinDerivedHits:       6,
-			MinReserveCandidates: 2,
-			MinEntityConfidence:  0.5,
-			UseEntityFactRefs:    true,
-			GateOn:               []derivecontextpack.ReserveDerivedHitKind{derivecontextpack.ReserveDerivedSummary},
-			ReserveMetadata: map[string]any{
-				"retrieval_origin": "entity_fact_expanded",
+		ContextPacker: derivecontextpack.SourceEvidencePacker{
+			SourceOnly:              true,
+			MaxDirectMessages:       12,
+			MaxSummaryMessages:      18,
+			MaxEntityFactMessages:   4,
+			MaxGraphMessages:        0,
+			MaxNeighborhoodMessages: 4,
+			MaxSourceRefsPerHit:     3,
+			MinEntityConfidence:     0.5,
+			MinRelativeScore:        0.5,
+			UseDirectMessages:       true,
+			UseSummaryRefs:          true,
+			UseEntityFactRefs:       true,
+			UseGraphSources:         true,
+			UseNeighborhood:         true,
+			NeighborhoodBefore:      1,
+			NeighborhoodAfter:       1,
+			NeighborhoodAnchors:     []derivecontextpack.SourceEvidenceOrigin{derivecontextpack.SourceEvidenceOriginSummary},
+			GraphMaxSeedFacts:       8,
+			GraphOptions:            viewentityfact.GraphExpansionOptions{MaxFactsPerSeed: 8, MaxBridgeFacts: 8, MaxSourceRefsPerGraphPath: 2},
+			OriginMetadataKey:       "retrieval_origin",
+			OriginMetadataValues: derivecontextpack.SourceEvidenceOriginValues{
+				Direct:       "source_direct",
+				Summary:      "summary_expanded",
+				EntityFact:   "entity_fact_expanded",
+				Graph:        "graph_fact_expanded",
+				Neighborhood: "source_neighborhood_expanded",
 			},
 		},
 	})

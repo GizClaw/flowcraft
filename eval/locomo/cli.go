@@ -31,22 +31,24 @@ import (
 
 func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 	var (
-		datasetPath         string
-		workspaceRoot       string
-		answerSpec          string
-		memorySpec          string
-		judgeSpec           string
-		embedderSpec        string
-		tasksSpec           string
-		limitSamples        int
-		limitQA             int
-		excludeQACategories []int
-		qaTopK              int
-		limitTurns          int
-		concurrency         int
-		qaConcurrency       int
-		maxSamples          int
-		perCallTimeout      time.Duration
+		datasetPath              string
+		workspaceRoot            string
+		runID                    string
+		answerSpec               string
+		memorySpec               string
+		judgeSpec                string
+		embedderSpec             string
+		tasksSpec                string
+		limitSamples             int
+		limitQA                  int
+		excludeQACategories      []int
+		qaTopK                   int
+		qaGraphExpandedMaxSource int
+		limitTurns               int
+		concurrency              int
+		qaConcurrency            int
+		maxSamples               int
+		perCallTimeout           time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -64,9 +66,6 @@ metadata are used as text memory inputs; this does not claim official visual MM-
 			if workspaceRoot == "" {
 				return fmt.Errorf("--workspace is required")
 			}
-			if answerSpec == "" {
-				return fmt.Errorf("--answer-llm is required")
-			}
 			tasks, err := ParseTasks(tasksSpec)
 			if err != nil {
 				return err
@@ -75,9 +74,19 @@ metadata are used as text memory inputs; this does not claim official visual MM-
 			if err != nil {
 				return fmt.Errorf("notify: %w", err)
 			}
-			answerLLM, err := env.BuildLLM(answerSpec)
-			if err != nil {
-				return fmt.Errorf("--answer-llm: %w", err)
+			taskSet := taskSet(tasks)
+			if answerSpec == "" && (taskSet[locomoreport.TaskEvent] || taskSet[locomoreport.TaskDialog]) {
+				return fmt.Errorf("--answer-llm is required for event/dialog tasks")
+			}
+			if answerSpec == "" && judgeSpec != "" {
+				return fmt.Errorf("--answer-llm is required when --judge-llm is set")
+			}
+			var answerLLM llm.LLM
+			if answerSpec != "" {
+				answerLLM, err = env.BuildLLM(answerSpec)
+				if err != nil {
+					return fmt.Errorf("--answer-llm: %w", err)
+				}
 			}
 			var memoryLLM llm.LLM
 			if memorySpec != "" {
@@ -116,24 +125,30 @@ metadata are used as text memory inputs; this does not claim official visual MM-
 					log.Printf("[locomo] close memory: %v", err)
 				}
 			}()
+			evalRunID := runID
+			if evalRunID == "" {
+				evalRunID = "locomo-" + fmt.Sprint(os.Getpid())
+			}
 			rep, err := Run(c.Context(), ds, Options{
-				Memory:              mem,
-				AnswerLLM:           answerLLM,
-				JudgeLLM:            judgeLLM,
-				WorkspaceRoot:       workspaceRoot,
-				RunID:               "locomo-" + fmt.Sprint(os.Getpid()),
-				Tasks:               tasks,
-				LimitSamples:        limitSamples,
-				LimitQA:             limitQA,
-				ExcludeQACategories: excludeQACategories,
-				QATopK:              qaTopK,
-				LimitTurns:          limitTurns,
-				Concurrency:         concurrency,
-				QAConcurrency:       qaConcurrency,
-				MaxSamples:          maxSamples,
-				ProgressPct:         g.Notify.ProgressPct,
-				PerCallTimeout:      perCallTimeout,
-				ReportHook:          progressReportHook(g.OutPath),
+				Memory:                   mem,
+				AnswerLLM:                answerLLM,
+				JudgeLLM:                 judgeLLM,
+				WorkspaceRoot:            workspaceRoot,
+				RunID:                    evalRunID,
+				ReuseIngested:            runID != "",
+				Tasks:                    tasks,
+				LimitSamples:             limitSamples,
+				LimitQA:                  limitQA,
+				ExcludeQACategories:      excludeQACategories,
+				QATopK:                   qaTopK,
+				QAGraphExpandedMaxSource: qaGraphExpandedMaxSource,
+				LimitTurns:               limitTurns,
+				Concurrency:              concurrency,
+				QAConcurrency:            qaConcurrency,
+				MaxSamples:               maxSamples,
+				ProgressPct:              g.Notify.ProgressPct,
+				PerCallTimeout:           perCallTimeout,
+				ReportHook:               progressReportHook(g.OutPath),
 				Hook: func(ctx context.Context, e Event) {
 					notify.Forward(ctx, notifier, notify.Event{
 						Kind: e.Kind, Time: e.Time, Title: e.Title, Body: e.Body, Fields: e.Fields,
@@ -158,7 +173,8 @@ metadata are used as text memory inputs; this does not claim official visual MM-
 	f := cmd.Flags()
 	f.StringVar(&datasetPath, "dataset", "", "path to locomo10.json; required")
 	f.StringVar(&workspaceRoot, "workspace", "", "unique LocalWorkspace root for this run; required")
-	f.StringVar(&answerSpec, "answer-llm", "", "LLM used to answer QA/event/dialog prompts; required")
+	f.StringVar(&runID, "run-id", "", "optional stable run id; if matching complete ingest exists in --workspace, reuse it instead of ingesting again")
+	f.StringVar(&answerSpec, "answer-llm", "", "LLM used to answer QA/event/dialog prompts (optional for QA retrieval-only runs)")
 	f.StringVar(&memorySpec, "memory-llm", "", "optional LLM used to derive SummaryDAG recall-bridge nodes")
 	f.StringVar(&judgeSpec, "judge-llm", "", "optional LLM judge for semantic QA correctness scoring")
 	f.StringVar(&embedderSpec, "embedder", "", "optional embedder for hybrid source-message retrieval")
@@ -167,6 +183,7 @@ metadata are used as text memory inputs; this does not claim official visual MM-
 	f.IntVar(&limitQA, "limit-qa", 0, "evaluate only first N QA items per sample (0 = all)")
 	f.IntSliceVar(&excludeQACategories, "exclude-qa-category", nil, "QA category IDs to exclude before applying --limit-qa (repeat or comma-separated, e.g. 5)")
 	f.IntVar(&qaTopK, "qa-top-k", defaultQATopK, "maximum final source messages used for LoCoMo QA context")
+	f.IntVar(&qaGraphExpandedMaxSource, "qa-graph-expanded-max-source", defaultQAGraphExpandedMaxSource, "maximum graph-expanded source messages appended to LoCoMo QA context (0 = disabled)")
 	f.IntVar(&limitTurns, "limit-turns", 0, "ingest only first N turns per sample for smoke runs (0 = all)")
 	f.IntVar(&concurrency, "concurrency", 4, "maximum concurrent LoCoMo samples/conversations")
 	f.IntVar(&qaConcurrency, "qa-concurrency", 4, "maximum concurrent QA items within one LoCoMo sample")

@@ -20,6 +20,15 @@ import (
 
 const defaultPathSegmentPrefix = "ef_"
 
+const (
+	factIndexEntities  = "entities"
+	factIndexSubjects  = "subjects"
+	factIndexObjects   = "objects"
+	factIndexRelations = "relations"
+	factIndexTimes     = "times"
+	factIndexSources   = "sources"
+)
+
 type WorkspaceStore struct {
 	ws                workspace.Workspace
 	pathSegmentPrefix string
@@ -105,7 +114,19 @@ func (s *WorkspaceStore) PutFact(ctx context.Context, fact Fact) (Fact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	oldFact, oldOK, err := s.readFact(ctx, fact.Scope, fact.ID)
+	if err != nil {
+		return Fact{}, err
+	}
+	if oldOK {
+		if err := s.removeFactIndexEntries(ctx, oldFact); err != nil {
+			return Fact{}, err
+		}
+	}
 	if err := s.writeJSON(ctx, s.factPath(fact.Scope, fact.ID), fact); err != nil {
+		return Fact{}, err
+	}
+	if err := s.addFactIndexEntries(ctx, fact); err != nil {
 		return Fact{}, err
 	}
 	return CloneFact(fact), nil
@@ -202,6 +223,56 @@ func (s *WorkspaceStore) ListFacts(ctx context.Context, scope views.Scope, opts 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	return s.listFactsUnlocked(ctx, scope, opts)
+}
+
+func (s *WorkspaceStore) ListFactsByEntity(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	return s.listFactsByIndexedIDs(ctx, scope, s.factEntityIndexPath(scope, id), opts, func(fact Fact) bool {
+		return factHasEntity(fact, id)
+	})
+}
+
+func (s *WorkspaceStore) ListFactsBySubject(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	return s.listFactsByIndexedIDs(ctx, scope, s.factSubjectIndexPath(scope, id), opts, func(fact Fact) bool {
+		return fact.SubjectEntityID == id
+	})
+}
+
+func (s *WorkspaceStore) ListFactsByObject(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	return s.listFactsByIndexedIDs(ctx, scope, s.factObjectIndexPath(scope, id), opts, func(fact Fact) bool {
+		return factHasObject(fact, id)
+	})
+}
+
+func (s *WorkspaceStore) ListFactsByRelation(ctx context.Context, scope views.Scope, relation RelationType, opts ListOptions) ([]Fact, error) {
+	return s.listFactsByIndexedIDs(ctx, scope, s.factRelationIndexPath(scope, relation), opts, func(fact Fact) bool {
+		return fact.RelationType == relation
+	})
+}
+
+func (s *WorkspaceStore) ListFactsByTime(ctx context.Context, scope views.Scope, timeText string, opts ListOptions) ([]Fact, error) {
+	timeKey := NormalizeTimeKey(timeText)
+	if timeKey == "" {
+		return nil, nil
+	}
+	return s.listFactsByIndexedIDs(ctx, scope, s.factTimeIndexPath(scope, timeKey), opts, func(fact Fact) bool {
+		return NormalizeTimeKey(fact.TimeText) == timeKey
+	})
+}
+
+func (s *WorkspaceStore) ListFactsBySourceMessage(ctx context.Context, scope views.Scope, conversationID, messageID string, opts ListOptions) ([]Fact, error) {
+	if conversationID == "" {
+		conversationID = scope.ConversationID
+	}
+	if messageID == "" {
+		return nil, nil
+	}
+	return s.listFactsByIndexedIDs(ctx, scope, s.factSourceIndexPath(scope, conversationID, messageID), opts, func(fact Fact) bool {
+		return factHasSourceMessage(fact, conversationID, messageID)
+	})
+}
+
+func (s *WorkspaceStore) listFactsUnlocked(ctx context.Context, scope views.Scope, opts ListOptions) ([]Fact, error) {
 	ids, err := s.listIDs(ctx, s.factsDir(scope), opts.AfterID)
 	if err != nil {
 		return nil, err
@@ -213,6 +284,51 @@ func (s *WorkspaceStore) ListFacts(ctx context.Context, scope views.Scope, opts 
 			return nil, err
 		}
 		if !ok {
+			continue
+		}
+		out = append(out, CloneFact(fact))
+		if opts.Limit > 0 && len(out) >= opts.Limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *WorkspaceStore) listFactsByIndexedIDs(ctx context.Context, scope views.Scope, indexPath string, opts ListOptions, match func(Fact) bool) ([]Fact, error) {
+	if s.ws == nil {
+		return nil, errdefs.Validationf("%s: workspace is required", errPrefix)
+	}
+	if scope.ConversationID == "" || indexPath == "" {
+		return nil, nil
+	}
+	if err := validateScope(scope); err != nil {
+		return nil, err
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	ids, ok, err := s.readFactIndexIDs(ctx, indexPath)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		facts, err := s.listFactsUnlocked(ctx, scope, opts)
+		if err != nil {
+			return nil, err
+		}
+		return filterFacts(facts, opts, match), nil
+	}
+	out := make([]Fact, 0, len(ids))
+	for _, id := range ids {
+		if opts.AfterID != "" && string(id) <= opts.AfterID {
+			continue
+		}
+		fact, ok, err := s.readFact(ctx, scope, id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !match(fact) {
 			continue
 		}
 		out = append(out, CloneFact(fact))
@@ -333,6 +449,98 @@ func (s *WorkspaceStore) addAliasEntries(ctx context.Context, entity Entity) err
 	return nil
 }
 
+func (s *WorkspaceStore) addFactIndexEntries(ctx context.Context, fact Fact) error {
+	for _, entry := range s.factIndexEntries(fact) {
+		if err := s.addFactIndexID(ctx, entry, fact.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *WorkspaceStore) removeFactIndexEntries(ctx context.Context, fact Fact) error {
+	for _, entry := range s.factIndexEntries(fact) {
+		if err := s.removeFactIndexID(ctx, entry, fact.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *WorkspaceStore) factIndexEntries(fact Fact) []string {
+	seen := map[string]bool{}
+	add := func(out *[]string, p string) {
+		if p == "" || seen[p] {
+			return
+		}
+		seen[p] = true
+		*out = append(*out, p)
+	}
+	var out []string
+	add(&out, s.factEntityIndexPath(fact.Scope, fact.SubjectEntityID))
+	add(&out, s.factSubjectIndexPath(fact.Scope, fact.SubjectEntityID))
+	for _, id := range fact.ObjectEntityIDs {
+		add(&out, s.factEntityIndexPath(fact.Scope, id))
+		add(&out, s.factObjectIndexPath(fact.Scope, id))
+	}
+	add(&out, s.factRelationIndexPath(fact.Scope, fact.RelationType))
+	if timeKey := NormalizeTimeKey(fact.TimeText); timeKey != "" {
+		add(&out, s.factTimeIndexPath(fact.Scope, timeKey))
+	}
+	for _, ref := range fact.SourceRefs {
+		if ref.Kind != views.SourceMessage || ref.Message == nil || ref.Message.MessageID == "" {
+			continue
+		}
+		conversationID := ref.Message.ConversationID
+		if conversationID == "" {
+			conversationID = fact.Scope.ConversationID
+		}
+		add(&out, s.factSourceIndexPath(fact.Scope, conversationID, ref.Message.MessageID))
+	}
+	return out
+}
+
+func (s *WorkspaceStore) addFactIndexID(ctx context.Context, indexPath string, id FactID) error {
+	ids, _, err := s.readFactIndexIDs(ctx, indexPath)
+	if err != nil {
+		return err
+	}
+	if !containsFactID(ids, id) {
+		ids = append(ids, id)
+		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	}
+	return s.writeJSON(ctx, indexPath, ids)
+}
+
+func (s *WorkspaceStore) removeFactIndexID(ctx context.Context, indexPath string, id FactID) error {
+	ids, ok, err := s.readFactIndexIDs(ctx, indexPath)
+	if err != nil || !ok {
+		return err
+	}
+	out := ids[:0]
+	for _, existing := range ids {
+		if existing != id {
+			out = append(out, existing)
+		}
+	}
+	if len(out) == 0 {
+		if err := s.ws.Delete(ctx, indexPath); err != nil && !errdefs.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+	return s.writeJSON(ctx, indexPath, out)
+}
+
+func (s *WorkspaceStore) readFactIndexIDs(ctx context.Context, indexPath string) ([]FactID, bool, error) {
+	var ids []FactID
+	ok, err := s.readJSON(ctx, indexPath, &ids)
+	if err != nil || !ok {
+		return nil, ok, err
+	}
+	return ids, true, nil
+}
+
 func (s *WorkspaceStore) readAliasIDs(ctx context.Context, scope views.Scope, key string) ([]EntityID, error) {
 	var ids []EntityID
 	ok, err := s.readJSON(ctx, s.aliasPath(scope, key), &ids)
@@ -406,6 +614,10 @@ func (s *WorkspaceStore) aliasesDir(scope views.Scope) string {
 	return path.Join(s.conversationDir(scope), "aliases")
 }
 
+func (s *WorkspaceStore) factIndexDir(scope views.Scope) string {
+	return path.Join(s.conversationDir(scope), "fact_index")
+}
+
 func (s *WorkspaceStore) entityPath(scope views.Scope, id EntityID) string {
 	return path.Join(s.entitiesDir(scope), s.pathSegment(string(id))+".json")
 }
@@ -416,6 +628,48 @@ func (s *WorkspaceStore) factPath(scope views.Scope, id FactID) string {
 
 func (s *WorkspaceStore) aliasPath(scope views.Scope, key string) string {
 	return path.Join(s.aliasesDir(scope), s.pathSegment(key)+".json")
+}
+
+func (s *WorkspaceStore) factEntityIndexPath(scope views.Scope, id EntityID) string {
+	if id == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexEntities, s.pathSegment(string(id))+".json")
+}
+
+func (s *WorkspaceStore) factSubjectIndexPath(scope views.Scope, id EntityID) string {
+	if id == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexSubjects, s.pathSegment(string(id))+".json")
+}
+
+func (s *WorkspaceStore) factObjectIndexPath(scope views.Scope, id EntityID) string {
+	if id == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexObjects, s.pathSegment(string(id))+".json")
+}
+
+func (s *WorkspaceStore) factRelationIndexPath(scope views.Scope, relation RelationType) string {
+	if relation == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexRelations, s.pathSegment(string(relation))+".json")
+}
+
+func (s *WorkspaceStore) factTimeIndexPath(scope views.Scope, timeKey string) string {
+	if timeKey == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexTimes, s.pathSegment(timeKey)+".json")
+}
+
+func (s *WorkspaceStore) factSourceIndexPath(scope views.Scope, conversationID, messageID string) string {
+	if conversationID == "" || messageID == "" {
+		return ""
+	}
+	return path.Join(s.factIndexDir(scope), factIndexSources, s.pathSegment(conversationID), s.pathSegment(messageID)+".json")
 }
 
 func (s *WorkspaceStore) tmpPath(livePath string) string {
@@ -451,4 +705,59 @@ func containsEntityID(ids []EntityID, id EntityID) bool {
 		}
 	}
 	return false
+}
+
+func containsFactID(ids []FactID, id FactID) bool {
+	for _, existing := range ids {
+		if existing == id {
+			return true
+		}
+	}
+	return false
+}
+
+func factHasEntity(fact Fact, id EntityID) bool {
+	return fact.SubjectEntityID == id || factHasObject(fact, id)
+}
+
+func factHasObject(fact Fact, id EntityID) bool {
+	for _, objectID := range fact.ObjectEntityIDs {
+		if objectID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func factHasSourceMessage(fact Fact, conversationID, messageID string) bool {
+	for _, ref := range fact.SourceRefs {
+		if ref.Kind != views.SourceMessage || ref.Message == nil {
+			continue
+		}
+		refConversationID := ref.Message.ConversationID
+		if refConversationID == "" {
+			refConversationID = fact.Scope.ConversationID
+		}
+		if refConversationID == conversationID && ref.Message.MessageID == messageID {
+			return true
+		}
+	}
+	return false
+}
+
+func filterFacts(facts []Fact, opts ListOptions, match func(Fact) bool) []Fact {
+	out := make([]Fact, 0, len(facts))
+	for _, fact := range facts {
+		if opts.AfterID != "" && string(fact.ID) <= opts.AfterID {
+			continue
+		}
+		if !match(fact) {
+			continue
+		}
+		out = append(out, CloneFact(fact))
+		if opts.Limit > 0 && len(out) >= opts.Limit {
+			break
+		}
+	}
+	return out
 }

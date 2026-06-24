@@ -92,8 +92,9 @@ type SourceMessageSearchResponse struct {
 
 // PackContextRequest describes the read-time evidence Executor should compose.
 type PackContextRequest struct {
-	Scope views.Scope
-	Query string
+	Scope       views.Scope
+	Query       string
+	PackOptions derive.ContextPackOptions
 
 	Window           recent.WindowRequest
 	MessageSearch    *retrieval.SearchRequest

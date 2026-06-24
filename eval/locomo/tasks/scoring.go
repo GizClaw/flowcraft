@@ -112,16 +112,48 @@ func captionTermRecall(predicted, caption string) float64 {
 }
 
 func evidenceRecall(observed map[string]bool, expected []string) float64 {
-	if len(expected) == 0 {
+	ids := NormalizeEvidenceIDs(expected)
+	if len(ids) == 0 {
 		return 0
 	}
 	var hit int
-	for _, id := range expected {
-		if observed[strings.TrimSpace(id)] {
+	for _, id := range ids {
+		if observed[id] {
 			hit++
 		}
 	}
-	return float64(hit) / float64(len(expected))
+	return float64(hit) / float64(len(ids))
+}
+
+// NormalizeEvidenceIDs turns LoCoMo evidence fields into atomic dialog IDs.
+// Some rows encode multiple evidence IDs in one string, such as "D8:6; D9:17".
+func NormalizeEvidenceIDs(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, id := range splitEvidenceIDs(value) {
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+func splitEvidenceIDs(s string) []string {
+	fields := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
 }
 
 func isNoInfoAnswer(s string) bool {

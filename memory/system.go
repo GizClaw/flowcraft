@@ -156,6 +156,14 @@ func (r *System) DocumentStore() sourcedocument.Store {
 	return r.inner.DocumentStore()
 }
 
+// EntityFactStore returns the configured entity fact store, if any.
+func (r *System) EntityFactStore() viewentityfact.Store {
+	if r == nil {
+		return nil
+	}
+	return r.deps.EntityFactStore
+}
+
 // RetrievalIndex returns the shared retrieval index used by projection writers.
 func (r *System) RetrievalIndex() retrieval.Index {
 	if r == nil || r.inner == nil {

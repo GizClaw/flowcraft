@@ -89,13 +89,20 @@ type QAResult struct {
 }
 
 type QAHitCounts struct {
-	SourceMessages        int `json:"source_messages"`
-	SourceDirect          int `json:"source_direct,omitempty"`
-	SourceSummaryExpanded int `json:"source_summary_expanded,omitempty"`
-	SourceEntityExpanded  int `json:"source_entity_expanded,omitempty"`
-	SummaryNode           int `json:"summary_node,omitempty"`
-	EntityFact            int `json:"entity_fact,omitempty"`
-	DocumentChunk         int `json:"document_chunk,omitempty"`
+	SourceMessages             int `json:"source_messages"`
+	SourceDirect               int `json:"source_direct,omitempty"`
+	SourceSummaryExpanded      int `json:"source_summary_expanded,omitempty"`
+	SourceNeighborhoodExpanded int `json:"source_neighborhood_expanded,omitempty"`
+	SourceEntityExpanded       int `json:"source_entity_expanded,omitempty"`
+	SourceGraphExpanded        int `json:"source_graph_expanded,omitempty"`
+	SummaryNode                int `json:"summary_node,omitempty"`
+	EntityFact                 int `json:"entity_fact,omitempty"`
+	GraphFact                  int `json:"graph_fact,omitempty"`
+	GraphEvent                 int `json:"graph_event,omitempty"`
+	GraphBridge                int `json:"graph_bridge,omitempty"`
+	GraphSeedEntity            int `json:"graph_seed_entity,omitempty"`
+	GraphPaths                 int `json:"graph_paths,omitempty"`
+	DocumentChunk              int `json:"document_chunk,omitempty"`
 }
 
 type QAJudgeResult struct {
@@ -162,7 +169,7 @@ func AccumulateQA(m *QAMetrics, item dataset.QAItem, row QAResult) {
 	m.AverageF1 += row.F1
 	m.EvidenceRecallAtK += row.EvidenceRecall
 	accumulateQAJudge(m, row.Judge)
-	if item.CategoryID == 5 || item.Category == "adversarial" {
+	if row.Predicted != "" && (item.CategoryID == 5 || item.Category == "adversarial") {
 		m.NoInfoCount++
 		if isNoInfoAnswer(row.Predicted) {
 			m.NoInfoAccuracy++
@@ -326,6 +333,7 @@ func SummaryLine(rep *Report) string {
 	parts := []string{}
 	if rep.QAMetrics != nil {
 		parts = append(parts, fmt.Sprintf("qa_f1=%.3f", rep.QAMetrics.AverageF1))
+		parts = append(parts, fmt.Sprintf("evidence_recall_at_k=%.3f", rep.QAMetrics.EvidenceRecallAtK))
 	}
 	if rep.EventMetrics != nil {
 		parts = append(parts, fmt.Sprintf("event_rouge_l=%.3f", rep.EventMetrics.AverageRougeL))

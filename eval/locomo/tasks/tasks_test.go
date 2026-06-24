@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/dataset"
 	"github.com/GizClaw/flowcraft/memory"
 	"github.com/GizClaw/flowcraft/memory/derive"
+	derivecontextpack "github.com/GizClaw/flowcraft/memory/derive/context"
 	"github.com/GizClaw/flowcraft/memory/retrieval"
 	retrievalworkspace "github.com/GizClaw/flowcraft/memory/retrieval/workspace"
 	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
@@ -167,9 +168,26 @@ func TestContextHitCountsReportsSourceMessages(t *testing.T) {
 	}
 }
 
-func TestDefaultQATopKIsThirty(t *testing.T) {
-	if DefaultQATopK != 30 {
-		t.Fatalf("DefaultQATopK = %d, want 30", DefaultQATopK)
+func TestDefaultQATopKIsTwelve(t *testing.T) {
+	if DefaultQATopK != 12 {
+		t.Fatalf("DefaultQATopK = %d, want 12", DefaultQATopK)
+	}
+}
+
+func TestNormalizeEvidenceIDsSplitsCompositeEvidence(t *testing.T) {
+	got := NormalizeEvidenceIDs([]string{"D8:6; D9:17", " D9:17 ", "D10:1|D10:2"})
+	want := []string{"D8:6", "D9:17", "D10:1", "D10:2"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("NormalizeEvidenceIDs = %v, want %v", got, want)
+	}
+}
+
+func TestEvidenceRecallUsesAtomicEvidenceIDs(t *testing.T) {
+	observed := map[string]bool{"D8:6": true, "D10:2": true}
+	got := evidenceRecall(observed, []string{"D8:6; D9:17", "D10:1|D10:2"})
+	want := 0.5
+	if got != want {
+		t.Fatalf("evidenceRecall = %.3f, want %.3f", got, want)
 	}
 }
 
@@ -179,8 +197,8 @@ func TestRetrieveQAContextDisablesRecentWindow(t *testing.T) {
 		qaTopK          int
 		wantMessageHits int
 	}{
-		{name: "default top k", qaTopK: 0, wantMessageHits: DefaultQATopK + 5},
-		{name: "custom top k", qaTopK: 7, wantMessageHits: 19},
+		{name: "default top k", qaTopK: 0, wantMessageHits: DefaultQATopK + qaSummaryExpandedMaxSource + qaEntityExpandedMaxSource},
+		{name: "custom top k", qaTopK: 7, wantMessageHits: 7 + qaSummaryExpandedMaxSource + qaEntityExpandedMaxSource},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -216,7 +234,7 @@ func TestRetrieveQAContextDisablesRecentWindow(t *testing.T) {
 			}
 
 			scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv", DatasetID: "dataset"}
-			messages := make([]sourcemessage.Message, DefaultQATopK+5)
+			messages := make([]sourcemessage.Message, 40)
 			for i := range messages {
 				n := i + 1
 				messages[i] = sourcemessage.Message{
@@ -239,6 +257,40 @@ func TestRetrieveQAContextDisablesRecentWindow(t *testing.T) {
 				t.Fatalf("recent window messages = %d, want 0", got)
 			}
 		})
+	}
+}
+
+func TestRetrieveQAContextDefaultGraphBudgetDoesNotExpandGraphSources(t *testing.T) {
+	ctx := context.Background()
+	mem, entityStore, closeMem := newQAGraphOnlyMemory(t)
+	defer closeMem()
+	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
+	messages := []sourcemessage.Message{
+		{ID: "dia-1", Message: model.NewTextMessage(model.RoleUser, "irrelevant filler")},
+		{ID: "dia-2", Message: model.NewTextMessage(model.RoleUser, "Ada keeps the spare key in the blue planter.")},
+	}
+	if _, err := mem.AppendMessage(ctx, memory.AppendMessageRequest{Scope: scope, Messages: messages}); err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+	putQAGraphEntity(t, ctx, entityStore, scope, viewentityfact.Entity{ID: "ent_ada", Type: viewentityfact.EntityPerson, Name: "Ada"})
+	putQAGraphFact(t, ctx, entityStore, scope, viewentityfact.Fact{
+		ID:              "fact_key",
+		SubjectEntityID: "ent_ada",
+		RelationType:    viewentityfact.RelationPossession,
+		FactText:        "Ada keeps the spare key in the blue planter.",
+		SourceRefs:      []views.SourceRef{qaTestMessageRef("conv", "dia-2")},
+	})
+
+	pack, err := RetrieveQAContextForDiagnostics(ctx, mem, scope, dataset.QAItem{Question: "Where does Ada keep the spare key?"}, DefaultQATopK)
+	if err != nil {
+		t.Fatalf("RetrieveQAContextForDiagnostics: %v", err)
+	}
+	counts := contextHitCounts(pack)
+	if counts.SourceGraphExpanded != 0 || counts.GraphFact != 0 {
+		t.Fatalf("hit counts = %+v, want graph disabled by default", counts)
+	}
+	if rendered := renderContext(pack); strings.Contains(rendered, "blue planter") {
+		t.Fatalf("rendered context included graph evidence with default graph budget:\n%s", rendered)
 	}
 }
 
@@ -333,17 +385,23 @@ func TestRetrieveQAContextLimitsSummaryExpansionPerNodeAndTotal(t *testing.T) {
 			{0, 1, 2, 3},
 			{4, 5, 6, 7},
 			{8, 9, 10, 11},
+			{12, 13, 14, 15},
+			{16, 17, 18, 19},
+			{20, 21, 22, 23},
 		},
 		texts: []string{
 			"budget-bridge first summary",
 			"budget-bridge second summary",
 			"budget-bridge third summary",
+			"budget-bridge fourth summary",
+			"budget-bridge fifth summary",
+			"budget-bridge sixth summary",
 		},
 	})
 	defer closeMem()
 
 	scope := memory.Scope{RuntimeID: "rt", UserID: "user", ConversationID: "conv"}
-	messages := make([]sourcemessage.Message, 20)
+	messages := make([]sourcemessage.Message, 30)
 	for i := range messages {
 		messages[i] = sourcemessage.Message{
 			ID:      fmt.Sprintf("dia-%02d", i+1),
@@ -362,14 +420,12 @@ func TestRetrieveQAContextLimitsSummaryExpansionPerNodeAndTotal(t *testing.T) {
 	if counts.SourceSummaryExpanded != qaSummaryExpandedMaxSource {
 		t.Fatalf("summary-expanded count = %d, want %d", counts.SourceSummaryExpanded, qaSummaryExpandedMaxSource)
 	}
-	for _, id := range []string{"dia-01", "dia-02", "dia-03", "dia-05", "dia-06", "dia-07", "dia-09", "dia-10"} {
-		if got := countContextMessagesByID(pack, id); got != 1 {
-			t.Fatalf("message %s appears %d times, want 1", id, got)
-		}
+	if counts.SourceNeighborhoodExpanded == 0 {
+		t.Fatalf("source-neighborhood count = 0, want capped summary neighbors appended separately")
 	}
-	for _, id := range []string{"dia-04", "dia-08", "dia-11", "dia-12"} {
-		if got := countContextMessagesByID(pack, id); got != 0 {
-			t.Fatalf("message %s appears %d times, want 0 from capped expansion", id, got)
+	for _, id := range []string{"dia-04", "dia-08", "dia-12", "dia-16", "dia-20", "dia-24"} {
+		if got := countContextMessagesByIDAndOrigin(pack, id, qaRetrievalOriginSummary); got != 0 {
+			t.Fatalf("message %s appears %d times as summary-expanded, want 0 from capped expansion", id, got)
 		}
 	}
 }
@@ -380,12 +436,18 @@ func TestRetrieveQAContextUsesIndependentRecentSummaryAndDirectBudgets(t *testin
 		nodes: [][]int{
 			{0, 1, 2},
 			{3, 4, 5},
-			{6, 7},
+			{6, 7, 8},
+			{9, 10, 11},
+			{12, 13, 14},
+			{15, 16, 17},
 		},
 		texts: []string{
 			"budget mix summary first",
 			"budget mix summary second",
 			"budget mix summary third",
+			"budget mix summary fourth",
+			"budget mix summary fifth",
+			"budget mix summary sixth",
 		},
 	})
 	defer closeMem()
@@ -416,7 +478,7 @@ func TestRetrieveQAContextUsesIndependentRecentSummaryAndDirectBudgets(t *testin
 	if counts.SourceMessages != qaSummaryExpandedMaxSource+DefaultQATopK {
 		t.Fatalf("source message count = %d, want summary+direct budget", counts.SourceMessages)
 	}
-	for _, id := range []string{"dia-01", "dia-08"} {
+	for _, id := range []string{"dia-01", "dia-18"} {
 		if got := countContextMessagesByID(pack, id); got != 1 {
 			t.Fatalf("summary message %s appears %d times, want exactly once", id, got)
 		}
@@ -878,10 +940,11 @@ func newQAMemoryWithSummaryConfig(t *testing.T, summarizer derive.Summarizer, re
 		},
 		ReadStages: readStages,
 	}, memory.Deps{
-		MessageStore: sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
-		SummaryStore: recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag")),
-		Summarizer:   summarizer,
-		Index:        index,
+		MessageStore:  sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		SummaryStore:  recent.NewSummaryWorkspaceStore(sdkworkspace.Sub(root, "views/summary_dag")),
+		Summarizer:    summarizer,
+		Index:         index,
+		ContextPacker: qaSourceEvidenceTestPacker(),
 	})
 	if err != nil {
 		_ = index.Close()
@@ -898,10 +961,122 @@ func newQAMemoryWithSummaryConfig(t *testing.T, summarizer derive.Summarizer, re
 	return mem, cleanup
 }
 
+func newQAGraphOnlyMemory(t *testing.T) (*memory.System, *viewentityfact.WorkspaceStore, func()) {
+	t.Helper()
+	root := sdkworkspace.NewMemWorkspace()
+	entityStore := viewentityfact.NewWorkspaceStore(sdkworkspace.Sub(root, "views/entity_facts"))
+	mem, err := memory.New(memory.Spec{
+		Sources: []memory.SourceSpec{{Kind: memory.SourceMessageLog, Required: true}},
+		Capabilities: []memory.CapabilitySpec{
+			{Capability: memory.CapabilityRecentWindow, Required: true},
+		},
+		WriteStages: []memory.StageSpec{
+			{Name: "append_message"},
+		},
+		ReadStages: []memory.StageSpec{
+			{Name: "load_recent_messages"},
+			{Name: "pack_context"},
+		},
+	}, memory.Deps{
+		MessageStore:    sourcemessage.NewWorkspaceStore(sdkworkspace.Sub(root, "sources/message")),
+		EntityFactStore: entityStore,
+		ContextPacker:   qaSourceEvidenceTestPacker(),
+	})
+	if err != nil {
+		t.Fatalf("memory.New: %v", err)
+	}
+	cleanup := func() {
+		if err := mem.Close(); err != nil {
+			t.Fatalf("memory close: %v", err)
+		}
+	}
+	return mem, entityStore, cleanup
+}
+
+func qaSourceEvidenceTestPacker() derivecontextpack.SourceEvidencePacker {
+	return derivecontextpack.SourceEvidencePacker{
+		SourceOnly:              true,
+		MaxDirectMessages:       DefaultQATopK,
+		MaxSummaryMessages:      qaSummaryExpandedMaxSource,
+		MaxEntityFactMessages:   qaEntityExpandedMaxSource,
+		MaxGraphMessages:        DefaultQAGraphExpandedMaxSource,
+		MaxNeighborhoodMessages: qaSummaryNeighborMaxSource,
+		MaxSourceRefsPerHit:     qaSummaryRefsPerNode,
+		MinEntityConfidence:     qaEntitySupplementMinConfidence,
+		MinRelativeScore:        qaEntitySupplementMinRelative,
+		UseDirectMessages:       true,
+		UseSummaryRefs:          true,
+		UseEntityFactRefs:       true,
+		UseGraphSources:         true,
+		UseNeighborhood:         true,
+		NeighborhoodBefore:      qaSummaryNeighborBefore,
+		NeighborhoodAfter:       qaSummaryNeighborAfter,
+		NeighborhoodAnchors:     []derivecontextpack.SourceEvidenceOrigin{derivecontextpack.SourceEvidenceOriginSummary},
+		GraphMaxSeedFacts:       qaGraphMaxSeedFacts,
+		GraphOptions: viewentityfact.GraphExpansionOptions{
+			MaxFactsPerSeed:           qaGraphMaxFactsPerSeed,
+			MaxBridgeFacts:            qaGraphMaxBridgeFacts,
+			MaxSourceRefsPerGraphPath: qaGraphRefsPerPath,
+		},
+		OriginMetadataKey: qaRetrievalOriginMetadataKey,
+		OriginMetadataValues: derivecontextpack.SourceEvidenceOriginValues{
+			Direct:       qaRetrievalOriginDirect,
+			Summary:      qaRetrievalOriginSummary,
+			EntityFact:   qaRetrievalOriginEntity,
+			Graph:        qaRetrievalOriginGraph,
+			Neighborhood: qaRetrievalOriginNeighbor,
+		},
+	}
+}
+
+func putQAGraphEntity(t *testing.T, ctx context.Context, store *viewentityfact.WorkspaceStore, scope memory.Scope, entity viewentityfact.Entity) {
+	t.Helper()
+	entity.Scope = scope
+	if entity.Confidence == 0 {
+		entity.Confidence = 0.9
+	}
+	if _, err := store.PutEntity(ctx, entity); err != nil {
+		t.Fatalf("PutEntity(%s): %v", entity.ID, err)
+	}
+}
+
+func putQAGraphFact(t *testing.T, ctx context.Context, store *viewentityfact.WorkspaceStore, scope memory.Scope, fact viewentityfact.Fact) viewentityfact.Fact {
+	t.Helper()
+	fact.Scope = scope
+	if fact.Confidence == 0 {
+		fact.Confidence = 0.9
+	}
+	stored, err := store.PutFact(ctx, fact)
+	if err != nil {
+		t.Fatalf("PutFact(%s): %v", fact.ID, err)
+	}
+	return stored
+}
+
 func countContextMessagesByID(pack *memory.ContextPack, id string) int {
 	count := 0
 	for _, item := range renderableContextItems(pack) {
 		if item.Message != nil && item.Message.ID == id {
+			count++
+		}
+	}
+	return count
+}
+
+func qaTestMessageRef(conversationID, messageID string) views.SourceRef {
+	return views.SourceRef{
+		Kind: views.SourceMessage,
+		Message: &views.MessageSourceRef{
+			ConversationID: conversationID,
+			MessageID:      messageID,
+		},
+	}
+}
+
+func countContextMessagesByIDAndOrigin(pack *memory.ContextPack, id, origin string) int {
+	count := 0
+	for _, item := range renderableContextItems(pack) {
+		if item.Message != nil && item.Message.ID == id && formatContextMetadataValue(contextItemMetadataValue(item, qaRetrievalOriginMetadataKey)) == origin {
 			count++
 		}
 	}

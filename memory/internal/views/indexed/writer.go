@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultEmbeddingBatchSize = 10
+	defaultEmbeddingBatchSize = 8
 	maxEmbeddingInputRunes    = 8192
 )
 

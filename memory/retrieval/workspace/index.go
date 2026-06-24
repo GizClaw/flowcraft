@@ -255,6 +255,9 @@ type namespaceState struct {
 
 	// manifest is the latest committed snapshot. Read under rwMu.
 	manifest *manifest
+	// initErr records a failed namespace open for concurrent callers that were
+	// waiting on this state while the opener held rwMu.
+	initErr error
 
 	// memtable is the in-memory staging buffer that absorbs Upsert /
 	// Delete batches between flushes. Swapped wholesale during

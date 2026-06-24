@@ -21,6 +21,12 @@ type Store interface {
 	GetFact(context.Context, views.Scope, FactID) (Fact, bool, error)
 	ListEntities(context.Context, views.Scope, ListOptions) ([]Entity, error)
 	ListFacts(context.Context, views.Scope, ListOptions) ([]Fact, error)
+	ListFactsByEntity(context.Context, views.Scope, EntityID, ListOptions) ([]Fact, error)
+	ListFactsBySubject(context.Context, views.Scope, EntityID, ListOptions) ([]Fact, error)
+	ListFactsByObject(context.Context, views.Scope, EntityID, ListOptions) ([]Fact, error)
+	ListFactsByRelation(context.Context, views.Scope, RelationType, ListOptions) ([]Fact, error)
+	ListFactsByTime(context.Context, views.Scope, string, ListOptions) ([]Fact, error)
+	ListFactsBySourceMessage(context.Context, views.Scope, string, string, ListOptions) ([]Fact, error)
 	LookupAlias(context.Context, views.Scope, string) ([]EntityID, error)
 	DeleteScope(context.Context, views.Scope) error
 }
@@ -112,6 +118,48 @@ func (g *Graph) ListFacts(ctx context.Context, scope views.Scope, opts ListOptio
 		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
 	}
 	return g.store.ListFacts(ctx, scope, opts)
+}
+
+func (g *Graph) ListFactsByEntity(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsByEntity(ctx, scope, id, opts)
+}
+
+func (g *Graph) ListFactsBySubject(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsBySubject(ctx, scope, id, opts)
+}
+
+func (g *Graph) ListFactsByObject(ctx context.Context, scope views.Scope, id EntityID, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsByObject(ctx, scope, id, opts)
+}
+
+func (g *Graph) ListFactsByRelation(ctx context.Context, scope views.Scope, relation RelationType, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsByRelation(ctx, scope, relation, opts)
+}
+
+func (g *Graph) ListFactsByTime(ctx context.Context, scope views.Scope, timeText string, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsByTime(ctx, scope, timeText, opts)
+}
+
+func (g *Graph) ListFactsBySourceMessage(ctx context.Context, scope views.Scope, conversationID, messageID string, opts ListOptions) ([]Fact, error) {
+	if g == nil || g.store == nil {
+		return nil, errdefs.NotAvailablef("%s: store is not configured", errPrefix)
+	}
+	return g.store.ListFactsBySourceMessage(ctx, scope, conversationID, messageID, opts)
 }
 
 func (g *Graph) LookupAlias(ctx context.Context, scope views.Scope, alias string) ([]EntityID, error) {

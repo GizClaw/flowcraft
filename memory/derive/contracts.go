@@ -67,6 +67,35 @@ type SourceMessageResolver interface {
 	GetSourceMessage(ctx context.Context, conversationID, messageID string) (sourcemessage.Message, bool, error)
 }
 
+// SourceMessageNeighborResolver optionally exposes canonical source messages
+// adjacent to another source message in the same conversation order.
+type SourceMessageNeighborResolver interface {
+	SourceMessageResolver
+	GetSourceMessageNeighbors(ctx context.Context, conversationID, messageID string, before, after int) ([]sourcemessage.Message, error)
+}
+
+// EntityGraphSourceResolver optionally exposes read-only entity graph expansion
+// for source-evidence context packing. Implementations must use existing
+// retained graph state and must not invoke planners or LLMs on the read path.
+type EntityGraphSourceResolver interface {
+	ExpandGraphSources(ctx context.Context, scope views.Scope, seedFacts []viewentityfact.GraphSeedFact, opts viewentityfact.GraphExpansionOptions) (viewentityfact.GraphExpansionResult, error)
+}
+
+// ContextPackOptions carries optional request-scoped packer controls.
+type ContextPackOptions struct {
+	SourceEvidence SourceEvidencePackOptions
+}
+
+// SourceEvidencePackOptions configures request-scoped source-message evidence
+// budgets. Zero values leave the packer's configured defaults unchanged.
+type SourceEvidencePackOptions struct {
+	MaxDirectMessages       int
+	MaxSummaryMessages      int
+	MaxEntityFactMessages   int
+	MaxGraphMessages        int
+	MaxNeighborhoodMessages int
+}
+
 // SummaryPolicy configures summary-buffer style summarization.
 type SummaryPolicy struct {
 	// MaxRawMessages is the maximum recent raw message buffer size. A zero value
@@ -134,15 +163,17 @@ type ContextPacker interface {
 
 // ContextPackInput carries deterministic candidate evidence for a packer hook.
 type ContextPackInput struct {
-	Scope          views.Scope
-	Query          string
-	Window         viewrecent.WindowResult
-	SourceMessages SourceMessageResolver
-	Items          []ContextItem
-	MessageHits    []SourceMessageSearchHit
-	SummaryHits    []SummaryNodeSearchHit
-	DocumentHits   []DocumentChunkSearchHit
-	EntityHits     []EntityFactSearchHit
+	Scope              views.Scope
+	Query              string
+	Options            ContextPackOptions
+	Window             viewrecent.WindowResult
+	SourceMessages     SourceMessageResolver
+	EntityGraphSources EntityGraphSourceResolver
+	Items              []ContextItem
+	MessageHits        []SourceMessageSearchHit
+	SummaryHits        []SummaryNodeSearchHit
+	DocumentHits       []DocumentChunkSearchHit
+	EntityHits         []EntityFactSearchHit
 }
 
 // ContextPackOutput contains the final items selected by a packer hook.

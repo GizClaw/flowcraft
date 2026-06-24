@@ -64,11 +64,12 @@ type ImportDocumentResult struct {
 
 // ContextRequest asks the facade to compose read-time context.
 type ContextRequest struct {
-	TraceID TraceID
-	Scope   views.Scope
-	Query   string
-	TopK    int
-	Window  recent.WindowRequest
+	TraceID     TraceID
+	Scope       views.Scope
+	Query       string
+	TopK        int
+	Window      recent.WindowRequest
+	PackOptions derive.ContextPackOptions
 }
 
 // AppendMessage appends source messages first, then executes configured write
@@ -358,9 +359,10 @@ func (r *System) packContextRequest(ctx context.Context, req ContextRequest) (in
 	}
 
 	out := internalexecutor.PackContextRequest{
-		Scope:  scope,
-		Query:  query,
-		Window: window,
+		Scope:       scope,
+		Query:       query,
+		Window:      window,
+		PackOptions: req.PackOptions,
 	}
 	for _, stage := range r.plan.Read {
 		switch stage.Name {

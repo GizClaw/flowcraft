@@ -28,16 +28,23 @@ func (idx *Index) ensureNamespace(ctx context.Context, name string) (*namespaceS
 	idx.nsMu.Lock()
 	if existing, ok := idx.namespaces[name]; ok {
 		idx.nsMu.Unlock()
+		if err := waitNamespaceInitialized(existing); err != nil {
+			return nil, err
+		}
 		return existing, nil
 	}
-	// Create+register before doing I/O so concurrent callers asking
-	// for the same namespace don't all open from disk in parallel.
+	// Lock before registering so concurrent callers that observe this
+	// state wait for openNamespaceLocked instead of reading a half-built
+	// manifest/memtable.
 	st := &namespaceState{name: name}
+	st.rwMu.Lock()
 	idx.namespaces[name] = st
 	idx.nsMu.Unlock()
 
-	st.rwMu.Lock()
 	err := idx.openNamespaceLocked(ctx, st)
+	if err != nil {
+		st.initErr = err
+	}
 	st.rwMu.Unlock()
 	if err != nil {
 		// On open failure, evict from the map so the next caller
@@ -52,9 +59,21 @@ func (idx *Index) ensureNamespace(ctx context.Context, name string) (*namespaceS
 	return st, nil
 }
 
-// openNamespaceLocked performs the actual open. Caller holds
-// st.rwMu in write mode and the namespace is *not* yet visible to
-// concurrent readers.
+func waitNamespaceInitialized(st *namespaceState) error {
+	st.rwMu.RLock()
+	defer st.rwMu.RUnlock()
+	if st.initErr != nil {
+		return st.initErr
+	}
+	if st.manifest == nil || st.memtable == nil {
+		return errdefs.NotAvailablef("workspace retrieval: namespace %q is not initialized", st.name)
+	}
+	return nil
+}
+
+// openNamespaceLocked performs the actual open. Caller holds st.rwMu in write
+// mode; the namespace may already be visible to concurrent callers, which will
+// block in waitNamespaceInitialized until this function finishes.
 //
 // Order is: (1) acquire the cross-process lock so manifest reads
 // and WAL replays below are not racing a second writer, (2) read

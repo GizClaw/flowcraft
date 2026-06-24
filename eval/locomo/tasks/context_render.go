@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory"
 	"github.com/GizClaw/flowcraft/memory/derive"
 	"github.com/GizClaw/flowcraft/memory/views"
+	viewentityfact "github.com/GizClaw/flowcraft/memory/views/entityfact"
 )
 
 func dedupeStrings(in []string) []string {
@@ -264,6 +265,8 @@ func contextHitCounts(pack *memory.ContextPack) *locomoreport.QAHitCounts {
 		counts.EntityFact = len(pack.EntityHits)
 		counts.DocumentChunk = len(pack.DocumentHits)
 	}
+	graphFactIDs := map[string]bool{}
+	graphSeedEntityIDs := map[string]bool{}
 	for _, item := range renderableContextItems(pack) {
 		switch item.Kind {
 		case derive.ContextItemRecentMessage:
@@ -273,8 +276,23 @@ func contextHitCounts(pack *memory.ContextPack) *locomoreport.QAHitCounts {
 				counts.SourceDirect++
 			case qaRetrievalOriginSummary:
 				counts.SourceSummaryExpanded++
+			case qaRetrievalOriginNeighbor:
+				counts.SourceNeighborhoodExpanded++
 			case qaRetrievalOriginEntity:
 				counts.SourceEntityExpanded++
+			case qaRetrievalOriginGraph:
+				counts.SourceGraphExpanded++
+				for _, id := range metadataStringValues(contextItemMetadataValue(item, qaGraphFactIDsMetadataKey)) {
+					graphFactIDs[id] = true
+				}
+				for _, id := range metadataStringValues(contextItemMetadataValue(item, qaGraphSeedIDsMetadataKey)) {
+					graphSeedEntityIDs[id] = true
+				}
+				paths := metadataStringValues(contextItemMetadataValue(item, qaGraphPathMetadataKey))
+				counts.GraphPaths += len(paths)
+				if strings.ToLower(formatContextMetadataValue(contextItemMetadataValue(item, qaGraphOriginMetadataKey))) == viewentityfact.GraphOriginBridge {
+					counts.GraphBridge++
+				}
 			}
 		case derive.ContextItemSummaryNode:
 			if pack == nil || len(pack.SummaryHits) == 0 {
@@ -290,6 +308,8 @@ func contextHitCounts(pack *memory.ContextPack) *locomoreport.QAHitCounts {
 			}
 		}
 	}
+	counts.GraphFact = len(graphFactIDs)
+	counts.GraphSeedEntity = len(graphSeedEntityIDs)
 	return counts
 }
 

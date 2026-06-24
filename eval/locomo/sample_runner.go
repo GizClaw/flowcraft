@@ -12,6 +12,7 @@ import (
 	locomosource "github.com/GizClaw/flowcraft/eval/locomo/source"
 	"github.com/GizClaw/flowcraft/eval/locomo/tasks"
 	"github.com/GizClaw/flowcraft/memory"
+	sourcemessage "github.com/GizClaw/flowcraft/memory/sources/message"
 )
 
 type sampleJob struct {
@@ -47,7 +48,7 @@ func runSamples(ctx context.Context, rep *locomoreport.Report, samples []dataset
 	jobs := make(chan sampleJob)
 	results := make(chan sampleRunResult, len(samples))
 	var wg sync.WaitGroup
-	for worker := 0; worker < workerCount; worker++ {
+	for range workerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -139,53 +140,70 @@ func runSample(ctx context.Context, datasetName string, sampleIdx, totalSamples 
 	ingestedTurns := 0
 	limitReached := false
 	log.Printf("[locomo] sample start %d/%d id=%s sessions=%d qa=%d", sampleIdx+1, totalSamples, sample.ID, len(sample.Sessions), len(sample.QA))
-	for _, session := range sample.Sessions {
-		sessionIngested := false
-		log.Printf("[locomo] session ingest start sample=%s session=%d turns=%d", sample.ID, session.Index, len(session.Turns))
-		if taskSet[locomoreport.TaskDialog] {
-			for _, turn := range session.Turns {
-				if opts.LimitTurns > 0 && ingestedTurns >= opts.LimitTurns {
-					limitReached = true
+	reuseIngested := false
+	if opts.ReuseIngested {
+		status, err := determineSampleIngestStatus(ctx, opts.Memory, scope, sample, opts.LimitTurns)
+		if err != nil {
+			return sampleResult, err
+		}
+		switch status {
+		case sampleIngestComplete:
+			reuseIngested = true
+			ingestedTurns = expectedSampleTurnCount(sample, opts.LimitTurns)
+			log.Printf("[locomo] sample reuse-ingest id=%s run_id=%s turns=%d", sample.ID, opts.RunID, ingestedTurns)
+		case sampleIngestPartial:
+			return sampleResult, fmt.Errorf("locomo: workspace has partial ingest for sample %s run_id=%s; use a fresh run-id/workspace or complete the ingest first", sample.ID, opts.RunID)
+		}
+	}
+	if !reuseIngested {
+		for _, session := range sample.Sessions {
+			sessionIngested := false
+			log.Printf("[locomo] session ingest start sample=%s session=%d turns=%d", sample.ID, session.Index, len(session.Turns))
+			if taskSet[locomoreport.TaskDialog] {
+				for _, turn := range session.Turns {
+					if opts.LimitTurns > 0 && ingestedTurns >= opts.LimitTurns {
+						limitReached = true
+						break
+					}
+					if err := locomosource.IngestTurns(ctx, opts.Memory, scope, session, []dataset.Turn{turn}); err != nil {
+						return sampleResult, fmt.Errorf("ingest sample %s session %d turn %s: %w", sample.ID, session.Index, turn.DiaID, err)
+					}
+					ingestedTurns++
+					sessionIngested = true
+					if c, ok := tasks.DialogCaseForTurn(sample.DialogCases, session.Index, turn.DiaID); ok {
+						row := tasks.RunDialog(ctx, opts.Memory, opts.AnswerLLM, scope, c, opts.PerCallTimeout)
+						sampleResult.Dialog = append(sampleResult.Dialog, row)
+					}
+				}
+			} else {
+				turns := sessionTurnsWithinLimit(session.Turns, opts.LimitTurns, ingestedTurns)
+				if len(turns) == 0 {
+					if opts.LimitTurns > 0 && ingestedTurns >= opts.LimitTurns {
+						limitReached = true
+					}
 					break
 				}
-				if err := locomosource.IngestTurns(ctx, opts.Memory, scope, session, []dataset.Turn{turn}); err != nil {
-					return sampleResult, fmt.Errorf("ingest sample %s session %d turn %s: %w", sample.ID, session.Index, turn.DiaID, err)
+				batch := session
+				batch.Turns = turns
+				if err := locomosource.IngestSession(ctx, opts.Memory, scope, batch); err != nil {
+					return sampleResult, fmt.Errorf("ingest sample %s session %d: %w", sample.ID, session.Index, err)
 				}
-				ingestedTurns++
+				ingestedTurns += len(turns)
 				sessionIngested = true
-				if c, ok := tasks.DialogCaseForTurn(sample.DialogCases, session.Index, turn.DiaID); ok {
-					row := tasks.RunDialog(ctx, opts.Memory, opts.AnswerLLM, scope, c, opts.PerCallTimeout)
-					sampleResult.Dialog = append(sampleResult.Dialog, row)
-				}
-			}
-		} else {
-			turns := sessionTurnsWithinLimit(session.Turns, opts.LimitTurns, ingestedTurns)
-			if len(turns) == 0 {
 				if opts.LimitTurns > 0 && ingestedTurns >= opts.LimitTurns {
 					limitReached = true
 				}
+			}
+			log.Printf("[locomo] session ingest end sample=%s session=%d ingested=%t total_turns=%d", sample.ID, session.Index, sessionIngested, ingestedTurns)
+			if taskSet[locomoreport.TaskEvent] && sessionIngested {
+				for _, target := range tasks.EventsForSession(sample.EventSummaries, session.Index) {
+					row := tasks.RunEvent(ctx, opts.Memory, opts.AnswerLLM, scope, target, opts.PerCallTimeout)
+					sampleResult.Events = append(sampleResult.Events, row)
+				}
+			}
+			if limitReached {
 				break
 			}
-			batch := session
-			batch.Turns = turns
-			if err := locomosource.IngestSession(ctx, opts.Memory, scope, batch); err != nil {
-				return sampleResult, fmt.Errorf("ingest sample %s session %d: %w", sample.ID, session.Index, err)
-			}
-			ingestedTurns += len(turns)
-			sessionIngested = true
-			if opts.LimitTurns > 0 && ingestedTurns >= opts.LimitTurns {
-				limitReached = true
-			}
-		}
-		log.Printf("[locomo] session ingest end sample=%s session=%d ingested=%t total_turns=%d", sample.ID, session.Index, sessionIngested, ingestedTurns)
-		if taskSet[locomoreport.TaskEvent] && sessionIngested {
-			for _, target := range tasks.EventsForSession(sample.EventSummaries, session.Index) {
-				row := tasks.RunEvent(ctx, opts.Memory, opts.AnswerLLM, scope, target, opts.PerCallTimeout)
-				sampleResult.Events = append(sampleResult.Events, row)
-			}
-		}
-		if limitReached {
-			break
 		}
 	}
 	if taskSet[locomoreport.TaskQA] {
@@ -204,6 +222,78 @@ func runSample(ctx context.Context, datasetName string, sampleIdx, totalSamples 
 	return sampleResult, nil
 }
 
+type sampleIngestStatus int
+
+const (
+	sampleIngestMissing sampleIngestStatus = iota
+	sampleIngestPartial
+	sampleIngestComplete
+)
+
+func determineSampleIngestStatus(ctx context.Context, mem *memory.System, scope memory.Scope, sample dataset.Sample, limitTurns int) (sampleIngestStatus, error) {
+	store := mem.MessageStore()
+	if store == nil {
+		return sampleIngestMissing, fmt.Errorf("locomo: ingest reuse requires message store")
+	}
+	messages, err := store.List(ctx, scope.ConversationID, sourcemessage.ListOptions{})
+	if err != nil {
+		return sampleIngestMissing, err
+	}
+	if len(messages) == 0 {
+		return sampleIngestMissing, nil
+	}
+	expected := expectedSampleDiaIDs(sample, limitTurns)
+	if len(expected) == 0 {
+		return sampleIngestComplete, nil
+	}
+	seen := map[string]bool{}
+	for _, msg := range messages {
+		seen[msg.ID] = true
+	}
+	matched := 0
+	for id := range expected {
+		if seen[id] {
+			matched++
+		}
+	}
+	switch {
+	case matched == 0:
+		return sampleIngestMissing, nil
+	case matched == len(expected):
+		return sampleIngestComplete, nil
+	default:
+		return sampleIngestPartial, nil
+	}
+}
+
+func expectedSampleDiaIDs(sample dataset.Sample, limitTurns int) map[string]bool {
+	ids := map[string]bool{}
+	count := 0
+	for _, session := range sample.Sessions {
+		for _, turn := range session.Turns {
+			if limitTurns > 0 && count >= limitTurns {
+				return ids
+			}
+			ids[turn.DiaID] = true
+			count++
+		}
+	}
+	return ids
+}
+
+func expectedSampleTurnCount(sample dataset.Sample, limitTurns int) int {
+	count := 0
+	for _, session := range sample.Sessions {
+		for range session.Turns {
+			if limitTurns > 0 && count >= limitTurns {
+				return count
+			}
+			count++
+		}
+	}
+	return count
+}
+
 func runQAItems(ctx context.Context, scope memory.Scope, sampleID string, qas []dataset.QAItem, opts Options) ([]locomoreport.QAResult, error) {
 	if len(qas) == 0 {
 		return nil, nil
@@ -220,7 +310,10 @@ func runQAItems(ctx context.Context, scope memory.Scope, sampleID string, qas []
 				if shouldLogQAProgress(job.index, len(qas)) {
 					log.Printf("[locomo] qa progress sample=%s item=%d/%d id=%s", sampleID, job.index+1, len(qas), job.item.ID)
 				}
-				row := tasks.RunQA(ctx, opts.Memory, opts.AnswerLLM, opts.JudgeLLM, scope, job.item, opts.QATopK, opts.PerCallTimeout)
+				row := tasks.RunQAWithOptions(ctx, opts.Memory, opts.AnswerLLM, opts.JudgeLLM, scope, job.item, tasks.QARetrievalOptions{
+					TopK:                   opts.QATopK,
+					GraphExpandedMaxSource: opts.QAGraphExpandedMaxSource,
+				}, opts.PerCallTimeout)
 				results <- qaRunResult{index: job.index, row: row}
 				if ctx.Err() != nil {
 					return

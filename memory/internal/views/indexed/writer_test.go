@@ -254,11 +254,11 @@ func TestWriterUpsertChunksEmbeddingBatches(t *testing.T) {
 		t.Fatalf("Upsert(chunked vectorized) error = %v", err)
 	}
 
-	if got, want := len(embedder.batchCalls), 3; got != want {
+	if got, want := len(embedder.batchCalls), 4; got != want {
 		t.Fatalf("EmbedBatch calls = %d, want %d", got, want)
 	}
-	if got := []int{len(embedder.batchCalls[0]), len(embedder.batchCalls[1]), len(embedder.batchCalls[2])}; !reflect.DeepEqual(got, []int{10, 10, 5}) {
-		t.Fatalf("EmbedBatch chunk sizes = %v, want [10 10 5]", got)
+	if got := []int{len(embedder.batchCalls[0]), len(embedder.batchCalls[1]), len(embedder.batchCalls[2]), len(embedder.batchCalls[3])}; !reflect.DeepEqual(got, []int{8, 8, 8, 1}) {
+		t.Fatalf("EmbedBatch chunk sizes = %v, want [8 8 8 1]", got)
 	}
 	for i, doc := range index.upsertDocs {
 		if len(doc.Vector) != 1 || doc.Vector[0] != float32(i) {
