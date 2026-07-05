@@ -2,7 +2,6 @@ package claw
 
 import (
 	"context"
-	"errors"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
@@ -22,6 +21,8 @@ type Claw struct {
 	tools    *tool.Registry
 	history  *historyRuntime
 	memory   *memoryRuntime
+
+	memoryMu sync.RWMutex
 
 	toolMu             sync.RWMutex
 	toolHandlers       map[string]ToolHandler
@@ -96,9 +97,12 @@ func (c *Claw) CloseContext(ctx context.Context) error {
 			return err
 		}
 	}
-	var errs []error
-	if c.memory != nil {
-		errs = append(errs, c.memory.close(ctx))
+	c.memoryMu.Lock()
+	mem := c.memory
+	c.memory = nil
+	c.memoryMu.Unlock()
+	if mem == nil {
+		return nil
 	}
-	return errors.Join(errs...)
+	return mem.close(ctx)
 }

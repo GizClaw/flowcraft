@@ -135,3 +135,22 @@ func TestDebugHTTPRecallUsesMemoryRuntime(t *testing.T) {
 		t.Fatalf("recall hit = %q, want saved fact", got)
 	}
 }
+
+func TestDebugHTTPRecallDisabledIgnoresRequestBody(t *testing.T) {
+	app := &Claw{}
+	req := httptest.NewRequest(http.MethodPost, "/debug/recall", bytes.NewBufferString(`{`))
+	rec := httptest.NewRecorder()
+
+	app.ServeDebugHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("recall status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var recallResp debugRecallResponse
+	if err := json.NewDecoder(rec.Body).Decode(&recallResp); err != nil {
+		t.Fatalf("decode recall debug: %v", err)
+	}
+	if recallResp.Enabled || len(recallResp.Hits) != 0 {
+		t.Fatalf("recall debug = %+v, want disabled with no hits", recallResp)
+	}
+}
