@@ -165,19 +165,24 @@ func (c *Claw) runRoundTrip(ctx context.Context, id string, req Request, events 
 		_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: result.Err.Error(), IsError: true, Result: result})
 		return
 	}
-	if c.memory != nil {
+	c.memoryMu.RLock()
+	mem := c.memory
+	if mem != nil {
 		var boardVars map[string]any
 		if result != nil && result.LastBoard != nil {
 			boardVars = result.LastBoard.Vars()
 		}
 		if err := sendRoundEvent(ctx, events, Event{Type: EventStatus, Content: "extracting"}); err != nil {
+			c.memoryMu.RUnlock()
 			return
 		}
-		if err := c.memory.saveTurn(ctx, id, req.Text, streams.memoryAssistant(result), boardVars); err != nil {
+		if err := mem.saveTurn(ctx, id, req.Text, streams.memoryAssistant(result), boardVars); err != nil {
+			c.memoryMu.RUnlock()
 			_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
 			return
 		}
 	}
+	c.memoryMu.RUnlock()
 	if c.history != nil {
 		if err := c.history.appendTurn(ctx, id, model.NewTextMessage(model.RoleUser, req.Text), streams.historyAssistants()); err != nil {
 			_ = sendRoundEvent(ctx, events, Event{Type: EventError, Err: err.Error(), IsError: true, Result: result})
@@ -227,14 +232,19 @@ func (c *Claw) boardSeeder() agent.BoardSeeder {
 				board.SetChannel(engine.MainChannel, prior)
 			}
 		}
-		if c.memory != nil {
-			memVars, err := c.memory.recallBoardVars(ctx, req.Message.Content())
+		c.memoryMu.RLock()
+		mem := c.memory
+		if mem != nil {
+			memVars, err := mem.recallBoardVars(ctx, req.Message.Content())
+			c.memoryMu.RUnlock()
 			if err != nil {
 				return nil, fmt.Errorf("claw: recall memory: %w", err)
 			}
 			for key, value := range memVars {
 				board.SetVar(key, value)
 			}
+		} else {
+			c.memoryMu.RUnlock()
 		}
 		board.AppendChannelMessage(engine.MainChannel, req.Message)
 		for k, v := range req.Inputs {
@@ -660,9 +670,12 @@ func (r *roundController) commitPartial(ctx context.Context) error {
 	ctx = context.WithoutCancel(ctx)
 	assistant := model.NewTextMessage(model.RoleAssistant, text)
 	var errs []error
-	if r.claw.memory != nil {
-		errs = append(errs, r.claw.memory.saveTurn(ctx, r.contextID, r.userText, assistant, nil))
+	r.claw.memoryMu.RLock()
+	mem := r.claw.memory
+	if mem != nil {
+		errs = append(errs, mem.saveTurn(ctx, r.contextID, r.userText, assistant, nil))
 	}
+	r.claw.memoryMu.RUnlock()
 	if r.claw.history != nil {
 		errs = append(errs, r.claw.history.appendTurn(ctx, r.contextID, model.NewTextMessage(model.RoleUser, r.userText), []model.Message{assistant}))
 	}

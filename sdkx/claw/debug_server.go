@@ -129,11 +129,15 @@ func (c *Claw) serveDebugHistory(w http.ResponseWriter, r *http.Request) {
 
 func (c *Claw) serveDebugMemory(w http.ResponseWriter) {
 	cfg := c.cfg.Memory
-	if c.memory != nil {
-		cfg = c.memory.cfg
+	c.memoryMu.RLock()
+	mem := c.memory
+	if mem != nil {
+		cfg = mem.cfg
 	}
+	enabled := mem != nil
+	c.memoryMu.RUnlock()
 	writeDebugJSON(w, http.StatusOK, debugMemoryResponse{
-		Enabled: c.memory != nil,
+		Enabled: enabled,
 		Root:    c.cfg.Workspace.MemoryRoot,
 		Scope:   cfg.Scope,
 		Write: debugMemoryWriteInfo{
@@ -155,24 +159,41 @@ func (c *Claw) serveDebugMemory(w http.ResponseWriter) {
 }
 
 func (c *Claw) serveDebugRecall(w http.ResponseWriter, r *http.Request) {
-	if c.memory == nil || c.memory.mem == nil {
+	c.memoryMu.RLock()
+	mem := c.memory
+	if mem == nil || mem.mem == nil {
+		c.memoryMu.RUnlock()
 		writeDebugJSON(w, http.StatusOK, debugRecallResponse{
 			Enabled: false,
 			Hits:    []debugRecallHit{},
 		})
 		return
 	}
+	c.memoryMu.RUnlock()
+
 	var req debugRecallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeDebugError(w, http.StatusBadRequest, fmt.Sprintf("decode recall request: %v", err))
 		return
 	}
-	query := c.memory.debugRecallQuery(req)
+	query := debugRecallQuery(c.cfg.Memory, req)
 	if recallQueryEmpty(query) {
 		writeDebugError(w, http.StatusBadRequest, "recall request requires text or structured query fields")
 		return
 	}
-	hits, err := c.memory.mem.Recall(r.Context(), c.memory.scope, query)
+	c.memoryMu.RLock()
+	mem = c.memory
+	if mem == nil || mem.mem == nil {
+		c.memoryMu.RUnlock()
+		writeDebugJSON(w, http.StatusOK, debugRecallResponse{
+			Enabled: false,
+			Hits:    []debugRecallHit{},
+		})
+		return
+	}
+	query = mem.debugRecallQuery(req)
+	hits, err := mem.mem.Recall(r.Context(), mem.scope, query)
+	c.memoryMu.RUnlock()
 	if err != nil {
 		writeDebugError(w, http.StatusInternalServerError, fmt.Sprintf("recall: %v", err))
 		return
@@ -201,9 +222,13 @@ func (c *Claw) serveDebugRecall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *memoryRuntime) debugRecallQuery(req debugRecallRequest) recall.Query {
+	return debugRecallQuery(m.cfg, req)
+}
+
+func debugRecallQuery(cfg MemoryConfig, req debugRecallRequest) recall.Query {
 	limit := req.TopK
 	if limit <= 0 {
-		limit = m.cfg.Recall.TopK
+		limit = cfg.Recall.TopK
 	}
 	if limit <= 0 {
 		limit = 5
