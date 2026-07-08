@@ -271,8 +271,13 @@ func (t *Transport) initPC(asOfferer bool) error {
 		if t.config.OnConnectionStateChange != nil {
 			t.config.OnConnectionStateChange(cs)
 		}
+		// Only tear down on terminal states. Disconnected is a TRANSIENT
+		// ICE state that routinely flaps on packet loss and can recover to
+		// connected; interrupting here would latch context.Canceled on the
+		// source pipe (see audio.Pipe.Read) and irrecoverably kill an
+		// otherwise-recoverable session. Callers still observe Disconnected
+		// via OnConnectionStateChange above.
 		if state == webrtc.PeerConnectionStateFailed ||
-			state == webrtc.PeerConnectionStateDisconnected ||
 			state == webrtc.PeerConnectionStateClosed {
 			t.source.pipe.Interrupt()
 		}
