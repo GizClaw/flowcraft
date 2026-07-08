@@ -63,3 +63,60 @@ func TestCircuit_HalfOpenConsecutiveFailuresStayBounded(t *testing.T) {
 			cycles, maxSeen, policy.CircuitBreakAfter)
 	}
 }
+
+// TestCircuit_HalfOpenAllowsSingleProbe verifies that once the open window
+// elapses, Allow hands out exactly one half-open probe and holds every other
+// caller until the probe is resolved via OnSuccess/OnFailure. Before the fix,
+// the first probe zeroed openUntil and any concurrent/subsequent Allow saw a
+// zero window and returned true, letting a post-cooldown burst hit a possibly
+// still-unhealthy provider.
+func TestCircuit_HalfOpenAllowsSingleProbe(t *testing.T) {
+	policy := FallbackPolicy{CircuitBreakAfter: 1, CircuitOpen: 50 * time.Millisecond}
+	base := time.Now()
+
+	open := func() *Circuit {
+		c := NewCircuit(1)
+		if !c.OnFailure(0, base, policy, true) {
+			t.Fatal("circuit should open after reaching CircuitBreakAfter")
+		}
+		return c
+	}
+	afterCooldown := base.Add(60 * time.Millisecond)
+
+	t.Run("holds other callers until probe resolves", func(t *testing.T) {
+		c := open()
+		if !c.Allow(0, afterCooldown) {
+			t.Fatal("first caller after cooldown should get the half-open probe")
+		}
+		// Probe is in flight; all other callers must be held.
+		for i := 0; i < 5; i++ {
+			if c.Allow(0, afterCooldown) {
+				t.Fatalf("call %d: expected probe to be held while one is in flight", i)
+			}
+		}
+	})
+
+	t.Run("probe success reopens the gate", func(t *testing.T) {
+		c := open()
+		if !c.Allow(0, afterCooldown) {
+			t.Fatal("expected half-open probe")
+		}
+		c.OnSuccess(0)
+		if !c.Allow(0, afterCooldown) {
+			t.Fatal("after a successful probe the circuit should be closed and allow traffic")
+		}
+	})
+
+	t.Run("probe failure re-opens and blocks", func(t *testing.T) {
+		c := open()
+		if !c.Allow(0, afterCooldown) {
+			t.Fatal("expected half-open probe")
+		}
+		if !c.OnFailure(0, afterCooldown, policy, true) {
+			t.Fatal("failed probe should re-open the circuit")
+		}
+		if c.Allow(0, afterCooldown) {
+			t.Fatal("re-opened circuit should block until the new cooldown elapses")
+		}
+	})
+}

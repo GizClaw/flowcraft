@@ -170,7 +170,8 @@ type circuitState struct {
 	consecutiveFailures int
 	openUntil           time.Time
 	// halfOpen is set when the open window has elapsed and a single probe has
-	// been allowed. In this state a probe success (OnSuccess) fully closes the
+	// been allowed. While it is set, Allow holds every other caller so only one
+	// probe is in flight at a time. A probe success (OnSuccess) fully closes the
 	// circuit, while a probe failure (OnFailure) re-opens it immediately from a
 	// clean failure count so recovery is gradual and the counter stays bounded.
 	halfOpen bool
@@ -191,8 +192,12 @@ func (c *Circuit) Allow(index int, now time.Time) bool {
 	defer c.mu.Unlock()
 	state := &c.states[index]
 	if state.openUntil.IsZero() {
-		// Closed: no open window pending.
-		return true
+		// A zero open window means the circuit is either fully closed or a
+		// half-open probe is already in flight. When a probe is in flight, hold
+		// every other caller (return false) until OnSuccess/OnFailure resolves
+		// it, so exactly one probe reaches a provider that may still be
+		// unhealthy instead of a post-cooldown burst.
+		return !state.halfOpen
 	}
 	if now.Before(state.openUntil) {
 		// Open: still within the cool-down window.
