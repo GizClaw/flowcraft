@@ -140,6 +140,27 @@ func IsRetryable(err error) bool {
 	return code == "timeout" || code == "transport_error" || code == "provider_unavailable"
 }
 
+// IsProviderFault reports whether err should count against a provider's circuit
+// breaker. Failures attributable to the caller/client — context cancellation and
+// bad input (bad audio/codec/sample-rate) — must NOT penalize provider health;
+// otherwise a client repeatedly sending bad input would trip a healthy
+// provider's breaker (and cascade to fallbacks). Everything else (timeout,
+// transport, provider_unavailable, internal_error) is treated as a
+// provider-attributable fault.
+func IsProviderFault(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var ce ClassifiedError
+	if errors.As(err, &ce) {
+		return ce.ErrorCode() != "bad_audio"
+	}
+	return ClassifyByMessage(err.Error()) != "bad_audio"
+}
+
 type Circuit struct {
 	mu     sync.Mutex
 	states []circuitState
@@ -148,6 +169,12 @@ type Circuit struct {
 type circuitState struct {
 	consecutiveFailures int
 	openUntil           time.Time
+	// halfOpen is set when the open window has elapsed and a single probe has
+	// been allowed. While it is set, Allow holds every other caller so only one
+	// probe is in flight at a time. A probe success (OnSuccess) fully closes the
+	// circuit, while a probe failure (OnFailure) re-opens it immediately from a
+	// clean failure count so recovery is gradual and the counter stays bounded.
+	halfOpen bool
 }
 
 func NewCircuit(size int) *Circuit {
@@ -163,7 +190,26 @@ func (c *Circuit) Allow(index int, now time.Time) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return !now.Before(c.states[index].openUntil)
+	state := &c.states[index]
+	if state.openUntil.IsZero() {
+		// A zero open window means the circuit is either fully closed or a
+		// half-open probe is already in flight. When a probe is in flight, hold
+		// every other caller (return false) until OnSuccess/OnFailure resolves
+		// it, so exactly one probe reaches a provider that may still be
+		// unhealthy instead of a post-cooldown burst.
+		return !state.halfOpen
+	}
+	if now.Before(state.openUntil) {
+		// Open: still within the cool-down window.
+		return false
+	}
+	// Open window elapsed: transition to half-open and allow one probe. Decay
+	// the failure count to zero so a probe failure re-opens from a clean slate
+	// (bounding the counter) rather than compounding the previous streak.
+	state.openUntil = time.Time{}
+	state.consecutiveFailures = 0
+	state.halfOpen = true
+	return true
 }
 
 func (c *Circuit) OnSuccess(index int) {
@@ -175,8 +221,19 @@ func (c *Circuit) OnSuccess(index int) {
 	c.states[index] = circuitState{}
 }
 
-func (c *Circuit) OnFailure(index int, now time.Time, policy FallbackPolicy, retryable bool) bool {
-	if c == nil || index < 0 || index >= len(c.states) || !retryable {
+// OnFailure records a provider failure and reports whether the circuit opened.
+//
+// attributable gates breaker accounting: only provider-attributable faults
+// (see IsProviderFault) count toward consecutiveFailures. Retryability does NOT
+// gate accounting — a persistently failing provider must eventually trip its
+// breaker even when it returns hard (non-retryable) errors — but client-fault
+// errors (bad input, caller cancellation) are excluded so they never open a
+// healthy provider.
+func (c *Circuit) OnFailure(index int, now time.Time, policy FallbackPolicy, attributable bool) bool {
+	if c == nil || index < 0 || index >= len(c.states) {
+		return false
+	}
+	if !attributable {
 		return false
 	}
 	policy = policy.Normalize()
@@ -184,10 +241,20 @@ func (c *Circuit) OnFailure(index int, now time.Time, policy FallbackPolicy, ret
 	defer c.mu.Unlock()
 	state := &c.states[index]
 	state.consecutiveFailures++
+
+	canOpen := policy.CircuitBreakAfter > 0 && policy.CircuitOpen > 0
 	opened := false
-	if policy.CircuitBreakAfter > 0 &&
-		policy.CircuitOpen > 0 &&
-		state.consecutiveFailures >= policy.CircuitBreakAfter {
+	switch {
+	case state.halfOpen:
+		// A half-open probe failed: re-open immediately from the clean count so
+		// recovery restarts a fresh cool-down window instead of an ever-growing
+		// streak.
+		state.halfOpen = false
+		if canOpen {
+			state.openUntil = now.Add(policy.CircuitOpen)
+			opened = true
+		}
+	case canOpen && state.consecutiveFailures >= policy.CircuitBreakAfter:
 		state.openUntil = now.Add(policy.CircuitOpen)
 		opened = true
 	}

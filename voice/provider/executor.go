@@ -14,9 +14,16 @@ import (
 var ErrSkipProvider = errors.New("provider: skip")
 
 // SleepWithContext blocks for duration d or until ctx is cancelled.
+// It reports true if the full duration elapsed and false if ctx was cancelled.
+// For d<=0 it still consults ctx so a cancelled context is honored immediately.
 func SleepWithContext(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
-		return true
+		select {
+		case <-ctx.Done():
+			return false
+		default:
+			return true
+		}
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -54,9 +61,21 @@ func RunWithFallback[T any](
 
 	var zero T
 	var lastErr error
-	now := time.Now()
 
 	for i := 0; i < n; i++ {
+		// Fail fast if the context is already done: return the context error
+		// directly so it is never misclassified as a provider failure that
+		// could trip the breaker.
+		if err := ctx.Err(); err != nil {
+			report.Error = err.Error()
+			emit()
+			return zero, err
+		}
+
+		// Recompute the clock per iteration: a slow multi-provider run can let
+		// a provider's open window elapse mid-loop, so a single pre-loop
+		// timestamp would keep skipping providers that are actually recovered.
+		now := time.Now()
 		name := nameFn(i)
 		if !circuit.Allow(i, now) {
 			report.Attempts = append(report.Attempts, Attempt{
@@ -69,6 +88,14 @@ func RunWithFallback[T any](
 
 		skipped := false
 		for attempt := 0; attempt < policy.MaxAttempts; attempt++ {
+			// Guard each attempt on the context so a cancelled/expired ctx
+			// stops retries deterministically even when RetryBackoff==0 (the
+			// backoff sleep is otherwise the only cancellation checkpoint).
+			if err := ctx.Err(); err != nil {
+				report.Error = err.Error()
+				emit()
+				return zero, err
+			}
 			result, err := execFn(ctx, i)
 			if err == nil {
 				circuit.OnSuccess(i)
@@ -91,7 +118,10 @@ func RunWithFallback[T any](
 			lastErr = err
 			retryable := policy.ShouldRetry(err)
 			fallbackable := policy.ShouldFallback(err)
-			circuitOpened := circuit.OnFailure(i, time.Now(), policy, retryable)
+			// Only provider-attributable faults count toward the breaker;
+			// client-fault errors (bad input, cancellation) must not open a
+			// healthy provider.
+			circuitOpened := circuit.OnFailure(i, time.Now(), policy, IsProviderFault(err))
 			report.Attempts = append(report.Attempts, Attempt{
 				Provider:      name,
 				Attempt:       attempt + 1,

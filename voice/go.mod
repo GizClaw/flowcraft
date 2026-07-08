@@ -8,6 +8,7 @@ require (
 	github.com/pion/webrtc/v4 v4.2.9
 	github.com/rs/xid v1.6.0
 	go.opentelemetry.io/otel/metric v1.40.0
+	go.uber.org/goleak v1.3.0
 )
 
 require (

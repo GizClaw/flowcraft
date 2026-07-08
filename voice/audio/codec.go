@@ -10,6 +10,7 @@ const (
 	CodecMP3
 	CodecOpus
 	CodecWAV
+	CodecFLAC
 )
 
 // Format describes the encoding parameters of an audio stream.

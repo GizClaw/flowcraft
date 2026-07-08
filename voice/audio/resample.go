@@ -62,6 +62,15 @@ func ResamplePCM16(data []byte, fromRate, toRate, channels int) []byte {
 // ResampleStream wraps a Stream[Frame] and resamples every PCM16 frame to
 // targetRate on the fly. Non-PCM frames or frames already at the target
 // rate are passed through unchanged.
+//
+// Leak note: the worker goroutine blocks in input.Read(). Read is a
+// blocking, non-interruptible call, so if the consumer interrupts the
+// returned stream while the worker is parked inside input.Read() on a
+// stalled upstream, the worker cannot exit until that Read returns. The
+// upstream input MUST therefore eventually become readable or return an
+// error (e.g. by being closed/interrupted) for the worker to terminate.
+// As a cheap safeguard the worker checks for an output interrupt before
+// each Read so it exits promptly when interrupted between frames.
 func ResampleStream(input Stream[Frame], targetRate int) Stream[Frame] {
 	if targetRate <= 0 {
 		return input
@@ -70,6 +79,13 @@ func ResampleStream(input Stream[Frame], targetRate int) Stream[Frame] {
 	go func() {
 		defer p.Close()
 		for {
+			// Exit early if the consumer already interrupted the output,
+			// avoiding a blocking Read we would immediately discard.
+			select {
+			case <-p.ctx.Done():
+				return
+			default:
+			}
 			f, err := input.Read()
 			if err != nil {
 				if err != io.EOF {

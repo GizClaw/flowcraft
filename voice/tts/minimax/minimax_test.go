@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -288,6 +289,203 @@ func TestSynthesizeStream(t *testing.T) {
 	}
 }
 
+func TestSynthesizeStream_FormatCodecMatchesOutput(t *testing.T) {
+	// MiniMax may return bytes in a codec other than the one requested
+	// (opus -> mp3, wav -> flac, pcm -> mp3). The Format.Codec label on emitted
+	// frames must describe the bytes the API actually returned, and the format
+	// string sent to the API must correspond to that same codec.
+	cases := []struct {
+		name       string
+		reqCodec   speechaudio.Codec
+		wantFormat string
+		wantCodec  speechaudio.Codec
+	}{
+		{"pcm->mp3", speechaudio.CodecPCM, "mp3", speechaudio.CodecMP3},
+		{"opus->mp3", speechaudio.CodecOpus, "mp3", speechaudio.CodecMP3},
+		{"wav->flac", speechaudio.CodecWAV, "flac", speechaudio.CodecFLAC},
+		{"mp3->mp3", speechaudio.CodecMP3, "mp3", speechaudio.CodecMP3},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := hex.EncodeToString([]byte("audio"))
+			var gotFormat string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req t2aRequest
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				gotFormat = req.AudioSetting.Format
+
+				flusher, _ := w.(http.Flusher)
+				events := []t2aResponse{
+					{Data: &t2aData{Audio: chunk, Status: 1}, BaseResp: &baseResp{StatusCode: 0}},
+					{Data: &t2aData{Audio: "", Status: 2}, BaseResp: &baseResp{StatusCode: 0}},
+				}
+				for _, ev := range events {
+					data, _ := json.Marshal(ev)
+					if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+						t.Fatalf("write sse: %v", err)
+					}
+					flusher.Flush()
+				}
+			}))
+			defer srv.Close()
+
+			p, _ := New(WithAPIKey("k"), WithBaseURL(srv.URL))
+			textPipe := speechaudio.NewPipe[string](1)
+			textPipe.Send("测试")
+			textPipe.Close()
+
+			stream, err := p.SynthesizeStream(context.Background(), textPipe, speechtts.WithCodec(tc.reqCodec))
+			if err != nil {
+				t.Fatal(err)
+			}
+			frame, err := stream.Read()
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			// Drain the stream.
+			for {
+				if _, err := stream.Read(); err == io.EOF {
+					break
+				} else if err != nil {
+					t.Fatalf("drain: %v", err)
+				}
+			}
+
+			if gotFormat != tc.wantFormat {
+				t.Errorf("api format = %q, want %q", gotFormat, tc.wantFormat)
+			}
+			if frame.Format.Codec != tc.wantCodec {
+				t.Errorf("frame codec = %v, want %v", frame.Format.Codec, tc.wantCodec)
+			}
+		})
+	}
+}
+
+// TestSynthesizeStream_ProviderErrorMidStreamSignalsError guards the stream
+// contract for abnormal termination: when MiniMax returns a base_resp error
+// after some audio has already streamed, the terminal Read must report an error
+// (context.Canceled from Interrupt), never a clean io.EOF. Surfacing io.EOF
+// would let a direct StreamTTS caller mistake a mid-stream provider failure for
+// a normally completed utterance.
+func TestSynthesizeStream_ProviderErrorMidStreamSignalsError(t *testing.T) {
+	chunk := hex.EncodeToString([]byte("chunk-1"))
+	srv := newSSEServer(func(w http.ResponseWriter, flush func()) {
+		writeSSE(w, flush, t2aResponse{Data: &t2aData{Audio: chunk, Status: 1}, BaseResp: &baseResp{StatusCode: 0}})
+		writeSSE(w, flush, t2aResponse{BaseResp: &baseResp{StatusCode: 1002, StatusMsg: "rate limited"}})
+	})
+	defer srv.Close()
+
+	p, _ := New(WithAPIKey("k"), WithBaseURL(srv.URL))
+	textPipe := speechaudio.NewPipe[string](1)
+	textPipe.Send("hello")
+	textPipe.Close()
+
+	stream, err := p.SynthesizeStream(context.Background(), textPipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var termErr error
+	for {
+		if _, err := stream.Read(); err != nil {
+			termErr = err
+			break
+		}
+	}
+	if termErr == io.EOF {
+		t.Fatal("mid-stream provider error surfaced as clean io.EOF; caller cannot tell failure from normal completion")
+	}
+	if termErr != context.Canceled {
+		t.Fatalf("terminal error = %v, want context.Canceled", termErr)
+	}
+}
+
+func TestSynthesizeStream_LargeFinalStatus2Line(t *testing.T) {
+	// Issue #4: production reads the SSE stream line-by-line. The original
+	// bufio.Scanner imposes a max-token cap (even when bumped to 1MB via
+	// scanner.Buffer), so any single `data:` line longer than that cap makes
+	// Scan() fail with bufio.ErrTooLong — aborting the read loop and silently
+	// dropping every remaining chunk on the stream. The fix switched to
+	// bufio.Reader, whose ReadString has no line-length cap.
+	//
+	// To catch a regression back to Scanner, the oversized line MUST sit on an
+	// INCREMENTAL audio event (status != 2 — the branch that decodes + Sends),
+	// followed by a further small incremental chunk. Under Scanner the >1MB
+	// line trips ErrTooLong: the large chunk is never decoded/sent AND the
+	// trailing small chunk is lost. Under Reader both are delivered. Putting
+	// the big payload on the skipped status=2 final line (as an earlier version
+	// did) is indistinguishable between the two implementations, so this test
+	// deliberately does not do that.
+	small := []byte("small-trailing-chunk")
+	smallHex := hex.EncodeToString(small)
+
+	// A > 1 MiB raw payload => > 2 MiB hex on the wire, well past both the
+	// default 64KB Scanner cap and a 1MB scanner.Buffer cap. Fill with a
+	// recognizable byte so the decoded bytes can be asserted exactly.
+	bigAudio := make([]byte, 1<<20+512)
+	for i := range bigAudio {
+		bigAudio[i] = 0xAB
+	}
+	bigHex := hex.EncodeToString(bigAudio)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		write := func(ev t2aResponse) {
+			data, _ := json.Marshal(ev)
+			if _, err := w.Write([]byte("data: " + string(data) + "\n\n")); err != nil {
+				t.Errorf("write sse: %v", err)
+			}
+			flusher.Flush()
+		}
+		// Oversized INCREMENTAL chunk first, then a small incremental chunk,
+		// then the redundant status=2 final (skipped by production).
+		write(t2aResponse{Data: &t2aData{Audio: bigHex, Status: 1}, BaseResp: &baseResp{StatusCode: 0}})
+		write(t2aResponse{Data: &t2aData{Audio: smallHex, Status: 1}, BaseResp: &baseResp{StatusCode: 0}})
+		write(t2aResponse{Data: &t2aData{Audio: "", Status: 2}, BaseResp: &baseResp{StatusCode: 0, StatusMsg: "success"}})
+	}))
+	defer srv.Close()
+
+	p, _ := New(WithAPIKey("test-key"), WithBaseURL(srv.URL))
+	textPipe := speechaudio.NewPipe[string](1)
+	textPipe.Send("测试大行")
+	textPipe.Close()
+
+	stream, err := p.SynthesizeStream(context.Background(), textPipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got [][]byte
+	var termErr error
+	for {
+		u, err := stream.Read()
+		if err != nil {
+			termErr = err
+			break
+		}
+		got = append(got, append([]byte(nil), u.Data...))
+	}
+
+	if termErr != io.EOF {
+		t.Fatalf("terminal error = %v, want io.EOF (large incremental line must not fail synthesis)", termErr)
+	}
+	// Both incremental chunks must be delivered: the >1MB one AND the small
+	// one after it. Under the old bufio.Scanner the oversized line trips
+	// ErrTooLong and BOTH are lost, so this count assertion fails.
+	if len(got) != 2 {
+		t.Fatalf("got %d chunks, want 2 (>1MB incremental + trailing small incremental)", len(got))
+	}
+	if !bytes.Equal(got[0], bigAudio) {
+		t.Errorf("large chunk: got %d bytes, want %d bytes with exact payload match", len(got[0]), len(bigAudio))
+	}
+	if string(got[1]) != string(small) {
+		t.Errorf("trailing chunk = %q, want %q", string(got[1]), string(small))
+	}
+}
+
 func TestBuildRequest_FormatMapping(t *testing.T) {
 	p, _ := New(WithAPIKey("k"))
 
@@ -334,6 +532,35 @@ func TestWarmup(t *testing.T) {
 	err := p.Warmup(context.Background())
 	if err != nil {
 		t.Fatalf("Warmup error: %v", err)
+	}
+}
+
+func TestWarmup_StatusHandling(t *testing.T) {
+	// A completed handshake is warmup's goal, so a client-side (4xx) status —
+	// which posting "{}" typically produces — must count as success, while a
+	// server-side (5xx) status is reported as a failure.
+	cases := []struct {
+		status  int
+		wantErr bool
+	}{
+		{http.StatusOK, false},
+		{http.StatusBadRequest, false},
+		{http.StatusInternalServerError, true},
+	}
+	for _, tc := range cases {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004}}`))
+		}))
+		p, _ := New(WithAPIKey("k"), WithBaseURL(srv.URL))
+		err := p.Warmup(context.Background())
+		if tc.wantErr && err == nil {
+			t.Errorf("status %d: expected error, got nil", tc.status)
+		}
+		if !tc.wantErr && err != nil {
+			t.Errorf("status %d: unexpected error: %v", tc.status, err)
+		}
+		srv.Close()
 	}
 }
 
