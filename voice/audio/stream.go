@@ -53,6 +53,24 @@ func (p *Pipe[T]) Read() (T, error) {
 	}
 	p.mu.Unlock()
 
+	// Interrupt takes precedence over any pending value or a normal Close.
+	// Without this pre-check the select below is chosen at random when both a
+	// value/closed channel and ctx.Done() are ready, which would let an
+	// abnormal termination be observed as a clean io.EOF — e.g. a producer
+	// that calls Interrupt() and then runs a deferred Close(). Checking
+	// ctx.Done() first makes "Interrupt returns context.Canceled immediately,
+	// skipping buffered values" a deterministic guarantee.
+	select {
+	case <-p.ctx.Done():
+		var zero T
+		err := p.ctx.Err()
+		p.mu.Lock()
+		p.lastErr = err
+		p.mu.Unlock()
+		return zero, err
+	default:
+	}
+
 	select {
 	case v, ok := <-p.ch:
 		if !ok {

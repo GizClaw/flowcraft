@@ -78,19 +78,14 @@ func TestPipe_InterruptSkipsBuffer(t *testing.T) {
 	}
 	pipe.Interrupt()
 
-	// Read must eventually return context.Canceled; it may return buffered values first
-	// (select is non-deterministic when both channel and ctx.Done() are ready).
-	var err error
-	for err == nil {
-		_, err = pipe.Read()
-	}
-	if err != context.Canceled {
+	// Interrupt is deterministic: the very first Read skips all buffered
+	// values and returns context.Canceled.
+	if _, err := pipe.Read(); err != context.Canceled {
 		t.Errorf("Read: got error %v, want context.Canceled", err)
 	}
 
 	// Subsequent reads also return the same error
-	_, err = pipe.Read()
-	if err != context.Canceled {
+	if _, err := pipe.Read(); err != context.Canceled {
 		t.Errorf("subsequent Read: got error %v, want context.Canceled", err)
 	}
 }
@@ -149,9 +144,10 @@ func TestPipe_InterruptThenClose(t *testing.T) {
 	pipe.Interrupt()
 	pipe.Close() // must not panic
 
-	// Read returns an error (either context.Canceled or io.EOF; select is non-deterministic when both are ready)
-	_, err := pipe.Read()
-	if err == nil {
-		t.Error("Read after Interrupt+Close: expected error, got nil")
+	// Interrupt takes precedence over Close: Read must deterministically
+	// report context.Canceled, never a clean io.EOF, so an abnormal
+	// termination is never observed as a normal end-of-stream.
+	if _, err := pipe.Read(); err != context.Canceled {
+		t.Errorf("Read after Interrupt+Close: got %v, want context.Canceled", err)
 	}
 }
