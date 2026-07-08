@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,11 @@ import (
 	speechtts "github.com/GizClaw/flowcraft/voice/tts"
 	"github.com/rs/xid"
 )
+
+// errConsumerGone signals that the output pipe's consumer stopped reading
+// (out.Send returned false). It is distinguished from provider/decode errors
+// so SynthesizeStream can Interrupt (nothing left to drain) instead of Close.
+var errConsumerGone = errors.New("minimax tts stream: consumer gone")
 
 const (
 	defaultBaseURL = "https://api.minimaxi.com"
@@ -311,13 +317,31 @@ func (t *TTS) SynthesizeStream(
 	out := speechaudio.NewPipe[speechtts.Utterance](16)
 
 	go func() {
+		// done is closed when this goroutine returns so the watcher below
+		// exits instead of leaking. The watcher only interrupts the output
+		// when the caller's ctx is cancelled, leaving the normal EOF
+		// (out.Close) and provider-error (out.Interrupt) paths untouched.
+		done := make(chan struct{})
+		defer close(done)
 		go func() {
-			<-ctx.Done()
-			out.Interrupt()
+			select {
+			case <-ctx.Done():
+				out.Interrupt()
+			case <-done:
+			}
 		}()
 
 		seq := 0
 		for {
+			// input.Read below ignores ctx, so bail out between sentences
+			// once the caller cancels. Interrupt directly (the watcher may
+			// race with done) to guarantee the consumer is unblocked.
+			select {
+			case <-ctx.Done():
+				out.Interrupt()
+				return
+			default:
+			}
 			text, err := input.Read()
 			if err == io.EOF {
 				out.Close()
@@ -328,7 +352,23 @@ func (t *TTS) SynthesizeStream(
 				return
 			}
 			if err := t.synthesizeStreamChunk(ctx, text, o, out, &seq); err != nil {
-				out.Interrupt()
+				if errors.Is(err, errConsumerGone) {
+					// The consumer already went away, so there is no
+					// buffered audio left to deliver — interrupt.
+					out.Interrupt()
+				} else {
+					// Genuine provider/decode error mid-stream. Prefer Close
+					// (normal EOF) over Interrupt so any already-synthesized
+					// leading audio still buffered in the pipe drains to the
+					// consumer instead of being discarded. The pipeline
+					// (voice/pipeline.go runTTS) treats the stream's terminal
+					// error identically to io.EOF — it stops reading without
+					// surfacing the error as an event — so choosing Close
+					// loses no error signal that callers rely on, and
+					// FallbackTTS only falls back on stream-setup failure,
+					// not on mid-stream errors.
+					out.Close()
+				}
 				return
 			}
 		}
@@ -354,94 +394,149 @@ func (t *TTS) synthesizeStreamChunk(
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data:") {
-			continue
+	// Use a bufio.Reader (unbounded line length) instead of a bufio.Scanner:
+	// the status=2 final SSE event carries the FULL cumulative hex-encoded
+	// audio, which for longer utterances exceeds Scanner's max-token cap and
+	// makes Scan() fail with bufio.ErrTooLong, failing the whole synthesis.
+	// handleStreamLine skips that redundant final payload since all audio has
+	// already been streamed incrementally via the status!=2 events.
+	reader := bufio.NewReader(resp.Body)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if err := t.handleStreamLine(strings.TrimSpace(line), text, chunkID, o, out, seq, &firstChunk); err != nil {
+			return err
 		}
-		data := strings.TrimPrefix(line, "data:")
-		data = strings.TrimSpace(data)
-		if data == "" {
-			continue
-		}
-
-		var respChunk t2aResponse
-		if err := json.Unmarshal([]byte(data), &respChunk); err != nil {
-			continue
-		}
-		if respChunk.BaseResp != nil && respChunk.BaseResp.StatusCode != 0 {
-			return fmt.Errorf("minimax tts stream: api error %d: %s",
-				respChunk.BaseResp.StatusCode, respChunk.BaseResp.StatusMsg)
-		}
-		if respChunk.Data == nil || respChunk.Data.Audio == "" {
-			continue
-		}
-		// status=2 is the final event containing the full cumulative audio;
-		// skip it because we already streamed all incremental chunks.
-		if respChunk.Data.Status == 2 {
-			continue
-		}
-
-		audioBytes, err := hex.DecodeString(respChunk.Data.Audio)
-		if err != nil {
-			continue
-		}
-
-		effectiveCodec := o.Codec
-		if effectiveCodec == speechaudio.CodecPCM {
-			effectiveCodec = speechaudio.CodecMP3
-		}
-
-		// Only the first audio chunk of a sentence carries Text;
-		// subsequent chunks for the same sentence leave Text empty
-		// so downstream consumers can treat it as a sync-safe delta.
-		uttText := ""
-		if firstChunk {
-			uttText = text
-			firstChunk = false
-		}
-
-		outChunk := speechtts.Utterance{
-			Frame: speechaudio.Frame{
-				Data: audioBytes,
-				Format: speechaudio.Format{
-					Codec:      effectiveCodec,
-					SampleRate: o.Rate,
-					Channels:   1,
-					BitDepth:   0,
-				},
-			},
-			Text:     uttText,
-			ChunkID:  chunkID,
-			Sequence: *seq,
-		}
-		*seq++
-		if !out.Send(outChunk) {
-			return ctx.Err()
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("minimax tts stream: read response: %w", readErr)
 		}
 	}
+}
 
-	return scanner.Err()
+// handleStreamLine parses one SSE line from the T2A streaming response and,
+// when it carries an incremental audio chunk, sends it to out. It returns
+// errConsumerGone if the consumer stopped reading, a provider error for API
+// failures, or nil for lines that should be skipped (non-data lines, the
+// redundant status=2 final event, or undecodable payloads).
+func (t *TTS) handleStreamLine(
+	line, text, chunkID string,
+	o *speechtts.TTSOptions,
+	out *speechaudio.Pipe[speechtts.Utterance],
+	seq *int,
+	firstChunk *bool,
+) error {
+	if !strings.HasPrefix(line, "data:") {
+		return nil
+	}
+	data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+	if data == "" {
+		return nil
+	}
+
+	var respChunk t2aResponse
+	if err := json.Unmarshal([]byte(data), &respChunk); err != nil {
+		return nil
+	}
+	if respChunk.BaseResp != nil && respChunk.BaseResp.StatusCode != 0 {
+		return fmt.Errorf("minimax tts stream: api error %d: %s",
+			respChunk.BaseResp.StatusCode, respChunk.BaseResp.StatusMsg)
+	}
+	if respChunk.Data == nil || respChunk.Data.Audio == "" {
+		return nil
+	}
+	// status=2 is the final event containing the full cumulative audio;
+	// skip it because we already streamed all incremental chunks.
+	if respChunk.Data.Status == 2 {
+		return nil
+	}
+
+	audioBytes, err := hex.DecodeString(respChunk.Data.Audio)
+	if err != nil {
+		return nil
+	}
+
+	// Label the frame with the codec of the bytes MiniMax actually returned
+	// (e.g. an opus request yields mp3 bytes, a wav request yields flac), not
+	// the requested codec, so downstream decoders keyed off Format.Codec decode
+	// the real audio rather than mis-decoding it.
+	output := resolveOutput(o.Codec)
+
+	// Only the first audio chunk of a sentence carries Text;
+	// subsequent chunks for the same sentence leave Text empty
+	// so downstream consumers can treat it as a sync-safe delta.
+	uttText := ""
+	if *firstChunk {
+		uttText = text
+		*firstChunk = false
+	}
+
+	outChunk := speechtts.Utterance{
+		Frame: speechaudio.Frame{
+			Data: audioBytes,
+			Format: speechaudio.Format{
+				Codec:      output.codec,
+				SampleRate: effectiveSampleRate(o),
+				Channels:   1,
+				// BitDepth is left 0: MiniMax's mp3/flac output is a
+				// compressed stream whose sample bit depth is only defined
+				// after decoding, so we cannot state it here without guessing.
+				BitDepth: 0,
+			},
+		},
+		Text:     uttText,
+		ChunkID:  chunkID,
+		Sequence: *seq,
+	}
+	*seq++
+	if !out.Send(outChunk) {
+		return errConsumerGone
+	}
+	return nil
 }
 
 // --- helpers ---
 
-// codecToMinimaxFormat maps speechaudio.Codec to the MiniMax API format string.
-func codecToMinimaxFormat(c speechaudio.Codec) string {
+// minimaxOutput describes the audio MiniMax actually returns for a requested
+// codec: the format string sent in audio_setting.format and the codec of the
+// bytes the API produces. MiniMax does not support every codec, so the
+// requested codec and the produced bytes can differ. Keeping both fields
+// together is the single source of truth so the format sent to the API and the
+// Format.Codec label stamped on emitted frames can never diverge.
+type minimaxOutput struct {
+	format string
+	codec  speechaudio.Codec
+}
+
+// resolveOutput maps a requested codec to the MiniMax API format string and the
+// codec of the bytes the API actually returns for that format.
+func resolveOutput(c speechaudio.Codec) minimaxOutput {
 	switch c {
 	case speechaudio.CodecMP3:
-		return "mp3"
+		return minimaxOutput{format: "mp3", codec: speechaudio.CodecMP3}
 	case speechaudio.CodecOpus:
-		return "mp3" // MiniMax does not support opus; fallback to mp3
+		// MiniMax does not support opus; it returns mp3 bytes.
+		return minimaxOutput{format: "mp3", codec: speechaudio.CodecMP3}
 	case speechaudio.CodecWAV:
-		return "flac"
+		// MiniMax returns flac bytes for a "flac" format request.
+		return minimaxOutput{format: "flac", codec: speechaudio.CodecFLAC}
 	case speechaudio.CodecPCM:
 		fallthrough
 	default:
-		return "mp3"
+		// MiniMax has no raw PCM output; it returns mp3 bytes.
+		return minimaxOutput{format: "mp3", codec: speechaudio.CodecMP3}
 	}
+}
+
+// effectiveSampleRate returns the sample rate MiniMax is asked to encode at.
+// It must match the value sent in audio_setting.sample_rate so the rate stamped
+// on emitted frames describes the actual audio.
+func effectiveSampleRate(o *speechtts.TTSOptions) int {
+	if o.Rate <= 0 {
+		return 32000
+	}
+	return o.Rate
 }
 
 func (t *TTS) buildRequest(text string, stream bool, o *speechtts.TTSOptions) *t2aRequest {
@@ -463,15 +558,9 @@ func (t *TTS) buildRequest(text string, stream bool, o *speechtts.TTSOptions) *t
 		Emotion: o.ExtraString(KeyEmotion, t.emotion),
 	}
 
-	format := codecToMinimaxFormat(o.Codec)
-	rate := o.Rate
-	if rate <= 0 {
-		rate = 32000
-	}
-
 	as := &audioSetting{
-		SampleRate: rate,
-		Format:     format,
+		SampleRate: effectiveSampleRate(o),
+		Format:     resolveOutput(o.Codec).format,
 		Channel:    1,
 	}
 
@@ -660,8 +749,17 @@ func (t *TTS) Warmup(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("minimax tts: warmup: %w", err)
 	}
+	// Drain the body before closing so net/http's Transport can return the
+	// connection to the idle pool for reuse — the whole point of warmup. A
+	// bare Close on an unread body discards the connection instead.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode >= 400 {
+	// The TCP/TLS handshake — the expensive part warmup pre-heats — is complete
+	// once we have any HTTP response. Posting "{}" to the T2A endpoint typically
+	// yields HTTP 400, so only treat 5xx as a warmup failure; a client-side
+	// (4xx) status still means the connection is established and pooled. A real
+	// connection error would already have been returned above.
+	if resp.StatusCode >= 500 {
 		return fmt.Errorf("minimax tts: warmup: HTTP %d", resp.StatusCode)
 	}
 	return nil
