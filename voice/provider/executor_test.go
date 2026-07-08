@@ -262,6 +262,129 @@ func TestRunWithFallback_ContextCancelDuringBackoff(t *testing.T) {
 	}
 }
 
+func TestRunWithFallback_ContextCancelledBeforeStart(t *testing.T) {
+	circuit := NewCircuit(2)
+	policy := DefaultFallbackPolicy()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	called := false
+	_, err := RunWithFallback(ctx, circuit, policy, "test.op",
+		2,
+		func(i int) string { return "provider" },
+		func(ctx context.Context, i int) (string, error) {
+			called = true
+			return "ok", nil
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("execFn should not be called when ctx is already cancelled")
+	}
+}
+
+func TestRunWithFallback_ContextCancelDuringRetryNoBackoff(t *testing.T) {
+	circuit := NewCircuit(1)
+	// RetryBackoff==0 means the backoff sleep is not a cancellation checkpoint;
+	// retries must still stop deterministically once ctx is cancelled.
+	policy := FallbackPolicy{MaxAttempts: 5, RetryBackoff: 0}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	calls := 0
+	_, err := RunWithFallback(ctx, circuit, policy, "test.op",
+		1,
+		func(i int) string { return "provider" },
+		func(ctx context.Context, i int) (string, error) {
+			calls++
+			cancel() // cancel while returning a retryable error that ignores ctx
+			return "", errors.New("503 unavailable")
+		},
+	)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 (retries must stop after cancellation)", calls)
+	}
+}
+
+func TestCircuit_NonRetryableFailuresTripBreaker(t *testing.T) {
+	c := NewCircuit(1)
+	policy := FallbackPolicy{CircuitBreakAfter: 2, CircuitOpen: time.Minute}
+	base := time.Now()
+
+	// A non-retryable but provider-attributable hard failure (e.g. an internal
+	// provider error) must still trip the breaker after CircuitBreakAfter — the
+	// breaker must not require retryable errors to open (#19).
+	hardErr := &ProviderError{Code: "internal_error", Op: "op", Message: "boom", Retry: false, Fallback: true}
+	if !IsProviderFault(hardErr) {
+		t.Fatal("internal_error must be provider-attributable")
+	}
+	if c.OnFailure(0, base, policy, IsProviderFault(hardErr)) {
+		t.Fatal("circuit should not open on the first hard failure")
+	}
+	if !c.OnFailure(0, base, policy, IsProviderFault(hardErr)) {
+		t.Fatal("persistent hard (non-retryable) failures should open the breaker")
+	}
+	if c.Allow(0, base.Add(time.Second)) {
+		t.Fatal("circuit should be open after consecutive hard failures")
+	}
+}
+
+func TestCircuit_HalfOpenRecovery(t *testing.T) {
+	c := NewCircuit(1)
+	policy := FallbackPolicy{CircuitBreakAfter: 2, CircuitOpen: 50 * time.Millisecond}
+	base := time.Now()
+
+	c.OnFailure(0, base, policy, true)
+	if !c.OnFailure(0, base, policy, true) {
+		t.Fatal("circuit should open after 2 failures")
+	}
+	if c.Allow(0, base.Add(10*time.Millisecond)) {
+		t.Fatal("circuit should stay open within the open window")
+	}
+
+	after := base.Add(60 * time.Millisecond)
+	if !c.Allow(0, after) {
+		t.Fatal("circuit should allow a probe (half-open) after the window elapses")
+	}
+	// A successful probe fully closes the circuit.
+	c.OnSuccess(0)
+	if !c.Allow(0, after) {
+		t.Fatal("circuit should be closed after a successful probe")
+	}
+}
+
+func TestCircuit_HalfOpenProbeFailureReopensFromCleanCount(t *testing.T) {
+	c := NewCircuit(1)
+	policy := FallbackPolicy{CircuitBreakAfter: 2, CircuitOpen: 50 * time.Millisecond}
+	base := time.Now()
+
+	c.OnFailure(0, base, policy, true)
+	c.OnFailure(0, base, policy, true) // opens
+
+	after := base.Add(60 * time.Millisecond)
+	if !c.Allow(0, after) {
+		t.Fatal("expected a half-open probe to be allowed")
+	}
+	// A single probe failure re-opens immediately from the decayed count,
+	// rather than requiring an ever-growing streak.
+	if !c.OnFailure(0, after, policy, true) {
+		t.Fatal("half-open probe failure should re-open the circuit")
+	}
+	if c.Allow(0, after.Add(10*time.Millisecond)) {
+		t.Fatal("circuit should be open again after the probe failure")
+	}
+	// And it remains bounded: the next window again yields a single probe.
+	if !c.Allow(0, after.Add(60*time.Millisecond)) {
+		t.Fatal("expected another probe after the second window elapses")
+	}
+}
+
 func TestRunWithFallback_ZeroProviders(t *testing.T) {
 	circuit := NewCircuit(0)
 	policy := DefaultFallbackPolicy()
@@ -302,5 +425,58 @@ func TestSleepWithContext_Cancelled(t *testing.T) {
 	ok := SleepWithContext(ctx, time.Second)
 	if ok {
 		t.Fatal("expected false for cancelled context")
+	}
+}
+
+// TestCircuit_ClientFaultDoesNotTripBreaker locks in that client-attributable
+// failures (bad input) never open a healthy provider's breaker, while
+// provider-attributable faults still do (regression guard for the breaker
+// accounting change).
+func TestCircuit_ClientFaultDoesNotTripBreaker(t *testing.T) {
+	c := NewCircuit(1)
+	policy := DefaultFallbackPolicy() // CircuitBreakAfter = 2
+	now := time.Now()
+
+	badInput := &ProviderError{Code: "bad_audio", Op: "tts.synthesize", Message: "invalid sample rate", Retry: false, Fallback: true}
+	for i := 0; i < 10; i++ {
+		if c.OnFailure(0, now, policy, IsProviderFault(badInput)) {
+			t.Fatalf("client-fault failure #%d wrongly opened the breaker", i+1)
+		}
+	}
+	if !c.Allow(0, now) {
+		t.Fatal("healthy provider should stay allowed after client-fault failures")
+	}
+
+	// Sanity: provider-attributable faults still trip after CircuitBreakAfter.
+	provErr := &ProviderError{Code: "provider_unavailable", Op: "tts.synthesize", Message: "503", Retry: true, Fallback: true}
+	_ = c.OnFailure(0, now, policy, IsProviderFault(provErr))
+	if !c.OnFailure(0, now, policy, IsProviderFault(provErr)) {
+		t.Fatal("provider-attributable faults should still trip the breaker")
+	}
+}
+
+// TestRunWithFallback_ClientFaultDoesNotSkipHealthyProvider verifies that a
+// client repeatedly sending bad input never causes a healthy provider to be
+// skipped with an open circuit (the regression the diff review flagged).
+func TestRunWithFallback_ClientFaultDoesNotSkipHealthyProvider(t *testing.T) {
+	circuit := NewCircuit(1)
+	policy := DefaultFallbackPolicy()
+
+	calls := 0
+	for req := 0; req < 5; req++ {
+		_, err := RunWithFallback(context.Background(), circuit, policy, "tts.synthesize",
+			1,
+			func(i int) string { return "primary" },
+			func(ctx context.Context, i int) (string, error) {
+				calls++
+				return "", &ProviderError{Code: "bad_audio", Op: "tts.synthesize", Message: "bad input", Retry: false, Fallback: true}
+			},
+		)
+		if err == nil {
+			t.Fatalf("req %d: expected an error for bad input", req)
+		}
+	}
+	if calls != 5 {
+		t.Fatalf("execFn called %d times, want 5 — a healthy provider was wrongly skipped by an open breaker on client-fault input", calls)
 	}
 }
