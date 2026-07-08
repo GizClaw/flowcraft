@@ -192,8 +192,9 @@ func TestSynthesizeStream_NoLeak_ProviderError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Drain to the terminal error. The provider-error path uses out.Close(),
-	// so already-buffered leading audio drains and the stream ends at io.EOF.
+	// Drain to the terminal error. The provider-error path interrupts the
+	// output, so the terminal Read reports context.Canceled (abnormal
+	// termination); this test only asserts no goroutine leaks on that path.
 	for {
 		if _, err := stream.Read(); err != nil {
 			break

@@ -364,6 +364,45 @@ func TestSynthesizeStream_FormatCodecMatchesOutput(t *testing.T) {
 	}
 }
 
+// TestSynthesizeStream_ProviderErrorMidStreamSignalsError guards the stream
+// contract for abnormal termination: when MiniMax returns a base_resp error
+// after some audio has already streamed, the terminal Read must report an error
+// (context.Canceled from Interrupt), never a clean io.EOF. Surfacing io.EOF
+// would let a direct StreamTTS caller mistake a mid-stream provider failure for
+// a normally completed utterance.
+func TestSynthesizeStream_ProviderErrorMidStreamSignalsError(t *testing.T) {
+	chunk := hex.EncodeToString([]byte("chunk-1"))
+	srv := newSSEServer(func(w http.ResponseWriter, flush func()) {
+		writeSSE(w, flush, t2aResponse{Data: &t2aData{Audio: chunk, Status: 1}, BaseResp: &baseResp{StatusCode: 0}})
+		writeSSE(w, flush, t2aResponse{BaseResp: &baseResp{StatusCode: 1002, StatusMsg: "rate limited"}})
+	})
+	defer srv.Close()
+
+	p, _ := New(WithAPIKey("k"), WithBaseURL(srv.URL))
+	textPipe := speechaudio.NewPipe[string](1)
+	textPipe.Send("hello")
+	textPipe.Close()
+
+	stream, err := p.SynthesizeStream(context.Background(), textPipe)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var termErr error
+	for {
+		if _, err := stream.Read(); err != nil {
+			termErr = err
+			break
+		}
+	}
+	if termErr == io.EOF {
+		t.Fatal("mid-stream provider error surfaced as clean io.EOF; caller cannot tell failure from normal completion")
+	}
+	if termErr != context.Canceled {
+		t.Fatalf("terminal error = %v, want context.Canceled", termErr)
+	}
+}
+
 func TestSynthesizeStream_LargeFinalStatus2Line(t *testing.T) {
 	// Issue #4: production reads the SSE stream line-by-line. The original
 	// bufio.Scanner imposes a max-token cap (even when bumped to 1MB via

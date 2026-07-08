@@ -352,23 +352,14 @@ func (t *TTS) SynthesizeStream(
 				return
 			}
 			if err := t.synthesizeStreamChunk(ctx, text, o, out, &seq); err != nil {
-				if errors.Is(err, errConsumerGone) {
-					// The consumer already went away, so there is no
-					// buffered audio left to deliver — interrupt.
-					out.Interrupt()
-				} else {
-					// Genuine provider/decode error mid-stream. Prefer Close
-					// (normal EOF) over Interrupt so any already-synthesized
-					// leading audio still buffered in the pipe drains to the
-					// consumer instead of being discarded. The pipeline
-					// (voice/pipeline.go runTTS) treats the stream's terminal
-					// error identically to io.EOF — it stops reading without
-					// surfacing the error as an event — so choosing Close
-					// loses no error signal that callers rely on, and
-					// FallbackTTS only falls back on stream-setup failure,
-					// not on mid-stream errors.
-					out.Close()
-				}
+				// Any mid-stream failure — consumer gone, a MiniMax base_resp
+				// API error, or a response read/decode error — is an abnormal
+				// termination. Interrupt so the terminal Read returns an error
+				// per the audio.Stream contract; closing instead would surface
+				// a clean io.EOF and let direct StreamTTS callers mistake a
+				// provider failure (or a truncated/empty utterance) for a
+				// normally completed one.
+				out.Interrupt()
 				return
 			}
 		}
