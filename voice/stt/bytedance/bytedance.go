@@ -227,11 +227,15 @@ func (s *STT) RecognizeStream(
 				}
 			}
 			for {
-				select {
-				case <-innerCtx.Done():
-					writerDone <- innerCtx.Err()
+				// input is owned by the caller (it is passed into
+				// RecognizeStream), so we must not Close/Interrupt it to unblock
+				// a pending Read. Stream.Read carries no context either, so the
+				// pragmatic fix against a writer leak is to observe innerCtx
+				// before each Read and return promptly once the reader goroutine
+				// cancels it (via its deferred innerCancel on every exit path).
+				if err := innerCtx.Err(); err != nil {
+					writerDone <- err
 					return
-				default:
 				}
 				frame, readErr := input.Read()
 				if readErr == io.EOF {
@@ -258,6 +262,14 @@ func (s *STT) RecognizeStream(
 				return
 			case err := <-writerDone:
 				if err != nil && err != io.EOF && innerCtx.Err() == nil {
+					// A genuine writer send-failure means the server never
+					// received the full stream, so the transcript is truncated.
+					// Interrupt the output (mirroring the server-error path)
+					// instead of falling through to defer out.Close(), which
+					// would surface a clean io.EOF indistinguishable from a
+					// normal end-of-stream.
+					telemetry.Error(innerCtx, fmt.Sprintf("bytedance stt: writer error: %v", err))
+					out.Interrupt()
 					return
 				}
 				writerDone = nil
@@ -311,7 +323,9 @@ func (s *STT) emitResults(ctx context.Context, resp *asrResponse, lang string, o
 		case <-ctx.Done():
 			return
 		default:
-			out.Send(stt.STTResult{Text: resp.payload.Result.Text, IsFinal: resp.isLast, Lang: lang})
+			if !out.Send(stt.STTResult{Text: resp.payload.Result.Text, IsFinal: resp.isLast, Lang: lang}) {
+				return
+			}
 		}
 	}
 }

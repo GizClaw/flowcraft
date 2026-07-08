@@ -463,6 +463,71 @@ func buildServerFullFrame(data []byte, isLast bool) []byte {
 	return buf
 }
 
+// buildErrorFrame constructs a server error response frame for testing.
+func buildErrorFrame(code uint32, data []byte) []byte {
+	toc := uint32(protoVersion | protoHdrSize | msgTypeError | serializationJSON | flagNoSeq)
+	buf := make([]byte, 4+4+4+len(data))
+	binary.BigEndian.PutUint32(buf[0:], toc)
+	binary.BigEndian.PutUint32(buf[4:], code)
+	binary.BigEndian.PutUint32(buf[8:], uint32(len(data)))
+	copy(buf[12:], data)
+	return buf
+}
+
+// TestRecognizeStream_ServerError verifies that an early server-error
+// termination surfaces an error to the consumer rather than a clean io.EOF,
+// which would make a truncated transcript look complete.
+func TestRecognizeStream_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = c.Close(websocket.StatusNormalClosure, "") }()
+
+		// Read full request, then report a server error instead of transcribing.
+		if _, _, err = c.Read(r.Context()); err != nil {
+			return
+		}
+		errPayload, _ := json.Marshal(asrResponsePayload{Error: "quota exceeded"})
+		_ = c.Write(r.Context(), websocket.MessageBinary, buildErrorFrame(1013, errPayload))
+
+		// Keep the connection open so the client observes the error frame
+		// before the normal-closure handshake.
+		_, _, _ = c.Read(r.Context())
+	}))
+	defer srv.Close()
+
+	wsURL := strings.Replace(srv.URL, "http://", "ws://", 1)
+	s, _ := New(WithAppID("app"), WithToken("tok"), WithHost(wsURL))
+
+	input := audio.NewPipe[audio.Frame](2)
+	input.Send(audio.Frame{
+		Data:   make([]byte, 3200),
+		Format: audio.Format{SampleRate: 16000, Channels: 1, BitDepth: 16},
+	})
+	input.Close()
+
+	out, err := s.RecognizeStream(context.Background(), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var readErr error
+	for {
+		if _, e := out.Read(); e != nil {
+			readErr = e
+			break
+		}
+	}
+	if readErr == io.EOF {
+		t.Fatal("server error surfaced as clean EOF; truncated transcript looks complete")
+	}
+	if readErr != context.Canceled {
+		t.Errorf("err = %v, want context.Canceled", readErr)
+	}
+}
+
 func TestUnpackFrame_ServerFull(t *testing.T) {
 	payload := []byte(`{"result":{"text":"hello"}}`)
 	frame := buildServerFullFrame(payload, false)
