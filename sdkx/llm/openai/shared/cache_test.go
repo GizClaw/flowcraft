@@ -3,6 +3,8 @@ package shared
 import (
 	"testing"
 
+	oai "github.com/openai/openai-go"
+
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
@@ -113,6 +115,50 @@ func TestComputePromptCacheKey_NoStableContentEmpty(t *testing.T) {
 	)
 	if got != "" {
 		t.Fatalf("expected empty key, got %q", got)
+	}
+}
+
+// TestCachedInputTokensFromUsageFallback verifies that the DeepSeek-style
+// top-level prompt_cache_hit_tokens field is used when the standard
+// prompt_tokens_details.cached_tokens field is absent.
+func TestCachedInputTokensFromUsageFallback(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want int64
+	}{
+		{
+			name: "openai nested cached_tokens",
+			json: `{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":80}}`,
+			want: 80,
+		},
+		{
+			name: "deepseek top-level prompt_cache_hit_tokens",
+			json: `{"prompt_tokens":100,"prompt_cache_hit_tokens":70,"prompt_cache_miss_tokens":30,"completion_tokens":20,"total_tokens":120}`,
+			want: 70,
+		},
+		{
+			name: "nested wins over top-level",
+			json: `{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":80},"prompt_cache_hit_tokens":70}`,
+			want: 80,
+		},
+		{
+			name: "no cache info",
+			json: `{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}`,
+			want: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			usage := oai.CompletionUsage{}
+			if err := usage.UnmarshalJSON([]byte(tc.json)); err != nil {
+				t.Fatalf("UnmarshalJSON: %v", err)
+			}
+			got := CachedInputTokensFromUsage(usage)
+			if got != tc.want {
+				t.Fatalf("CachedInputTokensFromUsage() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 
+	oai "github.com/openai/openai-go"
+
 	"github.com/GizClaw/flowcraft/sdk/llm"
 )
 
@@ -94,4 +96,26 @@ func writeCanonical(b *strings.Builder, v any) {
 		enc, _ := json.Marshal(t)
 		b.Write(enc)
 	}
+}
+
+// CachedInputTokensFromUsage extracts the cached-input token count from a
+// chat-completion usage block. It prefers the standard OpenAI field
+// usage.prompt_tokens_details.cached_tokens; if that is zero it falls back to
+// the DeepSeek-compatible top-level field prompt_cache_hit_tokens, which some
+// OpenAI-compatible providers (notably DeepSeek) emit instead.
+func CachedInputTokensFromUsage(usage oai.CompletionUsage) int64 {
+	if cached := usage.PromptTokensDetails.CachedTokens; cached != 0 {
+		return cached
+	}
+	raw := usage.RawJSON()
+	if raw == "" {
+		return 0
+	}
+	var body struct {
+		PromptCacheHitTokens int64 `json:"prompt_cache_hit_tokens"`
+	}
+	if err := json.Unmarshal([]byte(raw), &body); err != nil {
+		return 0
+	}
+	return body.PromptCacheHitTokens
 }

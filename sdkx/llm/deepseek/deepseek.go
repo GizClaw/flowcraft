@@ -159,15 +159,17 @@ const (
 	defaultModel = "deepseek-v4-flash"
 )
 
-// New creates a DeepSeek LLM instance (OpenAI-compatible).
-func New(model, apiKey, baseURL string) (*openai.LLM, error) {
+// New creates a DeepSeek LLM instance (OpenAI-compatible). It uses the
+// Chat Completions adapter rather than the default Responses adapter,
+// because DeepSeek's API is OpenAI-compatible only on /chat/completions.
+func New(model, apiKey, baseURL string) (*openai.ChatLLM, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	if model == "" {
 		model = defaultModel
 	}
-	inner, err := openai.New(model, apiKey, baseURL)
+	inner, err := openai.NewChat(model, apiKey, baseURL)
 	if err != nil {
 		return nil, err
 	}

@@ -95,13 +95,13 @@ const (
 	defaultModel   = "qwen-flash"
 )
 
-// LLM wraps openai.LLM to handle Qwen-specific parameters.
+// LLM wraps openai.ChatLLM to handle Qwen-specific parameters.
 type LLM struct {
-	inner *openai.LLM
+	inner *openai.ChatLLM
 }
 
-// New creates a Qwen LLM instance. Wraps openai.LLM to inject
-// enable_thinking based on GenerateOptions.Thinking.
+// New creates a Qwen LLM instance. Wraps the Chat Completions adapter
+// to inject enable_thinking based on GenerateOptions.Thinking.
 func New(model, apiKey, baseURL string) (*LLM, error) {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
@@ -109,12 +109,12 @@ func New(model, apiKey, baseURL string) (*LLM, error) {
 	if model == "" {
 		model = defaultModel
 	}
-	inner, err := openai.New(model, apiKey, baseURL)
+	inner, err := openai.NewChat(model, apiKey, baseURL)
 	if err != nil {
 		return nil, err
 	}
 	// Tag the OTel/metrics provider as "qwen" so dashboards split out
-	// Qwen traffic from the upstream openai.LLM that delegates the HTTP
+	// Qwen traffic from the upstream openai.ChatLLM that delegates the HTTP
 	// transport. See sdkx/llm/openai/openai.go ▸ WithProviderName for
 	// the contract.
 	inner.WithProviderName("qwen")

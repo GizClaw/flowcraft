@@ -141,11 +141,12 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 		TotalTokens:  resp.Usage.TotalTokens,
 		// usage.prompt_tokens_details.cached_tokens is the subset of
 		// PromptTokens the provider served from its prefix cache.
-		// OpenAI / Azure OpenAI / DeepSeek / Qwen-flash populate it
-		// when the wire response carries prompt_tokens_details;
-		// older / lighter compatibles leave it zero, which is what
-		// we propagate via TokenUsage.CachedInputTokens (omitempty).
-		CachedInputTokens: resp.Usage.PromptTokensDetails.CachedTokens,
+		// OpenAI / Azure OpenAI / Qwen-flash populate it when the wire
+		// response carries prompt_tokens_details; older / lighter
+		// compatibles leave it zero. DeepSeek reports the same value as
+		// a top-level prompt_cache_hit_tokens, so we fall back to the
+		// raw response when the nested field is absent.
+		CachedInputTokens: openaishared.CachedInputTokensFromUsage(resp.Usage),
 	}
 
 	span.SetAttributes(llm.UsageSpanAttrs(usage)...)
