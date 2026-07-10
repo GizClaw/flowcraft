@@ -253,16 +253,21 @@ func ensureResponsesTextBoundary(b *strings.Builder) {
 	}
 }
 
-func appendImageContent(items []*arkresponses.ContentItem, url string) []*arkresponses.ContentItem {
-	if url == "" {
+func appendImageContent(items []*arkresponses.ContentItem, ref string) []*arkresponses.ContentItem {
+	if ref == "" {
 		return items
 	}
-	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_Image{
-		Image: &arkresponses.ContentItemImage{
-			Type:     arkresponses.ContentItemType_input_image,
-			ImageUrl: &url,
-		},
-	}})
+	img := &arkresponses.ContentItemImage{Type: arkresponses.ContentItemType_input_image}
+	// The Responses API splits image-by-file-id from image-by-URL into
+	// separate fields; a file_id:// reference must not be stuffed into
+	// image_url or the server treats "file_id://..." as a (broken) URL.
+	if after, ok := strings.CutPrefix(ref, "file_id://"); ok {
+		img.FileId = stringPtrIfNotEmpty(after)
+	} else {
+		url := ref
+		img.ImageUrl = &url
+	}
+	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_Image{Image: img}})
 }
 
 func appendFileContent(items []*arkresponses.ContentItem, fileRef *llm.FileRef) []*arkresponses.ContentItem {
@@ -281,10 +286,33 @@ func appendFileContent(items []*arkresponses.ContentItem, fileRef *llm.FileRef) 
 	default:
 		file.FileUrl = &fileRef.URI
 	}
-	file.Filename = stringPtrIfNotEmpty(fileRef.Name)
+	if fileRef.Name != "" {
+		name := fileRef.Name
+		file.Filename = &name
+	} else if file.FileData != nil {
+		// Spec: filename is required when using file_data. Derive a
+		// usable name from the MIME type when the caller didn't give one.
+		if name := filenameFromMime(fileRef.MimeType); name != "" {
+			file.Filename = &name
+		}
+	}
 	return append(items, &arkresponses.ContentItem{Union: &arkresponses.ContentItem_File{
 		File: file,
 	}})
+}
+
+// filenameFromMime derives a "file.<ext>" name from a MIME type for
+// the file_data path, where the Responses API requires a filename.
+// Returns "" for empty/unknown MIME so the caller leaves the field unset.
+func filenameFromMime(mime string) string {
+	if mime == "" {
+		return ""
+	}
+	i := strings.IndexByte(mime, '/')
+	if i < 0 || i == len(mime)-1 {
+		return ""
+	}
+	return "file." + mime[i+1:]
 }
 
 func mediaURL(media *llm.MediaRef) string {
@@ -341,6 +369,76 @@ func parseWebSearchConfig(v any) webSearchConfig {
 	default:
 		return webSearchConfig{}
 	}
+}
+
+// applyResponsesExtra maps Responses API fields the provider-agnostic
+// [llm.GenerateOptions] cannot express onto req. Honoured Extra keys
+// are documented on the package. store defaults to false because the
+// adapter never reads responses back via previous_response_id in the
+// common case, so leaving the server default (true) only burns quota.
+func applyResponsesExtra(req *arkresponses.ResponsesRequest, opts *llm.GenerateOptions) {
+	store := false
+	if v, ok := opts.Extra["store"].(bool); ok {
+		store = v
+	}
+	req.Store = &store
+
+	if v, ok := opts.Extra["previous_response_id"].(string); ok && v != "" {
+		req.PreviousResponseId = &v
+	}
+
+	if thinkType, ok := parseThinkingExtra(opts.Extra["thinking"], opts.Thinking); ok {
+		t := thinkType
+		req.Thinking = &arkresponses.ResponsesThinking{Type: &t}
+	}
+	if effort, ok := parseReasoningEffortExtra(opts.Extra["reasoning_effort"]); ok {
+		req.Reasoning = &arkresponses.ResponsesReasoning{Effort: effort}
+	}
+}
+
+// parseThinkingExtra resolves the thinking mode, giving Extra
+// ("auto"/"enabled"/"disabled") precedence over the bool
+// [llm.WithThinking] so callers can reach the "auto" mode the bool
+// cannot express. Returns ok=false when neither is set, so the field
+// is omitted and the server applies its own default.
+func parseThinkingExtra(v any, opt *bool) (arkresponses.ThinkingType_Enum, bool) {
+	if s, ok := v.(string); ok {
+		switch strings.ToLower(s) {
+		case "auto":
+			return arkresponses.ThinkingType_auto, true
+		case "enabled":
+			return arkresponses.ThinkingType_enabled, true
+		case "disabled":
+			return arkresponses.ThinkingType_disabled, true
+		}
+	}
+	if opt != nil {
+		if *opt {
+			return arkresponses.ThinkingType_enabled, true
+		}
+		return arkresponses.ThinkingType_disabled, true
+	}
+	return 0, false
+}
+
+// parseReasoningEffortExtra maps an effort string to the Responses
+// API reasoning.effort enum. Unknown values are ignored (field omitted).
+func parseReasoningEffortExtra(v any) (arkresponses.ReasoningEffort_Enum, bool) {
+	s, ok := v.(string)
+	if !ok {
+		return 0, false
+	}
+	switch strings.ToLower(s) {
+	case "minimal":
+		return arkresponses.ReasoningEffort_minimal, true
+	case "low":
+		return arkresponses.ReasoningEffort_low, true
+	case "medium":
+		return arkresponses.ReasoningEffort_medium, true
+	case "high":
+		return arkresponses.ReasoningEffort_high, true
+	}
+	return 0, false
 }
 
 func responseMessage(resp *arkresponses.ResponseObject) llm.Message {
@@ -546,12 +644,37 @@ func classifyResponseEventError(prefix, code, message string) error {
 		msg += ": " + message
 	}
 	err := errdefs.Fmt("bytedance: %s", msg)
-	switch lower := strings.ToLower(code + " " + message); {
+	// Prefer an exact (case-insensitive) match on the provider's error
+	// code: providers reuse free-form messages that contain words like
+	// "context" or "auth" for unrelated errors, so substring matching on
+	// the message misclassifies. Fall back to substring only when the
+	// code is not a recognised token.
+	switch strings.ToLower(code) {
+	case "rate_limit", "rate_limit_exceeded", "ratelimit", "ratelimitexceeded",
+		"rate_limit_error", "429":
+		return errdefs.RateLimit(err)
+	case "unauthorized", "authentication_error", "auth_error",
+		"permission_error", "permission_denied", "401", "403":
+		return errdefs.Unauthorized(err)
+	case "forbidden", "insufficient_quota_error", "402":
+		return errdefs.Forbidden(err)
+	case "invalid_request_error", "invalid_parameter", "invalid",
+		"bad_request", "badrequest", "not_found", "not_found_error",
+		"validation_error", "400", "404":
+		return errdefs.Validation(err)
+	}
+	lower := strings.ToLower(code + " " + message)
+	switch {
 	case strings.Contains(lower, "rate"):
 		return errdefs.RateLimit(err)
-	case strings.Contains(lower, "auth") || strings.Contains(lower, "unauthorized") || strings.Contains(lower, "permission denied"):
+	case strings.Contains(lower, "permission denied"):
 		return errdefs.Unauthorized(err)
-	case strings.Contains(lower, "invalid") || strings.Contains(lower, "badrequest") || strings.Contains(lower, "notfound") || strings.Contains(lower, "context"):
+	case strings.Contains(lower, "forbidden"):
+		return errdefs.Forbidden(err)
+	case strings.Contains(lower, "auth") || strings.Contains(lower, "unauthorized"):
+		return errdefs.Unauthorized(err)
+	case strings.Contains(lower, "invalid") || strings.Contains(lower, "badrequest") ||
+		strings.Contains(lower, "notfound") || strings.Contains(lower, "context"):
 		return errdefs.Validation(err)
 	default:
 		return errdefs.ClassifyProviderError("bytedance", err)

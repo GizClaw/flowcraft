@@ -7,7 +7,9 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
@@ -20,6 +22,7 @@ type ollamaStreamMessage struct {
 	baseCtx context.Context
 	span    trace.Span
 	model   string
+	start   time.Time
 
 	mu       sync.Mutex
 	dec      *json.Decoder
@@ -46,6 +49,7 @@ func newStreamMessage(
 		baseCtx: ctx,
 		span:    span,
 		model:   model,
+		start:   time.Now(),
 		dec:     json.NewDecoder(body),
 		body:    body,
 	}
@@ -70,12 +74,12 @@ func (s *ollamaStreamMessage) Next() bool {
 	if err := s.baseCtx.Err(); err != nil {
 		body := s.body
 		s.body = nil
-		s.err = err
+		s.err = errdefs.FromContext(err)
 		s.mu.Unlock()
 		if body != nil {
 			_ = body.Close()
 		}
-		s.finish(err)
+		s.finish(s.err)
 		return false
 	}
 	dec := s.dec
@@ -95,17 +99,17 @@ func (s *ollamaStreamMessage) Next() bool {
 				s.finish(nil)
 				return false
 			}
-			s.mu.Lock()
-			body := s.body
-			s.body = nil
-			s.err = err
-			s.mu.Unlock()
-			if body != nil {
-				_ = body.Close()
-			}
-			s.finish(err)
-			return false
+		s.mu.Lock()
+		body := s.body
+		s.body = nil
+		s.err = errdefs.ClassifyProviderError("ollama", err)
+		s.mu.Unlock()
+		if body != nil {
+			_ = body.Close()
 		}
+		s.finish(s.err)
+		return false
+	}
 
 		s.updateFromChunk(chunk)
 		s.accumulateToolCalls(chunk)
@@ -227,9 +231,12 @@ func (s *ollamaStreamMessage) finish(err error) {
 	}
 	s.spanEnded = true
 	usage := s.usage
+	dur := time.Since(s.start)
 	s.mu.Unlock()
 
+	status := "success"
 	if err != nil {
+		status = "error"
 		s.span.RecordError(err)
 		s.span.SetStatus(codes.Error, err.Error())
 	} else {
@@ -239,5 +246,10 @@ func (s *ollamaStreamMessage) finish(err error) {
 		)
 		s.span.SetStatus(codes.Ok, "OK")
 	}
+	llm.RecordLLMMetrics(s.baseCtx, "ollama", s.model, status, dur, llm.TokenUsage{
+		InputTokens:  usage.InputTokens,
+		OutputTokens: usage.OutputTokens,
+		TotalTokens:  usage.InputTokens + usage.OutputTokens,
+	})
 	s.span.End()
 }

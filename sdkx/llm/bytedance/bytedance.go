@@ -8,6 +8,31 @@
 // routing locality is governed by Doubao's backend because ArkRuntime
 // does not expose a routing-hint field analogous to OpenAI's
 // `prompt_cache_key` or an explicit `cache_control` breakpoint.
+//
+// # Provider-specific Extra keys
+//
+// The Responses API surface is larger than the provider-agnostic
+// [llm.GenerateOptions] exposes. The adapter honours these per-call
+// keys via [llm.WithExtra]:
+//
+//   - "previous_response_id" (string): reference a prior stored
+//     response to continue a conversation server-side. The referenced
+//     response must have been created with store=true (see below).
+//   - "store" (bool): whether the server stores this response for
+//     later retrieval via previous_response_id. Defaults to false —
+//     the adapter never reads responses back, so storing them only
+//     burns server-side quota. Set true only on the response you
+//     intend to continue.
+//   - "thinking" (string): "auto" | "enabled" | "disabled". Overrides
+//     [llm.WithThinking] and reaches the "auto" mode the bool option
+//     cannot express. When neither is set the field is omitted so the
+//     server applies its own default.
+//   - "reasoning_effort" (string): "minimal" | "low" | "medium" |
+//     "high". Maps to the Responses API `reasoning.effort` field;
+//     only meaningful when thinking is enabled/auto.
+//   - "web_search" (bool | map): enables the built-in web_search tool
+//     (also configurable at provider construction).
+//   - "parallel_tool_calls" (bool): forwarded to the Responses API.
 package bytedance
 
 import (
@@ -73,13 +98,25 @@ func init() {
 		llm.CapStopWords, llm.CapFrequencyPenalty, llm.CapPresencePenalty,
 		llm.CapAudio,
 	)
+	// Pro and Lite fix temperature=1 and top_p=0.95 server-side and
+	// silently ignore manual values (per the Doubao Seed 2.0
+	// Responses API reference). Disable those caps on those two SKUs
+	// so the caps middleware fails fast instead of letting callers
+	// believe their sampling params took effect. Mini honours
+	// temperature/top_p, so it keeps the looser caps above.
+	chatTextOutputOnlyFixedSampling := llm.DisabledCaps(
+		llm.CapImageOutput, llm.CapAudioOutput,
+		llm.CapStopWords, llm.CapFrequencyPenalty, llm.CapPresencePenalty,
+		llm.CapAudio,
+		llm.CapTemperature, llm.CapTopP,
+	)
 
 	llm.RegisterProviderModels("bytedance", []llm.ModelInfo{
 		{
 			Label: "Doubao Seed 2.0 Pro",
 			Name:  "doubao-seed-2-0-pro-260215",
 			Spec: llm.ModelSpec{
-				Caps: chatTextOutputOnly,
+				Caps: chatTextOutputOnlyFixedSampling,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 256_000,
 					MaxOutputTokens:  32_000,
@@ -90,7 +127,7 @@ func init() {
 			Label: "Doubao Seed 2.0 Lite",
 			Name:  "doubao-seed-2-0-lite-260215",
 			Spec: llm.ModelSpec{
-				Caps: chatTextOutputOnly,
+				Caps: chatTextOutputOnlyFixedSampling,
 				Limits: llm.ModelLimits{
 					MaxContextTokens: 256_000,
 					MaxOutputTokens:  32_000,
@@ -146,7 +183,18 @@ func New(modelName, apiKey, baseURL, region string, retryTimes int) (*LLM, error
 	if retryTimes > 0 {
 		ropts = append(ropts, arkruntime.WithRetryTimes(retryTimes))
 	}
-	ropts = append(ropts, arkruntime.WithHTTPClient(http.DefaultClient))
+	// http.DefaultClient has no Timeout and its DefaultTransport has
+	// no ResponseHeaderTimeout, so a server that accepts the TCP
+	// connection but never responds hangs forever when the caller
+	// forgot a context deadline. Clone the default transport (keeps
+	// its sane dial/TLS/idle timeouts) and add a response-header
+	// ceiling so a stuck connection fails fast. We deliberately do
+	// NOT set an overall Client.Timeout: legitimate streaming and
+	// long thinking runs can last minutes, and the context is the
+	// right cancellation channel for those.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 90 * time.Second
+	ropts = append(ropts, arkruntime.WithHTTPClient(&http.Client{Transport: transport}))
 
 	client := arkruntime.NewClientWithApiKey(apiKey, ropts...)
 	return &LLM{
@@ -181,6 +229,19 @@ func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.
 			return llm.Message{}, llm.TokenUsage{}, errdefs.Timeoutf("bytedance.generate: %s", dur.String())
 		}
 		return llm.Message{}, llm.TokenUsage{}, classifyAPIError(err)
+	}
+	// Same nil-(resp,err) defensive guard as the OpenAI adapter: the
+	// ark SDK's pointer-return convention is not a language guarantee,
+	// and a 200 with an undecodable body has been seen returning
+	// (nil, nil) on OpenAI-compatible backends. responseMessage is
+	// nil-safe on its own, but classifying explicitly keeps the error
+	// accurate and the two providers symmetric.
+	if resp == nil {
+		err := errdefs.NotAvailablef("bytedance: nil response with no error (provider misbehaviour)")
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "bytedance", c.model, "error", dur, llm.TokenUsage{})
+		return llm.Message{}, llm.TokenUsage{}, err
 	}
 
 	msg := responseMessage(resp)
@@ -247,16 +308,10 @@ func (c *LLM) buildRequest(msgs []llm.Message, opts *llm.GenerateOptions) (*arkr
 	}
 	maxOutputTokens := int64(maxTokens)
 
-	thinkType := arkresponses.ThinkingType_disabled
-	if opts.Thinking != nil && *opts.Thinking {
-		thinkType = arkresponses.ThinkingType_enabled
-	}
-
 	req := &arkresponses.ResponsesRequest{
 		Model:           c.model,
 		Input:           &arkresponses.ResponsesInput{Union: &arkresponses.ResponsesInput_ListValue{ListValue: &arkresponses.InputItemList{}}},
 		MaxOutputTokens: &maxOutputTokens,
-		Thinking:        &arkresponses.ResponsesThinking{Type: &thinkType},
 	}
 
 	if opts.Temperature != nil {
@@ -326,6 +381,11 @@ func (c *LLM) buildRequest(msgs []llm.Message, opts *llm.GenerateOptions) (*arkr
 	if webSearch.Enabled {
 		req.Tools = append(req.Tools, webSearch.tool())
 	}
+
+	// Responses API fields the provider-agnostic options cannot express
+	// (store, previous_response_id, thinking mode, reasoning effort).
+	// See the package doc for the supported Extra keys.
+	applyResponsesExtra(req, opts)
 
 	if err := appendResponsesMessages(req, msgs); err != nil {
 		return nil, err

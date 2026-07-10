@@ -15,6 +15,7 @@ import (
 	asdk "github.com/anthropics/anthropic-sdk-go"
 	sdkopt "github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
+	"github.com/anthropics/anthropic-sdk-go/shared/constant"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -89,6 +90,14 @@ func init() {
 	// (read 2026-04-30) every current Claude SKU supports vision and
 	// tool use, so only CapJSONSchema is disabled per family.
 	//
+	// Audio input is not supported by the Anthropic Messages API at
+	// all — disable it so the caps middleware rejects audio parts up
+	// front instead of silently dropping them in convertContentParts.
+	//
+	// Frequency / presence penalty knobs do not exist on the Anthropic
+	// API either; disable them so callers don't think they're tuning
+	// sampling when the adapter is silently dropping the fields.
+	//
 	// Output modality: text only. Claude has no native image or
 	// audio output across the 4.x family — vision is input-only per
 	// docs.anthropic.com/en/docs/vision (analyse / understand,
@@ -96,6 +105,8 @@ func init() {
 	// matching does not route image-output slots here.
 	textOnlyOutput := llm.DisabledCaps(
 		llm.CapJSONSchema,
+		llm.CapAudio,
+		llm.CapFrequencyPenalty, llm.CapPresencePenalty,
 		llm.CapImageOutput, llm.CapAudioOutput,
 	)
 
@@ -181,7 +192,11 @@ var _ llm.LLM = (*LLM)(nil)
 // anthropic.New call. Wrapping adapters override it via WithProviderName.
 const defaultProviderName = "anthropic"
 
-// New creates an Anthropic LLM instance.
+// New creates an Anthropic LLM instance. If httpClient is nil, a
+// default client with a ResponseHeaderTimeout safety net is used so a
+// hung Anthropic-compatible endpoint cannot block a caller indefinitely
+// when no context deadline is set. The overall operation is still
+// governed by the caller's context.
 func New(model, apiKey, baseURL string, httpClient *http.Client) (*LLM, error) {
 	if model == "" {
 		model = defaultModel
@@ -194,11 +209,20 @@ func New(model, apiKey, baseURL string, httpClient *http.Client) (*LLM, error) {
 		baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 		ropts = append(ropts, sdkopt.WithBaseURL(baseURL))
 	}
-	if httpClient != nil {
-		ropts = append(ropts, sdkopt.WithHTTPClient(httpClient))
+	if httpClient == nil {
+		httpClient = defaultHTTPClient()
 	}
+	ropts = append(ropts, sdkopt.WithHTTPClient(httpClient))
 	client := asdk.NewClient(ropts...)
 	return &LLM{client: client, model: asdk.Model(model), provider: defaultProviderName}, nil
+}
+
+// defaultHTTPClient returns an http.Client with a ResponseHeaderTimeout
+// safety net. This mirrors the timeout setup in sdkx/llm/bytedance.
+func defaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 90 * time.Second
+	return &http.Client{Transport: transport}
 }
 
 // WithProviderName overrides the OTel / metrics provider tag used by
@@ -477,11 +501,6 @@ func convertMessages(messages []llm.Message) (system []asdk.TextBlockParam, out 
 	for _, msg := range messages {
 		switch msg.Role {
 		case llm.RoleSystem:
-			for _, p := range msg.Parts {
-				if p.Type != llm.PartText {
-					return nil, nil, errdefs.Validationf("anthropic: system message supports text parts only, got %s", p.Type)
-				}
-			}
 			// One TextBlockParam per llm.Message{Role:System}: that
 			// is the cache-segmentation primitive shared with
 			// callers. Empty / whitespace-only segments are dropped
@@ -548,12 +567,15 @@ func convertContentParts(parts []llm.Part) ([]asdk.ContentBlockParamUnion, error
 				out = append(out, asdk.NewToolUseBlock(p.ToolCall.ID, json.RawMessage(p.ToolCall.Arguments), p.ToolCall.Name))
 			}
 		case llm.PartImage:
-			if p.Image != nil && strings.HasPrefix(p.Image.URL, "data:") {
-				mediaType, b64, err := parseDataURL(p.Image.URL)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, asdk.NewImageBlockBase64(mediaType, b64))
+			if p.Image == nil {
+				continue
+			}
+			blk, err := convertImagePartAnthropic(p.Image)
+			if err != nil {
+				return nil, err
+			}
+			if blk != nil {
+				out = append(out, *blk)
 			}
 		case llm.PartFile:
 			if p.File != nil {
@@ -567,27 +589,34 @@ func convertContentParts(parts []llm.Part) ([]asdk.ContentBlockParamUnion, error
 			}
 		case llm.PartData:
 			if p.Data != nil {
-				text, err := formatAnthropicDataPartText(p.Data)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, asdk.NewTextBlock(text))
+				b, _ := json.Marshal(p.Data.Value)
+				out = append(out, asdk.NewTextBlock(string(b)))
 			}
 		}
 	}
 	return out, nil
 }
 
-func formatAnthropicDataPartText(data *llm.DataRef) (string, error) {
-	b, err := json.Marshal(data.Value)
-	if err != nil {
-		return "", errdefs.Validationf("anthropic: marshal data part: %v", err)
+func convertImagePartAnthropic(img *llm.MediaRef) (*asdk.ContentBlockParamUnion, error) {
+	switch {
+	case img.URL == "" && img.Base64 == "":
+		return nil, nil
+	case strings.HasPrefix(img.URL, "data:"):
+		mediaType, b64, err := parseDataURL(img.URL)
+		if err != nil {
+			return nil, err
+		}
+		blk := asdk.NewImageBlockBase64(mediaType, b64)
+		return &blk, nil
+	case img.Base64 != "":
+		blk := asdk.NewImageBlockBase64(img.MediaType, img.Base64)
+		return &blk, nil
+	case strings.HasPrefix(img.URL, "http://") || strings.HasPrefix(img.URL, "https://"):
+		blk := asdk.NewImageBlock(asdk.URLImageSourceParam{URL: img.URL})
+		return &blk, nil
+	default:
+		return nil, errdefs.Validationf("anthropic: unsupported image reference %q (expected data: URL, http(s) URL, or base64)", img.URL)
 	}
-	mime := strings.TrimSpace(data.MimeType)
-	if mime == "" {
-		mime = "application/json"
-	}
-	return fmt.Sprintf("Claude input data\nMIME type: %s\nJSON:\n%s", mime, string(b)), nil
 }
 
 func convertFilePartAnthropic(f *llm.FileRef) (*asdk.ContentBlockParamUnion, error) {
@@ -605,11 +634,21 @@ func convertFilePartAnthropic(f *llm.FileRef) (*asdk.ContentBlockParamUnion, err
 			blk := asdk.NewDocumentBlock(asdk.URLPDFSourceParam{URL: f.URI})
 			return &blk, nil
 		}
-		blk := asdk.NewDocumentBlock(asdk.PlainTextSourceParam{Data: f.URI})
-		return &blk, nil
+		if strings.HasPrefix(f.URI, "data:") {
+			_, b64, err := parseDataURL(f.URI)
+			if err != nil {
+				return nil, err
+			}
+			blk := asdk.NewDocumentBlock(asdk.Base64PDFSourceParam{
+				Data:       b64,
+				MediaType:  constant.ApplicationPDF("application/pdf"),
+				Type:       constant.Base64("base64"),
+			})
+			return &blk, nil
+		}
+		return nil, errdefs.Validationf("anthropic: PDF source must be an http(s) URL or a data: URI, got %q", f.URI)
 	}
-	blk := asdk.NewDocumentBlock(asdk.PlainTextSourceParam{Data: f.URI})
-	return &blk, nil
+	return nil, errdefs.Validationf("anthropic: unsupported file type %q (only application/pdf and image/* data: URIs are supported)", mime)
 }
 
 func convertResponse(blocks []asdk.ContentBlockUnion) llm.Message {

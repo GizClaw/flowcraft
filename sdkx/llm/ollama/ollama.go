@@ -24,7 +24,17 @@ const defaultBaseURL = "http://127.0.0.1:11434"
 func init() {
 	llm.RegisterProvider("ollama", func(model string, config map[string]any) (llm.LLM, error) {
 		baseURL, _ := config["base_url"].(string)
-		return New(model, baseURL)
+		c, err := New(model, baseURL)
+		if err != nil {
+			return nil, err
+		}
+		// Ollama is a local-model runner: the actual capability set
+		// depends on whichever model the user has pulled. We cannot
+		// predeclare per-model caps, but we apply a provider-level
+		// safe default that disables features the Ollama /api/chat
+		// protocol itself does not support, so callers get a clear
+		// fail-fast instead of a silent drop.
+		return llm.WithCaps(c, defaultOllamaCaps), nil
 	})
 }
 
@@ -37,6 +47,17 @@ type LLM struct {
 
 var _ llm.LLM = (*LLM)(nil)
 
+// defaultOllamaCaps is the capability set applied to every Ollama model
+// by New. Because Ollama models are user-defined and the registry does not
+// know their names, we cannot look up per-model caps; instead we apply the
+// provider-level safe default here.
+var defaultOllamaCaps = llm.DisabledCaps(
+	llm.CapAudio,
+	llm.CapFile,
+	llm.CapJSONSchema,
+	llm.CapToolChoice,
+)
+
 // New creates an Ollama LLM instance.
 func New(model, baseURL string) (*LLM, error) {
 	if baseURL == "" {
@@ -47,8 +68,18 @@ func New(model, baseURL string) (*LLM, error) {
 	return &LLM{
 		baseURL:    baseURL,
 		model:      model,
-		httpClient: http.DefaultClient,
+		httpClient: defaultHTTPClient(),
 	}, nil
+}
+
+// defaultHTTPClient returns an http.Client with a ResponseHeaderTimeout
+// safety net so a hung local Ollama server cannot block a caller
+// indefinitely when no context deadline is set. The overall operation is
+// still governed by the caller's context.
+func defaultHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 90 * time.Second
+	return &http.Client{Transport: transport}
 }
 
 func (c *LLM) Generate(ctx context.Context, messages []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
@@ -185,8 +216,13 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
+	dur := time.Since(start)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "ollama", c.model, "error", dur, llm.TokenUsage{})
 		span.End()
 		if ctx.Err() != nil {
 			return nil, errdefs.FromContext(ctx.Err())
@@ -195,15 +231,23 @@ func (c *LLM) GenerateStream(ctx context.Context, messages []llm.Message, opts .
 	}
 	// See nil-resp guard rationale on the non-streaming path above.
 	if resp == nil {
+		err := errdefs.NotAvailable(fmt.Errorf("ollama: nil http response with no error (custom transport misbehaviour)"))
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		llm.RecordLLMMetrics(ctx, "ollama", c.model, "error", dur, llm.TokenUsage{})
 		span.End()
-		return nil, errdefs.NotAvailable(fmt.Errorf("ollama: nil http response with no error (custom transport misbehaviour)"))
+		return nil, err
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		defer func() { _ = resp.Body.Close() }()
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		statusErr := errdefs.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		span.RecordError(statusErr)
+		span.SetStatus(codes.Error, statusErr.Error())
+		llm.RecordLLMMetrics(ctx, "ollama", c.model, "error", dur, llm.TokenUsage{})
 		span.End()
-		return nil, errdefs.ClassifyHTTPStatus("ollama", resp.StatusCode, strings.TrimSpace(string(bodyBytes)))
+		return nil, statusErr
 	}
 
 	return newStreamMessage(ctx, span, c.model, resp.Body), nil

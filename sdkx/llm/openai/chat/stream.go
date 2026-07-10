@@ -194,7 +194,7 @@ func (s *openaiStreamMessage) updateUsage(chunk oai.ChatCompletionChunk) {
 	s.mu.Lock()
 	s.usage.InputTokens = chunk.Usage.PromptTokens
 	s.usage.OutputTokens = chunk.Usage.CompletionTokens
-	s.usage.CachedInputTokens = chunk.Usage.PromptTokensDetails.CachedTokens
+	s.usage.CachedInputTokens = cachedInputTokensFromUsage(chunk.Usage)
 	s.mu.Unlock()
 }
 

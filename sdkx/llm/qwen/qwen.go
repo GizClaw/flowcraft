@@ -2,7 +2,6 @@ package qwen
 
 import (
 	"context"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdkx/llm/openai"
@@ -42,10 +41,12 @@ func init() {
 	// image-output / audio-output slots onto these chat models.
 	qwenChatCaps := llm.DisabledCaps(
 		llm.CapAudio, llm.CapFile,
+		llm.CapJSONSchema,
+		llm.CapFrequencyPenalty,
 		llm.CapImageOutput, llm.CapAudioOutput,
 	)
 
-	qwenModels := []llm.ModelInfo{
+	llm.RegisterProviderModels("qwen", []llm.ModelInfo{
 		{
 			// Flagship; 256K context per Model Studio docs.
 			Label: "Qwen Max",
@@ -86,69 +87,64 @@ func init() {
 				Limits: llm.ModelLimits{MaxContextTokens: 1_000_000},
 			},
 		},
-	}
-	llm.RegisterProviderModels("qwen", qwenModels)
+	})
 }
 
 const (
-	defaultResponsesBaseURL = "https://dashscope.aliyuncs.com/api/v2/apps/protocols/compatible-mode/v1"
-	defaultModel            = "qwen-flash"
+	defaultBaseURL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+	defaultModel   = "qwen-flash"
 )
 
-// LLM wraps the OpenAI-compatible Responses adapter to handle Qwen-specific parameters.
+// LLM wraps openai.LLM to handle Qwen-specific parameters.
 type LLM struct {
 	inner *openai.LLM
 }
 
-// New creates a Qwen LLM instance backed by DashScope's Responses API.
+// New creates a Qwen LLM instance. Wraps openai.LLM to inject
+// enable_thinking based on GenerateOptions.Thinking.
 func New(model, apiKey, baseURL string) (*LLM, error) {
+	if baseURL == "" {
+		baseURL = defaultBaseURL
+	}
 	if model == "" {
 		model = defaultModel
 	}
-	inner, err := openai.New(model, apiKey, qwenResponsesBaseURL(baseURL))
+	inner, err := openai.New(model, apiKey, baseURL)
 	if err != nil {
 		return nil, err
 	}
 	// Tag the OTel/metrics provider as "qwen" so dashboards split out
-	// Qwen traffic from the upstream OpenAI-compatible transport. See
-	// sdkx/llm/openai/openai.go ▸ WithProviderName for the contract.
+	// Qwen traffic from the upstream openai.LLM that delegates the HTTP
+	// transport. See sdkx/llm/openai/openai.go ▸ WithProviderName for
+	// the contract.
 	inner.WithProviderName("qwen")
 	return &LLM{inner: inner}, nil
 }
 
 func (q *LLM) Generate(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.Message, llm.TokenUsage, error) {
-	return q.inner.Generate(ctx, msgs, injectResponsesThinking(opts)...)
+	return q.inner.Generate(ctx, msgs, append(opts, qwenExtras(opts)...)...)
 }
 
 func (q *LLM) GenerateStream(ctx context.Context, msgs []llm.Message, opts ...llm.GenerateOption) (llm.StreamMessage, error) {
-	return q.inner.GenerateStream(ctx, msgs, injectResponsesThinking(opts)...)
+	return q.inner.GenerateStream(ctx, msgs, append(opts, qwenExtras(opts)...)...)
 }
 
-func (q *LLM) Provider() string {
-	if q == nil || q.inner == nil {
-		return "qwen"
-	}
-	return q.inner.Provider()
-}
-
-func qwenResponsesBaseURL(baseURL string) string {
-	baseURL = strings.TrimRight(baseURL, "/")
-	if baseURL == "" {
-		return defaultResponsesBaseURL
-	}
-	if strings.HasSuffix(baseURL, "/api/v2/apps/protocols/compatible-mode/v1") {
-		return baseURL
-	}
-	if before, ok := strings.CutSuffix(baseURL, "/compatible-mode/v1"); ok {
-		return before + "/api/v2/apps/protocols/compatible-mode/v1"
-	}
-	return baseURL
-}
-
-func injectResponsesThinking(opts []llm.GenerateOption) []llm.GenerateOption {
+// qwenExtras maps Qwen-specific GenerateOptions fields to Extra body keys
+// that the OpenAI-compatible baseline does not emit. The baseline sends
+// max_completion_tokens, which Qwen's compatible endpoint silently ignores;
+// Qwen still honors the legacy max_tokens field, so we mirror MaxTokens
+// there. top_k is a Qwen-specific sampling parameter the baseline never
+// sets. enable_thinking is Qwen's thinking toggle.
+func qwenExtras(opts []llm.GenerateOption) []llm.GenerateOption {
 	o := llm.ApplyOptions(opts...)
-	if o.Thinking == nil {
-		return append(opts, llm.WithExtra("enable_thinking", false))
+	out := []llm.GenerateOption{
+		llm.WithExtra("enable_thinking", o.Thinking != nil && *o.Thinking),
 	}
-	return append(opts, llm.WithExtra("enable_thinking", *o.Thinking))
+	if o.MaxTokens != nil {
+		out = append(out, llm.WithExtra("max_tokens", *o.MaxTokens))
+	}
+	if o.TopK != nil {
+		out = append(out, llm.WithExtra("top_k", *o.TopK))
+	}
+	return out
 }
