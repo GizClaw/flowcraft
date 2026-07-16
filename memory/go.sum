@@ -1,5 +1,5 @@
-github.com/GizClaw/flowcraft/sdk v0.4.2 h1:xKQ9zhdK6C0ioJIrc4GOnog8TbAnEDJaGQqSbBXjaaQ=
-github.com/GizClaw/flowcraft/sdk v0.4.2/go.mod h1:CtWO/keRfKzfyTuKD3axf6QSpDB/vEqbBIRgvK9qpKw=
+github.com/GizClaw/flowcraft/sdk v0.4.8 h1:fgbgMfZW8U3qAhzIjU+lFFRpoR0GcrF4MB0Oolq8+dI=
+github.com/GizClaw/flowcraft/sdk v0.4.8/go.mod h1:CtWO/keRfKzfyTuKD3axf6QSpDB/vEqbBIRgvK9qpKw=
 github.com/RoaringBitmap/roaring/v2 v2.14.5 h1:ckd0o545JqDPeVJDgeFoaM21eBixUnlWfYgjE5VnyWw=
 github.com/RoaringBitmap/roaring/v2 v2.14.5/go.mod h1:eq4wdNXxtJIS/oikeCzdX1rBzek7ANzbth041hrU8Q4=
 github.com/bits-and-blooms/bitset v1.24.2 h1:M7/NzVbsytmtfHbumG+K2bremQPMJuqv1JD3vOaFxp0=

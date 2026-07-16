@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/memory
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/sdk v0.4.2
+	github.com/GizClaw/flowcraft/sdk v0.4.8
 	github.com/blevesearch/bleve/v2 v2.6.0
 	github.com/coder/hnsw v0.6.1
 	github.com/dgraph-io/badger/v4 v4.9.1
