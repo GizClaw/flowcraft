@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	sdkhistory "github.com/GizClaw/flowcraft/sdk/history"
+	memoryhistory "github.com/GizClaw/flowcraft/memory/history"
 	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
@@ -18,7 +18,7 @@ type HistoryConfig struct {
 }
 
 type historyRuntime struct {
-	hist sdkhistory.History
+	hist memoryhistory.History
 	cfg  HistoryConfig
 }
 
@@ -29,13 +29,16 @@ func (c *Claw) buildHistory(_ context.Context) (*historyRuntime, error) {
 	}
 	switch strings.TrimSpace(cfg.Kind) {
 	case "", "buffer":
-		store := sdkhistory.NewFileStore(c.ws, c.cfg.Workspace.HistoryRoot)
-		opts := []sdkhistory.BufferOption{}
+		store := c.historyStore
+		if store == nil {
+			store = memoryhistory.NewFileStore(c.ws, c.cfg.Workspace.HistoryRoot)
+		}
+		opts := []memoryhistory.BufferOption{}
 		if cfg.MaxMessages > 0 {
-			opts = append(opts, sdkhistory.WithBufferMax(cfg.MaxMessages))
+			opts = append(opts, memoryhistory.WithBufferMax(cfg.MaxMessages))
 		}
 		return &historyRuntime{
-			hist: sdkhistory.NewBuffer(store, opts...),
+			hist: memoryhistory.NewBuffer(store, opts...),
 			cfg:  cfg,
 		}, nil
 	case "compacted":
@@ -49,7 +52,7 @@ func (h *historyRuntime) load(ctx context.Context, contextID string) ([]model.Me
 	if h == nil || h.hist == nil || strings.TrimSpace(contextID) == "" {
 		return nil, nil
 	}
-	return h.hist.Load(ctx, contextID, sdkhistory.Budget{
+	return h.hist.Load(ctx, contextID, memoryhistory.Budget{
 		MaxMessages: h.cfg.MaxMessages,
 		MaxTokens:   h.cfg.MaxTokens,
 	})
