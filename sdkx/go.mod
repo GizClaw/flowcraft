@@ -3,8 +3,8 @@ module github.com/GizClaw/flowcraft/sdkx
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/memory v0.1.6
-	github.com/GizClaw/flowcraft/sdk v0.4.6
+	github.com/GizClaw/flowcraft/memory v0.1.7
+	github.com/GizClaw/flowcraft/sdk v0.4.8
 )
 
 require (
