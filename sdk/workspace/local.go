@@ -38,6 +38,36 @@ func NewLocalWorkspace(root string) (*LocalWorkspace, error) {
 // Root returns the absolute path of the workspace root.
 func (w *LocalWorkspace) Root() string { return w.root }
 
+// Sub returns a local workspace rooted under prefix.
+//
+// The resolved child root must remain inside the current workspace, including
+// after symlink resolution performed by NewLocalWorkspace.
+func (w *LocalWorkspace) Sub(prefix string) (*LocalWorkspace, error) {
+	if w == nil {
+		return nil, errdefs.Validationf("workspace: local workspace is nil")
+	}
+	cleaned, err := cleanPath(prefix)
+	if err != nil {
+		return nil, fmt.Errorf("workspace local sub: invalid prefix %q: %w", prefix, err)
+	}
+	if cleaned == "" {
+		return w, nil
+	}
+	full, err := w.resolve(cleaned)
+	if err != nil {
+		return nil, fmt.Errorf("workspace local sub: resolve root %q: %w", cleaned, err)
+	}
+	local, err := NewLocalWorkspace(full)
+	if err != nil {
+		return nil, fmt.Errorf("workspace local sub: open root %q: %w", cleaned, err)
+	}
+	root := local.Root()
+	if root != w.Root() && !strings.HasPrefix(root, w.Root()+string(filepath.Separator)) {
+		return nil, fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, cleaned)
+	}
+	return local, nil
+}
+
 // Capabilities reports LocalWorkspace's storage characteristics:
 // backed by the host filesystem, so Rename is atomic on the same
 // device, writes are read-after-write consistent, and durability

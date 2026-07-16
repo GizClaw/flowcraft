@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -45,13 +44,8 @@ func Sub(inner Workspace, prefix string) Workspace {
 	sw := &subWorkspace{inner: inner, prefix: cleaned}
 	switch typed := inner.(type) {
 	case *LocalWorkspace:
-		local, err := NewLocalWorkspace(filepath.Join(typed.Root(), cleaned))
+		local, err := typed.Sub(cleaned)
 		if err != nil {
-			return &subWorkspace{inner: inner, initErr: fmt.Errorf("workspace sub: open local root %q: %w", cleaned, err)}
-		}
-		root := local.Root()
-		if root != typed.Root() && !strings.HasPrefix(root, typed.Root()+string(filepath.Separator)) {
-			err := fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, cleaned)
 			return &subWorkspace{inner: inner, initErr: fmt.Errorf("workspace sub: open local root %q: %w", cleaned, err)}
 		}
 		return local

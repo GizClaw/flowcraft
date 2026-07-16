@@ -2,11 +2,58 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 )
+
+func TestLocalWorkspace_Sub(t *testing.T) {
+	base, _ := newLocalWS(t)
+	child, err := base.Sub(filepath.Join("runtime-a", "memory"))
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	want := filepath.Join(base.Root(), "runtime-a", "memory")
+	if child.Root() != want {
+		t.Fatalf("Root() = %q, want %q", child.Root(), want)
+	}
+	nested, err := child.Sub("retrieval")
+	if err != nil {
+		t.Fatalf("nested Sub: %v", err)
+	}
+	if want := filepath.Join(child.Root(), "retrieval"); nested.Root() != want {
+		t.Fatalf("nested Root() = %q, want %q", nested.Root(), want)
+	}
+	same, err := base.Sub(".")
+	if err != nil {
+		t.Fatalf("empty Sub: %v", err)
+	}
+	if same != base {
+		t.Fatal("empty Sub should return the receiver")
+	}
+}
+
+func TestLocalWorkspace_SubRejectsTraversalAndSymlinkEscape(t *testing.T) {
+	base, _ := newLocalWS(t)
+	if _, err := base.Sub("../escape"); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("traversal Sub error = %v, want ErrPathTraversal", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(base.Root(), "escape")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := base.Sub(filepath.Join("escape", "created")); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("symlink Sub error = %v, want ErrPathTraversal", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "created")); !os.IsNotExist(err) {
+		t.Fatalf("symlink Sub created an outside directory: %v", err)
+	}
+}
 
 func TestLocalWorkspace_ReadWrite(t *testing.T) {
 	ws, ctx := newLocalWS(t)
