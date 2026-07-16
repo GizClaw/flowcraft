@@ -456,7 +456,14 @@ func inspectBBHWorkspace(ctx context.Context, workspaceDir string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	retrievalWS := sdkworkspace.Sub(sdkworkspace.Sub(ws, memoryRoot), "retrieval")
+	memoryWS, err := ws.Sub(memoryRoot)
+	if err != nil {
+		return "", fmt.Errorf("open memory workspace: %w", err)
+	}
+	retrievalWS, err := memoryWS.Sub("retrieval")
+	if err != nil {
+		return "", fmt.Errorf("open retrieval workspace: %w", err)
+	}
 	inspector, err := bbh.NewInspector(retrievalWS)
 	if err != nil {
 		return "", err

@@ -699,6 +699,22 @@ func newMemoryEnabledTestClaw(t *testing.T) *Claw {
 	return newMemoryEnabledTestClawWith(t, nil)
 }
 
+func TestMemoryBBHRequiresLocalWorkspace(t *testing.T) {
+	ws := workspace.NewMemWorkspace()
+	cfg := testConfigForLLM(t, staticLLM{reply: "ok"})
+	cfg.Memory.Enabled = true
+	cfg.Memory.Retrieval.Backend = "bbh"
+	writeTestConfig(t, ws, cfg)
+
+	_, err := New(ws)
+	if err == nil {
+		t.Fatal("New should reject bbh with a non-local workspace")
+	}
+	if !strings.Contains(err.Error(), "bbh requires a local workspace") {
+		t.Fatalf("New error = %v, want local workspace requirement", err)
+	}
+}
+
 func newMemoryEnabledTestClawWith(t *testing.T, mutate func(*Config)) *Claw {
 	t.Helper()
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())

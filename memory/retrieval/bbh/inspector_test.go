@@ -8,16 +8,12 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/retrieval"
-	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/dgraph-io/badger/v4"
 )
 
 func TestInspectorValidationAndEmptyWorkspace(t *testing.T) {
 	if _, err := NewInspector(nil); err == nil {
 		t.Fatal("nil workspace should fail")
-	}
-	if _, err := NewInspector(sdkworkspace.NewMemWorkspace()); err == nil {
-		t.Fatal("workspace without Root should fail")
 	}
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, badgerDir), []byte("not a dir"), 0o644); err != nil {
@@ -28,7 +24,8 @@ func TestInspectorValidationAndEmptyWorkspace(t *testing.T) {
 	}
 
 	empty := t.TempDir()
-	in, err := NewInspector(rootedWorkspace(t, empty))
+	emptyWS := rootedWorkspace(t, empty)
+	in, err := NewInspector(emptyWS)
 	if err != nil {
 		t.Fatalf("NewInspector empty: %v", err)
 	}
@@ -36,7 +33,7 @@ func TestInspectorValidationAndEmptyWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Inspect empty: %v", err)
 	}
-	if got.Root != empty || got.BadgerExists || got.BleveExists || got.HNSWExists {
+	if got.Root != emptyWS.Root() || got.BadgerExists || got.BleveExists || got.HNSWExists {
 		t.Fatalf("unexpected empty inspection: %+v", got)
 	}
 	if len(got.Namespaces) != 0 || got.TotalDocs != 0 {

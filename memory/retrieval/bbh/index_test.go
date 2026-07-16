@@ -26,9 +26,6 @@ func TestNewValidationAndClosedIndexErrors(t *testing.T) {
 	if _, err := New(nil); err == nil {
 		t.Fatal("nil workspace should fail")
 	}
-	if _, err := New(sdkworkspace.NewMemWorkspace()); err == nil {
-		t.Fatal("workspace without Root should fail")
-	}
 	if _, err := New(rootedWorkspace(t, filepath.Join(t.TempDir(), "missing-config")), WithConfigFilePath("missing.yaml")); err == nil {
 		t.Fatal("bad config in New should fail")
 	}
@@ -806,21 +803,14 @@ func openInternalIndex(t *testing.T, dir string, opts ...Option) *Index {
 	return idx
 }
 
-func rootedWorkspace(t *testing.T, root string) sdkworkspace.Workspace {
+func rootedWorkspace(t *testing.T, root string) *sdkworkspace.LocalWorkspace {
 	t.Helper()
-	ws, err := sdkworkspace.NewLocalWorkspace(t.TempDir())
+	ws, err := sdkworkspace.NewLocalWorkspace(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return localRootWorkspace{Workspace: ws, root: root}
+	return ws
 }
-
-type localRootWorkspace struct {
-	sdkworkspace.Workspace
-	root string
-}
-
-func (w localRootWorkspace) Root() string { return w.root }
 
 func iterIDs(t *testing.T, idx *Index, ns, cursor string, batch int) []string {
 	t.Helper()

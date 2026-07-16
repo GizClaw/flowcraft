@@ -38,10 +38,6 @@ const (
 	hnswGraphExt           = ".graph"
 )
 
-type localRoot interface {
-	Root() string
-}
-
 // Index implements retrieval.Index using a shared Badger doc store plus
 // per-namespace Bleve and HNSW indexes.
 type Index struct {
@@ -73,22 +69,14 @@ type textDoc struct {
 	Content string `json:"content"`
 }
 
-// New constructs an Index rooted directly in a local workspace.
-//
-// BBH accepts the Workspace interface so callers can share the same
-// constructor shape as other retrieval backends, but the current implementation
-// requires a workspace that exposes a local Root() path because Bleve and
-// Badger are path-backed embedded stores. Callers that need a common prefix
-// should provide an already-prefixed workspace instead of configuring BBH.
-func New(ws sdkworkspace.Workspace, opts ...Option) (*Index, error) {
+// New constructs an Index rooted directly in a local workspace. Badger, Bleve,
+// and HNSW are path-backed stores, so callers must provide an already-prefixed
+// LocalWorkspace rather than a generic workspace implementation.
+func New(ws *sdkworkspace.LocalWorkspace, opts ...Option) (*Index, error) {
 	if ws == nil {
 		return nil, errdefs.Validationf("retrieval/bbh: workspace is nil")
 	}
-	lr, ok := ws.(localRoot)
-	if !ok {
-		return nil, errdefs.Validationf("retrieval/bbh: workspace must expose local Root()")
-	}
-	root := lr.Root()
+	root := ws.Root()
 	cfg, err := resolveConfig(root, opts)
 	if err != nil {
 		return nil, err

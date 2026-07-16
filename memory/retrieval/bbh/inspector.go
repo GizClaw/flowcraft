@@ -70,15 +70,11 @@ type NamespaceInspection struct {
 // NewInspector opens an offline, read-only inspector rooted at a BBH workspace.
 // It opens Badger with a read-only lock, so it cannot inspect a workspace while
 // a writable Index is already open on the same path.
-func NewInspector(ws sdkworkspace.Workspace) (*Inspector, error) {
+func NewInspector(ws *sdkworkspace.LocalWorkspace) (*Inspector, error) {
 	if ws == nil {
 		return nil, errdefs.Validationf("retrieval/bbh: workspace is nil")
 	}
-	lr, ok := ws.(localRoot)
-	if !ok {
-		return nil, errdefs.Validationf("retrieval/bbh: workspace must expose local Root()")
-	}
-	root := lr.Root()
+	root := ws.Root()
 	in := &Inspector{root: root}
 	dbPath := filepath.Join(root, badgerDir)
 	info, err := os.Stat(dbPath)

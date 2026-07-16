@@ -154,7 +154,6 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 	opts := []recall.Option{recall.WithGraphEnabled(memCfg.Recall.GraphEnabled)}
 	memoryWS := sdkworkspace.Sub(c.ws, c.cfg.Workspace.MemoryRoot)
 	metadataWS := sdkworkspace.Sub(memoryWS, "metadata")
-	retrievalWS := sdkworkspace.Sub(memoryWS, "retrieval")
 	backend, err := recallworkspace.New(metadataWS)
 	if err != nil {
 		return nil, err
@@ -175,6 +174,14 @@ func (c *Claw) buildMemory(ctx context.Context) (*memoryRuntime, error) {
 	switch strings.TrimSpace(memCfg.Retrieval.Backend) {
 	case "", "memory":
 	case "bbh":
+		localMemoryWS, ok := memoryWS.(*sdkworkspace.LocalWorkspace)
+		if !ok {
+			return nil, fmt.Errorf("claw: retrieval backend bbh requires a local workspace")
+		}
+		retrievalWS, err := localMemoryWS.Sub("retrieval")
+		if err != nil {
+			return nil, fmt.Errorf("claw: create bbh retrieval workspace: %w", err)
+		}
 		index, err := bbh.New(retrievalWS, bbh.WithConfig(memCfg.Retrieval.BBH))
 		if err != nil {
 			return nil, err
