@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	memoryhistory "github.com/GizClaw/flowcraft/memory/history"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/llm"
@@ -11,16 +12,17 @@ import (
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// Claw is a local single-agent runtime backed by one workspace.
+// Claw is a local single-agent runtime configured by one root workspace.
 type Claw struct {
-	ws       sdkworkspace.Workspace
-	cfg      Config
-	agent    agent.Agent
-	engine   engine.Engine
-	resolver llm.LLMResolver
-	tools    *tool.Registry
-	history  *historyRuntime
-	memory   *memoryRuntime
+	ws           sdkworkspace.Workspace
+	cfg          Config
+	agent        agent.Agent
+	engine       engine.Engine
+	resolver     llm.LLMResolver
+	tools        *tool.Registry
+	history      *historyRuntime
+	historyStore memoryhistory.Store
+	memory       *memoryRuntime
 
 	memoryMu sync.RWMutex
 
@@ -33,9 +35,11 @@ type Claw struct {
 }
 
 // New constructs a Claw from the fixed workspace config layout.
-func New(ws sdkworkspace.Workspace) (_ *Claw, err error) {
+func New(ws sdkworkspace.Workspace, opts ...Option) (_ *Claw, err error) {
+	resolved := resolveOptions(opts)
 	c := &Claw{
-		ws: ws,
+		ws:           ws,
+		historyStore: resolved.historyStore,
 	}
 	defer func() {
 		if err != nil {
