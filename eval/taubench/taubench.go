@@ -1,7 +1,8 @@
 // Package taubench runs a [τ-bench]-style tool-use evaluation against
-// a FlowCraft agent. It tests the capability vessel + sdk/kanban +
-// sdk/agent are designed for: read the user's intent, call the right
-// tools in the right order, mutate the world to satisfy the goal.
+// a FlowCraft agent. It tests the capability a host runtime plus
+// sdk/kanban and sdk/agent are designed for: read the user's intent,
+// call the right tools in the right order, mutate the world to
+// satisfy the goal.
 //
 // # Two task forms
 //
@@ -47,7 +48,8 @@
 //     CI and no IPC glue.
 //   - Lets every tool be written with FlowCraft idioms
 //     (sdk/model.ToolDefinition + a plain Go handler), so the same
-//     definitions can be lifted into a vessel/sdk-based agent later.
+//     definitions can be lifted into an application-hosted SDK agent
+//     later.
 //   - The official τ-bench tasks are CC-BY-MIT-licensed JSON; we
 //     bundle a small "retail mini" task pack inline so a smoke run
 //     needs zero external assets.

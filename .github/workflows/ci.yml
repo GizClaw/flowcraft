@@ -16,10 +16,7 @@ jobs:
       memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
       voice: ${{ steps.filter.outputs.voice }}
-      vessel: ${{ steps.filter.outputs.vessel }}
-      vesseld: ${{ steps.filter.outputs.vesseld }}
-      vessel_quality: ${{ steps.filter.outputs.vessel_quality }}
-      vesseld_e2e: ${{ steps.filter.outputs.vesseld_e2e }}
+      claw: ${{ steps.filter.outputs.claw }}
       retrieval_e2e: ${{ steps.filter.outputs.retrieval_e2e }}
       eval: ${{ steps.filter.outputs.eval }}
       ci: ${{ steps.filter.outputs.ci }}
@@ -37,26 +34,53 @@ jobs:
               - 'sdkx/**'
             voice:
               - 'voice/**'
-            vessel:
-              - 'vessel/**'
-            vesseld:
-              - 'cmd/vesseld/**'
-            vessel_quality:
-              - 'tests/quality/vessel/**'
-            vesseld_e2e:
-              - 'tests/e2e/vesseld/**'
+            claw:
+              - 'cmd/claw/**'
             retrieval_e2e:
               - 'tests/e2e/retrieval/**'
             eval:
               - 'eval/**'
             ci:
               - '.github/workflows/**'
+              - '.release/**'
               - 'Makefile'
+              - 'tools/releasegate/**'
+
+  release-intent:
+    name: Validate release intent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Test release gate tooling
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go test -count=1 -race ./...
+
+      - name: Validate immutable changesets
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: go run . validate --repo ../.. --base "$BASE_SHA"
+
+      - name: Validate pending release plan
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . plan --repo ../..
 
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -67,25 +91,19 @@ jobs:
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx voice vessel cmd/vesseld eval; do
+          for m in sdk memory sdkx voice cmd/claw eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
-          # Modules that pin released sdk/sdkx/vessel via require
-          # directives — vet them with GOWORK=off so the pinned
-          # versions are honoured. The e2e suites are also build-
-          # tagged (//go:build e2e) so we pass -tags=e2e.
-          for m in tests/quality/vessel; do
-            echo "==> vet $m (GOWORK=off)"
-            (cd "$m" && GOWORK=off go vet ./...)
-          done
-          for m in tests/e2e/vesseld tests/e2e/retrieval; do
+          # The e2e suite pins released dependencies and is build-tagged,
+          # so vet it outside the workspace with the e2e tag.
+          for m in tests/e2e/retrieval; do
             echo "==> vet $m (e2e tag, GOWORK=off)"
             (cd "$m" && GOWORK=off go vet -tags=e2e ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx voice vessel cmd/vesseld eval tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval)
+          diff=$(gofmt -l sdk memory sdkx voice cmd/claw eval tests/e2e/retrieval)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -204,11 +222,11 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: voice
 
-  test-vessel:
-    name: Test vessel (Go ${{ matrix.go-version }})
+  test-claw:
+    name: Test claw (Go ${{ matrix.go-version }})
     needs: detect
-    # vessel depends on sdk; sdk memory shims also depend on memory.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.ci == 'true'
+    # claw composes sdk, memory, and sdkx; rerun when any dependency changes.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -220,69 +238,7 @@ jobs:
           go-version: ${{ matrix.go-version }}
       - name: Test
         run: go test -count=1 -race ./...
-        working-directory: vessel
-
-  test-vesseld:
-    name: Test vesseld (Go ${{ matrix.go-version }})
-    needs: detect
-    # vesseld depends on sdk + memory + sdkx + vessel; rerun when any changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: cmd/vesseld
-
-  test-vessel-quality:
-    name: Test vessel quality (Go ${{ matrix.go-version }})
-    needs: detect
-    # In-process quality suite for the vessel runtime; reruns on
-    # sdk/vessel changes plus when the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vessel_quality == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: GOWORK=off go test -count=1 -race ./...
-        working-directory: tests/quality/vessel
-
-  test-vesseld-e2e:
-    name: E2E vesseld (Go ${{ matrix.go-version }})
-    needs: detect
-    # Black-box subprocess suite for the vesseld binary; reruns
-    # when the daemon, vessel, sdk, or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.vessel == 'true' || needs.detect.outputs.vesseld == 'true' || needs.detect.outputs.vesseld_e2e == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    env:
-      # The e2e module pins released sdk/sdkx versions and uses
-      # `replace` directives to swap in the in-tree source. It must
-      # NOT participate in the workspace, otherwise go.work would
-      # take precedence and the replace lines become dead code.
-      GOWORK: "off"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -tags=e2e -count=1 -race ./...
-        working-directory: tests/e2e/vesseld
+        working-directory: cmd/claw
 
   test-retrieval-e2e:
     name: E2E retrieval (Go ${{ matrix.go-version }})
@@ -332,22 +288,24 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-vessel, test-vesseld, test-vessel-quality, test-vesseld-e2e, test-retrieval-e2e, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-retrieval-e2e, test-eval]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
         run: |
+          if [[ "${{ needs.detect.result }}" != "success" ]]; then
+            echo "Change detection failed: ${{ needs.detect.result }}"
+            exit 1
+          fi
           results=( \
+            "${{ needs.release-intent.result }}" \
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
             "${{ needs.test-voice.result }}" \
-            "${{ needs.test-vessel.result }}" \
-            "${{ needs.test-vesseld.result }}" \
-            "${{ needs.test-vessel-quality.result }}" \
-            "${{ needs.test-vesseld-e2e.result }}" \
+            "${{ needs.test-claw.result }}" \
             "${{ needs.test-retrieval-e2e.result }}" \
             "${{ needs.test-eval.result }}" \
           )

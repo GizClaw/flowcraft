@@ -49,8 +49,9 @@ no other change is needed.
 
 ## CI policy
 
-- **PR must run** synthetic + LongMemEval-50 (~3 min, ~$0.5/run);
-  `qa.judge` regression > 2pp or `latency.save.p95` > +30% fails CI.
-- **Nightly** runs full LoCoMo (~30 min, ~$5/run); results archived under
-  `results/nightly/<date>.json`.
-- **Release-gate** compares against the previous tagged release baseline.
+- Pull requests run the hermetic synthetic suites. LLM-backed comparisons
+  self-skip unless credentials and providers are configured explicitly.
+- Pending `sdk`, `memory`, or `sdkx` releases rerun the hermetic eval suite
+  before tags may be created.
+- Full LoCoMo and judge-backed quality runs remain opt-in and are not claimed as
+  an automated release gate.

@@ -13,7 +13,7 @@
 //   - They run only when the e2e build tag is set, so the default
 //     `go test ./...` from the repo root skips them.
 //
-//   - Like the vesseld e2e module, this module pins published
+//   - Like other standalone e2e modules, this module pins published
 //     sdk / sdkx versions and uses replace directives only for
 //     in-flight library work. While the workspace backend is being
 //     stabilised, sdk and sdkx are both replaced to the local tree

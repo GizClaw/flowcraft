@@ -221,20 +221,19 @@ name is read from the JSON's `"provider"` field.
 
 ## Module boundary
 
-`eval/` is an **off-workspace** Go module: its `go.mod` is intentionally
-decoupled from the main repo's `go.work` and `require`s pinned, already-
-released `sdk` / `sdkx` versions directly. That gives us three things:
+`eval/` is a Go workspace member for in-tree CI, while its `go.mod` keeps
+explicit released `sdk` / `sdkx` requirements for checks that intentionally run
+with `GOWORK=off`. This gives us three things:
 
 - 100MB-class LoCoMo / LongMemEval corpora, judge prompts, and report
   artifacts cannot pollute `sdk` patch releases.
-- Eval suites run against "the bytes external users actually pull",
-  keeping quality numbers comparable across releases.
-- Bumping the pinned `sdk` is a manual PR — `sdk`'s auto-tag pipeline
-  can't drag the eval module along sideways.
+- Normal workspace CI exercises the current in-tree modules.
+- Updating a pinned release remains an explicit PR; the module release workflow
+  never tags or rewrites `eval` as a side effect.
 
-When running anything under `eval/` always set `GOWORK=off`, or use the
-top-level `make eval` / `make eval-smoke` targets which wrap that for
-you.
+Use the top-level `make eval` / `make eval-smoke` targets for workspace
+validation. Set `GOWORK=off` only when intentionally checking the pinned
+external-module view.
 
 ## Quick start
 

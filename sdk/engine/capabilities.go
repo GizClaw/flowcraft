@@ -42,7 +42,7 @@ type Capabilities struct {
 	// becomes a compile-time error. Hosts populate Dependencies
 	// under the same names the engine declares here.
 	//
-	// Pods, agent.Run pre-flight, and the vessel build path
+	// Pods, agent.Run pre-flight, and application build paths
 	// iterate this list and reject the spec / run when a required
 	// dep is absent — surfacing wiring mistakes before any
 	// engine.Execute call. Empty when the engine has no required

@@ -8,7 +8,7 @@ SHELL := /bin/bash
 # sdk + memory + sdkx + voice are the tightly-coupled core that needs atomic
 # in-tree edits (memory depends on sdk, sdk compatibility shims point at
 # memory, sdkx imports both, and voice depends on the same sdk source).
-MODULES_WORK := sdk memory sdkx vessel voice cmd/vesseld eval
+MODULES_WORK := sdk memory sdkx voice cmd/claw eval
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
@@ -20,11 +20,9 @@ MODULES_WORK := sdk memory sdkx vessel voice cmd/vesseld eval
 #    Tests self-skip without credentials so `make test` runs them as a
 #    compile check; `make conformance` is the documented entry point
 #    when a .env is in place.
-#  - tests/e2e/vesseld: black-box subprocess tests for the vesseld
-#    binary. Tagged with `//go:build e2e` so `make test`'s default
-#    sweep is just a compile check; the credentialed / build-tagged
-#    lane runs via `make test-e2e`.
-MODULES_OFFWORK := examples/voice-pipeline tests/conformance tests/quality/vessel tests/e2e/vesseld tests/e2e/retrieval
+#  - tests/e2e/retrieval: build-tagged end-to-end coverage for the
+#    retrieval workspace. The lane runs explicitly via `make test-e2e`.
+MODULES_OFFWORK := examples/voice-pipeline tests/conformance tests/e2e/retrieval
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -44,6 +42,9 @@ help:
 	@echo "  make fmt         Run gofmt on all modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make ci          vet + test"
+	@echo "  make release-check  Test release tooling, validate changesets, and"
+	@echo "                      verify the pending module release plan."
+	@echo "  make release-plan   Print the pending module release plan as JSON."
 	@echo ""
 	@echo "Test suites under tests/ (default 'make test' already runs them"
 	@echo "in compile-check / no-credential mode; the targets below are the"
@@ -59,11 +60,8 @@ help:
 	@echo "                         bundled synthetic dataset and write a report."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
 	@echo "                         the pre-eval/ migration entry point."
-	@echo "  make test-e2e          Black-box e2e suite for vesseld"
-	@echo "                         (tests/e2e/vesseld, //go:build e2e)."
-	@echo "                         Builds the vesseld binary and runs it"
-	@echo "                         against an in-process mock OpenAI server;"
-	@echo "                         no network or API key required."
+	@echo "  make test-e2e          Retrieval workspace end-to-end suite"
+	@echo "                         (tests/e2e/retrieval, //go:build e2e)."
 	@echo "  make ci-e2e            ci + test-e2e."
 	@echo ""
 	@echo "Eval suites under eval/ run vet+test in CI; the long-running"
@@ -93,19 +91,25 @@ tidy:
 .PHONY: ci
 ci: vet test
 
-# `make test-e2e` runs the build-tagged e2e suite against a freshly
-# `go build`-ed vesseld binary. Each test spins up a subprocess
-# bound to a per-test temp socket and a per-test mock OpenAI HTTP
-# server, so the suite has no external dependencies (no API key,
-# no network).
-#
-# Default `make test` excludes this lane because each test pays a
-# ~1s build cost and a few seconds of subprocess setup; CI runs it
-# explicitly via `make ci-e2e` (or by adding it to your local
-# pre-push hook).
+.PHONY: release-check
+release-check:
+	@cd tools/releasegate && GOWORK=off go test -count=1 ./...
+	@if [[ -n "$(BASE)" ]]; then \
+		cd tools/releasegate && GOWORK=off go run . validate --repo ../.. --base "$(BASE)"; \
+	else \
+		cd tools/releasegate && GOWORK=off go run . validate --repo ../..; \
+	fi
+	@cd tools/releasegate && GOWORK=off go run . plan --repo ../..
+
+.PHONY: release-plan
+release-plan:
+	@cd tools/releasegate && GOWORK=off go run . plan --repo ../.. --json
+
+# `make test-e2e` runs the build-tagged retrieval workspace suite.
+# CI runs it explicitly via `make ci-e2e` (or by adding it to a
+# local pre-push hook).
 .PHONY: test-e2e
 test-e2e:
-	@cd tests/e2e/vesseld && GOWORK=off go test -tags=e2e -count=1 ./...
 	@cd tests/e2e/retrieval && GOWORK=off go test -tags=e2e -count=1 -timeout 120s ./...
 
 .PHONY: ci-e2e

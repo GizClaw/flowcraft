@@ -27,7 +27,6 @@ The repository is organised as independently released Go modules:
 | Orchestration | `sdk/agent` | Agents, observers, deciders, board seeders, handoff DSL |
 | Memory services | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing |
 | Adapters | `sdkx/...` | Concrete provider / protocol bindings layered on the SDK and memory contracts |
-| Runtime | `vessel/...`, `cmd/vesseld` | In-process runtime and deployable daemon |
 
 ## Repository layout
 
@@ -35,8 +34,6 @@ The repository is organised as independently released Go modules:
 sdk/         Core SDK (interfaces + primitives)
 memory/      Recall, history, knowledge, retrieval, text
 sdkx/        Provider and protocol adapters
-vessel/      Runtime and assembly helpers
-cmd/vesseld/ Daemon binary
 voice/       Voice pipeline: STT → LLM → TTS
 eval/        Quality-evaluation harnesses
 examples/    Reference assemblies

@@ -2,7 +2,7 @@
 
 # FlowCraft
 
-**Production-grade Go SDK for building AI agents with long-term memory, knowledge retrieval, and voice — runnable as a library, a daemon, or a real-time pipeline.**
+**A modular Go toolkit for extensible AI applications, long-term memory, provider integrations, voice, and local interactive workflows.**
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/sdk.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk)
@@ -14,90 +14,77 @@
 
 ---
 
-FlowCraft is a layered, **batteries-included** toolkit for shipping LLM applications in Go. Pick the layer you need:
+FlowCraft is a Go workspace for building and evaluating AI applications without
+tying application code to one model provider or execution model. Graphs are one
+built-in option, not a required architecture. Use the SDK packages directly, or
+start with Claw for a runnable local workspace.
 
-- **`sdk`** — Composable primitives: agents, DAG executor, LLM contracts, tools, telemetry, workspaces, and kanban-style multi-agent delegation.
-- **`memory`** — Long-term recall, conversation history, knowledge retrieval, text processing, and memory-backed stores.
-- **`sdkx`** — Drop-in providers: OpenAI, Anthropic, DeepSeek, MiniMax, ByteDance / Volcengine, plus embedding, reranker, sandbox, and compatibility adapters.
-- **`vessel`** — In-process runtime that hosts your agents with lifecycle management, restart policies, probes, sidecars, per-run workspaces, and assembly helpers.
-- **`vesseld`** — A standalone daemon that runs `vessel` instances from declarative YAML, exposes an HTTP + SSE control plane, and shares LLM clients & rate limits across many vessels.
-- **`voice`** — Real-time STT → LLM → TTS pipeline with VAD, barge-in, and WebRTC.
+- **`cmd/claw`** — Local CLI and TUI for creating agent workspaces, running
+  conversations, inspecting memory, serving debug APIs, and executing scripted
+  tests.
+- **`sdk`** — Agent, graph, engine, model, tool, event, telemetry, and workspace
+  contracts.
+- **`memory`** — Recall, conversation history, knowledge retrieval, text
+  processing, and persistence backends.
+- **`sdkx`** — Provider adapters and optional implementations for LLMs,
+  embeddings, reranking, checkpointing, sandboxing, and Claw.
+- **`voice`** — Real-time STT → LLM → TTS pipelines with VAD, barge-in, and
+  WebRTC.
 
-Everything ships as Go modules with semantic versioning — depend on what you need, ignore the rest.
+The library layers are independently versioned Go modules. Applications can
+adopt only the layers they need.
 
 ---
 
 ## Why FlowCraft
 
-| You want…                                                    | FlowCraft gives you…                                                                                                      |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
-| Strict separation between **engine** and **agent**           | `sdk/engine` is a leaf package; `sdk/agent` orchestrates above it. No "framework is the runtime" coupling.                |
-| **Long-term memory** that actually retrieves what's relevant | `memory/recall` ships hybrid BM25 + vector retrieval with predicate-alias normalisation, not just embedding similarity.   |
-| **Multi-agent collaboration** without a graph DSL            | `sdk/kanban` exposes any agent as a tool to any other agent — composition is just function calls.                         |
-| **A daemon you can deploy**                                  | `vesseld` is a single static binary: `vesseld run --config ./config -R`. No runtime, no Python, no Docker required.       |
-| **Voice agents** that don't reinvent VAD                     | `voice/` ships VAD, endpointing, barge-in, WebRTC — wire it to any STT/TTS provider in `sdkx`.                            |
-| **Provider portability**                                     | The same agent code runs against OpenAI, Anthropic, DeepSeek, MiniMax, or Volcengine — switch by changing one YAML field. |
+| You need…                          | FlowCraft provides…                                                                                                |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| A runnable local agent environment | Claw workspaces, TUI sessions, debug HTTP endpoints, and scripted tests                                            |
+| Explicit execution contracts       | A small `engine.Engine` / `engine.Host` boundary that supports graph, scripted, remote, or custom execution models |
+| Long-term memory                   | Hybrid recall, histories, knowledge stores, retrieval indexes, and SQLite/Postgres backends                        |
+| Provider portability               | OpenAI, Anthropic, DeepSeek, MiniMax, and Volcengine adapters behind shared SDK interfaces                         |
+| Multi-agent composition            | Kanban agent-as-tool delegation that can run over graph or custom engines                                          |
+| Real-time voice                    | VAD, endpointing, barge-in, STT/TTS contracts, and WebRTC integration                                              |
 
 ---
 
 ## Quickstart
 
-### Daemon — declarative multi-vessel deployment
+### Run a local agent with Claw
 
-The fastest way to ship something runnable: write YAML, point `vesseld` at it.
-
-```bash
-go install github.com/GizClaw/flowcraft/cmd/vesseld@latest
-
-# One daemon, two independently configured vessels, sharing one OpenAI client.
-vesseld validate --config examples/vesseld-multi-vessel -R
-vesseld run      --config examples/vesseld-multi-vessel -R
-```
+Claw is the fastest way to explore the stack. It creates persistent local
+workspaces, opens an interactive TUI, exposes debug endpoints, and runs scripted
+agent tests.
 
 ```bash
-SOCK=/tmp/vesseld-multi-vessel.sock   # set in examples/vesseld-multi-vessel/daemon.yaml
+cd cmd/claw
+go run . help
 
-# Synchronous call (waits for completion):
-curl --unix-socket $SOCK -X POST http://vesseld/v1/vessels/support/call \
-  -H 'content-type: application/json' \
-  -d '{"agent":"support-agent","query":"What are your business hours?"}'
-
-# Async submit + SSE log tail:
-RUN=$(curl -s --unix-socket $SOCK -X POST http://vesseld/v1/vessels/triage/submit \
-  -H 'content-type: application/json' \
-  -d '{"agent":"triage-dispatcher","query":"My order is two weeks late."}' | jq -r .run_id)
-
-curl --unix-socket $SOCK "http://vesseld/v1/vessels/triage/logs?run_id=$RUN"
+# Open the interactive TUI and select an embedded raid config.
+go run . tui new
 ```
 
-**Remote access via TCP + bearer token.** Set `spec.control.listen` and a `tokenFile` in `daemon.yaml`; validation refuses to start a TCP listener without auth:
-
-```yaml
-spec:
-  control:
-    socket: /tmp/vesseld-multi-vessel.sock   # local debugging stays available
-    listen: 0.0.0.0:8443                     # remote access
-    auth:
-      tokenFile: /etc/vesseld/token           # one line: the bearer token
-```
+Build a reusable local binary:
 
 ```bash
-TOKEN=$(cat /etc/vesseld/token)
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8443/v1/vessels/support/call \
-  -H 'content-type: application/json' \
-  -d '{"agent":"support-agent","query":"hello"}'
+cd cmd/claw
+go build -o claw .
+./claw help
 ```
 
-mTLS support is available through the daemon TLS config; bearer-token TCP auth remains the lightest remote-access path for simple deployments.
+See [`cmd/claw/README.md`](cmd/claw/README.md) for workspace, TUI, debug API,
+configuration, and test commands.
 
-See [`examples/vesseld-multi-vessel/`](examples/vesseld-multi-vessel/) for the multi-agent + Kanban delegation walkthrough, and [`examples/vesseld-with-history/`](examples/vesseld-with-history/) for an agent that remembers earlier turns of the same conversation.
+### Embed FlowCraft in a Go service
 
-### Library — programmatic SDK usage
-
-For embedding agents directly into a Go service (no daemon), use `sdk` directly and add `memory` / `sdkx` when you need recall, history, knowledge, or provider adapters. The minimum viable wiring is a graph DAG (`graph.GraphDefinition` + `node.Factory` with `llmnode.Register`) driven by `agent.Run`. See:
+Use `sdk` directly and add `memory` or `sdkx` when the application needs recall,
+history, knowledge, persistence, or provider adapters. Applications execute any
+`engine.Engine` through `agent.Run`; the bundled graph runner is one available
+implementation, alongside scripted, remote, or application-defined engines.
 
 - [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
-- [`tests/quality/vessel/`](tests/quality/vessel/) — full integration examples (history, sidecars, kanban)
+- [`examples/chatbot-with-recall/`](examples/chatbot-with-recall/) — conversational recall backed by the memory module
 - [`examples/voice-pipeline/setup.go`](examples/voice-pipeline/setup.go) — a real graph-runner build wiring an LLM provider + script node
 
 ### Voice — STT → LLM → TTS
@@ -119,62 +106,63 @@ End-to-end: [`examples/voice-pipeline/`](examples/voice-pipeline/) — a runnabl
 
 ## Architecture
 
-Layered bottom-up. `sdk` is the foundation; `memory` builds on it, and upper layers compose the published `sdk` + `memory` surfaces.
+The SDK defines the execution contracts. Memory, provider adapters, voice, and
+Claw compose those contracts without becoming dependencies of the core.
 
 ```
-   ┌──────────────────────────────────────────────────────────────┐
-   │                      Your Application                        │
-   └────────────┬───────────────────────────────────┬─────────────┘
-                │                                   │
-         ┌──────▼──────┐                            │
-         │   vesseld   │ ── HTTP + SSE control ──   │
-         │   (daemon)  │                            │
-         └──────┬──────┘                            │
-                │ composes vessel + sdkx            │
-   ┌────────────┼─────────────────┐          ┌──────▼─────┐
-   │     ┌──────▼───────┐  ┌──────▼──────┐   │   voice/   │  WebRTC
-   │     │   vessel/    │  │    sdkx/    │   │ (pipeline) │
-   │     │ runtime +    │  │ providers + │   └─────┬──────┘
-   │     │ assembly     │  │ sandbox     │         │
-   │     └──────┬───────┘  └──────┬──────┘         │
-   │            │                 │                │
-   │            ├─────────┬───────┴────────────────┘
-   │            │         │
-   │     ┌──────▼──────┐  │        ┌────────────────┐
-   │     │   memory/   │  └───────►│      sdk/      │
-   │     │ recall ·    │           │ agent · engine │
-   │     │ history ·   │           │ graph · llm ·  │
-   │     │ knowledge · │           │ tool · event · │
-   │     │ retrieval   │           │ telemetry      │
-   │     └──────┬──────┘           └────────────────┘
-   │            │                         ▲
-   └────────────┴─────────────────────────┘
-        sdk is the foundation. memory depends on sdk; sdkx and vessel
-        consume the published sdk + memory surfaces.
+                    ┌──────────────────────┐
+                    │   Your application   │
+                    └──────────┬───────────┘
+                               │
+         ┌─────────────────────┼─────────────────────┐
+         │                     │                     │
+  ┌──────▼──────┐       ┌──────▼──────┐       ┌──────▼──────┐
+  │  cmd/claw   │       │   voice/    │       │    sdkx/    │
+  │ CLI · TUI · │       │ STT · TTS · │       │ providers · │
+  │ debug · test│       │ VAD · WebRTC│       │ persistence │
+  └──────┬──────┘       └──────┬──────┘       └──────┬──────┘
+         │                     │                     │
+         └──────────────┬──────┴──────────────┬──────┘
+                        │                     │
+                 ┌──────▼──────┐       ┌──────▼───────┐
+                 │   memory/   │──────►│    sdk/      │
+                 │ recall ·    │       │ agent · graph│
+                 │ history ·   │       │ engine · tool│
+                 │ knowledge   │       │ event · model│
+                 └─────────────┘       └──────────────┘
 ```
 
-**Layering rule**: `sdk/engine` is a leaf inside `sdk/` — it does NOT import `agent`, `graph`, `llm`, `tool`, or `workflow`. New execution engines plug in by implementing `engine.Engine` against the `Host` capability interface, which keeps the runtime contract narrow. Memory services live in the separate `memory` module and depend on the SDK contracts rather than the other way around.
+**Layering rule:** `sdk/engine` is a leaf package. It does not import agent,
+graph, LLM, or tool packages. Execution implementations satisfy
+`engine.Engine`; hosts provide capabilities through `engine.Host`. Memory lives
+in its own module and depends on SDK contracts, never the reverse.
 
 ---
 
 ## Module map
 
-| Module                                     | What it gives you                                                                                          | Stable        |
-| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------- | ------------- |
-| [`sdk`](sdk/)                              | Core primitives — agent, graph DAG, kanban, model, llm, telemetry                                          | yes           |
-| [`memory`](memory/)                        | Memory domain — recall v2, history, knowledge, retrieval, text, and memory adapters                        | yes           |
-| [`sdkx`](sdkx/)                            | Provider implementations (OpenAI, Anthropic, DeepSeek, MiniMax, Volcengine) + non-memory extensions        | yes           |
-| [`vessel`](vessel/)                        | In-process agent runtime — Captain, restart, probes, sidecars, per-run workspaces, assembly helpers        | yes           |
-| [`cmd/vesseld`](cmd/vesseld/)              | Standalone daemon binary — declarative YAML, HTTP/SSE control plane                                        | yes           |
-| [`voice`](voice/)                          | Real-time voice pipeline (VAD / STT / LLM / TTS / WebRTC)                                                  | yes           |
-| [`examples/`](examples/)                   | Worked end-to-end examples (voice pipeline, multi-vessel daemon, …)                                        | —             |
-| [`tests/quality/`](tests/quality/)         | Quality / regression suites (knowledge retrieval, vessel runtime)                                          | —             |
-| [`tests/e2e/`](tests/e2e/)                 | Black-box end-to-end suites (vesseld subprocess)                                                           | —             |
-| [`tests/conformance/`](tests/conformance/) | Provider conformance — same surface, every backend                                                         | —             |
+| Path                                      | Role                                                                           | Distribution         |
+| ----------------------------------------- | ------------------------------------------------------------------------------ | -------------------- |
+| [`cmd/claw`](cmd/claw/)                   | Local workspace runner, TUI, debug API, and scripted-test CLI                  | Source-built command |
+| [`sdk`](sdk/)                             | Agent execution contracts, graph runtime, tools, models, events, and telemetry | Versioned Go module  |
+| [`memory`](memory/)                       | Recall, history, knowledge, retrieval, text processing, and stores             | Versioned Go module  |
+| [`sdkx`](sdkx/)                           | Provider, persistence, sandbox, and application adapters                       | Versioned Go module  |
+| [`voice`](voice/)                         | Real-time STT, TTS, VAD, audio, and WebRTC pipeline                            | Versioned Go module  |
+| [`eval`](eval/)                           | Offline and synthetic quality-evaluation harnesses                             | Workspace module     |
+| [`examples`](examples/)                   | Runnable recall-chatbot and voice-pipeline integrations                        | Examples             |
+| [`tests/conformance`](tests/conformance/) | Provider conformance suites                                                    | Tests                |
+| [`tests/e2e`](tests/e2e/)                 | Retrieval end-to-end coverage                                                  | Tests                |
 
 ---
 
 ## Highlights
+
+### Local workflows with Claw (`cmd/claw`, `sdkx/claw`)
+
+- Persistent workspaces with config, history, memory, and graph state.
+- Interactive TUI plus an embeddable Go runtime.
+- Debug HTTP endpoints for workspace, history, memory, and recall inspection.
+- Scripted and simulation-style tests with captured workspace artifacts.
 
 ### Hybrid memory that actually recalls (`memory/recall`)
 
@@ -188,13 +176,6 @@ Layered bottom-up. `sdk` is the foundation; `memory` builds on it, and upper lay
 - `Checkpoint` / `CheckpointStore` contract — pause and resume an agent across restarts.
 - `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
 
-### Production-shaped runtime (`vessel` + `vesseld`)
-
-- Declarative YAML — vessels, agents, engines, history, sidecars, probes, restart policies.
-- `Handle.OnTerminate` hooks for synchronous bookkeeping (registry, OTel spans, metrics).
-- Rate limits and concurrency caps shared across vessels via the daemon-wide gate.
-- SSE log streaming for every run with replay-friendly delta envelopes.
-
 ### Voice without the duct tape (`voice`)
 
 - VAD with hysteresis, endpointing, barge-in.
@@ -207,25 +188,30 @@ Layered bottom-up. `sdk` is the foundation; `memory` builds on it, and upper lay
 
 The canonical reference is the per-package `doc.go` files, browsable on pkg.go.dev:
 
+- [`cmd/claw/README.md`](cmd/claw/README.md) — CLI, TUI, workspace, debug API, and scripted-test guide
 - [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core primitives (agent, engine, graph, llm, tool, telemetry, …)
 - [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — recall, history, knowledge, retrieval, and text packages
 - [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — provider implementations
-- [pkg.go.dev/github.com/GizClaw/flowcraft/vessel](https://pkg.go.dev/github.com/GizClaw/flowcraft/vessel) — runtime layer
 - [pkg.go.dev/github.com/GizClaw/flowcraft/voice](https://pkg.go.dev/github.com/GizClaw/flowcraft/voice) — voice pipeline
 
 Worked examples live under [`examples/`](examples/) — each one is runnable end-to-end with a single command.
-
-For the daemon specifically, run `vesseld --help` for CLI sub-commands and supported YAML kinds; HTTP control-plane endpoints are documented inline on the command handlers.
 
 ---
 
 ## Status
 
-`sdk` and `sdkx` are stable and released continuously. `memory` is published as its own module for recall, history, knowledge, retrieval, and text. `vessel` has shipped `v0.3.0` with per-run session workspaces and assembly helpers, and `cmd/vesseld` is production-ready for single-node deployments. Durable execution (Postgres + SQLite checkpoint stores), OTel exporters, Prometheus `/metrics`, the seven-suite `eval/` harness, and end-to-end `tests/e2e/vesseld` conformance are all in place.
+The active project surface is `sdk`, `memory`, `sdkx`, `voice`, and Claw.
+Library modules are released independently and remain pre-1.0. Claw currently
+ships from source as the local interactive runner.
+
+Durable execution contracts, Postgres and SQLite checkpoint stores, OTel
+instrumentation, quality-evaluation harnesses, and retrieval end-to-end coverage
+are maintained in-tree.
 
 The next milestone is the assertion-graph memory model: first-class observations, assertions, and links with provenance, so recall can retrieve linked evidence packets instead of isolated facts.
 
-API surface is governed by SemVer per module. Breaking changes ship as minor bumps until each module reaches `v1.0.0`.
+API surface is governed by SemVer per module. Breaking changes may ship as minor
+bumps until a module reaches `v1.0.0`.
 
 ---
 
@@ -237,10 +223,13 @@ cd flowcraft
 
 make help          # list every target
 make ci            # vet + test for all in-tree modules
-make test-e2e      # black-box vesseld suite (no API key required)
+make test-e2e      # build-tagged retrieval end-to-end suite
+make release-check # validate changesets and the pending release plan
 ```
 
-This repo is a Go workspace (`go.work`). The in-tree modules are `sdk`, `memory`, `sdkx`, `vessel`, `voice`, `cmd/vesseld`, and `eval`. Off-workspace examples and test harnesses pin released versions and run with `GOWORK=off`.
+This repository is a Go workspace. Active members are `sdk`, `memory`, `sdkx`,
+`voice`, `cmd/claw`, and `eval`. Some examples and test harnesses intentionally
+run with `GOWORK=off` against pinned released modules.
 
 ---
 
@@ -252,6 +241,14 @@ Issues and pull requests are welcome. Before opening a PR:
 2. `gofmt -l .` should print nothing.
 3. Tests for new features. New behaviour without a test won't merge.
 4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+
+Library releases are declared explicitly with immutable `.release/*.json`
+changesets for `sdk`, `memory`, `sdkx`, and `voice`; a changeset is optional for
+ordinary PRs. After merge, each pending module passes isolated tidy, build, vet,
+and race-test gates before all planned tags are pushed atomically. Claw remains
+source-only and does not receive module tags. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated dependency
+rules.
 
 For larger work, please open a discussion or draft RFC issue first — it's much faster than reviewing a 5k-line PR cold.
 

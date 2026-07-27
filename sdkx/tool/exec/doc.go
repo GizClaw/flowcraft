@@ -66,7 +66,7 @@
 //	t, err := exec.New(rn)
 //
 // The same sandbox can be shared with the script-engine shell
-// bridge, vesseld Sandbox resources (planned, v0.2.0), and any
+// bridge, host-application sandbox resources, and any
 // future sdkx/sandbox/{nsjail,container,microvm} backend without
 // changing this tool's call site.
 package exec

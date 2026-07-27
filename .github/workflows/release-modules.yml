@@ -1,0 +1,235 @@
+name: Release modules
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-modules
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan pending releases
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      has_releases: ${{ steps.plan.outputs.has_releases }}
+      modules: ${{ steps.plan.outputs.modules }}
+      tags: ${{ steps.plan.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Validate release changesets
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . validate --repo ../..
+
+      - name: Build release plan
+        id: plan
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: |
+          set -euo pipefail
+          go run . plan --repo ../.. --json > /tmp/release-plan.json
+          cat /tmp/release-plan.json
+          modules=$(jq -c '.modules' /tmp/release-plan.json)
+          tags=$(jq -c '.tags' /tmp/release-plan.json)
+          count=$(jq '.modules | length' /tmp/release-plan.json)
+          {
+            echo "modules=$modules"
+            echo "tags=$tags"
+            if [ "$count" -gt 0 ]; then
+              echo "has_releases=true"
+            else
+              echo "has_releases=false"
+            fi
+          } >> "$GITHUB_OUTPUT"
+
+  gate:
+    name: Gate ${{ matrix.release.module }} (Go ${{ matrix.go-version }})
+    needs: plan
+    if: needs.plan.outputs.has_releases == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ${{ fromJSON(needs.plan.outputs.modules) }}
+        go-version: ["1.25", "1.26"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Prepare isolated module file
+        id: modfile
+        env:
+          MODULE: ${{ matrix.release.module }}
+          MODULE_DIR: ${{ matrix.release.dir }}
+          RELEASES_JSON: ${{ needs.plan.outputs.modules }}
+        run: |
+          set -euo pipefail
+          modfile="$RUNNER_TEMP/${MODULE}.mod"
+          sumfile="$RUNNER_TEMP/${MODULE}.sum"
+          cp "$MODULE_DIR/go.mod" "$modfile"
+          if [ -f "$MODULE_DIR/go.sum" ]; then
+            cp "$MODULE_DIR/go.sum" "$sumfile"
+          else
+            : > "$sumfile"
+          fi
+
+          case "$MODULE" in
+            memory) dependencies="sdk" ;;
+            sdkx) dependencies="sdk memory" ;;
+            voice) dependencies="sdk" ;;
+            *) dependencies="" ;;
+          esac
+
+          for dependency in $dependencies; do
+            if jq -e --arg dependency "$dependency" \
+              '.[] | select(.module == $dependency)' \
+              <<< "$RELEASES_JSON" >/dev/null; then
+              go mod edit -modfile="$modfile" \
+                -replace="github.com/GizClaw/flowcraft/${dependency}=$GITHUB_WORKSPACE/${dependency}"
+            fi
+          done
+
+          cp "$modfile" "$RUNNER_TEMP/${MODULE}.before.mod"
+          cp "$sumfile" "$RUNNER_TEMP/${MODULE}.before.sum"
+          {
+            echo "modfile=$modfile"
+            echo "sumfile=$sumfile"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify module is tidy
+        working-directory: ${{ matrix.release.dir }}
+        env:
+          GOWORK: "off"
+          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
+          MODULE: ${{ matrix.release.module }}
+        run: |
+          set -euo pipefail
+          go mod tidy
+          diff -u "$RUNNER_TEMP/${MODULE}.before.mod" "${{ steps.modfile.outputs.modfile }}"
+          diff -u "$RUNNER_TEMP/${MODULE}.before.sum" "${{ steps.modfile.outputs.sumfile }}"
+
+      - name: Build
+        working-directory: ${{ matrix.release.dir }}
+        env:
+          GOWORK: "off"
+          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
+        run: go build ./...
+
+      - name: Vet
+        working-directory: ${{ matrix.release.dir }}
+        env:
+          GOWORK: "off"
+          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
+        run: go vet ./...
+
+      - name: Test
+        working-directory: ${{ matrix.release.dir }}
+        env:
+          GOWORK: "off"
+          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
+        run: go test -count=1 -race ./...
+
+  retrieval-e2e:
+    name: Release gate / retrieval e2e
+    needs: [plan, gate]
+    if: needs.plan.outputs.has_releases == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: Test pinned release integration
+        run: make test-e2e
+
+  eval:
+    name: Release gate / hermetic eval
+    needs: [plan, gate]
+    if: needs.plan.outputs.has_releases == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+      - name: Test
+        run: make eval
+
+  tag:
+    name: Publish module tags
+    needs: [plan, gate, retrieval-e2e, eval]
+    if: always() && needs.plan.outputs.has_releases == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every release gate
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          RETRIEVAL_RESULT: ${{ needs.retrieval-e2e.result }}
+          EVAL_RESULT: ${{ needs.eval.result }}
+        run: |
+          set -euo pipefail
+          [ "$GATE_RESULT" = "success" ]
+          case "$RETRIEVAL_RESULT" in success|skipped) ;; *) exit 1 ;; esac
+          case "$EVAL_RESULT" in success|skipped) ;; *) exit 1 ;; esac
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Revalidate and atomically publish tags
+        env:
+          EXPECTED_TAGS: ${{ needs.plan.outputs.tags }}
+        run: |
+          set -euo pipefail
+          (
+            cd tools/releasegate
+            GOWORK=off go run . plan --repo ../.. --json
+          ) > /tmp/release-plan.json
+          actual_tags=$(jq -c '.tags' /tmp/release-plan.json)
+          if [ "$actual_tags" != "$EXPECTED_TAGS" ]; then
+            echo "release plan changed: expected $EXPECTED_TAGS, got $actual_tags" >&2
+            exit 1
+          fi
+
+          mapfile -t tags < <(jq -r '.[]' <<< "$EXPECTED_TAGS")
+          [ "${#tags[@]}" -gt 0 ]
+          refspecs=()
+          for tag in "${tags[@]}"; do
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "tag already exists: $tag" >&2
+              exit 1
+            fi
+            git tag "$tag" "$GITHUB_SHA"
+            refspecs+=("refs/tags/$tag:refs/tags/$tag")
+          done
+          git push --atomic origin "${refspecs[@]}"

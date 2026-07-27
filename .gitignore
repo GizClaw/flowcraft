@@ -30,14 +30,14 @@
 !sdk/**
 !sdkx/
 !sdkx/**
-!vessel/
-!vessel/**
 !voice/
 !voice/**
 !tests/
 !tests/**
 !tools/
 !tools/**
+!.release/
+!.release/**
 
 # ── Container ──
 !Dockerfile

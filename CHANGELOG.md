@@ -2,8 +2,7 @@
 
 All notable changes to this repository are documented here. FlowCraft is a
 multi-module monorepo; each Go module is released independently with its own tag
-prefix, for example `sdk/vX.Y.Z`, `memory/vX.Y.Z`, `sdkx/vX.Y.Z`, and
-`vessel/vX.Y.Z`.
+prefix, for example `sdk/vX.Y.Z`, `memory/vX.Y.Z`, and `sdkx/vX.Y.Z`.
 
 Per-release artifacts and generated notes also live on the
 [GitHub Releases](https://github.com/GizClaw/flowcraft/releases) page.
@@ -15,13 +14,17 @@ Per-release artifacts and generated notes also live on the
 | `sdk` | `sdk/v0.4.0` | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives. |
 | `memory` | `memory/v0.1.0` | First standalone memory-domain release: recall v2, history, knowledge, retrieval, text, and stores. |
 | `sdkx` | `sdkx/v0.4.0` | Provider/adaptor release pinned to `sdk v0.4.0` and `memory v0.1.0`. |
-| `vessel` | `vessel/v0.3.0` | Runtime release pinned to `sdk v0.4.0` and `memory v0.1.0`; includes assembly helpers. |
+| `vessel` | `vessel/v0.3.0` | Retired; historical tags remain available, but source and active support have been removed from `main`. |
 | `voice` | `voice/v0.2.0` | Voice pipeline module. |
-| `cmd/vesseld` | `vesseld/v0.1.0` | Daemon binary release line. |
+| `cmd/vesseld` | `vesseld/v0.1.0` | Retired; historical release artifacts remain available, but no further releases are planned. |
 
 ## [Unreleased]
 
-No unreleased user-facing changes yet.
+### Removed
+
+- Retired the `vessel` runtime and `vesseld` daemon from the active source
+  tree, CI, release automation, examples, and documentation. Existing tags and
+  release artifacts are retained as historical, unsupported releases.
 
 ## `sdk/v0.4.0` - 2026-05-30
 

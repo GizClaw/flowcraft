@@ -21,7 +21,7 @@ type scriptFallbackOwner struct{}
 // scriptnode. ScriptRuntime is required; the rest are optional.
 //
 // CommandRunner keeps its field name (rather than tracking the
-// sandbox.Runner rename) so existing wiring in callers like vesseld
+// sandbox.Runner rename) so existing wiring in host applications
 // does not have to chase the v0.2.0 rename. The field type is now
 // sandbox.Runner; workspace.CommandRunner remains a working alias until
 // v0.5.0.
