@@ -42,7 +42,40 @@ jobs:
               - 'eval/**'
             ci:
               - '.github/workflows/**'
+              - '.release/**'
               - 'Makefile'
+              - 'tools/releasegate/**'
+
+  release-intent:
+    name: Validate release intent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25"
+
+      - name: Test release gate tooling
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go test -count=1 -race ./...
+
+      - name: Validate immutable changesets
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: go run . validate --repo ../.. --base "$BASE_SHA"
+
+      - name: Validate pending release plan
+        working-directory: tools/releasegate
+        env:
+          GOWORK: "off"
+        run: go run . plan --repo ../..
 
   lint:
     name: Lint
@@ -255,7 +288,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-retrieval-e2e, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-retrieval-e2e, test-eval]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -265,6 +298,7 @@ jobs:
             exit 1
           fi
           results=( \
+            "${{ needs.release-intent.result }}" \
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-memory.result }}" \

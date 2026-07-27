@@ -39,11 +39,13 @@ func TestLoadChangesetsRejectsInvalidContracts(t *testing.T) {
 func TestValidateBaseAllowsOnlyAddedChangesets(t *testing.T) {
 	repo := initRepo(t)
 	writeFile(t, repo, ".release/existing.json", validChangeset("old", "sdk", "patch"))
+	writeFile(t, repo, ".release/README.md", "old docs\n")
 	commitAll(t, repo, "base")
 	base := gitOutput(t, repo, "rev-parse", "HEAD")
 
 	writeFile(t, repo, ".release/existing.json", validChangeset("changed", "sdk", "minor"))
 	writeFile(t, repo, ".release/new.json", validChangeset("new", "memory", "patch"))
+	writeFile(t, repo, ".release/README.md", "new docs\n")
 	if err := validateRepo(repo, base); err == nil || !strings.Contains(err.Error(), "modified") {
 		t.Fatalf("validateRepo() error = %v, want immutable modification error", err)
 	}
@@ -57,6 +59,12 @@ func TestValidateBaseAllowsOnlyAddedChangesets(t *testing.T) {
 	gitRun(t, repo, "rm", ".release/existing.json")
 	if err := validateRepo(repo, base); err == nil || !strings.Contains(err.Error(), "deleted") {
 		t.Fatalf("validateRepo() error = %v, want immutable deletion error", err)
+	}
+
+	gitRun(t, repo, "restore", "--staged", "--worktree", ".release/existing.json")
+	gitRun(t, repo, "mv", ".release/existing.json", ".release/existing.md")
+	if err := validateRepo(repo, base); err == nil || !strings.Contains(err.Error(), "renamed") {
+		t.Fatalf("validateRepo() error = %v, want immutable rename error", err)
 	}
 }
 

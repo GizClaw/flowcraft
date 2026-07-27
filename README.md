@@ -224,6 +224,7 @@ cd flowcraft
 make help          # list every target
 make ci            # vet + test for all in-tree modules
 make test-e2e      # build-tagged retrieval end-to-end suite
+make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `sdk`, `memory`, `sdkx`,
@@ -240,6 +241,14 @@ Issues and pull requests are welcome. Before opening a PR:
 2. `gofmt -l .` should print nothing.
 3. Tests for new features. New behaviour without a test won't merge.
 4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+
+Library releases are declared explicitly with immutable `.release/*.json`
+changesets for `sdk`, `memory`, `sdkx`, and `voice`; a changeset is optional for
+ordinary PRs. After merge, each pending module passes isolated tidy, build, vet,
+and race-test gates before all planned tags are pushed atomically. Claw remains
+source-only and does not receive module tags. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated dependency
+rules.
 
 For larger work, please open a discussion or draft RFC issue first — it's much faster than reviewing a 5k-line PR cold.
 

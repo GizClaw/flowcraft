@@ -25,10 +25,9 @@
 CLI 是独立 Go module。从仓库根目录运行：
 
 ```sh
-cd tools/releasegate
-GOWORK=off go run . validate --repo ../.. --base origin/main
-GOWORK=off go run . plan --repo ../..
-GOWORK=off go run . plan --repo ../.. --json
+make release-check
+make release-check BASE=origin/main
+make release-plan
 ```
 
 `plan --json` 输出模块计划、GitHub Actions matrix 和待创建 tags。若没有未消费的发布意图，命令成功并输出空数组。

@@ -42,6 +42,9 @@ help:
 	@echo "  make fmt         Run gofmt on all modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make ci          vet + test"
+	@echo "  make release-check  Test release tooling, validate changesets, and"
+	@echo "                      verify the pending module release plan."
+	@echo "  make release-plan   Print the pending module release plan as JSON."
 	@echo ""
 	@echo "Test suites under tests/ (default 'make test' already runs them"
 	@echo "in compile-check / no-credential mode; the targets below are the"
@@ -87,6 +90,20 @@ tidy:
 
 .PHONY: ci
 ci: vet test
+
+.PHONY: release-check
+release-check:
+	@cd tools/releasegate && GOWORK=off go test -count=1 ./...
+	@if [[ -n "$(BASE)" ]]; then \
+		cd tools/releasegate && GOWORK=off go run . validate --repo ../.. --base "$(BASE)"; \
+	else \
+		cd tools/releasegate && GOWORK=off go run . validate --repo ../..; \
+	fi
+	@cd tools/releasegate && GOWORK=off go run . plan --repo ../..
+
+.PHONY: release-plan
+release-plan:
+	@cd tools/releasegate && GOWORK=off go run . plan --repo ../.. --json
 
 # `make test-e2e` runs the build-tagged retrieval workspace suite.
 # CI runs it explicitly via `make ci-e2e` (or by adding it to a

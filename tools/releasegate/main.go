@@ -155,6 +155,16 @@ func validateRepo(repo, base string) error {
 		if len(fields) < 2 {
 			return fmt.Errorf("parse git diff status %q", line)
 		}
+		path := ""
+		for _, candidate := range fields[1:] {
+			if filepath.Ext(candidate) == ".json" {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			continue
+		}
 		status := fields[0]
 		if status == "A" {
 			continue
@@ -170,7 +180,7 @@ func validateRepo(repo, base string) error {
 		case 'C':
 			action = "copied"
 		}
-		return fmt.Errorf("changeset %s was %s; .release changesets are immutable and may only be added", fields[1], action)
+		return fmt.Errorf("changeset %s was %s; .release changesets are immutable and may only be added", path, action)
 	}
 	return nil
 }
