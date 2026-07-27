@@ -36,6 +36,8 @@
 !tests/**
 !tools/
 !tools/**
+!.release/
+!.release/**
 
 # ── Container ──
 !Dockerfile
