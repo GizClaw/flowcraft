@@ -1,6 +1,8 @@
 # Release changesets
 
-每个 `.release/*.json` 文件都是不可变的发布意图。文件合入后不得修改、重命名或删除；后续修正应新增 changeset。
+Each `.release/*.json` file is an immutable release intent. After it reaches
+`main`, do not modify, rename, or delete it. Add another changeset to correct
+the intent.
 
 ```json
 {
@@ -14,15 +16,18 @@
 }
 ```
 
-- `summary` 必须是非空单行字符串，且不能包含 releasegate 保留 marker。
-- `releases` 至少包含一项。
-- `module` 只能是 `sdk`、`memory`、`sdkx` 或 `voice`。
-- `bump` 只能是 `patch` 或 `minor`。
-- 同一文件中不能重复声明同一模块。
-- 多个未消费 changeset 声明同一模块时，发布计划采用最高 bump（`minor` 高于 `patch`）。
-- changeset 是否已消费由文件是否存在于对应模块的最新 `module/vX.Y.Z` tag 中决定。
+- `summary` must be a non-empty single line and must not contain the reserved
+  releasegate marker.
+- `releases` must contain at least one entry.
+- `module` must be `sdk`, `memory`, `sdkx`, or `voice`.
+- `bump` must be `patch` or `minor`.
+- A changeset cannot declare the same module more than once.
+- Multiple pending changesets for one module use the highest bump (`minor`
+  outranks `patch`).
+- A changeset is consumed for a module when that file exists in the module's
+  latest `module/vX.Y.Z` tag.
 
-CLI 是独立 Go module。从仓库根目录运行：
+The CLI is a standalone Go module. Run these commands from the repository root:
 
 ```sh
 make release-check
@@ -31,13 +36,22 @@ make release-plan
 make release-changelog
 ```
 
-`plan --json` 输出模块计划、GitHub Actions matrix 和待创建 tags。若没有未消费的发布意图，命令成功并输出空数组。
+`plan --json` prints the module plan, GitHub Actions matrix, and tags to create.
+With no pending release intent, it succeeds with empty arrays.
 
-changeset 合入 `main` 后，`Release modules` workflow 会聚合所有待处理
-`summary`，更新 `CHANGELOG.md` 的模块版本表和 release sections，并创建或
-更新 `automation/release-changelog` Release PR。该 PR 的内容由
-`make release-changelog` 确定；通常不需要在功能 PR 中手动提交生成结果。
+After a changeset reaches `main`, the `Release modules` workflow aggregates all
+pending summaries, updates the module-version table and release sections in
+`CHANGELOG.md`, and opens or refreshes the
+`automation/release-changelog` Release PR. `make release-changelog` determines
+that PR's content; feature PRs normally do not commit the generated output.
 
-Release PR 合并后，workflow 会再次验证 changelog、执行模块 gates，并在全部
-检查通过后原子创建所有计划 tags。Release PR 未合并、changelog 不一致或任一
-gate 失败时均不会创建 tag。
+Merging the Release PR makes the workflow validate the changelog again and run
+the module gates. It creates every planned tag atomically only after all checks
+pass. An unmerged Release PR, a changelog mismatch, or any failed gate creates
+no tags.
+
+Pending sections converge before publication: if a failed batch receives more
+changesets, releasegate replaces that module's untagged section with the newly
+aggregated section. Once a real tag exists, its changelog section becomes
+historical and is never rewritten. Changeset files themselves remain in the
+repository because tag containment is the consumption ledger.
