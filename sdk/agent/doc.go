@@ -147,7 +147,7 @@
 // # What does NOT live here yet (later)
 //
 //   - RunHandle / ResumeToken for in-flight run management
-//     (deferred until vessel-level handle plumbing matures).
+//     (deferred until application-level handle plumbing matures).
 //
 //   - Strategy adapter for compiled engines (sdk/agent/strategy will host
 //     it once we know what shape it should have).

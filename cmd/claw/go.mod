@@ -121,3 +121,5 @@ require (
 replace github.com/GizClaw/flowcraft/sdk => ../../sdk
 
 replace github.com/GizClaw/flowcraft/sdkx => ../../sdkx
+
+exclude google.golang.org/genproto v0.0.0-20200526211855-cb27e3aa2013

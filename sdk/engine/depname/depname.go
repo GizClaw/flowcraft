@@ -41,10 +41,10 @@
 //	    }
 //	}
 //
-// agent.Run / vessel build paths that perform pre-flight validation
-// iterate RequiredDepNames and reject the run when a required key is
-// absent in the container — surfacing wiring mistakes before any
-// engine.Execute call.
+// agent.Run and application build paths that perform pre-flight
+// validation iterate RequiredDepNames and reject the run when a
+// required key is absent in the container — surfacing wiring
+// mistakes before any engine.Execute call.
 //
 // # Naming convention
 //

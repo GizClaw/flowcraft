@@ -2,11 +2,9 @@ go 1.25.0
 
 use (
 	./cmd/claw
-	./cmd/vesseld
 	./eval
 	./memory
 	./sdk
 	./sdkx
-	./vessel
 	./voice
 )

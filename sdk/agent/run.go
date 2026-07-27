@@ -113,8 +113,8 @@ func Run(
 	attrs := mergeAttributes(rc.attributes, req, ag, runID)
 	// Promote agent.Agent.Tools into engine.Run.Deps under
 	// depname.ToolAllowedNames so engines that honour the
-	// allow-list (graph runner llmnode today; vessel inline engine
-	// after Epic D) finally see the policy gate. Caller-supplied
+	// allow-list (graph runner llmnode and custom inline engines)
+	// see the policy gate. Caller-supplied
 	// rc.deps[ToolAllowedNames] wins so tests / power users can
 	// override the agent-level claim per call.
 	runDeps := promoteAgentTools(rc.deps, ag.Tools)
@@ -381,7 +381,7 @@ func mintRunID() string {
 // does NOT already define [depname.ToolAllowedNames], the helper
 // returns a CLONE of the caller's container with the agent's tool
 // list set under that key. Engines that honour the allow-list
-// (graph runner llmnode; vessel inline engine after Epic D) then
+// (graph runner llmnode and custom inline engines) then
 // see it via engine.GetDep at run time.
 //
 // Cloning preserves Run's "callers' container is immutable from
@@ -665,7 +665,7 @@ func WithArtifactChannels(channels ...string) RunOption {
 // / Decider on the parent run) is the canonical use. agent.Run does
 // NOT auto-derive ParentRunID from any ambient context — explicit
 // is the only contract that survives ctx propagation rewrites and
-// cross-process dispatch (vessel, A2A bridge).
+// cross-process dispatch (application runtimes, A2A bridges).
 //
 // Engines / hosts that don't read ParentRunID are unaffected. The
 // field is also surfaced under telemetry.AttrParentRunID by

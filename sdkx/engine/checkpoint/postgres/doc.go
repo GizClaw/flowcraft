@@ -3,7 +3,7 @@
 //
 // The driver is github.com/jackc/pgx/v5 (used directly via pgxpool;
 // no database/sql layer). Suitable for multi-process daemons,
-// horizontally scaled vesseld fleets, and production durability
+// horizontally scaled application fleets, and production durability
 // requirements where SQLite's single-writer model is insufficient.
 //
 // # Usage

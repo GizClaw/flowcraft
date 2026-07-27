@@ -35,9 +35,9 @@ func (r *allowCommandsRunner) Exec(ctx context.Context, cmd string, args []strin
 
 // WithDefaults returns a Runner that merges defaults into every Exec
 // call's ExecOptions before delegating to inner. It is the
-// composition seam that lets a runtime owner (typically vesseld
-// Catalog instantiating a kind: Sandbox resource) fix the
-// daemon-level shared policy — env allow-list, network mode,
+// composition seam that lets a runtime owner (typically a host
+// application instantiating a sandbox resource) fix the
+// application-level shared policy — env allow-list, network mode,
 // resource caps — onto a Runner that callers (tools, scripts) then
 // invoke with only behavioural knobs (cwd, stdin, per-call timeout).
 //

@@ -180,7 +180,7 @@
 // # Capability discovery
 //
 // Hosts that need to know what an engine can do BEFORE invoking
-// Execute (e.g. agent.Run preflight, dashboard rendering, vessel
+// Execute (e.g. agent.Run preflight, dashboard rendering, runtime
 // admission) call [CapabilitiesOf]:
 //
 //	caps := engine.CapabilitiesOf(eng)

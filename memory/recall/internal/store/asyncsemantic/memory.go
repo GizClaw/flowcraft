@@ -2,10 +2,10 @@
 // tests and the SDK's default zero-config development experience.
 //
 // Production callers MUST replace with a durable backend (e.g.
-// sdk/jobqueue or a vessel resource). The in-memory queue has no
-// outbox drainer — Enqueue itself is the durable boundary because
-// "durable" here means "process-local". Restarting the process loses
-// all enqueued jobs.
+// sdk/jobqueue or a host-provided runtime resource). The in-memory
+// queue has no outbox drainer — Enqueue itself is the durable
+// boundary because "durable" here means "process-local". Restarting
+// the process loses all enqueued jobs.
 package asyncsemantic
 
 import (
