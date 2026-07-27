@@ -15,6 +15,8 @@ import (
 	"strings"
 )
 
+const changelogMarker = "<!-- releasegate:releases -->"
+
 var moduleOrder = []string{"sdk", "memory", "sdkx", "voice"}
 
 var moduleDependencies = map[string][]string{
@@ -71,7 +73,7 @@ func main() {
 
 func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: releasegate <validate|plan> [options]")
+		fmt.Fprintln(stderr, "usage: releasegate <validate|plan|changelog> [options]")
 		return 2
 	}
 
@@ -130,8 +132,56 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 
+	case "changelog":
+		flags := flag.NewFlagSet("changelog", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		repo := flags.String("repo", ".", "repository root")
+		check := flags.Bool("check", false, "verify CHANGELOG.md is current")
+		write := flags.Bool("write", false, "write CHANGELOG.md")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(stderr, "changelog does not accept positional arguments")
+			return 2
+		}
+		if *check && *write {
+			fmt.Fprintln(stderr, "changelog --check and --write are mutually exclusive")
+			return 2
+		}
+		content, err := buildChangelog(*repo)
+		if err != nil {
+			fmt.Fprintf(stderr, "releasegate changelog: %v\n", err)
+			return 1
+		}
+		path := filepath.Join(*repo, "CHANGELOG.md")
+		if *check {
+			current, err := os.ReadFile(path)
+			if err != nil {
+				fmt.Fprintf(stderr, "releasegate changelog: read CHANGELOG.md: %v\n", err)
+				return 1
+			}
+			if !bytes.Equal(current, content) {
+				fmt.Fprintln(stderr, "releasegate changelog: CHANGELOG.md is out of date; run changelog --write")
+				return 1
+			}
+			return 0
+		}
+		if *write {
+			if err := atomicWriteFile(path, content); err != nil {
+				fmt.Fprintf(stderr, "releasegate changelog: %v\n", err)
+				return 1
+			}
+			return 0
+		}
+		if _, err := stdout.Write(content); err != nil {
+			fmt.Fprintf(stderr, "releasegate changelog: write output: %v\n", err)
+			return 1
+		}
+		return 0
+
 	default:
-		fmt.Fprintf(stderr, "unknown command %q; usage: releasegate <validate|plan> [options]\n", args[0])
+		fmt.Fprintf(stderr, "unknown command %q; usage: releasegate <validate|plan|changelog> [options]\n", args[0])
 		return 2
 	}
 }
@@ -212,8 +262,15 @@ func loadChangesets(repo string) ([]Changeset, error) {
 			return nil, fmt.Errorf("%s: invalid JSON: %w", relativePath(repo, path), err)
 		}
 		changeset.file = relativePath(repo, path)
-		if strings.TrimSpace(changeset.Summary) == "" {
+		changeset.Summary = strings.TrimSpace(changeset.Summary)
+		if changeset.Summary == "" {
 			return nil, fmt.Errorf("%s: summary must be non-empty", changeset.file)
+		}
+		if strings.ContainsAny(changeset.Summary, "\r\n") {
+			return nil, fmt.Errorf("%s: summary must be a single line", changeset.file)
+		}
+		if strings.Contains(changeset.Summary, changelogMarker) {
+			return nil, fmt.Errorf("%s: summary contains reserved changelog marker", changeset.file)
 		}
 		if len(changeset.Releases) == 0 {
 			return nil, fmt.Errorf("%s: releases must contain at least one release", changeset.file)
@@ -330,6 +387,263 @@ func buildPlan(repo string) (Plan, error) {
 		empty.Tags = append(empty.Tags, item.Tag)
 	}
 	return empty, nil
+}
+
+func buildChangelog(repo string) ([]byte, error) {
+	plan, err := buildPlan(repo)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(repo, "CHANGELOG.md")
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read CHANGELOG.md: %w", err)
+	}
+	if len(plan.Modules) == 0 {
+		return current, nil
+	}
+
+	markerCount := bytes.Count(current, []byte(changelogMarker))
+	if markerCount != 1 {
+		return nil, fmt.Errorf("CHANGELOG.md must contain exactly one %s marker; found %d", changelogMarker, markerCount)
+	}
+	changesets, err := loadChangesets(repo)
+	if err != nil {
+		return nil, err
+	}
+	byFile := make(map[string]Changeset, len(changesets))
+	for _, changeset := range changesets {
+		byFile[changeset.file] = changeset
+	}
+
+	content := string(current)
+	content, err = removeUnpublishedSections(repo, content, plan.Modules)
+	if err != nil {
+		return nil, err
+	}
+	var additions []string
+	for _, item := range plan.Modules {
+		date, summaries, err := changelogRelease(repo, item, byFile)
+		if err != nil {
+			return nil, err
+		}
+		section := formatReleaseSection(item.Tag, date, summaries)
+		additions = append(additions, section)
+	}
+
+	content, err = updatePublishedState(content, plan.Modules)
+	if err != nil {
+		return nil, err
+	}
+	if len(additions) != 0 {
+		index := strings.Index(content, changelogMarker) + len(changelogMarker)
+		insertion := "\n\n" + strings.Join(additions, "\n\n")
+		content = content[:index] + insertion + content[index:]
+	}
+	return []byte(content), nil
+}
+
+type changelogSectionSpan struct {
+	start int
+	end   int
+	tag   string
+}
+
+func removeUnpublishedSections(repo, changelog string, modules []ModulePlan) (string, error) {
+	pending := make(map[string]bool, len(modules))
+	for _, item := range modules {
+		pending[item.Module] = true
+	}
+	output, err := git(repo, "tag", "--list")
+	if err != nil {
+		return "", fmt.Errorf("list tags: %w", err)
+	}
+	existingTags := make(map[string]bool)
+	for _, tag := range strings.Fields(output) {
+		existingTags[tag] = true
+	}
+
+	var headings []int
+	for offset := 0; offset < len(changelog); {
+		end := strings.IndexByte(changelog[offset:], '\n')
+		if end < 0 {
+			end = len(changelog) - offset
+		}
+		line := changelog[offset : offset+end]
+		if strings.HasPrefix(line, "## ") {
+			headings = append(headings, offset)
+		}
+		offset += end + 1
+	}
+
+	var candidates []changelogSectionSpan
+	for index, start := range headings {
+		lineEnd := strings.IndexByte(changelog[start:], '\n')
+		if lineEnd < 0 {
+			lineEnd = len(changelog) - start
+		}
+		tag, module, ok := releaseHeading(changelog[start : start+lineEnd])
+		if !ok || !pending[module] {
+			continue
+		}
+		end := len(changelog)
+		if index+1 < len(headings) {
+			end = headings[index+1]
+		}
+		candidates = append(candidates, changelogSectionSpan{start: start, end: end, tag: tag})
+	}
+
+	var removals []changelogSectionSpan
+	for _, candidate := range candidates {
+		if !existingTags[candidate.tag] {
+			removals = append(removals, candidate)
+		}
+	}
+	for index := len(removals) - 1; index >= 0; index-- {
+		span := removals[index]
+		changelog = changelog[:span.start] + changelog[span.end:]
+	}
+	return changelog, nil
+}
+
+func releaseHeading(line string) (tag, module string, ok bool) {
+	const prefix = "## `"
+	const separator = "` - "
+	if !strings.HasPrefix(line, prefix) {
+		return "", "", false
+	}
+	end := strings.Index(line[len(prefix):], separator)
+	if end < 0 {
+		return "", "", false
+	}
+	tag = line[len(prefix) : len(prefix)+end]
+	slash := strings.Index(tag, "/v")
+	if slash <= 0 {
+		return "", "", false
+	}
+	return tag, tag[:slash], true
+}
+
+func changelogRelease(repo string, item ModulePlan, changesets map[string]Changeset) (string, []string, error) {
+	var latestDate string
+	var summaries []string
+	seen := make(map[string]bool)
+	for _, file := range item.Replaces {
+		changeset, ok := changesets[file]
+		if !ok {
+			return "", nil, fmt.Errorf("module %s references missing changeset %s", item.Module, file)
+		}
+		output, err := git(repo, "log", "-1", "--format=%cs", "--", file)
+		if err != nil {
+			return "", nil, fmt.Errorf("find commit date for %s: %w", file, err)
+		}
+		date := strings.TrimSpace(output)
+		if date == "" {
+			return "", nil, fmt.Errorf("%s has no commit date", file)
+		}
+		if date > latestDate {
+			latestDate = date
+		}
+		belongs := false
+		for _, release := range changeset.Releases {
+			if release.Module == item.Module {
+				belongs = true
+				break
+			}
+		}
+		if belongs && !seen[changeset.Summary] {
+			seen[changeset.Summary] = true
+			summaries = append(summaries, changeset.Summary)
+		}
+	}
+	return latestDate, summaries, nil
+}
+
+func formatReleaseSection(tag, date string, summaries []string) string {
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "## `%s` - %s\n\n### Changed\n\n", tag, date)
+	for _, summary := range summaries {
+		fmt.Fprintf(&builder, "- %s\n", summary)
+	}
+	return strings.TrimSuffix(builder.String(), "\n")
+}
+
+func updatePublishedState(changelog string, modules []ModulePlan) (string, error) {
+	tags := make(map[string]string, len(modules))
+	for _, item := range modules {
+		tags[item.Module] = item.Tag
+	}
+	lines := strings.Split(changelog, "\n")
+	tableStart := -1
+	tableEnd := len(lines)
+	for index, line := range lines {
+		if line == "## Current Published State" {
+			tableStart = index + 1
+			continue
+		}
+		if tableStart >= 0 && strings.HasPrefix(line, "## ") {
+			tableEnd = index
+			break
+		}
+	}
+	if tableStart < 0 {
+		return "", errors.New("CHANGELOG.md has no Current Published State section")
+	}
+	updated := make(map[string]bool, len(tags))
+	for index := tableStart; index < tableEnd; index++ {
+		line := lines[index]
+		for module, tag := range tags {
+			prefix := "| `" + module + "` |"
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			cells := strings.Split(line, "|")
+			if len(cells) < 5 {
+				return "", fmt.Errorf("invalid Current Published State row for module %s", module)
+			}
+			cells[2] = " `" + tag + "` "
+			lines[index] = strings.Join(cells, "|")
+			updated[module] = true
+		}
+	}
+	for module := range tags {
+		if !updated[module] {
+			return "", fmt.Errorf("Current Published State has no row for module %s", module)
+		}
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+func atomicWriteFile(path string, content []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".releasegate-changelog-*")
+	if err != nil {
+		return fmt.Errorf("create temporary changelog: %w", err)
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if err := file.Chmod(info.Mode().Perm()); err != nil {
+		file.Close()
+		return fmt.Errorf("set temporary changelog permissions: %w", err)
+	}
+	if _, err := file.Write(content); err != nil {
+		file.Close()
+		return fmt.Errorf("write temporary changelog: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		return fmt.Errorf("sync temporary changelog: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close temporary changelog: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace CHANGELOG.md: %w", err)
+	}
+	return nil
 }
 
 func latestModuleTag(repo, module string) (tagVersion, error) {

@@ -244,9 +244,10 @@ Issues and pull requests are welcome. Before opening a PR:
 
 Library releases are declared explicitly with immutable `.release/*.json`
 changesets for `sdk`, `memory`, `sdkx`, and `voice`; a changeset is optional for
-ordinary PRs. After merge, each pending module passes isolated tidy, build, vet,
-and race-test gates before all planned tags are pushed atomically. Claw remains
-source-only and does not receive module tags. See
+ordinary PRs. After merge, automation aggregates pending summaries into a
+Release PR that updates `CHANGELOG.md`. Merging that PR runs isolated tidy,
+build, vet, and race-test gates before all planned tags are pushed atomically.
+Claw remains source-only and does not receive module tags. See
 [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated dependency
 rules.
 

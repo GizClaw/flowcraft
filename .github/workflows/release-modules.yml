@@ -6,7 +6,9 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
+  pull-requests: write
 
 concurrency:
   group: release-modules
@@ -19,6 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_releases: ${{ steps.plan.outputs.has_releases }}
+      changelog_ready: ${{ steps.changelog.outputs.ready }}
       modules: ${{ steps.plan.outputs.modules }}
       tags: ${{ steps.plan.outputs.tags }}
     steps:
@@ -58,10 +61,109 @@ jobs:
             fi
           } >> "$GITHUB_OUTPUT"
 
+      - name: Prepare release changelog PR
+        id: changelog
+        if: steps.plan.outputs.has_releases == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: automation/release-changelog
+          TAGS_JSON: ${{ steps.plan.outputs.tags }}
+        run: |
+          set -euo pipefail
+          (
+            cd tools/releasegate
+            GOWORK=off go run . changelog --repo ../.. --write
+          )
+          if git diff --quiet -- CHANGELOG.md; then
+            while read -r tag; do
+              heading_line=$(awk -v heading="## \`$tag\` -" \
+                'index($0, heading) == 1 { print NR; exit }' CHANGELOG.md)
+              if [ -z "$heading_line" ]; then
+                echo "missing generated changelog heading for $tag" >&2
+                exit 1
+              fi
+              release_commit=$(git blame --porcelain \
+                -L "$heading_line,$heading_line" CHANGELOG.md |
+                awk 'NR == 1 { print $1 }')
+              release_commit=${release_commit#^}
+              release_pr_count=$(
+                gh api "repos/$GITHUB_REPOSITORY/commits/$release_commit/pulls" |
+                  jq --arg repo "$GITHUB_REPOSITORY" \
+                    --arg branch "$RELEASE_BRANCH" \
+                    'map(select(
+                      .head.repo.full_name == $repo and
+                      .head.ref == $branch and
+                      .base.ref == "main" and
+                      .merged_at != null
+                    )) | length'
+              )
+              if [ "$release_pr_count" -lt 1 ]; then
+                echo "generated changelog for $tag was not merged from $GITHUB_REPOSITORY:$RELEASE_BRANCH" >&2
+                exit 1
+              fi
+            done < <(jq -r '.[]' <<< "$TAGS_JSON")
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C "$RELEASE_BRANCH"
+          git add CHANGELOG.md
+          git commit -m "chore(release): update module changelog"
+
+          remote_tip=$(git ls-remote --heads origin \
+            "refs/heads/$RELEASE_BRANCH" | awk '{print $1}')
+          if [ -n "$remote_tip" ]; then
+            git fetch origin \
+              "refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+            author_email=$(git show -s --format=%ae "$remote_tip")
+            subject=$(git show -s --format=%s "$remote_tip")
+            if [ "$author_email" != "41898282+github-actions[bot]@users.noreply.github.com" ] ||
+              [ "$subject" != "chore(release): update module changelog" ]; then
+              echo "$RELEASE_BRANCH contains a non-automation commit; refusing to overwrite it" >&2
+              exit 1
+            fi
+          fi
+          git push \
+            "--force-with-lease=refs/heads/$RELEASE_BRANCH:$remote_tip" \
+            origin \
+            "HEAD:refs/heads/$RELEASE_BRANCH"
+
+          pr_url=$(gh pr list \
+            --head "$RELEASE_BRANCH" \
+            --base main \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty')
+          if [ -z "$pr_url" ]; then
+            body_file=$(mktemp)
+            {
+              echo "Aggregates all pending immutable changesets into \`CHANGELOG.md\`."
+              echo
+              echo "Planned tags:"
+              jq -r '.[] | \"- `\" + . + \"`\"' <<< "$TAGS_JSON"
+              echo
+              echo "Merging this PR reruns the module release gates and publishes all planned tags atomically."
+            } > "$body_file"
+            pr_url=$(gh pr create \
+              --base main \
+              --head "$RELEASE_BRANCH" \
+              --title "chore(release): update module changelog" \
+              --body-file "$body_file")
+          fi
+
+          gh workflow run ci.yml \
+            --ref "$RELEASE_BRANCH" \
+            --field "base_sha=$GITHUB_SHA"
+          echo "release changelog PR: $pr_url"
+          echo "ready=false" >> "$GITHUB_OUTPUT"
+
   gate:
     name: Gate ${{ matrix.release.module }} (Go ${{ matrix.go-version }})
     needs: plan
-    if: needs.plan.outputs.has_releases == 'true'
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -153,7 +255,7 @@ jobs:
   retrieval-e2e:
     name: Release gate / retrieval e2e
     needs: [plan, gate]
-    if: needs.plan.outputs.has_releases == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -166,7 +268,7 @@ jobs:
   eval:
     name: Release gate / hermetic eval
     needs: [plan, gate]
-    if: needs.plan.outputs.has_releases == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -179,7 +281,7 @@ jobs:
   tag:
     name: Publish module tags
     needs: [plan, gate, retrieval-e2e, eval]
-    if: always() && needs.plan.outputs.has_releases == 'true'
+    if: always() && needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Require every release gate
@@ -213,6 +315,7 @@ jobs:
           set -euo pipefail
           (
             cd tools/releasegate
+            GOWORK=off go run . changelog --repo ../.. --check
             GOWORK=off go run . plan --repo ../.. --json
           ) > /tmp/release-plan.json
           actual_tags=$(jq -c '.tags' /tmp/release-plan.json)

@@ -54,9 +54,14 @@ the versions being planned in the same batch. The dependency order is
 make release-plan
 ```
 
-On `main`, the release workflow validates each planned module independently
-with `GOWORK=off`, including tidy, build, vet, and race tests. Relevant
-`sdk`/`memory`/`sdkx` batches also run retrieval E2E and hermetic evals. Only
-after every required gate succeeds are all module tags pushed atomically.
-Failed runs create no tags and are retried by the next push to `main` or a
-manual workflow dispatch.
+After a changeset reaches `main`, automation aggregates its summaries into
+`CHANGELOG.md` and opens or updates the `automation/release-changelog` Release
+PR. Feature PRs should not commit this generated changelog update. Maintainers
+can reproduce it locally with `make release-changelog`.
+
+When the Release PR merges, the release workflow validates each planned module
+independently with `GOWORK=off`, including tidy, build, vet, and race tests.
+Relevant `sdk`/`memory`/`sdkx` batches also run retrieval E2E and hermetic
+evals. Only after the generated changelog and every required gate succeed are
+all module tags pushed atomically. Failed runs create no tags and are retried
+by the next push to `main` or a manual workflow dispatch.

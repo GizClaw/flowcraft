@@ -4,8 +4,8 @@ All notable changes to this repository are documented here. FlowCraft is a
 multi-module monorepo; each Go module is released independently with its own tag
 prefix, for example `sdk/vX.Y.Z`, `memory/vX.Y.Z`, and `sdkx/vX.Y.Z`.
 
-Per-release artifacts and generated notes also live on the
-[GitHub Releases](https://github.com/GizClaw/flowcraft/releases) page.
+Pending changesets are aggregated into module release sections by the automated
+Release PR before their tags are published.
 
 ## Current Published State
 
@@ -25,6 +25,8 @@ Per-release artifacts and generated notes also live on the
 - Retired the `vessel` runtime and `vesseld` daemon from the active source
   tree, CI, release automation, examples, and documentation. Existing tags and
   release artifacts are retained as historical, unsupported releases.
+
+<!-- releasegate:releases -->
 
 ## `sdk/v0.4.0` - 2026-05-30
 

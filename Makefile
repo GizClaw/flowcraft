@@ -45,6 +45,7 @@ help:
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
 	@echo "  make release-plan   Print the pending module release plan as JSON."
+	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 	@echo ""
 	@echo "Test suites under tests/ (default 'make test' already runs them"
 	@echo "in compile-check / no-credential mode; the targets below are the"
@@ -104,6 +105,10 @@ release-check:
 .PHONY: release-plan
 release-plan:
 	@cd tools/releasegate && GOWORK=off go run . plan --repo ../.. --json
+
+.PHONY: release-changelog
+release-changelog:
+	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
 
 # `make test-e2e` runs the build-tagged retrieval workspace suite.
 # CI runs it explicitly via `make ci-e2e` (or by adding it to a
