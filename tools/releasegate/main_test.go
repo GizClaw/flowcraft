@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -22,6 +23,8 @@ func TestLoadChangesetsRejectsInvalidContracts(t *testing.T) {
 		{"duplicate module", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"},{"module":"sdk","bump":"minor"}]}`, "duplicate"},
 		{"unknown field", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"}],"extra":true}`, "unknown field"},
 		{"empty releases", `{"summary":"x","releases":[]}`, "release"},
+		{"multiline summary", "{\"summary\":\"first\\nsecond\",\"releases\":[{\"module\":\"sdk\",\"bump\":\"patch\"}]}", "single line"},
+		{"reserved marker", `{"summary":"break <!-- releasegate:releases --> parsing","releases":[{"module":"sdk","bump":"patch"}]}`, "reserved"},
 	}
 
 	for _, tt := range tests {
@@ -203,6 +206,281 @@ func TestPlanEmptySetAndCLIJSON(t *testing.T) {
 	}
 }
 
+func TestChangelogSingleModuleUsesPlanTagAndUpdatesState(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.2.3")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/z-patch.json", validChangeset("patch fix", "sdk", "patch"))
+	writeFile(t, repo, ".release/a-minor.json", validChangeset("minor feature", "sdk", "minor"))
+	commitAllAt(t, repo, "changes", "2026-07-25T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	assertContains(t, text, "| `sdk` | `sdk/v1.3.0` |")
+	assertContains(t, text, "## `sdk/v1.3.0` - 2026-07-25\n\n### Changed\n\n- minor feature\n- patch fix\n")
+	if strings.Index(text, "- minor feature") > strings.Index(text, "- patch fix") {
+		t.Fatal("bullets must follow stable changeset filename order")
+	}
+}
+
+func TestChangelogAssignsMultiModuleSummariesAndDeduplicates(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	seedModule(t, repo, "voice", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
+	commitAll(t, repo, "seed voice")
+	gitRun(t, repo, "tag", "voice/v2.0.0")
+	changelogPath := filepath.Join(repo, "CHANGELOG.md")
+	changelog, err := os.ReadFile(changelogPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "CHANGELOG.md", strings.Replace(string(changelog), "| `vessel`", "| `voice` | `voice/v2.0.0` | Active. |\n| `vessel`", 1))
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, "voice/change.go", "package voice\n\nconst Changed = true\n")
+	writeFile(t, repo, "voice/go.mod", moduleFile("voice", "require github.com/GizClaw/flowcraft/sdk v1.0.1\n"))
+	writeFile(t, repo, ".release/a.json", `{"summary":"shared","releases":[{"module":"sdk","bump":"patch"},{"module":"voice","bump":"patch"}]}`)
+	writeFile(t, repo, ".release/b.json", validChangeset("sdk only", "sdk", "patch"))
+	writeFile(t, repo, ".release/c.json", validChangeset("shared", "sdk", "patch"))
+	commitAllAt(t, repo, "changes", "2026-07-24T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	sdk := changelogSection(t, text, "sdk/v1.0.1")
+	voice := changelogSection(t, text, "voice/v2.0.1")
+	if strings.Count(sdk, "- shared\n") != 1 || !strings.Contains(sdk, "- sdk only\n") {
+		t.Fatalf("sdk section = %q", sdk)
+	}
+	if strings.Count(voice, "- shared\n") != 1 || strings.Contains(voice, "sdk only") {
+		t.Fatalf("voice section = %q", voice)
+	}
+}
+
+func TestChangelogUsesLatestChangesetCommitDate(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("first", "sdk", "patch"))
+	commitAllAt(t, repo, "first", "2026-07-20T12:00:00Z")
+	writeFile(t, repo, ".release/b.json", validChangeset("second", "sdk", "patch"))
+	commitAllAt(t, repo, "second", "2026-07-26T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, string(got), "## `sdk/v1.0.1` - 2026-07-26")
+}
+
+func TestChangelogIsIdempotentAndRepairsExistingSection(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("change", "sdk", "patch"))
+	commitAllAt(t, repo, "change", "2026-07-25T12:00:00Z")
+
+	first, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "CHANGELOG.md", string(first))
+	second, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("second changelog generation changed content")
+	}
+
+	writeFile(t, repo, "CHANGELOG.md", strings.Replace(string(first), "- change", "- wrong", 1))
+	repaired, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, repaired) {
+		t.Fatalf("repaired changelog differs from expected:\n%s", repaired)
+	}
+}
+
+func TestChangelogRebuildsUntaggedSectionWhenSummaryAndDateChange(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("first", "sdk", "patch"))
+	commitAllAt(t, repo, "first", "2026-07-20T12:00:00Z")
+
+	first, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "CHANGELOG.md", string(first))
+	writeFile(t, repo, ".release/b.json", validChangeset("second", "sdk", "patch"))
+	commitAllAt(t, repo, "second", "2026-07-26T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Count(text, "## `sdk/v1.0.1`") != 1 {
+		t.Fatalf("expected one rebuilt section:\n%s", text)
+	}
+	assertContains(t, text, "## `sdk/v1.0.1` - 2026-07-26\n\n### Changed\n\n- first\n- second\n")
+	writeFile(t, repo, "CHANGELOG.md", text)
+	again, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, again) {
+		t.Fatal("rebuilt changelog is not byte-idempotent")
+	}
+}
+
+func TestChangelogRemovesOldUntaggedPatchSectionAfterMinorBump(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("patch", "sdk", "patch"))
+	commitAllAt(t, repo, "patch", "2026-07-20T12:00:00Z")
+
+	patchChangelog, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, repo, "CHANGELOG.md", string(patchChangelog))
+	writeFile(t, repo, ".release/b.json", validChangeset("minor", "sdk", "minor"))
+	commitAllAt(t, repo, "minor", "2026-07-26T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if strings.Contains(text, "## `sdk/v1.0.1`") {
+		t.Fatalf("stale untagged patch section remains:\n%s", text)
+	}
+	assertContains(t, text, "## `sdk/v1.1.0` - 2026-07-26\n\n### Changed\n\n- patch\n- minor\n")
+	assertContains(t, text, "| `sdk` | `sdk/v1.1.0` |")
+}
+
+func TestChangelogPreservesTaggedHistoricalSection(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst First = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("first", "sdk", "patch"))
+	commitAllAt(t, repo, "first", "2026-07-20T12:00:00Z")
+
+	released, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	taggedSection := changelogSection(t, string(released), "sdk/v1.0.1")
+	writeFile(t, repo, "CHANGELOG.md", string(released))
+	commitAllAt(t, repo, "release changelog", "2026-07-21T12:00:00Z")
+	gitRun(t, repo, "tag", "sdk/v1.0.1")
+
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst First = true\nconst Second = true\n")
+	writeFile(t, repo, ".release/b.json", validChangeset("second", "sdk", "patch"))
+	commitAllAt(t, repo, "second", "2026-07-26T12:00:00Z")
+
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(got)
+	if section := changelogSection(t, text, "sdk/v1.0.1"); section != taggedSection {
+		t.Fatalf("tagged section changed:\nwant:\n%s\ngot:\n%s", taggedSection, section)
+	}
+	assertContains(t, text, "## `sdk/v1.0.2` - 2026-07-26\n\n### Changed\n\n- second\n")
+}
+
+func TestChangelogRejectsMissingMarkerAndUncommittedChangeset(t *testing.T) {
+	t.Run("missing marker", func(t *testing.T) {
+		repo := changelogRepo(t, "sdk", "1.0.0")
+		writeFile(t, repo, "CHANGELOG.md", strings.Replace(changelogFixture("sdk", "1.0.0"), changelogMarker+"\n", "", 1))
+		writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+		writeFile(t, repo, ".release/a.json", validChangeset("change", "sdk", "patch"))
+		commitAllAt(t, repo, "change", "2026-07-25T12:00:00Z")
+		if _, err := buildChangelog(repo); err == nil || !strings.Contains(err.Error(), "marker") {
+			t.Fatalf("buildChangelog() error = %v, want marker error", err)
+		}
+	})
+
+	t.Run("uncommitted changeset", func(t *testing.T) {
+		repo := changelogRepo(t, "sdk", "1.0.0")
+		writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+		writeFile(t, repo, ".release/a.json", validChangeset("change", "sdk", "patch"))
+		if _, err := buildChangelog(repo); err == nil || !strings.Contains(err.Error(), "commit date") {
+			t.Fatalf("buildChangelog() error = %v, want commit date error", err)
+		}
+	})
+}
+
+func TestChangelogEmptyPlanIsNoOp(t *testing.T) {
+	repo := initRepo(t)
+	body := "# Changelog\n\nNo release marker is needed yet.\n"
+	writeFile(t, repo, "CHANGELOG.md", body)
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Fatalf("buildChangelog() = %q, want unchanged", got)
+	}
+}
+
+func TestChangelogCLIPrintCheckAndWrite(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("change", "sdk", "patch"))
+	commitAllAt(t, repo, "change", "2026-07-25T12:00:00Z")
+
+	var stdout, stderr bytes.Buffer
+	if code := runCLI([]string{"changelog", "--repo", repo}, &stdout, &stderr); code != 0 {
+		t.Fatalf("print code = %d, stderr = %s", code, stderr.String())
+	}
+	expected := stdout.String()
+	if code := runCLI([]string{"changelog", "--repo", repo, "--check"}, &stdout, &stderr); code == 0 ||
+		!strings.Contains(stderr.String(), "--write") {
+		t.Fatalf("check should fail before write: code=%d stderr=%q", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runCLI([]string{"changelog", "--repo", repo, "--write"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("write code = %d, stderr = %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(filepath.Join(repo, "CHANGELOG.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != expected {
+		t.Fatalf("written changelog differs from printed output")
+	}
+	if code := runCLI([]string{"changelog", "--repo", repo, "--check"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("check after write code = %d, stderr = %s", code, stderr.String())
+	}
+	if code := runCLI([]string{"changelog", "--repo", repo, "--check", "--write"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("mutually exclusive flags code = %d, want 2", code)
+	}
+}
+
+func TestChangelogOnlyUpdatesActiveModuleRows(t *testing.T) {
+	repo := changelogRepo(t, "sdk", "1.0.0")
+	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
+	writeFile(t, repo, ".release/a.json", validChangeset("change", "sdk", "patch"))
+	commitAllAt(t, repo, "change", "2026-07-25T12:00:00Z")
+	before := changelogFixture("sdk", "1.0.0")
+	got, err := buildChangelog(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(
+		tableLine(string(got), "`vessel`"),
+		tableLine(before, "`vessel`"),
+	) {
+		t.Fatal("retired row changed")
+	}
+}
+
 func initRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
@@ -243,6 +521,70 @@ func commitAll(t *testing.T, repo, message string) {
 	t.Helper()
 	gitRun(t, repo, "add", "-A")
 	gitRun(t, repo, "commit", "-q", "-m", message)
+}
+
+func commitAllAt(t *testing.T, repo, message, date string) {
+	t.Helper()
+	gitRun(t, repo, "add", "-A")
+	cmd := exec.Command("git", "-C", repo, "commit", "-q", "-m", message)
+	cmd.Env = append(os.Environ(), "GIT_AUTHOR_DATE="+date, "GIT_COMMITTER_DATE="+date)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v\n%s", err, output)
+	}
+}
+
+func changelogRepo(t *testing.T, module, version string) string {
+	t.Helper()
+	repo := initRepo(t)
+	seedModule(t, repo, module, "")
+	writeFile(t, repo, "CHANGELOG.md", changelogFixture(module, version))
+	commitAll(t, repo, "seed module and changelog")
+	if module != "sdk" || version != "0.1.0" {
+		gitRun(t, repo, "tag", "sdk/v0.1.0")
+	}
+	gitRun(t, repo, "tag", module+"/v"+version)
+	return repo
+}
+
+func changelogFixture(module, version string) string {
+	return "# Changelog\n\n" +
+		"## Current Published State\n\n" +
+		"| Module | Latest tag | Notes |\n" +
+		"| --- | --- | --- |\n" +
+		"| `" + module + "` | `" + module + "/v" + version + "` | Active. |\n" +
+		"| `vessel` | `vessel/v0.3.0` | Retired. |\n\n" +
+		"## [Unreleased]\n\n- Pending notes stay here.\n\n" +
+		changelogMarker + "\n\n" +
+		"## `sdk/v0.1.0` - 2026-01-01\n\nHistorical text must stay byte-for-byte unchanged.\n"
+}
+
+func changelogSection(t *testing.T, changelog, tag string) string {
+	t.Helper()
+	start := strings.Index(changelog, "## `"+tag+"`")
+	if start < 0 {
+		t.Fatalf("missing section for %s", tag)
+	}
+	rest := changelog[start:]
+	if next := strings.Index(rest[3:], "\n## "); next >= 0 {
+		return rest[:next+3]
+	}
+	return rest
+}
+
+func tableLine(body, module string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "| "+module+" |") {
+			return line
+		}
+	}
+	return ""
+}
+
+func assertContains(t *testing.T, got, want string) {
+	t.Helper()
+	if !strings.Contains(got, want) {
+		t.Fatalf("missing %q in:\n%s", want, got)
+	}
 }
 
 func gitRun(t *testing.T, repo string, args ...string) {
