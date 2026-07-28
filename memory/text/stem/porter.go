@@ -1,4 +1,4 @@
-// Package stem houses morphological stemmers for the sdk/text family.
+// Package stem houses morphological stemmers for the memory/text family.
 //
 // Stemming reduces inflected English words (running → run, dogs →
 // dog) to a stable lookup key. Today the package ships [Porter]: a
@@ -22,7 +22,7 @@ import "strings"
 // Porter is intentionally conservative — it strips morphology by
 // suffix rules only and cannot collapse vowel-change pasts
 // ("went" / "ran") or suppletive forms ("ate"). Compose it with
-// [sdk/text/lemma.Lemmatize] when you need both irregular and
+// [memory/text/lemma.Lemmatize] when you need both irregular and
 // regular morphology folded onto a single key, e.g.:
 //
 //	stem.Porter(lemma.Lemmatize(word))

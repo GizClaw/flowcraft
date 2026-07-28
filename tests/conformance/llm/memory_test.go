@@ -2,448 +2,100 @@ package llm_test
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/llm"
-	"github.com/GizClaw/flowcraft/sdk/recall"
-	"github.com/GizClaw/flowcraft/sdk/retrieval"
-	retmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/recall"
 )
 
-// ---------------------------------------------------------------------------
-// Shared helpers — integration tests drive recall.Memory as the public
-// surface; entry enumeration drops to retrieval.Index directly so we do
-// not re-export a Store abstraction from the recall package.
-// ---------------------------------------------------------------------------
-
-// expectedMemory describes one expected extraction result (soft-match).
-type expectedMemory struct {
-	category    recall.Category
-	mustContain []string
-}
-
-func newLTM(t *testing.T, l llm.LLM) (recall.Memory, retrieval.Index) {
-	t.Helper()
-	idx := retmem.New()
-	mem, err := recall.New(
-		idx,
-		recall.WithLLM(l),
-		recall.WithExtractMode(recall.ModeAdditive),
-		recall.WithMaxFactsPerCall(8),
-	)
-	if err != nil {
-		t.Fatalf("recall.New: %v", err)
-	}
-	return mem, idx
-}
-
-// listEntries enumerates everything recall.Memory.Save has written for
-// the given scope by going straight to the backing retrieval.Index.
-// Tests use this instead of Memory.Recall when they need the full set
-// (no TopK truncation, no ranker bias).
-func listEntries(t *testing.T, idx retrieval.Index, scope recall.Scope) []recall.Entry {
-	t.Helper()
-	ns := recall.NamespaceFor(scope)
-	var out []recall.Entry
-	var token string
-	for {
-		resp, err := idx.List(context.Background(), ns, retrieval.ListRequest{PageToken: token, PageSize: 100})
-		if err != nil {
-			t.Fatalf("list %s: %v", ns, err)
-		}
-		for _, d := range resp.Items {
-			out = append(out, recall.DocToEntry(d))
-		}
-		if resp.NextPageToken == "" {
-			break
-		}
-		token = resp.NextPageToken
-	}
-	return out
-}
-
-// checkExtractions verifies that stored entries satisfy expectations.
-func checkExtractions(
-	t *testing.T,
-	idx retrieval.Index,
-	scope recall.Scope,
-	expects []expectedMemory,
-) (hits, misses int, extras []string) {
-	t.Helper()
-	all := listEntries(t, idx, scope)
-
-	byCat := make(map[recall.Category][]string)
-	for _, e := range all {
-		byCat[e.Category] = append(byCat[e.Category], e.Content)
-	}
-
-	expectedCats := make(map[recall.Category]bool)
-	for _, exp := range expects {
-		expectedCats[exp.category] = true
-		contents := byCat[exp.category]
-		if len(contents) == 0 {
-			misses++
-			t.Errorf("  MISS category=%s: no entries extracted (wanted %v)", exp.category, exp.mustContain)
-			continue
-		}
-		allFound := true
-		for _, kw := range exp.mustContain {
-			found := false
-			for _, c := range contents {
-				if strings.Contains(c, kw) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				allFound = false
-				t.Errorf("  MISS category=%s keyword=%q not found in %v", exp.category, kw, contents)
-			}
-		}
-		if allFound {
-			hits++
-		}
-	}
-
-	for cat := range byCat {
-		if !expectedCats[cat] {
-			extras = append(extras, string(cat))
-		}
-	}
-	return
-}
-
-// ---------------------------------------------------------------------------
-// P2a: Extraction quality
-// ---------------------------------------------------------------------------
-
-func TestExtractQuality(t *testing.T) {
-	type extractCase struct {
+// TestMemoryExtractionQuality keeps provider-level coverage on the public
+// temporal-memory API after the legacy sdk/recall conformance suite was
+// removed.
+func TestMemoryExtractionQuality(t *testing.T) {
+	tests := []struct {
 		name     string
-		messages []llm.Message
-		expects  []expectedMemory
-	}
-
-	cases := []extractCase{
+		user     string
+		query    string
+		contains string
+	}{
 		{
-			name: "profile extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我叫小明，是一名 Go 后端工程师，目前在字节跳动工作"),
-				llm.NewTextMessage(llm.RoleAssistant, "你好小明！很高兴认识你。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryProfile, mustContain: []string{"小明"}},
-			},
+			name:     "profile",
+			user:     "我叫小明，是一名 Go 后端工程师，目前在字节跳动工作。",
+			query:    "小明的工作是什么？",
+			contains: "小明",
 		},
 		{
-			name: "preferences extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我习惯用 Vim 写代码，偏好暗色主题，请用中文回复我"),
-				llm.NewTextMessage(llm.RoleAssistant, "好的，我会用中文回复你。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryPreferences, mustContain: []string{"Vim"}},
-			},
+			name:     "preference",
+			user:     "我习惯用 Vim 写代码，偏好暗色主题，请用中文回复我。",
+			query:    "用户偏好什么编辑器？",
+			contains: "Vim",
 		},
 		{
-			name: "entities extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我们的项目叫 Falcon，后端用 gRPC 通信，部署在 K8s 集群上"),
-				llm.NewTextMessage(llm.RoleAssistant, "了解，Falcon 项目使用了 gRPC 和 K8s。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryEntities, mustContain: []string{"Falcon"}},
-			},
-		},
-		{
-			name: "events extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "昨天我们上线了 v3.0 版本，修复了一个登录认证的严重 bug"),
-				llm.NewTextMessage(llm.RoleAssistant, "恭喜上线！认证 bug 修复了就好。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryEvents, mustContain: []string{"v3"}},
-			},
-		},
-		{
-			name: "cases extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "上次我们的服务遇到 OOM 问题，我通过把批量处理改成流式处理解决了，内存降了 80%"),
-				llm.NewTextMessage(llm.RoleAssistant, "流式处理是个好方案，能显著降低内存占用。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryCases, mustContain: []string{"OOM"}},
-			},
-		},
-		{
-			name: "patterns extraction",
-			messages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我总结了一个经验：写 Go 代码一定要传 context.Context，之前因为漏掉导致超时无法取消"),
-				llm.NewTextMessage(llm.RoleAssistant, "这是个很好的实践，context 是 Go 并发控制的关键。"),
-			},
-			expects: []expectedMemory{
-				{category: recall.CategoryPatterns, mustContain: []string{"context"}},
-			},
+			name:     "project",
+			user:     "我们的项目叫 Falcon，后端用 gRPC 通信，部署在 K8s 集群上。",
+			query:    "Falcon 项目使用什么技术？",
+			contains: "Falcon",
 		},
 	}
 
 	for _, spec := range providers {
 		t.Run(spec.Provider, func(t *testing.T) {
 			provider := createProvider(t, spec)
-
-			for _, tc := range cases {
+			for _, tc := range tests {
 				t.Run(tc.name, func(t *testing.T) {
-					mem, idx := newLTM(t, provider)
-					defer mem.Close()
-
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					defer cancel()
-
-					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
-					if _, err := mem.Save(ctx, scope, tc.messages); err != nil {
-						t.Fatalf("Save failed: %v", err)
-					}
-
-					hits, misses, extras := checkExtractions(t, idx, scope, tc.expects)
-					t.Logf("hits=%d misses=%d extras=%v", hits, misses, extras)
-
-					for _, e := range listEntries(t, idx, scope) {
-						t.Logf("  [%s] %s (kw: %v)", e.Category, e.Content, e.Keywords)
-					}
-				})
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// P2a: Deduplication quality
-// ---------------------------------------------------------------------------
-
-func TestDeduplicationQuality(t *testing.T) {
-	for _, spec := range providers {
-		t.Run(spec.Provider, func(t *testing.T) {
-			provider := createProvider(t, spec)
-			mem, idx := newLTM(t, provider)
-			defer mem.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-
-			scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
-
-			if _, err := mem.Add(ctx, scope, recall.Entry{
-				Category: recall.CategoryProfile,
-				Content:  "User is a Go backend developer",
-				Keywords: []string{"go", "backend", "developer"},
-				Scope:    scope,
-			}); err != nil {
-				t.Fatalf("seed Add: %v", err)
-			}
-
-			if _, err := mem.Save(ctx, scope, []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "I'm a Go developer working on backend services"),
-				llm.NewTextMessage(llm.RoleAssistant, "Great, I'll keep that in mind!"),
-			}); err != nil {
-				t.Fatalf("Save failed: %v", err)
-			}
-
-			var profile []recall.Entry
-			for _, e := range listEntries(t, idx, scope) {
-				if e.Category == recall.CategoryProfile {
-					profile = append(profile, e)
-				}
-			}
-			t.Logf("profile entries after dedup: %d", len(profile))
-			for _, e := range profile {
-				t.Logf("  [%s] id=%s content=%q", e.Category, e.ID, e.Content)
-			}
-
-			if len(profile) > 4 {
-				t.Errorf("expected at most 4 profile entries, got %d — dedup may have failed", len(profile))
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// P2b: End-to-end effect evaluation (LLM-as-a-judge)
-// ---------------------------------------------------------------------------
-
-type judgeResult struct {
-	Winner string `json:"winner"`
-	Reason string `json:"reason"`
-}
-
-type e2eCase struct {
-	name          string
-	seedMessages  []llm.Message
-	followUpQuery string
-	judgeHint     string
-}
-
-func TestEndToEndMemory(t *testing.T) {
-	cases := []e2eCase{
-		{
-			name: "remembers programming language",
-			seedMessages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我是一名 Go 后端工程师，平时主要用 Go 写服务端代码"),
-				llm.NewTextMessage(llm.RoleAssistant, "了解，你主要使用 Go 语言。"),
-			},
-			followUpQuery: "帮我写一个快速排序的实现",
-			judgeHint:     "回答是否使用了 Go 语言来实现（而不是 Python 或其他语言）",
-		},
-		{
-			name: "remembers code style preference",
-			seedMessages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我偏好简洁的代码风格，不要过多注释，变量名尽量短"),
-				llm.NewTextMessage(llm.RoleAssistant, "好的，我会注意代码风格。"),
-			},
-			followUpQuery: "写一个 HTTP health check handler",
-			judgeHint:     "回答 B 的代码是否比 A 更简洁、注释更少",
-		},
-		{
-			name: "remembers project tech stack",
-			seedMessages: []llm.Message{
-				llm.NewTextMessage(llm.RoleUser, "我们项目用 gRPC + Protocol Buffers 做服务间通信，数据库是 PostgreSQL"),
-				llm.NewTextMessage(llm.RoleAssistant, "了解你们的技术栈。"),
-			},
-			followUpQuery: "我需要设计一个新的用户服务 API，应该怎么设计？",
-			judgeHint:     "回答 B 是否提到了 gRPC 或 Protocol Buffers 或 PostgreSQL",
-		},
-	}
-
-	const judgePrompt = `You are an evaluation expert. Given a user query and two AI responses, determine which response better utilizes the user's personal information and context.
-
-User query: %s
-
-Evaluation focus: %s
-
-Response A (no personal memory):
-%s
-
-Response B (with personal memory injected):
-%s
-
-Reply in JSON: {"winner":"A" or "B" or "tie", "reason":"one sentence explanation"}
-Only return the JSON object, nothing else.`
-
-	for _, spec := range providers {
-		t.Run(spec.Provider, func(t *testing.T) {
-			provider := createProvider(t, spec)
-
-			for _, tc := range cases {
-				t.Run(tc.name, func(t *testing.T) {
-					ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-					defer cancel()
-
-					mem, idx := newLTM(t, provider)
-					defer mem.Close()
-
-					scope := recall.Scope{RuntimeID: "test-rt", UserID: "u1"}
-					if _, err := mem.Save(ctx, scope, tc.seedMessages); err != nil {
-						t.Fatalf("Seed save failed: %v", err)
-					}
-
-					extracted := listEntries(t, idx, scope)
-					t.Logf("extracted %d entries:", len(extracted))
-					for _, e := range extracted {
-						t.Logf("  [%s] %s", e.Category, e.Content)
-					}
-					if len(extracted) == 0 {
-						t.Fatal("no memories extracted, cannot proceed with e2e test")
-					}
-
-					msgsWithout := []llm.Message{
-						llm.NewTextMessage(llm.RoleSystem, "You are a helpful programming assistant. Reply in Chinese."),
-						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
-					}
-					genOpts := []llm.GenerateOption{llm.WithMaxTokens(500), llm.WithTemperature(0.3)}
-					respA, _, err := provider.Generate(ctx, msgsWithout, genOpts...)
+					mem, err := recall.New(recall.WithLLMExtractor(provider))
 					if err != nil {
-						t.Fatalf("Generate A failed: %v", err)
+						t.Fatalf("recall.New: %v", err)
 					}
-					answerA := respA.Content()
+					defer mem.Close()
 
-					hits, err := mem.Recall(ctx, scope, recall.Request{
-						Query: tc.followUpQuery,
-						TopK:  10,
+					ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+					defer cancel()
+					scope := recall.Scope{RuntimeID: "conformance", UserID: "u1", AgentID: spec.Provider}
+					save, err := mem.Save(ctx, scope, recall.SaveRequest{
+						Turns: []recall.TurnContext{{
+							ID:        "user-1",
+							SessionID: tc.name,
+							Role:      "user",
+							Speaker:   "user",
+							Text:      tc.user,
+							Time:      time.Now(),
+						}},
 					})
 					if err != nil {
-						t.Fatalf("Recall failed: %v", err)
+						t.Fatalf("Save: %v", err)
 					}
-					var ltBlock strings.Builder
-					ltBlock.WriteString("[Long-term memory]\n")
-					for _, h := range hits {
-						fmt.Fprintf(&ltBlock, "- [%s] %s\n", h.Entry.Category, h.Entry.Content)
+					if len(save.FactIDs) == 0 {
+						t.Fatal("extractor returned no facts")
 					}
-					ltBlock.WriteString("[End of long-term memory]")
-					sysPrompt := ltBlock.String() + "\n\nYou are a helpful programming assistant. Reply in Chinese."
-					msgsWith := []llm.Message{
-						llm.NewTextMessage(llm.RoleSystem, sysPrompt),
-						llm.NewTextMessage(llm.RoleUser, tc.followUpQuery),
+					processor, ok := recall.NewSideEffectProcessor(mem)
+					if !ok {
+						t.Fatal("side-effect processor unavailable")
+					}
+					if _, err := processor.ProcessSideEffects(ctx, recall.SideEffectProcessOptions{
+						Scope: scope,
+						Limit: 100,
+					}); err != nil {
+						t.Fatalf("ProcessSideEffects: %v", err)
 					}
 
-					respB, _, err := provider.Generate(ctx, msgsWith, genOpts...)
+					hits, err := mem.Recall(ctx, scope, recall.Query{Text: tc.query, Limit: 20})
 					if err != nil {
-						t.Fatalf("Generate B failed: %v", err)
+						t.Fatalf("Recall: %v", err)
 					}
-					answerB := respB.Content()
-
-					t.Logf("--- Answer A (no memory) ---\n%s", truncateForLog(answerA, 300))
-					t.Logf("--- Answer B (with memory) ---\n%s", truncateForLog(answerB, 300))
-
-					judgeMsg := fmt.Sprintf(
-						judgePrompt,
-						tc.followUpQuery, tc.judgeHint,
-						truncateForLog(answerA, 800), truncateForLog(answerB, 800),
-					)
-					judgeResp, _, err := provider.Generate(ctx, []llm.Message{
-						llm.NewTextMessage(llm.RoleUser, judgeMsg),
-					}, llm.WithMaxTokens(200), llm.WithJSONMode(true))
-					if err != nil {
-						t.Logf("Judge call failed: %v (non-fatal)", err)
-						return
+					found := false
+					for _, hit := range hits {
+						if strings.Contains(strings.ToLower(hit.Fact.Content), strings.ToLower(tc.contains)) {
+							found = true
+							break
+						}
 					}
-
-					var result judgeResult
-					raw := strings.TrimSpace(judgeResp.Content())
-					if err := json.Unmarshal([]byte(stripJSONFence(raw)), &result); err != nil {
-						t.Logf("Judge parse failed: %v raw=%q (non-fatal)", err, truncateForLog(raw, 200))
-						return
-					}
-
-					t.Logf("JUDGE: winner=%s reason=%q", result.Winner, result.Reason)
-					if result.Winner == "A" {
-						t.Logf("WARNING: memory injection did not help for this case")
+					if !found {
+						t.Fatalf("recalled facts do not contain %q: %+v", tc.contains, hits)
 					}
 				})
 			}
 		})
 	}
-}
-
-func truncateForLog(s string, maxRunes int) string {
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
-		return s
-	}
-	return string(runes[:maxRunes]) + "..."
-}
-
-func stripJSONFence(s string) string {
-	if strings.HasPrefix(s, "```") {
-		if idx := strings.Index(s, "\n"); idx != -1 {
-			s = s[idx+1:]
-		}
-		if strings.HasSuffix(s, "```") {
-			s = s[:len(s)-3]
-		}
-		s = strings.TrimSpace(s)
-	}
-	return s
 }

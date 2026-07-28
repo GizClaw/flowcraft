@@ -1,4 +1,4 @@
-// Package tokenize provides tokenizers for the sdk/text family.
+// Package tokenize provides tokenizers for the memory/text family.
 //
 // A Tokenizer splits raw text into searchable tokens — typically
 // lower-cased, morphology-folded units used as BM25 vocabulary keys.

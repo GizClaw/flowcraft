@@ -16,8 +16,8 @@
 //
 // Pick this backend when one or more of the following apply:
 //
-//   - You already use a Workspace for [sdk/history] archives,
-//     [sdkx/tool/memory], or knowledge ingestion, and want recall to
+//   - You already use a Workspace for memory/history archives,
+//     [sdkx/tool/anthropicmemory], or knowledge ingestion, and want recall to
 //     share the same root for one-knob ops/backup.
 //   - You want a fully self-contained, network-free retrieval store
 //     (no SQLite cgo decision, no Postgres dependency).

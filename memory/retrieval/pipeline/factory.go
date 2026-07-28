@@ -10,8 +10,7 @@ import (
 
 // LTMOption mutates the LTM pipeline configuration before assembly.
 //
-// Deprecated: use sdk/recall/pipeline.LTMOption. The retrieval-level LTM
-// recipe will be removed in v0.5.0.
+// Deprecated: use memory/recall. There is no direct option-level equivalent.
 //
 // Options compose; later options win. The defaults assemble:
 //
@@ -68,21 +67,21 @@ type ltmConfig struct {
 
 // WithRecallTopK overrides the vector recall fan-out (default 60).
 //
-// Deprecated: use sdk/recall/pipeline.WithRecallTopK. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithRecallTopK(k int) LTMOption {
 	return func(c *ltmConfig) { c.recallTopK = k }
 }
 
 // WithBM25Weight overrides the BM25 boost weight (default 0.3, 0 disables).
 //
-// Deprecated: use sdk/recall/pipeline.WithBM25Weight. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithBM25Weight(w float64) LTMOption {
 	return func(c *ltmConfig) { c.bm25Weight = w }
 }
 
 // WithEntityBoost overrides the entity boost weight (default 0.4, 0 disables).
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityBoost. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityBoost(w float64) LTMOption {
 	return func(c *ltmConfig) { c.entityBoost = w }
 }
@@ -90,7 +89,7 @@ func WithEntityBoost(w float64) LTMOption {
 // WithScoreThreshold drops candidates below this score before rerank/limit
 // (default 0.05).
 //
-// Deprecated: use sdk/recall/pipeline.WithScoreThreshold. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithScoreThreshold(min float64) LTMOption {
 	return func(c *ltmConfig) { c.scoreThreshold = min }
 }
@@ -98,7 +97,7 @@ func WithScoreThreshold(min float64) LTMOption {
 // WithSupersededDecay sets the score multiplier for memories whose
 // metadata.superseded_by is non-empty (default 0.3).
 //
-// Deprecated: use sdk/recall/pipeline.WithSupersededDecay. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithSupersededDecay(factor float64) LTMOption {
 	return func(c *ltmConfig) { c.supersededFactor = factor }
 }
@@ -106,14 +105,14 @@ func WithSupersededDecay(factor float64) LTMOption {
 // WithTimeDecayHalfLife overrides the time-decay half-life (default 30 days).
 // Pass 0 to disable.
 //
-// Deprecated: use sdk/recall/pipeline.WithTimeDecayHalfLife. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithTimeDecayHalfLife(hl time.Duration) LTMOption {
 	return func(c *ltmConfig) { c.halfLife = hl }
 }
 
 // WithReranker installs an LLM/cross-encoder reranker run after boosts.
 //
-// Deprecated: use sdk/recall/pipeline.WithReranker. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithReranker(r Reranker) LTMOption {
 	return func(c *ltmConfig) { c.reranker = r }
 }
@@ -123,7 +122,7 @@ func WithReranker(r Reranker) LTMOption {
 // Default: rule-based extraction. Pass an LLM-driven extractor to improve
 // recall on noisy / multilingual queries.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityExtractor. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityExtractor(extract func(ctx context.Context, text string) ([]string, error)) LTMOption {
 	return func(c *ltmConfig) {
 		c.entityExtract = EntityExtract{LLMExtractor: extract}
@@ -132,7 +131,7 @@ func WithEntityExtractor(extract func(ctx context.Context, text string) ([]strin
 
 // WithLimit overrides the final TopK truncation (default 10).
 //
-// Deprecated: use sdk/recall/pipeline.WithLimit. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithLimit(k int) LTMOption {
 	return func(c *ltmConfig) { c.limit = k }
 }
@@ -169,7 +168,7 @@ func WithLimit(k int) LTMOption {
 // vector lane means the multi-recall topology degrades to "bm25 +
 // entity", at which point the legacy BM25-only path is simpler).
 //
-// Deprecated: use sdk/recall/pipeline.WithMultiRecall. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithMultiRecall(on bool) LTMOption {
 	return func(c *ltmConfig) { c.multiRecall = on }
 }
@@ -177,7 +176,7 @@ func WithMultiRecall(on bool) LTMOption {
 // WithBM25LaneTopK overrides the BM25 recall-lane fan-out under
 // [WithMultiRecall] (default 50). No-op when multi-recall is off.
 //
-// Deprecated: use sdk/recall/pipeline.WithBM25LaneTopK. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithBM25LaneTopK(k int) LTMOption {
 	return func(c *ltmConfig) { c.bm25LaneTopK = k }
 }
@@ -185,7 +184,7 @@ func WithBM25LaneTopK(k int) LTMOption {
 // WithEntityLaneTopK overrides the entity recall-lane fan-out under
 // [WithMultiRecall] (default 30). No-op when multi-recall is off.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLaneTopK. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLaneTopK(k int) LTMOption {
 	return func(c *ltmConfig) { c.entityLaneTopK = k }
 }
@@ -195,7 +194,7 @@ func WithEntityLaneTopK(k int) LTMOption {
 // more aggressively; the default 60 matches the published RRF paper.
 // No-op when multi-recall is off.
 //
-// Deprecated: use sdk/recall/pipeline.WithRRFK. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithRRFK(k float64) LTMOption {
 	return func(c *ltmConfig) { c.rrfK = k }
 }
@@ -217,7 +216,7 @@ func WithRRFK(k float64) LTMOption {
 // Gating on selectivity collapses those queries back to "lane returns
 // nothing", leaving the fused result driven by vector + BM25 alone.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLaneMinSelectivity. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
 	return func(c *ltmConfig) { c.entityLaneMinSelectivity = ratio }
 }
@@ -232,7 +231,7 @@ func WithEntityLaneMinSelectivity(ratio float64) LTMOption {
 // lane has nothing to fuse with — the LTM factory ignores
 // entityLinkLane in single-lane mode.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLinkLane. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLinkLane(on bool) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkLane = on }
 }
@@ -243,7 +242,7 @@ func WithEntityLinkLane(on bool) LTMOption {
 // sdk/recall installs its internalEntityLinkResolver here when
 // [recall.WithEntityStore] is used.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLinkResolver. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLinkResolver(r EntityLinkResolver) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkResolver = r }
 }
@@ -253,7 +252,7 @@ func WithEntityLinkResolver(r EntityLinkResolver) LTMOption {
 // increase the number of candidate ids the lane contributes to RRF
 // fusion at the cost of more DocGetter round-trips.
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLinkLaneTopK. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLinkLaneTopK(k int) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkLaneTopK = k }
 }
@@ -264,7 +263,7 @@ func WithEntityLinkLaneTopK(k int) LTMOption {
 // most-recent linked entries for hot entities. 0 = no cap (return
 // the full EntityStore list).
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLinkPerEntityCap. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLinkPerEntityCap(n int) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkPerEntityCap = n }
 }
@@ -291,7 +290,7 @@ func WithEntityLinkPerEntityCap(n int) LTMOption {
 // Requires both [WithEntityLinkLane](true) and a non-nil
 // [WithEntityLinkResolver].
 //
-// Deprecated: use sdk/recall/pipeline.WithEntityLinkBoost. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithEntityLinkBoost(weight float64) LTMOption {
 	return func(c *ltmConfig) { c.entityLinkBoost = weight }
 }
@@ -303,7 +302,7 @@ func WithEntityLinkBoost(weight float64) LTMOption {
 // when running on data written before the slot supersede channel
 // shipped or when the underlying writer cannot guarantee tagging.
 //
-// Deprecated: use sdk/recall/pipeline.WithSlotCollapse. Removed in v0.5.0.
+// Deprecated: use memory/recall.
 func WithSlotCollapse(on bool) LTMOption {
 	return func(c *ltmConfig) { c.slotCollapse = on }
 }
@@ -336,8 +335,7 @@ func Default(emb embedding.Embedder) *Pipeline {
 // Old positional signature `LTM(emb)` continues to work — variadic options
 // default to the recipe described above.
 //
-// Deprecated: use sdk/recall/pipeline.LTM. The retrieval-level LTM recipe
-// will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 func LTM(emb embedding.Embedder, opts ...LTMOption) *Pipeline {
 	cfg := ltmConfig{
 		recallTopK:       60,

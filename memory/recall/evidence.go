@@ -20,7 +20,7 @@ type EvidenceStore interface {
 }
 
 // NewMemoryEvidenceStore returns the in-memory EvidenceStore adapter
-// shipped with sdk/recall. It is useful for local deployments, tests,
+// shipped with memory/recall. It is useful for local deployments, tests,
 // and benchmarks that want secondary evidence lookup without wiring a
 // durable backend.
 func NewMemoryEvidenceStore() EvidenceStore {

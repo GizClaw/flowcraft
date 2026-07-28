@@ -12,7 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/eval/dataset"
 	"github.com/GizClaw/flowcraft/eval/metrics"
-	sdkhistory "github.com/GizClaw/flowcraft/sdk/history"
+	sdkhistory "github.com/GizClaw/flowcraft/memory/history"
 	"github.com/GizClaw/flowcraft/sdk/llm"
 	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -28,7 +28,7 @@ const (
 	// StrategyBuffer keeps only the most recent BufferMax messages.
 	// Cheap baseline; demonstrates what tail-truncation costs in quality.
 	StrategyBuffer Strategy = "buffer"
-	// StrategyCompacted uses sdk/history.NewCompacted (DAG summarizer).
+	// StrategyCompacted uses memory/history.NewCompacted (DAG summarizer).
 	// Requires an LLM for summarization.
 	StrategyCompacted Strategy = "compacted"
 )

@@ -99,32 +99,6 @@ predictions ("methodology alignment, not framework improvement").
 When publishing a number, declare which style you used; for fairest
 cross-paper comparison, publish both.
 
-### E. soft-merge: CLI default vs. leaderboard convention
-
-soft-merge is the SDK's near-duplicate damping mechanism: when a
-newer fact supersedes an older one, the old entry's recall score is
-decayed. This is core memory-hygiene behaviour for any production
-system — without it stale facts dominate retrieval after a few
-sessions — so the SDK / CLI default (`--soft-merge=true`) matches
-production behaviour and **stays unchanged**.
-
-Observed effect on LoCoMo10: ~10-15pp qa.judge swing when toggled.
-
-**The leaderboard convention is the opposite — `--soft-merge=false`.**
-We publish headline numbers without this assist because (i) most
-competing memory frameworks have no equivalent toggle, so leaving
-soft-merge on creates a confound we can't subtract out of their
-numbers, and (ii) the `false` number cleanly answers "how good is
-our extraction + retrieval pipeline on its own", which is the more
-defensible quality claim.
-
-When you publish:
-
-- Headline number → `--soft-merge=false`.
-- Adjacent number → `--soft-merge=true`, labelled "production
-  default; includes near-duplicate damping" so readers can see the
-  delta the feature buys in practice.
-
 ### Anti-cheating discipline (what we deliberately do not do)
 
 For completeness, here are sharp edges we ruled out:

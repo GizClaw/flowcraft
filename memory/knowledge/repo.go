@@ -14,7 +14,7 @@ import "context"
 // repository-authoritative return value and will be removed entirely in
 // v0.5.0.
 //
-// Implementations live in sdk/knowledge/backend/*.
+// Implementations live in memory/knowledge/backend/*.
 type DocumentRepo interface {
 	Put(ctx context.Context, doc SourceDocument) (*SourceDocument, error)
 	Get(ctx context.Context, datasetID, name string) (*SourceDocument, error)

@@ -20,9 +20,7 @@ MODULES_WORK := sdk memory sdkx voice cmd/claw eval
 #    Tests self-skip without credentials so `make test` runs them as a
 #    compile check; `make conformance` is the documented entry point
 #    when a .env is in place.
-#  - tests/e2e/retrieval: build-tagged end-to-end coverage for the
-#    retrieval workspace. The lane runs explicitly via `make test-e2e`.
-MODULES_OFFWORK := examples/voice-pipeline tests/conformance tests/e2e/retrieval
+MODULES_OFFWORK := examples/voice-pipeline tests/conformance
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 
@@ -61,9 +59,6 @@ help:
 	@echo "                         bundled synthetic dataset and write a report."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
 	@echo "                         the pre-eval/ migration entry point."
-	@echo "  make test-e2e          Retrieval workspace end-to-end suite"
-	@echo "                         (tests/e2e/retrieval, //go:build e2e)."
-	@echo "  make ci-e2e            ci + test-e2e."
 	@echo ""
 	@echo "Eval suites under eval/ run vet+test in CI; the long-running"
 	@echo "unified CLI lives at eval/cmd/eval (run as 'go run ./cmd/eval'"
@@ -109,16 +104,6 @@ release-plan:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
-
-# `make test-e2e` runs the build-tagged retrieval workspace suite.
-# CI runs it explicitly via `make ci-e2e` (or by adding it to a
-# local pre-push hook).
-.PHONY: test-e2e
-test-e2e:
-	@cd tests/e2e/retrieval && GOWORK=off go test -tags=e2e -count=1 -timeout 120s ./...
-
-.PHONY: ci-e2e
-ci-e2e: ci test-e2e
 
 # Provider conformance: runs every suite under tests/conformance against
 # the pinned sdk/sdkx release. Without credentials the individual tests

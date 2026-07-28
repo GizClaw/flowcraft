@@ -80,7 +80,7 @@
 //   - sdk/errdefs
 //   - standard library
 //
-// agent MUST NOT import sdk/history, sdk/recall, sdk/agent/strategy
+// agent MUST NOT import memory/history, memory/recall, sdk/agent/strategy
 // (when added), sdk/graph, sdk/script, sdk/workflow, sdk/voice,
 // sdk/event. Anything that needs an event bus (Publish wiring, OTel
 // span linking, telemetry sinks) lives in the caller-supplied

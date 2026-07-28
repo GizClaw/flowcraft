@@ -11,8 +11,8 @@ import (
 // It is the single extension point for "anything that should be on
 // the board before the engine sees it":
 //
-//   - conversation history (load from sdk/history, summarise, window);
-//   - retrieved long-term memory (sdk/recall results, knowledge-base
+//   - conversation history (load from memory/history, summarise, window);
+//   - retrieved long-term memory (memory/recall results, knowledge-base
 //     hits);
 //   - system prompts and persona text;
 //   - request-scoped board vars (form fields, parameters, tool
@@ -61,7 +61,7 @@ func (f BoardSeederFunc) SeedBoard(ctx context.Context, info RunInfo, req *Reque
 // MainChannel, and copies req.Inputs into board vars. It does NOT
 // load any history; that is a deliberate choice — agents that need
 // transcript continuity wire it through a custom BoardSeeder (most
-// often a thin closure around sdk/history).
+// often a thin closure around memory/history).
 type defaultSeeder struct{}
 
 // SeedBoard implements [BoardSeeder].

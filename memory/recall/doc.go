@@ -1,8 +1,7 @@
 // Package recall is the v2 fact-centric long-term memory API.
 //
-// This package intentionally does not preserve the v1 Entry/retrieval-index
-// implementation. The legacy implementation lives at sdk/recall and is
-// deprecated for v0.5.0 removal.
+// This package intentionally does not preserve the removed v1
+// Entry/retrieval-index implementation.
 //
 // Architectural direction:
 //

@@ -1,7 +1,7 @@
 // Package history manages conversation transcripts: append messages,
 // load them back fitted to a model's context window, and (optionally)
 // compact older turns into hierarchical summaries to keep that window
-// finite. Long-term fact recall lives in [sdk/recall].
+// finite. Long-term fact recall lives in memory/recall.
 //
 // # Layering
 //

@@ -28,7 +28,7 @@ func Lemmatize(word string) string {
 // past-participle, irregular noun plural). For tokens not in the table
 // it returns word unchanged. Regular morphology (-ing / -ed / -s /
 // -tion / ...) is intentionally NOT handled here — that is Porter's
-// job in [sdk/text/stem.Porter]. The two are composed in the
+// job in [memory/text/stem.Porter]. The two are composed in the
 // tokenizer:
 //
 //	tokenize → lowercase → Lemmatize → Porter

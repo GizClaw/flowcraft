@@ -11,7 +11,7 @@ import (
 )
 
 // wellKnownLaneOrder pins the surface order of the LaneKeys defined in
-// sdk/retrieval/explain.go so that pipelines emitting the same set of lanes
+// memory/retrieval/explain.go so that pipelines emitting the same set of lanes
 // produce a deterministic SearchExecution.Lanes slice across runs.
 //
 // Unknown lane keys (e.g. backend-specific "pgvector.hybrid") fall through

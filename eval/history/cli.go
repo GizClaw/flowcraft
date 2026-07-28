@@ -39,7 +39,7 @@ func RegisterCobra(parent *cobra.Command, g *cliflags.Global) {
 	cmd := &cobra.Command{
 		Use:   "history",
 		Short: "history-compression regression (none / buffer / compacted strategies)",
-		Long: `Compare sdk/history compactor strategies on a LoCoMo-style dataset.
+		Long: `Compare memory/history compactor strategies on a LoCoMo-style dataset.
 
 Reports judge / EM / F1 alongside prompt-token p95 and load latency so
 operators can trade off cost vs. recall when picking a default

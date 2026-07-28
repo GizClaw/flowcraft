@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	knowledgequality "github.com/GizClaw/flowcraft/eval/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
 )
 
 const (

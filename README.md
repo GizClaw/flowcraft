@@ -84,7 +84,6 @@ history, knowledge, persistence, or provider adapters. Applications execute any
 implementation, alongside scripted, remote, or application-defined engines.
 
 - [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
-- [`examples/chatbot-with-recall/`](examples/chatbot-with-recall/) — conversational recall backed by the memory module
 - [`examples/voice-pipeline/setup.go`](examples/voice-pipeline/setup.go) — a real graph-runner build wiring an LLM provider + script node
 
 ### Voice — STT → LLM → TTS
@@ -151,7 +150,6 @@ in its own module and depends on SDK contracts, never the reverse.
 | [`eval`](eval/)                           | Offline and synthetic quality-evaluation harnesses                             | Workspace module     |
 | [`examples`](examples/)                   | Runnable recall-chatbot and voice-pipeline integrations                        | Examples             |
 | [`tests/conformance`](tests/conformance/) | Provider conformance suites                                                    | Tests                |
-| [`tests/e2e`](tests/e2e/)                 | Retrieval end-to-end coverage                                                  | Tests                |
 
 ---
 
@@ -223,7 +221,6 @@ cd flowcraft
 
 make help          # list every target
 make ci            # vet + test for all in-tree modules
-make test-e2e      # build-tagged retrieval end-to-end suite
 make release-check # validate changesets and the pending release plan
 ```
 

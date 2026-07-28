@@ -20,7 +20,7 @@
 //   - standard library
 //
 // engine MUST NOT import sdk/agent, sdk/agent/strategy, sdk/graph,
-// sdk/script, sdk/history, sdk/recall, sdk/llm, sdk/tool, sdk/workflow.
+// sdk/script, memory/history, memory/recall, sdk/llm, and sdk/tool.
 //
 // # The contract at a glance
 //
@@ -132,7 +132,7 @@
 //
 //   - StreamCallback / StreamEvent — replaced by Publisher +
 //     event.Envelope.
-//   - Memory / MemorySession — that is a sdk/history + sdk/recall
+//   - Memory / MemorySession — that is a memory/history + memory/recall
 //     concern at the agent layer.
 //   - Strategy / Runnable / Disposition / ResumeToken — those are
 //     agent ↔ engine adapter contracts and live in sdk/agent and

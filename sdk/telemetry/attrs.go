@@ -158,8 +158,8 @@ const (
 	// ----- Conversation / data scope -----
 
 	// AttrConversationID identifies the conversation an operation
-	// belongs to. Shared by sdk/history (transcript / DAG / archive),
-	// sdk/recall (long-term memory writes keyed by conversation),
+	// belongs to. Shared by memory/history (transcript / DAG / archive),
+	// memory/recall (long-term memory writes keyed by conversation),
 	// sdk/kanban (when the kanban scope mirrors a conversation), and
 	// the future sdk/pod controller (multi-agent pods that share a
 	// conversation context). Producers MUST use this constant
@@ -169,9 +169,9 @@ const (
 	AttrConversationID = "conversation.id"
 
 	// AttrDatasetID identifies a knowledge dataset. Emitted by
-	// sdk/knowledge (rebuild / write / delete), the knowledgenode
-	// graph node, and any retrieval span that targets one specific
-	// dataset. Cross-package dimension; needed for "errors per
+	// memory/knowledge (rebuild / write / delete) and any retrieval
+	// span that targets one specific dataset. Cross-package dimension;
+	// needed for "errors per
 	// dataset" / "latency per dataset" splits in the dashboard.
 	AttrDatasetID = "dataset.id"
 

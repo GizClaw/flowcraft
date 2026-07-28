@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/eval/internal/env"
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/bytedance"

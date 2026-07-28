@@ -23,7 +23,6 @@ jobs:
       sdkx: ${{ steps.filter.outputs.sdkx }}
       voice: ${{ steps.filter.outputs.voice }}
       claw: ${{ steps.filter.outputs.claw }}
-      retrieval_e2e: ${{ steps.filter.outputs.retrieval_e2e }}
       eval: ${{ steps.filter.outputs.eval }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
@@ -46,8 +45,6 @@ jobs:
               - 'voice/**'
             claw:
               - 'cmd/claw/**'
-            retrieval_e2e:
-              - 'tests/e2e/retrieval/**'
             eval:
               - 'eval/**'
             ci:
@@ -112,15 +109,9 @@ jobs:
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
-          # The e2e suite pins released dependencies and is build-tagged,
-          # so vet it outside the workspace with the e2e tag.
-          for m in tests/e2e/retrieval; do
-            echo "==> vet $m (e2e tag, GOWORK=off)"
-            (cd "$m" && GOWORK=off go vet -tags=e2e ./...)
-          done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx voice cmd/claw eval tests/e2e/retrieval)
+          diff=$(gofmt -l sdk memory sdkx voice cmd/claw eval)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -257,29 +248,6 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: cmd/claw
 
-  test-retrieval-e2e:
-    name: E2E retrieval (Go ${{ matrix.go-version }})
-    needs: detect
-    # On-disk LocalWorkspace conformance suite for sdkx/retrieval/workspace.
-    # Reruns when sdk/memory/sdkx changes or the suite itself moves.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.retrieval_e2e == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    env:
-      # Pinned to released sdk/sdkx tags via go.mod; keep go.work
-      # out of the resolution path so the pin is honoured.
-      GOWORK: "off"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -tags=e2e -count=1 -race -timeout 120s ./...
-        working-directory: tests/e2e/retrieval
-
   test-eval:
     name: Test eval (Go ${{ matrix.go-version }})
     needs: detect
@@ -305,7 +273,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-retrieval-e2e, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-eval]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -323,7 +291,6 @@ jobs:
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
             "${{ needs.test-voice.result }}" \
             "${{ needs.test-claw.result }}" \
-            "${{ needs.test-retrieval-e2e.result }}" \
             "${{ needs.test-eval.result }}" \
           )
           for r in "${results[@]}"; do

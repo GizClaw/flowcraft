@@ -252,19 +252,6 @@ jobs:
           GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
         run: go test -count=1 -race ./...
 
-  retrieval-e2e:
-    name: Release gate / retrieval e2e
-    needs: [plan, gate]
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.25"
-      - name: Test pinned release integration
-        run: make test-e2e
-
   eval:
     name: Release gate / hermetic eval
     needs: [plan, gate]
@@ -280,19 +267,17 @@ jobs:
 
   tag:
     name: Publish module tags
-    needs: [plan, gate, retrieval-e2e, eval]
+    needs: [plan, gate, eval]
     if: always() && needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Require every release gate
         env:
           GATE_RESULT: ${{ needs.gate.result }}
-          RETRIEVAL_RESULT: ${{ needs.retrieval-e2e.result }}
           EVAL_RESULT: ${{ needs.eval.result }}
         run: |
           set -euo pipefail
           [ "$GATE_RESULT" = "success" ]
-          case "$RETRIEVAL_RESULT" in success|skipped) ;; *) exit 1 ;; esac
           case "$EVAL_RESULT" in success|skipped) ;; *) exit 1 ;; esac
 
       - uses: actions/checkout@v4

@@ -1,4 +1,4 @@
-// Package history evaluates how much the sdk/history compactor trades answer
+// Package history evaluates how much the memory/history compactor trades answer
 // quality for prompt-token savings on long, multi-session conversations.
 //
 // Where eval/locomo answers "did recall surface the right fact?", this suite
@@ -13,7 +13,7 @@
 //     quality, lower bound on token count)
 //   - buffer    — keep only the last N messages (lower bound on quality, fixed
 //     prompt size)
-//   - compacted — run the SummaryDAG compactor (sdk/history.NewCompacted) and
+//   - compacted — run the SummaryDAG compactor (memory/history.NewCompacted) and
 //     hand the assembled mix of summaries + recent verbatim turns to the
 //     answer LLM
 //
