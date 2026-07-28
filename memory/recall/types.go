@@ -69,7 +69,7 @@ const (
 )
 
 // TemporalFact is the public v2 memory unit. It aliases the internal
-// canonical model — sdk/recall owns the public name, internal/model
+// canonical model — memory/recall owns the public name, internal/domain
 // owns the schema definition.
 //
 // Field documentation lives on domain.TemporalFact; the following

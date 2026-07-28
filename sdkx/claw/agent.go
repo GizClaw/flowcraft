@@ -7,7 +7,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/node"
-	"github.com/GizClaw/flowcraft/sdk/graph/node/knowledgenode"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/llmnode"
 	"github.com/GizClaw/flowcraft/sdk/graph/node/scriptnode"
 	"github.com/GizClaw/flowcraft/sdk/graph/runner"
@@ -64,7 +63,6 @@ func (c *Claw) buildEngine() (engine.Engine, error) {
 		tools = tool.NewRegistry()
 	}
 	llmnode.Register(factory, c.resolver, tools)
-	knowledgenode.Register(factory, nil)
 	scriptnode.Register(factory, scriptnode.Deps{
 		ScriptRuntime: jsrt.New(),
 		Workspace:     c.ws,

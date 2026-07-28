@@ -63,7 +63,7 @@ func TestPipelineDebugErrorReturnsPartialExecution(t *testing.T) {
 // hard-codes Limit{TopK: 10} as a fallback default; without this
 // override, every Recall(req{TopK: 30}) silently returned at most 10
 // hits and the framework's --topk knob was effectively a no-op.
-// See sdk/retrieval/pipeline/stages_post.go Limit.Run.
+// See memory/retrieval/pipeline/stages_post.go Limit.Run.
 func TestLimitHonoursRequestTopK(t *testing.T) {
 	ctx := context.Background()
 	idx := memory.New()

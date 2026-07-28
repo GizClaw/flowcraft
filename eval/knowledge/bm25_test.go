@@ -3,7 +3,7 @@ package knowledgequality_test
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
 )
 
 // TestE2E_BM25 runs the golden set through a no-embedder Service,

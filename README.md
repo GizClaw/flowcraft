@@ -84,7 +84,6 @@ history, knowledge, persistence, or provider adapters. Applications execute any
 implementation, alongside scripted, remote, or application-defined engines.
 
 - [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
-- [`examples/chatbot-with-recall/`](examples/chatbot-with-recall/) — conversational recall backed by the memory module
 - [`examples/voice-pipeline/setup.go`](examples/voice-pipeline/setup.go) — a real graph-runner build wiring an LLM provider + script node
 
 ### Voice — STT → LLM → TTS

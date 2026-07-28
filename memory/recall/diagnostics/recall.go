@@ -1,4 +1,4 @@
-// Package diagnostics is the only public diagnostics surface for sdk/recall.
+// Package diagnostics is the public diagnostics surface for memory/recall.
 // Every function is a pure consumer of trace.Stages; the package never reaches
 // into ranker / fusion / materialize implementations, and only depends on
 // internal/domain and internal/domain/diagnostic.

@@ -17,10 +17,10 @@
 //   - It composes with everything else: pair the same model on
 //     LongMemEval (memory) and SimpleQA (knowledge) and we get a 2x2
 //     view that scales with future "agentic" variants (SimpleQA +
-//     web-search, SimpleQA + sdk/knowledge-backed RAG).
+//     web-search, SimpleQA + memory/knowledge-backed RAG).
 //
 // Roadmap: a follow-up commit will add a knowledge-grounded variant
-// that wraps the answer LLM in sdk/agent + sdk/knowledge.Search so we
+// that wraps the answer LLM in sdk/agent + memory/knowledge.Search so we
 // can compare "raw model" vs "model + retrieval" calibration.
 //
 // [SimpleQA]: https://openai.com/index/introducing-simpleqa/

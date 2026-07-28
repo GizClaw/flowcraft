@@ -25,6 +25,13 @@ Release PR before their tags are published.
 - Retired the `vessel` runtime and `vesseld` daemon from the active source
   tree, CI, release automation, examples, and documentation. Existing tags and
   release artifacts are retained as historical, unsupported releases.
+- Removed the deprecated `sdk/history`, `sdk/recall`, `sdk/knowledge`,
+  `sdk/retrieval`, and `sdk/textsearch` packages in favor of the standalone
+  `memory` module.
+- Removed the legacy knowledge graph node, recall v1 SQLite queue, and history
+  and knowledge tool adapters tied to those SDK contracts, along with the
+  retrieval compatibility adapters, namespace migration utility, and legacy
+  retrieval E2E module.
 
 <!-- releasegate:releases -->
 

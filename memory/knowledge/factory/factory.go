@@ -67,8 +67,8 @@ func WithLocalPrefix(prefix string) LocalOption {
 // WithLocalTokenizer overrides the BM25 tokenizer (default CJKTokenizer).
 //
 // Deprecated: the tokenizer used by NewRetrieval is owned by the
-// configured retrieval.Index (e.g. sdk/retrieval/memory.Index uses
-// CJKTokenizer; sdkx/retrieval/{sqlite,postgres} expose backend-native
+// configured retrieval.Index (e.g. memory/retrieval/memory.Index uses
+// CJKTokenizer; memory/retrieval/{sqlite,postgres} expose backend-native
 // analyzers). Configure tokenization at the Index constructor instead.
 // Slated for removal in v0.5.0.
 func WithLocalTokenizer(tok tokenize.Tokenizer) LocalOption {
@@ -83,8 +83,8 @@ func WithLocalTokenizer(tok tokenize.Tokenizer) LocalOption {
 // Deprecated: NewLocal wires FSChunkRepo + FSLayerRepo, both
 // demo-grade backends whose O(N) per-doc ingest does not scale beyond
 // unit-test / small-fixture sizes (see #134). Use NewRetrieval with
-// an in-process sdk/retrieval/memory.Index for tests and a production
-// retrieval.Index (sdkx/retrieval/{sqlite,postgres,workspace}) for
+// an in-process memory/retrieval/memory.Index for tests and a production
+// retrieval.Index (memory/retrieval/{sqlite,postgres,workspace}) for
 // real workloads. FSDocumentRepo is NOT deprecated and remains the
 // canonical document store for both factories. Slated for removal in
 // v0.5.0; see docs/migrations/v0.5.0.md for the one-liner migration

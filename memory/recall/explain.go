@@ -9,7 +9,7 @@ import (
 
 // RecallTrace is the read-path explain surface. Every observable signal (plan,
 // sources, drops, fused pool size, materialized count, latency) is
-// reconstructable from trace.Stages via sdk/recall/diagnostics.
+// reconstructable from trace.Stages via memory/recall/diagnostics.
 type RecallTrace = domain.RecallTrace
 
 // SaveTrace is the write-path explain surface.

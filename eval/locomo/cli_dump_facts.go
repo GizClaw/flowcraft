@@ -6,7 +6,6 @@ import (
 	"github.com/GizClaw/flowcraft/eval/locomo/runners"
 	"github.com/GizClaw/flowcraft/memory/recall"
 	"github.com/GizClaw/flowcraft/memory/recall/diagnostics"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
 )
 
 type factDumpRecord struct {
@@ -99,32 +98,6 @@ type factDumpFact struct {
 	Source           string   `json:"source,omitempty"`
 	Confidence       float64  `json:"confidence,omitempty"`
 	Episodic         bool     `json:"episodic,omitempty"`
-}
-
-func newV1FactsDump(ts time.Time, scope recallv1.Scope, facts []recallv1.ExtractedFact) factDumpRecord {
-	out := factDumpRecord{
-		TS:     ts,
-		Runner: runnerFlowcraftRecallV1,
-		Scope: factDumpScope{
-			RuntimeID: scope.RuntimeID,
-			UserID:    scope.UserID,
-			AgentID:   scope.AgentID,
-		},
-		Facts: make([]factDumpFact, 0, len(facts)),
-	}
-	for _, f := range facts {
-		out.Facts = append(out.Facts, factDumpFact{
-			Content:    f.Content,
-			Subject:    f.Subject,
-			Predicate:  f.Predicate,
-			Entities:   append([]string(nil), f.Entities...),
-			Categories: append([]string(nil), f.Categories...),
-			Source:     f.Source,
-			Confidence: f.Confidence,
-			Episodic:   f.Episodic,
-		})
-	}
-	return out
 }
 
 func newV2FactsDump(ts time.Time, scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) factDumpRecord {

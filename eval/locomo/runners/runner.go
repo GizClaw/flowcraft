@@ -15,7 +15,7 @@ import (
 )
 
 // Scope identifies a memory partition for ingest and recall. Eval-owned so
-// drivers are not locked to sdk/recall_v1 or sdk/recall types.
+// drivers are not locked to memory/recall implementation types.
 type Scope struct {
 	RuntimeID string
 	UserID    string

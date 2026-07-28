@@ -127,8 +127,7 @@ func (s ScoreThreshold) Run(_ context.Context, st *State) error {
 //
 // Reads/Writes: Final.
 //
-// Deprecated: use sdk/recall/pipeline.SupersededDecay. The retrieval-level
-// supersedence stage will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type SupersededDecay struct {
 	Factor float64
 }

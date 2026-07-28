@@ -174,8 +174,7 @@ func (s QueryRewrite) Run(ctx context.Context, st *State) error {
 //
 // Provide LLMExtractor to override with an LLM-based extractor.
 //
-// Deprecated: use sdk/recall/pipeline.EntityExtract. The retrieval-level
-// entity extractor will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type EntityExtract struct {
 	LLMExtractor func(ctx context.Context, text string) ([]string, error)
 }

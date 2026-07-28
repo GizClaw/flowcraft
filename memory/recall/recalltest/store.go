@@ -1,4 +1,4 @@
-// Package recalltest contains reusable conformance suites for sdk/recall
+// Package recalltest contains reusable conformance suites for memory/recall
 // adapter implementations.
 package recalltest
 

@@ -7,7 +7,7 @@ import (
 
 // Knowledge re-exports a minimal slice of [sdk/text] under the
 // knowledge namespace so existing callers that historically reached
-// for these symbols through the (now-deprecated) sdk/textsearch
+// for these symbols through the removed sdk/textsearch
 // facade keep working unchanged. The aliases are the documented
 // public surface; new code should import sdk/text/{tokenize,bm25}
 // directly.

@@ -204,8 +204,8 @@ func (s *InMemoryStore) AppendMessages(_ context.Context, conversationID string,
 }
 
 // Compile-time assertion that InMemoryStore satisfies the optional
-// [MessageAppender] capability. Callers (notably sdk/recall's
-// appendHistory and sdk/history's compactor.persistAppend) prefer
+// [MessageAppender] capability. Callers (notably memory/history's
+// compactor.persistAppend) prefer
 // this path because it avoids the racy read-modify-write fallback
 // (#154 / #162).
 var _ MessageAppender = (*InMemoryStore)(nil)

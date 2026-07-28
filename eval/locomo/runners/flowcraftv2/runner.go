@@ -1,4 +1,4 @@
-// Package flowcraftv2 is the LoCoMo bench runner for sdk/recall v2.
+// Package flowcraftv2 is the LoCoMo bench runner for memory/recall.
 //
 // The current implementation is a bootstrap baseline: each turn is stored
 // as a FactNote with evidence refs preserved for recall.k_hit. It validates
@@ -57,7 +57,7 @@ type Options struct {
 	OnRecallDiagnostics func(scope runners.Scope, diag diagnostics.RecallDiagnostics)
 }
 
-// Runner implements runners.Runner against sdk/recall v2.
+// Runner implements runners.Runner against memory/recall.
 type Runner struct {
 	name          string
 	mem           recall.Memory

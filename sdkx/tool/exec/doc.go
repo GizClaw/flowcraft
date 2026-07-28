@@ -13,8 +13,6 @@
 // bridge the generic tool.Tool interface to one specific service —
 // and therefore belong here, mirroring the existing
 // sdk/llm → sdkx/llm/*, sdk/workspace → sdkx/tool/memory layouts.
-// See sdkx/tool/history/doc.go for the same rationale applied to
-// the history coordinator.
 //
 // # Deny-by-default
 //

@@ -41,16 +41,15 @@ func addLocomoIngest(parent *cobra.Command) {
 					return loadErr
 				}
 			}
-			v1RetrievalIndex, v2RetrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, "memory", "")
+			retrievalIndex, retrievalCleanup, err := buildRetrievalIndex("memory", "")
 			if err != nil {
 				return err
 			}
 			if retrievalCleanup != nil {
 				defer retrievalCleanup()
 			}
-			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
-				RetrievalIndex:   v1RetrievalIndex,
-				V2RetrievalIndex: v2RetrievalIndex,
+			r, err := buildLocomoRunner(canonical, runnerConfig{
+				RetrievalIndex: retrievalIndex,
 			}, nil, nil, nil)
 			if err != nil {
 				return err
@@ -78,7 +77,7 @@ func addLocomoIngest(parent *cobra.Command) {
 		},
 	}
 
-	cmd.Flags().StringVar(&runnerName, "runner", runnerFlowcraftRecallV1, "runner: flowcraft-recall-v1 | flowcraft-recall-v2")
+	cmd.Flags().StringVar(&runnerName, "runner", runnerFlowcraftRecallV2, "runner: flowcraft-recall-v2")
 	cmd.Flags().StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or .jsonl path")
 
 	parent.AddCommand(cmd)

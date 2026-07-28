@@ -1,5 +1,5 @@
 // Package knowledgequality is the retrieval-quality regression suite for
-// sdk/knowledge. The Run function spins up an in-memory Service, ingests
+// memory/knowledge. The Run function spins up an in-memory Service, ingests
 // a corpus, replays a golden question set across one or more search
 // lanes (bm25 / vector / hybrid) and returns a structured Report.
 //
@@ -27,14 +27,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/knowledge"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/backend/fs"
-	"github.com/GizClaw/flowcraft/sdk/knowledge/factory"
-	"github.com/GizClaw/flowcraft/sdk/retrieval/memory"
+	"github.com/GizClaw/flowcraft/memory/knowledge"
+	"github.com/GizClaw/flowcraft/memory/knowledge/backend/fs"
+	"github.com/GizClaw/flowcraft/memory/knowledge/factory"
+	"github.com/GizClaw/flowcraft/memory/retrieval/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-// Lane is an alias so callers don't have to import sdk/knowledge twice
+// Lane is an alias so callers don't have to import memory/knowledge twice
 // to write `[]Lane{knowledge.ModeBM25, knowledge.ModeVector}`.
 type Lane = knowledge.SearchMode
 
@@ -362,7 +362,7 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 }
 
 // buildService spins up a fresh in-memory workspace + Service backed
-// by the retrieval backend (chunks/layers in sdk/retrieval/memory,
+// by the retrieval backend (chunks/layers in memory/retrieval/memory,
 // documents in FSDocumentRepo on a workspace.MemWorkspace). The
 // embedder is wired only when non-nil — a nil embedder produces a
 // BM25-only Service that still answers ModeBM25 queries correctly but

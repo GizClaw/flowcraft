@@ -13,17 +13,9 @@ const entityLinkLookupDefaultCap = 50
 
 // EntityLinkResolver is implemented by callers that own an external
 // entity → entry-id inverted index. The pipeline package never
-// imports sdk/recall (would cycle), so the resolver is the entire
-// surface the EntityLinkLookup stage and ModeEntityLink lane see.
-//
-// Implementations:
-//
-//   - sdk/recall provides the canonical implementation
-//     (internalEntityLinkResolver) wrapping recall.EntityStore.
-//     The Memory facade installs it automatically when
-//     [recall.WithEntityStore] is enabled.
-//   - Tests substitute hand-rolled doubles via [WithEntityLinkResolver]
-//     to assert lane behaviour without spinning up a real EntityStore.
+// imports recall (would cycle), so the resolver is the entire surface the
+// EntityLinkLookup stage and ModeEntityLink lane see. Tests substitute
+// hand-rolled doubles via [WithEntityLinkResolver].
 //
 // Contract:
 //
@@ -42,8 +34,7 @@ const entityLinkLookupDefaultCap = 50
 //     cross-entity deduplication maintaining the first-occurrence
 //     position).
 //
-// Deprecated: use sdk/recall/pipeline.EntityLinkResolver. The retrieval-level
-// entity-link resolver surface will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type EntityLinkResolver interface {
 	ResolveLinks(
 		ctx context.Context,
@@ -62,18 +53,14 @@ type EntityLinkResolver interface {
 // The stage is intentionally a thin shim — all the storage
 // knowledge lives in the resolver. When Resolver is nil, the stage
 // is a no-op so callers can install the option unconditionally and
-// let the resolver decide whether the feature is wired (sdk/recall
-// installs a nil resolver when the underlying index does not
-// satisfy retrieval.DocGetter; the lane downstream sees an empty
-// CandidateEntityIDs and behaves as if it were absent).
+// let the resolver decide whether the feature is wired.
 //
 // Lookup errors are FATAL to the stage — they propagate to
 // Pipeline.Run, which aborts. This matches the existing recall
 // stages' policy (a failing Retrieve aborts the pipeline). Future
 // "tolerant" mode tracked under the recall-degrade RFC.
 //
-// Deprecated: use sdk/recall/pipeline.EntityLinkLookup. The retrieval-level
-// entity-link stage will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type EntityLinkLookup struct {
 	// Resolver is the entity → entry-id index implementation.
 	// nil = stage is a no-op (still safe to keep in the pipeline).

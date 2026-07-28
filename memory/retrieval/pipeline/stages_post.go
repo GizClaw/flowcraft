@@ -85,8 +85,7 @@ func (s TimeDecay) Run(_ context.Context, st *State) error {
 // is in CandidateEntityIDs (capped at 2× to preserve relative gaps).
 // Boost defaults to 0.3 when zero or negative.
 //
-// Deprecated: use sdk/recall/pipeline.EntityLinkBoost. The retrieval-level
-// entity-link boost stage will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type EntityLinkBoost struct {
 	Boost float64
 }
@@ -135,8 +134,7 @@ func (s EntityLinkBoost) Run(_ context.Context, st *State) error {
 //
 // Boost is added per overlapping entity, capped at 1× score.
 //
-// Deprecated: use sdk/recall/pipeline.EntityBoost. The retrieval-level entity
-// boost stage will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type EntityBoost struct {
 	Boost float64
 }
@@ -283,8 +281,7 @@ func (s Dedup) Run(_ context.Context, st *State) error {
 //
 // Reads/Writes: Final.
 //
-// Deprecated: use sdk/recall/pipeline.SlotCollapse. The retrieval-level slot
-// collapse stage will be removed in v0.5.0.
+// Deprecated: use memory/recall.
 type SlotCollapse struct{}
 
 // Name implements Stage.

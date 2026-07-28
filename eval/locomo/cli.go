@@ -22,11 +22,6 @@ import (
 	memoryretrieval "github.com/GizClaw/flowcraft/memory/retrieval"
 	memorybbh "github.com/GizClaw/flowcraft/memory/retrieval/bbh"
 	retrievalmem "github.com/GizClaw/flowcraft/memory/retrieval/memory"
-	"github.com/GizClaw/flowcraft/sdk/llm"
-	recallv1 "github.com/GizClaw/flowcraft/sdk/recall"
-	sdkretrieval "github.com/GizClaw/flowcraft/sdk/retrieval"
-	sdkbbh "github.com/GizClaw/flowcraft/sdk/retrieval/bbh"
-	sdkretrievalmem "github.com/GizClaw/flowcraft/sdk/retrieval/memory"
 	sdkworkspace "github.com/GizClaw/flowcraft/sdk/workspace"
 
 	_ "github.com/GizClaw/flowcraft/sdkx/embedding/azure"
@@ -92,20 +87,9 @@ func addLocomoRun(parent *cobra.Command, g *cliflags.Global) {
 		progressEvery      int
 		ingestTimeout      time.Duration
 		qaTimeout          time.Duration
-		maxFacts           int
 		rerankerLLM        string
 		judgeStyle         string
 		judgeTemp          float64
-		scoreThreshold     float64
-		saveWithContext    bool
-		softMerge          bool
-		multiRecall        bool
-		entityStore        bool
-		entityStoreMaxLnk  int
-		entityLinkBoost    float64
-		queryEntityLLM     bool
-		updateResolver     string
-		recentTurnsK       int
 		dumpFactsPath      string
 		dumpRecallPath     string
 		dumpAnswerReplay   string
@@ -182,28 +166,10 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			if err != nil {
 				return fmt.Errorf("--reranker-llm: %w", err)
 			}
-			var resolverLLM llm.LLM
-			if updateResolver != "" {
-				resolverLLM, err = env.BuildLLM(updateResolver)
-				if err != nil {
-					return fmt.Errorf("--update-resolver: %w", err)
-				}
-			}
-			// Query-side entity extractor reuses the SAME LLM as the
-			// write-side extractor — the whole point of opting in is
-			// to make the two ends share a single entity vocabulary
-			// so EntityStore.Lookup keys (saved at write time) actually
-			// match the QueryEntities (extracted at recall time).
-			// Defaulting to a different alias here would silently
-			// re-introduce the asymmetry the feature exists to fix.
-			var queryEntLLM llm.LLM
-			if queryEntityLLM {
-				queryEntLLM = extractor
-			}
 			if useExtractor && extractor == nil {
 				extractor = answer
 			}
-			if canonical == runnerFlowcraftRecallV2 && useExtractor && extractor == nil {
+			if useExtractor && extractor == nil {
 				return flowcraftv2.ErrExtractorNotSupported
 			}
 			var sdkExtractorMode recall.LLMExtractionMode
@@ -215,10 +181,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 			default:
 				return fmt.Errorf("--extractor-mode: unknown value %q (want single_pass or two_pass)", extractorMode)
 			}
-			if canonical != runnerFlowcraftRecallV2 && dumpStageAuditPath != "" {
-				return fmt.Errorf("--dump-stage-audit is only supported for flowcraft-recall-v2 (got %s)", canonical)
-			}
-			v1RetrievalIndex, v2RetrievalIndex, retrievalCleanup, err := buildRetrievalIndex(canonical, retrievalBackend, retrievalDir)
+			retrievalIndex, retrievalCleanup, err := buildRetrievalIndex(retrievalBackend, retrievalDir)
 			if err != nil {
 				return err
 			}
@@ -235,7 +198,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				dumpW     *os.File
 				dumpEnc   *json.Encoder
 				dumpStats factDumpTokenStats
-				onFacts   func(recallv1.Scope, []recallv1.ExtractedFact)
 				onV2Facts func(runners.Scope, []recall.TemporalFact, *diagnostics.SaveDiagnostics)
 			)
 			if dumpFactsPath != "" {
@@ -252,11 +214,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 						_ = dumpEnc.Encode(newV2FactsDumpSummary(time.Now(), dumpStats))
 					}
 				}()
-				onFacts = func(scope recallv1.Scope, facts []recallv1.ExtractedFact) {
-					dumpMu.Lock()
-					defer dumpMu.Unlock()
-					_ = dumpEnc.Encode(newV1FactsDump(time.Now(), scope, facts))
-				}
 				onV2Facts = func(scope runners.Scope, facts []recall.TemporalFact, diag *diagnostics.SaveDiagnostics) {
 					dumpMu.Lock()
 					defer dumpMu.Unlock()
@@ -276,9 +233,6 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				v2Diag     *v2DiagnosticHooks
 			)
 			if diagnosticsPath != "" {
-				if canonical != runnerFlowcraftRecallV2 {
-					return fmt.Errorf("--diagnostics is only supported for flowcraft-recall-v2 (got %s)", canonical)
-				}
 				diagHealth = diagnostics.NewPipelineHealth()
 				v2Diag = &v2DiagnosticHooks{
 					OnSave: func(_ runners.Scope, d diagnostics.SaveDiagnostics) {
@@ -294,26 +248,12 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 				}
 			}
 
-			r, err := buildLocomoRunner(canonical, v1RunnerConfig{
-				LLM:                       extractor,
-				RetrievalIndex:            v1RetrievalIndex,
-				V2RetrievalIndex:          v2RetrievalIndex,
-				ExtractorMode:             sdkExtractorMode,
-				Embedder:                  embedder,
-				MaxFactsPerCall:           maxFacts,
-				IncludeAssistant:          true,
-				SaveWithContext:           saveWithContext,
-				SoftMerge:                 &softMerge,
-				RerankerLLM:               reranker,
-				ScoreThreshold:            scoreThreshold,
-				MultiRecall:               multiRecall,
-				EntityStore:               entityStore,
-				EntityStoreMaxLinkedCount: entityStoreMaxLnk,
-				EntityLinkBoost:           entityLinkBoost,
-				QueryEntityLLM:            queryEntLLM,
-				UpdateResolverLLM:         resolverLLM,
-				RecentTurnsK:              recentTurnsK,
-				OnFactsExtracted:          onFacts,
+			r, err := buildLocomoRunner(canonical, runnerConfig{
+				LLM:            extractor,
+				RetrievalIndex: retrievalIndex,
+				ExtractorMode:  sdkExtractorMode,
+				Embedder:       embedder,
+				RerankerLLM:    reranker,
 			}, nil, onV2Facts, v2Diag)
 			if err != nil {
 				return fmt.Errorf("runner: %w", err)
@@ -515,7 +455,7 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&runnerName, "runner", runnerFlowcraftRecallV1, "runner: flowcraft-recall-v1 (default) | flowcraft-recall-v2")
+	f.StringVar(&runnerName, "runner", runnerFlowcraftRecallV2, "runner: flowcraft-recall-v2")
 	f.StringVar(&datasetFlag, "dataset", "synthetic", "dataset (synthetic) or path to .jsonl")
 	f.IntVar(&topK, "topk", 10, "Recall top-k")
 	f.BoolVar(&useExtractor, "extractor", false, "use LLM extractor on Save (requires --extractor-llm or shared --answer-llm)")
@@ -531,20 +471,9 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	f.IntVar(&progressEvery, "progress-every", 0, "log every N completed questions; 0 disables")
 	f.DurationVar(&ingestTimeout, "ingest-timeout", 10*time.Minute, "per-conversation ingest deadline; bounds hung LLM calls")
 	f.DurationVar(&qaTimeout, "qa-timeout", 2*time.Minute, "per-question recall+answer+judge deadline")
-	f.IntVar(&maxFacts, "max-facts", 200, "extractor: max facts per Save call")
 	f.StringVar(&rerankerLLM, "reranker-llm", "", "LLM for cross-encoder rerank, format provider:model; empty disables")
 	f.StringVar(&judgeStyle, "judge-style", "default", "judge prompt style: default (FlowCraft answer-inclusion semantics) | locomo (leaderboard reproducer, lenient)")
 	f.Float64Var(&judgeTemp, "judge-temperature", 0.0, "judge LLM temperature (0=deterministic)")
-	f.Float64Var(&scoreThreshold, "score-threshold", 0, "drop recall hits below this score before rerank/limit (0 = SDK default 0.05)")
-	f.BoolVar(&saveWithContext, "save-with-context", false, "before extraction, recall existing facts and inject as prompt context")
-	f.BoolVar(&softMerge, "soft-merge", true, "mark older near-duplicate entries as superseded_by; SupersededDecay damps them at recall")
-	f.BoolVar(&multiRecall, "multi-recall", false, "switch LTM to 3-lane recall (vector+bm25+entity) + RRFFusion; defaults to legacy single-lane vector recall + BM25/entity boosts")
-	f.BoolVar(&entityStore, "entity-store", false, "enable the entity-link inverted index (4th MultiRetrieve lane); writes a sibling namespace per Save Link and adds a ModeEntityLink lane that materialises linked entries via DocGetter — auto-enables --multi-recall")
-	f.IntVar(&entityStoreMaxLnk, "entity-store-max-linked", 0, "common-noun pollution gate: skip entity rows whose linked_ids count exceeds this threshold at Lookup time (0 = SDK safe default 100; negative = explicit opt-out (audited, see WithEntityStoreMaxLinkedCount godoc); positive = exact threshold)")
-	f.Float64Var(&entityLinkBoost, "entity-link-boost", 0, "switch the entity-store integration from RRF lane to post-fusion score boost when > 0 (recommended 0.2-0.5); vector + BM25 own candidate generation, entity-link only re-ranks the fused result. Mitigates the lane-flooding regression that hits multi-hop questions when one entity dominates the namespace.")
-	f.BoolVar(&queryEntityLLM, "query-entity-extractor", false, "swap the rule-based query-side entity extractor for an LLM call using the SAME LLM as --extractor-llm; closes the asymmetry between QueryEntities (capitalized single tokens) and the multi-word EntityStore keys (LLM-extracted noun phrases). Adds 1 LLM call per recall. No-op when --entity-store is false.")
-	f.StringVar(&updateResolver, "update-resolver", "", "LLM alias for the memory update resolver (ADD/UPDATE/DELETE/NOOP); empty disables. Adds one LLM call per Save batch.")
-	f.IntVar(&recentTurnsK, "recent-turns", 0, "if >0, inject the previous K messages from prior Save batches into the extractor for cross-batch pronoun/entity reference resolution")
 	f.StringVar(&dumpFactsPath, "dump-facts", "", "diagnostic: write one JSONL record per Save batch with the extractor's facts to this path (audits extract-miss vs recall-miss)")
 	f.StringVar(&dumpRecallPath, "dump-recall", "", "diagnostic: write one JSONL record per question with the top-k recall hits to this path (audits recall-miss vs answer-miss)")
 	f.StringVar(&dumpAnswerReplay, "dump-answer-replay", "", "diagnostic: write one JSONL record per answered question with full answer prompt/body, recall artifacts, prediction, and scores")
@@ -556,19 +485,16 @@ Example (LLM extractor + LLM answer + LLM judge + Qwen embedder):
 	parent.AddCommand(cmd)
 }
 
-func buildRetrievalIndex(canonical, backend, dir string) (sdkretrieval.Index, memoryretrieval.Index, func(), error) {
+func buildRetrievalIndex(backend, dir string) (memoryretrieval.Index, func(), error) {
 	switch backend {
 	case "", "memory":
-		if canonical == runnerFlowcraftRecallV2 {
-			return nil, retrievalmem.New(), nil, nil
-		}
-		return sdkretrievalmem.New(), nil, nil, nil
+		return retrievalmem.New(), nil, nil
 	case "bbh":
 		cleanup := func() {}
 		if dir == "" {
 			tmp, err := os.MkdirTemp("", "flowcraft-bbh-*")
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh temp dir: %w", err)
+				return nil, nil, fmt.Errorf("--retrieval-backend=bbh temp dir: %w", err)
 			}
 			dir = tmp
 			cleanup = func() { _ = os.RemoveAll(tmp) }
@@ -576,24 +502,16 @@ func buildRetrievalIndex(canonical, backend, dir string) (sdkretrieval.Index, me
 		ws, err := sdkworkspace.NewLocalWorkspace(dir)
 		if err != nil {
 			cleanup()
-			return nil, nil, nil, fmt.Errorf("--retrieval-dir: %w", err)
+			return nil, nil, fmt.Errorf("--retrieval-dir: %w", err)
 		}
-		if canonical == runnerFlowcraftRecallV2 {
-			idx, err := memorybbh.New(ws)
-			if err != nil {
-				cleanup()
-				return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
-			}
-			return nil, idx, cleanup, nil
-		}
-		idx, err := sdkbbh.New(ws)
+		idx, err := memorybbh.New(ws)
 		if err != nil {
 			cleanup()
-			return nil, nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
+			return nil, nil, fmt.Errorf("--retrieval-backend=bbh: %w", err)
 		}
-		return idx, nil, cleanup, nil
+		return idx, cleanup, nil
 	default:
-		return nil, nil, nil, fmt.Errorf("--retrieval-backend: unknown %q (want memory or bbh)", backend)
+		return nil, nil, fmt.Errorf("--retrieval-backend: unknown %q (want memory or bbh)", backend)
 	}
 }
 

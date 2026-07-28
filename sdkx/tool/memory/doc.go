@@ -44,9 +44,9 @@
 //
 // FlowCraft already exposes a four-tier memory architecture:
 //
-//	sdk/history    - per-conversation transcript (hot)
-//	sdk/recall     - long-term facts (BM25 + vector)
-//	sdk/knowledge  - retrieval over corpora (chunk + rerank)
+//	memory/history    - per-conversation transcript (hot)
+//	memory/recall     - long-term facts (BM25 + vector)
+//	memory/knowledge  - retrieval over corpora (chunk + rerank)
 //	sdk/workspace  - persistent file tree (Memory Tool target)
 //
 // This package wires the file-tree tier to the Anthropic spec so

@@ -8,7 +8,7 @@
 // and have no dependency on workspace, embeddings, or persistence;
 // they only know about retrieval.Hit and basic math.
 //
-// Existing call sites (sdk/retrieval/memory.cosineSim,
-// sdk/retrieval/pipeline.RRFFusion) delegate to this package so
+// Existing call sites (memory/retrieval/memory.cosineSim,
+// memory/retrieval/pipeline.RRFFusion) delegate to this package so
 // behaviour stays identical across helpers.
 package scoring
