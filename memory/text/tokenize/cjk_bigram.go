@@ -57,7 +57,7 @@ func (t *CJKBigram) Tokenize(text string) []string {
 
 // emitCJK walks the CJK rune buffer and emits unigram + bigram
 // tokens, skipping any rune classified as a CJK stop character by
-// [sdk/text/stopword.IsCJKChar]. The unigram + bigram strategy is
+// [memory/text/stopword.IsCJKChar]. The unigram + bigram strategy is
 // the documented baseline behaviour of the legacy textsearch
 // package and is preserved here byte-for-byte to keep BM25
 // vocabulary stable across the migration.

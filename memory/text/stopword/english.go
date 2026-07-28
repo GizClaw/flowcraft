@@ -1,15 +1,15 @@
 // Package stopword provides high-frequency-word filters used by the
-// sdk/text tokenizers and any downstream component that needs to
+// memory/text tokenizers and any downstream component that needs to
 // exclude semantically empty words from BM25 vocabularies, NER
 // candidate lists, or query intent extraction.
 //
 // The package keeps two distinct tables:
 //
 //   - [EnglishSet] / [IsEnglish] for ASCII English (the 136-word
-//     baseline used by [sdk/text/tokenize.Simple]).
+//     baseline used by [memory/text/tokenize.Simple]).
 //   - [IsCJKChar] for high-frequency CJK function characters (the
 //     50-character baseline used by
-//     [sdk/text/tokenize.CJKBigram]).
+//     [memory/text/tokenize.CJKBigram]).
 //
 // The tables are intentionally small. Larger off-the-shelf lists
 // (NLTK, spaCy) over-aggressively drop tokens that carry signal in

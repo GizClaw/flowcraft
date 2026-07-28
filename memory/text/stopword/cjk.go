@@ -29,7 +29,7 @@ var cjkStopChars = map[rune]bool{
 }
 
 // IsCJKChar reports whether r is in the package's CJK stop-character
-// baseline. Used by [sdk/text/tokenize.CJKBigram] to skip
+// baseline. Used by [memory/text/tokenize.CJKBigram] to skip
 // semantically empty runes during bigram emission.
 func IsCJKChar(r rune) bool {
 	return cjkStopChars[r]

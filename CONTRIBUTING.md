@@ -10,7 +10,6 @@ Run:
 
 ```sh
 make ci
-make test-e2e
 make release-check
 git diff --check
 ```

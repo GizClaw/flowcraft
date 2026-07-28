@@ -85,7 +85,7 @@ func (n *defaultNormalizer) Normalize(f domain.TemporalFact) domain.TemporalFact
 // [normalize.CollapseSpaces]. Kept as a one-line wrapper so the
 // normalizer's call sites stay self-documenting (every fact column
 // it touches needs canonical-space form) without leaking the
-// sdk/text dependency into the public signature.
+// memory/text dependency into the public signature.
 func canonicalSpace(s string) string {
 	return normalize.CollapseSpaces(s)
 }

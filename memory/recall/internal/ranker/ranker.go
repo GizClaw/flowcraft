@@ -320,7 +320,7 @@ func termMatchBoost(matches int) float64 {
 
 // significantQueryTerms folds the query text into deduped BM25
 // vocabulary keys. tokenize.Simple owns lower-casing, stop-word
-// filtering (sdk/text/stopword), and the lemma+stem composition; we
+// filtering (memory/text/stopword), and the lemma+stem composition; we
 // post-filter to drop tokens shorter than 3 chars (Simple uses 2).
 func significantQueryTerms(text string) []string {
 	return uniqueLongTokens(rankTokenizer.Tokenize(text))

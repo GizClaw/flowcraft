@@ -1,4 +1,4 @@
-package memory_test
+package anthropicmemory_test
 
 import (
 	"context"
@@ -7,16 +7,16 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/workspace"
-	memorytool "github.com/GizClaw/flowcraft/sdkx/tool/memory"
+	"github.com/GizClaw/flowcraft/sdkx/tool/anthropicmemory"
 )
 
-func newTool(t *testing.T) (*memorytool.Tool, *workspace.MemWorkspace) {
+func newTool(t *testing.T) (*anthropicmemory.Tool, *workspace.MemWorkspace) {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
-	return memorytool.New(ws), ws
+	return anthropicmemory.New(ws), ws
 }
 
-func exec(t *testing.T, tool *memorytool.Tool, args map[string]any) string {
+func exec(t *testing.T, tool *anthropicmemory.Tool, args map[string]any) string {
 	t.Helper()
 	raw, err := json.Marshal(args)
 	if err != nil {
@@ -29,7 +29,7 @@ func exec(t *testing.T, tool *memorytool.Tool, args map[string]any) string {
 	return out
 }
 
-func execErr(t *testing.T, tool *memorytool.Tool, args map[string]any) error {
+func execErr(t *testing.T, tool *anthropicmemory.Tool, args map[string]any) error {
 	t.Helper()
 	raw, _ := json.Marshal(args)
 	_, err := tool.Execute(context.Background(), string(raw))
@@ -50,7 +50,7 @@ func TestDefinition(t *testing.T) {
 func TestPathPrefixEnforced(t *testing.T) {
 	tool, _ := newTool(t)
 	err := execErr(t, tool, map[string]any{"command": "view", "path": "/etc/passwd"})
-	if !strings.Contains(err.Error(), memorytool.PathPrefix) {
+	if !strings.Contains(err.Error(), anthropicmemory.PathPrefix) {
 		t.Errorf("err = %v, want PathPrefix mention", err)
 	}
 }
@@ -259,7 +259,7 @@ func TestUnknownCommand(t *testing.T) {
 
 func TestMaxViewBytesTruncates(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
-	tool := memorytool.New(ws, memorytool.WithMaxViewBytes(8))
+	tool := anthropicmemory.New(ws, anthropicmemory.WithMaxViewBytes(8))
 	exec(t, tool, map[string]any{
 		"command":   "create",
 		"path":      "/memories/big.txt",

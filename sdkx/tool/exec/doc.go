@@ -12,7 +12,7 @@
 // adapters. tool.Tool implementations are concrete adapters — they
 // bridge the generic tool.Tool interface to one specific service —
 // and therefore belong here, mirroring the existing
-// sdk/llm → sdkx/llm/*, sdk/workspace → sdkx/tool/memory layouts.
+// sdk/llm → sdkx/llm/*, sdk/workspace → sdkx/tool/anthropicmemory layouts.
 //
 // # Deny-by-default
 //

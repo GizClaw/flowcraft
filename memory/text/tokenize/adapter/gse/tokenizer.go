@@ -1,11 +1,11 @@
 // Package gse adapts [github.com/go-ego/gse] to the
-// sdk/text/tokenize.Tokenizer interface.
+// memory/text/tokenize.Tokenizer interface.
 //
 // gse is a pure-Go reimplementation of jieba — the de-facto
 // Chinese segmentation library. It performs real word-level
 // segmentation backed by a double-array trie dictionary plus an
 // HMM model for unknown words, in contrast to
-// [sdk/text/tokenize.CJKBigram] which emits naive unigrams +
+// [memory/text/tokenize.CJKBigram] which emits naive unigrams +
 // bigrams.
 //
 // Choosing between gse and CJKBigram is a precision / dependency
@@ -32,7 +32,7 @@ import (
 )
 
 // Tokenizer wraps a [gse.Segmenter] and exposes it through the
-// sdk/text/tokenize.Tokenizer interface.
+// memory/text/tokenize.Tokenizer interface.
 //
 // Each Tokenizer owns its own Segmenter. The Segmenter is
 // expensive to construct (loads a multi-megabyte dictionary),
@@ -74,8 +74,8 @@ func WithDict(spec string) Option {
 // process. Mutating it from this adapter would be a footgun for
 // callers that hold their own Segmenter elsewhere. The output is
 // always lower-cased for BM25 vocabulary consistency with
-// sdk/text/tokenize.Simple; callers needing raw surface forms
-// should reach for [sdk/text/tokenize.SplitWords] instead.
+// memory/text/tokenize.Simple; callers needing raw surface forms
+// should reach for [memory/text/tokenize.SplitWords] instead.
 func WithHMM(enabled bool) Option {
 	return func(c *config) { c.hmm = enabled }
 }
@@ -99,7 +99,7 @@ func New(opts ...Option) (*Tokenizer, error) {
 	return t, nil
 }
 
-// Tokenize implements [sdk/text/tokenize.Tokenizer].
+// Tokenize implements [memory/text/tokenize.Tokenizer].
 //
 // Internally calls [gse.Segmenter.CutSearch], which is the
 // search-engine-optimised cut mode — it emits both the shortest-
@@ -109,7 +109,7 @@ func New(opts ...Option) (*Tokenizer, error) {
 // of a slightly larger vocabulary.
 //
 // ASCII case folding is applied at the input boundary so the
-// output matches sdk/text/tokenize.Simple's lower-cased
+// output matches memory/text/tokenize.Simple's lower-cased
 // vocabulary. Empty tokens and pure-whitespace splits are
 // filtered out.
 func (t *Tokenizer) Tokenize(text string) []string {

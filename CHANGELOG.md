@@ -33,6 +33,12 @@ Release PR before their tags are published.
   retrieval compatibility adapters, namespace migration utility, and legacy
   retrieval E2E module.
 
+### Changed
+
+- Renamed `sdkx/tool/memory` to `sdkx/tool/anthropicmemory` to distinguish
+  Anthropic's file-based Memory Tool protocol from the standalone `memory`
+  domain module.
+
 <!-- releasegate:releases -->
 
 ## `sdk/v0.4.0` - 2026-05-30

@@ -1,5 +1,5 @@
 // Package normalize provides Unicode-aware string canonicalisation
-// primitives used by the sdk/text family and any downstream component
+// primitives used by the memory/text family and any downstream component
 // that needs schema-grade equality on free-form text columns.
 //
 // The package keeps three orthogonal helpers:

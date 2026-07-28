@@ -76,7 +76,7 @@ func (t *Simple) Tokenize(text string) []string {
 		// their base form before the stemmer strips regular morphology.
 		// Stem alone cannot do this because it operates on suffixes
 		// only and irregular forms differ in their stem vowel or are
-		// suppletive — see sdk/text/lemma.
+		// suppletive — see memory/text/lemma.
 		out = append(out, t.stem(w, stem))
 	}
 	return out
