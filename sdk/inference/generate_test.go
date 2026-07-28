@@ -1,0 +1,645 @@
+package inference
+
+import (
+	"encoding/json"
+	"reflect"
+	"strings"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/tool"
+)
+
+func TestGenerateRequestSeparatesContextAndUniqueInput(t *testing.T) {
+	request := GenerateRequest{
+		Context: []Message{{
+			Role:    RoleUser,
+			Content: Content{Parts: []Part{TextPart{Text: "earlier"}}},
+		}},
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: Content{Parts: []Part{TextPart{Text: "now"}}},
+				Intent:  Intent{Text: &TextIntent{}},
+			},
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	missingInput := request
+	missingInput.Input = GenerateInput{}
+	if err := missingInput.Validate(); err == nil {
+		t.Fatal("Validate accepted a request without its one current input")
+	}
+	missingIntent := request
+	missingIntent.Input.Content.Intent = Intent{}
+	if err := missingIntent.Validate(); err == nil {
+		t.Fatal("Validate accepted current input without intent")
+	}
+
+	badContext := request
+	badContext.Context = []Message{{Role: RoleUser}}
+	if err := badContext.Validate(); err == nil {
+		t.Fatal("Validate accepted invalid prior context")
+	}
+}
+
+func TestGenerateInputMessageDiscardsIntent(t *testing.T) {
+	input := GenerateInput{
+		Role: InputRoleUser,
+		Content: InputContent{
+			Content: Content{Parts: []Part{TextPart{Text: "hello"}}},
+			Intent: Intent{
+				Text:      &TextIntent{},
+				Reasoning: &ReasoningIntent{Effort: ReasoningHigh},
+			},
+		},
+	}
+	message := input.Message()
+	if message.Role != RoleUser || len(message.Content.Parts) != 1 {
+		t.Fatalf("Message() = %#v", message)
+	}
+	data, err := json.Marshal(message)
+	if err != nil {
+		t.Fatalf("Marshal message: %v", err)
+	}
+	if strings.Contains(string(data), "intent") {
+		t.Fatalf("Message leaked intent: %s", data)
+	}
+}
+
+func TestIntentCombinesTypedControls(t *testing.T) {
+	count := 2
+	maxTokens := 512
+	temperature := 0.4
+	intent := Intent{
+		Text: &TextIntent{
+			Response:        &ResponseFormat{Kind: ResponseText},
+			MaxOutputTokens: &maxTokens,
+		},
+		Image: &ImageIntent{
+			AspectRatio:  media.AspectRatio("1:1"),
+			Count:        &count,
+			OutputFormat: media.ImageFormatPNG,
+			Delivery:     media.SourceURL,
+		},
+		Audio: &AudioIntent{
+			Voice:  media.VoiceSpec{ID: "alloy"},
+			Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
+			Count:  &count,
+		},
+		Tools: &ToolsIntent{
+			Definitions: []tool.Definition{{
+				Name:        "search",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			}},
+			Choice: &ToolChoice{Kind: ToolChoiceAuto},
+		},
+		Sampling:  &SamplingIntent{Temperature: &temperature},
+		Reasoning: &ReasoningIntent{Effort: ReasoningMedium},
+	}
+	if err := intent.Validate(); err != nil {
+		t.Fatalf("combined Intent.Validate: %v", err)
+	}
+	if err := (Intent{Sampling: &SamplingIntent{Temperature: &temperature}}).Validate(); err == nil {
+		t.Fatal("Intent accepted controls without an output-producing intent")
+	}
+}
+
+func TestGenerateRequestJSONRoundTripAndClone(t *testing.T) {
+	audio, err := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	duration := int64(750)
+	format := media.AudioFormat{Encoding: media.AudioEncodingMP3}
+	maxTokens := 64
+	request := GenerateRequest{
+		Context: []Message{{
+			Role: RoleAssistant,
+			Content: Content{Parts: []Part{AudioPart{
+				Source:         audio,
+				Format:         &format,
+				DurationMillis: &duration,
+			}}},
+		}},
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: Content{Parts: []Part{
+					TextPart{Text: "continue"},
+					DataPart{Value: json.RawMessage(`{"mutable":true}`)},
+				}},
+				Intent: Intent{
+					Text: &TextIntent{MaxOutputTokens: &maxTokens},
+					Tools: &ToolsIntent{Definitions: []tool.Definition{{
+						Name:        "search",
+						InputSchema: json.RawMessage(`{"type":"object"}`),
+					}}},
+				},
+			},
+		},
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded GenerateRequest
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if err := decoded.Validate(); err != nil {
+		t.Fatalf("round-tripped Validate: %v", err)
+	}
+	gotAudio, ok := decoded.Context[0].Content.Parts[0].(AudioPart)
+	if !ok || gotAudio.Format == nil || gotAudio.DurationMillis == nil ||
+		*gotAudio.DurationMillis != duration {
+		t.Fatalf("round-tripped audio = %#v", decoded.Context[0].Content.Parts[0])
+	}
+
+	clone := decoded.Clone()
+	clone.Input.Content.Parts[1].(DataPart).Value[0] = '['
+	*clone.Input.Content.Intent.Text.MaxOutputTokens = 1
+	clone.Input.Content.Intent.Tools.Definitions[0].InputSchema[0] = '['
+	if string(decoded.Input.Content.Parts[1].(DataPart).Value) != `{"mutable":true}` {
+		t.Fatal("GenerateRequest.Clone shared part payload")
+	}
+	if *decoded.Input.Content.Intent.Text.MaxOutputTokens != 64 {
+		t.Fatal("GenerateRequest.Clone shared intent pointer")
+	}
+	if string(decoded.Input.Content.Intent.Tools.Definitions[0].InputSchema) !=
+		`{"type":"object"}` {
+		t.Fatal("GenerateRequest.Clone shared tool schema")
+	}
+}
+
+func TestGenerateToolInput(t *testing.T) {
+	request := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleTool,
+			Content: InputContent{
+				Content: Content{Parts: []Part{ToolResultPart{Result: tool.Result{
+					CallID:  "call-1",
+					Content: "found",
+				}}}},
+				Intent: Intent{
+					Text:  &TextIntent{},
+					Tools: &ToolsIntent{Choice: &ToolChoice{Kind: ToolChoiceNone}},
+				},
+			},
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("tool input Validate: %v", err)
+	}
+	request.Input.Role = InputRoleUser
+	if err := request.Validate(); err == nil {
+		t.Fatal("user input accepted a tool result")
+	}
+}
+
+func TestGenerateToolsOnlyIntentRequiresCompletableToolChoice(t *testing.T) {
+	definitions := []tool.Definition{{
+		Name:        "search",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+	choice := func(kind ToolChoiceKind) *ToolChoice {
+		if kind == "" {
+			return nil
+		}
+		return &ToolChoice{Kind: kind}
+	}
+	tests := []struct {
+		name    string
+		text    bool
+		choice  *ToolChoice
+		wantErr bool
+	}{
+		{name: "tools_only_nil", choice: nil, wantErr: true},
+		{name: "tools_only_auto", choice: choice(ToolChoiceAuto), wantErr: true},
+		{name: "tools_only_none", choice: choice(ToolChoiceNone), wantErr: true},
+		{name: "tools_only_required", choice: choice(ToolChoiceRequired)},
+		{name: "tools_only_named", choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "search"}},
+		{name: "text_and_tools_nil", text: true},
+		{name: "text_and_tools_auto", text: true, choice: choice(ToolChoiceAuto)},
+		{name: "text_and_tools_none", text: true, choice: choice(ToolChoiceNone)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			intent := Intent{Tools: &ToolsIntent{
+				Definitions: definitions,
+				Choice:      tt.choice,
+			}}
+			if tt.text {
+				intent.Text = &TextIntent{}
+			}
+			err := intent.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Intent.Validate error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
+	image, _ := media.NewImageURL("https://example.com/cat.png", "image/png")
+	audio, _ := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
+	video, _ := media.NewVideoURL("https://example.com/video.mp4", "video/mp4")
+	call, _ := tool.NewCall("call-1", "search", map[string]any{"query": "cat"})
+	size := media.ImageSize{Width: 512, Height: 768}
+	count := 2
+	seed := int64(7)
+	speed := 1.25
+	maxTokens := 128
+	temperature := 0.4
+	topP := 0.9
+	request := GenerateRequest{
+		Context: []Message{
+			{Role: RoleUser, Content: Content{Parts: []Part{
+				TextPart{Text: "hello"}, ImagePart{Source: image},
+				AudioPart{Source: audio}, VideoPart{Source: video},
+				FilePart{URI: "s3://bucket/file"}, DataPart{Value: json.RawMessage(`{"x":1}`)},
+			}}},
+			{Role: RoleAssistant, Content: Content{Parts: []Part{ToolCallPart{Call: call}}}},
+			{Role: RoleTool, Content: Content{Parts: []Part{ToolResultPart{Result: tool.Result{CallID: "call-1"}}}}},
+		},
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: Content{Parts: []Part{
+					TextPart{Text: "now"}, ImagePart{Source: image},
+					AudioPart{Source: audio}, VideoPart{Source: video},
+					FilePart{URI: "s3://bucket/input"}, DataPart{Value: json.RawMessage(`{"y":2}`)},
+					ToolCallPart{Call: call}, ToolResultPart{Result: tool.Result{CallID: "call-1"}},
+				}},
+				Intent: Intent{
+					Text: &TextIntent{
+						Response: &ResponseFormat{
+							Kind: ResponseJSONSchema, Name: "answer",
+							Schema: json.RawMessage(`{"type":"object"}`),
+						},
+						MaxOutputTokens: &maxTokens,
+					},
+					Image: &ImageIntent{
+						Size: &size, AspectRatio: media.AspectRatio("2:3"),
+						Count: &count, Seed: &seed,
+						OutputFormat: media.ImageFormatPNG, Delivery: media.SourceURL,
+					},
+					Audio: &AudioIntent{
+						Voice: media.VoiceSpec{ID: "alloy", Language: "en"},
+						Format: media.AudioFormat{
+							Encoding: media.AudioEncodingPCM16, SampleRateHz: 24_000, Channels: 1,
+						},
+						Speed: &speed, Count: &count,
+					},
+					Tools: &ToolsIntent{
+						Definitions: []tool.Definition{{
+							Name: "search", Description: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
+						}},
+						Choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "search"},
+					},
+					Sampling:  &SamplingIntent{Temperature: &temperature, TopP: &topP},
+					Reasoning: &ReasoningIntent{Effort: ReasoningHigh},
+				},
+			},
+		},
+		Extensions: Extensions{testExtension{
+			provider: "openai", id: "generate_options",
+			fields: []ExtensionField{"store"},
+		}},
+	}
+	got := request.ActiveFields()
+	want := []FieldID{
+		FieldGenerateContextRole,
+		FieldGenerateContextText, FieldGenerateContextImage, FieldGenerateContextAudio,
+		FieldGenerateContextVideo, FieldGenerateContextFile, FieldGenerateContextData,
+		FieldGenerateContextToolCall, FieldGenerateContextToolResult,
+		FieldGenerateInputRole,
+		FieldGenerateInputText, FieldGenerateInputImage, FieldGenerateInputAudio,
+		FieldGenerateInputVideo, FieldGenerateInputFile, FieldGenerateInputData,
+		FieldGenerateInputToolCall, FieldGenerateInputToolResult,
+		FieldGenerateIntentText, FieldGenerateIntentTextResponse,
+		FieldGenerateIntentTextResponseKind, FieldGenerateIntentTextResponseName,
+		FieldGenerateIntentTextResponseSchema, FieldGenerateIntentTextMaxOutputTokens,
+		FieldGenerateIntentImage, FieldGenerateIntentImageSize,
+		FieldGenerateIntentImageSizeWidth, FieldGenerateIntentImageSizeHeight,
+		FieldGenerateIntentImageAspectRatio,
+		FieldGenerateIntentImageCount, FieldGenerateIntentImageSeed,
+		FieldGenerateIntentImageOutputFormat, FieldGenerateIntentImageDelivery,
+		FieldGenerateIntentAudio, FieldGenerateIntentAudioVoice,
+		FieldGenerateIntentAudioVoiceID, FieldGenerateIntentAudioVoiceLanguage,
+		FieldGenerateIntentAudioFormat, FieldGenerateIntentAudioFormatEncoding,
+		FieldGenerateIntentAudioFormatSampleRate, FieldGenerateIntentAudioFormatChannels,
+		FieldGenerateIntentAudioSpeed, FieldGenerateIntentAudioCount,
+		FieldGenerateIntentTools, FieldGenerateIntentToolDefinitions,
+		FieldGenerateIntentToolChoice, FieldGenerateIntentToolChoiceKind,
+		FieldGenerateIntentToolChoiceName,
+		FieldGenerateIntentSampling, FieldGenerateIntentSamplingTemperature,
+		FieldGenerateIntentSamplingTopP,
+		FieldGenerateIntentReasoning, FieldGenerateIntentReasoningEffort,
+		"extension.openai.generate_options.store",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ActiveFields() =\n%q\nwant\n%q", got, want)
+	}
+}
+
+func TestGenerateActiveFieldsIncludeExecutionShape(t *testing.T) {
+	request := validGenerateTextRequest()
+	for _, test := range []struct {
+		shape GenerateExecutionShape
+		field FieldID
+	}{
+		{GenerateExecutionUnary, FieldGenerateExecutionUnary},
+		{GenerateExecutionStream, FieldGenerateExecutionStream},
+	} {
+		active := request.ActiveFieldsFor(test.shape)
+		if got := active[len(active)-1]; got != test.field {
+			t.Fatalf("ActiveFieldsFor(%q) shape field = %q, want %q", test.shape, got, test.field)
+		}
+	}
+}
+
+func TestGenerateResponseCloneOwnsMutableState(t *testing.T) {
+	image, _ := media.NewImageBytes([]byte("image"), "image/png")
+	generated := int64(1)
+	response := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			ImagePart{Source: image},
+			DataPart{Value: json.RawMessage(`{"answer":42}`)},
+		}}},
+		FinishReason: FinishCompleted,
+		Usage: Usage{
+			InputTokens: 1, OutputTokens: 2, TotalTokens: 3,
+			GeneratedImages: &generated,
+			Input:           InputTokenUsage{CacheReadTokens: count(0)},
+		},
+		Metadata: Metadata{Decisions: []Decision{{Field: FieldGenerateInputRole, Disposition: Native}}},
+	}
+	clone := response.Clone()
+	clone.Message.Content.Parts[1].(DataPart).Value[0] = '['
+	*clone.Usage.GeneratedImages = 2
+	*clone.Usage.Input.CacheReadTokens = 3
+	clone.Metadata.Decisions[0].Disposition = Rejected
+	if string(response.Message.Content.Parts[1].(DataPart).Value) != `{"answer":42}` ||
+		*response.Usage.GeneratedImages != 1 || *response.Usage.Input.CacheReadTokens != 0 ||
+		response.Metadata.Decisions[0].Disposition != Native {
+		t.Fatal("GenerateResponse.Clone shared mutable response state")
+	}
+}
+
+func TestGenerateResponseValidateForCompletedCombinedIntent(t *testing.T) {
+	image, _ := media.NewImageURL("https://example.com/cat.png", "image/png")
+	audio, _ := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
+	count := 1
+	request := GenerateRequest{Input: GenerateInput{
+		Role: InputRoleUser,
+		Content: InputContent{
+			Content: Content{Parts: []Part{TextPart{Text: "make it"}}},
+			Intent: Intent{
+				Text: &TextIntent{Response: &ResponseFormat{
+					Kind: ResponseJSONSchema, Name: "answer",
+					Schema: json.RawMessage(`{"type":"object","required":["answer"],"properties":{"answer":{"type":"integer"}}}`),
+				}},
+				Image: &ImageIntent{Count: &count, OutputFormat: media.ImageFormatPNG, Delivery: media.SourceURL},
+				Audio: &AudioIntent{
+					Voice:  media.VoiceSpec{ID: "alloy"},
+					Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
+					Count:  &count,
+				},
+			},
+		},
+	}}
+	response := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			TextPart{Text: `{"answer":42}`},
+			ImagePart{Source: image},
+			AudioPart{Source: audio, Format: &media.AudioFormat{Encoding: media.AudioEncodingMP3}},
+		}}},
+		FinishReason: FinishCompleted,
+	}
+	if err := response.ValidateFor(request); err != nil {
+		t.Fatalf("valid combined response rejected: %v", err)
+	}
+
+	badSchema := response
+	badSchema.Message = response.Message.Clone()
+	badSchema.Message.Content.Parts[0] = TextPart{Text: `{"answer":"wrong"}`}
+	if err := badSchema.ValidateFor(request); err == nil {
+		t.Fatal("completed schema-invalid text accepted")
+	}
+	badDelivery := response
+	badDelivery.Message = response.Message.Clone()
+	inline, _ := media.NewImageBytes([]byte("image"), "image/png")
+	badDelivery.Message.Content.Parts[1] = ImagePart{Source: inline}
+	if err := badDelivery.ValidateFor(request); err == nil {
+		t.Fatal("completed image with wrong delivery accepted")
+	}
+	badAudio := response
+	badAudio.Message = response.Message.Clone()
+	badAudio.Message.Content.Parts[2] = AudioPart{
+		Source: audio, Format: &media.AudioFormat{Encoding: media.AudioEncodingAAC},
+	}
+	if err := badAudio.ValidateFor(request); err == nil {
+		t.Fatal("completed audio with wrong format accepted")
+	}
+	tooManyImages := response
+	tooManyImages.Message = response.Message.Clone()
+	tooManyImages.Message.Content.Parts = append(
+		tooManyImages.Message.Content.Parts, ImagePart{Source: image},
+	)
+	if err := tooManyImages.ValidateFor(request); err == nil {
+		t.Fatal("completed image cardinality mismatch accepted")
+	}
+}
+
+func TestGenerateResponsePartialSkipsCompletenessButRejectsWrongModality(t *testing.T) {
+	count := 2
+	request := GenerateRequest{Input: GenerateInput{
+		Role: InputRoleUser,
+		Content: InputContent{
+			Content: Content{Parts: []Part{TextPart{Text: "make it"}}},
+			Intent: Intent{
+				Text:  &TextIntent{Response: &ResponseFormat{Kind: ResponseJSONObject}},
+				Image: &ImageIntent{Count: &count},
+			},
+		},
+	}}
+	partial := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			TextPart{Text: `{"answer":`},
+		}}},
+		FinishReason: FinishMaxOutput,
+	}
+	if err := partial.ValidateFor(request); err != nil {
+		t.Fatalf("partial response was subjected to completeness checks: %v", err)
+	}
+	negative := int64(-1)
+	invalidUsage := partial
+	invalidUsage.Usage.InputCharacters = &negative
+	if err := invalidUsage.ValidateFor(request); err == nil {
+		t.Fatal("partial response with invalid usage accepted")
+	}
+	audio, _ := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
+	partial.Message.Content.Parts = append(partial.Message.Content.Parts, AudioPart{Source: audio})
+	if err := partial.ValidateFor(request); err == nil {
+		t.Fatal("partial response with unrequested modality accepted")
+	}
+}
+
+func TestGenerateResponseToolFinishParity(t *testing.T) {
+	call, _ := tool.NewCall("call-1", "search", map[string]any{"query": "cat"})
+	response := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			ToolCallPart{Call: call},
+		}}},
+		FinishReason: FinishCompleted,
+	}
+	if err := response.Validate(); err == nil {
+		t.Fatal("completed response with tool calls accepted")
+	}
+	response.FinishReason = FinishToolCalls
+	if err := response.Validate(); err != nil {
+		t.Fatalf("tool-call finish rejected: %v", err)
+	}
+	response.Message.Content.Parts = []Part{TextPart{Text: "no call"}}
+	if err := response.Validate(); err == nil {
+		t.Fatal("tool-call finish without tool calls accepted")
+	}
+}
+
+func TestUnifiedFinishReasonValues(t *testing.T) {
+	reasons := map[FinishReason]string{
+		FinishCompleted:       "completed",
+		FinishMaxOutput:       "max_output",
+		FinishToolCalls:       "tool_calls",
+		FinishContentFilter:   "content_filter",
+		FinishRefusal:         "refusal",
+		FinishPause:           "pause",
+		FinishInvalidToolCall: "invalid_tool_call",
+		FinishContextLimit:    "context_limit",
+		FinishOther:           "other",
+	}
+	for reason, want := range reasons {
+		if string(reason) != want {
+			t.Errorf("finish reason %q = %q, want %q", want, reason, want)
+		}
+	}
+}
+
+func TestGenerateResponseValidateForEnforcesToolChoiceAndDefinitions(t *testing.T) {
+	definitions := []tool.Definition{
+		{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		{Name: "fetch", InputSchema: json.RawMessage(`{"type":"object"}`)},
+	}
+	call := func(name string) Part {
+		value, err := tool.NewCall("call-1", name, map[string]any{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ToolCallPart{Call: value}
+	}
+	response := func(parts ...Part) GenerateResponse {
+		return GenerateResponse{
+			Message:      Message{Role: RoleAssistant, Content: Content{Parts: parts}},
+			FinishReason: FinishToolCalls,
+		}
+	}
+	request := func(choice ToolChoice) GenerateRequest {
+		return GenerateRequest{Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: Content{Parts: []Part{TextPart{Text: "use a tool"}}},
+				Intent: Intent{
+					Text: &TextIntent{},
+					Tools: &ToolsIntent{
+						Definitions: definitions,
+						Choice:      &choice,
+					},
+				},
+			},
+		}}
+	}
+
+	tests := []struct {
+		name     string
+		choice   ToolChoice
+		response GenerateResponse
+		wantErr  bool
+	}{
+		{"none_rejects_call", ToolChoice{Kind: ToolChoiceNone}, response(call("search")), true},
+		{"required_requires_call", ToolChoice{Kind: ToolChoiceRequired}, GenerateResponse{
+			Message: Message{Role: RoleAssistant, Content: Content{
+				Parts: []Part{TextPart{Text: "no call"}},
+			}},
+			FinishReason: FinishCompleted,
+		}, true},
+		{"named_accepts_only_name", ToolChoice{Kind: ToolChoiceNamed, Name: "search"}, response(call("fetch")), true},
+		{"undefined_call_rejected", ToolChoice{Kind: ToolChoiceAuto}, response(call("missing")), true},
+		{"required_accepts_defined_call", ToolChoice{Kind: ToolChoiceRequired}, response(call("search")), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.response.ValidateFor(request(tt.choice))
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ValidateFor error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGenerateResponseAllowsEmptyMessageOnlyForIncompleteFinish(t *testing.T) {
+	request := validGenerateTextRequest()
+	incomplete := []FinishReason{
+		FinishContentFilter, FinishRefusal, FinishContextLimit, FinishPause,
+		FinishMaxOutput, FinishInvalidToolCall, FinishOther,
+	}
+	for _, reason := range incomplete {
+		t.Run(string(reason), func(t *testing.T) {
+			response := GenerateResponse{
+				Message:      Message{Role: RoleAssistant},
+				FinishReason: reason,
+			}
+			if err := response.ValidateFor(request); err != nil {
+				t.Fatalf("empty incomplete response rejected: %v", err)
+			}
+		})
+	}
+	required := request.Clone()
+	required.Input.Content.Intent.Tools = &ToolsIntent{
+		Definitions: []tool.Definition{{
+			Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+		Choice: &ToolChoice{Kind: ToolChoiceRequired},
+	}
+	if err := (GenerateResponse{
+		Message:      Message{Role: RoleAssistant},
+		FinishReason: FinishPause,
+	}).ValidateFor(required); err != nil {
+		t.Fatalf("empty paused required-tool response rejected: %v", err)
+	}
+	for _, reason := range []FinishReason{FinishCompleted, FinishToolCalls} {
+		t.Run(string(reason), func(t *testing.T) {
+			response := GenerateResponse{
+				Message:      Message{Role: RoleAssistant},
+				FinishReason: reason,
+			}
+			if err := response.ValidateFor(request); err == nil {
+				t.Fatal("empty complete response accepted")
+			}
+		})
+	}
+}
+
+func TestResponseFormatValidateCompilesJSONSchema(t *testing.T) {
+	format := ResponseFormat{
+		Kind:   ResponseJSONSchema,
+		Name:   "broken",
+		Schema: json.RawMessage(`{"type":"definitely-not-a-json-schema-type"}`),
+	}
+	if err := format.Validate(); err == nil {
+		t.Fatal("syntactically valid but uncompilable JSON schema accepted")
+	}
+}

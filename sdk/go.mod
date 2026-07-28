@@ -7,6 +7,7 @@ require (
 	github.com/expr-lang/expr v1.17.8
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/rs/xid v1.6.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	github.com/yuin/gopher-lua v1.1.1
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0
