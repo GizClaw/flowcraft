@@ -183,8 +183,8 @@ func TestGenerateRejectsInvalidFallbackTargetAndLimit(t *testing.T) {
 	})
 
 	t.Run("target limit", func(t *testing.T) {
-		behaviors := make(map[string]generateRouteBehavior, maxGenerateTargets+1)
-		targets := make([]inference.ModelRef, maxGenerateTargets+1)
+		behaviors := make(map[string]generateRouteBehavior, maxFallbackTargets+1)
+		targets := make([]inference.ModelRef, maxFallbackTargets+1)
 		for index := range targets {
 			targets[index] = generateModel(string(rune('a' + index)))
 			behaviors[targets[index].ID.Name] = generateRouteBehavior{
@@ -204,7 +204,7 @@ func TestGenerateRejectsInvalidFallbackTargetAndLimit(t *testing.T) {
 		}))
 		_, trace, err := router.Generate(context.Background(), generateRequest("hello"))
 		if !IsKind(err, FallbackLimitExceeded) ||
-			len(trace.Attempts) != maxGenerateTargets {
+			len(trace.Attempts) != maxFallbackTargets {
 			t.Fatalf("Generate error/attempts = %v/%+v", err, trace.Attempts)
 		}
 	})
@@ -217,7 +217,7 @@ func TestGenerateFallbackEligibilityIsTransportSafe(t *testing.T) {
 		inference.InvalidExtension,
 	}
 	for _, kind := range eligible {
-		if !generateFallbackEligible(Attempt{
+		if !fallbackEligible(Attempt{
 			Outcome: AttemptOutcomeFailed, ErrorKind: kind,
 		}) {
 			t.Fatalf("%s is not fallback eligible", kind)
@@ -235,13 +235,13 @@ func TestGenerateFallbackEligibilityIsTransportSafe(t *testing.T) {
 		inference.UnknownProfile,
 	}
 	for _, kind := range prohibited {
-		if generateFallbackEligible(Attempt{
+		if fallbackEligible(Attempt{
 			Outcome: AttemptOutcomeFailed, ErrorKind: kind,
 		}) {
 			t.Fatalf("%s is fallback eligible", kind)
 		}
 	}
-	if generateFallbackEligible(Attempt{
+	if fallbackEligible(Attempt{
 		Outcome:          AttemptOutcomeFailed,
 		ErrorKind:        inference.UnsupportedFeature,
 		ObservableOutput: true,

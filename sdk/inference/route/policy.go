@@ -26,10 +26,17 @@ func (t Tier) Validate() error {
 // value is in [0,1], and higher is better. Scores guide selection only; they
 // never claim that a request is executable.
 type ModelScore struct {
-	Quality     *float64 `json:"quality,omitempty"`
-	Economy     *float64 `json:"economy,omitempty"`
-	Speed       *float64 `json:"speed,omitempty"`
-	Reliability *float64 `json:"reliability,omitempty"`
+	Quality     *float64 `json:"quality,omitempty" yaml:"quality,omitempty"`
+	Economy     *float64 `json:"economy,omitempty" yaml:"economy,omitempty"`
+	Speed       *float64 `json:"speed,omitempty" yaml:"speed,omitempty"`
+	Reliability *float64 `json:"reliability,omitempty" yaml:"reliability,omitempty"`
+}
+
+// IsZero reports whether no signal is populated. It drives both JSON
+// omitzero and YAML omitempty so scoreless targets stay compact.
+func (s ModelScore) IsZero() bool {
+	return s.Quality == nil && s.Economy == nil &&
+		s.Speed == nil && s.Reliability == nil
 }
 
 func (s ModelScore) Clone() ModelScore {
@@ -65,8 +72,8 @@ func (s ModelScore) Validate() error {
 
 // Target is one exact executable model candidate plus route-only signals.
 type Target struct {
-	Model inference.ModelRef `json:"model"`
-	Score ModelScore         `json:"score,omitzero"`
+	Model inference.ModelRef `json:"model" yaml:"model"`
+	Score ModelScore         `json:"score,omitzero" yaml:"score,omitempty"`
 }
 
 func (t Target) Clone() Target {
@@ -83,8 +90,8 @@ func (t Target) Validate() error {
 
 // Pool is the allowlist of exact model targets available to one tier.
 type Pool struct {
-	Tier    Tier     `json:"tier"`
-	Targets []Target `json:"targets"`
+	Tier    Tier     `json:"tier" yaml:"tier"`
+	Targets []Target `json:"targets" yaml:"targets"`
 }
 
 func (p Pool) Clone() Pool {
@@ -119,10 +126,10 @@ func (p Pool) Validate() error {
 // Policy owns operation-specific tier allowlists. It is descriptive route
 // configuration, not an inference capability catalog.
 type Policy struct {
-	Generate      []Pool `json:"generate,omitempty"`
-	Embed         []Pool `json:"embed,omitempty"`
-	Transcription []Pool `json:"transcription,omitempty"`
-	Realtime      []Pool `json:"realtime,omitempty"`
+	Generate      []Pool `json:"generate,omitempty" yaml:"generate,omitempty"`
+	Embed         []Pool `json:"embed,omitempty" yaml:"embed,omitempty"`
+	Transcription []Pool `json:"transcription,omitempty" yaml:"transcription,omitempty"`
+	Realtime      []Pool `json:"realtime,omitempty" yaml:"realtime,omitempty"`
 }
 
 func (p Policy) Clone() Policy {
