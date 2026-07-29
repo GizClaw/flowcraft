@@ -11,8 +11,74 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 )
+
+func storeRoundTripsRouteSection(t *testing.T) {
+	t.Helper()
+	quality := 0.9
+	document := config.Document{
+		Version:   config.VersionV1,
+		Providers: []config.ProviderConfig{{ID: "openai", Driver: "openai"}},
+		Route: &route.Policy{
+			Generate: []route.Pool{{
+				Tier: "quality",
+				Targets: []route.Target{
+					{
+						Model: inference.ModelRef{
+							ID:      inference.ModelID{Provider: "openai", Name: "gpt"},
+							Profile: "eu",
+						},
+						Score: route.ModelScore{Quality: &quality},
+					},
+					{
+						Model: inference.ModelRef{
+							ID: inference.ModelID{Provider: "openai", Name: "gpt-mini"},
+						},
+					},
+				},
+			}},
+		},
+	}
+	path := filepath.Join(t.TempDir(), "inference.yaml")
+	store, err := New(path)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := store.Save(t.Context(), "", document); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "route:") ||
+		!strings.Contains(text, `profile: eu`) ||
+		!strings.Contains(text, `quality: 0.9`) {
+		t.Fatalf("serialized route section:\n%s", text)
+	}
+	// The scoreless second target must not emit an empty score mapping.
+	if strings.Contains(text, "score: {}") {
+		t.Fatalf("scoreless target emitted noise:\n%s", text)
+	}
+	snapshot, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	loaded := snapshot.Document.Route
+	if loaded == nil || len(loaded.Generate) != 1 ||
+		len(loaded.Generate[0].Targets) != 2 {
+		t.Fatalf("loaded route = %+v", loaded)
+	}
+	first := loaded.Generate[0].Targets[0]
+	if first.Model.Profile != "eu" ||
+		first.Score.Quality == nil ||
+		*first.Score.Quality != 0.9 {
+		t.Fatalf("loaded target = %+v", first)
+	}
+}
 
 func TestStoreRoundTripAndOptimisticRevision(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "inference.yaml")

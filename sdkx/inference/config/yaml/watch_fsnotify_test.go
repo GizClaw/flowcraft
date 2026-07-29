@@ -24,6 +24,10 @@ func watchDocument(t *testing.T) config.Document {
 	return document
 }
 
+func TestStoreRoundTripsRouteSection(t *testing.T) {
+	storeRoundTripsRouteSection(t)
+}
+
 func awaitSignal(t *testing.T, signals <-chan struct{}, what string) {
 	t.Helper()
 	select {

@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
 )
 
 const VersionV1 = "v1"
@@ -25,6 +26,11 @@ var identifierPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 type Document struct {
 	Version   string           `json:"version"`
 	Providers []ProviderConfig `json:"providers"`
+	// Route declares deployment routing tiers and target pools. It is
+	// optional: nil means callers select exact models themselves. Builder
+	// validates every target against the assembled runtime at build time, so
+	// a snapshot referencing unknown or retired models fails fast.
+	Route *route.Policy `json:"route,omitempty"`
 }
 
 // ProviderConfig is the provider-neutral envelope consumed by a provider
@@ -117,6 +123,11 @@ func (d Document) Validate() error {
 			return fmt.Errorf("duplicate provider %q", provider.ID)
 		}
 		providers[provider.ID] = struct{}{}
+	}
+	if d.Route != nil {
+		if err := d.Route.Validate(); err != nil {
+			return fmt.Errorf("route: %w", err)
+		}
 	}
 	return nil
 }
@@ -273,6 +284,10 @@ func (d Document) Clone() Document {
 	}
 	for index, provider := range d.Providers {
 		cloned.Providers[index] = provider.Clone()
+	}
+	if d.Route != nil {
+		clonedRoute := d.Route.Clone()
+		cloned.Route = &clonedRoute
 	}
 	return cloned
 }

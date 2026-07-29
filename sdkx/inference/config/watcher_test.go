@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
 )
 
 type memoryStore struct {
@@ -244,6 +245,83 @@ func TestNewReloaderRejectsBrokenInitialSnapshot(t *testing.T) {
 	store := &memoryStore{}
 	if _, err := NewReloader(t.Context(), newWatcherBuilder(t), store); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("NewReloader error = %v, want ErrNotFound", err)
+	}
+}
+
+func watcherRoutedDocument(name string) Document {
+	document := watcherDocument(name)
+	document.Route = &route.Policy{
+		Generate: []route.Pool{{
+			Tier: "balanced",
+			Targets: []route.Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "fake", Name: "model"},
+				},
+			}},
+		}},
+	}
+	return document
+}
+
+func TestReloaderSwapsRouterWithRuntime(t *testing.T) {
+	store := &memoryStore{}
+	seed, err := store.Save(t.Context(), "", watcherRoutedDocument("v1"))
+	if err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+	reloader, err := NewReloader(t.Context(), newWatcherBuilder(t), store)
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+	firstRuntime := reloader.Runtime()
+	firstRouter := reloader.Router()
+	if firstRouter == nil {
+		t.Fatal("route section did not produce a router")
+	}
+
+	if err := reloader.ReloadOnce(t.Context()); err != nil {
+		t.Fatalf("ReloadOnce unchanged: %v", err)
+	}
+	if reloader.Router() != firstRouter {
+		t.Fatal("unchanged revision swapped the router")
+	}
+
+	if _, err := store.Save(
+		t.Context(), seed.Revision, watcherRoutedDocument("v2"),
+	); err != nil {
+		t.Fatalf("update Save: %v", err)
+	}
+	if err := reloader.ReloadOnce(t.Context()); err != nil {
+		t.Fatalf("ReloadOnce changed: %v", err)
+	}
+	if reloader.Runtime() == firstRuntime {
+		t.Fatal("changed revision kept the old runtime")
+	}
+	if reloader.Router() == firstRouter {
+		t.Fatal("changed revision kept the old router")
+	}
+}
+
+func TestReloaderRouterStaysNilWithoutRouteSection(t *testing.T) {
+	store := &memoryStore{}
+	if _, err := store.Save(t.Context(), "", watcherDocument("v1")); err != nil {
+		t.Fatalf("seed Save: %v", err)
+	}
+	reloader, err := NewReloader(t.Context(), newWatcherBuilder(t), store)
+	if err != nil {
+		t.Fatalf("NewReloader: %v", err)
+	}
+	if reloader.Router() != nil {
+		t.Fatal("routeless document produced a router")
+	}
+	if _, err := store.Save(t.Context(), AnyRevision, watcherDocument("v2")); err != nil {
+		t.Fatalf("update Save: %v", err)
+	}
+	if err := reloader.ReloadOnce(t.Context()); err != nil {
+		t.Fatalf("ReloadOnce: %v", err)
+	}
+	if reloader.Router() != nil {
+		t.Fatal("router appeared without a route section")
 	}
 }
 

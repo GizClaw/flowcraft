@@ -7,6 +7,7 @@ import (
 	"reflect"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
 )
 
 // Factory is implemented by a provider package. It owns strict decoding of
@@ -183,7 +184,51 @@ func (b *Builder) NewRuntime(
 	if err != nil {
 		return nil, err
 	}
-	return inference.NewRuntime(definitions, options...)
+	runtime, err := inference.NewRuntime(definitions, options...)
+	if err != nil {
+		return nil, err
+	}
+	if document.Route != nil {
+		if err := document.Route.ValidateFor(runtime); err != nil {
+			return nil, fmt.Errorf("validate route targets: %w", err)
+		}
+	}
+	return runtime, nil
+}
+
+// Assembly is the fully built output of one Document: the runtime plus, when
+// the document declares a route section, a Router composed above it.
+type Assembly struct {
+	Runtime *inference.Runtime
+	// Router is nil when the document has no route section; callers then
+	// address exact models through Runtime directly.
+	Router *route.Router
+}
+
+// NewAssembly builds the runtime and, when document.Route is set, composes the
+// deployment Router above it. The Router is driven by the route policy in
+// declared order (see Policy.Selectors); callers that need score-aware or
+// request-aware selection build route.New themselves with custom Selectors.
+// Route targets were already validated against the runtime, so Router
+// construction cannot fail on target resolution.
+func (b *Builder) NewAssembly(
+	ctx context.Context,
+	document Document,
+	options ...inference.RuntimeOption,
+) (Assembly, error) {
+	runtime, err := b.NewRuntime(ctx, document, options...)
+	if err != nil {
+		return Assembly{}, err
+	}
+	assembly := Assembly{Runtime: runtime}
+	if document.Route != nil {
+		router, err := route.New(runtime, document.Route.Selectors())
+		if err != nil {
+			return Assembly{}, fmt.Errorf("build route router: %w", err)
+		}
+		assembly.Router = router
+	}
+	return assembly, nil
 }
 
 func (b *Builder) resolveProvider(

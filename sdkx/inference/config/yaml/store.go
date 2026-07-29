@@ -18,6 +18,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 	yamlv3 "gopkg.in/yaml.v3"
 )
@@ -188,6 +189,7 @@ func (s *Store) Save(
 type documentWire struct {
 	Version   string         `yaml:"version"`
 	Providers []providerWire `yaml:"providers"`
+	Route     *route.Policy  `yaml:"route,omitempty"`
 }
 
 type providerWire struct {
@@ -414,6 +416,7 @@ func decode(data []byte) (config.Document, error) {
 	document := config.Document{
 		Version:   wire.Version,
 		Providers: make([]config.ProviderConfig, len(wire.Providers)),
+		Route:     wire.Route,
 	}
 	for providerIndex, provider := range wire.Providers {
 		converted := config.ProviderConfig{
@@ -442,6 +445,7 @@ func encode(document config.Document) ([]byte, error) {
 	wire := documentWire{
 		Version:   document.Version,
 		Providers: make([]providerWire, len(document.Providers)),
+		Route:     document.Route,
 	}
 	for providerIndex, provider := range document.Providers {
 		converted := providerWire{
