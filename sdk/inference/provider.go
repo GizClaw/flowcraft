@@ -139,6 +139,7 @@ type pipeline[Req, Wire, Raw, Resp any] struct {
 	validateRequest  func(Req) error
 	activeFields     func(Req) []FieldID
 	extensions       func(Req) Extensions
+	setExtensions    func(Req, Extensions) Req
 	clone            func(Req) Req
 	validateResponse func(Req, Resp) error
 }
@@ -170,6 +171,10 @@ func bindGenerate[Wire, Raw any](
 			return request.ActiveFieldsFor(GenerateExecutionUnary)
 		},
 		func(request GenerateRequest) Extensions { return request.Extensions },
+		func(request GenerateRequest, extensions Extensions) GenerateRequest {
+			request.Extensions = extensions
+			return request
+		},
 		GenerateRequest.Clone,
 		func(request GenerateRequest, response GenerateResponse) error {
 			return response.ValidateFor(request)
@@ -228,6 +233,10 @@ func bindGenerateStream[Wire, RawEvent any](
 			return request.ActiveFieldsFor(GenerateExecutionStream)
 		},
 		func(request GenerateRequest) Extensions { return request.Extensions },
+		func(request GenerateRequest, extensions Extensions) GenerateRequest {
+			request.Extensions = extensions
+			return request
+		},
 		GenerateRequest.Clone,
 		func(request GenerateRequest, response GenerateResponse) error {
 			return response.ValidateFor(request)
@@ -268,6 +277,10 @@ func BindEmbed[Wire, Raw any](
 		OperationEmbed, compile, transport, decode,
 		EmbedRequest.Validate, EmbedRequest.ActiveFields,
 		func(request EmbedRequest) Extensions { return request.Extensions },
+		func(request EmbedRequest, extensions Extensions) EmbedRequest {
+			request.Extensions = extensions
+			return request
+		},
 		EmbedRequest.Clone,
 		func(request EmbedRequest, response EmbedResponse) error {
 			return response.ValidateFor(request)
@@ -288,6 +301,10 @@ func BindTranscription[Wire, Raw any](
 		OperationTranscription, compile, transport, decode,
 		TranscriptionRequest.Validate, TranscriptionRequest.ActiveFields,
 		func(request TranscriptionRequest) Extensions { return request.Extensions },
+		func(request TranscriptionRequest, extensions Extensions) TranscriptionRequest {
+			request.Extensions = extensions
+			return request
+		},
 		TranscriptionRequest.Clone,
 		func(request TranscriptionRequest, response TranscriptionResponse) error {
 			return response.ValidateFor(request)
@@ -311,6 +328,10 @@ func BindTranscriptionSession[Wire any](
 		TranscriptionSessionConfig.Validate,
 		TranscriptionSessionConfig.ActiveFields,
 		func(config TranscriptionSessionConfig) Extensions { return config.Extensions },
+		func(config TranscriptionSessionConfig, extensions Extensions) TranscriptionSessionConfig {
+			config.Extensions = extensions
+			return config
+		},
 		TranscriptionSessionConfig.Clone,
 		func(_ TranscriptionSessionConfig, session TranscriptionSession) error {
 			if isNilValue(session) {
@@ -359,6 +380,10 @@ func BindRealtime[ConfigWire, InputWire, RawEvent any](
 		},
 		RealtimeConfig.Validate, RealtimeConfig.ActiveFields,
 		func(config RealtimeConfig) Extensions { return config.Extensions },
+		func(config RealtimeConfig, extensions Extensions) RealtimeConfig {
+			config.Extensions = extensions
+			return config
+		},
 		RealtimeConfig.Clone,
 		func(
 			_ RealtimeConfig,
@@ -453,10 +478,11 @@ func bindPipeline[Req, Wire, Raw, Resp any](
 	validateRequest func(Req) error,
 	activeFields func(Req) []FieldID,
 	extensions func(Req) Extensions,
+	setExtensions func(Req, Extensions) Req,
 	clone func(Req) Req,
 	validateResponse func(Req, Resp) error,
 ) (*pipeline[Req, Wire, Raw, Resp], error) {
-	if compile == nil || transport == nil || decode == nil {
+	if compile == nil || transport == nil || decode == nil || setExtensions == nil {
 		return nil, errdefs.Validationf("inference pipeline requires all provider stages")
 	}
 	wireType := reflect.TypeFor[Wire]()
@@ -474,6 +500,7 @@ func bindPipeline[Req, Wire, Raw, Resp any](
 		validateRequest:  validateRequest,
 		activeFields:     activeFields,
 		extensions:       extensions,
+		setExtensions:    setExtensions,
 		clone:            clone,
 		validateResponse: validateResponse,
 	}, nil
@@ -532,18 +559,26 @@ func (p *pipeline[Req, Wire, Raw, Resp]) prepare(
 	if err := model.Validate(); err != nil {
 		return zero, NewError(InvalidRequest, p.operation, "", err)
 	}
-	if err := p.extensions(request).ValidateForProvider(model.ID.Provider); err != nil {
-		return zero, NewError(InvalidExtension, p.operation, "", err)
-	}
 	if err := p.validateRequest(request); err != nil {
 		return zero, NewError(InvalidRequest, p.operation, "", err)
 	}
-	active := append([]FieldID(nil), p.activeFields(request)...)
+	// Extensions are addressed by ProviderID: on this attempt only the
+	// provider's own extensions apply. Foreign extensions are stripped so
+	// one request can carry several providers' settings across route
+	// fallback; the attempt's ledger then covers only what applied here.
+	// The expected field set derives from the caller's request so a lossy
+	// clone cannot hide dropped extension fields.
+	expected := p.activeFields(p.setExtensions(
+		request,
+		p.extensions(request).ForProvider(model.ID.Provider),
+	))
 	snapshot := p.clone(request)
-	if err := p.extensions(snapshot).ValidateForProvider(model.ID.Provider); err != nil {
-		return zero, contractViolation(p.operation, "", "extension clone is invalid")
-	}
-	if !sameFieldSet(active, p.activeFields(snapshot)) {
+	snapshot = p.setExtensions(
+		snapshot,
+		p.extensions(snapshot).ForProvider(model.ID.Provider),
+	)
+	active := append([]FieldID(nil), p.activeFields(snapshot)...)
+	if !sameFieldSet(expected, active) {
 		return zero, contractViolation(
 			p.operation,
 			"",

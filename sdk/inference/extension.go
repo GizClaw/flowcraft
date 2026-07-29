@@ -8,6 +8,14 @@ import (
 // Extension is implemented by typed values in provider packages. The
 // provider-qualified key lets the compiler prove that each extension was
 // consumed without exposing an untyped parameter map.
+//
+// ProviderID is an address, not a lock: a request may carry extensions for
+// several providers at once so that route fallback across providers keeps
+// working. On each attempt the pipeline strips extensions addressed to
+// other providers before compilation (Extensions.ForProvider) — foreign
+// extensions are inert, never silently misapplied and never rejected merely
+// for belonging elsewhere. An extension addressed to the attempt's provider
+// but meant for another operation is still rejected by the compiler.
 type Extension interface {
 	ProviderID() string
 	ExtensionID() string
@@ -33,6 +41,9 @@ func (field ExtensionField) Qualify(extension Extension) FieldID {
 type Extensions []Extension
 
 func (extensions Extensions) Clone() Extensions {
+	if extensions == nil {
+		return nil
+	}
 	cloned := make(Extensions, len(extensions))
 	for i, extension := range extensions {
 		if !isNilValue(extension) {
@@ -80,21 +91,20 @@ func (extensions Extensions) Validate() error {
 	return nil
 }
 
-func (extensions Extensions) ValidateForProvider(provider string) error {
-	if err := extensions.Validate(); err != nil {
-		return err
-	}
+// ForProvider returns the subset of extensions addressed to provider,
+// preserving order. Extensions addressed elsewhere are inert on this
+// attempt: routing may fall back across providers, and each attempt applies
+// only its own provider's settings. An empty result is reported as nil.
+func (extensions Extensions) ForProvider(provider string) Extensions {
+	var filtered Extensions
 	for _, extension := range extensions {
-		if extension.ProviderID() != provider {
-			return fmt.Errorf(
-				"extension %q belongs to provider %q, not %q",
-				extension.ExtensionID(),
-				extension.ProviderID(),
-				provider,
-			)
+		if isNilValue(extension) ||
+			extension.ProviderID() != provider {
+			continue
 		}
+		filtered = append(filtered, extension)
 	}
-	return nil
+	return filtered
 }
 
 func (extensions Extensions) AppendActiveFields(fields []FieldID) []FieldID {

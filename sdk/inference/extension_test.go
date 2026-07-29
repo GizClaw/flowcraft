@@ -50,15 +50,30 @@ func (e *pointerExtension) Clone() Extension {
 	return &clone
 }
 
-func TestProviderExtensionMismatchIsRejectedBeforeCompile(t *testing.T) {
-	if err := (Extensions{
+func TestExtensionsForProviderFiltersForeignAttempts(t *testing.T) {
+	extensions := Extensions{
 		testExtension{
 			provider: "anthropic",
 			id:       "thinking",
 			fields:   []ExtensionField{"budget_tokens"},
 		},
-	}).ValidateForProvider("openai"); err == nil {
-		t.Fatal("expected provider mismatch")
+		nil,
+		testExtension{
+			provider: "openai",
+			id:       "chat_options",
+			fields:   []ExtensionField{"store"},
+		},
+	}
+	filtered := extensions.ForProvider("openai")
+	if len(filtered) != 1 || filtered[0].ExtensionID() != "chat_options" {
+		t.Fatalf("filtered = %#v", filtered)
+	}
+	if rest := extensions.ForProvider("gemini"); rest != nil {
+		t.Fatalf("unmatched provider subset = %#v, want nil", rest)
+	}
+	// The source list is untouched: filtering is per-attempt, not destructive.
+	if len(extensions) != 3 {
+		t.Fatalf("source mutated: %d entries", len(extensions))
 	}
 }
 
@@ -148,5 +163,64 @@ func TestTypedNilExtensionIsRejected(t *testing.T) {
 	request.Extensions = []Extension{extension}
 	if err := request.Validate(); err == nil {
 		t.Fatal("expected typed-nil extension validation error")
+	}
+}
+
+// Foreign extensions must not fail or leak into an attempt for another
+// provider: the pipeline strips them before compilation, so a request may
+// carry several providers' settings across route fallback.
+func TestPipelineAppliesOnlyOwnProviderExtensions(t *testing.T) {
+	type wire struct{ Prompt string }
+	operations, err := BindGenerateOperations(
+		nativeGenerateCompile(wire{Prompt: "native"}),
+		func(context.Context, wire) (string, error) { return "ok", nil },
+		func(context.Context, string) (GenerateResponse, error) {
+			return GenerateResponse{}, nil
+		},
+		func(context.Context, wire) (ProviderStream[string], error) {
+			return &generateStringStream{}, nil
+		},
+		func(context.Context, string) (GenerateStreamEvent, error) {
+			return GenerateStreamEvent{}, nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("BindGenerateOperations: %v", err)
+	}
+	model := ModelRef{ID: ModelID{Provider: "openai", Name: "generate"}}
+	request := validGenerateTextRequest()
+	own := testExtension{
+		provider: "openai",
+		id:       "chat_options",
+		fields:   []ExtensionField{"store"},
+	}
+	foreign := testExtension{
+		provider: "anthropic",
+		id:       "thinking",
+		fields:   []ExtensionField{"budget_tokens"},
+	}
+	request.Extensions = Extensions{foreign, own}
+	before := request.Clone()
+
+	explanation, err := operations.Unary.Explain(context.Background(), model, request)
+	if err != nil {
+		t.Fatalf("Explain with mixed extensions: %v", err)
+	}
+	ownField := FieldID("extension.openai.chat_options.store")
+	foreignField := FieldID("extension.anthropic.thinking.budget_tokens")
+	var sawOwn bool
+	for _, decision := range explanation.Decisions {
+		if decision.Field == foreignField {
+			t.Fatalf("foreign extension leaked into decisions: %+v", decision)
+		}
+		if decision.Field == ownField {
+			sawOwn = true
+		}
+	}
+	if !sawOwn {
+		t.Fatalf("own extension missing from decisions: %+v", explanation.Decisions)
+	}
+	if !reflect.DeepEqual(before, request.Clone()) {
+		t.Fatal("pipeline mutated the caller request")
 	}
 }

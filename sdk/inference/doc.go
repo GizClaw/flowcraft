@@ -20,4 +20,12 @@
 // and hot reload live in the separate sdkx/inference/config module. This
 // package deliberately contains no I/O beyond provider transport, no global
 // registries, and no deployment policy of its own.
+//
+// Provider-specific settings ride on requests as typed extensions addressed
+// by ProviderID. A request may carry several providers' extensions at once:
+// on each attempt the pipeline strips extensions addressed elsewhere, so
+// route fallback across providers applies only the executing provider's
+// settings and treats the rest as inert. An extension that does address the
+// executing provider but is unknown to it, meant for another operation, or
+// colliding with a canonical field is still a structured rejection.
 package inference
