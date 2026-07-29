@@ -1,6 +1,6 @@
 module github.com/GizClaw/flowcraft/sdkx
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/memory v0.1.7
@@ -13,6 +13,8 @@ require (
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/microcosm-cc/bluemonday v1.0.27
+	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb
+	github.com/gorilla/websocket v1.5.3
 	github.com/openai/openai-go v1.12.0
 	github.com/volcengine/volcengine-go-sdk v1.2.14
 	go.opentelemetry.io/otel v1.40.0
