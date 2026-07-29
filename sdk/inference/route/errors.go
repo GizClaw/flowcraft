@@ -9,6 +9,10 @@ import (
 
 type ErrorKind string
 
+// SelectionFailed also wraps target inspection failures: a selector-chosen
+// target that the runtime cannot resolve is a routing failure, never a
+// contract violation. Contract violations are reserved for selector or
+// fallback outputs that break the declared Decision/Fallback contract.
 const (
 	InvalidRequest            ErrorKind = "invalid_request"
 	SelectorUnavailable       ErrorKind = "selector_unavailable"
@@ -70,5 +74,20 @@ func classify(kind ErrorKind, cause error) error {
 		return errdefs.Internal(cause)
 	default:
 		return errdefs.Internal(cause)
+	}
+}
+
+// fallbackEligibleKind reports whether a failed inference attempt is
+// transport-safe to retry on another exact target. Only local compiler
+// rejections qualify: the request never reached the provider, so no provider
+// side effects or partial outputs are possible.
+func fallbackEligibleKind(kind inference.ErrorKind) bool {
+	switch kind {
+	case inference.UnsupportedOperation,
+		inference.UnsupportedFeature,
+		inference.InvalidExtension:
+		return true
+	default:
+		return false
 	}
 }

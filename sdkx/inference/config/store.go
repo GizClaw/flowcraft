@@ -36,6 +36,22 @@ type Store interface {
 	Save(context.Context, string, Document) (Snapshot, error)
 }
 
+// ErrNotifyUnsupported marks stores that cannot push change notifications.
+// Reloader.Watch silently falls back to interval polling for them.
+var ErrNotifyUnsupported = errors.New(
+	"store does not support change notification",
+)
+
+// Notifier is an optional Store capability: push-based change notification.
+// Signals are advisory only — they may be missed (queue overflow, reconnect
+// gaps) or spurious, and they never carry a revision. Correctness always
+// comes from loading and comparing revisions; a signal is only a hint to
+// reload now instead of waiting for the next poll. The returned channel is
+// closed when the watch ends, and implementations must not block on send.
+type Notifier interface {
+	Notify(ctx context.Context) (<-chan struct{}, error)
+}
+
 func (b *Builder) LoadRuntime(
 	ctx context.Context,
 	store Store,

@@ -96,8 +96,8 @@ func (s *Store) Save(
 	if err != nil {
 		return config.Snapshot{}, err
 	}
-	s.lock.Lock()
-	defer s.lock.Unlock()
+	// Create the target directory before entering the critical section so the
+	// lock ordering below stays: in-process mutex -> cross-process file lock.
 	directory := filepath.Dir(s.path)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return config.Snapshot{}, fmt.Errorf(
@@ -105,6 +105,8 @@ func (s *Store) Save(
 			err,
 		)
 	}
+	s.lock.Lock()
+	defer s.lock.Unlock()
 	fileLock, err := lockFile(ctx, s.path+".lock")
 	if err != nil {
 		return config.Snapshot{}, err
@@ -171,25 +173,10 @@ func (s *Store) Save(
 			err,
 		)
 	}
-	directoryHandle, err := os.Open(directory)
-	if err != nil {
-		return config.Snapshot{}, fmt.Errorf(
-			"open YAML inference config directory: %w",
-			err,
-		)
-	}
-	syncErr := directoryHandle.Sync()
-	closeErr = directoryHandle.Close()
-	if syncErr != nil {
+	if err := syncDir(directory); err != nil {
 		return config.Snapshot{}, fmt.Errorf(
 			"sync YAML inference config directory: %w",
-			syncErr,
-		)
-	}
-	if closeErr != nil {
-		return config.Snapshot{}, fmt.Errorf(
-			"close YAML inference config directory: %w",
-			closeErr,
+			err,
 		)
 	}
 	return config.Snapshot{

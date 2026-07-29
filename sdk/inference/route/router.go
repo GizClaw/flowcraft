@@ -143,6 +143,15 @@ type Trace struct {
 	Attempts  []Attempt          `json:"attempts,omitempty"`
 }
 
+// Clone returns an owned copy safe to share beyond the call that produced the
+// trace. GenerateStream callers must still respect the read-after-Next rule:
+// Clone copies the attempt values observed at call time.
+func (t Trace) Clone() Trace {
+	t.Fallbacks = append([]FallbackHop(nil), t.Fallbacks...)
+	t.Attempts = append([]Attempt(nil), t.Attempts...)
+	return t
+}
+
 // Router composes operation-specific selectors above an exact-target inference
 // Runtime. Callers that already know the model continue to use Runtime directly.
 type Router struct {
@@ -476,12 +485,7 @@ func (r *Router) OpenTranscription(
 	if err != nil {
 		return nil, Trace{}, err
 	}
-	trace, err := traceForResponse(decision, session.Metadata())
-	if err != nil {
-		_ = session.Close()
-		return nil, Trace{}, err
-	}
-	return session, trace, nil
+	return session, traceForSession(decision), nil
 }
 
 func (r *Router) ExplainTranscriptionSession(
@@ -542,12 +546,7 @@ func (r *Router) OpenRealtime(
 	if err != nil {
 		return nil, Trace{}, err
 	}
-	trace, err := traceForResponse(decision, session.Metadata())
-	if err != nil {
-		_ = session.Close()
-		return nil, Trace{}, err
-	}
-	return session, trace, nil
+	return session, traceForSession(decision), nil
 }
 
 func (r *Router) ExplainRealtime(
@@ -608,7 +607,7 @@ func (r *Router) selectGenerate(
 	}
 	descriptor, err := r.runtime.InspectModel(decision.Selected)
 	if err != nil {
-		return Decision{}, err
+		return Decision{}, NewError(SelectionFailed, inference.OperationGenerate, err)
 	}
 	if !supportsOperation(descriptor, inference.OperationGenerate) {
 		return Decision{}, NewError(
@@ -735,14 +734,7 @@ func generateFallbackEligible(attempt Attempt) bool {
 	if attempt.Outcome != AttemptOutcomeFailed || attempt.ObservableOutput {
 		return false
 	}
-	switch attempt.ErrorKind {
-	case inference.UnsupportedOperation,
-		inference.UnsupportedFeature,
-		inference.InvalidExtension:
-		return true
-	default:
-		return false
-	}
+	return fallbackEligibleKind(attempt.ErrorKind)
 }
 
 func selectTarget[Request any, Selector any](
@@ -779,7 +771,7 @@ func selectTarget[Request any, Selector any](
 	}
 	descriptor, err := runtime.InspectModel(decision.Selected)
 	if err != nil {
-		return Decision{}, err
+		return Decision{}, NewError(SelectionFailed, operation, err)
 	}
 	if descriptor.Lifecycle.Status == inference.ModelStatusRetired {
 		return Decision{}, NewError(
@@ -814,6 +806,15 @@ func traceForResponse(
 		Decision: decision,
 		Executed: decision.Selected,
 	}, nil
+}
+
+// traceForSession trusts the opened session's route because the Runtime
+// derives session metadata from the exact target it resolved.
+func traceForSession(decision Decision) Trace {
+	return Trace{
+		Decision: decision,
+		Executed: decision.Selected,
+	}
 }
 
 func isNilInterface(value any) bool {
