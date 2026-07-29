@@ -265,7 +265,7 @@ var inputPartFields = map[inference.PartKind]inference.FieldID{
 // downgrades silently: parts the model cannot consume natively are rejected
 // in the ledger with a precise reason.
 func compileGenerate(
-	spec Spec,
+	endpoint string,
 	entry catalogEntry,
 ) inference.GenerateCompiler[generateWire] {
 	return func(
@@ -279,7 +279,7 @@ func compileGenerate(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := generateWire{
-			model:  spec.endpoint(model.ID.Name),
+			model:  endpoint,
 			stream: shape == inference.GenerateExecutionStream,
 		}
 

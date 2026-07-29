@@ -39,7 +39,7 @@ type asrWire struct {
 }
 
 func compileASR(
-	spec Spec,
+	endpoint string,
 ) inference.Compiler[inference.TranscriptionSessionConfig, asrWire] {
 	return func(
 		_ context.Context,
@@ -51,7 +51,7 @@ func compileASR(
 			config.ActiveFields(),
 		)
 		wire := asrWire{
-			resourceID: spec.endpoint(model.ID.Name),
+			resourceID: endpoint,
 			channels:   1,
 			bits:       16,
 			language:   config.Language,
@@ -344,7 +344,7 @@ func openASR(
 		return inference.TranscriptionOperations{}, err
 	}
 	session, err := inference.BindTranscriptionSession(
-		compileASR(spec),
+		compileASR(cls.endpoint(id.Name)),
 		openASRSession(speech),
 	)
 	if err != nil {

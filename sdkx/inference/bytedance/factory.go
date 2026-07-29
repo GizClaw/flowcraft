@@ -137,6 +137,19 @@ func openersFor(
 				return openImage(cls, spec, id, model.Profile)
 			},
 		}
+	case kindVideo:
+		return inference.Openers{
+			Generate: func(
+				_ context.Context,
+				model inference.ModelRef,
+			) (inference.GenerateOperations, error) {
+				cls, err := open(model.Profile)
+				if err != nil {
+					return inference.GenerateOperations{}, err
+				}
+				return openVideo(cls, spec, entry, id, model.Profile)
+			},
+		}
 	case kindTTS:
 		return inference.Openers{
 			Generate: func(

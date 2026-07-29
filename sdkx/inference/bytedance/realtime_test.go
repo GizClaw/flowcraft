@@ -24,7 +24,7 @@ func realtimeConfig() inference.RealtimeConfig {
 func compileRealtimeForTest(
 	config inference.RealtimeConfig,
 ) (inference.Compiled[realtimeWire], error) {
-	return compileRealtime(Spec{})(
+	return compileRealtime(&clients{})(
 		context.Background(),
 		generateModel("doubao-seeduplex-3-0"),
 		config,

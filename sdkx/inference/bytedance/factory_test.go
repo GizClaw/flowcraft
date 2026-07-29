@@ -3,6 +3,8 @@ package bytedance
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -38,6 +40,23 @@ func testProfiles() []config.ResolvedProfile {
 	return []config.ResolvedProfile{{
 		ID:      "default",
 		Secrets: map[string]config.Secret{SecretAPIKey: secret},
+	}}
+}
+
+func testProfilesWithSpec(t *testing.T, spec ProfileSpec) []config.ResolvedProfile {
+	t.Helper()
+	secret, err := config.NewSecret([]byte("test-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return []config.ResolvedProfile{{
+		ID:      "default",
+		Secrets: map[string]config.Secret{SecretAPIKey: secret},
+		Spec:    raw,
 	}}
 }
 
@@ -103,7 +122,6 @@ func TestFactorySpecValidation(t *testing.T) {
 		{"unknown field", map[string]any{"bogus": true}},
 		{"credential-shaped key", map[string]any{"api_key": "inline"}},
 		{"bad base url", map[string]any{"base_url": "ftp://x"}},
-		{"empty endpoint", map[string]any{"endpoints": map[string]string{"m": " "}}},
 		{"duplicate model", map[string]any{"models": []map[string]any{
 			{"name": "x", "kind": "generate"},
 			{"name": "x", "kind": "embed"},
@@ -162,16 +180,16 @@ func TestFactorySecretValidation(t *testing.T) {
 }
 
 func TestFactoryCustomModelAndEndpoint(t *testing.T) {
+	profiles := testProfilesWithSpec(t, ProfileSpec{
+		Endpoints: map[string]string{"doubao-seed-2-1-pro": "ep-20260729-abcde"},
+	})
 	provider := buildProvider(t, map[string]any{
-		"endpoints": map[string]string{
-			"doubao-seed-2-1-pro": "ep-20260729-abcde",
-		},
 		"models": []map[string]any{{
 			"name":   "my-internal-model",
 			"kind":   "generate",
 			"vision": true,
 		}},
-	}, testProfiles())
+	}, profiles)
 	var custom *inference.ModelImplementation
 	for index := range provider.Models {
 		if provider.Models[index].Descriptor.ID.Name == "my-internal-model" {
@@ -194,13 +212,104 @@ func TestFactoryBuildsRuntime(t *testing.T) {
 }
 
 func TestEndpointResolution(t *testing.T) {
-	spec := Spec{
-		Endpoints: map[string]string{"a": "ep-1"},
-	}
-	if got := spec.endpoint("a"); got != "ep-1" {
+	cls := &clients{endpoints: map[string]string{"a": "ep-1"}}
+	if got := cls.endpoint("a"); got != "ep-1" {
 		t.Fatalf("endpoint(a) = %q", got)
 	}
-	if got := spec.endpoint("b"); got != "b" {
+	if got := cls.endpoint("b"); got != "b" {
 		t.Fatalf("endpoint(b) = %q", got)
+	}
+	if err := (ProfileSpec{Endpoints: map[string]string{"bad name": "ep-1"}}).Validate(); err == nil {
+		t.Fatal("invalid endpoint model name accepted")
+	}
+	if err := (ProfileSpec{Endpoints: map[string]string{"m": " "}}).Validate(); err == nil {
+		t.Fatal("empty endpoint accepted")
+	}
+}
+
+func akskSecrets(t *testing.T) map[string]config.Secret {
+	t.Helper()
+	ak, err := config.NewSecret([]byte("test-ak"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sk, err := config.NewSecret([]byte("test-sk"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return map[string]config.Secret{SecretAccessKey: ak, SecretSecretKey: sk}
+}
+
+func TestAKSKProfileMaterial(t *testing.T) {
+	material, err := newProfileMaterial(config.ResolvedProfile{
+		ID:      "default",
+		Secrets: akskSecrets(t),
+	})
+	if err != nil {
+		t.Fatalf("newProfileMaterial: %v", err)
+	}
+	if material.accessKey != "test-ak" || material.secretKey != "test-sk" {
+		t.Fatalf("material = %+v", material)
+	}
+	cls := material.newClients(Spec{})
+	if cls.ark == nil || cls.arkAuth != arkAuthAKSK {
+		t.Fatalf("ark client = %+v", cls)
+	}
+
+	apiKey, err := config.NewSecret([]byte("k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mixed := akskSecrets(t)
+	mixed[SecretAPIKey] = apiKey
+	if _, err := newProfileMaterial(config.ResolvedProfile{
+		ID: "default", Secrets: mixed,
+	}); err == nil {
+		t.Fatal("api_key mixed with AK/SK accepted")
+	}
+
+	for name, secrets := range map[string]map[string]config.Secret{
+		"access key without secret key": {SecretAccessKey: akskSecrets(t)[SecretAccessKey]},
+		"secret key without access key": {SecretSecretKey: akskSecrets(t)[SecretSecretKey]},
+	} {
+		if _, err := newProfileMaterial(config.ResolvedProfile{
+			ID: "default", Secrets: secrets,
+		}); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+}
+
+func TestAKSKProfileCannotOpenMediaGeneration(t *testing.T) {
+	provider := buildProvider(t, map[string]any{}, []config.ResolvedProfile{{
+		ID:      "default",
+		Secrets: akskSecrets(t),
+	}})
+	runtime, err := inference.NewRuntime([]inference.ProviderDefinition{provider})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	imageRequest := inference.GenerateRequest{Input: inference.GenerateInput{
+		Role: inference.InputRoleUser,
+		Content: inference.InputContent{
+			Content: inference.Content{Parts: []inference.Part{
+				inference.TextPart{Text: "a boat"},
+			}},
+			Intent: inference.Intent{Image: &inference.ImageIntent{}},
+		},
+	}}
+	for _, model := range []string{"doubao-seedream-5-0", "doubao-seedance-2-0"} {
+		_, err := runtime.Generate(context.Background(), generateModel(model), imageRequest)
+		if err == nil {
+			t.Fatalf("%s opened under AK/SK", model)
+		}
+		var chain strings.Builder
+		for current := err; current != nil; current = errors.Unwrap(current) {
+			chain.WriteString(current.Error())
+			chain.WriteByte('|')
+		}
+		if !strings.Contains(chain.String(), "AK/SK") {
+			t.Fatalf("%s error = %v, want AK/SK mention", model, err)
+		}
 	}
 }

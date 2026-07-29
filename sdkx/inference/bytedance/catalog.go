@@ -10,6 +10,7 @@ const (
 	kindGenerate modelKind = "generate"
 	kindEmbed    modelKind = "embed"
 	kindImage    modelKind = "image"
+	kindVideo    modelKind = "video"
 	kindTTS      modelKind = "tts"
 	kindASR      modelKind = "asr"
 	kindRealtime modelKind = "realtime"
@@ -29,6 +30,9 @@ type catalogEntry struct {
 	imageInput bool
 	// embed: accepts custom output dimensions.
 	dimensions bool
+	// video: highest supported resolution tier ("720p", "1080p", "4k");
+	// empty leaves resolution unconstrained.
+	maxResolution string
 	// lifecycle: deprecated models stay routable but announce a replacement.
 	deprecated  bool
 	replacement string
@@ -78,8 +82,31 @@ var catalog = map[string]catalogEntry{
 	"doubao-seedream-5-0": {kind: kindImage},
 	"doubao-seedream-4-5": {kind: kindImage},
 	"doubao-seedream-4-0": {
-		kind: kindImage,
+		kind:       kindImage,
 		deprecated: true, replacement: "doubao-seedream-5-0",
+	},
+
+	// Seedance video generation, served by the async content-generation task
+	// API behind the unary contract. 2.0 is the current line; fast/mini cap
+	// at 720p. 1.x stays routable for existing deployments.
+	"doubao-seedance-2-0":      {kind: kindVideo, maxResolution: "4k"},
+	"doubao-seedance-2-0-fast": {kind: kindVideo, maxResolution: "720p"},
+	"doubao-seedance-2-0-mini": {kind: kindVideo, maxResolution: "720p"},
+	"doubao-seedance-1-5-pro": {
+		kind: kindVideo, maxResolution: "1080p",
+		deprecated: true, replacement: "doubao-seedance-2-0",
+	},
+	"doubao-seedance-1-0-pro": {
+		kind: kindVideo, maxResolution: "1080p",
+		deprecated: true, replacement: "doubao-seedance-2-0",
+	},
+	"doubao-seedance-1-0-lite-t2v": {
+		kind: kindVideo, maxResolution: "720p",
+		deprecated: true, replacement: "doubao-seedance-2-0-fast",
+	},
+	"doubao-seedance-1-0-lite-i2v": {
+		kind: kindVideo, maxResolution: "720p",
+		deprecated: true, replacement: "doubao-seedance-2-0-fast",
 	},
 
 	// Logical names for speech families; the wire address (resource ID or
@@ -98,12 +125,13 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	}
 	for _, model := range spec.Models {
 		merged[model.Name] = catalogEntry{
-			kind:       modelKind(model.Kind),
-			vision:     model.Vision,
-			video:      model.Video,
-			reasoning:  model.Reasoning,
-			imageInput: model.ImageInput,
-			dimensions: model.Dimensions,
+			kind:          modelKind(model.Kind),
+			vision:        model.Vision,
+			video:         model.Video,
+			reasoning:     model.Reasoning,
+			imageInput:    model.ImageInput,
+			dimensions:    model.Dimensions,
+			maxResolution: model.MaxResolution,
 		}
 	}
 	return merged, nil

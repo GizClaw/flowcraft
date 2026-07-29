@@ -80,7 +80,7 @@ type realtimeRawCall struct {
 }
 
 func compileRealtime(
-	spec Spec,
+	cls *clients,
 ) inference.Compiler[inference.RealtimeConfig, realtimeWire] {
 	return func(
 		_ context.Context,
@@ -89,10 +89,10 @@ func compileRealtime(
 	) (inference.Compiled[realtimeWire], error) {
 		ledger := newLedger(inference.OperationRealtime, config.ActiveFields())
 		// The duplex "model" is a dialog engine version, not an Ark endpoint;
-		// Spec.Endpoints may pin a deployment-specific version, otherwise the
-		// SDK default applies.
+		// the profile's endpoints may pin a deployment-specific version,
+		// otherwise the SDK default applies.
 		modelVersion := doubaospeech.RealtimeDuplexModelDefault
-		if endpoint, ok := spec.Endpoints[model.ID.Name]; ok {
+		if endpoint, ok := cls.endpoints[model.ID.Name]; ok {
 			modelVersion = endpoint
 		}
 		wire := realtimeWire{
@@ -605,7 +605,7 @@ func openRealtime(
 		return nil, err
 	}
 	return inference.BindRealtime(
-		compileRealtime(spec),
+		compileRealtime(cls),
 		openRealtimeSession(speech),
 		compileRealtimeInput,
 		decodeRealtimeEvent,

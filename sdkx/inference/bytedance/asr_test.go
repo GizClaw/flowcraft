@@ -23,7 +23,7 @@ func asrConfig() inference.TranscriptionSessionConfig {
 func compileASRForTest(
 	config inference.TranscriptionSessionConfig,
 ) (inference.Compiled[asrWire], error) {
-	return compileASR(Spec{})(
+	return compileASR("doubao-asr-sauc-2-0")(
 		context.Background(),
 		generateModel("doubao-asr-sauc-2-0"),
 		config,

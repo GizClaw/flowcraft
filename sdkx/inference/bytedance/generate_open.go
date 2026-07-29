@@ -19,7 +19,7 @@ func openGenerate(
 		return inference.GenerateOperations{}, err
 	}
 	return inference.BindGenerateOperations(
-		compileGenerate(spec, entry),
+		compileGenerate(cls.endpoint(id.Name), entry),
 		transportGenerate(ark),
 		decodeGenerate,
 		transportGenerateStream(ark),

@@ -59,7 +59,7 @@ type rawImage struct {
 }
 
 func compileImage(
-	spec Spec,
+	endpoint string,
 ) inference.GenerateCompiler[imageWire] {
 	return func(
 		_ context.Context,
@@ -72,7 +72,7 @@ func compileImage(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := imageWire{
-			model:    spec.endpoint(model.ID.Name),
+			model:    endpoint,
 			count:    1,
 			delivery: "url",
 		}
@@ -467,8 +467,11 @@ func openImage(
 	if err != nil {
 		return inference.GenerateOperations{}, err
 	}
+	if err := cls.requireArkAPIKey(profile, "Seedream image generation"); err != nil {
+		return inference.GenerateOperations{}, err
+	}
 	unary, err := inference.BindGenerate(
-		compileImage(spec),
+		compileImage(cls.endpoint(id.Name)),
 		transportImage(ark),
 		decodeImage,
 	)

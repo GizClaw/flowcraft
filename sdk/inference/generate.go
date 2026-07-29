@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"regexp"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
@@ -332,6 +333,24 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 			fields = append(fields, FieldGenerateIntentAudioCount)
 		}
 	}
+	if intent.Video != nil {
+		fields = append(fields, FieldGenerateIntentVideo)
+		if intent.Video.DurationMillis != nil {
+			fields = append(fields, FieldGenerateIntentVideoDuration)
+		}
+		if intent.Video.Resolution != "" {
+			fields = append(fields, FieldGenerateIntentVideoResolution)
+		}
+		if intent.Video.AspectRatio != "" {
+			fields = append(fields, FieldGenerateIntentVideoAspectRatio)
+		}
+		if intent.Video.Seed != nil {
+			fields = append(fields, FieldGenerateIntentVideoSeed)
+		}
+		if intent.Video.Watermark != nil {
+			fields = append(fields, FieldGenerateIntentVideoWatermark)
+		}
+	}
 	if intent.Tools != nil {
 		fields = append(fields, FieldGenerateIntentTools)
 		if len(intent.Tools.Definitions) > 0 {
@@ -370,6 +389,7 @@ type Intent struct {
 	Text      *TextIntent      `json:"text,omitempty"`
 	Image     *ImageIntent     `json:"image,omitempty"`
 	Audio     *AudioIntent     `json:"audio,omitempty"`
+	Video     *VideoIntent     `json:"video,omitempty"`
 	Tools     *ToolsIntent     `json:"tools,omitempty"`
 	Sampling  *SamplingIntent  `json:"sampling,omitempty"`
 	Reasoning *ReasoningIntent `json:"reasoning,omitempty"`
@@ -389,6 +409,10 @@ func (i Intent) Clone() Intent {
 		value := i.Audio.Clone()
 		clone.Audio = &value
 	}
+	if i.Video != nil {
+		value := i.Video.Clone()
+		clone.Video = &value
+	}
 	if i.Tools != nil {
 		value := i.Tools.Clone()
 		clone.Tools = &value
@@ -402,12 +426,12 @@ func (i Intent) Clone() Intent {
 }
 
 func (i Intent) Validate() error {
-	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Tools == nil {
-		return fmt.Errorf("intent requires text, image, audio, or tools output")
+	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Video == nil && i.Tools == nil {
+		return fmt.Errorf("intent requires text, image, audio, video, or tools output")
 	}
 	for name, control := range map[string]interface{ Validate() error }{
-		"text": i.Text, "image": i.Image, "audio": i.Audio, "tools": i.Tools,
-		"sampling": i.Sampling, "reasoning": i.Reasoning,
+		"text": i.Text, "image": i.Image, "audio": i.Audio, "video": i.Video,
+		"tools": i.Tools, "sampling": i.Sampling, "reasoning": i.Reasoning,
 	} {
 		if !isNilValue(control) {
 			if err := control.Validate(); err != nil {
@@ -415,7 +439,7 @@ func (i Intent) Validate() error {
 			}
 		}
 	}
-	if i.Text == nil && i.Image == nil && i.Audio == nil {
+	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Video == nil {
 		if i.Tools.Choice == nil ||
 			(i.Tools.Choice.Kind != ToolChoiceRequired &&
 				i.Tools.Choice.Kind != ToolChoiceNamed) {
@@ -525,6 +549,46 @@ func (i AudioIntent) Validate() error {
 	}
 	if i.Count != nil && *i.Count <= 0 {
 		return fmt.Errorf("audio count must be positive")
+	}
+	return nil
+}
+
+// VideoIntent requests video generation. Providers typically run video
+// synthesis as a long task behind the scenes; the unary contract still
+// applies — the provider must complete within the caller's context
+// deadline. Videos are all-or-nothing: there is no count knob, and a
+// completed response carries at least one VideoPart.
+type VideoIntent struct {
+	DurationMillis *int64            `json:"duration_millis,omitempty"`
+	Resolution     string            `json:"resolution,omitempty"`
+	AspectRatio    media.AspectRatio `json:"aspect_ratio,omitempty"`
+	Seed           *int64            `json:"seed,omitempty"`
+	Watermark      *bool             `json:"watermark,omitempty"`
+}
+
+func (i VideoIntent) Clone() VideoIntent {
+	i.DurationMillis = clonePointer(i.DurationMillis)
+	i.Seed = clonePointer(i.Seed)
+	i.Watermark = clonePointer(i.Watermark)
+	return i
+}
+
+var videoResolutionPattern = regexp.MustCompile(`^[0-9]+[pPkK]$`)
+
+func (i VideoIntent) Validate() error {
+	if i.DurationMillis != nil && *i.DurationMillis <= 0 {
+		return fmt.Errorf("video duration must be positive")
+	}
+	if i.Resolution != "" && !videoResolutionPattern.MatchString(i.Resolution) {
+		return fmt.Errorf(
+			"video resolution must be a tier token like \"720p\" or \"4k\", not %q",
+			i.Resolution,
+		)
+	}
+	if i.AspectRatio != "" {
+		if err := i.AspectRatio.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -650,7 +714,7 @@ func (r GenerateResponse) Validate() error {
 	}
 	for _, part := range r.Message.Content.Parts {
 		switch part.(type) {
-		case TextPart, ImagePart, AudioPart, ToolCallPart:
+		case TextPart, ImagePart, AudioPart, VideoPart, ToolCallPart:
 		default:
 			return fmt.Errorf("generate response contains unsupported part %q", part.Kind())
 		}
@@ -668,6 +732,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	textParts := 0
 	var images []ImagePart
 	var audio []AudioPart
+	var videos []VideoPart
 	var toolCalls []ToolCallPart
 	for _, part := range r.Message.Content.Parts {
 		switch value := part.(type) {
@@ -692,6 +757,14 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			audio = append(audio, value)
 			if err := validateGenerateAudio(value, *intent.Audio); err != nil {
 				return fmt.Errorf("generate audio %d: %w", len(audio)-1, err)
+			}
+		case VideoPart:
+			if intent.Video == nil {
+				return fmt.Errorf("generate response contains unrequested video")
+			}
+			videos = append(videos, value)
+			if err := validateGenerateVideo(value); err != nil {
+				return fmt.Errorf("generate video %d: %w", len(videos)-1, err)
 			}
 		case ToolCallPart:
 			if intent.Tools == nil {
@@ -757,6 +830,21 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			return err
 		}
 	}
+	if intent.Video != nil {
+		if err := validateGenerateCount("video", len(videos), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateGenerateVideo checks the output part is genuinely video. Unlike
+// image and audio, no canonical video parameter constrains the returned
+// encoding beyond the media family.
+func validateGenerateVideo(part VideoPart) error {
+	if mediaType := part.Source.BaseMediaType(); !strings.HasPrefix(mediaType, "video/") {
+		return fmt.Errorf("video part media type %q is not video", part.Source.MediaType())
+	}
 	return nil
 }
 
@@ -766,6 +854,8 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 	hasAudio := false
 	audioDurationKnown := true
 	audioDuration := int64(0)
+	videoCount := int64(0)
+	hasVideo := false
 	for _, part := range response.Message.Content.Parts {
 		switch value := part.(type) {
 		case ImagePart:
@@ -778,6 +868,9 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 			} else {
 				audioDuration += *value.DurationMillis
 			}
+		case VideoPart:
+			hasVideo = true
+			videoCount++
 		}
 	}
 	if hasImage || request.Input.Content.Intent.Image != nil {
@@ -789,6 +882,11 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 		response.Usage.AudioDurationMillis = &audioDuration
 	} else {
 		response.Usage.AudioDurationMillis = nil
+	}
+	if hasVideo || request.Input.Content.Intent.Video != nil {
+		response.Usage.GeneratedVideos = &videoCount
+	} else {
+		response.Usage.GeneratedVideos = nil
 	}
 }
 

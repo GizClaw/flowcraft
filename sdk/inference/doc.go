@@ -1,10 +1,10 @@
 // Package inference is the instance-owned runtime for unified model inference.
 //
 // Four root operations cover every supported workload: Generate (unary and
-// finite streaming text/image/audio/tool calls), Embed, Transcription (unary
-// and streaming sessions), and Realtime (bidirectional sessions). Callers
-// address an exact ModelRef — provider, model name, and credential profile —
-// and the Runtime resolves, compiles, and executes against it.
+// finite streaming text/image/audio/video/tool calls), Embed, Transcription
+// (unary and streaming sessions), and Realtime (bidirectional sessions).
+// Callers address an exact ModelRef — provider, model name, and credential
+// profile — and the Runtime resolves, compiles, and executes against it.
 //
 // The provider compiler is the sole authority on whether a concrete request
 // is executable. Canonical requests declare their active fields through a

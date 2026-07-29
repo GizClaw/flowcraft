@@ -56,7 +56,7 @@ type ttsStreamRaw struct {
 }
 
 func compileTTS(
-	spec Spec,
+	endpoint string,
 ) inference.GenerateCompiler[ttsWire] {
 	return func(
 		_ context.Context,
@@ -69,7 +69,7 @@ func compileTTS(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := ttsWire{
-			resourceID: spec.endpoint(model.ID.Name),
+			resourceID: endpoint,
 			stream:     shape == inference.GenerateExecutionStream,
 		}
 
@@ -258,7 +258,7 @@ func openTTS(
 		return inference.GenerateOperations{}, err
 	}
 	return inference.BindGenerateOperations(
-		compileTTS(spec),
+		compileTTS(cls.endpoint(id.Name)),
 		transportTTS(speech),
 		decodeTTS,
 		transportTTSStream(speech),

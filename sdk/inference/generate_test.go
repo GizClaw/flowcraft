@@ -252,15 +252,20 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 	count := 2
 	seed := int64(7)
 	speed := 1.25
+	videoDuration := int64(5000)
+	watermark := true
 	maxTokens := 128
 	temperature := 0.4
 	topP := 0.9
 	request := GenerateRequest{
 		Context: []Message{
 			{Role: RoleUser, Content: Content{Parts: []Part{
-				TextPart{Text: "hello"}, ImagePart{Source: image},
-				AudioPart{Source: audio}, VideoPart{Source: video},
-				FilePart{URI: "s3://bucket/file"}, DataPart{Value: json.RawMessage(`{"x":1}`)},
+				TextPart{Text: "hello"},
+				ImagePart{Source: image},
+				AudioPart{Source: audio},
+				VideoPart{Source: video},
+				FilePart{URI: "s3://bucket/file"},
+				DataPart{Value: json.RawMessage(`{"x":1}`)},
 			}}},
 			{Role: RoleAssistant, Content: Content{Parts: []Part{ToolCallPart{Call: call}}}},
 			{Role: RoleTool, Content: Content{Parts: []Part{ToolResultPart{Result: tool.Result{CallID: "call-1"}}}}},
@@ -269,10 +274,14 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 			Role: InputRoleUser,
 			Content: InputContent{
 				Content: Content{Parts: []Part{
-					TextPart{Text: "now"}, ImagePart{Source: image},
-					AudioPart{Source: audio}, VideoPart{Source: video},
-					FilePart{URI: "s3://bucket/input"}, DataPart{Value: json.RawMessage(`{"y":2}`)},
-					ToolCallPart{Call: call}, ToolResultPart{Result: tool.Result{CallID: "call-1"}},
+					TextPart{Text: "now"},
+					ImagePart{Source: image},
+					AudioPart{Source: audio},
+					VideoPart{Source: video},
+					FilePart{URI: "s3://bucket/input"},
+					DataPart{Value: json.RawMessage(`{"y":2}`)},
+					ToolCallPart{Call: call},
+					ToolResultPart{Result: tool.Result{CallID: "call-1"}},
 				}},
 				Intent: Intent{
 					Text: &TextIntent{
@@ -293,6 +302,11 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 							Encoding: media.AudioEncodingPCM16, SampleRateHz: 24_000, Channels: 1,
 						},
 						Speed: &speed, Count: &count,
+					},
+					Video: &VideoIntent{
+						DurationMillis: &videoDuration, Resolution: "720p",
+						AspectRatio: media.AspectRatio("16:9"),
+						Seed:        &seed, Watermark: &watermark,
 					},
 					Tools: &ToolsIntent{
 						Definitions: []tool.Definition{{
@@ -333,6 +347,9 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 		FieldGenerateIntentAudioFormat, FieldGenerateIntentAudioFormatEncoding,
 		FieldGenerateIntentAudioFormatSampleRate, FieldGenerateIntentAudioFormatChannels,
 		FieldGenerateIntentAudioSpeed, FieldGenerateIntentAudioCount,
+		FieldGenerateIntentVideo, FieldGenerateIntentVideoDuration,
+		FieldGenerateIntentVideoResolution, FieldGenerateIntentVideoAspectRatio,
+		FieldGenerateIntentVideoSeed, FieldGenerateIntentVideoWatermark,
 		FieldGenerateIntentTools, FieldGenerateIntentToolDefinitions,
 		FieldGenerateIntentToolChoice, FieldGenerateIntentToolChoiceKind,
 		FieldGenerateIntentToolChoiceName,
@@ -641,5 +658,100 @@ func TestResponseFormatValidateCompilesJSONSchema(t *testing.T) {
 	}
 	if err := format.Validate(); err == nil {
 		t.Fatal("syntactically valid but uncompilable JSON schema accepted")
+	}
+}
+
+func TestVideoIntentValidationAndClone(t *testing.T) {
+	duration := int64(5000)
+	seed := int64(42)
+	watermark := false
+	valid := VideoIntent{
+		DurationMillis: &duration, Resolution: "1080p",
+		AspectRatio: media.AspectRatio("9:16"), Seed: &seed, Watermark: &watermark,
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatalf("valid VideoIntent rejected: %v", err)
+	}
+	if err := (Intent{Video: &valid}).Validate(); err != nil {
+		t.Fatalf("video-only Intent rejected: %v", err)
+	}
+
+	zero := int64(0)
+	for name, intent := range map[string]VideoIntent{
+		"non-positive duration": {DurationMillis: &zero},
+		"bad resolution token":  {Resolution: "hd"},
+		"bad aspect ratio":      {AspectRatio: media.AspectRatio("widescreen")},
+	} {
+		if err := intent.Validate(); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+
+	clone := valid.Clone()
+	*clone.DurationMillis = 9000
+	*clone.Watermark = true
+	if *valid.DurationMillis != 5000 || *valid.Watermark {
+		t.Fatal("VideoIntent.Clone shared a pointer")
+	}
+}
+
+func TestGenerateResponseValidateForVideo(t *testing.T) {
+	video, err := media.NewVideoURL("https://example.com/out.mp4", "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoURL: %v", err)
+	}
+	videoRequest := GenerateRequest{Input: GenerateInput{
+		Role: InputRoleUser,
+		Content: InputContent{
+			Content: Content{Parts: []Part{TextPart{Text: "a cat walking"}}},
+			Intent:  Intent{Video: &VideoIntent{}},
+		},
+	}}
+	response := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			VideoPart{Source: video},
+		}}},
+		FinishReason: FinishCompleted,
+	}
+	if err := response.ValidateFor(videoRequest); err != nil {
+		t.Fatalf("valid video response rejected: %v", err)
+	}
+	derived := response
+	deriveGenerateUsage(videoRequest, &derived)
+	if derived.Usage.GeneratedVideos == nil || *derived.Usage.GeneratedVideos != 1 {
+		t.Fatalf("GeneratedVideos = %v, want 1", derived.Usage.GeneratedVideos)
+	}
+
+	textRequest := GenerateRequest{Input: GenerateInput{
+		Role: InputRoleUser,
+		Content: InputContent{
+			Content: Content{Parts: []Part{TextPart{Text: "hi"}}},
+			Intent:  Intent{Text: &TextIntent{}},
+		},
+	}}
+	if err := response.ValidateFor(textRequest); err == nil {
+		t.Fatal("unrequested video part accepted")
+	}
+	textResponse := GenerateResponse{
+		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
+			TextPart{Text: "hi"},
+		}}},
+		FinishReason: FinishCompleted,
+	}
+	deriveGenerateUsage(textRequest, &textResponse)
+	if textResponse.Usage.GeneratedVideos != nil {
+		t.Fatalf("text-only response derived GeneratedVideos = %v", textResponse.Usage.GeneratedVideos)
+	}
+
+	missing := response
+	missing.Message = Message{Role: RoleAssistant}
+	if err := missing.ValidateFor(videoRequest); err == nil {
+		t.Fatal("completed response without the requested video accepted")
+	}
+	unfinished := response
+	unfinished.FinishReason = FinishMaxOutput
+	unfinished.Message = Message{Role: RoleAssistant}
+	if err := unfinished.ValidateFor(videoRequest); err != nil {
+		t.Fatalf("unfinished response without video rejected: %v", err)
 	}
 }

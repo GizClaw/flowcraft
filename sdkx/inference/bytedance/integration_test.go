@@ -4,8 +4,9 @@ package bytedance_test
 // (provider envelope + secret references + route policy) flows through
 // config.Builder with this package's Factory registered under the driver
 // name, and every provider-owned config item lands at its destination —
-// base_url redirects transport, endpoints rewrite the addressed model,
-// profile secrets authenticate, and the route section composes a Router.
+// base_url redirects transport, profile endpoints rewrite the addressed
+// model, profile secrets authenticate, and the route section composes a
+// Router.
 
 import (
 	"context"
@@ -42,11 +43,11 @@ func TestConfigToBytedanceInstance(t *testing.T) {
 			"driver": "bytedance",
 			"profiles": [{
 				"id": "default",
-				"secrets": {"api_key": {"resolver": "env", "key": "ARK_API_KEY"}}
+				"secrets": {"api_key": {"resolver": "env", "key": "ARK_API_KEY"}},
+				"spec": {"endpoints": {"doubao-seed-2-1-pro": "ep-deploy-123"}}
 			}],
 			"spec": {
 				"base_url": "%s/api/v3",
-				"endpoints": {"doubao-seed-2-1-pro": "ep-deploy-123"},
 				"models": [{"name": "my-alias", "kind": "generate", "vision": true}]
 			}
 		}],

@@ -26,6 +26,7 @@ const driverID = "bytedance"
 const (
 	extensionGenerate      = "generate_options"
 	extensionImage         = "image_options"
+	extensionVideo         = "video_options"
 	extensionTTS           = "tts_options"
 	extensionTranscription = "transcription_options"
 	extensionRealtime      = "realtime_options"
@@ -311,6 +312,72 @@ func (o ImageOptions) Clone() inference.Extension {
 		optimize := *o.OptimizePrompt
 		o.OptimizePrompt = &optimize
 	}
+	return o
+}
+
+// ---------------------------------------------------------------------------
+// Video (Seedance content-generation tasks).
+// ---------------------------------------------------------------------------
+
+// VideoOptions carries Seedance task settings beyond the canonical video
+// intent. Returning the last frame is deliberately not exposed: the
+// canonical contract has no channel for it, and silently dropping a
+// requested artifact would be untruthful. Draft-mode task chaining
+// (draft / draft_task_id) is likewise out of scope.
+type VideoOptions struct {
+	// Provider targets a deployment provider ID other than "bytedance".
+	// Attempts for any other provider leave the extension inert rather than
+	// rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// CameraFixed keeps the camera static while the subject moves.
+	CameraFixed *bool `json:"camera_fixed,omitempty"`
+	// GenerateAudio lets Seedance 2.x synthesize a matching audio track.
+	GenerateAudio *bool `json:"generate_audio,omitempty"`
+	// ServiceTier selects the serving tier: "default" or "flex".
+	ServiceTier string `json:"service_tier,omitempty"`
+	// ExecutionExpiresAfter bounds the server-side task lifetime in seconds.
+	ExecutionExpiresAfter *int64 `json:"execution_expires_after,omitempty"`
+}
+
+func (o VideoOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o VideoOptions) ExtensionID() string { return extensionVideo }
+
+func (o VideoOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.CameraFixed != nil {
+		fields = append(fields, "camera_fixed")
+	}
+	if o.GenerateAudio != nil {
+		fields = append(fields, "generate_audio")
+	}
+	if o.ServiceTier != "" {
+		fields = append(fields, "service_tier")
+	}
+	if o.ExecutionExpiresAfter != nil {
+		fields = append(fields, "execution_expires_after")
+	}
+	return fields
+}
+
+func (o VideoOptions) Validate() error {
+	switch o.ServiceTier {
+	case "", "default", "flex":
+	default:
+		return fmt.Errorf("service_tier must be default or flex, not %q", o.ServiceTier)
+	}
+	if o.ExecutionExpiresAfter != nil && *o.ExecutionExpiresAfter <= 0 {
+		return fmt.Errorf(
+			"execution_expires_after must be positive, not %d",
+			*o.ExecutionExpiresAfter,
+		)
+	}
+	return nil
+}
+
+func (o VideoOptions) Clone() inference.Extension {
+	o.CameraFixed = clonePointer(o.CameraFixed)
+	o.GenerateAudio = clonePointer(o.GenerateAudio)
+	o.ExecutionExpiresAfter = clonePointer(o.ExecutionExpiresAfter)
 	return o
 }
 

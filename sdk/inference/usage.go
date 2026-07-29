@@ -11,6 +11,7 @@ type Usage struct {
 	TotalTokens  int64 `json:"total_tokens"`
 
 	GeneratedImages     *int64 `json:"generated_images,omitempty"`
+	GeneratedVideos     *int64 `json:"generated_videos,omitempty"`
 	InputCharacters     *int64 `json:"input_characters,omitempty"`
 	AudioDurationMillis *int64 `json:"audio_duration_millis,omitempty"`
 
@@ -129,6 +130,7 @@ type Money struct {
 
 func (u Usage) Clone() Usage {
 	u.GeneratedImages = clonePointer(u.GeneratedImages)
+	u.GeneratedVideos = clonePointer(u.GeneratedVideos)
 	u.InputCharacters = clonePointer(u.InputCharacters)
 	u.AudioDurationMillis = clonePointer(u.AudioDurationMillis)
 	u.Input.CacheReadTokens = clonePointer(u.Input.CacheReadTokens)
@@ -165,6 +167,7 @@ func (u Usage) Validate() error {
 	}
 	for name, value := range map[string]*int64{
 		"generated images":            u.GeneratedImages,
+		"generated videos":            u.GeneratedVideos,
 		"input characters":            u.InputCharacters,
 		"audio duration milliseconds": u.AudioDurationMillis,
 	} {

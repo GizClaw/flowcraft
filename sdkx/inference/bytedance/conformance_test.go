@@ -55,7 +55,7 @@ func instrumentedGenerateDrivers(
 		t.Fatalf("requireArk: %v", err)
 	}
 	operations, err := inference.BindGenerateOperations(
-		compileGenerate(spec, catalog["doubao-seed-2-1-pro"]),
+		compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"]),
 		countingTransport(calls, transportGenerate(ark)),
 		decodeGenerate,
 		countingTransport(calls, transportGenerateStream(ark)),
@@ -107,10 +107,10 @@ func wsURL(server *httptest.Server) string {
 
 // instrumentedSessionSpec builds the provider Spec pointed at one WebSocket
 // endpoint plus the speech client for the default profile.
-func instrumentedSessionSpec(
+func instrumentedSessionClients(
 	t *testing.T,
 	server *httptest.Server,
-) (Spec, *clients) {
+) *clients {
 	t.Helper()
 	spec, err := decodeSpec([]byte(
 		fmt.Sprintf(`{"speech_web_socket_url":%q}`, wsURL(server)),
@@ -126,7 +126,7 @@ func instrumentedSessionSpec(
 	if _, err := cls.requireSpeech("default"); err != nil {
 		t.Fatalf("requireSpeech: %v", err)
 	}
-	return spec, cls
+	return cls
 }
 
 // instrumentedRuntime assembles a Runtime exposing one model with the given
@@ -255,10 +255,6 @@ func TestConformanceGenerateCompileParity(t *testing.T) {
 }
 
 func TestConformanceGenerateCompiler(t *testing.T) {
-	spec, err := decodeSpec([]byte(`{}`))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
 	model := generateModel("doubao-seed-2-1-pro")
 
 	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[generateWire]{
@@ -268,7 +264,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate(spec, catalog["doubao-seed-2-1-pro"]),
+		Compile: compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"]),
 		AssertWire: func(t *testing.T, wire generateWire) {
 			if wire.model != "doubao-seed-2-1-pro" {
 				t.Fatalf("wire model = %q", wire.model)
@@ -335,7 +331,7 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate(spec, models["my-plain-model"]),
+		Compile: compileGenerate("my-plain-model", models["my-plain-model"]),
 		AssertWire: func(t *testing.T, wire generateWire) {
 			if wire.model != "my-plain-model" {
 				t.Fatalf("wire model = %q", wire.model)
@@ -364,6 +360,73 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 					return request
 				},
 				Field: inference.FieldGenerateIntentReasoningEffort,
+				Kind:  inference.UnsupportedFeature,
+			},
+		},
+	})
+}
+
+// The video compiler targets the task API and caps resolution per model:
+// the suite pins the generic contract while TestVideoRejections covers the
+// full capability matrix.
+func TestConformanceGenerateCompilerVideo(t *testing.T) {
+	video, err := media.NewVideoURL("https://example.com/in.mp4", "video/mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	model := generateModel("doubao-seedance-2-0-fast")
+
+	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[videoWire]{
+		Model:   model,
+		Shape:   inference.GenerateExecutionUnary,
+		Request: func() inference.GenerateRequest { return videoRequest() },
+		Snapshot: func(request inference.GenerateRequest) any {
+			return request.Clone()
+		},
+		Compile: compileVideo("doubao-seedance-2-0-fast", catalog["doubao-seedance-2-0-fast"]),
+		AssertWire: func(t *testing.T, wire videoWire) {
+			if wire.model != "doubao-seedance-2-0-fast" {
+				t.Fatalf("wire model = %q", wire.model)
+			}
+			if wire.firstFrame != "" || wire.lastFrame != "" {
+				t.Fatalf("text-only request compiled frames: %+v", wire)
+			}
+		},
+		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
+			{
+				Name: "video reference input",
+				Request: func() inference.GenerateRequest {
+					request := videoRequest()
+					request.Input.Content.Parts = append(
+						request.Input.Content.Parts,
+						inference.VideoPart{Source: video},
+					)
+					return request
+				},
+				Field: inference.FieldGenerateInputVideo,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
+				Name: "resolution over model cap",
+				Request: func() inference.GenerateRequest {
+					request := videoRequest()
+					request.Input.Content.Intent.Video.Resolution = "1080p"
+					return request
+				},
+				Field: inference.FieldGenerateIntentVideoResolution,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
+				Name: "audio intent",
+				Request: func() inference.GenerateRequest {
+					request := videoRequest()
+					request.Input.Content.Intent.Audio = &inference.AudioIntent{
+						Voice:  media.VoiceSpec{ID: "v"},
+						Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
+					}
+					return request
+				},
+				Field: inference.FieldGenerateIntentAudio,
 				Kind:  inference.UnsupportedFeature,
 			},
 		},
@@ -399,7 +462,7 @@ func (s *countingTranscriptionSession) Close() error {
 
 func TestConformanceTranscriptionSession(t *testing.T) {
 	server := wsTestServer(t, nil) // drain-only sink; the suite reads no events
-	spec, cls := instrumentedSessionSpec(t, server)
+	cls := instrumentedSessionClients(t, server)
 
 	opens := &inferencetest.Counter{}
 	sends := &inferencetest.Counter{}
@@ -407,7 +470,7 @@ func TestConformanceTranscriptionSession(t *testing.T) {
 	closes := &inferencetest.Counter{}
 
 	driver, err := inference.BindTranscriptionSession(
-		compileASR(spec),
+		compileASR("doubao-asr-sauc-2-0"),
 		func(
 			ctx context.Context,
 			wire asrWire,
@@ -510,7 +573,7 @@ func TestConformanceRealtimeSession(t *testing.T) {
 			}
 		}
 	})
-	spec, cls := instrumentedSessionSpec(t, server)
+	cls := instrumentedSessionClients(t, server)
 
 	opens := &inferencetest.Counter{}
 	inputCompiles := &inferencetest.Counter{}
@@ -519,7 +582,7 @@ func TestConformanceRealtimeSession(t *testing.T) {
 	closes := &inferencetest.Counter{}
 
 	driver, err := inference.BindRealtime(
-		compileRealtime(spec),
+		compileRealtime(cls),
 		func(
 			ctx context.Context,
 			wire realtimeWire,

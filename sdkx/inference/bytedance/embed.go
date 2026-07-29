@@ -47,7 +47,7 @@ var embedPartFields = map[inference.PartKind]inference.FieldID{
 }
 
 func compileEmbed(
-	spec Spec,
+	endpoint string,
 	entry catalogEntry,
 ) inference.Compiler[inference.EmbedRequest, embedWire] {
 	return func(
@@ -57,7 +57,7 @@ func compileEmbed(
 	) (inference.Compiled[embedWire], error) {
 		ledger := newLedger(inference.OperationEmbed, request.ActiveFields())
 		wire := embedWire{
-			model:      spec.endpoint(model.ID.Name),
+			model:      endpoint,
 			multimodal: entry.imageInput,
 			dimensions: request.Dimensions,
 		}
@@ -253,7 +253,7 @@ func openEmbed(
 		return nil, err
 	}
 	return inference.BindEmbed(
-		compileEmbed(spec, entry),
+		compileEmbed(cls.endpoint(id.Name), entry),
 		transportEmbed(ark),
 		decodeEmbed,
 	)

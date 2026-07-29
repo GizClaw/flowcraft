@@ -8,6 +8,11 @@
 //   - Generate (unary + stream): Ark Responses API — text, vision input,
 //     tool calling, reasoning effort, JSON/JSON-schema response formats.
 //   - Generate ImageIntent: Ark images.generations (seedream models).
+//   - Generate VideoIntent: Ark content-generation tasks (seedance models).
+//     The API is asynchronous — the transport creates a task and polls it to
+//     a terminal state inside the caller's context, so the unary contract
+//     holds. Input images map to first/last-frame roles; video-reference
+//     input awaits SDK support and is rejected truthfully.
 //   - Generate AudioIntent: Doubao TTS 2.0 HTTP chunked synthesis (seed-tts).
 //   - Embed: Ark embeddings (doubao-embedding text; multimodal embedding for
 //     vision-capable variants).
@@ -20,7 +25,9 @@
 // options struct per operation family: GenerateOptions (thinking switch,
 // service tier, context caching, server-side storage and chaining, tool-call
 // limits, web search), ImageOptions (guidance scale, watermark, prompt
-// optimization, grouped generation, named size tiers, web search), TTSOptions
+// optimization, grouped generation, named size tiers, web search),
+// VideoOptions (fixed camera, generated audio track, service tier, task
+// TTL), TTSOptions
 // (pitch, volume, emotion, compressed bitrate), TranscriptionOptions
 // (diarization, hotwords, result type, ITN and punctuation switches), and
 // RealtimeOptions (output speed and loudness). Every extension field is
@@ -37,10 +44,16 @@
 // fallback across providers may carry several providers' options at once;
 // only the executing provider's settings apply to each attempt.
 //
-// Credentials come exclusively from config profiles: `api_key` authenticates
-// Ark and is the default speech credential, `speech_api_key` optionally
-// overrides it for speech services, and the profile Spec's `app_id` supplies
-// the Doubao speech application ID those services still require.
+// Credentials come exclusively from config profiles. `api_key`
+// authenticates Ark and is the default speech credential, `speech_api_key`
+// optionally overrides it for speech services, and the profile Spec's
+// `app_id` supplies the Doubao speech application ID those services still
+// require. As an alternative to `api_key`, the `access_key`/`secret_key`
+// pair authenticates Ark via Volcengine IAM AK/SK signing; the two schemes
+// are mutually exclusive within one profile. AK/SK has no channel for
+// images or content-generation tasks (the SDK hard-fails them) and none for
+// speech services, so image/video drivers reject AK/SK profiles at open
+// time and speech still needs an API-key profile.
 //
 // Deployments wire this package through the config builder under the driver
 // name "bytedance":
@@ -52,7 +65,11 @@
 //	assembly, _ := builder.NewAssembly(ctx, document) // Runtime + Router
 //
 // The provider Spec in the document redirects transport (base_url,
-// speech_base_url, speech_web_socket_url), rewrites addressed models
-// (endpoints), declares extra models (models), and profile Specs supply
-// per-credential app_id. See integration_test.go for a worked example.
+// speech_base_url, speech_web_socket_url), declares extra models (models),
+// and tunes Seedance task polling (video_poll_interval_millis). Profile
+// Specs carry the account-scoped settings: app_id and the endpoints map
+// binding model names to that account's Ark endpoint IDs (ep-xxx), speech
+// resource IDs, or — for realtime models — the duplex engine version.
+// Unmapped models are addressed by their catalog name. See
+// integration_test.go for a worked example.
 package bytedance
