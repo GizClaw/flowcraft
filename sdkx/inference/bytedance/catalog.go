@@ -1,6 +1,9 @@
 package bytedance
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
 
 // modelKind groups models by the service family that serves them. The kind,
 // not the model name, selects the compiler and transport.
@@ -120,9 +123,7 @@ var catalog = map[string]catalogEntry{
 // the merged view. Spec entries replace catalog entries by name.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	merged := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
-	for name, entry := range catalog {
-		merged[name] = entry
-	}
+	maps.Copy(merged, catalog)
 	for _, model := range spec.Models {
 		merged[model.Name] = catalogEntry{
 			kind:          modelKind(model.Kind),

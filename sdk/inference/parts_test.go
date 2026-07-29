@@ -70,7 +70,8 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 		FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
 		DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
 		ToolCallPart{Call: call},
-		ToolResultPart{Result: tool.Result{CallID: "call-1", Content: "found"}}},
+		ToolResultPart{Result: tool.Result{CallID: "call-1", Content: "found"}},
+		ReasoningPart{Text: "let me think", Signature: "sig-1"}},
 	}
 
 	data, err := json.Marshal(content)
@@ -83,7 +84,7 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 	}
 	wantKinds := []PartKind{
 		PartText, PartImage, PartAudio, PartVideo, PartFile, PartData,
-		PartToolCall, PartToolResult,
+		PartToolCall, PartToolResult, PartReasoning,
 	}
 	if len(decoded.Parts) != len(wantKinds) {
 		t.Fatalf("decoded part count = %d, want %d", len(decoded.Parts), len(wantKinds))
@@ -120,5 +121,50 @@ func TestPartValidationLeavesEmbedSupportToCompiler(t *testing.T) {
 		}}}},
 	}).Validate(); err == nil {
 		t.Fatal("user message must reject tool call parts")
+	}
+}
+
+func TestReasoningPartValidationAndRoles(t *testing.T) {
+	if err := (ReasoningPart{}).Validate(); err == nil {
+		t.Fatal("empty reasoning part must be invalid")
+	}
+	if err := (ReasoningPart{Signature: "sig"}).Validate(); err != nil {
+		t.Fatalf("redacted reasoning (signature only) must be valid: %v", err)
+	}
+	if err := (ReasoningPart{Text: "thinking"}).Validate(); err != nil {
+		t.Fatalf("unsigned reasoning must be valid: %v", err)
+	}
+
+	reasoning := Content{Parts: []Part{ReasoningPart{Text: "t", Signature: "s"}}}
+	if err := (Message{Role: RoleAssistant, Content: reasoning}).Validate(); err != nil {
+		t.Fatalf("assistant message must accept reasoning: %v", err)
+	}
+	for _, role := range []Role{RoleSystem, RoleUser, RoleTool} {
+		if err := (Message{Role: role, Content: reasoning}).Validate(); err == nil {
+			t.Fatalf("%s message must reject reasoning parts", role)
+		}
+	}
+}
+
+func TestReasoningPartRoundTripsSignature(t *testing.T) {
+	content := Content{Parts: []Part{
+		ReasoningPart{Text: "visible", Signature: "sig-1"},
+		ReasoningPart{Signature: "opaque-redacted-data"},
+	}}
+	data, err := json.Marshal(content)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded Content
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	first := decoded.Parts[0].(ReasoningPart)
+	if first.Text != "visible" || first.Signature != "sig-1" {
+		t.Fatalf("signed reasoning round-trip = %#v", first)
+	}
+	second := decoded.Parts[1].(ReasoningPart)
+	if second.Text != "" || second.Signature != "opaque-redacted-data" {
+		t.Fatalf("redacted reasoning round-trip = %#v", second)
 	}
 }

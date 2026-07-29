@@ -1,0 +1,45 @@
+// Package anthropic provides the Anthropic (Claude) inference provider.
+//
+// The provider serves the Messages API surface only, which is the whole
+// Claude API: chat generation, unary and SSE streamed. Claude has no
+// embeddings, image generation, speech, or transcription endpoints, so
+// those operations are absent rather than stubbed.
+//
+// The generate driver binds through the package kernel (kernel.go):
+// sibling Claude platforms — AWS Bedrock, Google Vertex AI — serve the
+// same Messages protocol behind their own authentication and model-id
+// schemes, and reuse KernelGenerate with their own clients and capability
+// declarations instead of forking the driver.
+//
+// Notable protocol mappings:
+//
+//   - system and developer messages compile into the request's system
+//     blocks, which is the only system channel the API has.
+//   - Tool results compile into user messages carrying tool_result blocks;
+//     consecutive user messages merge, because the API rejects consecutive
+//     same-role messages.
+//   - The reasoning effort knob maps to output_config.effort (low/medium/
+//     high, matching the canonical enum exactly). Thinking and redacted
+//     thinking blocks decode into canonical reasoning parts — the
+//     signature (or redacted data) rides the part's Signature slot — and
+//     hoist ahead of other blocks when context compiles back, which the
+//     API requires for round-trips. Unsigned reasoning cannot verify on
+//     round-trip, so it compiles as Dropped with the reason on the
+//     ledger.
+//   - max_tokens is required by the API; when the request leaves
+//     MaxOutputTokens unset, the compiler pins the catalog default
+//     (DefaultMaxTokens) rather than inventing a per-model figure.
+//
+// # Credentials
+//
+// Each profile carries exactly one secret:
+//
+//	api_key (required): the Anthropic API key, sent as x-api-key.
+//
+// # Deployment wiring
+//
+// The provider Spec carries an optional base_url override (for gateways)
+// and optional model declarations for deployments serving unreleased or
+// gateway-renamed models. All models are generate kind; the built-in
+// catalog tracks the Claude lineup of July 2026.
+package anthropic

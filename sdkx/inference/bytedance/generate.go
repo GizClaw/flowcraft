@@ -118,11 +118,19 @@ type wireToolChoice struct {
 
 type generateRaw struct {
 	id           string
-	texts        []string // output_text items in order
+	reasonings   []rawReasoning // reasoning items in output order
+	texts        []string       // output_text items in order
 	toolCalls    []rawToolCall
 	finish       inference.FinishReason
 	usage        rawUsage
 	failedReason string // non-empty when the provider reported failure
+}
+
+// rawReasoning lowers one reasoning item: joined summary text and the item
+// id. ark signs nothing, so the trace cannot round-trip; it is display-only.
+type rawReasoning struct {
+	id   string
+	text string
 }
 
 type rawToolCall struct {
@@ -144,8 +152,9 @@ type rawUsage struct {
 // stays pure and concurrency-safe.
 type streamRaw struct {
 	kind   streamRawKind
-	part   int    // canonical part index (text / tool fragment kinds)
-	text   string // text delta
+	part   int    // canonical part index (text / tool / reasoning kinds)
+	text   string // text / summary delta
+	id     string // terminal reasoning item id
 	tool   streamRawTool
 	usage  *rawUsage
 	finish inference.FinishReason
@@ -156,6 +165,7 @@ type streamRawKind int
 const (
 	streamRawText streamRawKind = iota
 	streamRawToolFragment
+	streamRawReasoning
 	streamRawFinish
 )
 
@@ -173,6 +183,7 @@ type ledger struct {
 	operation inference.Operation
 	active    []inference.FieldID
 	rejected  map[inference.FieldID]string
+	dropped   map[inference.FieldID]string
 	order     []inference.FieldID // rejection order, deterministic
 }
 
@@ -184,6 +195,7 @@ func newLedger(
 		operation: operation,
 		active:    append([]inference.FieldID(nil), active...),
 		rejected:  make(map[inference.FieldID]string),
+		dropped:   make(map[inference.FieldID]string),
 	}
 }
 
@@ -194,8 +206,20 @@ func (l *ledger) reject(field inference.FieldID, reason string) {
 	}
 }
 
+// drop records an intentional discard that keeps the compile successful.
+// Rejection wins when both land on one field: a failed compile reports the
+// rejection.
+func (l *ledger) drop(field inference.FieldID, reason string) {
+	if _, rejected := l.rejected[field]; rejected {
+		return
+	}
+	if _, exists := l.dropped[field]; !exists {
+		l.dropped[field] = reason
+	}
+}
+
 // report renders the compile report: every active field carries exactly one
-// disposition, Native unless rejected.
+// disposition — Rejected, then Dropped, otherwise Native.
 func (l *ledger) report() inference.CompileReport {
 	decisions := make([]inference.Decision, 0, len(l.active))
 	for _, field := range l.active {
@@ -203,6 +227,14 @@ func (l *ledger) report() inference.CompileReport {
 			decisions = append(decisions, inference.Decision{
 				Field:       field,
 				Disposition: inference.Rejected,
+				Reason:      reason,
+			})
+			continue
+		}
+		if reason, dropped := l.dropped[field]; dropped {
+			decisions = append(decisions, inference.Decision{
+				Field:       field,
+				Disposition: inference.Dropped,
 				Reason:      reason,
 			})
 			continue
@@ -248,6 +280,7 @@ var contextPartFields = map[inference.PartKind]inference.FieldID{
 	inference.PartData:       inference.FieldGenerateContextData,
 	inference.PartToolCall:   inference.FieldGenerateContextToolCall,
 	inference.PartToolResult: inference.FieldGenerateContextToolResult,
+	inference.PartReasoning:  inference.FieldGenerateContextReasoning,
 }
 
 var inputPartFields = map[inference.PartKind]inference.FieldID{
@@ -259,6 +292,7 @@ var inputPartFields = map[inference.PartKind]inference.FieldID{
 	inference.PartData:       inference.FieldGenerateInputData,
 	inference.PartToolCall:   inference.FieldGenerateInputToolCall,
 	inference.PartToolResult: inference.FieldGenerateInputToolResult,
+	inference.PartReasoning:  inference.FieldGenerateInputReasoning,
 }
 
 // compileGenerate lowers a canonical request into the provider wire. It never
@@ -456,6 +490,17 @@ func compileMessage(
 				callID: value.Result.CallID,
 				output: value.Result.Content,
 			})
+		case inference.ReasoningPart:
+			flush()
+			field := fields[inference.PartReasoning]
+			if role != "assistant" {
+				ledger.reject(field, "reasoning parts belong to assistant context")
+				continue
+			}
+			// ark emits reasoning traces but signs nothing and consumes no
+			// reasoning input: the trace cannot round-trip, so it drops
+			// with the reason on the ledger rather than vanishing.
+			ledger.drop(field, "ark does not consume reasoning input")
 		}
 	}
 	flush()

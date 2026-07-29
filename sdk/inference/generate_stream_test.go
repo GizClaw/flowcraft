@@ -287,6 +287,17 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 						Part: ImagePart{Source: imageSource},
 					},
 				},
+				{
+					PartIndex: 4,
+					Delta:     ReasoningDelta{Text: "first thought. "},
+				},
+				{
+					PartIndex: 4,
+					Delta: ReasoningDelta{
+						Text:      "second thought",
+						Signature: "sig-terminal",
+					},
+				},
 				{FinishReason: FinishToolCalls},
 			}}, nil
 		},
@@ -330,7 +341,7 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Result: %v", err)
 	}
-	if len(response.Message.Content.Parts) != 4 {
+	if len(response.Message.Content.Parts) != 5 {
 		t.Fatalf("parts = %+v", response.Message.Content.Parts)
 	}
 	call := response.Message.Content.Parts[1].(ToolCallPart).Call
@@ -340,6 +351,11 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 	audio := response.Message.Content.Parts[2].(AudioPart)
 	if got := string(audio.Source.Bytes()); got != "firstsecond" {
 		t.Fatalf("audio = %q", got)
+	}
+	reasoning := response.Message.Content.Parts[4].(ReasoningPart)
+	if reasoning.Text != "first thought. second thought" ||
+		reasoning.Signature != "sig-terminal" {
+		t.Fatalf("reasoning = %#v", reasoning)
 	}
 }
 

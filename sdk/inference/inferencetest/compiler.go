@@ -17,6 +17,15 @@ type CompilerRejection[Request any] struct {
 	Kind    inference.ErrorKind
 }
 
+// CompilerDrop describes one canonical field a provider intentionally
+// discards while succeeding: the compile must succeed, the report must
+// mark the field Dropped, and the decision must state the reason.
+type CompilerDrop[Request any] struct {
+	Name    string
+	Request func() Request
+	Field   inference.FieldID
+}
+
 // CompilerSuite verifies field-ledger completeness and provider-native wire
 // compilation independently from transport.
 type CompilerSuite[Request, Wire any] struct {
@@ -29,6 +38,7 @@ type CompilerSuite[Request, Wire any] struct {
 
 	AssertWire func(*testing.T, Wire)
 	Rejections []CompilerRejection[Request]
+	Drops      []CompilerDrop[Request]
 }
 
 // GenerateCompilerSuite fixes the canonical request type while retaining the
@@ -41,6 +51,7 @@ type GenerateCompilerSuite[Wire any] struct {
 	Compile    inference.GenerateCompiler[Wire]
 	AssertWire func(*testing.T, Wire)
 	Rejections []CompilerRejection[inference.GenerateRequest]
+	Drops      []CompilerDrop[inference.GenerateRequest]
 }
 
 // RunGenerateCompiler applies the common compiler completeness suite to the
@@ -70,6 +81,7 @@ func RunGenerateCompiler[Wire any](
 		},
 		AssertWire: suite.AssertWire,
 		Rejections: suite.Rejections,
+		Drops:      suite.Drops,
 	})
 }
 
@@ -152,6 +164,43 @@ func RunCompiler[Request, Wire any](
 			}
 			if !compiled.Report.Rejects(rejection.Field) {
 				t.Fatalf("report did not reject %q: %+v", rejection.Field, compiled.Report)
+			}
+			assertUnchanged(t, expected, suite.Snapshot(request))
+		})
+	}
+
+	for _, drop := range suite.Drops {
+		drop := drop
+		t.Run("drop_"+drop.Name, func(t *testing.T) {
+			if drop.Request == nil {
+				t.Fatal("drop request is required")
+			}
+			request := drop.Request()
+			expected := suite.Snapshot(request)
+			active := append([]inference.FieldID(nil), suite.Fields(request)...)
+			compiled, err := suite.Compile(context.Background(), suite.Model, request)
+			if err != nil {
+				t.Fatalf("Compile: %v, want success with a dropped field", err)
+			}
+			if err := compiled.Report.ValidateSuccess(
+				suite.Operation,
+				active,
+			); err != nil {
+				t.Fatalf("CompileReport: %v", err)
+			}
+			reason := ""
+			for _, decision := range compiled.Report.Decisions {
+				if decision.Field == drop.Field &&
+					decision.Disposition == inference.Dropped {
+					reason = decision.Reason
+				}
+			}
+			if reason == "" {
+				t.Fatalf(
+					"report did not drop %q with a reason: %+v",
+					drop.Field,
+					compiled.Report,
+				)
 			}
 			assertUnchanged(t, expected, suite.Snapshot(request))
 		})

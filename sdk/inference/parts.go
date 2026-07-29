@@ -24,6 +24,7 @@ const (
 	PartData       PartKind = "data"
 	PartToolCall   PartKind = "tool_call"
 	PartToolResult PartKind = "tool_result"
+	PartReasoning  PartKind = "reasoning"
 )
 
 // Part is the sealed canonical content union. Each operation validates which
@@ -151,6 +152,39 @@ func (p ToolResultPart) Clone() Part     { return p }
 func (p ToolResultPart) Validate() error { return p.Result.Validate() }
 func (ToolResultPart) inferencePart()    {}
 
+// ReasoningPart is one provider reasoning trace: the thinking a model
+// produced while composing the answer. It is a trace, not a requested
+// artifact — reasoning-capable models emit it whether or not the request
+// set a reasoning intent, so responses may always carry it.
+//
+// Text holds the visible reasoning; providers that hide the content
+// (Anthropic redacted_thinking, OpenAI encrypted reasoning without a
+// summary) deliver an empty Text. Signature is the provider-issued opaque
+// verification payload (Anthropic signature / redacted data, OpenAI
+// encrypted_content): providers that sign reasoning require it verbatim
+// when the part round-trips through conversation context, so consumers
+// building agent loops must preserve the whole part. The convention
+// Text=="" with Signature!="" therefore means "reasoning happened, content
+// withheld" — it is derived, never a separate flag. ID is the
+// provider-issued trace identifier (OpenAI reasoning item ids); providers
+// that address traces by id require it on round-trip, and providers
+// without item ids (Anthropic thinking blocks) leave it empty.
+type ReasoningPart struct {
+	Text      string `json:"text,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	ID        string `json:"id,omitempty"`
+}
+
+func (ReasoningPart) Kind() PartKind { return PartReasoning }
+func (p ReasoningPart) Clone() Part  { return p }
+func (p ReasoningPart) Validate() error {
+	if p.Text == "" && p.Signature == "" {
+		return fmt.Errorf("reasoning part carries neither text nor signature")
+	}
+	return nil
+}
+func (ReasoningPart) inferencePart() {}
+
 // Content is an ordered collection of canonical parts. Intent deliberately
 // does not belong here; only InputContent may attach execution intent.
 type Content struct {
@@ -177,7 +211,7 @@ func (c Content) Validate() error {
 	for i, part := range c.Parts {
 		switch part.(type) {
 		case TextPart, ImagePart, AudioPart, VideoPart, FilePart, DataPart,
-			ToolCallPart, ToolResultPart:
+			ToolCallPart, ToolResultPart, ReasoningPart:
 		default:
 			return fmt.Errorf("content part %d has unsupported value type %T", i, part)
 		}
@@ -240,6 +274,13 @@ func (c Content) MarshalJSON() ([]byte, error) {
 				Type   PartKind    `json:"type"`
 				Result tool.Result `json:"result"`
 			}{PartToolResult, value.Result}
+		case ReasoningPart:
+			wire[i] = struct {
+				Type      PartKind `json:"type"`
+				Text      string   `json:"text,omitempty"`
+				Signature string   `json:"signature,omitempty"`
+				ID        string   `json:"id,omitempty"`
+			}{PartReasoning, value.Text, value.Signature, value.ID}
 		default:
 			return nil, fmt.Errorf("unsupported content part %T", part)
 		}
@@ -350,6 +391,21 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 				return fmt.Errorf("content part %d: %w", i, err)
 			}
 			decoded.Parts[i] = ToolResultPart{Result: item.Result}
+		case PartReasoning:
+			var item struct {
+				Type      PartKind `json:"type"`
+				Text      string   `json:"text,omitempty"`
+				Signature string   `json:"signature,omitempty"`
+				ID        string   `json:"id,omitempty"`
+			}
+			if err := decodeStrict(raw, &item); err != nil {
+				return fmt.Errorf("content part %d: %w", i, err)
+			}
+			decoded.Parts[i] = ReasoningPart{
+				Text:      item.Text,
+				Signature: item.Signature,
+				ID:        item.ID,
+			}
 		default:
 			return fmt.Errorf("content part %d has unknown type %q", i, header.Type)
 		}

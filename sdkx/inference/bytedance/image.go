@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
-	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
-
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
+
+	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
+	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
 // Image generation runs on the Ark images endpoint (seedream). The prompt is

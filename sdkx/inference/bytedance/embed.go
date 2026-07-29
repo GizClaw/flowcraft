@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/inference"
+
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
-
-	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // Embed has two native shapes on Ark: the batched text embeddings endpoint

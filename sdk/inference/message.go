@@ -7,6 +7,7 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/sdk/tool"
+
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
@@ -52,6 +53,10 @@ func (m Message) Validate() error {
 			hasToolResults = true
 			if m.Role != RoleTool {
 				return fmt.Errorf("tool result parts require tool role")
+			}
+		case ReasoningPart:
+			if m.Role != RoleAssistant {
+				return fmt.Errorf("reasoning parts require assistant role")
 			}
 		}
 	}

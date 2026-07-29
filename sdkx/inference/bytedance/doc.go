@@ -7,6 +7,9 @@
 //
 //   - Generate (unary + stream): Ark Responses API — text, vision input,
 //     tool calling, reasoning effort, JSON/JSON-schema response formats.
+//     Reasoning items decode into canonical reasoning parts (summary text
+//     plus item id); ark signs nothing and consumes no reasoning input, so
+//     traces never round-trip and context compiles them as Dropped.
 //   - Generate ImageIntent: Ark images.generations (seedream models).
 //   - Generate VideoIntent: Ark content-generation tasks (seedance models).
 //     The API is asynchronous — the transport creates a task and polls it to

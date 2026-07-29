@@ -32,6 +32,15 @@ func (ToolCallDelta) Kind() PartKind               { return PartToolCall }
 func (ToolCallDelta) validateGenerateDelta() error { return nil }
 func (ToolCallDelta) inferencePartDelta()          {}
 
+func (ReasoningDelta) Kind() PartKind { return PartReasoning }
+func (d ReasoningDelta) validateGenerateDelta() error {
+	if d.Text == "" && d.Signature == "" && d.ID == "" {
+		return fmt.Errorf("reasoning delta carries neither text, signature, nor id")
+	}
+	return nil
+}
+func (ReasoningDelta) inferencePartDelta() {}
+
 type AudioPartDelta struct {
 	Data           []byte             `json:"data"`
 	Format         *media.AudioFormat `json:"format,omitempty"`
@@ -155,6 +164,9 @@ type generatePartAccumulator struct {
 	audioFormat   *media.AudioFormat
 	audioDuration *int64
 	completeImage *ImagePart
+
+	reasoningSignature string
+	reasoningID        string
 }
 
 type decodedGenerateStream[RawEvent any] struct {
@@ -307,6 +319,14 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 		}
 		image := value.Part
 		p.completeImage = &image
+	case ReasoningDelta:
+		p.text.WriteString(value.Text)
+		if value.Signature != "" {
+			p.reasoningSignature = value.Signature
+		}
+		if value.ID != "" {
+			p.reasoningID = value.ID
+		}
 	default:
 		return fmt.Errorf("unsupported generate part delta %T", delta)
 	}
@@ -386,6 +406,16 @@ func (p *generatePartAccumulator) result() (Part, error) {
 			return nil, fmt.Errorf("streamed image is incomplete")
 		}
 		return p.completeImage.Clone(), nil
+	case PartReasoning:
+		part := ReasoningPart{
+			Text:      p.text.String(),
+			Signature: p.reasoningSignature,
+			ID:        p.reasoningID,
+		}
+		if err := part.Validate(); err != nil {
+			return nil, err
+		}
+		return part, nil
 	default:
 		return nil, fmt.Errorf("unknown generate part kind %q", p.kind)
 	}

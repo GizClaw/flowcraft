@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/utils"
-
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // responsesStream adapts the ark SSE reader to ProviderStream[streamRaw]. It
@@ -30,7 +30,10 @@ type responsesStream struct {
 type streamPart struct {
 	index        int
 	tool         bool
+	reasoning    bool
+	id           string // reasoning item id from output_item.added
 	sawArgsDelta bool
+	sawSummary   bool
 }
 
 func transportGenerateStream(
@@ -84,9 +87,9 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 }
 
 // apply folds one ark event into a streamRaw. keep=false means the event was
-// bookkeeping-only (part registration, reasoning summaries, lifecycle pings)
-// and the loop should read on. The event union has no shared discriminator,
-// so dispatch follows accessor presence plus each payload's Type field.
+// bookkeeping-only (part registration, lifecycle pings) and the loop should
+// read on. The event union has no shared discriminator, so dispatch follows
+// accessor presence plus each payload's Type field.
 func (s *responsesStream) apply(
 	event *arkresponses.Event,
 ) (streamRaw, bool, error) {
@@ -124,24 +127,53 @@ func (s *responsesStream) apply(
 		return s.applyTerminal(response, finish)
 	}
 	if item := event.GetItem(); item != nil {
+		if reasoning := item.GetItem().GetReasoning(); reasoning != nil {
+			part := s.registerPart(item.GetOutputIndex(), false)
+			part.reasoning = true
+			if reasoning.GetId() != "" {
+				part.id = reasoning.GetId()
+			}
+			return streamRaw{}, false, nil
+		}
 		call := item.GetItem().GetFunctionToolCall()
 		if call == nil {
 			return streamRaw{}, false, nil
 		}
 		part := s.registerPart(item.GetOutputIndex(), true)
-		raw := streamRaw{
+		return streamRaw{
 			kind: streamRawToolFragment,
 			part: part.index,
 			tool: streamRawTool{id: call.GetCallId(), name: call.GetName()},
+		}, true, nil
+	}
+	if done := event.GetItemDone(); done != nil {
+		reasoning := done.GetItem().GetReasoning()
+		if reasoning == nil {
+			return streamRaw{}, false, nil
 		}
-		// item.done carries the complete arguments; emit them only when no
-		// incremental deltas streamed for this part, otherwise the runtime
-		// accumulator would append the snapshot a second time.
-		if item.GetType() == arkresponses.EventType_response_output_item_done &&
-			!part.sawArgsDelta {
-			raw.tool.argsFragment = call.GetArguments()
+		// item.done is the reasoning terminal: it carries the full summary
+		// when no text deltas streamed, plus the item id.
+		part := s.registerPart(done.GetOutputIndex(), false)
+		part.reasoning = true
+		if reasoning.GetId() != "" {
+			part.id = reasoning.GetId()
 		}
-		return raw, true, nil
+		text := ""
+		if !part.sawSummary {
+			text = reasoningSummaryText(reasoning.GetSummary())
+		}
+		if text == "" && !part.sawSummary {
+			// Nothing visible ever streamed: an id-only terminal would
+			// accumulate into an empty reasoning part, which the canonical
+			// contract rejects.
+			return streamRaw{}, false, nil
+		}
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: text,
+			id:   part.id,
+		}, true, nil
 	}
 	if text := event.GetText(); text != nil {
 		if text.GetType() != arkresponses.EventType_response_output_text_delta {
@@ -155,6 +187,22 @@ func (s *responsesStream) apply(
 			kind: streamRawText,
 			part: part.index,
 			text: text.GetDelta(),
+		}, true, nil
+	}
+	if summary := event.GetReasoningText(); summary != nil {
+		if summary.GetType() != arkresponses.EventType_response_reasoning_summary_text_delta {
+			return streamRaw{}, false, nil // summary .done snapshots: skip
+		}
+		part := s.registerPart(summary.GetOutputIndex(), false)
+		part.reasoning = true
+		part.sawSummary = true
+		if summary.GetDelta() == "" {
+			return streamRaw{}, false, nil
+		}
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: summary.GetDelta(),
 		}, true, nil
 	}
 	if fragment := event.GetFunctionCallArguments(); fragment != nil {
@@ -182,8 +230,8 @@ func (s *responsesStream) apply(
 		}
 		return streamRaw{}, false, nil
 	}
-	// Reasoning summaries, content-part markers, web-search lifecycle, and
-	// transcription events are bookkeeping for this operation's output.
+	// Reasoning part markers, web-search lifecycle, and transcription
+	// events are bookkeeping for this operation's output.
 	return streamRaw{}, false, nil
 }
 
@@ -270,6 +318,14 @@ func decodeGenerateStream(
 				ID:                raw.tool.id,
 				Name:              raw.tool.name,
 				ArgumentsFragment: raw.tool.argsFragment,
+			},
+		}, nil
+	case streamRawReasoning:
+		return inference.GenerateStreamEvent{
+			PartIndex: raw.part,
+			Delta: inference.ReasoningDelta{
+				Text: raw.text,
+				ID:   raw.id,
 			},
 		}, nil
 	case streamRawFinish:

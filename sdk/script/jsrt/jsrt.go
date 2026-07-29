@@ -14,6 +14,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/script"
+
 	"github.com/dop251/goja"
 )
 

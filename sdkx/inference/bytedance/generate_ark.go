@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
-	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
-
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+
+	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
+	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
 // ---------------------------------------------------------------------------
@@ -329,6 +329,20 @@ func arkToRaw(response *arkresponses.ResponseObject) (generateRaw, error) {
 	}
 	raw := generateRaw{id: response.GetId()}
 	for _, item := range response.GetOutput() {
+		if reasoning := item.GetReasoning(); reasoning != nil {
+			text := reasoningSummaryText(reasoning.GetSummary())
+			// An id-only item carries no visible trace and ark signs
+			// nothing, so it is pure noise — the canonical part requires
+			// content.
+			if text == "" {
+				continue
+			}
+			raw.reasonings = append(raw.reasonings, rawReasoning{
+				id:   reasoning.GetId(),
+				text: text,
+			})
+			continue
+		}
 		if message := item.GetOutputMessage(); message != nil {
 			for _, content := range message.GetContent() {
 				if text := content.GetText(); text != nil {
@@ -382,6 +396,19 @@ func arkFinishReason(
 	return inference.FinishCompleted
 }
 
+// reasoningSummaryText joins one reasoning item's summary entries. The
+// canonical part is item-granular, so visible summary text joins with a
+// blank line.
+func reasoningSummaryText(summary []*arkresponses.ReasoningSummaryPart) string {
+	texts := make([]string, 0, len(summary))
+	for _, entry := range summary {
+		if entry.GetText() != "" {
+			texts = append(texts, entry.GetText())
+		}
+	}
+	return strings.Join(texts, "\n\n")
+}
+
 func classifyResponseError(code, message string) error {
 	err := fmt.Errorf("bytedance: response failed: %s %s", code, message)
 	switch lower := strings.ToLower(code + " " + message); {
@@ -410,7 +437,16 @@ func decodeGenerate(
 			raw.failedReason,
 		)
 	}
-	parts := make([]inference.Part, 0, len(raw.texts)+len(raw.toolCalls))
+	parts := make([]inference.Part, 0,
+		len(raw.reasonings)+len(raw.texts)+len(raw.toolCalls))
+	// ark emits reasoning items before the answer; the canonical message
+	// keeps that order.
+	for _, reasoning := range raw.reasonings {
+		parts = append(parts, inference.ReasoningPart{
+			Text: reasoning.text,
+			ID:   reasoning.id,
+		})
+	}
 	for _, text := range raw.texts {
 		parts = append(parts, inference.TextPart{Text: text})
 	}

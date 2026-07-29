@@ -291,6 +291,19 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
+				Name: "reasoning is assistant-only",
+				Request: func() inference.GenerateRequest {
+					request := simpleTextRequest("hi")
+					request.Input.Content.Parts = append(
+						request.Input.Content.Parts,
+						inference.ReasoningPart{Text: "trace"},
+					)
+					return request
+				},
+				Field: inference.FieldGenerateInputReasoning,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
 				Name: "image intent on text model",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
@@ -299,6 +312,23 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				},
 				Field: inference.FieldGenerateIntentImage,
 				Kind:  inference.UnsupportedFeature,
+			},
+		},
+		Drops: []inferencetest.CompilerDrop[inference.GenerateRequest]{
+			{
+				Name: "ark does not consume reasoning input",
+				Request: func() inference.GenerateRequest {
+					request := simpleTextRequest("hi")
+					request.Context = append(request.Context, inference.Message{
+						Role: inference.RoleAssistant,
+						Content: inference.Content{Parts: []inference.Part{
+							inference.ReasoningPart{Text: "trace", ID: "rs_1"},
+							inference.TextPart{Text: "answer"},
+						}},
+					})
+					return request
+				},
+				Field: inference.FieldGenerateContextReasoning,
 			},
 		},
 	})

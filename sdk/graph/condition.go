@@ -3,10 +3,10 @@ package graph
 import (
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
-
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // CompiledCondition holds a pre-compiled expr-lang program for edge/skip conditions.

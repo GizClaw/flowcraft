@@ -228,6 +228,7 @@ func appendGenerateContextPartFields(
 		{PartData, FieldGenerateContextData},
 		{PartToolCall, FieldGenerateContextToolCall},
 		{PartToolResult, FieldGenerateContextToolResult},
+		{PartReasoning, FieldGenerateContextReasoning},
 	} {
 		if seen[item.kind] {
 			fields = append(fields, item.field)
@@ -255,6 +256,7 @@ func appendGenerateInputPartFields(fields []FieldID, parts []Part) []FieldID {
 		{PartData, FieldGenerateInputData},
 		{PartToolCall, FieldGenerateInputToolCall},
 		{PartToolResult, FieldGenerateInputToolResult},
+		{PartReasoning, FieldGenerateInputReasoning},
 	} {
 		if seen[item.kind] {
 			fields = append(fields, item.field)
@@ -714,7 +716,7 @@ func (r GenerateResponse) Validate() error {
 	}
 	for _, part := range r.Message.Content.Parts {
 		switch part.(type) {
-		case TextPart, ImagePart, AudioPart, VideoPart, ToolCallPart:
+		case TextPart, ImagePart, AudioPart, VideoPart, ToolCallPart, ReasoningPart:
 		default:
 			return fmt.Errorf("generate response contains unsupported part %q", part.Kind())
 		}
@@ -771,6 +773,11 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				return fmt.Errorf("generate response contains an unrequested tool call")
 			}
 			toolCalls = append(toolCalls, value)
+		case ReasoningPart:
+			// Reasoning is a trace of the model's own process, not a
+			// requested artifact: reasoning-capable models emit it whether
+			// or not the request set a reasoning intent, so responses may
+			// always carry it.
 		}
 	}
 	if intent.Tools != nil {

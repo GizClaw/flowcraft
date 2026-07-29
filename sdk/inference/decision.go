@@ -19,6 +19,7 @@ const (
 	FieldGenerateContextData                 FieldID = "generate.context.*.content.parts.data"
 	FieldGenerateContextToolCall             FieldID = "generate.context.*.content.parts.tool_call"
 	FieldGenerateContextToolResult           FieldID = "generate.context.*.content.parts.tool_result"
+	FieldGenerateContextReasoning            FieldID = "generate.context.*.content.parts.reasoning"
 	FieldGenerateInputRole                   FieldID = "generate.input.role"
 	FieldGenerateInputText                   FieldID = "generate.input.content.parts.text"
 	FieldGenerateInputImage                  FieldID = "generate.input.content.parts.image"
@@ -28,6 +29,7 @@ const (
 	FieldGenerateInputData                   FieldID = "generate.input.content.parts.data"
 	FieldGenerateInputToolCall               FieldID = "generate.input.content.parts.tool_call"
 	FieldGenerateInputToolResult             FieldID = "generate.input.content.parts.tool_result"
+	FieldGenerateInputReasoning              FieldID = "generate.input.content.parts.reasoning"
 	FieldGenerateIntentText                  FieldID = "generate.input.content.intent.text"
 	FieldGenerateIntentTextResponse          FieldID = "generate.input.content.intent.text.response"
 	FieldGenerateIntentTextResponseKind      FieldID = "generate.input.content.intent.text.response.kind"
@@ -100,8 +102,15 @@ const (
 type Disposition string
 
 const (
-	Native   Disposition = "native"
+	// Native means the compiler consumed the field into the provider wire.
+	Native Disposition = "native"
+	// Rejected means the field cannot be honored and the compile failed.
 	Rejected Disposition = "rejected"
+	// Dropped means the compiler intentionally discarded the field while
+	// succeeding: the value cannot round-trip or has no channel, and the
+	// Reason states why. Consumers audit drops through the report; nothing
+	// is discarded silently.
+	Dropped Disposition = "dropped"
 )
 
 type Decision struct {
@@ -158,6 +167,10 @@ func (r CompileReport) ValidateSuccess(operation Operation, active []FieldID) er
 		seen[decision.Field] = struct{}{}
 		switch decision.Disposition {
 		case Native:
+		case Dropped:
+			if decision.Reason == "" {
+				return contractViolation(r.Operation, decision.Field, "dropped field carries no reason")
+			}
 		case Rejected:
 			return contractViolation(r.Operation, decision.Field, "successful compile contains rejection")
 		default:

@@ -30,10 +30,10 @@ func TestGenerateExtensionsCapturedWire(t *testing.T) {
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
 		withExtensions(simpleTextRequest("hi"), GenerateOptions{
-			Thinking:    ptr(true),
-			ServiceTier: "auto",
-			Caching:     &GenerateCaching{Enabled: true, Prefix: true},
-			Store:       ptr(true),
+			Thinking:           ptr(true),
+			ServiceTier:        "auto",
+			Caching:            &GenerateCaching{Enabled: true, Prefix: true},
+			Store:              ptr(true),
 			PreviousResponseID: "resp_prev",
 			ParallelToolCalls:  ptr(false),
 			MaxToolCalls:       ptr(int64(3)),
@@ -244,9 +244,9 @@ func TestImageExtensionConflicts(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	cases := []struct {
-		name    string
-		mutate  func(*inference.GenerateRequest)
-		field   inference.FieldID
+		name   string
+		mutate func(*inference.GenerateRequest)
+		field  inference.FieldID
 	}{
 		{
 			name: "size token collides with canonical size",

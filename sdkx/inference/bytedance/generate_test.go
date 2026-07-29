@@ -88,9 +88,9 @@ func responsesResponseJSON(output []map[string]any) string {
 		"status": "completed",
 		"output": output,
 		"usage": map[string]any{
-			"input_tokens":  12,
-			"output_tokens": 7,
-			"total_tokens":  19,
+			"input_tokens":          12,
+			"output_tokens":         7,
+			"total_tokens":          19,
 			"input_tokens_details":  map[string]any{"cached_tokens": 3},
 			"output_tokens_details": map[string]any{"reasoning_tokens": 2},
 		},
@@ -154,35 +154,35 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 					}},
 				},
 			},
-		Input: inference.GenerateInput{
-			Role: inference.InputRoleUser,
-			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{
-						inference.TextPart{Text: "current question"},
+			Input: inference.GenerateInput{
+				Role: inference.InputRoleUser,
+				Content: inference.InputContent{
+					Content: inference.Content{
+						Parts: []inference.Part{
+							inference.TextPart{Text: "current question"},
+						},
 					},
-				},
-				Intent: inference.Intent{
-					Text: &inference.TextIntent{
-						Response:        &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
-						MaxOutputTokens: &maxTokens,
-					},
-					Reasoning: &inference.ReasoningIntent{Effort: inference.ReasoningHigh},
-					Tools: &inference.ToolsIntent{
-						Definitions: []tool.Definition{{
-							Name:        "lookup",
-							Description: "look things up",
-							InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
-						}},
-						Choice: &inference.ToolChoice{Kind: inference.ToolChoiceAuto},
-					},
-					Sampling: &inference.SamplingIntent{
-						Temperature: &temperature,
-						TopP:        &topP,
+					Intent: inference.Intent{
+						Text: &inference.TextIntent{
+							Response:        &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
+							MaxOutputTokens: &maxTokens,
+						},
+						Reasoning: &inference.ReasoningIntent{Effort: inference.ReasoningHigh},
+						Tools: &inference.ToolsIntent{
+							Definitions: []tool.Definition{{
+								Name:        "lookup",
+								Description: "look things up",
+								InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
+							}},
+							Choice: &inference.ToolChoice{Kind: inference.ToolChoiceAuto},
+						},
+						Sampling: &inference.SamplingIntent{
+							Temperature: &temperature,
+							TopP:        &topP,
+						},
 					},
 				},
 			},
-		},
 		},
 	)
 	if err != nil {

@@ -8,10 +8,10 @@ import (
 	"math"
 	"strings"
 
-	doubaospeech "github.com/GizClaw/doubao-speech-go"
-
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
+
+	doubaospeech "github.com/GizClaw/doubao-speech-go"
 )
 
 // Speech synthesis runs on the Doubao TTS V2 HTTP streaming endpoint. The

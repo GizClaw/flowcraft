@@ -7,11 +7,11 @@ import (
 	"io"
 	"iter"
 
-	doubaospeech "github.com/GizClaw/doubao-speech-go"
-
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+
+	doubaospeech "github.com/GizClaw/doubao-speech-go"
 )
 
 // Full-duplex dialogue runs on the Doubao realtime duplex WebSocket API. The
@@ -55,12 +55,12 @@ type realtimeInputWire struct {
 }
 
 type realtimeRaw struct {
-	kind      realtimeRawKind
-	delta     string // text / transcript delta
-	audio     []byte
-	call      *realtimeRawCall
-	usage     *rawUsage
-	canceled  bool
+	kind     realtimeRawKind
+	delta    string // text / transcript delta
+	audio    []byte
+	call     *realtimeRawCall
+	usage    *rawUsage
+	canceled bool
 }
 
 type realtimeRawKind int

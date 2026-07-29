@@ -36,6 +36,38 @@ func TestCompileReportRequiresCompleteNativeDisposition(t *testing.T) {
 	}
 }
 
+func TestCompileReportDroppedDisposition(t *testing.T) {
+	active := []FieldID{
+		FieldGenerateExecutionUnary,
+		FieldGenerateInputRole,
+		FieldGenerateContextReasoning,
+	}
+
+	dropped := CompileReport{
+		Operation: OperationGenerate,
+		Decisions: []Decision{
+			{Field: FieldGenerateExecutionUnary, Disposition: Native},
+			{Field: FieldGenerateInputRole, Disposition: Native},
+			{
+				Field:       FieldGenerateContextReasoning,
+				Disposition: Dropped,
+				Reason:      "provider does not consume reasoning input",
+			},
+		},
+	}
+	if err := dropped.ValidateSuccess(OperationGenerate, active); err != nil {
+		t.Fatalf("dropped field with reason must validate: %v", err)
+	}
+
+	reasonless := dropped.Clone()
+	reasonless.Decisions[2].Reason = ""
+	if err := reasonless.ValidateSuccess(OperationGenerate, active); err == nil {
+		t.Fatal("dropped field without reason must be a contract violation")
+	} else if !IsKind(err, CompilerContractViolation) {
+		t.Fatalf("error = %v, want CompilerContractViolation", err)
+	}
+}
+
 func TestRequestFieldsDeclareLedgerMetadata(t *testing.T) {
 	known := map[FieldID]struct{}{
 		FieldGenerateExecutionUnary: {}, FieldGenerateExecutionStream: {},
@@ -48,6 +80,7 @@ func TestRequestFieldsDeclareLedgerMetadata(t *testing.T) {
 		FieldGenerateInputAudio: {}, FieldGenerateInputVideo: {},
 		FieldGenerateInputFile: {}, FieldGenerateInputData: {},
 		FieldGenerateInputToolCall: {}, FieldGenerateInputToolResult: {},
+		FieldGenerateContextReasoning: {}, FieldGenerateInputReasoning: {},
 		FieldGenerateIntentText: {}, FieldGenerateIntentTextResponse: {},
 		FieldGenerateIntentTextResponseKind:    {},
 		FieldGenerateIntentTextResponseName:    {},
