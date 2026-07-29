@@ -25,8 +25,8 @@ func (o Operation) Validate() error {
 
 // ModelID is the public, credential-free identity of a provider model.
 type ModelID struct {
-	Provider string `json:"provider"`
-	Name     string `json:"name"`
+	Provider string `json:"provider" yaml:"provider"`
+	Name     string `json:"name" yaml:"name"`
 }
 
 func (id ModelID) Validate() error {
@@ -42,8 +42,8 @@ func (id ModelID) Validate() error {
 // ModelRef combines a public model identity with an internal credential
 // profile used only while resolving a call.
 type ModelRef struct {
-	ID      ModelID `json:"id"`
-	Profile string  `json:"profile,omitempty"`
+	ID      ModelID `json:"id" yaml:"id"`
+	Profile string  `json:"profile,omitempty" yaml:"profile,omitempty"`
 }
 
 func (r ModelRef) Validate() error {
