@@ -1,154 +1,115 @@
-// Package agent is the application-layer surface for FlowCraft agents.
+// Package agent is FlowCraft's agent abstraction: the identity, the
+// execution contract, and the turn harness for one logical agent.
+//
+// # The shape of the abstraction
+//
+// An agent in FlowCraft is the triple of:
+//
+//	Agent  — a plain data struct: who this agent is (ID, Card, Tools)
+//	Engine — the execution contract: how one run is executed
+//	Run    — the per-execution input bundle: identity, attributes,
+//	         dependencies, resume checkpoint
+//
+// wired together for one turn by [Execute]:
+//
+//	res, err := agent.Execute(ctx, ag, eng, req, opts...)
+//
+// The same [Agent] value can be driven by different engines (a graph
+// DAG for rich decision trees, a script flow, an A2A-remote proxy)
+// without changing its definition — engines are interchangeable
+// implementations of the agent's behaviour, not part of its identity.
 //
 // # Position in the layering
 //
 //	┌──────────────────────────────────────────────────────────┐
-//	│  application layer       sdk/agent          ← this pkg   │
-//	│                                                          │
-//	│      ┌──────────────────────┐                            │
-//	│      │  Agent / Request /   │                            │
-//	│      │  Result / Observer / │                            │
-//	│      │  Decider /           │                            │
-//	│      │  BoardSeeder /       │                            │
-//	│      │  agent.Run(...)      │                            │
-//	│      └──────────────────────┘                            │
-//	│                  ↓ drives                                │
-//	│  core layer              sdk/engine                      │
-//	│      Engine / Host / Run / Board / Checkpoint            │
+//	│  sdk/agent                     ← this pkg                │
+//	│      Agent / Request / Result / Identity                 │
+//	│      Execute(...) — the turn harness                     │
+//	│      Hook / BeforeExecute / AfterExecute — lifecycle     │
+//	│      Engine / Host / Board / Run / Checkpoint — contract │
 //	│                  ↑ implemented by                        │
-//	│  concrete engines        sdk/graph, sdk/script           │
+//	│  concrete engines        sdk/graph, (script flows, …)    │
+//	│  engine dependencies     sdk/script (bindings/runtime)   │
 //	└──────────────────────────────────────────────────────────┘
 //
-// agent owns "what the user sees": agents, conversations, request /
-// result envelopes, lifecycle observation, lifecycle decisions
-// (disposition, moderation), board seeding policy. It deliberately
-// does NOT own "how a turn is executed" — execution is delegated to
-// an [engine.Engine] passed at run time:
+// Concrete engines (sdk/graph's runner, custom inline engines built
+// on [EngineFunc]) import this package and implement [Engine]. They
+// reuse [Board] for shared blackboard state, [Host] for host-side
+// capabilities, and [Checkpoint] for resume — they do not redefine
+// them.
 //
-//	agent.Run(ctx, ag, eng, req, opts...)
+// # Identity is typed
 //
-// The same agent identity can be driven by different engines (graph for
-// rich decision trees, script for simple flows, A2A-remote for federation)
-// without changing its definition. This is the central design point that
-// supersedes sdk/workflow's Agent-owns-Strategy coupling.
+// Every identity dimension of a run is a typed field on [Identity]
+// (embedded in [Run]): AgentID, RunID, ParentRunID, TaskID,
+// ConversationID. Envelope headers, step subjects, telemetry span
+// attributes and multi-agent fan-in all read identity from that
+// value — never from a stringly-typed attribute bag. [Run.Attributes]
+// is reserved for non-identity metadata (tenant id, engine kind,
+// feature flags) supplied via [WithAttributes].
 //
-// # Memory / history / recall integration
+// # The turn harness
 //
-// agent does NOT define a History interface. The reason: not every
-// engine speaks "graph + node" or stores its working state on the
-// engine.Board the same way, so a single contract for "load before"
-// and "append after" leaks engine assumptions into the application
-// layer. Instead, agent exposes four orthogonal extension points:
+// [Execute] is intentionally minimalist: it mints the run id, builds
+// the board, dispatches lifecycle hooks, classifies the outcome into
+// [Status], and assembles [Result] — nothing else. Anything that
+// looks like "policy" lives on four orthogonal extension points:
 //
-//   - [BoardSeeder] (via [WithBoardSeed]) builds the initial board.
-//     Use it to load conversation history, run retrieval, materialise
-//     system prompts, or whatever the engine expects to find on the
-//     board at start.
+//   - [BeforeExecute] (via [WithBeforeExecute]) builds the initial
+//     board: load conversation history, run retrieval, materialise
+//     system prompts.
 //
-//   - [Observer] (via [WithObserver] or [Agent.Observers]) reacts to
-//     run lifecycle events with no return value. Use it to append the
-//     produced messages to a transcript on completion, emit metrics,
-//     snapshot board state on interrupt, etc.
+//   - [Hook] (via [WithHook] or [Agent.Hooks]) reacts to run
+//     lifecycle events with no return value: transcript append,
+//     metrics, snapshots.
 //
-//   - [Decider] (via [WithDecider] or [Agent.Deciders]) influences
-//     the run's classification at boundary points. Round B exposes
-//     [Decider.BeforeFinalize], which sets [Result.Committed] —
-//     transcript / archival Observers gate on that flag, so a
-//     barge-in or moderation hit can opt the run out of persistence
-//     without rewriting any persistence wiring.
+//   - [AfterExecute] (via [WithAfterExecute] or [Agent.After])
+//     influences classification at the finalize boundary: its merged
+//     [Decision] drives [Result.Committed] and gates the revise loop
+//     ([WithMaxRevise]).
 //
-//   - [engine.Host] (via [WithEngineHost]) is the bag of host-side
-//     capabilities the engine reaches for during execution: event
-//     publishing, interrupt injection, user prompting, checkpoint
-//     persistence, token-usage reporting. Build one struct that
-//     embeds [engine.NoopHost] and override the methods you actually
-//     need; share metric clients / tracers / loggers across methods
-//     the way only a struct can. agent never wraps or decorates the
-//     supplied host — what you pass in is exactly what the engine
-//     sees.
+//   - [Host] (via [WithHost]) is the bag of host-side capabilities
+//     the engine reaches for during execution: event publishing,
+//     interrupt injection, user prompting, checkpoint persistence,
+//     token-usage reporting. Embed [NoopHost] and override the
+//     methods you need; decorate with [HostMiddleware] (e.g.
+//     [TracingMiddleware]) via [ComposeHost].
 //
-// Concrete history / recall / archival integrations are intentionally
-// the caller's problem: they are 5–10 lines of glue around any
-// transcript store and live with the application that owns the
-// store, not in sdk/agent. See example_multiturn_test.go for the
-// canonical wiring shape.
+// # Resume
+//
+// [WithResumeFrom](cp) replays a previous run from cp by setting
+// [Run.ResumeFrom] and overriding the run id to cp.ExecID. Engines
+// without [Resumer] surface NotAvailable; engines with it (graph
+// runner) restore board state from cp.Board and continue from
+// cp.Step. ResumeFrom applies to attempt 1 only — revise restarts
+// are fresh runs, not checkpoint replays. [LoadAndResume] packages
+// the load-checkpoint-then-execute dance for hosts.
+//
+// # Engine assembly: specs, factories, registries
+//
+// Engines are wired at ASSEMBLY time, not per run. Each engine kind
+// ships a [Factory] whose [EngineSpec] statically declares its
+// [Capabilities] and named [DepSpec] dependencies; hosts register
+// factories in a [Registry] and read specs to validate deployments
+// before any engine instance exists. There is deliberately no
+// per-run dependency bag on [Run] — the only per-run policy gate is
+// the typed [Run.ToolAllowList], promoted from [Agent.Tools] (or
+// overridden via [WithToolAllowList]).
+//
+// This package contains no YAML loader: serialisable spec types
+// carry yaml/json tags, and the config-driven assembly of agents
+// (YAML → Factory → Engine) lives in an sdkx module layered on top,
+// mirroring sdkx/inference/config and sdkx/tool/config.
 //
 // # Allowed dependencies
 //
-//   - sdk/engine     (Engine, Host, Run, Board, Checkpoint, …)
-//   - sdk/model      (Message, Part, TokenUsage)
+//   - sdk/event       (Envelope subjects/headers only — no Bus)
 //   - sdk/errdefs
+//   - sdk/inference   (Message / Part on Board channels, Usage)
+//   - sdk/telemetry   (attribute key conventions)
+//   - sdk/tool        (tool definitions on Request)
 //   - standard library
 //
-// agent MUST NOT import memory/history, memory/recall, sdk/agent/strategy
-// (when added), sdk/graph, sdk/script, sdk/workflow, sdk/voice,
-// sdk/event. Anything that needs an event bus (Publish wiring, OTel
-// span linking, telemetry sinks) lives in the caller-supplied
-// [engine.Host] (see [WithEngineHost]); agent itself does not own any
-// event-routing convention.
-//
-// # What lives here
-//
-//  1. [Agent], [AgentCard], [Skill] — agent identity and capability
-//     description. Agent is a *plain struct* (no Strategy-method on it):
-//     execution wiring is the caller's concern.
-//
-//  2. [Request] / [Result] / [Status] / [Artifact] — one-turn input/output.
-//
-//  3. [BoardSeeder] / [BoardSeederFunc] — the data-injection extension
-//     point that runs once before engine.Execute.
-//
-//  4. [Observer] / [BaseObserver] / [RunInfo] — the read-only
-//     lifecycle hooks fired around engine.Execute.
-//
-//  5. [Decider] / [BaseDecider] / [FinalizeDecision] — the
-//     decision-making counterpart of Observer. BeforeFinalize fires
-//     after every engine.Execute attempt; the merged decision drives
-//     [Result.Committed], records the [FinalizeDecision.Reason] in
-//     Result.State["finalize_reason"], and (when [WithMaxRevise] is
-//     enabled) gates the revise loop.
-//
-//  6. [DiscardOnInterruptCauses] — the canonical disposition
-//     Decider for voice / streaming UX. Constructs a Decider that
-//     marks Result.Committed=false on barge-in causes.
-//
-//  7. [Run] — the entry point that wires Request + Agent + Engine +
-//     observers + deciders + seeder together for one turn, returning
-//     a Result. Honours [WithResumeFrom] for checkpoint replay and
-//     [WithMaxRevise] for Decider-driven re-attempts (see
-//     "Resume / Revise" below).
-//
-//  8. [RunOption] and the WithXxx helpers — plumb optional behaviours
-//     into Run without making the function signature unwieldy.
-//
-// # Resume / Revise
-//
-// Two attempt-shaping options compose with everything else:
-//
-//   - [WithResumeFrom](cp) replays a previous run from cp by setting
-//     engine.Run.ResumeFrom and overriding the run id to cp.ExecID.
-//     Engines without [engine.Resumer] surface NotAvailable; engines
-//     with it (graph runner, future script engine) restore board
-//     state from cp.Board and continue from cp.Step. ResumeFrom
-//     applies to attempt 1 only — see Revise.
-//
-//   - [WithMaxRevise](n) opts in to the
-//     [FinalizeDecision.Revise] loop. When n>=2, deciders that
-//     return Revise=true on a completed attempt trigger another
-//     engine.Execute pass with a freshly-seeded board (revise is a
-//     fresh retry, not a checkpoint replay — ResumeFrom is dropped
-//     after attempt 1). The loop exits when no decider asks for
-//     revise OR the attempt counter reaches n. Failed /
-//     interrupted / canceled / aborted attempts NEVER consume
-//     budget; transient infrastructure errors surface immediately.
-//     [Result.Attempts] reports the actual count;
-//     [Observer.OnRunRevise] fires once per attempt transition.
-//
-// # What does NOT live here yet (later)
-//
-//   - RunHandle / ResumeToken for in-flight run management
-//     (deferred until application-level handle plumbing matures).
-//
-//   - Strategy adapter for compiled engines (sdk/agent/strategy will host
-//     it once we know what shape it should have).
+// This package MUST NOT import sdk/graph, sdk/script, memory/*, or
+// any concrete engine implementation.
 package agent

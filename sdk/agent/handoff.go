@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -29,9 +28,9 @@ import (
 //	    {ToAgentID: "tech",    Description: "Bugs, errors, integrations"},
 //	}
 //	tools := append(baseTools, agent.HandoffTools(hs)...)
-//	deciders := []agent.Decider{agent.HandoffDecider(hs)}
+//	deciders := []agent.AfterExecute{agent.HandoffDecider(hs)}
 //
-// Recommended host loop after Run returns:
+// Recommended host loop after Execute returns:
 //
 //	if ev, ok := agent.HandoffFromResult(res); ok {
 //	    next := dispatch(ev.ToAgentID, ev.Note)  // kanban / direct Run / queue
@@ -72,7 +71,7 @@ type Handoff struct {
 	// OnInvoke fires synchronously inside the hand-off tool's
 	// Execute call. Use it for lightweight observability (a log
 	// line, a metric) — heavy work should be done by the host
-	// after Run returns. Returning an error from OnInvoke fails
+	// after Execute returns. Returning an error from OnInvoke fails
 	// the tool call and the LLM may retry; the hand-off is NOT
 	// recorded in that case.
 	OnInvoke func(ctx context.Context, args HandoffArgs) error
@@ -120,11 +119,11 @@ type HandoffEvent struct {
 
 // HandoffStateKey is the [Result.State] map key under which
 // [HandoffDecider] writes its [HandoffEvent]. Exposed as a constant
-// so hosts and Observers can probe the state without depending on
+// so hosts and Hooks can probe the state without depending on
 // the decider's import path.
 const HandoffStateKey = "handoff"
 
-// HandoffFinalizeReason is the conventional [FinalizeDecision.Reason]
+// HandoffFinalizeReason is the conventional [Decision.Reason]
 // prefix used by [HandoffDecider]. Format: "handoff:<to_agent_id>".
 // Telemetry consumers can branch on the prefix without parsing the
 // full state map.
@@ -153,11 +152,7 @@ func HandoffTool(h Handoff) tool.Tool {
 	if desc == "" {
 		desc = "Transfer the conversation to " + h.ToAgentID
 	}
-	def := model.ToolDefinition{
-		Name:        name,
-		Description: desc,
-		InputSchema: handoffInputSchema(),
-	}
+	def := handoffToolDefinition(name, desc)
 	return tool.FuncTool(def, func(ctx context.Context, args string) (string, error) {
 		var parsed HandoffArgs
 		if args != "" {
@@ -201,10 +196,10 @@ func HandoffTools(ctx context.Context, req *Request, hs []Handoff) []tool.Tool {
 	return out
 }
 
-// HandoffDecider returns a [Decider] that scans Result.Messages for
+// HandoffDecider returns a [AfterExecute] that scans Result.Messages for
 // the FIRST tool call whose name matches one of hs and, when found,
 // records the hand-off in Result.State and emits a
-// [FinalizeDecision] with Reason = [HandoffFinalizeReason] +
+// [Decision] with Reason = [HandoffFinalizeReason] +
 // ToAgentID.
 //
 // Behaviour:
@@ -224,13 +219,13 @@ func HandoffTools(ctx context.Context, req *Request, hs []Handoff) []tool.Tool {
 //   - Multiple hand-offs in one turn are deduped to the first
 //     match (see Handoff doc).
 //
-// The returned Decider stores the [HandoffEvent] under
+// The returned AfterExecute stores the [HandoffEvent] under
 // [HandoffStateKey]; consumers retrieve it via
 // [HandoffFromResult] which performs the type assertion + map
 // initialisation safely.
-func HandoffDecider(hs []Handoff) Decider {
+func HandoffDecider(hs []Handoff) AfterExecute {
 	if len(hs) == 0 {
-		return BaseDecider{}
+		return BaseAfterExecute{}
 	}
 	// Build a name → handoff lookup once so per-turn detection
 	// stays O(message * tool_call) instead of O(× len(hs)).
@@ -246,17 +241,17 @@ func HandoffDecider(hs []Handoff) Decider {
 }
 
 type handoffDecider struct {
-	BaseDecider
+	BaseAfterExecute
 	lookup map[string]Handoff
 }
 
-// BeforeFinalize implements [Decider]. It walks res.Messages from
+// After implements [AfterExecute]. It walks res.Messages from
 // the FIRST message forward (the LLM's chronological order) so
 // "first tool call wins" reflects the natural sequence the model
 // produced.
-func (d *handoffDecider) BeforeFinalize(_ context.Context, _ RunInfo, _ *Request, res *Result) (FinalizeDecision, error) {
+func (d *handoffDecider) After(_ context.Context, _ Identity, _ *Request, res *Result) (Decision, error) {
 	if res == nil {
-		return FinalizeDecision{}, nil
+		return Decision{}, nil
 	}
 	for _, msg := range res.Messages {
 		for _, tc := range msg.ToolCalls() {
@@ -269,19 +264,19 @@ func (d *handoffDecider) BeforeFinalize(_ context.Context, _ RunInfo, _ *Request
 				ToolName:   tc.Name,
 				ToolCallID: tc.ID,
 			}
-			if tc.Arguments != "" {
-				_ = json.Unmarshal([]byte(tc.Arguments), &ev.Args)
+			if len(tc.Arguments) > 0 {
+				_ = json.Unmarshal(tc.Arguments, &ev.Args)
 			}
 			if res.State == nil {
 				res.State = map[string]any{}
 			}
 			res.State[HandoffStateKey] = ev
-			return FinalizeDecision{
+			return Decision{
 				Reason: HandoffFinalizeReason + h.ToAgentID,
 			}, nil
 		}
 	}
-	return FinalizeDecision{}, nil
+	return Decision{}, nil
 }
 
 // HandoffFromResult extracts the [HandoffEvent] previously written
@@ -291,7 +286,7 @@ func (d *handoffDecider) BeforeFinalize(_ context.Context, _ RunInfo, _ *Request
 //
 // Hosts use this in their dispatch loop:
 //
-//	res, _ := agent.Run(ctx, current, eng, req, opts...)
+//	res, _ := agent.Execute(ctx, current, eng, req, opts...)
 //	if ev, ok := agent.HandoffFromResult(res); ok {
 //	    return dispatchTo(ev.ToAgentID, ev.Args.Note)
 //	}
@@ -333,31 +328,25 @@ func DefaultHandoffToolName(agentID string) string {
 	return b.String()
 }
 
-// handoffInputSchema returns the JSON-Schema for the structured
-// arguments object surfaced to the LLM. Static and uniform across
-// every hand-off tool — see the [HandoffArgs] doc for why we don't
-// allow per-handoff schema customisation.
-func handoffInputSchema() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"reason": map[string]any{
-				"type":        "string",
-				"description": "Short rationale for the transfer (1 sentence).",
-			},
-			"note": map[string]any{
-				"type":        "string",
-				"description": "Optional message for the receiving agent to read first.",
-			},
-		},
-		"additionalProperties": false,
-	}
+// handoffToolDefinition builds the tool.Definition for one hand-off.
+// The arguments schema is static and uniform across every hand-off
+// tool — see the [HandoffArgs] doc for why we don't allow per-handoff
+// schema customisation.
+func handoffToolDefinition(name, description string) tool.Definition {
+	return tool.DefineSchema(
+		name,
+		description,
+		tool.Property("reason", "string",
+			"Short rationale for the transfer (1 sentence)."),
+		tool.Property("note", "string",
+			"Optional message for the receiving agent to read first."),
+	).DisallowAdditionalProperties().Build()
 }
 
 // Compile-time assertion that the decider does not accidentally
-// drop the BaseDecider embedding (which provides the no-op default
-// for any future Decider methods we might add).
+// drop the BaseAfterExecute embedding (which provides the no-op default
+// for any future AfterExecute methods we might add).
 var (
-	_ Decider = (*handoffDecider)(nil)
-	_         = errors.New
+	_ AfterExecute = (*handoffDecider)(nil)
+	_              = errors.New
 )

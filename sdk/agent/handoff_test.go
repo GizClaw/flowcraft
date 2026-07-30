@@ -2,28 +2,28 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
-// makeAssistantWithToolCall constructs a model.Message that contains
-// one tool-call part — enough to exercise the handoff decider.
-func makeAssistantWithToolCall(id, name, args string) model.Message {
-	return model.Message{
-		Role: model.RoleAssistant,
-		Parts: []model.Part{
-			{
-				Type: model.PartToolCall,
-				ToolCall: &model.ToolCall{
-					ID:        id,
-					Name:      name,
-					Arguments: args,
-				},
-			},
-		},
+// makeAssistantWithToolCall constructs an inference.Message that
+// contains one tool-call part — enough to exercise the handoff
+// decider.
+func makeAssistantWithToolCall(id, name, args string) inference.Message {
+	return inference.Message{
+		Role: inference.RoleAssistant,
+		Content: inference.Content{Parts: []inference.Part{
+			inference.ToolCallPart{Call: tool.Call{
+				ID:        id,
+				Name:      name,
+				Arguments: json.RawMessage(args),
+			}},
+		}},
 	}
 }
 
@@ -52,8 +52,22 @@ func TestHandoffTool_DefinitionShape(t *testing.T) {
 	if !strings.Contains(def.Description, "billing") {
 		t.Fatalf("description must mention target id, got %q", def.Description)
 	}
-	if def.InputSchema["type"] != "object" {
-		t.Fatalf("schema type = %v", def.InputSchema["type"])
+	var schema struct {
+		Type                 string         `json:"type"`
+		Properties           map[string]any `json:"properties"`
+		AdditionalProperties bool           `json:"additionalProperties"`
+	}
+	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
+		t.Fatalf("input schema must unmarshal: %v", err)
+	}
+	if schema.Type != "object" {
+		t.Fatalf("schema type = %q, want object", schema.Type)
+	}
+	if len(schema.Properties) != 2 {
+		t.Fatalf("schema properties = %v, want reason+note", schema.Properties)
+	}
+	if schema.AdditionalProperties {
+		t.Fatal("schema must be closed (additionalProperties: false)")
 	}
 }
 
@@ -115,14 +129,14 @@ func TestHandoffDecider_DetectsFirstCall(t *testing.T) {
 	}
 	dec := agent.HandoffDecider(hs)
 	res := &agent.Result{
-		Messages: []model.Message{
+		Messages: []inference.Message{
 			makeAssistantWithToolCall("call-1", "transfer_to_billing", `{"reason":"refund"}`),
 			makeAssistantWithToolCall("call-2", "transfer_to_tech", ""), // should be ignored
 		},
 	}
-	d, err := dec.BeforeFinalize(context.Background(), agent.RunInfo{}, &agent.Request{}, res)
+	d, err := dec.After(context.Background(), agent.Identity{}, &agent.Request{}, res)
 	if err != nil {
-		t.Fatalf("BeforeFinalize: %v", err)
+		t.Fatalf("After: %v", err)
 	}
 	if d.Reason != agent.HandoffFinalizeReason+"billing" {
 		t.Fatalf("reason = %q", d.Reason)
@@ -143,15 +157,15 @@ func TestHandoffDecider_DetectsFirstCall(t *testing.T) {
 func TestHandoffDecider_NoMatchReturnsZeroDecision(t *testing.T) {
 	dec := agent.HandoffDecider([]agent.Handoff{{ToAgentID: "billing"}})
 	res := &agent.Result{
-		Messages: []model.Message{
+		Messages: []inference.Message{
 			makeAssistantWithToolCall("c", "search_kb", "{}"),
 		},
 	}
-	d, err := dec.BeforeFinalize(context.Background(), agent.RunInfo{}, &agent.Request{}, res)
+	d, err := dec.After(context.Background(), agent.Identity{}, &agent.Request{}, res)
 	if err != nil {
-		t.Fatalf("BeforeFinalize: %v", err)
+		t.Fatalf("After: %v", err)
 	}
-	if d != (agent.FinalizeDecision{}) {
+	if d != (agent.Decision{}) {
 		t.Fatalf("expected zero decision, got %+v", d)
 	}
 	if _, ok := agent.HandoffFromResult(res); ok {
@@ -161,7 +175,7 @@ func TestHandoffDecider_NoMatchReturnsZeroDecision(t *testing.T) {
 
 func TestHandoffDecider_EmptyHandoffsReturnsBaseDecider(t *testing.T) {
 	dec := agent.HandoffDecider(nil)
-	if _, err := dec.BeforeFinalize(context.Background(), agent.RunInfo{},
+	if _, err := dec.After(context.Background(), agent.Identity{},
 		&agent.Request{}, &agent.Result{}); err != nil {
 		t.Fatalf("nil-Handoffs decider must be a no-op, err = %v", err)
 	}

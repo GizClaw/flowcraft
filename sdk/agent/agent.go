@@ -2,8 +2,8 @@ package agent
 
 // Agent is the application-layer description of one logical agent. It
 // is a plain data struct, NOT a "live object" that knows how to run
-// itself: execution is performed by passing an [engine.Engine] to
-// [Run] alongside the Agent. The same Agent value can therefore be
+// itself: execution is performed by passing an [Engine] to
+// [Execute] alongside the Agent. The same Agent value can therefore be
 // driven by different engines without re-construction.
 //
 // This is the central distinction from sdk/workflow.Agent, which
@@ -16,24 +16,24 @@ type Agent struct {
 
 	// Card describes the agent's capabilities for discovery (A2A,
 	// dashboards, …). Optional.
-	Card AgentCard `json:"card,omitempty"`
+	Card AgentCard `json:"card,omitzero"`
 
 	// Tools is the list of tool ids the agent is permitted to call.
 	// The engine looks tools up by id in its dependency container at
 	// run time; this list is the policy gate, not the wiring.
 	Tools []string `json:"tools,omitempty"`
 
-	// Observers are agent-scoped lifecycle observers. They fire on
-	// every [Run] of this agent value, before any observers added
-	// via [WithObserver] for the specific call. JSON-skipped because
-	// observers carry runtime state (channels, stores, …) that does
-	// not round-trip through serialisation.
-	Observers []Observer `json:"-"`
+	// Hooks are agent-scoped lifecycle hooks. They fire on every
+	// [Execute] of this agent value, before any hooks added via
+	// [WithHook] for the specific call. JSON-skipped because hooks
+	// carry runtime state (channels, stores, …) that does not
+	// round-trip through serialisation.
+	Hooks []Hook `json:"-"`
 
-	// Deciders are agent-scoped decision hooks (see [Decider]). They
-	// run before any Decider added via [WithDecider] for the
-	// specific call. Same JSON-skip rationale as Observers.
-	Deciders []Decider `json:"-"`
+	// After are agent-scoped decision hooks (see [AfterExecute]). They
+	// run before any AfterExecute added via [WithAfterExecute] for the
+	// specific call. Same JSON-skip rationale as Hooks.
+	After []AfterExecute `json:"-"`
 }
 
 // AgentCard describes an agent's capabilities for discovery. Field

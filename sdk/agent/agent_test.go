@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // TestAgentCard_JSONKeysMatchA2A pins the AgentCard JSON encoding to
@@ -87,6 +88,7 @@ func TestRequest_JSONKeysMatchA2A(t *testing.T) {
 		TaskID:    "t1",
 		ContextID: "c1",
 		RunID:     "r1",
+		Message:   inference.NewTextMessage(inference.RoleUser, "hi"),
 		Config: &agent.RequestConfig{
 			AcceptedOutputModes: []string{"text/plain"},
 		},
@@ -149,7 +151,7 @@ func TestResult_JSONKeys(t *testing.T) {
 	}
 
 	// Result no longer carries a Usage field — token aggregation is
-	// the caller-supplied engine.Host's job (see agent.WithEngineHost
+	// the caller-supplied agent.Host's job (see agent.WithHost
 	// for the rationale). The JSON must not regress to including it.
 	forbidden := []string{
 		`"task_id"`, `"run_id"`,
@@ -164,16 +166,16 @@ func TestResult_JSONKeys(t *testing.T) {
 	}
 }
 
-// TestAgent_JSONOmitsNonSerialisableHooks ensures the Observers /
-// Deciders fields stay JSON-skipped — they hold runtime state and
+// TestAgent_JSONOmitsNonSerialisableHooks ensures the Hooks /
+// After fields stay JSON-skipped — they hold runtime state and
 // would not round-trip through serialisation cleanly.
 func TestAgent_JSONOmitsNonSerialisableHooks(t *testing.T) {
 	a := agent.Agent{
-		ID:        "a1",
-		Card:      agent.AgentCard{Name: "demo"},
-		Tools:     []string{"web.search"},
-		Observers: []agent.Observer{agent.BaseObserver{}},
-		Deciders:  []agent.Decider{agent.BaseDecider{}},
+		ID:    "a1",
+		Card:  agent.AgentCard{Name: "demo"},
+		Tools: []string{"web.search"},
+		Hooks: []agent.Hook{agent.BaseHook{}},
+		After: []agent.AfterExecute{agent.BaseAfterExecute{}},
 	}
 
 	raw, err := json.Marshal(a)
@@ -188,7 +190,7 @@ func TestAgent_JSONOmitsNonSerialisableHooks(t *testing.T) {
 			t.Errorf("Agent JSON missing key %s; got: %s", key, got)
 		}
 	}
-	forbidden := []string{`"observers"`, `"Observers"`, `"deciders"`, `"Deciders"`}
+	forbidden := []string{`"observers"`, `"Hooks"`, `"deciders"`, `"After"`}
 	for _, key := range forbidden {
 		if strings.Contains(got, key) {
 			t.Errorf("Agent JSON contains forbidden key %s; got: %s", key, got)
