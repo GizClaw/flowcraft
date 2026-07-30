@@ -26,7 +26,7 @@ package enginetest
 //     from any goroutine"; the suite hammers each method from 16
 //     goroutines under -race.
 //   - Zero-value tolerance: zero Envelope, Checkpoint, UserPrompt,
-//     TokenUsage must not crash. Catches hosts that dereference
+//     inference.Usage must not crash. Catches hosts that dereference
 //     unset fields blindly.
 //
 // # Wiring
@@ -43,7 +43,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // HostFactory builds a fresh [engine.Host] for each subtest. The
@@ -128,7 +128,7 @@ func hostReportUsageZero(t *testing.T, f HostFactory, c HostCapabilities) {
 	t.Helper()
 	h := f()
 	defer hostRecoverPanicAs(t, "ReportUsage(zero usage)")
-	err := h.ReportUsage(context.Background(), model.TokenUsage{})
+	err := h.ReportUsage(context.Background(), inference.Usage{})
 	if err != nil && !c.AcceptsBudgetExceeded {
 		t.Errorf("ReportUsage(zero) = %v; hosts with no configured budget MUST return nil — see host.go UsageReporter contract", err)
 	}
@@ -178,7 +178,7 @@ func hostConcurrentAccess(t *testing.T, f HostFactory, c HostCapabilities) {
 			}()
 			_ = h.Publish(ctx, event.Envelope{Subject: "test"})
 			_ = h.Checkpoint(ctx, engine.Checkpoint{ExecID: "x"})
-			_ = h.ReportUsage(ctx, model.TokenUsage{})
+			_ = h.ReportUsage(ctx, inference.Usage{})
 			_ = h.Interrupts()
 		}()
 	}

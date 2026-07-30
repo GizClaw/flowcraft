@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // MainChannel is the default message channel key.
@@ -23,12 +23,6 @@ import (
 // MainChannel include graph-level vars VarInterruptedNode and
 // VarToolCalls (see sdk/graph).
 const MainChannel = "__main_channel"
-
-// legacyMainChannel is the pre-v0.3.0 MainChannel value (the empty
-// string). Snapshot restore paths translate it to the current
-// MainChannel so checkpoint blobs taken with older SDK builds still
-// resume cleanly. Slated for removal in v0.4.
-const legacyMainChannel = ""
 
 // Cloneable may be implemented by values stored in Board vars to
 // provide a type-safe deep copy instead of the reflection fallback used
@@ -51,7 +45,7 @@ type Cloneable interface {
 // Deps) belongs on [Run], not here.
 type Board struct {
 	mu       sync.RWMutex
-	channels map[string][]model.Message
+	channels map[string][]inference.Message
 	vars     map[string]any
 }
 
@@ -59,15 +53,15 @@ type Board struct {
 // for resume / checkpoint flows. It carries no live mutex and is safe
 // to JSON-encode.
 type BoardSnapshot struct {
-	Vars     map[string]any             `json:"vars"`
-	Channels map[string][]model.Message `json:"channels,omitempty"`
+	Vars     map[string]any                 `json:"vars"`
+	Channels map[string][]inference.Message `json:"channels,omitempty"`
 }
 
 // NewBoard creates an empty Board with an initialised main channel so
 // callers can [Board.AppendChannelMessage] without a nil-check.
 func NewBoard() *Board {
 	return &Board{
-		channels: map[string][]model.Message{MainChannel: {}},
+		channels: map[string][]inference.Message{MainChannel: {}},
 		vars:     make(map[string]any),
 	}
 }
@@ -178,34 +172,34 @@ func (b *Board) UpdateSliceVarItem(key string, match func(any) bool, update func
 // Channel returns a copy of messages for the given channel. An empty
 // or missing channel returns a nil slice (not a zero-length slice) so
 // callers can use len() == 0 uniformly.
-func (b *Board) Channel(name string) []model.Message {
+func (b *Board) Channel(name string) []inference.Message {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	msgs := b.channels[name]
 	if len(msgs) == 0 {
 		return nil
 	}
-	return model.CloneMessages(msgs)
+	return inference.CloneMessages(msgs)
 }
 
 // SetChannel replaces the entire message list for a channel. The input
 // slice is copied; later mutations by the caller do not affect the
 // Board.
-func (b *Board) SetChannel(name string, msgs []model.Message) {
+func (b *Board) SetChannel(name string, msgs []inference.Message) {
 	b.mu.Lock()
 	if b.channels == nil {
-		b.channels = map[string][]model.Message{}
+		b.channels = map[string][]inference.Message{}
 	}
-	b.channels[name] = model.CloneMessages(msgs)
+	b.channels[name] = inference.CloneMessages(msgs)
 	b.mu.Unlock()
 }
 
 // AppendChannelMessage appends a message to a channel, creating the
 // channel on demand.
-func (b *Board) AppendChannelMessage(name string, msg model.Message) {
+func (b *Board) AppendChannelMessage(name string, msg inference.Message) {
 	b.mu.Lock()
 	if b.channels == nil {
-		b.channels = map[string][]model.Message{}
+		b.channels = map[string][]inference.Message{}
 	}
 	b.channels[name] = append(b.channels[name], msg.Clone())
 	b.mu.Unlock()
@@ -214,12 +208,12 @@ func (b *Board) AppendChannelMessage(name string, msg model.Message) {
 // ChannelsCopy returns a deep copy of all channel message lists. Used
 // by parallel branch execution to give each branch an independent
 // view that can later be merged.
-func (b *Board) ChannelsCopy() map[string][]model.Message {
+func (b *Board) ChannelsCopy() map[string][]inference.Message {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	out := make(map[string][]model.Message, len(b.channels))
+	out := make(map[string][]inference.Message, len(b.channels))
 	for k, msgs := range b.channels {
-		out[k] = model.CloneMessages(msgs)
+		out[k] = inference.CloneMessages(msgs)
 	}
 	return out
 }
@@ -234,9 +228,9 @@ func (b *Board) Snapshot() *BoardSnapshot {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	chCopy := make(map[string][]model.Message, len(b.channels))
+	chCopy := make(map[string][]inference.Message, len(b.channels))
 	for k, msgs := range b.channels {
-		chCopy[k] = model.CloneMessages(msgs)
+		chCopy[k] = inference.CloneMessages(msgs)
 	}
 	return &BoardSnapshot{
 		Vars:     deepCopyVars(b.vars),
@@ -252,16 +246,15 @@ func RestoreBoard(snap *BoardSnapshot) *Board {
 		return NewBoard()
 	}
 	b := &Board{
-		channels: make(map[string][]model.Message),
+		channels: make(map[string][]inference.Message),
 		vars:     deepCopyVars(snap.Vars),
 	}
 	if len(snap.Channels) > 0 {
 		for k, msgs := range snap.Channels {
-			b.channels[k] = model.CloneMessages(msgs)
+			b.channels[k] = inference.CloneMessages(msgs)
 		}
-		migrateLegacyMainChannel(b.channels)
 	} else {
-		b.channels[MainChannel] = []model.Message{}
+		b.channels[MainChannel] = []inference.Message{}
 	}
 	return b
 }
@@ -277,33 +270,16 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.vars = deepCopyVars(snap.Vars)
-	b.channels = make(map[string][]model.Message)
+	b.channels = make(map[string][]inference.Message)
 	if len(snap.Channels) > 0 {
 		for k, msgs := range snap.Channels {
-			b.channels[k] = model.CloneMessages(msgs)
+			b.channels[k] = inference.CloneMessages(msgs)
 		}
-		migrateLegacyMainChannel(b.channels)
 	} else {
 		// Mirror RestoreBoard / NewBoard: every Board must expose
 		// MainChannel even when the snapshot didn't carry channels.
-		b.channels[MainChannel] = []model.Message{}
+		b.channels[MainChannel] = []inference.Message{}
 	}
-}
-
-// migrateLegacyMainChannel rewrites pre-v0.3.0 checkpoint blobs that
-// used the empty-string MainChannel. If the snapshot already carries
-// the new key, the legacy key is dropped; otherwise its messages move
-// over. Slated for removal in v0.4 once all stored checkpoints have
-// been re-taken with v0.3+ writers.
-func migrateLegacyMainChannel(channels map[string][]model.Message) {
-	legacy, hasLegacy := channels[legacyMainChannel]
-	if !hasLegacy {
-		return
-	}
-	if _, hasNew := channels[MainChannel]; !hasNew {
-		channels[MainChannel] = legacy
-	}
-	delete(channels, legacyMainChannel)
 }
 
 // ---------- internal ----------
@@ -328,8 +304,8 @@ func deepCopyValue(v any) any {
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool:
 		return v
-	case []model.Message:
-		return model.CloneMessages(val)
+	case []inference.Message:
+		return inference.CloneMessages(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {

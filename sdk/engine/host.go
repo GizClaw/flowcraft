@@ -5,7 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // Host is the contract a runtime exposes to a running engine.
@@ -114,8 +114,12 @@ type Checkpointer interface {
 //
 // Hosts without billing or budget enforcement return nil
 // unconditionally (see [NoopHost.ReportUsage]).
+//
+// The usage value is inference.Usage: token totals plus the Model /
+// LatencyMs envelope, with cost carried by Billing.Cost (a Money with
+// explicit currency and scale) when a pricing catalog is configured.
 type UsageReporter interface {
-	ReportUsage(ctx context.Context, usage model.TokenUsage) error
+	ReportUsage(ctx context.Context, usage inference.Usage) error
 }
 
 // NoopHost is a zero-cost Host implementation that discards events,
@@ -142,4 +146,4 @@ func (NoopHost) Checkpoint(context.Context, Checkpoint) error { return nil }
 
 // ReportUsage discards the usage report. NoopHost has no budget so
 // always returns nil — engines never see BudgetExceeded under it.
-func (NoopHost) ReportUsage(context.Context, model.TokenUsage) error { return nil }
+func (NoopHost) ReportUsage(context.Context, inference.Usage) error { return nil }

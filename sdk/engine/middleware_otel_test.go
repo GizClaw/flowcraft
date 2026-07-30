@@ -12,7 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // installTestTracer installs a TracerProvider that exports to an
@@ -102,8 +102,11 @@ func TestTracingMiddleware_RecordsErrorOnFailure(t *testing.T) {
 func TestTracingMiddleware_ReportUsageAttribs(t *testing.T) {
 	rec := installTestTracer(t)
 	host := engine.ComposeHost(engine.NoopHost{}, engine.TracingMiddleware())
-	if err := host.ReportUsage(context.Background(), model.TokenUsage{
-		Model: "gpt-4o", InputTokens: 12, OutputTokens: 34,
+	if err := host.ReportUsage(context.Background(), inference.Usage{
+		Model: inference.ModelRef{
+			ID: inference.ModelID{Provider: "openai", Name: "gpt-4o"},
+		},
+		InputTokens: 12, OutputTokens: 34,
 	}); err != nil {
 		t.Fatalf("ReportUsage: %v", err)
 	}
@@ -112,7 +115,8 @@ func TestTracingMiddleware_ReportUsageAttribs(t *testing.T) {
 		t.Fatalf("spans = %+v", spans)
 	}
 	a := attrMap(spans[0].Attributes())
-	if a["usage.model"] != "gpt-4o" || a["usage.input_tokens"] != int64(12) || a["usage.output_tokens"] != int64(34) {
+	if a["usage.provider"] != "openai" || a["usage.model"] != "gpt-4o" ||
+		a["usage.input_tokens"] != int64(12) || a["usage.output_tokens"] != int64(34) {
 		t.Fatalf("attrs = %#v", a)
 	}
 }

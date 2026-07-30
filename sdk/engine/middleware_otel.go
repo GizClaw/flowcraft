@@ -9,7 +9,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // tracingScope is the OTel instrumentation scope name for the spans
@@ -128,10 +128,11 @@ func (h tracingHost) Checkpoint(ctx context.Context, cp Checkpoint) error {
 	return nil
 }
 
-func (h tracingHost) ReportUsage(ctx context.Context, usage model.TokenUsage) error {
+func (h tracingHost) ReportUsage(ctx context.Context, usage inference.Usage) error {
 	ctx, span := h.tracer.Start(ctx, "engine.host.report_usage",
 		trace.WithAttributes(
-			attribute.String("usage.model", usage.Model),
+			attribute.String("usage.provider", usage.Model.ID.Provider),
+			attribute.String("usage.model", usage.Model.ID.Name),
 			attribute.Int64("usage.input_tokens", usage.InputTokens),
 			attribute.Int64("usage.output_tokens", usage.OutputTokens),
 		),

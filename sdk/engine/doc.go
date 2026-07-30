@@ -15,12 +15,12 @@
 //
 //   - sdk/event       (for Envelope only; engine does NOT use Bus)
 //   - sdk/errdefs     (for the interrupted-error classification)
-//   - sdk/model       (for Message in Board's typed channels and
-//     Part in user-prompt payloads)
+//   - sdk/inference   (for Message in Board's typed channels, Part in
+//     user-prompt payloads, and Usage in host budget reporting)
 //   - standard library
 //
 // engine MUST NOT import sdk/agent, sdk/agent/strategy, sdk/graph,
-// sdk/script, memory/history, memory/recall, sdk/llm, and sdk/tool.
+// sdk/script, memory/history, memory/recall, and sdk/tool.
 //
 // # The contract at a glance
 //

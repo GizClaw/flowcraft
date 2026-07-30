@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
@@ -17,7 +17,7 @@ func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
 		return func(inner engine.Host) engine.Host {
 			return engine.HostFuncs{
 				Inner: inner,
-				ReportUsageFn: func(ctx context.Context, u model.TokenUsage) error {
+				ReportUsageFn: func(ctx context.Context, u inference.Usage) error {
 					seen = append(seen, name)
 					return inner.ReportUsage(ctx, u)
 				},
@@ -26,7 +26,7 @@ func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
 	}
 
 	composed := engine.ComposeHost(engine.NoopHost{}, mw("A"), mw("B"), mw("C"))
-	if err := composed.ReportUsage(context.Background(), model.TokenUsage{}); err != nil {
+	if err := composed.ReportUsage(context.Background(), inference.Usage{}); err != nil {
 		t.Fatalf("ReportUsage: %v", err)
 	}
 	want := []string{"A", "B", "C"}
@@ -59,7 +59,7 @@ func TestHostFuncs_DelegatesUntouchedMethods(t *testing.T) {
 	called := false
 	wrapped := engine.HostFuncs{
 		Inner: engine.NoopHost{},
-		ReportUsageFn: func(_ context.Context, _ model.TokenUsage) error {
+		ReportUsageFn: func(_ context.Context, _ inference.Usage) error {
 			called = true
 			return nil
 		},
@@ -77,7 +77,7 @@ func TestHostFuncs_DelegatesUntouchedMethods(t *testing.T) {
 	if err := wrapped.Checkpoint(context.Background(), engine.Checkpoint{}); err != nil {
 		t.Errorf("Checkpoint should delegate to NoopHost (returns nil); got %v", err)
 	}
-	if err := wrapped.ReportUsage(context.Background(), model.TokenUsage{}); err != nil {
+	if err := wrapped.ReportUsage(context.Background(), inference.Usage{}); err != nil {
 		t.Errorf("ReportUsage override returned %v, want nil", err)
 	}
 	if !called {
@@ -96,7 +96,7 @@ func TestHostFuncs_BudgetGateRefusesNextCall(t *testing.T) {
 
 	gated := engine.HostFuncs{
 		Inner: engine.NoopHost{},
-		ReportUsageFn: func(_ context.Context, u model.TokenUsage) error {
+		ReportUsageFn: func(_ context.Context, u inference.Usage) error {
 			totalTokens += u.TotalTokens
 			if totalTokens > quota {
 				return errdefs.BudgetExceededf("token budget exceeded: %d/%d", totalTokens, quota)
@@ -105,10 +105,10 @@ func TestHostFuncs_BudgetGateRefusesNextCall(t *testing.T) {
 		},
 	}
 
-	if err := gated.ReportUsage(context.Background(), model.TokenUsage{TotalTokens: 60}); err != nil {
+	if err := gated.ReportUsage(context.Background(), inference.Usage{TotalTokens: 60}); err != nil {
 		t.Fatalf("first call within budget; got %v", err)
 	}
-	err := gated.ReportUsage(context.Background(), model.TokenUsage{TotalTokens: 60})
+	err := gated.ReportUsage(context.Background(), inference.Usage{TotalTokens: 60})
 	if !errdefs.IsBudgetExceeded(err) {
 		t.Fatalf("second call must trip BudgetExceeded; got %v", err)
 	}

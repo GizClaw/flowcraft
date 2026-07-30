@@ -2,9 +2,10 @@ package engine
 
 import (
 	"context"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // HostMiddleware decorates a Host with policy / observability /
@@ -37,11 +38,11 @@ func ComposeHost(base Host, mws ...HostMiddleware) Host {
 	// outermost wrapper. ComposeHost(base, A, B) ≡ A(B(base)) so a
 	// caller reading the slice top-down sees "A first, then B".
 	h := base
-	for i := len(mws) - 1; i >= 0; i-- {
-		if mws[i] == nil {
+	for _, mw := range slices.Backward(mws) {
+		if mw == nil {
 			continue
 		}
-		h = mws[i](h)
+		h = mw(h)
 		if h == nil {
 			// A middleware that returns nil would silently break the
 			// chain at the next call. Refuse the whole compose so the
@@ -59,7 +60,7 @@ func ComposeHost(base Host, mws ...HostMiddleware) Host {
 //
 //	wrapped := engine.HostFuncs{
 //	    Inner: base,
-//	    ReportUsageFn: func(ctx context.Context, u model.TokenUsage) error {
+//	    ReportUsageFn: func(ctx context.Context, u inference.Usage) error {
 //	        // budget enforcement here
 //	        return base.ReportUsage(ctx, u)
 //	    },
@@ -75,7 +76,7 @@ type HostFuncs struct {
 	InterruptsFn  func() <-chan Interrupt
 	AskUserFn     func(ctx context.Context, prompt UserPrompt) (UserReply, error)
 	CheckpointFn  func(ctx context.Context, cp Checkpoint) error
-	ReportUsageFn func(ctx context.Context, usage model.TokenUsage) error
+	ReportUsageFn func(ctx context.Context, usage inference.Usage) error
 }
 
 // Publish routes through PublishFn or Inner.
@@ -111,7 +112,7 @@ func (h HostFuncs) Checkpoint(ctx context.Context, cp Checkpoint) error {
 }
 
 // ReportUsage routes through ReportUsageFn or Inner.
-func (h HostFuncs) ReportUsage(ctx context.Context, usage model.TokenUsage) error {
+func (h HostFuncs) ReportUsage(ctx context.Context, usage inference.Usage) error {
 	if h.ReportUsageFn != nil {
 		return h.ReportUsageFn(ctx, usage)
 	}

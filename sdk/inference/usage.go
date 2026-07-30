@@ -5,6 +5,14 @@ import "fmt"
 // Usage contains normalized effective token totals plus optional
 // provider-reported generation dimensions and breakdowns. Optional counters
 // use pointers so an API can distinguish "not reported" from a reported zero.
+//
+// The Model / LatencyMs envelope is not provider-reported: it is call
+// context the runtime stamps on so hosts can enforce per-model rate
+// limits and surface per-call timing without a sidecar accumulation
+// channel. Cost has exactly one home — Billing.Cost, a Money with
+// explicit currency and scale — so there is never a second "cost"
+// field to disagree with it. Both envelope fields are optional: a
+// reporter that only knows token counts leaves them zero.
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
@@ -14,6 +22,18 @@ type Usage struct {
 	GeneratedVideos     *int64 `json:"generated_videos,omitempty"`
 	InputCharacters     *int64 `json:"input_characters,omitempty"`
 	AudioDurationMillis *int64 `json:"audio_duration_millis,omitempty"`
+
+	// Model identifies the exact target this usage came from —
+	// provider, model name, and credential profile. Zero when the
+	// reporter does not know which model produced the call (aggregate
+	// reports). Hosts that bucket usage by model for budgeting / quota
+	// enforcement consume this field.
+	Model ModelRef `json:"model,omitzero"`
+
+	// LatencyMs is the wall-clock latency of the producing call in
+	// milliseconds. Zero when not measured. It surfaces per-call timing
+	// on the same channel as token counts instead of a parallel one.
+	LatencyMs int64 `json:"latency_ms,omitempty"`
 
 	Input  InputTokenUsage  `json:"input,omitzero"`
 	Output OutputTokenUsage `json:"output,omitzero"`
@@ -128,6 +148,19 @@ type Money struct {
 	Scale    uint8  `json:"scale"`
 }
 
+// Add sums two Money values that share currency and scale, so hosts
+// can accumulate cost under their own currency policy. It returns
+// ok=false for mismatched currency or scale: converting between them
+// is a policy decision (exchange rates, precision) this type does not
+// make. Callers enforcing a single budget currency should normalize or
+// reject on ok=false rather than drop the amount.
+func (m Money) Add(other Money) (Money, bool) {
+	if m.Currency != other.Currency || m.Scale != other.Scale {
+		return Money{}, false
+	}
+	return Money{Currency: m.Currency, Scale: m.Scale, Units: m.Units + other.Units}, true
+}
+
 func (u Usage) Clone() Usage {
 	u.GeneratedImages = clonePointer(u.GeneratedImages)
 	u.GeneratedVideos = clonePointer(u.GeneratedVideos)
@@ -158,12 +191,69 @@ func (u Usage) Clone() Usage {
 	return u
 }
 
+// Add returns a new Usage that is the sum of u and other, composing
+// the dimensions a budget accumulator sums: normalized token totals,
+// the plain input-side sub-counters (cache read/write, uncached — all
+// subset counters sharing the input unit), and the Model / LatencyMs
+// envelope. Model is preserved from u when both are non-zero and
+// disagree (the accumulator's identity wins); when one side is zero
+// the other fills it in — so per-model breakdowns SHOULD bucket by
+// Model before summing. Billing.Cost is deliberately not summed: cost
+// carries a currency and scale, and silently adding mixed currencies
+// is a bug — hosts accumulate cost with their own currency policy via
+// Money.Add. The output-side and keyed breakdowns (reasoning with its
+// per-provider accounting semantics, modality splits, TTL-keyed cache
+// writes, tool details) have no provider-independent sum semantics and
+// are not carried into the result.
+func (u Usage) Add(other Usage) Usage {
+	model := u.Model
+	if model == (ModelRef{}) {
+		model = other.Model
+	}
+	return Usage{
+		InputTokens:  u.InputTokens + other.InputTokens,
+		OutputTokens: u.OutputTokens + other.OutputTokens,
+		TotalTokens:  u.TotalTokens + other.TotalTokens,
+		Model:        model,
+		LatencyMs:    u.LatencyMs + other.LatencyMs,
+		Input: InputTokenUsage{
+			CacheReadTokens:  addPointers(u.Input.CacheReadTokens, other.Input.CacheReadTokens),
+			CacheWriteTokens: addPointers(u.Input.CacheWriteTokens, other.Input.CacheWriteTokens),
+			UncachedTokens:   addPointers(u.Input.UncachedTokens, other.Input.UncachedTokens),
+		},
+	}
+}
+
+// addPointers sums two optional counters; both nil stays nil so "not
+// reported" does not become a reported zero.
+func addPointers(a, b *int64) *int64 {
+	if a == nil && b == nil {
+		return nil
+	}
+	var sum int64
+	if a != nil {
+		sum += *a
+	}
+	if b != nil {
+		sum += *b
+	}
+	return &sum
+}
+
 func (u Usage) Validate() error {
 	if u.InputTokens < 0 || u.OutputTokens < 0 || u.TotalTokens < 0 {
 		return fmt.Errorf("usage token totals must be non-negative")
 	}
 	if u.TotalTokens != u.InputTokens+u.OutputTokens {
 		return fmt.Errorf("usage total must equal input plus output tokens")
+	}
+	if u.LatencyMs < 0 {
+		return fmt.Errorf("usage latency must be non-negative")
+	}
+	if u.Model != (ModelRef{}) {
+		if err := u.Model.Validate(); err != nil {
+			return fmt.Errorf("usage model: %w", err)
+		}
 	}
 	for name, value := range map[string]*int64{
 		"generated images":            u.GeneratedImages,

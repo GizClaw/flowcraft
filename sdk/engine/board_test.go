@@ -7,8 +7,20 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/media"
 )
+
+// imageURLPart builds an ImagePart from a URL for tests that exercise
+// multi-part messages.
+func imageURLPart(t *testing.T, rawURL string) inference.ImagePart {
+	t.Helper()
+	source, err := media.NewImageURL(rawURL, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL(%q): %v", rawURL, err)
+	}
+	return inference.ImagePart{Source: source}
+}
 
 func TestBoard_NewBoardHasEmptyMainChannel(t *testing.T) {
 	b := engine.NewBoard()
@@ -19,90 +31,92 @@ func TestBoard_NewBoardHasEmptyMainChannel(t *testing.T) {
 
 func TestBoard_AppendChannelMessage(t *testing.T) {
 	b := engine.NewBoard()
-	m := model.NewTextMessage(model.RoleUser, "hello")
+	m := inference.NewTextMessage(inference.RoleUser, "hello")
 	b.AppendChannelMessage(engine.MainChannel, m)
 
 	got := b.Channel(engine.MainChannel)
-	if len(got) != 1 || got[0].Content() != "hello" {
+	if len(got) != 1 || got[0].Content.Text() != "hello" {
 		t.Errorf("Channel = %+v, want [hello]", got)
 	}
 }
 
 func TestBoard_SetChannel_DefensiveCopy(t *testing.T) {
 	b := engine.NewBoard()
-	in := []model.Message{
-		model.NewTextMessage(model.RoleUser, "a"),
-		model.NewTextMessage(model.RoleUser, "b"),
+	in := []inference.Message{
+		inference.NewTextMessage(inference.RoleUser, "a"),
+		inference.NewTextMessage(inference.RoleUser, "b"),
 	}
 	b.SetChannel("alt", in)
 
 	// Mutate caller-owned slice; board copy must be unaffected.
-	in[0] = model.NewTextMessage(model.RoleUser, "MUTATED")
+	in[0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
 
 	got := b.Channel("alt")
-	if got[0].Content() != "a" {
-		t.Errorf("SetChannel did not defensively copy; got %q after caller mutation", got[0].Content())
+	if got[0].Content.Text() != "a" {
+		t.Errorf("SetChannel did not defensively copy; got %q after caller mutation", got[0].Content.Text())
 	}
 }
 
 func TestBoard_SetChannel_DeepCopiesMessageParts(t *testing.T) {
 	b := engine.NewBoard()
-	in := []model.Message{
+	in := []inference.Message{
 		{
-			Role: model.RoleUser,
-			Parts: []model.Part{
-				{Type: model.PartText, Text: "a"},
-				{Type: model.PartImage, Image: &model.MediaRef{URL: "https://img.example.com/a.png"}},
-			},
+			Role: inference.RoleUser,
+			Content: inference.Content{Parts: []inference.Part{
+				inference.TextPart{Text: "a"},
+				imageURLPart(t, "https://img.example.com/a.png"),
+			}},
 		},
 	}
 	b.SetChannel("alt", in)
 
-	in[0].Parts[0].Text = "MUTATED"
-	in[0].Parts[1].Image.URL = "MUTATED"
+	// Parts are interface values: caller-side mutation means swapping
+	// the slice element, which a defensive copy must not observe.
+	in[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	in[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
 	got := b.Channel("alt")
-	if got[0].Parts[0].Text != "a" {
-		t.Errorf("SetChannel leaked caller part mutation: %q", got[0].Parts[0].Text)
+	if text := got[0].Content.Parts[0].(inference.TextPart).Text; text != "a" {
+		t.Errorf("SetChannel leaked caller part mutation: %q", text)
 	}
-	if got[0].Parts[1].Image.URL != "https://img.example.com/a.png" {
-		t.Errorf("SetChannel leaked caller media mutation: %q", got[0].Parts[1].Image.URL)
+	if url := got[0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
+		t.Errorf("SetChannel leaked caller media mutation: %q", url)
 	}
 }
 
 func TestBoard_ChannelDefensiveCopyOnRead(t *testing.T) {
 	b := engine.NewBoard()
-	b.AppendChannelMessage("alt", model.NewTextMessage(model.RoleUser, "x"))
+	b.AppendChannelMessage("alt", inference.NewTextMessage(inference.RoleUser, "x"))
 
 	got := b.Channel("alt")
-	got[0] = model.NewTextMessage(model.RoleUser, "MUTATED")
+	got[0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
 
 	again := b.Channel("alt")
-	if again[0].Content() != "x" {
-		t.Errorf("Channel returned a non-defensive view; mutation leaked: %q", again[0].Content())
+	if again[0].Content.Text() != "x" {
+		t.Errorf("Channel returned a non-defensive view; mutation leaked: %q", again[0].Content.Text())
 	}
 }
 
 func TestBoard_ChannelDeepCopiesMessagePartsOnRead(t *testing.T) {
 	b := engine.NewBoard()
-	b.AppendChannelMessage("alt", model.Message{
-		Role: model.RoleUser,
-		Parts: []model.Part{
-			{Type: model.PartText, Text: "x"},
-			{Type: model.PartImage, Image: &model.MediaRef{URL: "https://img.example.com/x.png"}},
-		},
+	b.AppendChannelMessage("alt", inference.Message{
+		Role: inference.RoleUser,
+		Content: inference.Content{Parts: []inference.Part{
+			inference.TextPart{Text: "x"},
+			imageURLPart(t, "https://img.example.com/x.png"),
+		}},
 	})
 
 	got := b.Channel("alt")
-	got[0].Parts[0].Text = "MUTATED"
-	got[0].Parts[1].Image.URL = "MUTATED"
+	got[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	got[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
 	again := b.Channel("alt")
-	if again[0].Parts[0].Text != "x" {
-		t.Errorf("Channel leaked part mutation: %q", again[0].Parts[0].Text)
+	if text := again[0].Content.Parts[0].(inference.TextPart).Text; text != "x" {
+		t.Errorf("Channel leaked part mutation: %q", text)
 	}
-	if again[0].Parts[1].Image.URL != "https://img.example.com/x.png" {
-		t.Errorf("Channel leaked media mutation: %q", again[0].Parts[1].Image.URL)
+	if url := again[0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/x.png" {
+		t.Errorf("Channel leaked media mutation: %q", url)
 	}
 }
 
@@ -204,13 +218,13 @@ func TestBoard_UpdateSliceVarItem_MissingKeyIsNoOp(t *testing.T) {
 
 func TestBoard_ChannelsCopy_DeepCopiesPerChannel(t *testing.T) {
 	b := engine.NewBoard()
-	b.AppendChannelMessage("a", model.NewTextMessage(model.RoleUser, "alpha"))
-	b.AppendChannelMessage("b", model.NewTextMessage(model.RoleUser, "beta"))
+	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "alpha"))
+	b.AppendChannelMessage("b", inference.NewTextMessage(inference.RoleUser, "beta"))
 
 	cp := b.ChannelsCopy()
-	cp["a"][0] = model.NewTextMessage(model.RoleUser, "MUTATED")
+	cp["a"][0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
 
-	if got := b.Channel("a")[0].Content(); got != "alpha" {
+	if got := b.Channel("a")[0].Content.Text(); got != "alpha" {
 		t.Errorf("ChannelsCopy is not deep; live board mutated: %q", got)
 	}
 	if _, ok := cp["b"]; !ok {
@@ -221,17 +235,17 @@ func TestBoard_ChannelsCopy_DeepCopiesPerChannel(t *testing.T) {
 func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 	b := engine.NewBoard()
 	b.SetVar("k", "v")
-	b.AppendChannelMessage("a", model.NewTextMessage(model.RoleUser, "alpha"))
+	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "alpha"))
 
 	snap := b.Snapshot()
 
 	b.SetVar("k", "MUTATED")
-	b.AppendChannelMessage("a", model.NewTextMessage(model.RoleUser, "leaked"))
+	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "leaked"))
 
 	if v := snap.Vars["k"]; v != "v" {
 		t.Errorf("snapshot Vars leaked mutation: %v", v)
 	}
-	if got := snap.Channels["a"]; len(got) != 1 || got[0].Content() != "alpha" {
+	if got := snap.Channels["a"]; len(got) != 1 || got[0].Content.Text() != "alpha" {
 		t.Errorf("snapshot Channels leaked mutation: %+v", got)
 	}
 
@@ -239,31 +253,31 @@ func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 	if v, _ := restored.GetVar("k"); v != "v" {
 		t.Errorf("RestoreBoard k = %v, want v", v)
 	}
-	if got := restored.Channel("a"); len(got) != 1 || got[0].Content() != "alpha" {
+	if got := restored.Channel("a"); len(got) != 1 || got[0].Content.Text() != "alpha" {
 		t.Errorf("RestoreBoard channel a = %+v, want [alpha]", got)
 	}
 }
 
 func TestBoard_Snapshot_DeepCopiesChannelMessageParts(t *testing.T) {
 	b := engine.NewBoard()
-	b.AppendChannelMessage("a", model.Message{
-		Role: model.RoleUser,
-		Parts: []model.Part{
-			{Type: model.PartText, Text: "alpha"},
-			{Type: model.PartImage, Image: &model.MediaRef{URL: "https://img.example.com/a.png"}},
-		},
+	b.AppendChannelMessage("a", inference.Message{
+		Role: inference.RoleUser,
+		Content: inference.Content{Parts: []inference.Part{
+			inference.TextPart{Text: "alpha"},
+			imageURLPart(t, "https://img.example.com/a.png"),
+		}},
 	})
 
 	snap := b.Snapshot()
 	got := b.Channel("a")
-	got[0].Parts[0].Text = "MUTATED"
-	got[0].Parts[1].Image.URL = "MUTATED"
+	got[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	got[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
-	if snap.Channels["a"][0].Parts[0].Text != "alpha" {
-		t.Errorf("snapshot channel part leaked mutation: %q", snap.Channels["a"][0].Parts[0].Text)
+	if text := snap.Channels["a"][0].Content.Parts[0].(inference.TextPart).Text; text != "alpha" {
+		t.Errorf("snapshot channel part leaked mutation: %q", text)
 	}
-	if snap.Channels["a"][0].Parts[1].Image.URL != "https://img.example.com/a.png" {
-		t.Errorf("snapshot channel media leaked mutation: %q", snap.Channels["a"][0].Parts[1].Image.URL)
+	if url := snap.Channels["a"][0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
+		t.Errorf("snapshot channel media leaked mutation: %q", url)
 	}
 }
 
@@ -279,7 +293,7 @@ func TestBoard_RestoreBoard_NilSnapshot(t *testing.T) {
 
 func TestBoard_RestoreFrom_EmptyChannelsRehydratesMain(t *testing.T) {
 	b := engine.NewBoard()
-	b.AppendChannelMessage("a", model.NewTextMessage(model.RoleUser, "x"))
+	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "x"))
 
 	snap := &engine.BoardSnapshot{Vars: map[string]any{"k": "v"}}
 	b.RestoreFrom(snap)
@@ -289,45 +303,6 @@ func TestBoard_RestoreFrom_EmptyChannelsRehydratesMain(t *testing.T) {
 	}
 	if got := b.Channel("a"); got != nil {
 		t.Errorf("RestoreFrom did not clear stale channels; got %+v", got)
-	}
-}
-
-func TestBoard_RestoreBoard_MigratesLegacyMainChannelKey(t *testing.T) {
-	// Pre-v0.3.0 checkpoints stored MainChannel under the empty-string
-	// key. RestoreBoard must lift those messages onto the new key so
-	// resume on a v0.3+ binary keeps the transcript.
-	snap := &engine.BoardSnapshot{
-		Channels: map[string][]model.Message{
-			"": {model.NewTextMessage(model.RoleUser, "from-legacy")},
-		},
-	}
-
-	b := engine.RestoreBoard(snap)
-
-	if got := b.Channel(engine.MainChannel); len(got) != 1 || got[0].Content() != "from-legacy" {
-		t.Fatalf("MainChannel = %+v, want one legacy message", got)
-	}
-	if got := b.Channel(""); got != nil {
-		t.Fatalf("legacy empty-string channel should not be reachable, got %+v", got)
-	}
-}
-
-func TestBoard_RestoreBoard_LegacyDoesNotOverwriteNewKey(t *testing.T) {
-	// A snapshot that carries both the legacy "" key and the modern
-	// MainChannel key is treated as already migrated: the modern
-	// content wins and the legacy bucket is dropped.
-	snap := &engine.BoardSnapshot{
-		Channels: map[string][]model.Message{
-			"":                 {model.NewTextMessage(model.RoleUser, "legacy")},
-			engine.MainChannel: {model.NewTextMessage(model.RoleUser, "modern")},
-		},
-	}
-
-	b := engine.RestoreBoard(snap)
-
-	got := b.Channel(engine.MainChannel)
-	if len(got) != 1 || got[0].Content() != "modern" {
-		t.Fatalf("MainChannel = %+v, want modern content", got)
 	}
 }
 
@@ -485,7 +460,7 @@ func TestBoard_ConcurrentAccessRaceSmoke(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			b.AppendChannelMessage(engine.MainChannel,
-				model.NewTextMessage(model.RoleAssistant, "x"))
+				inference.NewTextMessage(inference.RoleAssistant, "x"))
 			atomic.AddInt64(&counter, 1)
 		}()
 		go func() {

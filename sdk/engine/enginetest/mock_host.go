@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // MockHost is a fully-featured [engine.Host] for tests. It records
@@ -24,7 +24,7 @@ type MockHost struct {
 
 	mu          sync.Mutex
 	envelopes   []event.Envelope
-	usages      []model.TokenUsage
+	usages      []inference.Usage
 	checkpoints []engine.Checkpoint
 	prompts     []engine.UserPrompt
 
@@ -159,7 +159,7 @@ func (h *MockHost) Checkpoints() []engine.Checkpoint {
 // ReportUsage records the usage delta. Multiple calls are kept in
 // order so tests can assert per-call totals; sum them with
 // [MockHost.TotalUsage] when only the total matters.
-func (h *MockHost) ReportUsage(_ context.Context, usage model.TokenUsage) error {
+func (h *MockHost) ReportUsage(_ context.Context, usage inference.Usage) error {
 	h.mu.Lock()
 	h.usages = append(h.usages, usage)
 	h.mu.Unlock()
@@ -167,19 +167,19 @@ func (h *MockHost) ReportUsage(_ context.Context, usage model.TokenUsage) error 
 }
 
 // Usages returns a copy of every usage report.
-func (h *MockHost) Usages() []model.TokenUsage {
+func (h *MockHost) Usages() []inference.Usage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	out := make([]model.TokenUsage, len(h.usages))
+	out := make([]inference.Usage, len(h.usages))
 	copy(out, h.usages)
 	return out
 }
 
 // TotalUsage sums every recorded usage report.
-func (h *MockHost) TotalUsage() model.TokenUsage {
+func (h *MockHost) TotalUsage() inference.Usage {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	var sum model.TokenUsage
+	var sum inference.Usage
 	for _, u := range h.usages {
 		sum = sum.Add(u)
 	}

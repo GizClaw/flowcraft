@@ -228,6 +228,98 @@ func TestRuntimeTelemetryStreamClosesSpanOnEOF(t *testing.T) {
 	}
 }
 
+func TestRuntimeStampsUsageEnvelope(t *testing.T) {
+	installSpanRecorder(t)
+	runtime := newTelemetryRuntime(t, nil,
+		func(context.Context, string) (GenerateResponse, error) {
+			return GenerateResponse{
+				Message: Message{
+					Role:    RoleAssistant,
+					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				},
+				FinishReason: FinishCompleted,
+				Usage:        Usage{InputTokens: 2, OutputTokens: 2, TotalTokens: 4},
+			}, nil
+		},
+		[]GenerateStreamEvent{
+			{Usage: &Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}},
+			{PartIndex: 0, Delta: TextPartDelta{Text: "ok"}},
+			{FinishReason: FinishCompleted},
+		},
+	)
+	resp, err := runtime.Generate(context.Background(), telemetryModelRef(), validGenerateTextRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Usage.Model != telemetryModelRef() {
+		t.Fatalf("stamped model = %+v, want %+v", resp.Usage.Model, telemetryModelRef())
+	}
+	if resp.Usage.LatencyMs < 0 {
+		t.Fatalf("stamped latency = %d, must be non-negative", resp.Usage.LatencyMs)
+	}
+
+	stream, err := runtime.GenerateStream(context.Background(), telemetryModelRef(), validGenerateTextRequest())
+	if err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	event, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatalf("stream.Next: %v", err)
+	}
+	if event.Usage == nil || event.Usage.Model != telemetryModelRef() {
+		t.Fatalf("stream usage snapshot not stamped: %+v", event.Usage)
+	}
+	for {
+		if _, nextErr := stream.Next(context.Background()); errors.Is(nextErr, io.EOF) {
+			break
+		} else if nextErr != nil {
+			t.Fatalf("stream.Next: %v", nextErr)
+		}
+	}
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream.Result: %v", err)
+	}
+	if result.Usage.Model != telemetryModelRef() {
+		t.Fatalf("result usage not stamped: %+v", result.Usage.Model)
+	}
+	_ = stream.Close()
+}
+
+func TestRuntimeStampPreservesProviderEnvelope(t *testing.T) {
+	installSpanRecorder(t)
+	other := ModelRef{ID: ModelID{Provider: "fake", Name: "server-side"}}
+	runtime := newTelemetryRuntime(t, nil,
+		func(context.Context, string) (GenerateResponse, error) {
+			return GenerateResponse{
+				Message: Message{
+					Role:    RoleAssistant,
+					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				},
+				FinishReason: FinishCompleted,
+				Usage: Usage{
+					InputTokens: 2, OutputTokens: 2, TotalTokens: 4,
+					// A provider that reports its own envelope knows
+					// better than the Runtime's wall clock.
+					Model:     other,
+					LatencyMs: 1234,
+				},
+			}, nil
+		},
+		nil,
+	)
+	resp, err := runtime.Generate(context.Background(), telemetryModelRef(), validGenerateTextRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if resp.Usage.Model != other {
+		t.Fatalf("provider model overwritten: %+v, want %+v", resp.Usage.Model, other)
+	}
+	if resp.Usage.LatencyMs != 1234 {
+		t.Fatalf("provider latency overwritten: %d, want 1234", resp.Usage.LatencyMs)
+	}
+}
+
 func TestRuntimeTelemetryExplainStaysSilent(t *testing.T) {
 	recorder := installSpanRecorder(t)
 	runtime := newTelemetryRuntime(t, nil,

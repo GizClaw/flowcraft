@@ -104,6 +104,7 @@ func (r *Runtime) Generate(
 	ctx, tel := startCall(ctx, OperationGenerate, model, false)
 	defer func() {
 		if err == nil {
+			tel.stampUsage(&resp.Usage)
 			tel.recordUsage(ctx, resp.Usage)
 		}
 		tel.finish(ctx, err)

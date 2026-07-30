@@ -121,6 +121,23 @@ func (t callTelemetry) finish(ctx context.Context, err error) {
 		otellog.String(telemetry.AttrErrorMessage, err.Error()))
 }
 
+// stampUsage fills the call-context envelope on a usage value about
+// to cross the Runtime boundary. The envelope is Runtime-owned by
+// contract, but stamping is fill-if-absent: a provider that
+// explicitly reports server-side latency or a more specific model
+// identity knows better than the wall clock.
+func (t callTelemetry) stampUsage(usage *Usage) {
+	if usage == nil {
+		return
+	}
+	if usage.Model == (ModelRef{}) {
+		usage.Model = t.model
+	}
+	if usage.LatencyMs == 0 {
+		usage.LatencyMs = time.Since(t.start).Milliseconds()
+	}
+}
+
 // recordUsage emits generate token counters and mirrors the usage onto
 // the span. Zero values stay out of counters (no cache hit reported is
 // not a hit-rate of zero); the cached counter only moves when the
@@ -204,6 +221,9 @@ func (s *telemetryStream) Next(ctx context.Context) (GenerateStreamEvent, error)
 	if err == nil {
 		s.seen = true
 		if event.Usage != nil {
+			// Stamp before retaining so the recorded snapshot and the
+			// caller-visible event carry the same envelope.
+			s.tel.stampUsage(event.Usage)
 			s.last = event.Usage
 		}
 		return event, nil
@@ -214,6 +234,16 @@ func (s *telemetryStream) Next(ctx context.Context) (GenerateStreamEvent, error)
 	}
 	s.end(err)
 	return event, err
+}
+
+// Result returns the stream's final response with the envelope
+// stamped, matching the unary Generate contract.
+func (s *telemetryStream) Result() (GenerateResponse, error) {
+	resp, err := s.GenerateStream.Result()
+	if err == nil {
+		s.tel.stampUsage(&resp.Usage)
+	}
+	return resp, err
 }
 
 func (s *telemetryStream) Close() error {
