@@ -2,33 +2,32 @@ package tool
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
 func stubTool(name string) Tool {
-	return FuncTool(model.ToolDefinition{Name: name, Description: name + " desc"}, func(_ context.Context, _ string) (string, error) {
+	return FuncTool(Definition{Name: name, Description: name + " desc"}, func(_ context.Context, _ string) (string, error) {
 		return "{}", nil
 	})
 }
 
 func errTool(name string, err error) Tool {
-	return FuncTool(model.ToolDefinition{Name: name}, func(_ context.Context, _ string) (string, error) {
+	return FuncTool(Definition{Name: name}, func(_ context.Context, _ string) (string, error) {
 		return "", err
 	})
 }
 
 type selfTimeoutTool struct {
-	def    model.ToolDefinition
+	def    Definition
 	called bool
 }
 
-func (s *selfTimeoutTool) Definition() model.ToolDefinition { return s.def }
+func (s *selfTimeoutTool) Definition() Definition { return s.def }
 func (s *selfTimeoutTool) Execute(ctx context.Context, _ string) (string, error) {
 	s.called = true
 	if _, ok := ctx.Deadline(); ok {
@@ -227,17 +226,17 @@ func TestLen(t *testing.T) {
 func TestExecute_Success(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "echo"},
+		Definition{Name: "echo"},
 		func(_ context.Context, args string) (string, error) {
 			return "echoed:" + args, nil
 		},
 	))
 
-	result := r.Execute(context.Background(), model.ToolCall{
-		ID: "call-1", Name: "echo", Arguments: "hello",
+	result := r.Execute(context.Background(), Call{
+		ID: "call-1", Name: "echo", Arguments: json.RawMessage("hello"),
 	})
-	if result.ToolCallID != "call-1" {
-		t.Errorf("ToolCallID = %q, want %q", result.ToolCallID, "call-1")
+	if result.CallID != "call-1" {
+		t.Errorf("CallID = %q, want %q", result.CallID, "call-1")
 	}
 	if result.Content != "echoed:hello" {
 		t.Errorf("Content = %q, want %q", result.Content, "echoed:hello")
@@ -249,8 +248,8 @@ func TestExecute_Success(t *testing.T) {
 
 func TestExecute_ToolNotFound(t *testing.T) {
 	r := NewRegistry()
-	result := r.Execute(context.Background(), model.ToolCall{
-		ID: "call-1", Name: "missing", Arguments: "{}",
+	result := r.Execute(context.Background(), Call{
+		ID: "call-1", Name: "missing", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
 		t.Fatal("expected IsError for missing tool")
@@ -264,8 +263,8 @@ func TestExecute_ToolReturnsError(t *testing.T) {
 	r := NewRegistry()
 	r.Register(errTool("fail", errors.New("broken")))
 
-	result := r.Execute(context.Background(), model.ToolCall{
-		ID: "call-2", Name: "fail", Arguments: "{}",
+	result := r.Execute(context.Background(), Call{
+		ID: "call-2", Name: "fail", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
 		t.Error("IsError should be true")
@@ -278,7 +277,7 @@ func TestExecute_ToolReturnsError(t *testing.T) {
 func TestExecute_ContextCancelled(t *testing.T) {
 	r := NewRegistry(WithExecTimeout(5 * time.Second))
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "slow"},
+		Definition{Name: "slow"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -288,8 +287,8 @@ func TestExecute_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := r.Execute(ctx, model.ToolCall{
-		ID: "call-3", Name: "slow", Arguments: "{}",
+	result := r.Execute(ctx, Call{
+		ID: "call-3", Name: "slow", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
 		t.Error("IsError should be true for cancelled context")
@@ -299,15 +298,15 @@ func TestExecute_ContextCancelled(t *testing.T) {
 func TestExecute_Timeout(t *testing.T) {
 	r := NewRegistry(WithExecTimeout(50 * time.Millisecond))
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "hang"},
+		Definition{Name: "hang"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
 		},
 	))
 
-	result := r.Execute(context.Background(), model.ToolCall{
-		ID: "call-4", Name: "hang", Arguments: "{}",
+	result := r.Execute(context.Background(), Call{
+		ID: "call-4", Name: "hang", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
 		t.Error("IsError should be true for timed-out tool")
@@ -316,11 +315,11 @@ func TestExecute_Timeout(t *testing.T) {
 
 func TestExecute_SelfTimeouter_SkipsTimeout(t *testing.T) {
 	r := NewRegistry(WithExecTimeout(50 * time.Millisecond))
-	st := &selfTimeoutTool{def: model.ToolDefinition{Name: "self"}}
+	st := &selfTimeoutTool{def: Definition{Name: "self"}}
 	r.Register(st)
 
-	result := r.Execute(context.Background(), model.ToolCall{
-		ID: "call-5", Name: "self", Arguments: "{}",
+	result := r.Execute(context.Background(), Call{
+		ID: "call-5", Name: "self", Arguments: json.RawMessage("{}"),
 	})
 	if result.IsError {
 		t.Errorf("unexpected tool error: %s", result.Content)
@@ -333,26 +332,26 @@ func TestExecute_SelfTimeouter_SkipsTimeout(t *testing.T) {
 func TestExecuteAll_Success(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "add"},
+		Definition{Name: "add"},
 		func(_ context.Context, args string) (string, error) {
 			return "result:" + args, nil
 		},
 	))
 
-	calls := []model.ToolCall{
-		{ID: "c1", Name: "add", Arguments: "1"},
-		{ID: "c2", Name: "add", Arguments: "2"},
-		{ID: "c3", Name: "add", Arguments: "3"},
+	calls := []Call{
+		{ID: "c1", Name: "add", Arguments: json.RawMessage("1")},
+		{ID: "c2", Name: "add", Arguments: json.RawMessage("2")},
+		{ID: "c3", Name: "add", Arguments: json.RawMessage("3")},
 	}
 	results := r.ExecuteAll(context.Background(), calls)
 	if len(results) != 3 {
 		t.Fatalf("len(results) = %d, want 3", len(results))
 	}
 	for i, res := range results {
-		if res.ToolCallID != calls[i].ID {
-			t.Errorf("results[%d].ToolCallID = %q, want %q", i, res.ToolCallID, calls[i].ID)
+		if res.CallID != calls[i].ID {
+			t.Errorf("results[%d].CallID = %q, want %q", i, res.CallID, calls[i].ID)
 		}
-		expected := "result:" + calls[i].Arguments
+		expected := "result:" + string(calls[i].Arguments)
 		if res.Content != expected {
 			t.Errorf("results[%d].Content = %q, want %q", i, res.Content, expected)
 		}
@@ -364,10 +363,10 @@ func TestExecuteAll_MixedSuccessAndFailure(t *testing.T) {
 	r.Register(stubTool("good"))
 	r.Register(errTool("bad", errors.New("fail")))
 
-	calls := []model.ToolCall{
-		{ID: "c1", Name: "good", Arguments: "{}"},
-		{ID: "c2", Name: "bad", Arguments: "{}"},
-		{ID: "c3", Name: "good", Arguments: "{}"},
+	calls := []Call{
+		{ID: "c1", Name: "good", Arguments: json.RawMessage("{}")},
+		{ID: "c2", Name: "bad", Arguments: json.RawMessage("{}")},
+		{ID: "c3", Name: "good", Arguments: json.RawMessage("{}")},
 	}
 	results := r.ExecuteAll(context.Background(), calls)
 	if len(results) != 3 {
@@ -387,14 +386,14 @@ func TestExecuteAll_MixedSuccessAndFailure(t *testing.T) {
 func TestExecuteAll_PanicRecovery(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "panicker"},
+		Definition{Name: "panicker"},
 		func(_ context.Context, _ string) (string, error) {
 			panic("oh no")
 		},
 	))
 
-	results := r.ExecuteAll(context.Background(), []model.ToolCall{
-		{ID: "c1", Name: "panicker", Arguments: "{}"},
+	results := r.ExecuteAll(context.Background(), []Call{
+		{ID: "c1", Name: "panicker", Arguments: json.RawMessage("{}")},
 	})
 	if len(results) != 1 {
 		t.Fatalf("len = %d, want 1", len(results))
@@ -410,7 +409,7 @@ func TestExecuteAll_PanicRecovery(t *testing.T) {
 func TestExecuteAll_SemaphoreContextCancelled(t *testing.T) {
 	r := NewRegistry(WithMaxConcurrency(1))
 	r.Register(FuncTool(
-		model.ToolDefinition{Name: "block"},
+		Definition{Name: "block"},
 		func(ctx context.Context, _ string) (string, error) {
 			time.Sleep(200 * time.Millisecond)
 			return "done", nil
@@ -420,9 +419,9 @@ func TestExecuteAll_SemaphoreContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	calls := make([]model.ToolCall, 5)
+	calls := make([]Call, 5)
 	for i := range calls {
-		calls[i] = model.ToolCall{ID: fmt.Sprintf("c%d", i), Name: "block", Arguments: "{}"}
+		calls[i] = Call{ID: fmt.Sprintf("c%d", i), Name: "block", Arguments: json.RawMessage("{}")}
 	}
 
 	results := r.ExecuteAll(ctx, calls)
@@ -448,8 +447,8 @@ func TestExecuteAll_Empty(t *testing.T) {
 
 func TestExecuteAll_ToolNotFound(t *testing.T) {
 	r := NewRegistry()
-	results := r.ExecuteAll(context.Background(), []model.ToolCall{
-		{ID: "c1", Name: "nonexistent", Arguments: "{}"},
+	results := r.ExecuteAll(context.Background(), []Call{
+		{ID: "c1", Name: "nonexistent", Arguments: json.RawMessage("{}")},
 	})
 	if len(results) != 1 {
 		t.Fatalf("len = %d, want 1", len(results))

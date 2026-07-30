@@ -1,6 +1,20 @@
 package tool
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+// schemaMap decodes a built Definition's InputSchema (JSON) into a map
+// so the assertions below can inspect the JSON Schema structure.
+func schemaMap(t *testing.T, def Definition) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(def.InputSchema, &m); err != nil {
+		t.Fatalf("InputSchema not a JSON object: %v", err)
+	}
+	return m
+}
 
 func TestSchemaBuilder_Basic(t *testing.T) {
 	def := DefineSchema("my_tool", "does things",
@@ -15,7 +29,8 @@ func TestSchemaBuilder_Basic(t *testing.T) {
 		t.Fatalf("Description = %q, want %q", def.Description, "does things")
 	}
 
-	props, ok := def.InputSchema["properties"].(map[string]any)
+	schema := schemaMap(t, def)
+	props, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("InputSchema missing properties")
 	}
@@ -26,7 +41,7 @@ func TestSchemaBuilder_Basic(t *testing.T) {
 		t.Fatal("missing property 'count'")
 	}
 
-	req, ok := def.InputSchema["required"].([]string)
+	req, ok := schema["required"].([]any)
 	if !ok || len(req) != 1 || req[0] != "name" {
 		t.Fatalf("required = %v, want [name]", req)
 	}
@@ -37,7 +52,7 @@ func TestSchemaBuilder_NoRequired(t *testing.T) {
 		Property("x", "string", "x"),
 	).Build()
 
-	if _, ok := def.InputSchema["required"]; ok {
+	if _, ok := schemaMap(t, def)["required"]; ok {
 		t.Fatal("should not have required when none specified")
 	}
 }
@@ -47,7 +62,7 @@ func TestSchemaBuilder_Empty(t *testing.T) {
 	if def.Name != "empty" {
 		t.Fatalf("Name = %q", def.Name)
 	}
-	props := def.InputSchema["properties"].(map[string]any)
+	props := schemaMap(t, def)["properties"].(map[string]any)
 	if len(props) != 0 {
 		t.Fatalf("expected empty properties, got %d", len(props))
 	}
@@ -111,7 +126,7 @@ func TestSchemaBuilder_MultipleRequired(t *testing.T) {
 		Property("c", "string", "c"),
 	).Required("a", "b").Required("c").Build()
 
-	req, ok := def.InputSchema["required"].([]string)
+	req, ok := schemaMap(t, def)["required"].([]any)
 	if !ok {
 		t.Fatal("missing required")
 	}
@@ -130,7 +145,7 @@ func TestDefineSchema_WithAllPropertyTypes(t *testing.T) {
 		EnumProperty("status", "string", "status", "active", "inactive"),
 	).Required("name").Build()
 
-	props := def.InputSchema["properties"].(map[string]any)
+	props := schemaMap(t, def)["properties"].(map[string]any)
 	if len(props) != 4 {
 		t.Fatalf("properties count = %d, want 4", len(props))
 	}
@@ -151,7 +166,7 @@ func TestPropertyWithDefault(t *testing.T) {
 	def := DefineSchema("t", "d",
 		PropertyWithDefault("enabled", "boolean", "toggle", true),
 	).Build()
-	props := def.InputSchema["properties"].(map[string]any)
+	props := schemaMap(t, def)["properties"].(map[string]any)
 	enabled := props["enabled"].(map[string]any)
 	if enabled["default"] != true {
 		t.Fatalf("default = %v, want true", enabled["default"])
@@ -164,7 +179,7 @@ func TestRequired_Dedup(t *testing.T) {
 		Property("b", "string", "b"),
 	).Required("a", "b").Required("a").Required("b", "a").Build()
 
-	req := def.InputSchema["required"].([]string)
+	req := schemaMap(t, def)["required"].([]any)
 	if len(req) != 2 {
 		t.Fatalf("required count = %d, want 2 (deduped)", len(req))
 	}

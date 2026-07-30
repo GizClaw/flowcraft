@@ -4,13 +4,11 @@ package tool
 
 import (
 	"context"
-
-	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
 // Tool is the interface that LLM-callable tools must implement.
 type Tool interface {
-	Definition() model.ToolDefinition
+	Definition() Definition
 	Execute(ctx context.Context, arguments string) (string, error)
 }
 
@@ -23,16 +21,16 @@ type SelfTimeouter interface {
 }
 
 // FuncTool wraps a plain function as a Tool.
-func FuncTool(def model.ToolDefinition, fn func(ctx context.Context, args string) (string, error)) Tool {
+func FuncTool(def Definition, fn func(ctx context.Context, args string) (string, error)) Tool {
 	return &funcTool{def: def, fn: fn}
 }
 
 type funcTool struct {
-	def model.ToolDefinition
+	def Definition
 	fn  func(ctx context.Context, args string) (string, error)
 }
 
-func (f *funcTool) Definition() model.ToolDefinition { return f.def }
+func (f *funcTool) Definition() Definition { return f.def }
 
 func (f *funcTool) Execute(ctx context.Context, arguments string) (string, error) {
 	return f.fn(ctx, arguments)

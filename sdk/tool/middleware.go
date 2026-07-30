@@ -2,8 +2,6 @@ package tool
 
 import (
 	"context"
-
-	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
 // Dispatch is the function form of "execute one tool call and return
@@ -11,9 +9,9 @@ import (
 // (modulo the receiver). Middleware operates on this signature.
 //
 // Implementations should treat the input call as immutable and must
-// always return a ToolResult — errors are reported via
-// ToolResult.IsError, never returned out-of-band.
-type Dispatch func(ctx context.Context, call model.ToolCall) model.ToolResult
+// always return a Result — errors are reported via
+// Result.IsError, never returned out-of-band.
+type Dispatch func(ctx context.Context, call Call) Result
 
 // Middleware decorates a Dispatch, returning a new Dispatch that may
 // run code before/after the wrapped call (audit, approval, rate-limit,
@@ -23,7 +21,7 @@ type Dispatch func(ctx context.Context, call model.ToolCall) model.ToolResult
 //
 // A middleware MUST forward to next unless it intentionally
 // short-circuits (e.g. policy denial). Short-circuit responses should
-// set ToolResult.IsError=true and put a human-readable reason in
+// set Result.IsError=true and put a human-readable reason in
 // Content; classify the underlying error via sdk/errdefs where
 // possible (PolicyDenied, BudgetExceeded, RateLimit).
 type Middleware func(next Dispatch) Dispatch

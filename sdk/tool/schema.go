@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/GizClaw/flowcraft/sdk/model"
+import "encoding/json"
 
 // PropertyDef describes a single JSON Schema property.
 type PropertyDef struct {
@@ -71,7 +71,7 @@ func EnumProperty(name, typ, description string, values ...string) PropertyDef {
 	}
 }
 
-// SchemaBuilder constructs a ToolDefinition using a fluent API.
+// SchemaBuilder constructs a Definition using a fluent API.
 type SchemaBuilder struct {
 	name        string
 	description string
@@ -79,7 +79,7 @@ type SchemaBuilder struct {
 	required    []string
 }
 
-// DefineSchema starts building a ToolDefinition with the given properties.
+// DefineSchema starts building a Definition with the given properties.
 func DefineSchema(name, description string, props ...PropertyDef) *SchemaBuilder {
 	properties := make(map[string]any, len(props))
 	for _, p := range props {
@@ -108,8 +108,8 @@ func (b *SchemaBuilder) Required(names ...string) *SchemaBuilder {
 	return b
 }
 
-// Build returns the final ToolDefinition.
-func (b *SchemaBuilder) Build() model.ToolDefinition {
+// Build returns the final Definition.
+func (b *SchemaBuilder) Build() Definition {
 	schema := map[string]any{
 		"type":       "object",
 		"properties": b.properties,
@@ -117,9 +117,10 @@ func (b *SchemaBuilder) Build() model.ToolDefinition {
 	if len(b.required) > 0 {
 		schema["required"] = b.required
 	}
-	return model.ToolDefinition{
+	raw, _ := json.Marshal(schema)
+	return Definition{
 		Name:        b.name,
 		Description: b.description,
-		InputSchema: schema,
+		InputSchema: raw,
 	}
 }

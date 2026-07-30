@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -54,7 +53,7 @@ func WithExecTimeout(d time.Duration) RegistryOption {
 }
 
 // Tool scope constants control visibility in tool_list and /api/tools.
-// The scope is registry-level metadata and does NOT appear in model.ToolDefinition.
+// The scope is registry-level metadata and does NOT appear in Definition.
 const (
 	// ScopeAgent marks a tool as available to all agents (default).
 	ScopeAgent = "agent"
@@ -144,22 +143,22 @@ func (r *Registry) ScopeOf(name string) string {
 	return ScopeAgent
 }
 
-// Definitions returns the ToolDefinition for every registered tool (all scopes).
-func (r *Registry) Definitions() []model.ToolDefinition {
+// Definitions returns the Definition for every registered tool (all scopes).
+func (r *Registry) Definitions() []Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	defs := make([]model.ToolDefinition, 0, len(r.tools))
+	defs := make([]Definition, 0, len(r.tools))
 	for _, t := range r.tools {
 		defs = append(defs, t.Definition())
 	}
 	return defs
 }
 
-// DefinitionsByScope returns only the ToolDefinitions matching the given scope.
-func (r *Registry) DefinitionsByScope(scope string) []model.ToolDefinition {
+// DefinitionsByScope returns only the Definitions matching the given scope.
+func (r *Registry) DefinitionsByScope(scope string) []Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var defs []model.ToolDefinition
+	var defs []Definition
 	for name, t := range r.tools {
 		if r.scopes[name] == scope {
 			defs = append(defs, t.Definition())
@@ -189,7 +188,7 @@ func (r *Registry) Len() int {
 // Execute runs a single tool call through the registered middleware
 // chain (outermost first) and the core dispatch (lookup + timeout +
 // telemetry). All errors (including tool-not-found) are returned as
-// ToolResult with IsError=true, so callers never need to handle a
+// Result with IsError=true, so callers never need to handle a
 // separate error path.
 //
 // Tool errors should be classified via sdk/errdefs markers
@@ -197,7 +196,7 @@ func (r *Registry) Len() int {
 // classification matters for upstream retry / restart decisions.
 // Built-in tools are expected to follow this convention; third-party
 // tools are encouraged to do the same.
-func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolResult {
+func (r *Registry) Execute(ctx context.Context, call Call) Result {
 	dispatch := composeDispatch(r.coreDispatch, r.snapshotMiddlewares())
 	return dispatch(ctx, call)
 }
@@ -205,7 +204,7 @@ func (r *Registry) Execute(ctx context.Context, call model.ToolCall) model.ToolR
 // coreDispatch is the un-decorated execution path: span/log setup,
 // lookup, optional timeout, and the actual Tool.Execute call.
 // Middlewares wrap this Dispatch via Registry.Use.
-func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.ToolResult {
+func (r *Registry) coreDispatch(ctx context.Context, call Call) Result {
 	ctx, span := telemetry.Tracer().Start(ctx, fmt.Sprintf("tool.%s.execute", call.Name), trace.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name)))
 	defer span.End()
 
@@ -220,10 +219,10 @@ func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.
 			attribute.String(telemetry.AttrToolName, call.Name),
 			attribute.String("status", "error")))
 		toolErrorCount.Add(ctx, 1, nameAttr)
-		return model.ToolResult{
-			ToolCallID: call.ID,
-			Content:    fmt.Sprintf("tool %q not found", call.Name),
-			IsError:    true,
+		return Result{
+			CallID:  call.ID,
+			Content: fmt.Sprintf("tool %q not found", call.Name),
+			IsError: true,
 		}
 	}
 
@@ -235,7 +234,7 @@ func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.
 	}
 
 	start := time.Now()
-	content, err := t.Execute(execCtx, call.Arguments)
+	content, err := t.Execute(execCtx, string(call.Arguments))
 	dur := time.Since(start)
 
 	span.SetAttributes(attribute.Float64("tool.duration_s", dur.Seconds()))
@@ -251,10 +250,10 @@ func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.
 		telemetry.Warn(ctx, "tool execution failed",
 			otellog.String(telemetry.AttrToolName, call.Name),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()))
-		return model.ToolResult{
-			ToolCallID: call.ID,
-			Content:    err.Error(),
-			IsError:    true,
+		return Result{
+			CallID:  call.ID,
+			Content: err.Error(),
+			IsError: true,
 		}
 	}
 
@@ -262,40 +261,40 @@ func (r *Registry) coreDispatch(ctx context.Context, call model.ToolCall) model.
 	toolExecCount.Add(ctx, 1, metric.WithAttributes(
 		attribute.String(telemetry.AttrToolName, call.Name),
 		attribute.String("status", "success")))
-	return model.ToolResult{
-		ToolCallID: call.ID,
-		Content:    content,
+	return Result{
+		CallID:  call.ID,
+		Content: content,
 	}
 }
 
 // ExecuteAll runs multiple tool calls concurrently with a semaphore
 // limiting parallelism. Results are returned in the same order as the input calls.
-func (r *Registry) ExecuteAll(ctx context.Context, calls []model.ToolCall) []model.ToolResult {
-	results := make([]model.ToolResult, len(calls))
+func (r *Registry) ExecuteAll(ctx context.Context, calls []Call) []Result {
+	results := make([]Result, len(calls))
 	var wg sync.WaitGroup
 
 	for i, call := range calls {
 		wg.Add(1)
-		go func(idx int, c model.ToolCall) {
+		go func(idx int, c Call) {
 			defer wg.Done()
 			defer func() {
 				if rv := recover(); rv != nil {
 					telemetry.Error(ctx, "tool panic recovered",
 						otellog.String(telemetry.AttrToolName, c.Name),
 						otellog.String("panic", fmt.Sprint(rv)))
-					results[idx] = model.ToolResult{
-						ToolCallID: c.ID,
-						Content:    fmt.Sprintf("tool %q panicked: %v", c.Name, rv),
-						IsError:    true,
+					results[idx] = Result{
+						CallID:  c.ID,
+						Content: fmt.Sprintf("tool %q panicked: %v", c.Name, rv),
+						IsError: true,
 					}
 				}
 			}()
 
 			if err := r.sem.Acquire(ctx, 1); err != nil {
-				results[idx] = model.ToolResult{
-					ToolCallID: c.ID,
-					Content:    fmt.Sprintf("failed to acquire semaphore: %v", err),
-					IsError:    true,
+				results[idx] = Result{
+					CallID:  c.ID,
+					Content: fmt.Sprintf("failed to acquire semaphore: %v", err),
+					IsError: true,
 				}
 				return
 			}

@@ -5,16 +5,14 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/GizClaw/flowcraft/sdk/model"
 )
 
 type metaTool struct {
-	def  model.ToolDefinition
+	def  Definition
 	meta ToolMeta
 }
 
-func (m *metaTool) Definition() model.ToolDefinition                    { return m.def }
+func (m *metaTool) Definition() Definition                              { return m.def }
 func (m *metaTool) Execute(_ context.Context, _ string) (string, error) { return "ok", nil }
 func (m *metaTool) Metadata() ToolMeta                                  { return m.meta }
 
@@ -29,7 +27,7 @@ func TestMetadataOf_DefaultZero(t *testing.T) {
 
 func TestMetadataOf_DeclaredValues(t *testing.T) {
 	tl := &metaTool{
-		def:  model.ToolDefinition{Name: "writer"},
+		def:  Definition{Name: "writer"},
 		meta: ToolMeta{RateLimit: 5, MutatesState: true},
 	}
 	got := MetadataOf(tl)
@@ -49,7 +47,7 @@ func TestRegistry_Use_OutermostFirst(t *testing.T) {
 	var mu sync.Mutex
 	track := func(label string) Middleware {
 		return func(next Dispatch) Dispatch {
-			return func(ctx context.Context, call model.ToolCall) model.ToolResult {
+			return func(ctx context.Context, call Call) Result {
 				mu.Lock()
 				order = append(order, label+":pre")
 				mu.Unlock()
@@ -63,7 +61,7 @@ func TestRegistry_Use_OutermostFirst(t *testing.T) {
 	}
 	r.Use(track("a"), track("b"))
 
-	res := r.Execute(context.Background(), model.ToolCall{ID: "1", Name: "foo"})
+	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
 	if res.IsError {
 		t.Fatalf("unexpected error result: %+v", res)
 	}
@@ -79,7 +77,7 @@ func TestRegistry_Use_NilSkipped(t *testing.T) {
 	r.Register(stubTool("foo"))
 	r.Use(nil, nil)
 
-	res := r.Execute(context.Background(), model.ToolCall{ID: "1", Name: "foo"})
+	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %+v", res)
 	}
@@ -90,13 +88,13 @@ func TestRegistry_Use_ShortCircuit(t *testing.T) {
 	r.Register(stubTool("foo"))
 
 	deny := func(_ Dispatch) Dispatch {
-		return func(_ context.Context, call model.ToolCall) model.ToolResult {
-			return model.ToolResult{ToolCallID: call.ID, Content: "denied", IsError: true}
+		return func(_ context.Context, call Call) Result {
+			return Result{CallID: call.ID, Content: "denied", IsError: true}
 		}
 	}
 	r.Use(deny)
 
-	res := r.Execute(context.Background(), model.ToolCall{ID: "1", Name: "foo"})
+	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
 	if !res.IsError || res.Content != "denied" {
 		t.Errorf("expected denied error, got %+v", res)
 	}
@@ -107,7 +105,7 @@ func TestRegistry_Use_SeesNotFound(t *testing.T) {
 
 	var seen string
 	audit := func(next Dispatch) Dispatch {
-		return func(ctx context.Context, call model.ToolCall) model.ToolResult {
+		return func(ctx context.Context, call Call) Result {
 			res := next(ctx, call)
 			seen = res.Content
 			return res
@@ -115,7 +113,7 @@ func TestRegistry_Use_SeesNotFound(t *testing.T) {
 	}
 	r.Use(audit)
 
-	res := r.Execute(context.Background(), model.ToolCall{ID: "1", Name: "missing"})
+	res := r.Execute(context.Background(), Call{ID: "1", Name: "missing"})
 	if !res.IsError {
 		t.Fatalf("expected error result, got %+v", res)
 	}
