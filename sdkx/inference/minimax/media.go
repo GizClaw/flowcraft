@@ -15,6 +15,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 )
 
 // mediaClient speaks to MiniMax's media APIs (t2a, video, image) — plain
@@ -28,7 +29,10 @@ type mediaClient struct {
 
 func newMediaClient(key, base string) *mediaClient {
 	return &mediaClient{
-		http: &http.Client{Timeout: 10 * time.Minute},
+		http: &http.Client{
+			Transport: httpkit.NewRetryTransport(nil, httpkit.DefaultRetry),
+			Timeout:   10 * time.Minute,
+		},
 		key:  key,
 		base: strings.TrimRight(base, "/"),
 	}
