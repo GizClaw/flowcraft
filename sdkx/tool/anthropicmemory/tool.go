@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
@@ -58,7 +57,7 @@ func New(ws workspace.Workspace, opts ...Option) *Tool {
 }
 
 // Definition implements [tool.Tool].
-func (t *Tool) Definition() model.ToolDefinition {
+func (t *Tool) Definition() tool.Definition {
 	return tool.DefineSchema(
 		"memory",
 		"Persistent file-tree memory. Issue commands to read and edit files under "+PathPrefix+"/. "+
@@ -84,7 +83,7 @@ func (t *Tool) Definition() model.ToolDefinition {
 			"Destination path for rename. Must begin with "+PathPrefix+"/."),
 		tool.ArrayProperty("view_range",
 			"Optional 2-element [start, end] 1-based inclusive line range for view. Use -1 for end-of-file.",
-			map[string]any{"type": "integer"}),
+			tool.Items("integer")),
 	).Required("command").Build()
 }
 

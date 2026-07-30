@@ -19,6 +19,12 @@ func Property(name, typ, description string) PropertyDef {
 	}
 }
 
+// Items is the schema for the elements of an ArrayProperty: the
+// common "array of plain-typed values" case without a raw map.
+func Items(typ string) map[string]any {
+	return map[string]any{"type": typ}
+}
+
 // ArrayProperty creates an array property with item schema.
 func ArrayProperty(name, description string, items map[string]any) PropertyDef {
 	return PropertyDef{
@@ -77,6 +83,7 @@ type SchemaBuilder struct {
 	description string
 	properties  map[string]any
 	required    []string
+	closed      bool
 }
 
 // DefineSchema starts building a Definition with the given properties.
@@ -90,6 +97,14 @@ func DefineSchema(name, description string, props ...PropertyDef) *SchemaBuilder
 		description: description,
 		properties:  properties,
 	}
+}
+
+// DisallowAdditionalProperties marks the object schema as closed:
+// providers that honor additionalProperties will reject arguments
+// outside the declared properties.
+func (b *SchemaBuilder) DisallowAdditionalProperties() *SchemaBuilder {
+	b.closed = true
+	return b
 }
 
 // Required marks the given property names as required in the JSON Schema.
@@ -116,6 +131,9 @@ func (b *SchemaBuilder) Build() Definition {
 	}
 	if len(b.required) > 0 {
 		schema["required"] = b.required
+	}
+	if b.closed {
+		schema["additionalProperties"] = false
 	}
 	raw, _ := json.Marshal(schema)
 	return Definition{

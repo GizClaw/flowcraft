@@ -84,13 +84,20 @@ func TestDefinition_Shape(t *testing.T) {
 	// Schema must require command — without it the LLM gets no
 	// hint that command is mandatory and we lose the validation
 	// fast-path.
-	schema := def.InputSchema
-	if schema == nil {
+	if def.InputSchema == nil {
 		t.Fatal("InputSchema should not be nil")
 	}
-	required, _ := schema["required"].([]string)
+	var schema map[string]any
+	if err := json.Unmarshal(def.InputSchema, &schema); err != nil {
+		t.Fatalf("InputSchema not valid JSON: %v", err)
+	}
+	required, _ := schema["required"].([]any)
 	if len(required) != 1 || required[0] != "command" {
 		t.Fatalf("required = %v, want [command]", required)
+	}
+	// Closed schema: the model should not invent knobs we don't read.
+	if got := schema["additionalProperties"]; got != false {
+		t.Fatalf("additionalProperties = %v, want false", got)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkkanban "github.com/GizClaw/flowcraft/sdk/kanban"
-	"github.com/GizClaw/flowcraft/sdk/model"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -24,7 +23,7 @@ type SubmitTool struct {
 }
 
 // Definition implements [tool.Tool].
-func (t *SubmitTool) Definition() model.ToolDefinition {
+func (t *SubmitTool) Definition() tool.Definition {
 	return tool.DefineSchema(
 		"kanban_submit",
 		"Dispatch a task to another agent. Returns a card_id. The agent executes in the background and the system delivers the result via a [Task Callback] message when done. "+
@@ -118,7 +117,7 @@ type TaskContextTool struct {
 }
 
 // Definition implements [tool.Tool].
-func (t *TaskContextTool) Definition() model.ToolDefinition {
+func (t *TaskContextTool) Definition() tool.Definition {
 	return tool.DefineSchema(
 		"task_context",
 		"Retrieve the full context of a dispatched task, including original user request, "+

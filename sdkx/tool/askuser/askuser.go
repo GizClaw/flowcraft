@@ -35,15 +35,15 @@ func New() tool.Tool { return askUserTool{} }
 // "ask the human only when truly needed" — to discourage chatty
 // models from interrupting on every minor uncertainty.
 func (askUserTool) Definition() tool.Definition {
-	return tool.Definition{
-		Name: Name,
-		Description: "Ask the human user a clarifying question and " +
-			"wait for their reply. Use only when you genuinely " +
-			"cannot proceed without their input — most questions " +
-			"can be answered from context. Returns the user's reply " +
+	return tool.DefineSchema(
+		Name,
+		"Ask the human user a clarifying question and "+
+			"wait for their reply. Use only when you genuinely "+
+			"cannot proceed without their input — most questions "+
+			"can be answered from context. Returns the user's reply "+
 			"as a string.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"The question to display to the user."}},"required":["prompt"],"additionalProperties":false}`),
-	}
+		tool.Property("prompt", "string", "The question to display to the user."),
+	).Required("prompt").DisallowAdditionalProperties().Build()
 }
 
 // Execute parses the LLM-supplied arguments, recovers the engine

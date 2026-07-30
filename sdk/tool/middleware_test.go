@@ -2,8 +2,6 @@ package tool
 
 import (
 	"context"
-	"strings"
-	"sync"
 	"testing"
 )
 
@@ -36,88 +34,5 @@ func TestMetadataOf_DeclaredValues(t *testing.T) {
 	}
 	if !got.MutatesState {
 		t.Errorf("MutatesState = false, want true")
-	}
-}
-
-func TestRegistry_Use_OutermostFirst(t *testing.T) {
-	r := NewRegistry()
-	r.Register(stubTool("foo"))
-
-	var order []string
-	var mu sync.Mutex
-	track := func(label string) Middleware {
-		return func(next Dispatch) Dispatch {
-			return func(ctx context.Context, call Call) Result {
-				mu.Lock()
-				order = append(order, label+":pre")
-				mu.Unlock()
-				res := next(ctx, call)
-				mu.Lock()
-				order = append(order, label+":post")
-				mu.Unlock()
-				return res
-			}
-		}
-	}
-	r.Use(track("a"), track("b"))
-
-	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
-	if res.IsError {
-		t.Fatalf("unexpected error result: %+v", res)
-	}
-
-	want := []string{"a:pre", "b:pre", "b:post", "a:post"}
-	if strings.Join(order, ",") != strings.Join(want, ",") {
-		t.Errorf("order = %v, want %v", order, want)
-	}
-}
-
-func TestRegistry_Use_NilSkipped(t *testing.T) {
-	r := NewRegistry()
-	r.Register(stubTool("foo"))
-	r.Use(nil, nil)
-
-	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
-	if res.IsError {
-		t.Fatalf("unexpected error: %+v", res)
-	}
-}
-
-func TestRegistry_Use_ShortCircuit(t *testing.T) {
-	r := NewRegistry()
-	r.Register(stubTool("foo"))
-
-	deny := func(_ Dispatch) Dispatch {
-		return func(_ context.Context, call Call) Result {
-			return Result{CallID: call.ID, Content: "denied", IsError: true}
-		}
-	}
-	r.Use(deny)
-
-	res := r.Execute(context.Background(), Call{ID: "1", Name: "foo"})
-	if !res.IsError || res.Content != "denied" {
-		t.Errorf("expected denied error, got %+v", res)
-	}
-}
-
-func TestRegistry_Use_SeesNotFound(t *testing.T) {
-	r := NewRegistry()
-
-	var seen string
-	audit := func(next Dispatch) Dispatch {
-		return func(ctx context.Context, call Call) Result {
-			res := next(ctx, call)
-			seen = res.Content
-			return res
-		}
-	}
-	r.Use(audit)
-
-	res := r.Execute(context.Background(), Call{ID: "1", Name: "missing"})
-	if !res.IsError {
-		t.Fatalf("expected error result, got %+v", res)
-	}
-	if !strings.Contains(seen, "missing") {
-		t.Errorf("middleware should observe not-found content, got %q", seen)
 	}
 }

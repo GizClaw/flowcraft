@@ -184,3 +184,33 @@ func TestRequired_Dedup(t *testing.T) {
 		t.Fatalf("required count = %d, want 2 (deduped)", len(req))
 	}
 }
+
+func TestItems(t *testing.T) {
+	items := Items("string")
+	if items["type"] != "string" {
+		t.Fatalf("Items(string) = %v", items)
+	}
+	def := DefineSchema("t", "d",
+		ArrayProperty("args", "arguments", Items("string")),
+	).Build()
+	props := schemaMap(t, def)["properties"].(map[string]any)
+	args := props["args"].(map[string]any)
+	got := args["items"].(map[string]any)
+	if got["type"] != "string" {
+		t.Fatalf("args.items.type = %v, want string", got["type"])
+	}
+}
+
+func TestDisallowAdditionalProperties(t *testing.T) {
+	def := DefineSchema("t", "d",
+		Property("a", "string", "a"),
+	).DisallowAdditionalProperties().Build()
+	if got := schemaMap(t, def)["additionalProperties"]; got != false {
+		t.Fatalf("additionalProperties = %v, want false", got)
+	}
+
+	open := DefineSchema("t", "d", Property("a", "string", "a")).Build()
+	if _, present := schemaMap(t, open)["additionalProperties"]; present {
+		t.Fatal("default schema should omit additionalProperties")
+	}
+}
