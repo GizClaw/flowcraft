@@ -583,7 +583,11 @@ func (i ImageIntent) Validate() error {
 }
 
 type AudioIntent struct {
-	Voice  media.VoiceSpec   `json:"voice"`
+	// Voice selects the synthesis voice. It is optional at the canonical
+	// layer: speech models require one (their compilers reject a missing
+	// voice), while voice-free synthesis such as music generation omits
+	// it.
+	Voice  media.VoiceSpec   `json:"voice,omitempty"`
 	Format media.AudioFormat `json:"format"`
 	Speed  *float64          `json:"speed,omitempty"`
 	Count  *int              `json:"count,omitempty"`
@@ -596,8 +600,10 @@ func (i AudioIntent) Clone() AudioIntent {
 }
 
 func (i AudioIntent) Validate() error {
-	if err := i.Voice.Validate(); err != nil {
-		return err
+	if i.Voice.ID != "" || i.Voice.Language != "" {
+		if err := i.Voice.Validate(); err != nil {
+			return err
+		}
 	}
 	if err := i.Format.Validate(); err != nil {
 		return err

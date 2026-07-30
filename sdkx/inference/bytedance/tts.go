@@ -112,6 +112,12 @@ func compileTTS(
 			)
 		}
 		if audio := intent.Audio; audio != nil {
+			if audio.Voice.ID == "" {
+				ledger.reject(
+					inference.FieldGenerateIntentAudioVoice,
+					"speech synthesis requires a voice",
+				)
+			}
 			wire.speaker = audio.Voice.ID
 			wire.language = audio.Voice.Language
 			compileTTSFormat(&wire, audio.Format, ledger)

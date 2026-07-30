@@ -28,9 +28,28 @@ func (TextPartDelta) Kind() PartKind               { return PartText }
 func (TextPartDelta) validateGenerateDelta() error { return nil }
 func (TextPartDelta) inferencePartDelta()          {}
 
+// ToolCallDelta carries provider-neutral incremental tool-call arguments.
+// ArgumentsFragment is validated only after stream accumulation.
+type ToolCallDelta struct {
+	ID                string `json:"id,omitempty"`
+	Name              string `json:"name,omitempty"`
+	ArgumentsFragment string `json:"arguments_fragment,omitempty"`
+}
+
 func (ToolCallDelta) Kind() PartKind               { return PartToolCall }
 func (ToolCallDelta) validateGenerateDelta() error { return nil }
 func (ToolCallDelta) inferencePartDelta()          {}
+
+// ReasoningDelta carries incremental reasoning text. Signature and ID are
+// terminal-only: providers sign a reasoning block when it completes, so the
+// last delta for a part carries the opaque verification payload and the
+// provider-issued trace identifier. The accumulator concatenates Text and
+// keeps the latest Signature and ID.
+type ReasoningDelta struct {
+	Text      string `json:"text,omitempty"`
+	Signature string `json:"signature,omitempty"`
+	ID        string `json:"id,omitempty"`
+}
 
 func (ReasoningDelta) Kind() PartKind { return PartReasoning }
 func (d ReasoningDelta) validateGenerateDelta() error {
@@ -93,6 +112,11 @@ type GenerateStreamDecoder[RawEvent any] func(
 type GenerateStream interface {
 	Next(context.Context) (GenerateStreamEvent, error)
 	Result() (GenerateResponse, error)
+	Close() error
+}
+
+type ProviderStream[RawEvent any] interface {
+	Next(context.Context) (RawEvent, error)
 	Close() error
 }
 
