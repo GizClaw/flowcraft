@@ -306,7 +306,7 @@ func TestWireToParamsMessages(t *testing.T) {
 		t.Fatalf("merged user blocks = %+v", wire.messages[2].blocks)
 	}
 
-	params := wireToParams(wire)
+	params := wireToParams(wire, ReasoningControlEffort)
 	if params.MaxTokens != DefaultMaxTokens {
 		t.Fatalf("max tokens = %d", params.MaxTokens)
 	}
@@ -327,23 +327,17 @@ func TestWireToParamsKnobs(t *testing.T) {
 			Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`),
 		},
 		MaxOutputTokens: intPointer(64),
-	}
-	request.Input.Content.Intent.Sampling = &inference.SamplingIntent{
-		Temperature: floatPointer(0.2),
-		TopP:        floatPointer(0.9),
-	}
-	request.Input.Content.Intent.Reasoning = &inference.ReasoningIntent{
-		Effort: inference.ReasoningHigh,
-	}
-	request.Input.Content.Intent.Tools = &inference.ToolsIntent{
-		Definitions: []tool.Definition{{
+		Temperature:     floatPointer(0.2),
+		TopP:            floatPointer(0.9),
+		ReasoningEffort: inference.ReasoningHigh,
+		Tools: []tool.Definition{{
 			Name:        "lookup",
 			Description: "find things",
 			InputSchema: json.RawMessage(
 				`{"type":"object","properties":{"q":{"type":"string"}},"required":["q"]}`,
 			),
 		}},
-		Choice: &inference.ToolChoice{Kind: inference.ToolChoiceRequired},
+		ToolChoice: &inference.ToolChoice{Kind: inference.ToolChoiceRequired},
 	}
 	compiled, err := compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"])(
 		context.Background(),
@@ -354,7 +348,7 @@ func TestWireToParamsKnobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileGenerate: %v", err)
 	}
-	params := wireToParams(compiled.Wire)
+	params := wireToParams(compiled.Wire, ReasoningControlEffort)
 	if params.MaxTokens != 64 {
 		t.Fatalf("max tokens = %d", params.MaxTokens)
 	}
@@ -494,7 +488,7 @@ func TestWireToParamsThinkingBlocks(t *testing.T) {
 		t.Fatalf("redacted block = %+v", blocks[1])
 	}
 
-	params := wireToParams(wire)
+	params := wireToParams(wire, ReasoningControlEffort)
 	assistant := params.Messages[0]
 	if len(assistant.Content) != 4 {
 		t.Fatalf("param blocks = %d", len(assistant.Content))

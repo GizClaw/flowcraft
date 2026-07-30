@@ -15,7 +15,9 @@ func openGenerate(
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return KernelGenerate(cls.api, id.Name, Capabilities{
-		Vision:    entry.vision,
-		Reasoning: entry.reasoning,
+		Vision:           entry.vision,
+		Reasoning:        entry.reasoning,
+		ReasoningLevels:  entry.reasoningLevels,
+		ReasoningDisable: entry.reasoningDisable,
 	})
 }

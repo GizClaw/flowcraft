@@ -54,17 +54,12 @@ func clonePointer[T any](value *T) *T {
 // ---------------------------------------------------------------------------
 
 // GenerateOptions carries Ark Responses API settings that have no canonical
-// representation. Thinking forces the thinking switch explicitly; when it is
-// unset, thinking follows the reasoning intent (enabled when an effort is
-// requested, provider default otherwise).
+// representation.
 type GenerateOptions struct {
 	// Provider targets a deployment provider ID other than "bytedance".
 	// Attempts for any other provider leave the extension inert rather than
 	// rejecting it, so mixed-provider routes keep working.
 	Provider string `json:"-"`
-	// Thinking forces thinking on (true) or off (false). Off conflicts with
-	// a requested reasoning effort and is rejected at compile time.
-	Thinking *bool `json:"thinking,omitempty"`
 	// ServiceTier selects the serving tier: "auto" or "default".
 	ServiceTier string `json:"service_tier,omitempty"`
 	// Caching controls context caching for this request.
@@ -117,9 +112,6 @@ func (o GenerateOptions) ExtensionID() string { return extensionGenerate }
 
 func (o GenerateOptions) ActiveFields() []inference.ExtensionField {
 	var fields []inference.ExtensionField
-	if o.Thinking != nil {
-		fields = append(fields, "thinking")
-	}
 	if o.ServiceTier != "" {
 		fields = append(fields, "service_tier")
 	}
@@ -175,7 +167,6 @@ func (o GenerateOptions) Validate() error {
 }
 
 func (o GenerateOptions) Clone() inference.Extension {
-	o.Thinking = clonePointer(o.Thinking)
 	o.Store = clonePointer(o.Store)
 	o.ParallelToolCalls = clonePointer(o.ParallelToolCalls)
 	o.MaxToolCalls = clonePointer(o.MaxToolCalls)

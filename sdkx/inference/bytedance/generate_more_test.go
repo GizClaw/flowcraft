@@ -48,12 +48,10 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("find something")
-	request.Input.Content.Intent.Tools = &inference.ToolsIntent{
-		Definitions: []tool.Definition{{
-			Name:        "lookup",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-		}},
-	}
+	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+		Name:        "lookup",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
 	response, err := runtime.Generate(
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
@@ -114,12 +112,10 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("hi")
-	request.Input.Content.Intent.Tools = &inference.ToolsIntent{
-		Definitions: []tool.Definition{{
-			Name:        "lookup",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-		}},
-	}
+	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+		Name:        "lookup",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
 	stream, err := runtime.GenerateStream(
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),

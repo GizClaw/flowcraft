@@ -504,40 +504,83 @@ func compileIntent(
 			"openai has no video generation surface",
 		)
 	}
-	if tools := intent.Tools; tools != nil {
-		for _, definition := range tools.Definitions {
-			wire.tools = append(wire.tools, wireTool{
-				name:        definition.Name,
-				description: definition.Description,
-				schema:      bytesClone(definition.InputSchema),
-			})
-		}
-		if choice := tools.Choice; choice != nil {
-			switch choice.Kind {
-			case inference.ToolChoiceAuto:
-				wire.toolChoice = &wireToolChoice{mode: "auto"}
-			case inference.ToolChoiceNone:
-				wire.toolChoice = &wireToolChoice{mode: "none"}
-			case inference.ToolChoiceRequired:
-				wire.toolChoice = &wireToolChoice{mode: "required"}
-			case inference.ToolChoiceNamed:
-				wire.toolChoice = &wireToolChoice{mode: "named", name: choice.Name}
-			}
+	text := intent.Text
+	if text == nil {
+		return
+	}
+	for _, definition := range text.Tools {
+		wire.tools = append(wire.tools, wireTool{
+			name:        definition.Name,
+			description: definition.Description,
+			schema:      bytesClone(definition.InputSchema),
+		})
+	}
+	if choice := text.ToolChoice; choice != nil {
+		switch choice.Kind {
+		case inference.ToolChoiceAuto:
+			wire.toolChoice = &wireToolChoice{mode: "auto"}
+		case inference.ToolChoiceNone:
+			wire.toolChoice = &wireToolChoice{mode: "none"}
+		case inference.ToolChoiceRequired:
+			wire.toolChoice = &wireToolChoice{mode: "required"}
+		case inference.ToolChoiceNamed:
+			wire.toolChoice = &wireToolChoice{mode: "named", name: choice.Name}
 		}
 	}
-	if sampling := intent.Sampling; sampling != nil {
-		wire.temperature = sampling.Temperature
-		wire.topP = sampling.TopP
+	wire.temperature = text.Temperature
+	wire.topP = text.TopP
+	if text.ReasoningEnabled != nil {
+		switch {
+		case !entry.reasoning:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model has no reasoning to switch",
+			)
+		case !*text.ReasoningEnabled:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"openai reasoning models cannot disable reasoning",
+			)
+		}
+		// enabled == true is a no-op: reasoning models reason by default.
 	}
-	if reasoning := intent.Reasoning; reasoning != nil && reasoning.Effort != "" {
+	if text.ReasoningEffort != "" {
 		if !entry.reasoning {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
 		} else {
-			wire.reasoning = string(reasoning.Effort)
+			wire.reasoning = string(text.ReasoningEffort)
 		}
+	}
+}
+
+// rejectTextControls rejects the text-only intent controls (tools, sampling,
+// reasoning) for a non-text operation, one decision per active field so the
+// report stays field-precise.
+func rejectTextControls(
+	text *inference.TextIntent,
+	ledger *ledger,
+	toolsReason, samplingReason, reasoningReason string,
+) {
+	if len(text.Tools) > 0 {
+		ledger.reject(inference.FieldGenerateIntentTools, toolsReason)
+	}
+	if text.ToolChoice != nil {
+		ledger.reject(inference.FieldGenerateIntentToolChoice, toolsReason)
+	}
+	if text.Temperature != nil {
+		ledger.reject(inference.FieldGenerateIntentTemperature, samplingReason)
+	}
+	if text.TopP != nil {
+		ledger.reject(inference.FieldGenerateIntentTopP, samplingReason)
+	}
+	if text.ReasoningEnabled != nil {
+		ledger.reject(inference.FieldGenerateIntentReasoningEnabled, reasoningReason)
+	}
+	if text.ReasoningEffort != "" {
+		ledger.reject(inference.FieldGenerateIntentReasoningEffort, reasoningReason)
 	}
 }
 

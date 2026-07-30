@@ -36,12 +36,10 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 		t.Fatalf("openGenerate: %v", err)
 	}
 	request := simpleTextRequest("find something")
-	request.Input.Content.Intent.Tools = &inference.ToolsIntent{
-		Definitions: []tool.Definition{{
-			Name:        "lookup",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-		}},
-	}
+	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+		Name:        "lookup",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
 	response, err := operations.Unary.Execute(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),

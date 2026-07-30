@@ -314,12 +314,10 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 		Voice:  media.VoiceSpec{ID: "voice"},
 		Format: format,
 	}
-	request.Input.Content.Intent.Tools = &ToolsIntent{
-		Definitions: []tool.Definition{{
-			Name:        "lookup",
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-		}},
-	}
+	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+		Name:        "lookup",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
 	stream, err := driver.Stream(
 		context.Background(),
 		ModelRef{ID: ModelID{Provider: "fake", Name: "generate"}},

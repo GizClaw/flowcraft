@@ -1,21 +1,19 @@
-package anthropic
+package deepseek
 
 // Framework conformance: this file wires the provider into the shared
-// inferencetest suites against a captured HTTP server. Claude serves the
-// Messages API only, so the suites cover generate unary, stream, parity,
-// and the compiler ledger.
+// inferencetest suites against a fake chat completions server. Event
+// mapping itself is covered by the driver-level tests in
+// generate_more_test.go.
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
 )
 
 // countingTransport wraps one pipeline transport stage with a probe.
@@ -33,16 +31,16 @@ func countingTransport[Wire, Raw any](
 // factory) so the transport probe sits inside the bound drivers.
 func instrumentedGenerateDrivers(
 	t *testing.T,
-	server *httptest.Server,
+	server *chatServer,
 	calls *inferencetest.Counter,
 ) (inference.GenerateDriver, inference.GenerateStreamDriver) {
 	t.Helper()
-	cls := testClients(t, server)
+	cls := server.clients(t)
 	operations, err := inference.BindGenerateOperations(
-		compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"]),
-		countingTransport(calls, transportGenerate(cls.api, ReasoningControlEffort)),
+		compileGenerate("deepseek-v4-pro", catalog["deepseek-v4-pro"]),
+		countingTransport(calls, transportGenerate(cls.api)),
 		decodeGenerate,
-		countingTransport(calls, transportGenerateStream(cls.api, ReasoningControlEffort)),
+		countingTransport(calls, transportGenerateStream(cls.api)),
 		decodeGenerateStream,
 	)
 	if err != nil {
@@ -52,18 +50,15 @@ func instrumentedGenerateDrivers(
 }
 
 func TestConformanceGenerateUnary(t *testing.T) {
-	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, messageJSON([]map[string]any{
-			{"type": "text", "text": "ok"},
-		}))
+		fmt.Fprint(w, chatCompletionJSON("stop", nil))
 	})
-	defer server.Close()
 	calls := &inferencetest.Counter{}
 	unary, _ := instrumentedGenerateDrivers(t, server, calls)
 
 	inferencetest.RunGenerateUnary(t, inferencetest.GenerateUnarySuite{
-		Model:   claudeModel("claude-sonnet-5"),
+		Model:   generateModel("deepseek-v4-pro"),
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Driver:  unary,
 		TransportCalls: func() int64 {
@@ -80,52 +75,20 @@ func TestConformanceGenerateUnary(t *testing.T) {
 			if response.FinishReason != inference.FinishCompleted {
 				t.Fatalf("finish = %q", response.FinishReason)
 			}
-			if response.Usage.Input.CacheReadTokens == nil ||
-				*response.Usage.Input.CacheReadTokens != 3 {
-				t.Fatalf("cache read = %+v", response.Usage.Input)
-			}
 		},
 	})
 }
 
 func TestConformanceGenerateStream(t *testing.T) {
-	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
-			map[string]any{
-				"type": "message_start",
-				"message": map[string]any{
-					"id": "msg_1", "type": "message", "role": "assistant",
-					"model": "claude-sonnet-5", "content": []any{},
-					"usage": map[string]any{
-						"input_tokens": 1, "output_tokens": 0,
-						"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
-					},
-				},
-			},
-			map[string]any{
-				"type": "content_block_start", "index": 0,
-				"content_block": map[string]any{"type": "text", "text": ""},
-			},
-			map[string]any{
-				"type": "content_block_delta", "index": 0,
-				"delta": map[string]any{"type": "text_delta", "text": "ok"},
-			},
-			map[string]any{"type": "content_block_stop", "index": 0},
-			map[string]any{
-				"type":  "message_delta",
-				"delta": map[string]any{"stop_reason": "end_turn"},
-				"usage": map[string]any{"output_tokens": 1},
-			},
-			map[string]any{"type": "message_stop"},
-		))
+		fmt.Fprint(w, sseBody(textChunk("ok"), finishChunk("stop"), usageChunk()))
 	})
-	defer server.Close()
 	calls := &inferencetest.Counter{}
 	_, stream := instrumentedGenerateDrivers(t, server, calls)
 
 	inferencetest.RunGenerateStream(t, inferencetest.GenerateStreamSuite{
-		Model:   claudeModel("claude-sonnet-5"),
+		Model:   generateModel("deepseek-v4-pro"),
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Driver:  stream,
 		TransportCalls: func() int64 {
@@ -142,7 +105,7 @@ func TestConformanceGenerateStream(t *testing.T) {
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
-			if response.Usage.OutputTokens != 1 || response.Usage.InputTokens != 1 {
+			if response.Usage.TotalTokens != 19 {
 				t.Fatalf("usage = %+v", response.Usage)
 			}
 		},
@@ -150,15 +113,14 @@ func TestConformanceGenerateStream(t *testing.T) {
 }
 
 func TestConformanceGenerateCompileParity(t *testing.T) {
-	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		t.Error("parity checks are explain-only; transport must not run")
 	})
-	defer server.Close()
 	calls := &inferencetest.Counter{}
 	unary, stream := instrumentedGenerateDrivers(t, server, calls)
 
 	inferencetest.RunGenerateCompileParity(t, inferencetest.GenerateCompileParitySuite{
-		Model:   claudeModel("claude-sonnet-5"),
+		Model:   generateModel("deepseek-v4-pro"),
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Unary:   unary,
 		Stream:  stream,
@@ -166,25 +128,20 @@ func TestConformanceGenerateCompileParity(t *testing.T) {
 }
 
 func TestConformanceGenerateCompiler(t *testing.T) {
-	model := claudeModel("claude-sonnet-5")
-
 	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[generateWire]{
-		Model:   model,
+		Model:   generateModel("deepseek-v4-pro"),
 		Shape:   inference.GenerateExecutionUnary,
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"]),
+		Compile: compileGenerate("deepseek-v4-pro", catalog["deepseek-v4-pro"]),
 		AssertWire: func(t *testing.T, wire generateWire) {
-			if wire.model != "claude-sonnet-5" {
+			if wire.model != "deepseek-v4-pro" {
 				t.Fatalf("wire model = %q", wire.model)
 			}
 			if wire.stream {
 				t.Fatal("unary shape compiled a stream wire")
-			}
-			if wire.maxTokens != DefaultMaxTokens {
-				t.Fatalf("wire maxTokens = %d", wire.maxTokens)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
@@ -205,38 +162,20 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
-				Name: "audio part has no surface",
+				Name: "reasoning is assistant-only",
 				Request: func() inference.GenerateRequest {
-					clip, err := media.NewAudioBytes([]byte{1, 2}, "audio/wav")
-					if err != nil {
-						t.Fatal(err)
-					}
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.AudioPart{Source: clip},
+						inference.ReasoningPart{Text: "trace"},
 					)
 					return request
 				},
-				Field: inference.FieldGenerateInputAudio,
+				Field: inference.FieldGenerateInputReasoning,
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
-				Name: "json_object mode does not exist",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Intent.Text = &inference.TextIntent{
-						Response: &inference.ResponseFormat{
-							Kind: inference.ResponseJSONObject,
-						},
-					}
-					return request
-				},
-				Field: inference.FieldGenerateIntentTextResponseKind,
-				Kind:  inference.UnsupportedFeature,
-			},
-			{
-				Name: "image intent has no surface",
+				Name: "image intent on text model",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Intent.Image = &inference.ImageIntent{}
@@ -246,40 +185,29 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
-				Name: "reasoning is assistant-only",
+				Name: "schema-constrained output unsupported",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						inference.ReasoningPart{Text: "trace", Signature: "sig"},
-					)
+					request.Input.Content.Intent.Text.Response = &inference.ResponseFormat{
+						Kind:   inference.ResponseJSONSchema,
+						Name:   "answer",
+						Schema: json.RawMessage(`{"type":"object"}`),
+					}
 					return request
 				},
-				Field: inference.FieldGenerateInputReasoning,
+				Field: inference.FieldGenerateIntentTextResponseKind,
 				Kind:  inference.UnsupportedFeature,
 			},
-			{
-				Name: "foreign extension",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Extensions = inference.Extensions{foreignExtension{}}
-					return request
-				},
-				Field: inference.FieldID(
-					"extension.openai.generate_options.thinking",
-				),
-				Kind: inference.InvalidExtension,
-			},
-		},
+	},
 		Drops: []inferencetest.CompilerDrop[inference.GenerateRequest]{
 			{
-				Name: "unsigned reasoning cannot round-trip",
+				Name: "reasoning without tool calls has no channel",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
 					request.Context = append(request.Context, inference.Message{
 						Role: inference.RoleAssistant,
 						Content: inference.Content{Parts: []inference.Part{
-							inference.ReasoningPart{Text: "unsigned trace"},
+							inference.ReasoningPart{Text: "trace"},
 							inference.TextPart{Text: "answer"},
 						}},
 					})
@@ -291,10 +219,12 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 	})
 }
 
-// A custom bare declaration must reject vision and reasoning channels.
+// The capability matrix also needs a bare model: a custom declaration
+// without reasoning support must reject the thinking channels and still
+// keep a complete ledger on plain text.
 func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 	spec, err := decodeSpec([]byte(
-		`{"models":[{"name":"my-claude"}]}`,
+		`{"models":[{"name":"my-plain-model","kind":"generate"}]}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
@@ -303,51 +233,29 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
-	image, err := media.NewImageURL("https://example.com/i.png", "image/png")
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	inferencetest.RunGenerateCompiler(t, inferencetest.GenerateCompilerSuite[generateWire]{
-		Model:   claudeModel("my-claude"),
+		Model:   generateModel("my-plain-model"),
 		Shape:   inference.GenerateExecutionUnary,
 		Request: func() inference.GenerateRequest { return simpleTextRequest("hi") },
 		Snapshot: func(request inference.GenerateRequest) any {
 			return request.Clone()
 		},
-		Compile: compileGenerate("my-claude", models["my-claude"]),
+		Compile: compileGenerate("my-plain-model", models["my-plain-model"]),
 		AssertWire: func(t *testing.T, wire generateWire) {
-			if wire.model != "my-claude" {
+			if wire.model != "my-plain-model" {
 				t.Fatalf("wire model = %q", wire.model)
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-				Name: "image on model without image input",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						inference.ImagePart{Source: image},
-					)
-					return request
-				},
-				Field: inference.FieldGenerateInputImage,
-				Kind:  inference.UnsupportedFeature,
+			Name: "reasoning on non-thinking model",
+			Request: func() inference.GenerateRequest {
+				request := simpleTextRequest("hi")
+				request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
+				return request
 			},
-			{
-				Name: "reasoning on non-reasoning model",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					text := request.Input.Content.Intent.Text
-					if text == nil {
-						text = &inference.TextIntent{}
-						request.Input.Content.Intent.Text = text
-					}
-					text.ReasoningEffort = inference.ReasoningLow
-					return request
-				},
-				Field: inference.FieldGenerateIntentReasoningEffort,
+			Field: inference.FieldGenerateIntentReasoningEffort,
 				Kind:  inference.UnsupportedFeature,
 			},
 		},

@@ -166,19 +166,15 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 						Text: &inference.TextIntent{
 							Response:        &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
 							MaxOutputTokens: &maxTokens,
-						},
-						Reasoning: &inference.ReasoningIntent{Effort: inference.ReasoningHigh},
-						Tools: &inference.ToolsIntent{
-							Definitions: []tool.Definition{{
+							Tools: []tool.Definition{{
 								Name:        "lookup",
 								Description: "look things up",
 								InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
 							}},
-							Choice: &inference.ToolChoice{Kind: inference.ToolChoiceAuto},
-						},
-						Sampling: &inference.SamplingIntent{
-							Temperature: &temperature,
-							TopP:        &topP,
+							ToolChoice:      &inference.ToolChoice{Kind: inference.ToolChoiceAuto},
+							Temperature:     &temperature,
+							TopP:            &topP,
+							ReasoningEffort: inference.ReasoningHigh,
 						},
 					},
 				},

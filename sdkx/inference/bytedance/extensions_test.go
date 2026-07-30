@@ -13,7 +13,8 @@ import (
 )
 
 // TestGenerateExtensionsCapturedWire lowers every GenerateOptions field and
-// asserts its exact destination in the Responses API payload.
+// asserts its exact destination in the Responses API payload. The thinking
+// switch is canonical now; TestGenerateThinkingSwitch covers it.
 func TestGenerateExtensionsCapturedWire(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
@@ -30,7 +31,6 @@ func TestGenerateExtensionsCapturedWire(t *testing.T) {
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
 		withExtensions(simpleTextRequest("hi"), GenerateOptions{
-			Thinking:           ptr(true),
 			ServiceTier:        "auto",
 			Caching:            &GenerateCaching{Enabled: true, Prefix: true},
 			Store:              ptr(true),
@@ -57,10 +57,6 @@ func TestGenerateExtensionsCapturedWire(t *testing.T) {
 	}
 
 	body := capture.body(0)
-	thinking, _ := body["thinking"].(map[string]any)
-	if thinking["type"] != "enabled" {
-		t.Fatalf("thinking = %v", body["thinking"])
-	}
 	if body["service_tier"] != "auto" {
 		t.Fatalf("service_tier = %v", body["service_tier"])
 	}
@@ -102,8 +98,9 @@ func TestGenerateExtensionsCapturedWire(t *testing.T) {
 	}
 }
 
-// TestGenerateThinkingSwitch covers the thinking extension: explicit disable
-// maps to the disabled enum, and disable+reasoning is a compile rejection.
+// TestGenerateThinkingSwitch covers the canonical reasoning switch: explicit
+// disable maps to the disabled enum on the wire, and disable+effort is a
+// request validation failure before the compiler ever runs.
 func TestGenerateThinkingSwitch(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
@@ -114,12 +111,12 @@ func TestGenerateThinkingSwitch(t *testing.T) {
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
 
+	disableRequest := simpleTextRequest("hi")
+	disableRequest.Input.Content.Intent.Text.ReasoningEnabled = ptr(false)
 	_, err := runtime.Generate(
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
-		withExtensions(simpleTextRequest("hi"), GenerateOptions{
-			Thinking: ptr(false),
-		}),
+		disableRequest,
 	)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
@@ -129,26 +126,19 @@ func TestGenerateThinkingSwitch(t *testing.T) {
 		t.Fatalf("thinking = %v", capture.body(0)["thinking"])
 	}
 
-	disabledRequest := withExtensions(simpleTextRequest("hi"), GenerateOptions{
-		Thinking: ptr(false),
-	})
-	disabledRequest.Input.Content.Intent.Reasoning =
-		&inference.ReasoningIntent{Effort: inference.ReasoningLow}
+	conflictRequest := simpleTextRequest("hi")
+	conflictRequest.Input.Content.Intent.Text.ReasoningEnabled = ptr(false)
+	conflictRequest.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
 	_, err = runtime.Generate(
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
-		disabledRequest,
+		conflictRequest,
 	)
 	if err == nil {
-		t.Fatal("expected thinking/reasoning conflict rejection")
+		t.Fatal("expected reasoning switch/effort conflict validation failure")
 	}
-	if !inference.IsKind(err, inference.InvalidExtension) {
+	if !inference.IsKind(err, inference.InvalidRequest) {
 		t.Fatalf("kind = %v", err)
-	}
-	var inferenceErr *inference.Error
-	if !errors.As(err, &inferenceErr) ||
-		inferenceErr.Field != "extension.bytedance.generate_options.thinking" {
-		t.Fatalf("field = %v", err)
 	}
 	if len(capture.bodies) != 1 {
 		t.Fatalf("transport ran %d times", len(capture.bodies))

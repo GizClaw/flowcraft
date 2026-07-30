@@ -52,8 +52,7 @@ func TestGenerateInputMessageDiscardsIntent(t *testing.T) {
 		Content: InputContent{
 			Content: Content{Parts: []Part{TextPart{Text: "hello"}}},
 			Intent: Intent{
-				Text:      &TextIntent{},
-				Reasoning: &ReasoningIntent{Effort: ReasoningHigh},
+				Text: &TextIntent{ReasoningEffort: ReasoningHigh},
 			},
 		},
 	}
@@ -78,6 +77,13 @@ func TestIntentCombinesTypedControls(t *testing.T) {
 		Text: &TextIntent{
 			Response:        &ResponseFormat{Kind: ResponseText},
 			MaxOutputTokens: &maxTokens,
+			Tools: []tool.Definition{{
+				Name:        "search",
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			}},
+			ToolChoice:      &ToolChoice{Kind: ToolChoiceAuto},
+			Temperature:     &temperature,
+			ReasoningEffort: ReasoningMedium,
 		},
 		Image: &ImageIntent{
 			AspectRatio:  media.AspectRatio("1:1"),
@@ -90,21 +96,12 @@ func TestIntentCombinesTypedControls(t *testing.T) {
 			Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
 			Count:  &count,
 		},
-		Tools: &ToolsIntent{
-			Definitions: []tool.Definition{{
-				Name:        "search",
-				InputSchema: json.RawMessage(`{"type":"object"}`),
-			}},
-			Choice: &ToolChoice{Kind: ToolChoiceAuto},
-		},
-		Sampling:  &SamplingIntent{Temperature: &temperature},
-		Reasoning: &ReasoningIntent{Effort: ReasoningMedium},
 	}
 	if err := intent.Validate(); err != nil {
 		t.Fatalf("combined Intent.Validate: %v", err)
 	}
-	if err := (Intent{Sampling: &SamplingIntent{Temperature: &temperature}}).Validate(); err == nil {
-		t.Fatal("Intent accepted controls without an output-producing intent")
+	if err := (Intent{}).Validate(); err == nil {
+		t.Fatal("Intent accepted no output-producing intent")
 	}
 }
 
@@ -133,11 +130,13 @@ func TestGenerateRequestJSONRoundTripAndClone(t *testing.T) {
 					DataPart{Value: json.RawMessage(`{"mutable":true}`)},
 				}},
 				Intent: Intent{
-					Text: &TextIntent{MaxOutputTokens: &maxTokens},
-					Tools: &ToolsIntent{Definitions: []tool.Definition{{
-						Name:        "search",
-						InputSchema: json.RawMessage(`{"type":"object"}`),
-					}}},
+					Text: &TextIntent{
+						MaxOutputTokens: &maxTokens,
+						Tools: []tool.Definition{{
+							Name:        "search",
+							InputSchema: json.RawMessage(`{"type":"object"}`),
+						}},
+					},
 				},
 			},
 		},
@@ -162,14 +161,14 @@ func TestGenerateRequestJSONRoundTripAndClone(t *testing.T) {
 	clone := decoded.Clone()
 	clone.Input.Content.Parts[1].(DataPart).Value[0] = '['
 	*clone.Input.Content.Intent.Text.MaxOutputTokens = 1
-	clone.Input.Content.Intent.Tools.Definitions[0].InputSchema[0] = '['
+	clone.Input.Content.Intent.Text.Tools[0].InputSchema[0] = '['
 	if string(decoded.Input.Content.Parts[1].(DataPart).Value) != `{"mutable":true}` {
 		t.Fatal("GenerateRequest.Clone shared part payload")
 	}
 	if *decoded.Input.Content.Intent.Text.MaxOutputTokens != 64 {
 		t.Fatal("GenerateRequest.Clone shared intent pointer")
 	}
-	if string(decoded.Input.Content.Intent.Tools.Definitions[0].InputSchema) !=
+	if string(decoded.Input.Content.Intent.Text.Tools[0].InputSchema) !=
 		`{"type":"object"}` {
 		t.Fatal("GenerateRequest.Clone shared tool schema")
 	}
@@ -185,8 +184,7 @@ func TestGenerateToolInput(t *testing.T) {
 					Content: "found",
 				}}}},
 				Intent: Intent{
-					Text:  &TextIntent{},
-					Tools: &ToolsIntent{Choice: &ToolChoice{Kind: ToolChoiceNone}},
+					Text: &TextIntent{ToolChoice: &ToolChoice{Kind: ToolChoiceNone}},
 				},
 			},
 		},
@@ -200,7 +198,7 @@ func TestGenerateToolInput(t *testing.T) {
 	}
 }
 
-func TestGenerateToolsOnlyIntentRequiresCompletableToolChoice(t *testing.T) {
+func TestGenerateTextIntentToolRules(t *testing.T) {
 	definitions := []tool.Definition{{
 		Name:        "search",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -213,28 +211,29 @@ func TestGenerateToolsOnlyIntentRequiresCompletableToolChoice(t *testing.T) {
 	}
 	tests := []struct {
 		name    string
-		text    bool
+		tools   []tool.Definition
 		choice  *ToolChoice
 		wantErr bool
 	}{
-		{name: "tools_only_nil", choice: nil, wantErr: true},
-		{name: "tools_only_auto", choice: choice(ToolChoiceAuto), wantErr: true},
-		{name: "tools_only_none", choice: choice(ToolChoiceNone), wantErr: true},
-		{name: "tools_only_required", choice: choice(ToolChoiceRequired)},
-		{name: "tools_only_named", choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "search"}},
-		{name: "text_and_tools_nil", text: true},
-		{name: "text_and_tools_auto", text: true, choice: choice(ToolChoiceAuto)},
-		{name: "text_and_tools_none", text: true, choice: choice(ToolChoiceNone)},
+		{name: "definitions_only"},
+		{name: "definitions_auto", choice: choice(ToolChoiceAuto)},
+		{name: "definitions_none", choice: choice(ToolChoiceNone)},
+		{name: "definitions_required", choice: choice(ToolChoiceRequired)},
+		{name: "definitions_named", choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "search"}},
+		{name: "named_undefined", choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "missing"}, wantErr: true},
+		{name: "choice_without_definitions", choice: choice(ToolChoiceAuto), wantErr: true},
+		{name: "none_without_definitions", choice: choice(ToolChoiceNone)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			intent := Intent{Tools: &ToolsIntent{
-				Definitions: definitions,
-				Choice:      tt.choice,
-			}}
-			if tt.text {
-				intent.Text = &TextIntent{}
+			tools := tt.tools
+			if tools == nil && tt.name != "choice_without_definitions" && tt.name != "none_without_definitions" {
+				tools = definitions
 			}
+			intent := Intent{Text: &TextIntent{
+				Tools:      tools,
+				ToolChoice: tt.choice,
+			}}
 			err := intent.Validate()
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("Intent.Validate error = %v, wantErr %v", err, tt.wantErr)
@@ -290,6 +289,13 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 							Schema: json.RawMessage(`{"type":"object"}`),
 						},
 						MaxOutputTokens: &maxTokens,
+						Tools: []tool.Definition{{
+							Name: "search", Description: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
+						}},
+						ToolChoice:      &ToolChoice{Kind: ToolChoiceNamed, Name: "search"},
+						Temperature:     &temperature,
+						TopP:            &topP,
+						ReasoningEffort: ReasoningHigh,
 					},
 					Image: &ImageIntent{
 						Size: &size, AspectRatio: media.AspectRatio("2:3"),
@@ -308,14 +314,6 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 						AspectRatio: media.AspectRatio("16:9"),
 						Seed:        &seed, Watermark: &watermark,
 					},
-					Tools: &ToolsIntent{
-						Definitions: []tool.Definition{{
-							Name: "search", Description: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
-						}},
-						Choice: &ToolChoice{Kind: ToolChoiceNamed, Name: "search"},
-					},
-					Sampling:  &SamplingIntent{Temperature: &temperature, TopP: &topP},
-					Reasoning: &ReasoningIntent{Effort: ReasoningHigh},
 				},
 			},
 		},
@@ -337,6 +335,11 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 		FieldGenerateIntentText, FieldGenerateIntentTextResponse,
 		FieldGenerateIntentTextResponseKind, FieldGenerateIntentTextResponseName,
 		FieldGenerateIntentTextResponseSchema, FieldGenerateIntentTextMaxOutputTokens,
+		FieldGenerateIntentTools,
+		FieldGenerateIntentToolChoice, FieldGenerateIntentToolChoiceKind,
+		FieldGenerateIntentToolChoiceName,
+		FieldGenerateIntentTemperature, FieldGenerateIntentTopP,
+		FieldGenerateIntentReasoning, FieldGenerateIntentReasoningEffort,
 		FieldGenerateIntentImage, FieldGenerateIntentImageSize,
 		FieldGenerateIntentImageSizeWidth, FieldGenerateIntentImageSizeHeight,
 		FieldGenerateIntentImageAspectRatio,
@@ -350,12 +353,6 @@ func TestGenerateActiveFieldsCoverNestedLedger(t *testing.T) {
 		FieldGenerateIntentVideo, FieldGenerateIntentVideoDuration,
 		FieldGenerateIntentVideoResolution, FieldGenerateIntentVideoAspectRatio,
 		FieldGenerateIntentVideoSeed, FieldGenerateIntentVideoWatermark,
-		FieldGenerateIntentTools, FieldGenerateIntentToolDefinitions,
-		FieldGenerateIntentToolChoice, FieldGenerateIntentToolChoiceKind,
-		FieldGenerateIntentToolChoiceName,
-		FieldGenerateIntentSampling, FieldGenerateIntentSamplingTemperature,
-		FieldGenerateIntentSamplingTopP,
-		FieldGenerateIntentReasoning, FieldGenerateIntentReasoningEffort,
 		"extension.openai.generate_options.store",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -570,10 +567,9 @@ func TestGenerateResponseValidateForEnforcesToolChoiceAndDefinitions(t *testing.
 			Content: InputContent{
 				Content: Content{Parts: []Part{TextPart{Text: "use a tool"}}},
 				Intent: Intent{
-					Text: &TextIntent{},
-					Tools: &ToolsIntent{
-						Definitions: definitions,
-						Choice:      &choice,
+					Text: &TextIntent{
+						Tools:      definitions,
+						ToolChoice: &choice,
 					},
 				},
 			},
@@ -625,12 +621,10 @@ func TestGenerateResponseAllowsEmptyMessageOnlyForIncompleteFinish(t *testing.T)
 		})
 	}
 	required := request.Clone()
-	required.Input.Content.Intent.Tools = &ToolsIntent{
-		Definitions: []tool.Definition{{
-			Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
-		}},
-		Choice: &ToolChoice{Kind: ToolChoiceRequired},
-	}
+	required.Input.Content.Intent.Text.Tools = []tool.Definition{{
+		Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}}
+	required.Input.Content.Intent.Text.ToolChoice = &ToolChoice{Kind: ToolChoiceRequired}
 	if err := (GenerateResponse{
 		Message:      Message{Role: RoleAssistant},
 		FinishReason: FinishPause,

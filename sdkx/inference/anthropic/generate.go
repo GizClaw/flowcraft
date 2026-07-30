@@ -34,9 +34,13 @@ type generateWire struct {
 	temperature *float64
 	topP        *float64
 	effort      string // low | medium | high; empty means unset
-	format      *wireFormat
-	tools       []wireTool
-	toolChoice  *wireToolChoice
+	// thinking carries the explicit reasoning switch: nil means unset,
+	// false emits thinking: {type: "disabled"}, true emits adaptive
+	// thinking where effort levels do not apply.
+	thinking   *bool
+	format     *wireFormat
+	tools      []wireTool
+	toolChoice *wireToolChoice
 }
 
 type wireMessage struct {
@@ -519,7 +523,8 @@ func compileIntent(
 	entry catalogEntry,
 	ledger *ledger,
 ) {
-	if text := intent.Text; text != nil {
+	text := intent.Text
+	if text != nil {
 		if format := text.Response; format != nil {
 			switch format.Kind {
 			case "", inference.ResponseText:
@@ -554,39 +559,66 @@ func compileIntent(
 			"claude models do not generate video",
 		)
 	}
-	if tools := intent.Tools; tools != nil {
-		for _, definition := range tools.Definitions {
-			wire.tools = append(wire.tools, wireTool{
-				name:        definition.Name,
-				description: definition.Description,
-				schema:      bytesClone(definition.InputSchema),
-			})
-		}
-		if choice := tools.Choice; choice != nil {
-			switch choice.Kind {
-			case inference.ToolChoiceAuto:
-				wire.toolChoice = &wireToolChoice{mode: "auto"}
-			case inference.ToolChoiceNone:
-				wire.toolChoice = &wireToolChoice{mode: "none"}
-			case inference.ToolChoiceRequired:
-				wire.toolChoice = &wireToolChoice{mode: "any"}
-			case inference.ToolChoiceNamed:
-				wire.toolChoice = &wireToolChoice{mode: "tool", name: choice.Name}
-			}
+	if text == nil {
+		return
+	}
+	for _, definition := range text.Tools {
+		wire.tools = append(wire.tools, wireTool{
+			name:        definition.Name,
+			description: definition.Description,
+			schema:      bytesClone(definition.InputSchema),
+		})
+	}
+	if choice := text.ToolChoice; choice != nil {
+		switch choice.Kind {
+		case inference.ToolChoiceAuto:
+			wire.toolChoice = &wireToolChoice{mode: "auto"}
+		case inference.ToolChoiceNone:
+			wire.toolChoice = &wireToolChoice{mode: "none"}
+		case inference.ToolChoiceRequired:
+			wire.toolChoice = &wireToolChoice{mode: "any"}
+		case inference.ToolChoiceNamed:
+			wire.toolChoice = &wireToolChoice{mode: "tool", name: choice.Name}
 		}
 	}
-	if sampling := intent.Sampling; sampling != nil {
-		wire.temperature = sampling.Temperature
-		wire.topP = sampling.TopP
+	wire.temperature = text.Temperature
+	wire.topP = text.TopP
+	if text.ReasoningEnabled != nil {
+		switch {
+		case !entry.reasoning:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model has no thinking to switch",
+			)
+		case !*text.ReasoningEnabled && !entry.reasoningDisable:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model cannot disable thinking",
+			)
+		default:
+			enabled := *text.ReasoningEnabled
+			wire.thinking = &enabled
+		}
 	}
-	if reasoning := intent.Reasoning; reasoning != nil && reasoning.Effort != "" {
-		if !entry.reasoning {
+	if text.ReasoningEffort != "" {
+		switch {
+		case !entry.reasoning:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		} else {
-			wire.effort = string(reasoning.Effort)
+		case !entry.reasoningLevels:
+			// The platform's thinking is binary: the level cannot be
+			// honored, but the request for reasoning itself is — turn
+			// thinking on and report the loss.
+			on := true
+			wire.thinking = &on
+			ledger.drop(
+				inference.FieldGenerateIntentReasoningEffort,
+				"platform thinking has no effort levels; enabled at platform-chosen depth",
+			)
+		default:
+			wire.effort = string(text.ReasoningEffort)
 		}
 	}
 }

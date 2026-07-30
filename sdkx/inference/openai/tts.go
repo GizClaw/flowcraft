@@ -91,7 +91,12 @@ func compileTTS(
 		wire.text = strings.Join(text, "\n")
 
 		intent := request.Input.Content.Intent
-		if intent.Text != nil {
+		if text := intent.Text; text != nil {
+			rejectTextControls(text, ledger,
+				"speech models do not call tools",
+				"speech synthesis has no sampling controls",
+				"speech models have no reasoning control",
+			)
 			ledger.reject(
 				inference.FieldGenerateIntentText,
 				"speech models do not produce text",
@@ -134,24 +139,6 @@ func compileTTS(
 			ledger.reject(
 				inference.FieldGenerateIntentVideo,
 				"speech models do not produce video",
-			)
-		}
-		if intent.Tools != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentTools,
-				"speech models do not call tools",
-			)
-		}
-		if intent.Sampling != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentSampling,
-				"speech synthesis has no sampling controls",
-			)
-		}
-		if intent.Reasoning != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentReasoning,
-				"speech models have no reasoning control",
 			)
 		}
 		for _, field := range request.Extensions.ActiveFields() {

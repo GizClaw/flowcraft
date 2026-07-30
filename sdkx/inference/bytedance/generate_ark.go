@@ -76,7 +76,7 @@ func wireToArk(wire generateWire) *arkresponses.ResponsesRequest {
 	if wire.textFormat != nil {
 		request.Text = &arkresponses.ResponsesText{Format: arkTextFormat(wire.textFormat)}
 	}
-	// Thinking: an explicit extension switch wins; otherwise thinking follows
+	// Thinking: an explicit canonical switch wins; otherwise thinking follows
 	// the reasoning effort. Neither set leaves the provider default in place.
 	switch {
 	case wire.thinking != nil && !*wire.thinking:

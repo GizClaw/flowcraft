@@ -25,9 +25,9 @@
 //   - Realtime: Doubao full-duplex dialogue (Seeduplex) over WebSocket JSON.
 //
 // Provider-specific settings ride on requests as typed extensions, one
-// options struct per operation family: GenerateOptions (thinking switch,
-// service tier, context caching, server-side storage and chaining, tool-call
-// limits, web search), ImageOptions (guidance scale, watermark, prompt
+// options struct per operation family: GenerateOptions (service tier,
+// context caching, server-side storage and chaining, tool-call limits,
+// web search), ImageOptions (guidance scale, watermark, prompt
 // optimization, grouped generation, named size tiers, web search),
 // VideoOptions (fixed camera, generated audio track, service tier, task
 // TTL), TTSOptions

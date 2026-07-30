@@ -283,6 +283,33 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 		if intent.Text.MaxOutputTokens != nil {
 			fields = append(fields, FieldGenerateIntentTextMaxOutputTokens)
 		}
+		if len(intent.Text.Tools) > 0 {
+			fields = append(fields, FieldGenerateIntentTools)
+		}
+		if intent.Text.ToolChoice != nil {
+			fields = append(fields, FieldGenerateIntentToolChoice)
+			if intent.Text.ToolChoice.Kind != "" {
+				fields = append(fields, FieldGenerateIntentToolChoiceKind)
+			}
+			if intent.Text.ToolChoice.Name != "" {
+				fields = append(fields, FieldGenerateIntentToolChoiceName)
+			}
+		}
+		if intent.Text.Temperature != nil {
+			fields = append(fields, FieldGenerateIntentTemperature)
+		}
+		if intent.Text.TopP != nil {
+			fields = append(fields, FieldGenerateIntentTopP)
+		}
+		if intent.Text.ReasoningEnabled != nil || intent.Text.ReasoningEffort != "" {
+			fields = append(fields, FieldGenerateIntentReasoning)
+		}
+		if intent.Text.ReasoningEnabled != nil {
+			fields = append(fields, FieldGenerateIntentReasoningEnabled)
+		}
+		if intent.Text.ReasoningEffort != "" {
+			fields = append(fields, FieldGenerateIntentReasoningEffort)
+		}
 	}
 	if intent.Image != nil {
 		fields = append(fields, FieldGenerateIntentImage)
@@ -353,48 +380,18 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 			fields = append(fields, FieldGenerateIntentVideoWatermark)
 		}
 	}
-	if intent.Tools != nil {
-		fields = append(fields, FieldGenerateIntentTools)
-		if len(intent.Tools.Definitions) > 0 {
-			fields = append(fields, FieldGenerateIntentToolDefinitions)
-		}
-		if intent.Tools.Choice != nil {
-			fields = append(fields, FieldGenerateIntentToolChoice)
-			if intent.Tools.Choice.Kind != "" {
-				fields = append(fields, FieldGenerateIntentToolChoiceKind)
-			}
-			if intent.Tools.Choice.Name != "" {
-				fields = append(fields, FieldGenerateIntentToolChoiceName)
-			}
-		}
-	}
-	if intent.Sampling != nil {
-		fields = append(fields, FieldGenerateIntentSampling)
-		if intent.Sampling.Temperature != nil {
-			fields = append(fields, FieldGenerateIntentSamplingTemperature)
-		}
-		if intent.Sampling.TopP != nil {
-			fields = append(fields, FieldGenerateIntentSamplingTopP)
-		}
-	}
-	if intent.Reasoning != nil {
-		fields = append(fields, FieldGenerateIntentReasoning)
-		if intent.Reasoning.Effort != "" {
-			fields = append(fields, FieldGenerateIntentReasoningEffort)
-		}
-	}
 	return fields
 }
 
-// Intent composes output modalities and cross-modal controls atomically.
+// Intent declares the output modalities one generation should produce.
+// Controls are not free-floating: they live on the modality they govern,
+// so combinations no provider can honor (image with a temperature, video
+// with tool calls) are unrepresentable rather than rejected at runtime.
 type Intent struct {
-	Text      *TextIntent      `json:"text,omitempty"`
-	Image     *ImageIntent     `json:"image,omitempty"`
-	Audio     *AudioIntent     `json:"audio,omitempty"`
-	Video     *VideoIntent     `json:"video,omitempty"`
-	Tools     *ToolsIntent     `json:"tools,omitempty"`
-	Sampling  *SamplingIntent  `json:"sampling,omitempty"`
-	Reasoning *ReasoningIntent `json:"reasoning,omitempty"`
+	Text  *TextIntent  `json:"text,omitempty"`
+	Image *ImageIntent `json:"image,omitempty"`
+	Audio *AudioIntent `json:"audio,omitempty"`
+	Video *VideoIntent `json:"video,omitempty"`
 }
 
 func (i Intent) Clone() Intent {
@@ -415,45 +412,54 @@ func (i Intent) Clone() Intent {
 		value := i.Video.Clone()
 		clone.Video = &value
 	}
-	if i.Tools != nil {
-		value := i.Tools.Clone()
-		clone.Tools = &value
-	}
-	if i.Sampling != nil {
-		value := i.Sampling.Clone()
-		clone.Sampling = &value
-	}
-	clone.Reasoning = clonePointer(i.Reasoning)
 	return clone
 }
 
 func (i Intent) Validate() error {
-	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Video == nil && i.Tools == nil {
-		return fmt.Errorf("intent requires text, image, audio, video, or tools output")
+	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Video == nil {
+		return fmt.Errorf("intent requires text, image, audio, or video output")
 	}
-	for name, control := range map[string]interface{ Validate() error }{
+	for name, modality := range map[string]interface{ Validate() error }{
 		"text": i.Text, "image": i.Image, "audio": i.Audio, "video": i.Video,
-		"tools": i.Tools, "sampling": i.Sampling, "reasoning": i.Reasoning,
 	} {
-		if !isNilValue(control) {
-			if err := control.Validate(); err != nil {
+		if !isNilValue(modality) {
+			if err := modality.Validate(); err != nil {
 				return fmt.Errorf("%s intent: %w", name, err)
 			}
-		}
-	}
-	if i.Text == nil && i.Image == nil && i.Audio == nil && i.Video == nil {
-		if i.Tools.Choice == nil ||
-			(i.Tools.Choice.Kind != ToolChoiceRequired &&
-				i.Tools.Choice.Kind != ToolChoiceNamed) {
-			return fmt.Errorf("tools-only intent requires required or named tool choice")
 		}
 	}
 	return nil
 }
 
+// TextIntent declares text output and owns every control that governs
+// text generation: response shaping, tool calling, sampling, and the
+// reasoning trace. A TextIntent carrying only tools is the tools-first
+// shape — text output stays welcome because the modality itself is
+// present.
 type TextIntent struct {
 	Response        *ResponseFormat `json:"response,omitempty"`
 	MaxOutputTokens *int            `json:"max_output_tokens,omitempty"`
+	// Tools lists the tool definitions the model may call; ToolChoice
+	// constrains when and which. Either one marks tool calling as
+	// requested.
+	Tools      []tool.Definition `json:"tools,omitempty"`
+	ToolChoice *ToolChoice       `json:"tool_choice,omitempty"`
+	// Sampling controls: temperature in [0, 2], top_p in [0, 1].
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	// ReasoningEnabled is the universal reasoning switch — every
+	// provider can turn thinking on or off, so the compiler honors it
+	// exactly (or rejects where a model cannot comply). ReasoningEffort
+	// tunes depth where the platform has levels; platforms whose
+	// thinking is binary quantize it, and the compiler reports the loss.
+	ReasoningEnabled *bool           `json:"reasoning_enabled,omitempty"`
+	ReasoningEffort  ReasoningEffort `json:"reasoning_effort,omitempty"`
+}
+
+// toolsRequested reports whether tool calling was requested: definitions
+// or a choice.
+func (i TextIntent) toolsRequested() bool {
+	return len(i.Tools) > 0 || i.ToolChoice != nil
 }
 
 func (i TextIntent) Clone() TextIntent {
@@ -463,6 +469,17 @@ func (i TextIntent) Clone() TextIntent {
 		i.Response = &response
 	}
 	i.MaxOutputTokens = clonePointer(i.MaxOutputTokens)
+	if i.Tools != nil {
+		tools := make([]tool.Definition, len(i.Tools))
+		for index, definition := range i.Tools {
+			tools[index] = definition.Clone()
+		}
+		i.Tools = tools
+	}
+	i.ToolChoice = clonePointer(i.ToolChoice)
+	i.Temperature = clonePointer(i.Temperature)
+	i.TopP = clonePointer(i.TopP)
+	i.ReasoningEnabled = clonePointer(i.ReasoningEnabled)
 	return i
 }
 
@@ -474,6 +491,47 @@ func (i TextIntent) Validate() error {
 	}
 	if i.MaxOutputTokens != nil && *i.MaxOutputTokens <= 0 {
 		return fmt.Errorf("max output tokens must be positive")
+	}
+	names := make(map[string]struct{}, len(i.Tools))
+	for _, definition := range i.Tools {
+		if err := definition.Validate(); err != nil {
+			return err
+		}
+		if _, exists := names[definition.Name]; exists {
+			return fmt.Errorf("duplicate tool definition %q", definition.Name)
+		}
+		names[definition.Name] = struct{}{}
+	}
+	if i.ToolChoice != nil {
+		if err := i.ToolChoice.Validate(); err != nil {
+			return err
+		}
+		if len(i.Tools) == 0 && i.ToolChoice.Kind != ToolChoiceNone {
+			return fmt.Errorf("tool choice requires tool definitions")
+		}
+		if i.ToolChoice.Kind == ToolChoiceNamed {
+			if _, exists := names[i.ToolChoice.Name]; !exists {
+				return fmt.Errorf("named tool choice %q is not defined", i.ToolChoice.Name)
+			}
+		}
+	}
+	if i.Temperature != nil &&
+		(math.IsNaN(*i.Temperature) || math.IsInf(*i.Temperature, 0) ||
+			*i.Temperature < 0 || *i.Temperature > 2) {
+		return fmt.Errorf("temperature must be between 0 and 2")
+	}
+	if i.TopP != nil &&
+		(math.IsNaN(*i.TopP) || math.IsInf(*i.TopP, 0) ||
+			*i.TopP < 0 || *i.TopP > 1) {
+		return fmt.Errorf("top_p must be between 0 and 1")
+	}
+	switch i.ReasoningEffort {
+	case "", ReasoningLow, ReasoningMedium, ReasoningHigh:
+	default:
+		return fmt.Errorf("unknown reasoning effort %q", i.ReasoningEffort)
+	}
+	if i.ReasoningEnabled != nil && !*i.ReasoningEnabled && i.ReasoningEffort != "" {
+		return fmt.Errorf("reasoning cannot be disabled while an effort is requested")
 	}
 	return nil
 }
@@ -595,90 +653,6 @@ func (i VideoIntent) Validate() error {
 	return nil
 }
 
-type ToolsIntent struct {
-	Definitions []tool.Definition `json:"definitions,omitempty"`
-	Choice      *ToolChoice       `json:"choice,omitempty"`
-}
-
-func (i ToolsIntent) Clone() ToolsIntent {
-	definitions := make([]tool.Definition, len(i.Definitions))
-	for index, definition := range i.Definitions {
-		definitions[index] = definition.Clone()
-	}
-	i.Definitions = definitions
-	i.Choice = clonePointer(i.Choice)
-	return i
-}
-
-func (i ToolsIntent) Validate() error {
-	names := make(map[string]struct{}, len(i.Definitions))
-	for _, definition := range i.Definitions {
-		if err := definition.Validate(); err != nil {
-			return err
-		}
-		if _, exists := names[definition.Name]; exists {
-			return fmt.Errorf("duplicate tool definition %q", definition.Name)
-		}
-		names[definition.Name] = struct{}{}
-	}
-	if i.Choice == nil {
-		if len(i.Definitions) == 0 {
-			return fmt.Errorf("tools intent requires definitions or a choice")
-		}
-		return nil
-	}
-	if err := i.Choice.Validate(); err != nil {
-		return err
-	}
-	if len(i.Definitions) == 0 && i.Choice.Kind != ToolChoiceNone {
-		return fmt.Errorf("tool choice requires tool definitions")
-	}
-	if i.Choice.Kind == ToolChoiceNamed {
-		if _, exists := names[i.Choice.Name]; !exists {
-			return fmt.Errorf("named tool choice %q is not defined", i.Choice.Name)
-		}
-	}
-	return nil
-}
-
-type SamplingIntent struct {
-	Temperature *float64 `json:"temperature,omitempty"`
-	TopP        *float64 `json:"top_p,omitempty"`
-}
-
-func (i SamplingIntent) Clone() SamplingIntent {
-	i.Temperature = clonePointer(i.Temperature)
-	i.TopP = clonePointer(i.TopP)
-	return i
-}
-
-func (i SamplingIntent) Validate() error {
-	if i.Temperature != nil &&
-		(math.IsNaN(*i.Temperature) || math.IsInf(*i.Temperature, 0) ||
-			*i.Temperature < 0 || *i.Temperature > 2) {
-		return fmt.Errorf("temperature must be between 0 and 2")
-	}
-	if i.TopP != nil &&
-		(math.IsNaN(*i.TopP) || math.IsInf(*i.TopP, 0) ||
-			*i.TopP < 0 || *i.TopP > 1) {
-		return fmt.Errorf("top_p must be between 0 and 1")
-	}
-	return nil
-}
-
-type ReasoningIntent struct {
-	Effort ReasoningEffort `json:"effort,omitempty"`
-}
-
-func (i ReasoningIntent) Validate() error {
-	switch i.Effort {
-	case "", ReasoningLow, ReasoningMedium, ReasoningHigh:
-		return nil
-	default:
-		return fmt.Errorf("unknown reasoning effort %q", i.Effort)
-	}
-}
-
 type GenerateResponse struct {
 	Message      Message      `json:"message"`
 	FinishReason FinishReason `json:"finish_reason"`
@@ -730,6 +704,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 		return err
 	}
 	intent := request.Input.Content.Intent
+	toolsRequested := intent.Text != nil && intent.Text.toolsRequested()
 	var text strings.Builder
 	textParts := 0
 	var images []ImagePart
@@ -769,7 +744,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				return fmt.Errorf("generate video %d: %w", len(videos)-1, err)
 			}
 		case ToolCallPart:
-			if intent.Tools == nil {
+			if !toolsRequested {
 				return fmt.Errorf("generate response contains an unrequested tool call")
 			}
 			toolCalls = append(toolCalls, value)
@@ -780,9 +755,9 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			// always carry it.
 		}
 	}
-	if intent.Tools != nil {
-		definitions := make(map[string]struct{}, len(intent.Tools.Definitions))
-		for _, definition := range intent.Tools.Definitions {
+	if toolsRequested {
+		definitions := make(map[string]struct{}, len(intent.Text.Tools))
+		for _, definition := range intent.Text.Tools {
 			definitions[definition.Name] = struct{}{}
 		}
 		for index, call := range toolCalls {
@@ -790,8 +765,8 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				return fmt.Errorf("generate tool call %d names undefined tool %q", index, call.Call.Name)
 			}
 		}
-		if intent.Tools.Choice != nil {
-			switch intent.Tools.Choice.Kind {
+		if choice := intent.Text.ToolChoice; choice != nil {
+			switch choice.Kind {
 			case ToolChoiceNone:
 				if len(toolCalls) != 0 {
 					return fmt.Errorf("tool choice none forbids tool calls")
@@ -802,10 +777,10 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				}
 			case ToolChoiceNamed:
 				for _, call := range toolCalls {
-					if call.Call.Name != intent.Tools.Choice.Name {
+					if call.Call.Name != choice.Name {
 						return fmt.Errorf(
 							"named tool choice %q produced tool %q",
-							intent.Tools.Choice.Name,
+							choice.Name,
 							call.Call.Name,
 						)
 					}

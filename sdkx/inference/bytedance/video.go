@@ -159,7 +159,14 @@ func compileVideo(
 		rejectOtherExtensions("video generation", other, ledger)
 		compileVideoOptions(&wire, options)
 
-		if intent.Text != nil {
+		if text := intent.Text; text != nil {
+			// Specific control rejections precede the wholesale text
+			// rejection so the first failure names the offending field.
+			rejectTextControls(text, ledger,
+				"video models do not call tools",
+				"the task API has no sampling controls",
+				"video models have no thinking control",
+			)
 			ledger.reject(
 				inference.FieldGenerateIntentText,
 				"video models do not produce text",
@@ -177,25 +184,6 @@ func compileVideo(
 				"video models do not synthesize standalone audio; the generate_audio extension adds a track to the video",
 			)
 		}
-		if intent.Tools != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentTools,
-				"video models do not call tools",
-			)
-		}
-		if intent.Sampling != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentSampling,
-				"the task API has no sampling controls",
-			)
-		}
-		if intent.Reasoning != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentReasoning,
-				"video models have no thinking control",
-			)
-		}
-
 		report := ledger.report()
 		if len(ledger.order) > 0 {
 			return inference.Compiled[videoWire]{Report: report}, ledger.err()

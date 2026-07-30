@@ -367,21 +367,15 @@ func TestWireToParamsKnobs(t *testing.T) {
 			Schema: json.RawMessage(`{"type":"object","properties":{"a":{"type":"string"}}}`),
 		},
 		MaxOutputTokens: intPointer(64),
-	}
-	request.Input.Content.Intent.Sampling = &inference.SamplingIntent{
-		Temperature: floatPointer(0.2),
-		TopP:        floatPointer(0.9),
-	}
-	request.Input.Content.Intent.Reasoning = &inference.ReasoningIntent{
-		Effort: inference.ReasoningHigh,
-	}
-	request.Input.Content.Intent.Tools = &inference.ToolsIntent{
-		Definitions: []tool.Definition{{
+		Temperature:     floatPointer(0.2),
+		TopP:            floatPointer(0.9),
+		ReasoningEffort: inference.ReasoningHigh,
+		Tools: []tool.Definition{{
 			Name:        "lookup",
 			Description: "find things",
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		}},
-		Choice: &inference.ToolChoice{Kind: inference.ToolChoiceNamed, Name: "lookup"},
+		ToolChoice: &inference.ToolChoice{Kind: inference.ToolChoiceNamed, Name: "lookup"},
 	}
 	params := wireToParams(compileTextWire(t, request))
 	if params.MaxOutputTokens.Value != 64 {

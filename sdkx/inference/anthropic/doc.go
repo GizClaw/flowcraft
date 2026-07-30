@@ -18,14 +18,18 @@
 //   - Tool results compile into user messages carrying tool_result blocks;
 //     consecutive user messages merge, because the API rejects consecutive
 //     same-role messages.
-//   - The reasoning effort knob maps to output_config.effort (low/medium/
-//     high, matching the canonical enum exactly). Thinking and redacted
-//     thinking blocks decode into canonical reasoning parts — the
-//     signature (or redacted data) rides the part's Signature slot — and
-//     hoist ahead of other blocks when context compiles back, which the
-//     API requires for round-trips. Unsigned reasoning cannot verify on
-//     round-trip, so it compiles as Dropped with the reason on the
-//     ledger.
+//   - The canonical reasoning switch emits thinking: {type: "disabled"}
+//     or adaptive thinking directly; the reasoning effort knob maps to
+//     output_config.effort (low/medium/high, matching the canonical enum
+//     exactly). The kernel can switch the control to the binary-thinking
+//     dialect (thinking: {type: "adaptive"}, no effort levels) for
+//     Messages-compatible platforms such as MiniMax.
+//   - Thinking and redacted thinking blocks decode into canonical
+//     reasoning parts — the signature (or redacted data) rides the part's
+//     Signature slot — and hoist ahead of other blocks when context
+//     compiles back, which the API requires for round-trips. Unsigned
+//     reasoning cannot verify on round-trip, so it compiles as Dropped
+//     with the reason on the ledger.
 //   - max_tokens is required by the API; when the request leaves
 //     MaxOutputTokens unset, the compiler pins the catalog default
 //     (DefaultMaxTokens) rather than inventing a per-model figure.

@@ -18,11 +18,38 @@ import (
 // accepts. The zero value is the bare text surface: the compiler rejects
 // every channel the declaration omits, so a deployment never silently
 // accepts a feature its backing model may not serve.
+// ReasoningControl names the wire shape one Messages-compatible platform
+// uses for the reasoning intent. Platforms genuinely differ here — even
+// Anthropic's own API grew more than one shape — so the kernel declares
+// the dialect instead of hardcoding Anthropic's.
+type ReasoningControl int
+
+const (
+	// ReasoningControlEffort emits output_config.effort (low/medium/
+	// high) — Anthropic's native surface.
+	ReasoningControlEffort ReasoningControl = iota
+	// ReasoningControlAdaptive emits thinking: {type: "adaptive"} — the
+	// binary-thinking dialect of platforms whose thinking control has no
+	// effort levels (MiniMax). Any requested effort turns thinking on;
+	// the platform picks the depth.
+	ReasoningControlAdaptive
+)
+
 type Capabilities struct {
 	// Vision accepts image input parts on generate.
 	Vision bool
-	// Reasoning accepts the reasoning effort knob and thinking traces.
+	// Reasoning accepts the reasoning controls and thinking traces.
 	Reasoning bool
+	// ReasoningLevels honors effort levels exactly. Binary-thinking
+	// platforms leave it false: the compiler turns any requested effort
+	// into thinking-on and drops the level with a report.
+	ReasoningLevels bool
+	// ReasoningDisable can force thinking off. Platforms whose models
+	// always think (MiniMax M2.x) leave it false and reject the switch.
+	ReasoningDisable bool
+	// ReasoningControl selects the wire shape for the reasoning intent.
+	// The zero value is Anthropic's native output_config.effort.
+	ReasoningControl ReasoningControl
 }
 
 // KernelGenerate binds the chat driver (Messages API, unary + stream) for
@@ -36,12 +63,14 @@ func KernelGenerate(
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
 		compileGenerate(model, catalogEntry{
-			vision:    caps.Vision,
-			reasoning: caps.Reasoning,
+			vision:           caps.Vision,
+			reasoning:        caps.Reasoning,
+			reasoningLevels:  caps.ReasoningLevels,
+			reasoningDisable: caps.ReasoningDisable,
 		}),
-		transportGenerate(client),
+		transportGenerate(client, caps.ReasoningControl),
 		decodeGenerate,
-		transportGenerateStream(client),
+		transportGenerateStream(client, caps.ReasoningControl),
 		decodeGenerateStream,
 	)
 }

@@ -299,8 +299,7 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 				Name: "reasoning on non-reasoning model",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
-					request.Input.Content.Intent.Reasoning =
-						&inference.ReasoningIntent{Effort: inference.ReasoningLow}
+					request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
 					return request
 				},
 				Field: inference.FieldGenerateIntentReasoningEffort,

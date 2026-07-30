@@ -366,28 +366,13 @@ func compileGenerate(
 	}
 }
 
-// compileGenerateOptions lowers GenerateOptions onto the wire. Conflicts
-// with the canonical request are rejected rather than arbitrated silently:
-// disabling thinking while an effort is requested has no truthful reading.
+// compileGenerateOptions lowers GenerateOptions onto the wire.
 func compileGenerateOptions(
 	wire *generateWire,
 	options GenerateOptions,
-	request inference.GenerateRequest,
+	_ inference.GenerateRequest,
 	ledger *ledger,
 ) {
-	field := func(name string) inference.FieldID {
-		return inference.ExtensionField(name).Qualify(options)
-	}
-	if options.Thinking != nil {
-		if !*options.Thinking && request.Input.Content.Intent.Reasoning != nil {
-			ledger.reject(
-				field("thinking"),
-				"thinking cannot be disabled while a reasoning effort is requested",
-			)
-		} else {
-			wire.thinking = options.Thinking
-		}
-	}
 	if options.ServiceTier != "" {
 		wire.serviceTier = options.ServiceTier
 	}
@@ -569,40 +554,78 @@ func compileIntent(
 			"text models do not synthesize speech; route a seed-tts model",
 		)
 	}
-	if tools := intent.Tools; tools != nil {
-		for _, definition := range tools.Definitions {
-			wire.tools = append(wire.tools, wireTool{
-				name:        definition.Name,
-				description: definition.Description,
-				schema:      bytesClone(definition.InputSchema),
-			})
-		}
-		if choice := tools.Choice; choice != nil {
-			switch choice.Kind {
-			case inference.ToolChoiceAuto:
-				wire.toolChoice = &wireToolChoice{mode: "auto"}
-			case inference.ToolChoiceNone:
-				wire.toolChoice = &wireToolChoice{mode: "none"}
-			case inference.ToolChoiceRequired:
-				wire.toolChoice = &wireToolChoice{mode: "required"}
-			case inference.ToolChoiceNamed:
-				wire.toolChoice = &wireToolChoice{mode: "named", name: choice.Name}
-			}
+	text := intent.Text
+	if text == nil {
+		return
+	}
+	for _, definition := range text.Tools {
+		wire.tools = append(wire.tools, wireTool{
+			name:        definition.Name,
+			description: definition.Description,
+			schema:      bytesClone(definition.InputSchema),
+		})
+	}
+	if choice := text.ToolChoice; choice != nil {
+		switch choice.Kind {
+		case inference.ToolChoiceAuto:
+			wire.toolChoice = &wireToolChoice{mode: "auto"}
+		case inference.ToolChoiceNone:
+			wire.toolChoice = &wireToolChoice{mode: "none"}
+		case inference.ToolChoiceRequired:
+			wire.toolChoice = &wireToolChoice{mode: "required"}
+		case inference.ToolChoiceNamed:
+			wire.toolChoice = &wireToolChoice{mode: "named", name: choice.Name}
 		}
 	}
-	if sampling := intent.Sampling; sampling != nil {
-		wire.temperature = sampling.Temperature
-		wire.topP = sampling.TopP
+	wire.temperature = text.Temperature
+	wire.topP = text.TopP
+	if text.ReasoningEnabled != nil {
+		if !entry.reasoning {
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model has no thinking control",
+			)
+		} else {
+			wire.thinking = text.ReasoningEnabled
+		}
 	}
-	if reasoning := intent.Reasoning; reasoning != nil && reasoning.Effort != "" {
+	if text.ReasoningEffort != "" {
 		if !entry.reasoning {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
 		} else {
-			wire.reasoning = &wireReasoning{effort: string(reasoning.Effort)}
+			wire.reasoning = &wireReasoning{effort: string(text.ReasoningEffort)}
 		}
+	}
+}
+
+// rejectTextControls rejects the text-only intent controls (tools, sampling,
+// reasoning) for a non-text operation, one decision per active field so the
+// report stays field-precise.
+func rejectTextControls(
+	text *inference.TextIntent,
+	ledger *ledger,
+	toolsReason, samplingReason, reasoningReason string,
+) {
+	if len(text.Tools) > 0 {
+		ledger.reject(inference.FieldGenerateIntentTools, toolsReason)
+	}
+	if text.ToolChoice != nil {
+		ledger.reject(inference.FieldGenerateIntentToolChoice, toolsReason)
+	}
+	if text.Temperature != nil {
+		ledger.reject(inference.FieldGenerateIntentTemperature, samplingReason)
+	}
+	if text.TopP != nil {
+		ledger.reject(inference.FieldGenerateIntentTopP, samplingReason)
+	}
+	if text.ReasoningEnabled != nil {
+		ledger.reject(inference.FieldGenerateIntentReasoningEnabled, reasoningReason)
+	}
+	if text.ReasoningEffort != "" {
+		ledger.reject(inference.FieldGenerateIntentReasoningEffort, reasoningReason)
 	}
 }
 

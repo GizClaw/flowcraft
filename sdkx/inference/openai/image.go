@@ -98,7 +98,12 @@ func compileImage(
 		wire.prompt = strings.Join(prompt, "\n")
 
 		intent := request.Input.Content.Intent
-		if intent.Text != nil {
+		if text := intent.Text; text != nil {
+			rejectTextControls(text, ledger,
+				"image models do not call tools",
+				"the images API has no sampling controls",
+				"image models have no reasoning control",
+			)
 			ledger.reject(
 				inference.FieldGenerateIntentText,
 				"image models do not produce text",
@@ -164,25 +169,6 @@ func compileImage(
 				"image models do not generate video",
 			)
 		}
-		if intent.Tools != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentTools,
-				"image models do not call tools",
-			)
-		}
-		if intent.Sampling != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentSampling,
-				"the images API has no sampling controls",
-			)
-		}
-		if intent.Reasoning != nil {
-			ledger.reject(
-				inference.FieldGenerateIntentReasoning,
-				"image models have no reasoning control",
-			)
-		}
-
 		report := ledger.report()
 		if len(ledger.order) > 0 {
 			return inference.Compiled[imageWire]{Report: report}, ledger.err()

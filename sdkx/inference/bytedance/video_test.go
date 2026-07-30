@@ -257,8 +257,8 @@ func TestVideoRejections(t *testing.T) {
 		{
 			name: "tools intent",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Input.Content.Intent.Tools = &inference.ToolsIntent{
-					Definitions: []tool.Definition{{
+				r.Input.Content.Intent.Text = &inference.TextIntent{
+					Tools: []tool.Definition{{
 						Name:        "search",
 						InputSchema: json.RawMessage(`{"type":"object"}`),
 					}},
@@ -270,20 +270,20 @@ func TestVideoRejections(t *testing.T) {
 			name: "sampling intent",
 			mutate: func(r *inference.GenerateRequest) {
 				temperature := 0.5
-				r.Input.Content.Intent.Sampling = &inference.SamplingIntent{
+				r.Input.Content.Intent.Text = &inference.TextIntent{
 					Temperature: &temperature,
 				}
 			},
-			field: inference.FieldGenerateIntentSampling,
+			field: inference.FieldGenerateIntentTemperature,
 		},
 		{
 			name: "reasoning intent",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Input.Content.Intent.Reasoning = &inference.ReasoningIntent{
-					Effort: inference.ReasoningLow,
+				r.Input.Content.Intent.Text = &inference.TextIntent{
+					ReasoningEffort: inference.ReasoningLow,
 				}
 			},
-			field: inference.FieldGenerateIntentReasoning,
+			field: inference.FieldGenerateIntentReasoningEffort,
 		},
 	}
 	for _, tc := range cases {

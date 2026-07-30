@@ -6,6 +6,8 @@
 //
 //   - Generate (unary + stream): Responses API — text, vision input, tool
 //     calling, reasoning effort, JSON/JSON-schema response formats.
+//     Reasoning models cannot switch reasoning off: reasoning_enabled:
+//     false rejects at compile time; true is a no-op (the default).
 //     Reasoning items decode into canonical reasoning parts (summary text,
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always

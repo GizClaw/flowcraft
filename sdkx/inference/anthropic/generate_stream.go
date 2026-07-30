@@ -34,12 +34,13 @@ type streamPart struct {
 
 func transportGenerateStream(
 	client anthropicgo.Client,
+	control ReasoningControl,
 ) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
-		stream := client.Messages.NewStreaming(ctx, wireToParams(wire))
+		stream := client.Messages.NewStreaming(ctx, wireToParams(wire, control))
 		if err := stream.Err(); err != nil {
 			return nil, classifyError(err)
 		}
