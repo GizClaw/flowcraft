@@ -9,6 +9,12 @@ Go SDK for building AI agents with long-term memory, knowledge
 retrieval, runtime orchestration, and voice. Source on
 [github.com/GizClaw/flowcraft](https://github.com/GizClaw/flowcraft).
 
+## Guides
+
+- [Inference Runtime](guides/inference.md) — unified Generate / Embed /
+  Transcription / Realtime: deployment config, routing, extensions,
+  streaming, media intents, hot reload.
+
 ## Migrations
 
 - [`sdk/v0.4.0` + `memory/v0.1.0`](migrations/v0.4.0-memory-split.md) —
