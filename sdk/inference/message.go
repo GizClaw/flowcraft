@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/sdk/tool"
 
@@ -203,4 +204,43 @@ func (r FinishReason) Validate() error {
 	default:
 		return fmt.Errorf("unknown generate finish reason %q", r)
 	}
+}
+
+// CloneMessages returns a deep copy of msgs. Nil stays nil so callers
+// can preserve the usual JSON / len semantics.
+func CloneMessages(msgs []Message) []Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]Message, len(msgs))
+	for i, msg := range msgs {
+		out[i] = msg.Clone()
+	}
+	return out
+}
+
+// LastByRole returns the last message in msgs whose Role matches role.
+// The boolean is false when no such message exists. The returned Message
+// is the slice element itself (not a deep copy); callers that intend to
+// mutate it should call [Message.Clone] first.
+//
+// Typical use is for graph nodes that need to read a single role-scoped
+// turn from a board channel — e.g. "the latest user message on
+// MainChannel" — without re-implementing the reverse scan everywhere:
+//
+//	if m, ok := inference.LastByRole(b.Channel(engine.MainChannel), inference.RoleUser); ok {
+//	    query = m.Content.Text()
+//	}
+func LastByRole(msgs []Message, role Role) (Message, bool) {
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == role {
+			return msg, true
+		}
+	}
+	return Message{}, false
+}
+
+// NewTextMessage builds a message carrying a single text part.
+func NewTextMessage(role Role, text string) Message {
+	return Message{Role: role, Content: Content{Parts: []Part{TextPart{Text: text}}}}
 }

@@ -401,6 +401,56 @@ for _, decision := range explanation.Decisions {
 Use it in tests and tooling to answer "would this request run, and what
 happens to each field?" without spending tokens.
 
+## Telemetry
+
+Instrumentation is **always on** and needs no configuration: with no
+OTel SDK installed the global no-op providers make every hook a few map
+lookups. Point an OTel SDK at the process and spans, metrics, and
+failure logs appear — for direct `Runtime` callers and for routed
+callers alike (each routing attempt delegates to a `Runtime` call, so
+attempt spans nest under the route span).
+
+Every operation emits one span at the `Runtime` funnel:
+
+- `inference.generate` / `inference.embed` / `inference.transcribe` /
+  `inference.realtime` (streaming adds a `.stream` suffix)
+- Attributes: `inference.operation`, `llm.provider`, `llm.model`,
+  `inference.profile` — the `llm.*` keys match the rest of the
+  telemetry surface so dashboards can join across packages
+- Usage rides the span on success: `llm.tokens.input` / `.output` /
+  `.total` (plus `llm.tokens.input.cached` when the provider reports
+  prompt-cache reads); transcription adds `inference.audio.duration_ms`
+- Failures set the span status to Error, stamp `inference.error_kind`
+  (the `ErrorKind` taxonomy above), and log a warning through
+  `sdk/telemetry`
+
+Metrics (meter `flowcraft/inference`):
+
+| Metric | Labels | Meaning |
+| --- | --- | --- |
+| `executions.total` | operation, provider, model, status | calls by outcome |
+| `duration.seconds` | operation, provider, model | unary latency / stream time-to-close |
+| `errors.total` | operation, provider, model, error_kind | failures by `ErrorKind` |
+| `tokens.input` / `tokens.output` | provider, model | generate spend |
+| `tokens.input.cached` | provider, model | prompt-cache hits |
+
+A streaming span stays open for the life of the stream — it closes on
+`io.EOF`, on a terminal error, or on `Close`, and records the last
+cumulative usage snapshot. A stream abandoned without EOF or `Close`
+leaks its span (the standard streaming-API trade-off), so always close
+streams.
+
+The `Router` adds one route-level span per logical request,
+`inference.route.<operation>` (meter `flowcraft/inference.route`):
+each attempt becomes a span event (`target`, `phase`, `trigger`,
+`outcome`, `error_kind`), and attributes record the journey —
+`route.selected.*` vs `route.executed.*`, `route.attempts`,
+`route.fallbacks` — alongside `executions.total` and `fallbacks.total`
+counters. This answers "did we fall back, how often, and why" without
+spelunking per-attempt spans.
+
+`Explain*` methods perform no provider I/O and stay silent.
+
 ## Errors
 
 Runtime errors are typed (`*inference.Error`) with a stable

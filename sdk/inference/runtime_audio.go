@@ -9,7 +9,14 @@ func (r *Runtime) Transcribe(
 	ctx context.Context,
 	model ModelRef,
 	request TranscriptionRequest,
-) (TranscriptionResponse, error) {
+) (resp TranscriptionResponse, err error) {
+	ctx, tel := startCall(ctx, OperationTranscription, model, false)
+	defer func() {
+		if err == nil {
+			tel.recordTranscriptionUsage(ctx, resp.Usage)
+		}
+		tel.finish(ctx, err)
+	}()
 	if _, err := r.resolve(model, OperationTranscription); err != nil {
 		return TranscriptionResponse{}, err
 	}
@@ -71,7 +78,9 @@ func (r *Runtime) OpenTranscription(
 	ctx context.Context,
 	model ModelRef,
 	config TranscriptionSessionConfig,
-) (OpenedTranscriptionSession, error) {
+) (session OpenedTranscriptionSession, err error) {
+	ctx, tel := startCall(ctx, OperationTranscription, model, true)
+	defer func() { tel.finish(ctx, err) }()
 	if _, err := r.resolve(model, OperationTranscription); err != nil {
 		return nil, err
 	}
@@ -99,11 +108,11 @@ func (r *Runtime) OpenTranscription(
 			"streaming transcription session",
 		)
 	}
-	session, metadata, err := operations.Session.Open(ctx, model, effective)
+	opened, metadata, err := operations.Session.Open(ctx, model, effective)
 	if err != nil {
 		return nil, err
 	}
-	return wrapTranscriptionSession(model, effective, session, metadata), nil
+	return wrapTranscriptionSession(model, effective, opened, metadata), nil
 }
 
 func (r *Runtime) ExplainTranscriptionSession(
@@ -145,7 +154,9 @@ func (r *Runtime) OpenRealtime(
 	ctx context.Context,
 	model ModelRef,
 	config RealtimeConfig,
-) (OpenedRealtimeSession, error) {
+) (session OpenedRealtimeSession, err error) {
+	ctx, tel := startCall(ctx, OperationRealtime, model, true)
+	defer func() { tel.finish(ctx, err) }()
 	if _, err := r.resolve(model, OperationRealtime); err != nil {
 		return nil, err
 	}
@@ -160,11 +171,11 @@ func (r *Runtime) OpenRealtime(
 	if err != nil {
 		return nil, err
 	}
-	session, metadata, err := driver.Open(ctx, model, effective)
+	opened, metadata, err := driver.Open(ctx, model, effective)
 	if err != nil {
 		return nil, err
 	}
-	return wrapRealtimeSession(model, session, metadata), nil
+	return wrapRealtimeSession(model, opened, metadata), nil
 }
 
 func (r *Runtime) ExplainRealtime(

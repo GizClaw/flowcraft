@@ -72,7 +72,8 @@ func (r *Router) Embed(
 	ctx context.Context,
 	request inference.EmbedRequest,
 ) (inference.EmbedResponse, Trace, error) {
-	return executeWithFallback(
+	ctx, span := startRouteSpan(ctx, inference.OperationEmbed)
+	response, trace, err := executeWithFallback(
 		ctx,
 		r.runtime,
 		inference.OperationEmbed,
@@ -90,6 +91,8 @@ func (r *Router) Embed(
 			return response, response.Metadata, err
 		},
 	)
+	recordRoute(ctx, span, inference.OperationEmbed, trace, err)
+	return response, trace, err
 }
 
 func (r *Router) ExplainEmbed(
@@ -120,7 +123,8 @@ func (r *Router) Transcribe(
 	ctx context.Context,
 	request inference.TranscriptionRequest,
 ) (inference.TranscriptionResponse, Trace, error) {
-	return executeWithFallback(
+	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
+	response, trace, err := executeWithFallback(
 		ctx,
 		r.runtime,
 		inference.OperationTranscription,
@@ -138,6 +142,8 @@ func (r *Router) Transcribe(
 			return response, response.Metadata, err
 		},
 	)
+	recordRoute(ctx, span, inference.OperationTranscription, trace, err)
+	return response, trace, err
 }
 
 func (r *Router) ExplainTranscription(
@@ -168,7 +174,8 @@ func (r *Router) OpenTranscription(
 	ctx context.Context,
 	config inference.TranscriptionSessionConfig,
 ) (inference.OpenedTranscriptionSession, Trace, error) {
-	return openSessionWithFallback(
+	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
+	session, trace, err := openSessionWithFallback(
 		ctx,
 		r.runtime,
 		inference.OperationTranscription,
@@ -182,6 +189,8 @@ func (r *Router) OpenTranscription(
 		transcriptionSessionFallbackNext(r.selectors.TranscriptionSessionFallback),
 		r.runtime.OpenTranscription,
 	)
+	recordRoute(ctx, span, inference.OperationTranscription, trace, err)
+	return session, trace, err
 }
 
 func (r *Router) ExplainTranscriptionSession(
@@ -216,7 +225,8 @@ func (r *Router) OpenRealtime(
 	ctx context.Context,
 	config inference.RealtimeConfig,
 ) (inference.OpenedRealtimeSession, Trace, error) {
-	return openSessionWithFallback(
+	ctx, span := startRouteSpan(ctx, inference.OperationRealtime)
+	session, trace, err := openSessionWithFallback(
 		ctx,
 		r.runtime,
 		inference.OperationRealtime,
@@ -230,6 +240,8 @@ func (r *Router) OpenRealtime(
 		realtimeFallbackNext(r.selectors.RealtimeFallback),
 		r.runtime.OpenRealtime,
 	)
+	recordRoute(ctx, span, inference.OperationRealtime, trace, err)
+	return session, trace, err
 }
 
 func (r *Router) ExplainRealtime(

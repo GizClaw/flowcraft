@@ -26,7 +26,8 @@ func (r *Router) Generate(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, Trace, error) {
-	return executeWithFallback(
+	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
+	response, trace, err := executeWithFallback(
 		ctx,
 		r.runtime,
 		inference.OperationGenerate,
@@ -47,12 +48,16 @@ func (r *Router) Generate(
 			return response, response.Metadata, err
 		},
 	)
+	recordRoute(ctx, span, inference.OperationGenerate, trace, err)
+	return response, trace, err
 }
 
 func (r *Router) GenerateStream(
 	ctx context.Context,
 	request inference.GenerateRequest,
-) (inference.GenerateStream, Trace, error) {
+) (stream inference.GenerateStream, routeTrace Trace, err error) {
+	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
+	defer func() { recordRoute(ctx, span, inference.OperationGenerate, routeTrace, err) }()
 	snapshot := request.Clone()
 	decision, err := r.selectGenerate(ctx, snapshot)
 	if err != nil {

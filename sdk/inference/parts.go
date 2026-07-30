@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -431,4 +432,17 @@ func decodeStrict(data []byte, dst any) error {
 		return err
 	}
 	return nil
+}
+
+// Text concatenates the message's text parts in order. Non-text parts
+// are skipped; it answers "what did the user/assistant say" without
+// imposing prose structure on multi-modal content.
+func (c Content) Text() string {
+	var b strings.Builder
+	for _, part := range c.Parts {
+		if tp, ok := part.(TextPart); ok {
+			b.WriteString(tp.Text)
+		}
+	}
+	return b.String()
 }

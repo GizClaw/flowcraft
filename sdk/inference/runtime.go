@@ -100,7 +100,14 @@ func (r *Runtime) Generate(
 	ctx context.Context,
 	model ModelRef,
 	request GenerateRequest,
-) (GenerateResponse, error) {
+) (resp GenerateResponse, err error) {
+	ctx, tel := startCall(ctx, OperationGenerate, model, false)
+	defer func() {
+		if err == nil {
+			tel.recordUsage(ctx, resp.Usage)
+		}
+		tel.finish(ctx, err)
+	}()
 	effective, err := r.prepareGenerateRequest(ctx, model, request)
 	if err != nil {
 		return GenerateResponse{}, err
@@ -123,7 +130,15 @@ func (r *Runtime) GenerateStream(
 	ctx context.Context,
 	model ModelRef,
 	request GenerateRequest,
-) (GenerateStream, error) {
+) (stream GenerateStream, err error) {
+	ctx, tel := startCall(ctx, OperationGenerate, model, true)
+	defer func() {
+		if err != nil {
+			// Open failed: the Runtime still owns the span. Once a
+			// stream opens, the telemetryStream wrapper takes over.
+			tel.finish(ctx, err)
+		}
+	}()
 	effective, err := r.prepareGenerateRequest(ctx, model, request)
 	if err != nil {
 		return nil, err
@@ -139,7 +154,11 @@ func (r *Runtime) GenerateStream(
 			"streaming generation",
 		)
 	}
-	return operations.Stream.Stream(ctx, model, effective)
+	opened, err := operations.Stream.Stream(ctx, model, effective)
+	if err != nil {
+		return nil, err
+	}
+	return wrapStreamTelemetry(ctx, tel, opened), nil
 }
 
 // ExplainGenerate compiles and explains unary Generate execution without
@@ -196,7 +215,14 @@ func (r *Runtime) Embed(
 	ctx context.Context,
 	model ModelRef,
 	request EmbedRequest,
-) (EmbedResponse, error) {
+) (resp EmbedResponse, err error) {
+	ctx, tel := startCall(ctx, OperationEmbed, model, false)
+	defer func() {
+		if err == nil {
+			tel.recordEmbedUsage(ctx, resp.Usage)
+		}
+		tel.finish(ctx, err)
+	}()
 	if _, err := r.resolve(model, OperationEmbed); err != nil {
 		return EmbedResponse{}, err
 	}
