@@ -549,13 +549,10 @@ func WithEngineHost(h engine.Host) RunOption {
 // alongside the well-known agent_id / run_id / task_id / context_id keys.
 // Caller-supplied keys win on conflict; agent does not overwrite.
 //
-// This is also the canonical replacement for the deprecated
-// [Request.Extensions] (contract-audit #8): engines that need
-// caller-supplied metadata read engine.Run.Attributes via the same
-// codepath as the well-known keys, with no map[string]any →
-// map[string]string serialisation guesswork. Hosts that previously
-// wrote into req.Extensions should serialise the values at the
-// call site and pass the resulting map[string]string here.
+// Engines that need caller-supplied metadata read
+// engine.Run.Attributes via the same codepath as the well-known keys.
+// Callers serialise any non-string values at the call site and pass
+// the resulting map[string]string here.
 func WithAttributes(extra map[string]string) RunOption {
 	return func(rc *runConfig) {
 		if rc.attributes == nil {

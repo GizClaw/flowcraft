@@ -8,9 +8,8 @@
 //     LayerRepo, normalises Query and stamps DerivedSig
 //     so callers see a single coherent contract.
 //   - factory       (memory/knowledge/factory): wires Service against a
-//     retrieval.Index (factory.NewRetrieval). The legacy filesystem
-//     wiring factory.NewLocal is deprecated as of v0.4 and slated for
-//     removal in v0.5.0; see #134 / docs/migrations/v0.5.0.md.
+//     retrieval.Index (factory.NewRetrieval, the single wiring entry
+//     point).
 //   - SearchEngine  (this package): runs Retrievers in parallel, fuses with
 //     a Ranker (RRF by default).
 //   - EventReloader (this package): debounces ChangeEvents and triggers

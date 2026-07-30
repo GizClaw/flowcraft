@@ -93,60 +93,22 @@ func TestEnvelope_HeadersHelpers(t *testing.T) {
 	}
 }
 
-// TestEnvelope_AgentIDDualWrite pins the migration contract:
-// SetAgentID MUST stamp both HeaderAgentID (canonical) and
-// HeaderActorID (legacy) so observers that haven't migrated
-// off the actor_id header keep working until v0.5.0 when the
-// legacy spelling is removed. Without this guard a producer-side
-// rename would silently break every cross-process consumer that
-// inspects raw envelope.Headers["actor_id"].
-func TestEnvelope_AgentIDDualWrite(t *testing.T) {
+// TestEnvelope_AgentIDSingleWrite pins the v0.5.0 contract:
+// SetAgentID stamps exactly one header — the canonical agent_id —
+// and the legacy actor_id spelling no longer exists anywhere in the
+// envelope surface.
+func TestEnvelope_AgentIDSingleWrite(t *testing.T) {
 	var env Envelope
 	env.SetAgentID("alice")
 
 	if got := env.Headers[HeaderAgentID]; got != "alice" {
 		t.Errorf("HeaderAgentID = %q, want alice", got)
 	}
-	// Legacy mirror — removed in v0.5.0.
-	if got := env.Headers[HeaderActorID]; got != "alice" {
-		t.Errorf("HeaderActorID dual-write = %q, want alice (back-compat broken)", got)
+	if got := env.AgentID(); got != "alice" {
+		t.Errorf("AgentID() = %q, want alice", got)
 	}
-	// Both accessors agree.
-	if env.AgentID() != "alice" || env.ActorID() != "alice" {
-		t.Errorf("accessors disagree: AgentID=%q ActorID=%q", env.AgentID(), env.ActorID())
-	}
-}
-
-// TestEnvelope_AgentIDReadFallsBackToLegacyHeader documents the
-// consumer-side back-compat path: an envelope produced by a
-// pre-v0.4 SDK (only sets HeaderActorID, not HeaderAgentID) MUST
-// still resolve via env.AgentID(). After v0.5.0 producers will
-// only set HeaderAgentID and this fallback becomes dead code,
-// but until then it is the bridge that lets new consumers run
-// against old producers.
-func TestEnvelope_AgentIDReadFallsBackToLegacyHeader(t *testing.T) {
-	var env Envelope
-	env.SetHeader(HeaderActorID, "legacy-producer")
-
-	if got := env.AgentID(); got != "legacy-producer" {
-		t.Errorf("AgentID() should fall back to HeaderActorID; got %q", got)
-	}
-}
-
-// TestEnvelope_SetActorIDDelegatesToSetAgentID documents the
-// inverse migration path: existing producers calling the
-// Deprecated SetActorID still get both headers populated so the
-// transitional period does not require a coordinated flag day
-// where producers and consumers all upgrade together.
-func TestEnvelope_SetActorIDDelegatesToSetAgentID(t *testing.T) {
-	var env Envelope
-	env.SetActorID("bob") //nolint:staticcheck // intentional Deprecated path
-
-	if got := env.Headers[HeaderAgentID]; got != "bob" {
-		t.Errorf("legacy SetActorID must populate HeaderAgentID; got %q", got)
-	}
-	if got := env.Headers[HeaderActorID]; got != "bob" {
-		t.Errorf("legacy SetActorID must keep populating HeaderActorID; got %q", got)
+	if _, ok := env.Headers["actor_id"]; ok {
+		t.Error("legacy actor_id header must not be written")
 	}
 }
 

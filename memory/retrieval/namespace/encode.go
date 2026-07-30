@@ -64,13 +64,3 @@ func (p *Prefix) DatasetScope(datasetID, suffix string) string {
 	}
 	return p.name + "_" + Sanitize(datasetID) + suffixSeparator + suffix
 }
-
-// LegacyUserScopeV1 returns the pre-V2 recall-style user namespace:
-//
-//	<prefix>_<Sanitize(runtimeID)>__u_<Sanitize(userID)>
-//
-// Deprecated: V1 user-scope namespaces are kept only for migration tooling
-// and will be removed in v0.5.0. New writes must use UserScope.
-func (p *Prefix) LegacyUserScopeV1(runtimeID, userID string) string {
-	return p.name + "_" + Sanitize(runtimeID) + "__u_" + Sanitize(userID)
-}

@@ -20,57 +20,23 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-type ctxKey int
-
-const ctxKeyActorKey ctxKey = iota
-
-// WithActorKey stamps an agent identifier onto ctx for legacy
-// callers that drive the executor directly (no agent.Run wrapper).
-//
-// Deprecated: prefer populating engine.Run.Attributes with the
-// canonical telemetry.AttrAgentID key — agent.Run already does
-// this, and unlike a context value the attribute survives
-// cross-process hand-offs (HTTP, A2A, custom inline engines). The
-// executor's agentIDFor resolver still honours this ctx-key as a
-// fallback when no attribute is set, so existing callers keep
-// working until the v0.5.0 removal.
-func WithActorKey(ctx context.Context, key string) context.Context {
-	return context.WithValue(ctx, ctxKeyActorKey, key)
-}
-
-func actorKeyFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(ctxKeyActorKey).(string); ok {
-		return v
-	}
-	return ""
-}
-
 // agentIDFor resolves the agent.id the executor stamps onto every
 // published envelope (HeaderAgentID) and uses as the prefix of the
 // step subject segment (engine.SubjectStep* / SubjectStreamDelta).
 //
-// Precedence:
+// The only source is cfg.attributes[telemetry.AttrAgentID] — the
+// canonical wire key. agent.Run promotes Agent.ID into
+// engine.Run.Attributes under this key (sdk/agent.mergeAttributes),
+// and runner.Runner forwards engine.Run.Attributes into
+// cfg.attributes via executor.WithAttributes. This path survives
+// cross-process hand-offs (HTTP, custom inline engines, A2A) because
+// the attribute bag is part of the engine.Run contract.
 //
-//  1. cfg.attributes[telemetry.AttrAgentID] — the canonical wire
-//     key. agent.Run promotes Agent.ID into engine.Run.Attributes
-//     under this key (sdk/agent.mergeAttributes), and runner.Runner
-//     forwards engine.Run.Attributes into cfg.attributes via
-//     executor.WithAttributes. This path survives cross-process
-//     hand-offs (HTTP, custom inline engines, A2A) because the attribute
-//     bag is part of the engine.Run contract.
-//  2. actorKeyFrom(ctx) — legacy WithActorKey ctx-key. Kept until
-//     v0.5.0 so direct executor callers (tests, embedded users)
-//     keep working without code change. The "actor" naming is
-//     historical; the value is treated as an agent identifier.
-//
-// Returns "" when neither source has a value; envelope publishers
-// then skip the SetAgentID call and the step subject degrades to
-// the bare nodeID (no agent prefix).
-func agentIDFor(ctx context.Context, cfg runConfig) string {
-	if id := cfg.attributes[telemetry.AttrAgentID]; id != "" {
-		return id
-	}
-	return actorKeyFrom(ctx)
+// Returns "" when the attribute is unset; envelope publishers then
+// skip the SetAgentID call and the step subject degrades to the bare
+// nodeID (no agent prefix).
+func agentIDFor(cfg runConfig) string {
+	return cfg.attributes[telemetry.AttrAgentID]
 }
 
 // stepActorFor builds the engine.SubjectStep* "stepActor" segment
@@ -304,7 +270,7 @@ func (e *LocalExecutor) Execute(ctx context.Context, g *graph.Graph, board *grap
 	}
 	cfg.publisher = cfg.host
 
-	agentID := agentIDFor(ctx, cfg)
+	agentID := agentIDFor(cfg)
 
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc

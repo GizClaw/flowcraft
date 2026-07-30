@@ -14,9 +14,13 @@ func TestUserScopeV2RoundTripDelimiterSafe(t *testing.T) {
 	}
 }
 
-func TestLegacyUserScopeV1StillDecodes(t *testing.T) {
+// TestLegacyV1NamespaceStillDecodes pins DecodeScope's read-side
+// compatibility with pre-V2 recall namespaces ("<prefix>_<rt>__u_<user>").
+// The V1 constructor is gone; decoders must still parse namespaces
+// written by old binaries so migration tooling can read them.
+func TestLegacyV1NamespaceStillDecodes(t *testing.T) {
 	p := &Prefix{name: "ltm"}
-	ns := p.LegacyUserScopeV1("default", "alice")
+	ns := "ltm_default__u_alice"
 	rt, user, isUser, ok := p.DecodeScope(ns)
 	if !ok || !isUser || rt != "default" || user != "alice" {
 		t.Fatalf("DecodeScope(%q) = rt=%q user=%q isUser=%v ok=%v", ns, rt, user, isUser, ok)

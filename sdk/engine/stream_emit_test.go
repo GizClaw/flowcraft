@@ -38,16 +38,12 @@ func TestEmitStreamToken_HappyPath(t *testing.T) {
 	}
 	// stepActor is split into the agent.id prefix + the optional
 	// ".node.<nodeID>" suffix; the helper projects them onto
-	// HeaderAgentID / HeaderNodeID respectively. HeaderActorID is the
-	// legacy mirror written by SetAgentID's dual-write.
+	// HeaderAgentID / HeaderNodeID respectively.
 	if got := env.Headers[event.HeaderAgentID]; got != "agent-A" {
 		t.Errorf("HeaderAgentID = %q, want agent-A", got)
 	}
 	if got := env.Headers[event.HeaderNodeID]; got != "node-1" {
 		t.Errorf("HeaderNodeID = %q, want node-1", got)
-	}
-	if got := env.Headers[event.HeaderActorID]; got != "agent-A" {
-		t.Errorf("HeaderActorID (legacy mirror) = %q, want agent-A", got)
 	}
 	p, err := DecodeStreamDelta(env)
 	if err != nil {

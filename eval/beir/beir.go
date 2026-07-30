@@ -459,8 +459,8 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 // and SearchDocs queries that doc-level namespace directly. As a
 // result the BM25 scorer sees doc-level N / df / avgdl — the same
 // regime Anserini uses for its BEIR baselines, and the same regime
-// FSChunkRepo's deprecated bespoke doc-level inverted index used to
-// produce. This is the v2 attempt after #141 reverted the original
+// the removed v1 FS chunk repo's bespoke doc-level inverted index
+// produced. This is the v2 attempt after #141 reverted the original
 // switch (#137 sum-pool over chunk-level stats produced nDCG@10 0.133
 // vs fs baseline 0.672, see run 25848699992 vs 25844184454).
 //

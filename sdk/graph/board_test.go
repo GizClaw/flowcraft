@@ -3,7 +3,7 @@ package graph
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 func TestBoard_ValidateInputs(t *testing.T) {
@@ -61,8 +61,8 @@ func TestBoard_ValidateOutputs_VarBacked(t *testing.T) {
 // classified Status=failed despite producing the correct messages.
 func TestBoard_ValidateOutputs_MessagesChannelFallback(t *testing.T) {
 	b := NewBoard()
-	b.SetChannel(MainChannel, []model.Message{
-		model.NewTextMessage(model.RoleAssistant, "hi"),
+	b.SetChannel(MainChannel, []inference.Message{
+		inference.NewTextMessage(inference.RoleAssistant, "hi"),
 	})
 
 	node := &testPortNode{

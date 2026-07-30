@@ -9,10 +9,8 @@ import "context"
 //     (contract guarantee #4).
 //   - Delete is idempotent.
 //
-// Put used to return only error, leaving Service to predict the final
-// SourceDocument.Version. That contract is deprecated in favour of the
-// repository-authoritative return value and will be removed entirely in
-// v0.5.0.
+// Put returns the repository-authoritative SourceDocument (final
+// Version, UpdatedAt); callers must not predict versions themselves.
 //
 // Implementations live in memory/knowledge/backend/*.
 type DocumentRepo interface {
@@ -85,10 +83,10 @@ type DocLevelSearcher interface {
 // [ChunkQuery] as DocLevelSearcher and is expected to honour
 // q.Mode == ModeVector or ModeHybrid.
 //
-// No in-tree implementation yet — both [FSChunkRepo] and
-// [RetrievalChunkRepo] hold per-chunk vectors but no per-doc
-// representation. Mean-pool / late-chunking will land via a
-// follow-up that adds SearchDocsByVector to one or both repos.
+// No in-tree implementation yet — [RetrievalChunkRepo] holds
+// per-chunk vectors but no per-doc representation. Mean-pool /
+// late-chunking will land via a follow-up that adds
+// SearchDocsByVector to the repo.
 type DocVectorSearcher interface {
 	SearchDocsByVector(ctx context.Context, q ChunkQuery) ([]Candidate, error)
 }

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 func TestMergeLastWins(t *testing.T) {
@@ -13,8 +13,8 @@ func TestMergeLastWins(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"x": "a"}, channels: map[string][]model.Message{}},
-		{vars: map[string]any{"x": "b", "y": "only_b"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"x": "a"}, channels: map[string][]inference.Message{}},
+		{vars: map[string]any{"x": "b", "y": "only_b"}, channels: map[string][]inference.Message{}},
 	}
 
 	if err := mergeLastWins(board, snap, results); err != nil {
@@ -33,8 +33,8 @@ func TestMergeNamespace(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"out": "from_0"}, channels: map[string][]model.Message{}},
-		{vars: map[string]any{"out": "from_1"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"out": "from_0"}, channels: map[string][]inference.Message{}},
+		{vars: map[string]any{"out": "from_1"}, channels: map[string][]inference.Message{}},
 	}
 
 	if err := mergeNamespace(board, snap, results); err != nil {
@@ -53,8 +53,8 @@ func TestMergeErrorOnConflict_NoConflict(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"a": "1"}, channels: map[string][]model.Message{}},
-		{vars: map[string]any{"b": "2"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"a": "1"}, channels: map[string][]inference.Message{}},
+		{vars: map[string]any{"b": "2"}, channels: map[string][]inference.Message{}},
 	}
 
 	if err := mergeErrorOnConflict(board, snap, results); err != nil {
@@ -70,8 +70,8 @@ func TestMergeErrorOnConflict_Conflict(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"shared": "from_a"}, channels: map[string][]model.Message{}},
-		{vars: map[string]any{"shared": "from_b"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"shared": "from_a"}, channels: map[string][]inference.Message{}},
+		{vars: map[string]any{"shared": "from_b"}, channels: map[string][]inference.Message{}},
 	}
 
 	err := mergeErrorOnConflict(board, snap, results)
@@ -87,11 +87,11 @@ func TestMergeErrorOnConflict_ChannelConflict(t *testing.T) {
 	results := []branchResult{
 		{
 			vars:     map[string]any{},
-			channels: map[string][]model.Message{"ch": {model.NewTextMessage(model.RoleUser, "a")}},
+			channels: map[string][]inference.Message{"ch": {inference.NewTextMessage(inference.RoleUser, "a")}},
 		},
 		{
 			vars:     map[string]any{},
-			channels: map[string][]model.Message{"ch": {model.NewTextMessage(model.RoleUser, "b")}},
+			channels: map[string][]inference.Message{"ch": {inference.NewTextMessage(inference.RoleUser, "b")}},
 		},
 	}
 
@@ -118,8 +118,8 @@ func TestRegisterMergeStrategy_Custom(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"val": "x"}, channels: map[string][]model.Message{}},
-		{vars: map[string]any{"val": "y"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"val": "x"}, channels: map[string][]inference.Message{}},
+		{vars: map[string]any{"val": "y"}, channels: map[string][]inference.Message{}},
 	}
 
 	if err := fn(board, snap, results); err != nil {
@@ -139,7 +139,7 @@ func TestLookupMerge_UnknownFallsBackToLastWins(t *testing.T) {
 	snap := board.Snapshot()
 
 	results := []branchResult{
-		{vars: map[string]any{"k": "v"}, channels: map[string][]model.Message{}},
+		{vars: map[string]any{"k": "v"}, channels: map[string][]inference.Message{}},
 	}
 	if err := fn(board, snap, results); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -150,9 +150,9 @@ func TestLookupMerge_UnknownFallsBackToLastWins(t *testing.T) {
 }
 
 func TestChannelMessagesEqual(t *testing.T) {
-	a := []model.Message{model.NewTextMessage(model.RoleUser, "hi")}
-	b := []model.Message{model.NewTextMessage(model.RoleUser, "hi")}
-	c := []model.Message{model.NewTextMessage(model.RoleAssistant, "hello")}
+	a := []inference.Message{inference.NewTextMessage(inference.RoleUser, "hi")}
+	b := []inference.Message{inference.NewTextMessage(inference.RoleUser, "hi")}
+	c := []inference.Message{inference.NewTextMessage(inference.RoleAssistant, "hello")}
 
 	if !channelMessagesEqual(a, b) {
 		t.Fatal("identical messages should be equal")

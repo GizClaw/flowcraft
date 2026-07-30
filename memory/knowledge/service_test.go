@@ -42,9 +42,8 @@ func (e *stubEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]floa
 
 // newService spins up a Service backed by the retrieval backend
 // (RetrievalChunkRepo/LayerRepo on memory/retrieval/memory; documents in
-// FSDocumentRepo on a workspace.MemWorkspace). factory.NewLocal is
-// deprecated as of v0.4 (#134) — new tests should reach for this
-// helper.
+// FSDocumentRepo on a workspace.MemWorkspace) — the canonical wiring
+// for in-memory tests.
 func newService(t *testing.T, opts ...factory.RetrievalOption) *knowledge.Service {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()

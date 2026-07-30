@@ -458,9 +458,10 @@ func chunksSourceVer(chunks []knowledge.DerivedChunk) uint64 {
 // native BM25 scorer evaluated against the doc-level corpus stats
 // (N = number of documents in the dataset, avgdl = average doc
 // length, df = doc-level document frequency). This is the same
-// statistic regime Anserini uses for BEIR baselines and what
-// FSChunkRepo's bespoke doc-level inverted index produces; it
-// replaces the pre-#134 query-time chunk-level + sum-pool collapse,
+// statistic regime Anserini uses for BEIR baselines and what the
+// removed v1 FS chunk repo's bespoke doc-level inverted index
+// produced; it replaces the pre-#134 query-time chunk-level +
+// sum-pool collapse,
 // which cannot recover doc-level BM25 from chunk-level statistics
 // (BM25 is nonlinear in TF / DocLength; see #134 for the math).
 //
@@ -534,9 +535,8 @@ func (r *RetrievalChunkRepo) SearchDocs(ctx context.Context, q knowledge.ChunkQu
 			// (notably memory/retrieval/memory returns every
 			// filter-matched doc with Score=0 when no query
 			// term hit); dropping them keeps doc-level
-			// rankings honest. Mirrors what FSChunkRepo's
-			// SearchDocs achieves by only emitting docs with
-			// a posting hit.
+			// rankings honest by only emitting docs with a
+			// posting hit.
 			if h.Score <= 0 {
 				continue
 			}

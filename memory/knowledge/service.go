@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -24,7 +23,6 @@ type Service struct {
 	chunker  Chunker
 	embedder Embedder
 	embedSig string
-	now      func() time.Time
 }
 
 // ServiceOptions configures a Service. Nil-friendly: every field is
@@ -43,17 +41,11 @@ type ServiceOptions struct {
 	// freshness checks within a single binary but not stable across
 	// processes — production wiring should set it explicitly.
 	EmbedSig string
-	// Now overrides the legacy Service clock.
-	//
-	// Deprecated: DocumentRepo.Put is authoritative for UpdatedAt as of
-	// the final stateful-modules architecture. This hook no longer
-	// affects document timestamps and will be removed in v0.5.0.
-	Now func() time.Time
 }
 
 // NewService constructs a Service from explicit repositories.
 //
-// Most callers should use NewLocalService / NewRetrievalService instead;
+// Most callers should use the factory package (NewRetrieval) instead;
 // this entry point exists so out-of-tree backends can be wired the same
 // way the built-ins are.
 func NewService(
@@ -67,10 +59,6 @@ func NewService(
 	if chunker == nil {
 		chunker = NewDefaultChunker(DefaultChunkConfig())
 	}
-	now := opts.Now
-	if now == nil {
-		now = time.Now
-	}
 	embedSig := opts.EmbedSig
 	if embedSig == "" && opts.Embedder != nil {
 		embedSig = fmt.Sprintf("embedder:%T", opts.Embedder)
@@ -83,7 +71,6 @@ func NewService(
 		chunker:  chunker,
 		embedder: opts.Embedder,
 		embedSig: embedSig,
-		now:      now,
 	}
 }
 

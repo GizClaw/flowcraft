@@ -93,8 +93,7 @@ func subjNodeSkipped(runID, nodeID string) event.Subject {
 // when subject routing alone is insufficient (e.g. cross-run
 // aggregations). agentID — the executor identity, sourced from
 // engine.Run.Attributes[telemetry.AttrAgentID] via agentIDFor — is
-// stamped onto HeaderAgentID (and the legacy HeaderActorID via the
-// SetAgentID dual-write) so observers can filter by agent without
+// stamped onto HeaderAgentID so observers can filter by agent without
 // inspecting the subject.
 //
 // Errors from publisher.Publish are intentionally swallowed to preserve

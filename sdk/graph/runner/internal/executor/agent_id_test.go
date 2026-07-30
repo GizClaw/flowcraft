@@ -7,58 +7,35 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/engine/enginetest"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
-// TestAgentIDFor_AttributesWinOverCtxKey pins the precedence
-// documented on agentIDFor: the canonical wire key
-// (cfg.attributes[telemetry.AttrAgentID], populated upstream by
-// agent.Run.mergeAttributes) takes priority over the legacy
-// WithActorKey ctx-key. This is the rule that lets agent.Run
-// stamp the envelope agent id without callers having to manually
-// thread WithActorKey through the executor entry point.
-func TestAgentIDFor_AttributesWinOverCtxKey(t *testing.T) {
-	ctx := WithActorKey(context.Background(), "ctx-actor")
+// TestAgentIDFor_ResolvesFromAttributes pins the single resolution
+// source documented on agentIDFor: cfg.attributes[AttrAgentID],
+// populated upstream by agent.Run.mergeAttributes and forwarded by
+// runner via executor.WithAttributes.
+func TestAgentIDFor_ResolvesFromAttributes(t *testing.T) {
 	cfg := runConfig{attributes: map[string]string{
 		telemetry.AttrAgentID: "attr-agent",
 	}}
-	if got := agentIDFor(ctx, cfg); got != "attr-agent" {
-		t.Fatalf("attributes should win: got %q want %q", got, "attr-agent")
+	if got := agentIDFor(cfg); got != "attr-agent" {
+		t.Fatalf("agentIDFor = %q, want %q", got, "attr-agent")
 	}
 }
 
-// TestAgentIDFor_FallsBackToCtxKeyWhenAttributesEmpty asserts the
-// back-compat path: legacy callers that drove the executor with
-// WithActorKey (no agent.Run on top) still see their identifier on
-// the envelope after the migration. Without this the migration
-// would silently strip agent_id from existing pipelines until
-// they switched to the attribute-based seed.
-func TestAgentIDFor_FallsBackToCtxKeyWhenAttributesEmpty(t *testing.T) {
-	ctx := WithActorKey(context.Background(), "ctx-actor")
-
-	if got := agentIDFor(ctx, runConfig{}); got != "ctx-actor" {
-		t.Errorf("nil attributes: got %q want %q", got, "ctx-actor")
+// TestAgentIDFor_EmptyWhenAttributeMissing documents the no-agent
+// case: publish helpers skip SetAgentID when the resolved id is
+// empty so envelope headers stay clean (no "agent_id":""
+// pollution) and step subjects degrade to the bare nodeID rather
+// than an "<empty>.node.<id>" form.
+func TestAgentIDFor_EmptyWhenAttributeMissing(t *testing.T) {
+	if got := agentIDFor(runConfig{}); got != "" {
+		t.Fatalf("nil attributes: expected empty agent id, got %q", got)
 	}
 	cfg := runConfig{attributes: map[string]string{"unrelated": "x"}}
-	if got := agentIDFor(ctx, cfg); got != "ctx-actor" {
-		t.Errorf("missing AttrAgentID: got %q want %q", got, "ctx-actor")
-	}
-	cfg = runConfig{attributes: map[string]string{telemetry.AttrAgentID: ""}}
-	if got := agentIDFor(ctx, cfg); got != "ctx-actor" {
-		t.Errorf("empty AttrAgentID should not suppress fallback: got %q", got)
-	}
-}
-
-// TestAgentIDFor_EmptyWhenBothMissing documents the no-agent case:
-// publish helpers skip SetAgentID when the resolved id is empty so
-// envelope headers stay clean (no "agent_id":"" pollution) and
-// step subjects degrade to the bare nodeID rather than an
-// "<empty>.node.<id>" form.
-func TestAgentIDFor_EmptyWhenBothMissing(t *testing.T) {
-	if got := agentIDFor(context.Background(), runConfig{}); got != "" {
-		t.Fatalf("expected empty agent id, got %q", got)
+	if got := agentIDFor(cfg); got != "" {
+		t.Fatalf("missing AttrAgentID: expected empty agent id, got %q", got)
 	}
 }
 
@@ -76,7 +53,7 @@ func TestStepActorFor(t *testing.T) {
 	}{
 		{"both", "researcher", "n1", "researcher.node.n1"},
 		{"agent only (run-level)", "researcher", "", "researcher"},
-		{"node only (legacy ctx-key absent)", "", "n1", "n1"},
+		{"node only (no agent attribute)", "", "n1", "n1"},
 		{"both empty", "", "", ""},
 	}
 	for _, tc := range cases {
@@ -131,12 +108,6 @@ func TestExecute_StampsAgentIDFromAttributes(t *testing.T) {
 			t.Errorf("envelope %s: AgentID = %q, want %q",
 				env.Subject, got, "researcher")
 		}
-		// Legacy mirror also populated by SetAgentID dual-write —
-		// observers that haven't migrated still see actor_id.
-		if got := env.Headers[event.HeaderActorID]; got != "researcher" {
-			t.Errorf("envelope %s: legacy actor_id mirror = %q, want %q",
-				env.Subject, got, "researcher")
-		}
 		// Step subjects MUST carry the compound stepActor segment.
 		// Run-level subjects (.start / .end) do not — they have no
 		// step actor. SanitiseID collapses the literal "." inside
@@ -154,39 +125,6 @@ func TestExecute_StampsAgentIDFromAttributes(t *testing.T) {
 	}
 	if !sawStep {
 		t.Fatal("no step subject published — graph never executed the probe node?")
-	}
-}
-
-// TestExecute_StampsAgentIDFromCtxKeyFallback exercises the legacy
-// path. With the attribute bag empty the executor MUST still honour
-// WithActorKey-supplied ids until v0.5.0 removal; otherwise existing
-// direct-executor callers (tests, embedded users) would silently
-// lose envelope agent_id at this version bump.
-func TestExecute_StampsAgentIDFromCtxKeyFallback(t *testing.T) {
-	host := enginetest.NewMockHost()
-
-	probe := newTestNode("probe", func(_ graph.ExecutionContext, _ *graph.Board) error {
-		return nil
-	})
-	g := buildGraph("agent-fallback", "probe",
-		map[string]graph.Node{"probe": probe},
-		[]graph.Edge{{From: "probe", To: graph.END}},
-	)
-
-	ctx := WithActorKey(context.Background(), "legacy-agent")
-	_, err := NewLocalExecutor().Execute(ctx, g, graph.NewBoard(),
-		WithRunID("run-fallback"),
-		WithHost(host),
-	)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	for _, env := range host.Envelopes() {
-		if got := env.AgentID(); got != "legacy-agent" {
-			t.Errorf("envelope %s: AgentID = %q, want %q",
-				env.Subject, got, "legacy-agent")
-		}
 	}
 }
 

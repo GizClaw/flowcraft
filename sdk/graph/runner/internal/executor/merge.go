@@ -5,7 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // MergeFunc merges parallel branch results into the parent board.
@@ -30,10 +30,8 @@ func lookupMerge(strategy MergeStrategy) MergeFunc {
 	return mergeLastWins
 }
 
-func copyMsgs(msgs []model.Message) []model.Message {
-	cp := make([]model.Message, len(msgs))
-	copy(cp, msgs)
-	return cp
+func copyMsgs(msgs []inference.Message) []inference.Message {
+	return inference.CloneMessages(msgs)
 }
 
 func mergeLastWins(board *graph.Board, _ *graph.BoardSnapshot, results []branchResult) error {
@@ -82,7 +80,7 @@ func mergeErrorOnConflict(board *graph.Board, snapshot *graph.BoardSnapshot, res
 
 	origCh := snapshot.Channels
 	if origCh == nil {
-		origCh = map[string][]model.Message{}
+		origCh = map[string][]inference.Message{}
 	}
 	modCh := make(map[string]int)
 	for i, r := range results {
@@ -108,12 +106,12 @@ func mergeErrorOnConflict(board *graph.Board, snapshot *graph.BoardSnapshot, res
 	return nil
 }
 
-func channelMessagesEqual(a, b []model.Message) bool {
+func channelMessagesEqual(a, b []inference.Message) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for i := range a {
-		if a[i].Role != b[i].Role || a[i].Content() != b[i].Content() {
+		if a[i].Role != b[i].Role || a[i].Content.Text() != b[i].Content.Text() {
 			return false
 		}
 	}

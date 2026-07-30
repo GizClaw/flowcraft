@@ -85,19 +85,6 @@ const (
 	// graph run. Emitted on per-node spans, metrics and log records.
 	AttrNodeID = "node.id"
 
-	// ----- Generic actor (engine-neutral) -----
-
-	// AttrActorID is the legacy spelling of AttrAgentID. The "actor"
-	// terminology pre-dates the agent / step-actor distinction
-	// settled in v0.4: the producer identity (envelope agent_id /
-	// span attribute) and the engine.SubjectStep* "actor" segment
-	// (graph runner: agent.id + ".node." + node id) are two
-	// different dimensions, and the single "actor" name conflated
-	// them.
-	//
-	// Deprecated: use [AttrAgentID]. Removed in v0.5.0.
-	AttrActorID = "actor.id"
-
 	// ----- Tools -----
 
 	// AttrToolName identifies the dispatched tool (tool.Tool.Name).

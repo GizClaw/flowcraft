@@ -107,12 +107,10 @@ func EmitStreamToolResult(ctx context.Context, pub Publisher, runID, stepActor, 
 //
 // The envelope is stamped with HeaderRunID. The agent identifier is
 // derived from the stepActor segment ahead of any optional ".node." /
-// ".iter" suffix — it goes onto HeaderAgentID (and the legacy
-// HeaderActorID via [event.Envelope.SetAgentID] dual-write). For
-// header-routed subscribers that key off the node id, the
-// HeaderNodeID is populated whenever stepActor carries the
-// graph runner's "<agent>.node.<nodeID>" form so the two transports
-// stay aligned.
+// ".iter" suffix — it goes onto HeaderAgentID. For header-routed
+// subscribers that key off the node id, the HeaderNodeID is populated
+// whenever stepActor carries the graph runner's
+// "<agent>.node.<nodeID>" form so the two transports stay aligned.
 //
 // Publish errors are returned to the caller (unlike the executor's
 // fire-and-forget convention) so node authors can decide whether to

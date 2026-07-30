@@ -8,14 +8,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/engine"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 type branchResult struct {
 	index    int
 	branchID string
 	vars     map[string]any
-	channels map[string][]model.Message
+	channels map[string][]inference.Message
 	err      error
 }
 
@@ -57,7 +57,7 @@ func executeForkJoin(ctx context.Context, g *graph.Graph, board *graph.Board, fo
 		branchStarts = branchStarts[:cfg.parallel.MaxBranches]
 	}
 
-	agentID := agentIDFor(ctx, cfg)
+	agentID := agentIDFor(cfg)
 	joinNodeID := findJoinNode(g, branchStarts)
 	forkID := parallelForkID(cfg.runID, forkNodeID)
 	controller := newParallelForkController(ctx, cfg, g.Name(), agentID, forkID, forkNodeID, branchStarts, joinNodeID, g)

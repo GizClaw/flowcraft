@@ -708,12 +708,12 @@ func TestAgentRun_NoAgentToolsKeepsLegacyBehaviour(t *testing.T) {
 //	             newNodePublisher stamp env.SetAgentID
 //	          -> host observes envelope.AgentID() == ag.ID
 //
-// Before the fix the executor only consulted runner.WithActorKey
-// (a ctx-key), which agent.Run never set; envelopes published
-// through agent.Run therefore carried empty agent_id headers,
-// breaking multi-agent observability in shared-runtime mode (multiple
-// agents publishing to the same NATS topic could not be split by
-// producer).
+// Before the fix the executor only consulted a ctx-key that
+// agent.Run never set; envelopes published through agent.Run
+// therefore carried empty agent_id headers, breaking multi-agent
+// observability in shared-runtime mode (multiple agents publishing
+// to the same NATS topic could not be split by producer). The
+// attribute-based path is now the single source of truth.
 func TestAgentRun_EnvelopeAgentIDIsAgentID(t *testing.T) {
 	r := buildEchoRunner(t)
 	host := enginetest.NewMockHost()
@@ -756,37 +756,6 @@ func TestAgentRun_EnvelopeAgentIDIsAgentID(t *testing.T) {
 	if missing > 0 {
 		t.Fatalf("%d / %d envelopes missing agent_id (agent.Run -> executor seam regression)",
 			missing, len(envs))
-	}
-}
-
-// TestAgentRun_LegacyActorIDHeaderStillSet pins the dual-write
-// migration contract at the integration boundary: even after
-// agent.Run/runner moved to SetAgentID semantics, the legacy
-// envelope header HeaderActorID must keep being populated so
-// pre-v0.4 consumers (runtime logs, dashboards inspecting raw
-// Headers["actor_id"]) keep working unchanged until v0.5.0
-// removes the mirror.
-func TestAgentRun_LegacyActorIDHeaderStillSet(t *testing.T) {
-	r := buildEchoRunner(t)
-	host := enginetest.NewMockHost()
-
-	_, err := agent.Run(context.Background(),
-		agent.Agent{ID: "researcher"},
-		r,
-		agent.Request{Message: model.NewTextMessage(model.RoleUser, "hi")},
-		agent.WithEngineHost(host),
-	)
-	if err != nil {
-		t.Fatalf("agent.Run: %v", err)
-	}
-
-	for _, e := range host.Envelopes() {
-		// HeaderActorID is the legacy spelling; SetAgentID's
-		// dual-write keeps it populated until v0.5.0.
-		if got := e.Headers[event.HeaderActorID]; got != "researcher" {
-			t.Errorf("envelope %q: legacy actor_id mirror = %q, want %q",
-				string(e.Subject), got, "researcher")
-		}
 	}
 }
 

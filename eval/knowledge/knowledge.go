@@ -369,10 +369,10 @@ func Run(ctx context.Context, ds *Dataset, opts Options) (*Report, error) {
 // returns empty results for ModeVector / ModeHybrid (we surface those
 // as Skipped lanes upstream rather than crashing).
 //
-// We avoid factory.NewLocal here: FSChunkRepo's O(N) per-ingest cost
-// (see #134) is not visible at this corpus size (~100 docs) but using
-// the same backend choice across eval suites keeps regressions
-// detected by either suite reproducible on the same code path.
+// The service is wired through factory.NewRetrieval on an in-process
+// retrieval index so eval suites exercise the same backend code path
+// as production wiring; regressions detected by either suite
+// reproduce on the same code path.
 func buildService(opts Options) (*knowledge.Service, error) {
 	ws := workspace.NewMemWorkspace()
 	docs := fs.NewDocumentRepo(ws, fs.DefaultPrefix)

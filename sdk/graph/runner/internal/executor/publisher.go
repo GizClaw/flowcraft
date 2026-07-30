@@ -32,9 +32,9 @@ func parallelBranchInfoFromContext(ctx context.Context) (parallelBranchInfo, boo
 // translates each emit into a fully-formed engine event.Envelope and
 // pushes it through the executor's host publisher.
 //
-// agentID is resolved once (from engine.Run.Attributes /
-// WithActorKey ctx-key fallback) so every emit pays a constant cost
-// rather than re-walking ctx for each payload. The stepActor segment
+// agentID is resolved once (from engine.Run.Attributes) so every
+// emit pays a constant cost rather than re-walking the config for
+// each payload. The stepActor segment
 // stamped onto the subject is "<agentID>.node.<nodeID>" — the
 // envelope.HeaderAgentID and HeaderNodeID transports carry the two
 // dimensions separately for header-routed subscribers.
@@ -42,7 +42,7 @@ func parallelBranchInfoFromContext(ctx context.Context) (parallelBranchInfo, boo
 // The wrapper is always non-nil so nodes can call ctx.Publisher.Emit
 // without nil-checks.
 func newNodePublisher(ctx context.Context, cfg runConfig, nodeID string) graph.StreamPublisher {
-	agentID := agentIDFor(ctx, cfg)
+	agentID := agentIDFor(cfg)
 	stepActor := stepActorFor(agentID, nodeID)
 	graphName := cfg.graphName
 	pub := cfg.publisher
