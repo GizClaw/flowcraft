@@ -24,18 +24,24 @@
 //   - shell: run shell commands against a scratch filesystem with
 //     script-oriented output shape
 //   - tools: script-callable facade over a tool.Dispatcher /
-//     tool.Catalog pair with an allow-list (see NewToolBridge)
+//     tool.Catalog pair with an allow-list — call for one shot,
+//     callAll for an ordered batch that can forward model-issued
+//     call ids, definitions for wire-ready tool declarations
+//     (see NewToolBridge)
+//   - inference: single-shot LLM generation — generate resolves an
+//     explicit model through the inference.Runtime, route defers
+//     target selection to a route.Router and adds a routing trace;
+//     stream/routeStream are the pull-based iterator twins whose
+//     accumulated result matches the unary shape. Requests and
+//     responses are the canonical GenerateRequest / GenerateResponse
+//     wire JSON, and multi-turn tool loops are orchestrated in
+//     script-land (see NewInferenceBridge)
 //
 //   - runtime: named sub-script execution via runtime.execScript,
 //     with nested-exec capability probing (see NewRuntimeBridge)
 //   - run: read-only run identity (run_id / task_id / agent_id /
 //     context_id / parent_run_id), sourced from the ambient RunInfo
 //     in the context (see NewRunInfoBridge)
-//
-// Pending restoration:
-//
-//   - llm: model invocation bindings (completion / generate /
-//     askUser helpers) — pending the inference-based redesign
 //
 // # Interpolation
 //

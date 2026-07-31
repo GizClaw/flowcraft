@@ -129,6 +129,22 @@ func decodeStrictJSON(raw any, target any, field string) error {
 	return nil
 }
 
+// toScriptJSON projects any JSON-marshalable value (typically an
+// inference response type) into the script-facing shape — maps,
+// slices, scalars. The value's own JSON contract defines what scripts
+// see; there is no hand-maintained field list to drift.
+func toScriptJSON(v any, field string) (any, error) {
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return nil, errdefs.Internalf("%s: value is not JSON-encodable: %v", field, err)
+	}
+	var out any
+	if err := json.Unmarshal(buf, &out); err != nil {
+		return nil, errdefs.Internalf("%s: projection: %v", field, err)
+	}
+	return out, nil
+}
+
 // asAnyList asserts raw is a []any (the script-side array shape).
 func asAnyList(raw any, field string) ([]any, error) {
 	list, ok := raw.([]any)
