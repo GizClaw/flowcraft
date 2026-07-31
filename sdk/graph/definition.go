@@ -1,18 +1,92 @@
 package graph
 
 import (
+	"encoding/json"
+
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// GraphDefinition is the declarative definition of a graph (YAML/JSON).
+// END is the sentinel edge target marking graph termination. An edge
+// whose To is END exits the run when taken; it does not refer to a
+// real node.
+const END = "__end__"
+
+// GraphDefinition is the serialisable declarative definition of a
+// graph (the wire layer).
+//
+// It is deliberately JSON-shaped only. YAML authoring belongs to a
+// future sdkx/graph/config module (mirroring sdkx/agent/config), which
+// converts documents into this type; keeping the kernel JSON-only
+// avoids a YAML dependency in sdk and gives node configs a single
+// canonical encoding.
+//
+// Validate performs structural checks (unique ids, known edge
+// endpoints, entry presence). Semantic checks — unknown node types,
+// config field names, condition syntax, I/O role resolution — happen
+// in [Build], which has access to the [Registry].
 type GraphDefinition struct {
-	Name  string           `json:"name" yaml:"name"`
-	Entry string           `json:"entry" yaml:"entry"`
-	Nodes []NodeDefinition `json:"nodes" yaml:"nodes"`
-	Edges []EdgeDefinition `json:"edges" yaml:"edges"`
+	// Name identifies the graph. It is recorded in checkpoints as the
+	// spec version marker and appears in error messages.
+	Name string `json:"name"`
+
+	// Entry is the id of the node where a fresh run starts.
+	Entry string `json:"entry"`
+
+	// Nodes lists all nodes. Ids must be unique; Entry must be one of
+	// them.
+	Nodes []NodeDefinition `json:"nodes"`
+
+	// Edges lists directed transitions. From must name a node; To
+	// names a node or END.
+	Edges []EdgeDefinition `json:"edges"`
 }
 
-// Validate checks that the definition is structurally valid.
+// NodeDefinition describes a single node in a [GraphDefinition].
+type NodeDefinition struct {
+	// ID uniquely names the node within the graph.
+	ID string `json:"id"`
+
+	// Type selects the registered node type ([Registry]) supplying the
+	// behaviour.
+	Type string `json:"type"`
+
+	// Config is the node's opaque configuration as raw JSON. The
+	// kernel never interprets it beyond two well-defined points:
+	//
+	//   - at [Build] time, top-level field names are checked against
+	//     the node type's config struct (unknown fields are rejected);
+	//   - at execution time, "${board.<name>}" references inside
+	//     string values are resolved against the live board before the
+	//     typed decode runs (see package doc, layer 4).
+	//
+	// Everything else — defaults, required fields, semantics — is the
+	// node type's own [NodeType.Decode] contract.
+	Config json.RawMessage `json:"config,omitempty"`
+
+	// SkipCondition is an optional expr-lang expression over board
+	// vars (same syntax as edge conditions). When it evaluates to true
+	// the node's handler is not invoked, but the node still routes:
+	// its outgoing edges are followed as if it had run.
+	SkipCondition string `json:"skip_condition,omitempty"`
+}
+
+// EdgeDefinition describes a single directed transition.
+type EdgeDefinition struct {
+	// From is the source node id.
+	From string `json:"from"`
+
+	// To is the target node id, or END to terminate the run.
+	To string `json:"to"`
+
+	// Condition is an optional expr-lang expression evaluated against
+	// board vars after the source node completes. The edge is taken
+	// only when the expression is absent or evaluates to true.
+	// Multiple outgoing edges may fire (fan-out); zero firing edges
+	// ends the branch.
+	Condition string `json:"condition,omitempty"`
+}
+
+// Validate checks that the definition is structurally sound.
 func (d *GraphDefinition) Validate() error {
 	if d.Name == "" {
 		return errdefs.Validationf("graph name is required")
@@ -33,6 +107,9 @@ func (d *GraphDefinition) Validate() error {
 			return errdefs.Validationf("duplicate node ID %q", n.ID)
 		}
 		nodeIDs[n.ID] = true
+		if n.Type == "" {
+			return errdefs.Validationf("node %q: type is required", n.ID)
+		}
 	}
 
 	if !nodeIDs[d.Entry] {
@@ -48,42 +125,4 @@ func (d *GraphDefinition) Validate() error {
 		}
 	}
 	return nil
-}
-
-// NodeDefinition describes a single node in a GraphDefinition.
-type NodeDefinition struct {
-	ID            string         `json:"id" yaml:"id"`
-	Type          string         `json:"type" yaml:"type"`
-	Config        map[string]any `json:"config,omitempty" yaml:"config,omitempty"`
-	SkipCondition string         `json:"skip_condition,omitempty" yaml:"skip_condition,omitempty"`
-}
-
-// EdgeDefinition describes a single edge in a GraphDefinition.
-type EdgeDefinition struct {
-	From      string `json:"from" yaml:"from"`
-	To        string `json:"to" yaml:"to"`
-	Condition string `json:"condition,omitempty" yaml:"condition,omitempty"`
-}
-
-// RawGraph is the intermediate graph structure produced by the compiler.
-//
-// All fields are exported for static analysis during compilation. It is NOT
-// intended for direct execution — use Assemble (graph/runner) to produce an
-// immutable *Graph for the executor.
-type RawGraph struct {
-	Name           string
-	Entry          string
-	Nodes          map[string]Node
-	Edges          map[string][]Edge
-	Reverse        map[string][]string
-	SkipConditions map[string]*CompiledCondition
-}
-
-// GraphMeta contains structural analysis results produced by the compiler.
-type GraphMeta struct {
-	NodeCount   int  `json:"node_count"`
-	EdgeCount   int  `json:"edge_count"`
-	HasCycles   bool `json:"has_cycles"`
-	HasParallel bool `json:"has_parallel"`
-	MaxDepth    int  `json:"max_depth"`
 }

@@ -740,6 +740,44 @@ func (r Run) Attribute(key string) string {
 	return r.Attributes[key]
 }
 
+// RunInfo is the read-only, node-facing projection of [Run].
+//
+// Engines hand it to step/node implementations instead of the full
+// Run: everything a step legitimately needs (identity, attributes,
+// tool policy) is here, while engine-internal machinery such as
+// [Run.ResumeFrom] stays invisible. The projection is owned by this
+// package — when Run grows a new field, the author decides here
+// whether steps should see it, keeping every engine's step API stable.
+type RunInfo struct {
+	Identity
+
+	// Attributes mirrors [Run.Attributes] (host-supplied metadata:
+	// tenant id, engine kind, feature flags, …).
+	Attributes map[string]string
+
+	// ToolAllowList mirrors [Run.ToolAllowList]: the tool ids this run
+	// is permitted to call. Empty means "no agent-level restriction".
+	ToolAllowList []string
+}
+
+// Info returns the node-facing projection of r.
+func (r Run) Info() RunInfo {
+	return RunInfo{
+		Identity:      r.Identity,
+		Attributes:    r.Attributes,
+		ToolAllowList: r.ToolAllowList,
+	}
+}
+
+// Attribute returns the value for the given attribute key, or "" if
+// absent, tolerating a nil Attributes map.
+func (ri RunInfo) Attribute(key string) string {
+	if ri.Attributes == nil {
+		return ""
+	}
+	return ri.Attributes[key]
+}
+
 // ---------- Resume ----------
 
 // Resumer is the optional capability an [Engine] may advertise to
