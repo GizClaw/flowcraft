@@ -351,26 +351,6 @@ func TestLocalWorkspace_ResolveEmptyAndDot(t *testing.T) {
 	}
 }
 
-func TestValidateGitURL(t *testing.T) {
-	tests := []struct {
-		url     string
-		wantErr bool
-	}{
-		{"https://github.com/user/repo.git", false},
-		{"git@github.com:user/repo.git", false},
-		{"", true},
-		{"  ", true},
-		{"-upload-pack=evil", true},
-		{"--upload-pack=evil", true},
-	}
-	for _, tt := range tests {
-		err := validateGitURL(tt.url)
-		if (err != nil) != tt.wantErr {
-			t.Errorf("validateGitURL(%q) error = %v, wantErr = %v", tt.url, err, tt.wantErr)
-		}
-	}
-}
-
 // --- helpers ---
 
 func TestLocalWorkspace_Rename(t *testing.T) {

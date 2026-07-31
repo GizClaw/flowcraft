@@ -56,9 +56,6 @@ func NewScopedWorkspace(inner Workspace, opts ...ScopedOption) *ScopedWorkspace 
 // atomicity / consistency / distribution semantics. A wrapped
 // Workspace that does not implement [CapabilityReporter] yields a
 // zero-value (all-false) [Capabilities] via [CapabilitiesOf].
-//
-// ScopedGitWorkspace embeds ScopedWorkspace and therefore inherits
-// this method.
 func (s *ScopedWorkspace) Capabilities() Capabilities {
 	return CapabilitiesOf(s.inner)
 }
@@ -128,41 +125,6 @@ func (s *ScopedWorkspace) Stat(ctx context.Context, path string) (fs.FileInfo, e
 	}
 	return s.inner.Stat(ctx, path)
 }
-
-type ScopedGitWorkspace struct {
-	*ScopedWorkspace
-	git GitWorkspace
-}
-
-func NewScopedGitWorkspace(inner GitWorkspace, opts ...ScopedOption) *ScopedGitWorkspace {
-	return &ScopedGitWorkspace{
-		ScopedWorkspace: NewScopedWorkspace(inner, opts...),
-		git:             inner,
-	}
-}
-
-func (s *ScopedGitWorkspace) GitClone(ctx context.Context, url, dest string) error {
-	if err := s.checkWrite(ctx, dest); err != nil {
-		return err
-	}
-	return s.git.GitClone(ctx, url, dest)
-}
-
-func (s *ScopedGitWorkspace) GitPull(ctx context.Context, dir string) error {
-	if err := s.checkWrite(ctx, dir); err != nil {
-		return err
-	}
-	return s.git.GitPull(ctx, dir)
-}
-
-func (s *ScopedGitWorkspace) GitHead(ctx context.Context, dir string) (string, error) {
-	if err := s.checkRead(ctx, dir); err != nil {
-		return "", err
-	}
-	return s.git.GitHead(ctx, dir)
-}
-
-var _ GitWorkspace = (*ScopedGitWorkspace)(nil)
 
 func (s *ScopedWorkspace) checkRead(ctx context.Context, path string) error {
 	cleaned := filepath.Clean(path)

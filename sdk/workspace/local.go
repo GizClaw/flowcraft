@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -264,64 +263,3 @@ func evalExistingPrefix(path string) (string, error) {
 	}
 	return filepath.Join(realParent, filepath.Base(path)), nil
 }
-
-func (w *LocalWorkspace) GitClone(ctx context.Context, url, dest string) error {
-	if err := validateGitURL(url); err != nil {
-		return err
-	}
-	full, err := w.resolve(dest)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return fmt.Errorf("workspace: mkdir for clone dest: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, "git", "clone", "--", url, full)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		safe := redactURL(url)
-		if safe == "" && strings.TrimSpace(url) != "" {
-			safe = "<url redacted>"
-		}
-		return fmt.Errorf("workspace: git clone %s to %s: %w\n%s", safe, dest, err, string(output))
-	}
-	return nil
-}
-
-func validateGitURL(url string) error {
-	trimmed := strings.TrimSpace(url)
-	if trimmed == "" {
-		return errdefs.Validationf("workspace: git url is empty")
-	}
-	if strings.HasPrefix(trimmed, "-") {
-		return errdefs.Validationf("workspace: git url must not start with '-'")
-	}
-	return nil
-}
-
-func (w *LocalWorkspace) GitPull(ctx context.Context, dir string) error {
-	full, err := w.resolve(dir)
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", full, "pull", "--ff-only")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("workspace: git pull in %s: %w\n%s", dir, err, string(output))
-	}
-	return nil
-}
-
-func (w *LocalWorkspace) GitHead(ctx context.Context, dir string) (string, error) {
-	full, err := w.resolve(dir)
-	if err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", full, "rev-parse", "--short", "HEAD")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("workspace: git rev-parse in %s: %w", dir, err)
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-var _ GitWorkspace = (*LocalWorkspace)(nil)

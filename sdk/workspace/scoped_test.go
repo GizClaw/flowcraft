@@ -180,50 +180,6 @@ func (l *testViolationLogger) LogViolation(ctx context.Context, r ViolationRecor
 	l.fn(ctx, r)
 }
 
-func TestScopedGitWorkspace(t *testing.T) {
-	inner := NewMemWorkspace()
-
-	gw := &fakeGitWorkspace{Workspace: inner}
-
-	sgw := NewScopedGitWorkspace(gw,
-		WithAllowWrite("repos/**"),
-		WithDenyRead("private/**"),
-	)
-	ctx := context.Background()
-
-	if err := sgw.GitClone(ctx, "https://example.com/repo", "repos/myrepo"); err != nil {
-		t.Fatalf("clone allowed: %v", err)
-	}
-	if err := sgw.GitClone(ctx, "https://example.com/repo", "other/repo"); err == nil {
-		t.Fatal("clone should be denied outside allowWrite")
-	}
-
-	if err := sgw.GitPull(ctx, "repos/myrepo"); err != nil {
-		t.Fatalf("pull allowed: %v", err)
-	}
-	if err := sgw.GitPull(ctx, "other/repo"); err == nil {
-		t.Fatal("pull should be denied")
-	}
-
-	inner.MustWrite("repos/myrepo/.git/HEAD", []byte("x"))
-	if _, err := sgw.GitHead(ctx, "repos/myrepo"); err != nil {
-		t.Fatalf("head allowed: %v", err)
-	}
-	if _, err := sgw.GitHead(ctx, "private/repo"); err == nil {
-		t.Fatal("head should be denied for denyRead")
-	}
-}
-
-type fakeGitWorkspace struct {
-	Workspace
-}
-
-func (f *fakeGitWorkspace) GitClone(_ context.Context, _, _ string) error { return nil }
-func (f *fakeGitWorkspace) GitPull(_ context.Context, _ string) error     { return nil }
-func (f *fakeGitWorkspace) GitHead(_ context.Context, _ string) (string, error) {
-	return "abc1234", nil
-}
-
 func TestMatchesAny(t *testing.T) {
 	tests := []struct {
 		path    string
