@@ -1,0 +1,288 @@
+package nodes
+
+import (
+	"errors"
+	"io"
+
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/route"
+	"github.com/GizClaw/flowcraft/sdk/tool"
+)
+
+// InferenceConfig is the config of the "inference" node type. Board
+// references (${board.*}) are resolved per invocation before decode,
+// so fields like system_prompt may interpolate upstream output.
+type InferenceConfig struct {
+	// Model targets a specific model through the wired Runtime. When
+	// absent the node defers target selection to the wired Router.
+	Model *inference.ModelRef `json:"model,omitempty"`
+
+	// MessagesChannel names the board channel holding the
+	// conversation; empty means the main channel. The channel's tail
+	// message is the current turn's input and must have role user or
+	// tool — everything before it becomes the request context.
+	MessagesChannel string `json:"messages_channel,omitempty"`
+
+	// SystemPrompt is prepended as a system message when the context
+	// does not already start with one.
+	SystemPrompt string `json:"system_prompt,omitempty"`
+
+	// OutputKey, when set, receives the full assistant Message.
+	OutputKey string `json:"output_key,omitempty"`
+	// UsageKey, when set, receives the call's inference.Usage.
+	UsageKey string `json:"usage_key,omitempty"`
+	// ToolPendingKey, when set, receives whether the finish reason is
+	// tool_calls — the boolean condition edges branch on to route
+	// through a tool node and loop back.
+	ToolPendingKey string `json:"tool_pending_key,omitempty"`
+
+	// Stream opens a GenerateStream and publishes text deltas as
+	// token stream events; the board still receives exactly one
+	// assembled message (tool_call parts included).
+	Stream bool `json:"stream,omitempty"`
+
+	// Tools names the catalog tools the model may call this turn.
+	Tools []string `json:"tools,omitempty"`
+	// The remaining knobs ride the text intent verbatim.
+	ToolChoice       *inference.ToolChoice     `json:"tool_choice,omitempty"`
+	Temperature      *float64                  `json:"temperature,omitempty"`
+	TopP             *float64                  `json:"top_p,omitempty"`
+	MaxOutputTokens  *int                      `json:"max_output_tokens,omitempty"`
+	ReasoningEnabled *bool                     `json:"reasoning_enabled,omitempty"`
+	ReasoningEffort  inference.ReasoningEffort `json:"reasoning_effort,omitempty"`
+
+	// Extensions names host-registered provider knobs in the shared
+	// {provider, id, fields} wire form (see bindings.DecodeExtensions).
+	Extensions []bindings.ExtensionEntry `json:"extensions,omitempty"`
+}
+
+// InferenceNodeDeps wires the inference node's collaborators. Runtime
+// serves configs carrying an explicit model; Router serves configs
+// without one. Either may be nil if no graph needs it — the error
+// surfaces at invocation, classified NotAvailable.
+type InferenceNodeDeps struct {
+	Runtime *inference.Runtime
+	Router  *route.Router
+	// Catalog resolves config tool names into definitions; required
+	// only when a graph configures tools.
+	Catalog tool.Catalog
+	// Extensions maps "provider/id" to decoders, the same registry
+	// shape the script bridge wires with bindings.WithExtensionDecoder.
+	Extensions map[string]bindings.ExtensionDecoder
+}
+
+// Inference returns the "inference" node type: one Generate call per
+// invocation, channel tail in, one assistant message appended. The
+// node never executes tool calls — finish_reason == tool_calls is
+// flagged onto tool_pending_key and the graph routes onward.
+func Inference(deps InferenceNodeDeps) graph.NodeType[InferenceConfig] {
+	return graph.NodeType[InferenceConfig]{
+		Meta: graph.Meta{
+			Desc: "single-shot LLM generation: channel tail in, one assistant message out",
+			Reads: []graph.Role{
+				{Kind: graph.RoleMessages, ConfigKey: "messages_channel"},
+			},
+			Writes: []graph.Role{
+				{Kind: graph.RoleMessages, ConfigKey: "messages_channel"},
+				{Kind: graph.RoleVar, ConfigKey: "output_key"},
+				{Kind: graph.RoleVar, ConfigKey: "usage_key"},
+				{Kind: graph.RoleVar, ConfigKey: "tool_pending_key"},
+			},
+		},
+		Handler: func(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig) error {
+			return runInference(ec, board, cfg, deps)
+		},
+	}
+}
+
+// RegisterInference registers the "inference" node type into reg.
+func RegisterInference(reg *graph.Registry, deps InferenceNodeDeps) error {
+	return graph.RegisterType(reg, "inference", Inference(deps))
+}
+
+func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, deps InferenceNodeDeps) error {
+	channel := cfg.MessagesChannel
+	if channel == "" {
+		channel = agent.MainChannel
+	}
+	req, err := buildGenerateRequest(board, channel, cfg, deps)
+	if err != nil {
+		return err
+	}
+
+	resp, err := executeGenerate(ec, board, cfg, deps, req)
+	if err != nil {
+		return err
+	}
+
+	board.AppendChannelMessage(channel, resp.Message)
+	if cfg.OutputKey != "" {
+		board.SetVar(cfg.OutputKey, resp.Message)
+	}
+	if cfg.UsageKey != "" {
+		board.SetVar(cfg.UsageKey, resp.Usage)
+	}
+	if cfg.ToolPendingKey != "" {
+		board.SetVar(cfg.ToolPendingKey, resp.FinishReason == inference.FinishToolCalls)
+	}
+	if ec.Host != nil {
+		if err := ec.Host.ReportUsage(ec.Context, resp.Usage); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// buildGenerateRequest splits the channel tail into context + current
+// input — the exact shape GenerateRequest demands — and attaches the
+// configured text intent and extensions.
+func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfig, deps InferenceNodeDeps) (inference.GenerateRequest, error) {
+	var req inference.GenerateRequest
+	messages := board.Channel(channel)
+	if len(messages) == 0 {
+		return req, errdefs.Validationf("inference node: messages channel %q is empty", channel)
+	}
+	last := messages[len(messages)-1]
+	var inputRole inference.InputRole
+	switch last.Role {
+	case inference.RoleUser:
+		inputRole = inference.InputRoleUser
+	case inference.RoleTool:
+		inputRole = inference.InputRoleTool
+	default:
+		return req, errdefs.Validationf(
+			"inference node: last message on channel %q must have role user or tool, got %q",
+			channel, last.Role)
+	}
+	contextMessages := messages[:len(messages)-1]
+	if cfg.SystemPrompt != "" &&
+		(len(contextMessages) == 0 || contextMessages[0].Role != inference.RoleSystem) {
+		contextMessages = append(
+			[]inference.Message{inference.NewTextMessage(inference.RoleSystem, cfg.SystemPrompt)},
+			contextMessages...,
+		)
+	}
+
+	text := &inference.TextIntent{
+		ToolChoice:       cfg.ToolChoice,
+		Temperature:      cfg.Temperature,
+		TopP:             cfg.TopP,
+		MaxOutputTokens:  cfg.MaxOutputTokens,
+		ReasoningEnabled: cfg.ReasoningEnabled,
+		ReasoningEffort:  cfg.ReasoningEffort,
+	}
+	if len(cfg.Tools) > 0 {
+		definitions, err := toolDefinitions(cfg.Tools, deps.Catalog)
+		if err != nil {
+			return req, err
+		}
+		text.Tools = definitions
+	}
+
+	extensions, err := bindings.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
+	if err != nil {
+		return req, err
+	}
+
+	return inference.GenerateRequest{
+		Context: contextMessages,
+		Input: inference.GenerateInput{
+			Role: inputRole,
+			Content: inference.InputContent{
+				Content: last.Content,
+				Intent:  inference.Intent{Text: text},
+			},
+		},
+		Extensions: extensions,
+	}, nil
+}
+
+func toolDefinitions(names []string, catalog tool.Catalog) ([]tool.Definition, error) {
+	if catalog == nil {
+		return nil, errdefs.Validationf("inference node: tools configured but no tool catalog wired")
+	}
+	available := make(map[string]tool.Definition)
+	for _, def := range catalog.Definitions() {
+		available[def.Name] = def
+	}
+	definitions := make([]tool.Definition, len(names))
+	for i, name := range names {
+		def, ok := available[name]
+		if !ok {
+			return nil, errdefs.Validationf("inference node: unknown tool %q", name)
+		}
+		definitions[i] = def
+	}
+	return definitions, nil
+}
+
+func executeGenerate(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, deps InferenceNodeDeps, req inference.GenerateRequest) (inference.GenerateResponse, error) {
+	if cfg.Stream {
+		return executeGenerateStream(ec, board, cfg, deps, req)
+	}
+	if cfg.Model != nil {
+		if deps.Runtime == nil {
+			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: model configured but no runtime wired")
+		}
+		return deps.Runtime.Generate(ec.Context, *cfg.Model, req)
+	}
+	if deps.Router == nil {
+		return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: no model configured and no router wired")
+	}
+	resp, _, err := deps.Router.Generate(ec.Context, req)
+	return resp, err
+}
+
+// executeGenerateStream drains a GenerateStream through a
+// MessageStream: each text delta is buffered and published as a token
+// event. On success the caller appends the driver-accumulated response
+// (complete message, tool_calls included). On a mid-stream failure —
+// driver error or run interruption — the buffered partial text is
+// committed to the board as one assistant message before the error
+// propagates, so downstream consumers and a host-saved board keep the
+// progress instead of silently losing every token.
+func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, deps InferenceNodeDeps, req inference.GenerateRequest) (inference.GenerateResponse, error) {
+	var stream inference.GenerateStream
+	var err error
+	if cfg.Model != nil {
+		if deps.Runtime == nil {
+			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: model configured but no runtime wired")
+		}
+		stream, err = deps.Runtime.GenerateStream(ec.Context, *cfg.Model, req)
+	} else {
+		if deps.Router == nil {
+			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: no model configured and no router wired")
+		}
+		stream, _, err = deps.Router.GenerateStream(ec.Context, req)
+	}
+	if err != nil {
+		return inference.GenerateResponse{}, err
+	}
+	defer func() { _ = stream.Close() }()
+
+	channel := cfg.MessagesChannel
+	s := ec.NewMessageStream(channel)
+	for {
+		event, err := stream.Next(ec.Context)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			// Best-effort partial commit; the original error is
+			// what propagates.
+			_, _ = s.Close(board)
+			return inference.GenerateResponse{}, err
+		}
+		if delta, ok := event.Delta.(inference.TextPartDelta); ok && delta.Text != "" {
+			if err := s.Emit(delta.Text); err != nil {
+				_, _ = s.Close(board)
+				return inference.GenerateResponse{}, err
+			}
+		}
+	}
+	return stream.Result()
+}

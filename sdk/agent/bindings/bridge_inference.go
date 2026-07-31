@@ -337,44 +337,42 @@ func splitExtensionsKey(obj map[string]any) (extRaw any, rest map[string]any) {
 	return extRaw, rest
 }
 
-// decodeScriptExtensions resolves a script "extensions" array —
-// entries of {provider, id, fields} — into typed extensions via the
+// ExtensionEntry is the wire form of one extension reference: which
+// provider's which extension, plus its fields object. Shared by the
+// script bridge and graph nodes — anywhere a JSON document needs to
+// name a typed extension.
+type ExtensionEntry struct {
+	Provider string          `json:"provider"`
+	ID       string          `json:"id"`
+	Fields   json.RawMessage `json:"fields"`
+}
+
+// DecodeExtensions resolves entries into typed extensions via the
 // host-registered decoders. Unregistered identities are validation
-// errors: the host's registry is the whole menu.
-func decodeScriptExtensions(raw any, decoders map[string]ExtensionDecoder, field string) (inference.Extensions, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	list, err := asAnyList(raw, field)
-	if err != nil {
-		return nil, err
-	}
+// errors: the host's registry is the whole menu. A decoder returning
+// an extension whose identity does not match the registered key is a
+// host wiring bug and surfaces as an internal error.
+func DecodeExtensions(entries []ExtensionEntry, decoders map[string]ExtensionDecoder, field string) (inference.Extensions, error) {
 	var extensions inference.Extensions
-	for i, item := range list {
+	for i, entry := range entries {
 		entryField := fmt.Sprintf("%s[%d]", field, i)
-		obj, ok := item.(map[string]any)
-		if !ok {
-			return nil, errdefs.Validationf("%s: expected an object, got %T", entryField, item)
-		}
-		provider, _ := obj["provider"].(string)
-		id, _ := obj["id"].(string)
-		if provider == "" || id == "" {
+		if entry.Provider == "" || entry.ID == "" {
 			return nil, errdefs.Validationf("%s: provider and id are required", entryField)
 		}
-		key := provider + "/" + id
+		key := entry.Provider + "/" + entry.ID
 		decoder, ok := decoders[key]
 		if !ok {
 			return nil, errdefs.Validationf("%s: extension %q is not registered by the host", entryField, key)
 		}
-		fieldsJSON, err := json.Marshal(obj["fields"])
-		if err != nil {
-			return nil, errdefs.Validationf("%s.fields: value is not JSON-encodable: %v", entryField, err)
+		fields := entry.Fields
+		if len(fields) == 0 {
+			fields = json.RawMessage(`{}`)
 		}
-		extension, err := decoder(fieldsJSON)
+		extension, err := decoder(fields)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", entryField, err)
 		}
-		if extension.ProviderID() != provider || extension.ExtensionID() != id {
+		if extension.ProviderID() != entry.Provider || extension.ExtensionID() != entry.ID {
 			return nil, errdefs.Internalf(
 				"%s: decoder for %q returned extension %q/%q",
 				entryField, key, extension.ProviderID(), extension.ExtensionID(),
@@ -383,4 +381,19 @@ func decodeScriptExtensions(raw any, decoders map[string]ExtensionDecoder, field
 		extensions = append(extensions, extension)
 	}
 	return extensions, nil
+}
+
+// decodeScriptExtensions resolves a script "extensions" array —
+// entries of {provider, id, fields} — into typed extensions via the
+// host-registered decoders. Strict decoding rejects unknown entry
+// keys as typos.
+func decodeScriptExtensions(raw any, decoders map[string]ExtensionDecoder, field string) (inference.Extensions, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var entries []ExtensionEntry
+	if err := decodeStrictJSON(raw, &entries, field); err != nil {
+		return nil, err
+	}
+	return DecodeExtensions(entries, decoders, field)
 }

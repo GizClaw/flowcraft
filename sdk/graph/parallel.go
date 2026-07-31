@@ -2,8 +2,10 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
@@ -31,6 +33,11 @@ type BranchResult struct {
 	NodeID   string
 	Snapshot *agent.BoardSnapshot
 	Err      error
+
+	// Cancelled marks a branch deliberately cancelled through the
+	// wave's ParallelController (while queued or running): it merged
+	// as a no-op rather than failed, and Err stays nil.
+	Cancelled bool
 }
 
 // MergeFunc folds completed branch results back into the shared board.
@@ -64,6 +71,13 @@ type ParallelConfig struct {
 	// negative means "all branches of the wave".
 	MaxConcurrency int
 
+	// MaxBranches caps the total number of branches one wave may fan
+	// out to; zero or negative means unlimited. A wave exceeding the
+	// cap fails the run with an [errdefs.IsBudgetExceeded]-classified
+	// error — unlike the legacy runner's silent truncation, which
+	// could drop branches and their entire downstream subgraph.
+	MaxBranches int
+
 	// MergeStrategy selects the built-in merge. Empty means
 	// [FirstWriteWins].
 	MergeStrategy MergeStrategy
@@ -81,6 +95,9 @@ func (c ParallelConfig) validate() error {
 	}
 	if c.MaxConcurrency < 0 {
 		return errdefs.Validationf("graph: parallel max concurrency must be >= 0")
+	}
+	if c.MaxBranches < 0 {
+		return errdefs.Validationf("graph: parallel max branches must be >= 0")
 	}
 	if c.Merge == nil {
 		switch c.MergeStrategy {
@@ -161,4 +178,140 @@ func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, res
 			}
 		}
 	}
+}
+
+type parallelCtxKey struct{}
+
+// ParallelController exposes limited control over the currently executing
+// parallel fork. It is intentionally context-scoped: outside a fork it is absent.
+type ParallelController interface {
+	CancelNode(nodeID, reason string) bool
+}
+
+// WithParallelController stores the current fork controller on ctx.
+func WithParallelController(ctx context.Context, c ParallelController) context.Context {
+	if c == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, parallelCtxKey{}, c)
+}
+
+// ParallelControllerFromContext returns the current fork controller, if any.
+func ParallelControllerFromContext(ctx context.Context) (ParallelController, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	c, ok := ctx.Value(parallelCtxKey{}).(ParallelController)
+	return c, ok
+}
+
+// forkController implements [ParallelController] for one in-flight
+// wave. Cancelling a branch marks it: a running branch's context is
+// cancelled with the reason as its cause, a queued branch observes
+// the mark before invoking and skips. Explicitly cancelled branches
+// are not wave failures — their results merge as no-ops, exactly
+// like skipped nodes.
+//
+// Branches see the controller through a per-branch view
+// (branchView): a branch that is itself cancelled or finished may
+// not cancel others — a dying branch's last gasp must not widen the
+// damage.
+type forkController struct {
+	members map[string]struct{}
+
+	mu      sync.Mutex
+	running map[string]context.CancelCauseFunc // started, unfinished branches
+	marks   map[string]string                  // nodeID -> cancel reason
+	done    map[string]struct{}                // finished branches
+}
+
+func newForkController(members []string) *forkController {
+	c := &forkController{
+		members: make(map[string]struct{}, len(members)),
+		running: make(map[string]context.CancelCauseFunc, len(members)),
+		marks:   make(map[string]string),
+		done:    make(map[string]struct{}, len(members)),
+	}
+	for _, id := range members {
+		c.members[id] = struct{}{}
+	}
+	return c
+}
+
+// view returns the [ParallelController] one branch sees.
+func (c *forkController) view(nodeID string) ParallelController {
+	return branchView{parent: c, id: nodeID}
+}
+
+// cancelFrom marks the target branch cancelled and cancels its
+// context with the reason as cause. Unknown or finished targets and
+// disqualified callers (cancelled or finished themselves) report
+// false; repeated cancellations of a live branch are idempotent and
+// report true (the first reason wins).
+func (c *forkController) cancelFrom(callerID, nodeID, reason string) bool {
+	if reason == "" {
+		reason = "cancelled by parallel.cancelNode"
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.members[nodeID]; !ok {
+		return false
+	}
+	if _, ok := c.done[nodeID]; ok {
+		return false
+	}
+	if _, ok := c.done[callerID]; ok {
+		return false
+	}
+	if _, ok := c.marks[callerID]; ok {
+		return false
+	}
+	if _, marked := c.marks[nodeID]; !marked {
+		c.marks[nodeID] = reason
+	}
+	if cancel, ok := c.running[nodeID]; ok {
+		cancel(errors.New(c.marks[nodeID]))
+	}
+	return true
+}
+
+// start registers a running branch's cancel func. A branch cancelled
+// while queued learns its reason here and must skip invocation.
+func (c *forkController) start(nodeID string, cancel context.CancelCauseFunc) (reason string, cancelled bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if reason, ok := c.marks[nodeID]; ok {
+		return reason, true
+	}
+	c.running[nodeID] = cancel
+	return "", false
+}
+
+// finish deregisters a completed branch; later cancellations report
+// false.
+func (c *forkController) finish(nodeID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.running, nodeID)
+	c.done[nodeID] = struct{}{}
+}
+
+// cancelledReason reports whether the branch was explicitly cancelled,
+// distinguishing deliberate cancellation from a genuine branch error.
+func (c *forkController) cancelledReason(nodeID string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	reason, ok := c.marks[nodeID]
+	return reason, ok
+}
+
+// branchView is the per-branch [ParallelController]: cancellation
+// rights are checked against the caller branch's own state.
+type branchView struct {
+	parent *forkController
+	id     string
+}
+
+func (v branchView) CancelNode(nodeID, reason string) bool {
+	return v.parent.cancelFrom(v.id, nodeID, reason)
 }

@@ -13,9 +13,9 @@ import (
 // conditions, skip conditions) and evaluated per wave with zero parse
 // cost.
 //
-// The evaluation environment is Board.Vars(): expressions reference
-// board variables by name, e.g. `retrieved_docs != nil and
-// len(retrieved_docs) > 0`.
+// The evaluation environment is Board.Vars() plus kernel-injected
+// names (VarIterations): expressions reference board variables by
+// name, e.g. `retrieved_docs != nil and len(retrieved_docs) > 0`.
 type CompiledCondition struct {
 	// Raw is the source expression, kept for diagnostics and
 	// checkpoint inspection.
@@ -35,7 +35,12 @@ func compileCondition(raw string) (*CompiledCondition, error) {
 
 // Evaluate runs the condition against the board's current vars.
 func (c *CompiledCondition) Evaluate(board *agent.Board) (bool, error) {
-	out, err := expr.Run(c.program, board.Vars())
+	return c.evaluate(board.Vars())
+}
+
+// evaluate runs the condition against a pre-assembled environment.
+func (c *CompiledCondition) evaluate(env map[string]any) (bool, error) {
+	out, err := expr.Run(c.program, env)
 	if err != nil {
 		return false, errdefs.Validationf("condition %q evaluation failed: %v", c.Raw, err)
 	}

@@ -19,11 +19,13 @@ type Checkpoint struct {
 	// to. MUST equal the producing [Run.RunID].
 	ExecID string `json:"exec_id"`
 
-	// Step is an opaque, engine-defined marker that locates "where"
-	// the run is. For graph it is typically the next node id; for a
-	// script engine it might be a continuation id. The host treats
-	// this as opaque bytes.
-	Step string `json:"step,omitempty"`
+	// Steps is an opaque, engine-defined marker set locating "where"
+	// the run is. For graph it is the most recently completed wave —
+	// the resume anchor (the frontier is rebuilt from it) and the
+	// "paused at" display (last element). A single-node wave degrades
+	// to a one-element slice; empty means "no position recorded".
+	// The host treats these as opaque strings.
+	Steps []string `json:"steps,omitempty"`
 
 	// Iteration is an optional monotonic counter for engines that
 	// loop (graph re-entry counter, scheduler tick, …). Zero is fine

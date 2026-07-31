@@ -811,7 +811,7 @@ func TestRun_WithResumeFrom_PropagatesCheckpointAndOverridesRunID(t *testing.T) 
 		return b, nil
 	})
 
-	cp := &agent.Checkpoint{ExecID: "saved-run-7", Step: "node-x"}
+	cp := &agent.Checkpoint{ExecID: "saved-run-7", Steps: []string{"node-x"}}
 
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng,
 		// req.RunID intentionally different so the override path is exercised.
@@ -1493,7 +1493,7 @@ func TestLoadAndResume_ResumePathPopulatesContext(t *testing.T) {
 	cpAt := time.Now().Add(-time.Hour)
 	store := &memStore{cp: &agent.Checkpoint{
 		ExecID:    "r1",
-		Step:      "node-3",
+		Steps:     []string{"node-3"},
 		Timestamp: cpAt,
 	}}
 
@@ -1504,7 +1504,7 @@ func TestLoadAndResume_ResumePathPopulatesContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadAndResume: %v", err)
 	}
-	if eng.gotRun.ResumeFrom == nil || eng.gotRun.ResumeFrom.Step != "node-3" {
+	if eng.gotRun.ResumeFrom == nil || len(eng.gotRun.ResumeFrom.Steps) != 1 || eng.gotRun.ResumeFrom.Steps[0] != "node-3" {
 		t.Fatalf("ResumeFrom not propagated: %+v", eng.gotRun.ResumeFrom)
 	}
 	if !eng.gotResOK || eng.gotResume.Attempt < 2 {
@@ -1528,7 +1528,7 @@ func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
 	originalStart := time.Now().Add(-2 * time.Hour)
 	store := &memStore{cp: &agent.Checkpoint{
 		ExecID:            "r1",
-		Step:              "step",
+		Steps:             []string{"step"},
 		Timestamp:         time.Now().Add(-time.Hour),
 		OriginalStartedAt: originalStart,
 	}}
@@ -1551,7 +1551,7 @@ func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
 	t.Run("falls_back_when_checkpoint_missing_field", func(t *testing.T) {
 		oldCp := &agent.Checkpoint{
 			ExecID:    "r1",
-			Step:      "step",
+			Steps:     []string{"step"},
 			Timestamp: time.Now().Add(-time.Hour),
 		}
 		oldStore := &memStore{cp: oldCp}

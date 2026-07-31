@@ -3,168 +3,24 @@ package bindings
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
-	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
-// The inference bridge projects wire JSON straight into
-// Runtime/Router calls, so the tests run real Runtime and Router
-// instances over a canned provider — no provider I/O, but the full
+// The inference bridge projects wire JSON straight into Runtime/Router
+// calls, so the tests run real Runtime and Router instances over the
+// canned provider in inferencetest — no provider I/O, but the full
 // resolve/compile/validate pipeline is exercised.
-
-var fakeModelRef = inference.ModelRef{
-	ID:      inference.ModelID{Provider: "fake", Name: "echo"},
-	Profile: "default",
-}
-
-// fakeGenerateRuntime builds a Runtime whose single model answers
-// every Generate with respond (default: a one-part text message). The
-// captured request counter lets tests assert what the script sent.
-// streamEvents, when given, back GenerateStream with a slice stream
-// using the fake raw protocol: "text:<delta>" emits a text delta,
-// "finish:<reason>" terminates with a finish reason.
-func fakeGenerateRuntime(
-	t *testing.T,
-	captured *atomic.Value,
-	respond func(inference.GenerateRequest) inference.GenerateResponse,
-	streamEvents ...string,
-) *inference.Runtime {
-	t.Helper()
-	if respond == nil {
-		respond = func(inference.GenerateRequest) inference.GenerateResponse {
-			return inference.GenerateResponse{
-				Message: inference.Message{
-					Role:    inference.RoleAssistant,
-					Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "ok"}}},
-				},
-				FinishReason: inference.FinishCompleted,
-			}
-		}
-	}
-	compile := inference.GenerateCompiler[string](
-		func(_ context.Context, _ inference.ModelRef, req inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
-			if captured != nil {
-				captured.Store(req.Clone())
-			}
-			// The ledger contract requires an explicit disposition for
-			// every active field; the fake natively "supports" all of them.
-			fields := req.ActiveFieldsFor(shape)
-			decisions := make([]inference.Decision, len(fields))
-			for i, field := range fields {
-				decisions[i] = inference.Decision{Field: field, Disposition: inference.Native}
-			}
-			return inference.Compiled[string]{
-				Wire:   "wire",
-				Report: inference.CompileReport{Operation: inference.OperationGenerate, Decisions: decisions},
-			}, nil
-		},
-	)
-	transport := inference.Transport[string, string](
-		func(_ context.Context, wire string) (string, error) { return wire, nil },
-	)
-	decode := inference.Decoder[string, inference.GenerateResponse](
-		func(_ context.Context, _ string) (inference.GenerateResponse, error) {
-			return respond(capturedRequest(captured)), nil
-		},
-	)
-	streamTransport := inference.Transport[string, inference.ProviderStream[string]](
-		func(_ context.Context, _ string) (inference.ProviderStream[string], error) {
-			if len(streamEvents) == 0 {
-				return nil, fmt.Errorf("stream not supported by the fake")
-			}
-			return &sliceStream{events: streamEvents}, nil
-		},
-	)
-	streamDecode := inference.GenerateStreamDecoder[string](
-		func(_ context.Context, raw string) (inference.GenerateStreamEvent, error) {
-			switch text, ok := strings.CutPrefix(raw, "text:"); {
-			case ok:
-				return inference.GenerateStreamEvent{PartIndex: 0, Delta: inference.TextPartDelta{Text: text}}, nil
-			default:
-				if reason, ok := strings.CutPrefix(raw, "finish:"); ok {
-					return inference.GenerateStreamEvent{FinishReason: inference.FinishReason(reason)}, nil
-				}
-				return inference.GenerateStreamEvent{}, fmt.Errorf("bad fake raw event %q", raw)
-			}
-		},
-	)
-	operations, err := inference.BindGenerateOperations(compile, transport, decode, streamTransport, streamDecode)
-	if err != nil {
-		t.Fatalf("BindGenerateOperations: %v", err)
-	}
-	runtime, err := inference.NewRuntime([]inference.ProviderDefinition{{
-		ID: "fake",
-		Profiles: []inference.ProfileDefinition{{
-			ID:         "default",
-			Operations: []inference.Operation{inference.OperationGenerate},
-		}},
-		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{ID: fakeModelRef.ID},
-			Openers: inference.Openers{
-				Generate: func(_ context.Context, _ inference.ModelRef) (inference.GenerateOperations, error) {
-					return operations, nil
-				},
-			},
-		}},
-	}})
-	if err != nil {
-		t.Fatalf("NewRuntime: %v", err)
-	}
-	return runtime
-}
-
-func capturedRequest(captured *atomic.Value) inference.GenerateRequest {
-	if captured == nil {
-		return inference.GenerateRequest{}
-	}
-	if req, ok := captured.Load().(inference.GenerateRequest); ok {
-		return req
-	}
-	return inference.GenerateRequest{}
-}
-
-// sliceStream is a ProviderStream over canned raw events.
-type sliceStream struct {
-	events []string
-	index  int
-}
-
-func (s *sliceStream) Next(_ context.Context) (string, error) {
-	if s.index >= len(s.events) {
-		return "", io.EOF
-	}
-	event := s.events[s.index]
-	s.index++
-	return event, nil
-}
-
-func (s *sliceStream) Close() error { return nil }
-
-type generateSelectorFunc func(context.Context, inference.GenerateRequest) (route.Decision, error)
-
-func (f generateSelectorFunc) SelectGenerate(ctx context.Context, req inference.GenerateRequest) (route.Decision, error) {
-	return f(ctx, req)
-}
 
 func fakeRouter(t *testing.T, runtime *inference.Runtime) *route.Router {
 	t.Helper()
 	router, err := route.New(runtime, route.Selectors{
-		Generate: generateSelectorFunc(func(_ context.Context, _ inference.GenerateRequest) (route.Decision, error) {
-			return route.Decision{
-				Operation: inference.OperationGenerate,
-				Tier:      "primary",
-				Proposed:  fakeModelRef,
-				Selected:  fakeModelRef,
-			}, nil
-		}),
+		Generate: inferencetest.StaticGenerateSelector(inferencetest.DefaultFakeModel),
 	})
 	if err != nil {
 		t.Fatalf("route.New: %v", err)
@@ -254,9 +110,8 @@ func userInput(text string) map[string]any {
 }
 
 func TestInferenceBridge_Generate_RoundTrip(t *testing.T) {
-	var captured atomic.Value
-	runtime := fakeGenerateRuntime(t, &captured, nil)
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	out, err := api.generate(map[string]any{
 		"model":   fakeModelJSON(),
@@ -284,19 +139,19 @@ func TestInferenceBridge_Generate_RoundTrip(t *testing.T) {
 
 	// The canonical request reached the provider intact: context plus
 	// the current-turn input, in order.
-	req := capturedRequest(&captured)
-	if len(req.Context) != 1 || len(req.Context[0].Content.Parts) != 1 {
-		t.Fatalf("provider saw context = %+v, want one message", req.Context)
+	reqs := fake.Requests()
+	if len(reqs) != 1 || len(reqs[0].Context) != 1 || len(reqs[0].Context[0].Content.Parts) != 1 {
+		t.Fatalf("provider saw context = %+v, want one message", reqs)
 	}
-	text, ok := req.Input.Content.Parts[0].(inference.TextPart)
-	if !ok || text.Text != "hi" || req.Input.Role != inference.InputRoleUser {
-		t.Fatalf("provider saw input = %+v, want user text %q", req.Input, "hi")
+	text, ok := reqs[0].Input.Content.Parts[0].(inference.TextPart)
+	if !ok || text.Text != "hi" || reqs[0].Input.Role != inference.InputRoleUser {
+		t.Fatalf("provider saw input = %+v, want user text %q", reqs[0].Input, "hi")
 	}
 }
 
 func TestInferenceBridge_Generate_MissingModel(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	_, err := api.generate(map[string]any{"input": userInput("hi")})
 	if err == nil || !errdefs.IsValidation(err) {
@@ -305,8 +160,8 @@ func TestInferenceBridge_Generate_MissingModel(t *testing.T) {
 }
 
 func TestInferenceBridge_Generate_StrictUnknownField(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	_, err := api.generate(map[string]any{
 		"model":  fakeModelJSON(),
@@ -330,11 +185,11 @@ func TestInferenceBridge_Generate_NoRuntime(t *testing.T) {
 }
 
 func TestInferenceBridge_Generate_UnknownModel(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	_, err := api.generate(map[string]any{
-		"model": map[string]any{"id": map[string]any{"provider": "fake", "name": "ghost"}},
+		"model": map[string]any{"id": map[string]any{"provider": "fake", "name": "ghost"}, "profile": "default"},
 		"input": userInput("hi"),
 	})
 	if err == nil {
@@ -343,8 +198,8 @@ func TestInferenceBridge_Generate_UnknownModel(t *testing.T) {
 }
 
 func TestInferenceBridge_Route_RoundTrip(t *testing.T) {
-	var captured atomic.Value
-	runtime := fakeGenerateRuntime(t, &captured, nil)
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Runtime(t)
 	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
 
 	out, err := api.route(map[string]any{"input": userInput("hi")})
@@ -370,13 +225,14 @@ func TestInferenceBridge_Route_RoundTrip(t *testing.T) {
 	if !ok || id["provider"] != "fake" || id["name"] != "echo" {
 		t.Fatalf("trace.executed.id = %v, want fake/echo", executed["id"])
 	}
-	if req := capturedRequest(&captured); len(req.Context) != 0 || req.Input.Role != inference.InputRoleUser {
+	if req := fake.LastRequest(); len(req.Context) != 0 || req.Input.Role != inference.InputRoleUser {
 		t.Fatalf("router forwarded request = %+v", req)
 	}
 }
 
 func TestInferenceBridge_Route_RejectsModelKey(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Runtime(t)
 	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
 
 	// The router owns target selection; a model key is a strict-decode
@@ -391,8 +247,8 @@ func TestInferenceBridge_Route_RejectsModelKey(t *testing.T) {
 }
 
 func TestInferenceBridge_Route_NoRouter(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	_, err := api.route(map[string]any{"input": userInput("hi")})
 	if err == nil || !errdefs.IsNotAvailable(err) {
@@ -404,18 +260,24 @@ func TestInferenceBridge_Generate_ToolCallResponse(t *testing.T) {
 	// The multi-turn contract: a tool_calls finish carries the
 	// assistant message verbatim, tool_call id included, so the script
 	// can forward it to tools.callAll and continue with role="tool".
-	runtime := fakeGenerateRuntime(t, nil, func(inference.GenerateRequest) inference.GenerateResponse {
-		return inference.GenerateResponse{
-			Message: inference.Message{
-				Role: inference.RoleAssistant,
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ToolCallPart{Call: mustToolCall(t)},
-				}},
-			},
-			FinishReason: inference.FinishToolCalls,
-		}
-	})
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: inference.Message{
+					Role: inference.RoleAssistant,
+					Content: inference.Content{Parts: []inference.Part{
+						inference.ToolCallPart{Call: tool.Call{
+							ID:        "call_1",
+							Name:      "search",
+							Arguments: json.RawMessage(`{"q":"weather"}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	out, err := api.generate(map[string]any{
 		"model": fakeModelJSON(),
@@ -453,11 +315,6 @@ func TestInferenceBridge_Generate_ToolCallResponse(t *testing.T) {
 	}
 }
 
-func mustToolCall(t *testing.T) tool.Call {
-	t.Helper()
-	return tool.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)}
-}
-
 // testExtension mirrors the provider option-struct pattern (kimi's
 // GenerateOptions): JSON-tagged knobs, json:"-" provider override,
 // identity + ledger methods.
@@ -491,9 +348,8 @@ func testExtensionDecoder() ExtensionDecoder {
 }
 
 func TestInferenceBridge_Generate_Extensions(t *testing.T) {
-	var captured atomic.Value
-	runtime := fakeGenerateRuntime(t, &captured, nil)
-	api := newInferenceAPI(t, runtime, nil,
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil,
 		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
 
 	_, err := api.generate(map[string]any{
@@ -508,16 +364,16 @@ func TestInferenceBridge_Generate_Extensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate with extensions: %v", err)
 	}
-	req := capturedRequest(&captured)
-	if len(req.Extensions) != 1 {
-		t.Fatalf("provider saw %d extensions, want 1", len(req.Extensions))
+	reqs := fake.Requests()
+	if len(reqs) != 1 || len(reqs[0].Extensions) != 1 {
+		t.Fatalf("provider saw %+v, want one extension", reqs)
 	}
 	// The pipeline Clone()s requests in flight, so extensions arrive
 	// in the shape their Clone returns — the value form, matching how
 	// provider compilers type-assert them.
-	ext, ok := req.Extensions[0].(testExtension)
+	ext, ok := reqs[0].Extensions[0].(testExtension)
 	if !ok {
-		t.Fatalf("extension = %T, want testExtension (post-Clone value form)", req.Extensions[0])
+		t.Fatalf("extension = %T, want testExtension (post-Clone value form)", reqs[0].Extensions[0])
 	}
 	if ext.CacheKey != "sess-1" || ext.ProviderID() != "fake" || ext.ExtensionID() != "generate_options" {
 		t.Fatalf("extension = %+v, want cache_key sess-1 addressed to fake/generate_options", ext)
@@ -525,8 +381,8 @@ func TestInferenceBridge_Generate_Extensions(t *testing.T) {
 }
 
 func TestInferenceBridge_Extensions_Unregistered(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil,
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil,
 		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
 
 	_, err := api.generate(map[string]any{
@@ -544,8 +400,8 @@ func TestInferenceBridge_Extensions_Unregistered(t *testing.T) {
 }
 
 func TestInferenceBridge_Extensions_StrictFields(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil,
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil,
 		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
 
 	_, err := api.generate(map[string]any{
@@ -563,8 +419,8 @@ func TestInferenceBridge_Extensions_StrictFields(t *testing.T) {
 }
 
 func TestInferenceBridge_Extensions_MissingIdentity(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil)
-	api := newInferenceAPI(t, runtime, nil,
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil,
 		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
 
 	_, err := api.generate(map[string]any{
@@ -581,8 +437,8 @@ func TestInferenceBridge_Extensions_MissingIdentity(t *testing.T) {
 }
 
 func TestInferenceBridge_Route_Extensions(t *testing.T) {
-	var captured atomic.Value
-	runtime := fakeGenerateRuntime(t, &captured, nil)
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Runtime(t)
 	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime),
 		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
 
@@ -597,9 +453,9 @@ func TestInferenceBridge_Route_Extensions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route with extensions: %v", err)
 	}
-	req := capturedRequest(&captured)
+	req := fake.LastRequest()
 	if len(req.Extensions) != 1 {
-		t.Fatalf("router forwarded %d extensions, want 1", len(req.Extensions))
+		t.Fatalf("router forwarded %+v, want one extension", req.Extensions)
 	}
 	if ext, ok := req.Extensions[0].(testExtension); !ok || ext.CacheKey != "sess-2" {
 		t.Fatalf("extension = %+v (%T), want cache_key sess-2", req.Extensions[0], req.Extensions[0])
@@ -618,8 +474,14 @@ func TestInferenceBridge_Extensions_NonPointerFactory(t *testing.T) {
 }
 
 func TestInferenceBridge_Stream_EventSequenceAndResult(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil, "text:hel", "text:lo", "finish:completed")
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hel"}},
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "lo"}},
+			{FinishReason: inference.FinishCompleted},
+		},
+	}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	raw, err := api.stream(map[string]any{
 		"model": fakeModelJSON(),
@@ -674,8 +536,8 @@ func TestInferenceBridge_Stream_EventSequenceAndResult(t *testing.T) {
 }
 
 func TestInferenceBridge_Stream_ResultBeforeEOF(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil, "text:hel", "finish:completed")
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	raw, err := api.stream(map[string]any{"model": fakeModelJSON(), "input": userInput("hi")})
 	if err != nil {
@@ -688,8 +550,8 @@ func TestInferenceBridge_Stream_ResultBeforeEOF(t *testing.T) {
 }
 
 func TestInferenceBridge_Stream_CloseIdempotent(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil, "text:hel", "text:lo", "finish:completed")
-	api := newInferenceAPI(t, runtime, nil)
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Runtime(t), nil)
 
 	raw, err := api.stream(map[string]any{"model": fakeModelJSON(), "input": userInput("hi")})
 	if err != nil {
@@ -720,7 +582,13 @@ func TestInferenceBridge_Stream_NoRuntime(t *testing.T) {
 }
 
 func TestInferenceBridge_RouteStream_TraceOnResult(t *testing.T) {
-	runtime := fakeGenerateRuntime(t, nil, nil, "text:hi", "finish:completed")
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hi"}},
+			{FinishReason: inference.FinishCompleted},
+		},
+	}
+	runtime := fake.Runtime(t)
 	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
 
 	raw, err := api.routeStream(map[string]any{"input": userInput("hi")})

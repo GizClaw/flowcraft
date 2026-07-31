@@ -103,11 +103,17 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 			board.RestoreFrom(cp.Board)
 		}
 		iterations = cp.Iteration
-		next, err := g.resolveNext(board, []string{cp.Step})
+		next, err := g.resolveNext(board, cp.Steps, iterations)
 		if err != nil {
 			return retBoard, err
 		}
 		frontier = next
+	} else if startID, ok := startNodeFromContext(ctx); ok {
+		if _, known := g.nodes[startID]; !known {
+			return retBoard, errdefs.Validationf(
+				"graph %q: start node %q is not defined", g.name, startID)
+		}
+		frontier = []string{startID}
 	}
 
 	for len(frontier) > 0 {
@@ -132,8 +138,8 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 			return retBoard, err
 		}
 		iterations += len(wave)
-		g.stampCheckpoint(ctx, host, run, board, wave[len(wave)-1], iterations, originalStartedAt)
-		next, err := g.resolveNext(board, wave)
+		g.stampCheckpoint(ctx, host, run, board, wave, iterations, originalStartedAt)
+		next, err := g.resolveNext(board, wave, iterations)
 		if err != nil {
 			return retBoard, err
 		}
@@ -208,7 +214,7 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		return false, verr
 	}
 
-	ec := ExecutionContext{Context: ctx, Host: host, NodeID: nodeID, GraphID: g.name}
+	ec := ExecutionContext{Context: ctx, Host: host, NodeID: nodeID, NodeType: slot.def.Type, GraphID: g.name}
 	publishStepStarted(ctx, host, g, info, nodeID)
 	preInvoke := channelLengths(board, slot.writes)
 
@@ -225,10 +231,28 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 
 	var invokeErr error
 	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			// Linear backoff between attempts; the wait stays
+			// interruptible so a cancelled run never sleeps out its
+			// remaining budget.
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			}
+			if ctx.Err() != nil {
+				invokeErr = ctx.Err()
+				break
+			}
+		}
+		snapshot := board.Snapshot()
 		invokeErr = invoke()
 		if invokeErr == nil || !isRetryable(invokeErr) || attempt >= g.maxNodeRetries {
 			break
 		}
+		// Roll the board back to the pre-attempt state so a retried
+		// node never sees its own half-written vars or duplicated
+		// messages. The final attempt's writes stay for diagnostics.
+		board.RestoreFrom(snapshot)
 	}
 	if invokeErr != nil {
 		if cerr := classifyContextError(ctx, g.name, nodeID); cerr != nil {
@@ -296,11 +320,22 @@ func (g *Graph) validateWrites(board *agent.Board, slot *nodeSlot, preInvoke map
 // executeParallel fans a wave out across goroutines. Every branch runs
 // against a private copy of the pre-fork board; results merge back
 // deterministically via the configured [MergeFunc]. A wave with any
-// failing branch fails without merging.
+// failing branch fails without merging — but a branch cancelled
+// through the wave's [ParallelController] is not a failure: it merges
+// as a no-op, like a skipped node.
 func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, wave []string) error {
+	if g.parallel.MaxBranches > 0 && len(wave) > g.parallel.MaxBranches {
+		return errdefs.BudgetExceededf(
+			"graph %q: parallel wave of %d branches exceeds max_branches %d",
+			g.name, len(wave), g.parallel.MaxBranches)
+	}
 	preFork := board.Snapshot()
 	info := run.Info()
 	forkID := fmt.Sprintf("%s#%s", run.RunID, wave[0])
+	controller := newForkController(wave)
+
+	publishParallelWave(ctx, host, g, info, agent.SubjectParallelFork(info.RunID),
+		ParallelWaveEventPayload{ForkID: forkID, Branches: wave})
 
 	results := make([]BranchResult, len(wave))
 	var wg sync.WaitGroup
@@ -313,14 +348,30 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			bctx := ctx
+			bctx, cancelBranch := context.WithCancelCause(ctx)
+			defer cancelBranch(nil)
 			if g.parallel.BranchTimeout > 0 {
 				var cancel context.CancelFunc
-				bctx, cancel = context.WithTimeout(ctx, g.parallel.BranchTimeout)
+				bctx, cancel = context.WithTimeout(bctx, g.parallel.BranchTimeout)
 				defer cancel()
 			}
 
 			slot := g.nodes[id]
+
+			// A branch cancelled while queued skips invocation entirely.
+			if reason, cancelled := controller.start(id, cancelBranch); cancelled {
+				publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
+					Type:     agent.StreamDeltaParallelBranchCancel,
+					ForkID:   forkID,
+					BranchID: id,
+					Reason:   reason,
+				})
+				results[i] = BranchResult{NodeID: id, Cancelled: true}
+				return
+			}
+			defer controller.finish(id)
+			bctx = WithParallelController(bctx, controller.view(id))
+
 			publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
 				Type:     agent.StreamDeltaParallelBranchAccept,
 				ForkID:   forkID,
@@ -334,12 +385,20 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 			case skipped:
 				results[i] = BranchResult{NodeID: id}
 			case err != nil:
-				results[i] = BranchResult{NodeID: id, Err: err}
+				reason := err.Error()
+				if cancelReason, cancelled := controller.cancelledReason(id); cancelled {
+					// Deliberate cancellation, not a failure: the
+					// branch merges as a no-op and the wave proceeds.
+					results[i] = BranchResult{NodeID: id, Cancelled: true}
+					reason = cancelReason
+				} else {
+					results[i] = BranchResult{NodeID: id, Err: err}
+				}
 				publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
 					Type:     agent.StreamDeltaParallelBranchCancel,
 					ForkID:   forkID,
 					BranchID: id,
-					Reason:   err.Error(),
+					Reason:   reason,
 				})
 			default:
 				results[i] = BranchResult{NodeID: id, Snapshot: branchBoard.Snapshot()}
@@ -353,18 +412,59 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 			return res.Err
 		}
 	}
-	return g.parallel.mergeFunc()(ctx, board, preFork, results)
+	if err := g.parallel.mergeFunc()(ctx, board, preFork, results); err != nil {
+		return err
+	}
+	publishParallelWave(ctx, host, g, info, agent.SubjectParallelJoin(info.RunID),
+		ParallelWaveEventPayload{ForkID: forkID, Branches: wave, Cancelled: cancelledBranches(results)})
+	return nil
 }
 
-// stampCheckpoint persists the wave boundary on the host. Checkpoint
-// failures never fail the run — durability is the host's choice.
-func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.Run, board *agent.Board, lastNodeID string, iterations int, startedAt time.Time) {
+// cancelledBranches lists the wave's deliberately cancelled branch
+// ids, in wave order, for the join envelope.
+func cancelledBranches(results []BranchResult) []string {
+	var cancelled []string
+	for _, res := range results {
+		if res.Cancelled {
+			cancelled = append(cancelled, res.NodeID)
+		}
+	}
+	return cancelled
+}
+
+// startNodeKey carries a per-run entry override on the context.
+type startNodeKey struct{}
+
+// WithStartNode overrides where one Execute call begins: the run
+// starts at id instead of the definition's entry — the debug/manual
+// entry point. Precedence mirrors the legacy runner: a resume
+// (agent.Run.ResumeFrom) wins, then this override, then the entry.
+// Unknown ids fail validation at Execute.
+func WithStartNode(ctx context.Context, id string) context.Context {
+	if id == "" || ctx == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, startNodeKey{}, id)
+}
+
+// startNodeFromContext returns the WithStartNode override, if any.
+func startNodeFromContext(ctx context.Context) (string, bool) {
+	id, ok := ctx.Value(startNodeKey{}).(string)
+	return id, ok && id != ""
+}
+
+// stampCheckpoint persists the wave boundary on the host: the full
+// completed wave becomes the checkpoint's position marker set, so a
+// later resume rebuilds the frontier from every branch's outgoing
+// edges — not just the last node's. Checkpoint failures never fail
+// the run — durability is the host's choice.
+func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.Run, board *agent.Board, wave []string, iterations int, startedAt time.Time) {
 	if host == nil {
 		return
 	}
 	_ = host.Checkpoint(ctx, agent.Checkpoint{
 		ExecID:            run.RunID,
-		Step:              lastNodeID,
+		Steps:             wave,
 		Iteration:         iterations,
 		Board:             board.Snapshot(),
 		Attributes:        run.Attributes,
@@ -377,13 +477,18 @@ func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.
 // resolveNext computes the next frontier after a wave: every outgoing
 // edge whose condition passes (or is absent) contributes its target;
 // END targets terminate quietly.
-func (g *Graph) resolveNext(board *agent.Board, executed []string) ([]string, error) {
+// resolveNext computes the next frontier after a wave: every outgoing
+// edge whose condition passes (or is absent) contributes its target;
+// END targets terminate quietly. Conditions evaluate against board
+// vars plus the kernel-injected VarIterations (node invocation
+// count), so a loop back-edge can soft-exit via "__iterations < 10".
+func (g *Graph) resolveNext(board *agent.Board, executed []string, iterations int) ([]string, error) {
 	var next []string
 	for _, id := range executed {
 		for _, e := range g.edges[id] {
 			take := true
 			if e.Condition != nil {
-				ok, err := e.Condition.Evaluate(board)
+				ok, err := e.Condition.evaluate(conditionEnv(board, iterations))
 				if err != nil {
 					return nil, fmt.Errorf("graph %q node %q: %w", g.name, id, err)
 				}
@@ -395,6 +500,15 @@ func (g *Graph) resolveNext(board *agent.Board, executed []string) ([]string, er
 		}
 	}
 	return dedupIDs(next), nil
+}
+
+// conditionEnv assembles the condition evaluation environment: board
+// vars plus kernel-injected names. The kernel value wins on collision —
+// a user var named "__iterations" cannot fake out a loop's soft exit.
+func conditionEnv(board *agent.Board, iterations int) map[string]any {
+	env := board.Vars()
+	env[VarIterations] = iterations
+	return env
 }
 
 // classifyContextError converts context termination into a classified

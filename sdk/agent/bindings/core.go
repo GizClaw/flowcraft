@@ -39,6 +39,16 @@ func (b *EnvBuilder) Add(fns ...BindingFunc) *EnvBuilder {
 	return b
 }
 
+// AddIf appends ordinary binding functions only when cond holds —
+// the opt-in shape for capability bindings whose dep may be unwired
+// (nil workspace, nil sandbox runner, …).
+func (b *EnvBuilder) AddIf(cond bool, fns ...BindingFunc) *EnvBuilder {
+	if cond {
+		b.fns = append(b.fns, fns...)
+	}
+	return b
+}
+
 // AddLate appends late binding functions. They execute after ordinary bindings.
 func (b *EnvBuilder) AddLate(fns ...LateBindingFunc) *EnvBuilder {
 	b.late = append(b.late, fns...)

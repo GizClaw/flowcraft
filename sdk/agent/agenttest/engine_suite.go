@@ -20,8 +20,8 @@ type Capabilities struct {
 	// resumes the run rather than returning errdefs.NotAvailable).
 	//
 	// Engines that implement agent.Resumer with stricter CanResume
-	// admission rules (e.g. graph runner requires cp.Step to be a
-	// real node id) MAY surface errdefs.Validation when the suite's
+	// admission rules (e.g. graph runner requires cp.Steps to name
+	// real node ids) MAY surface errdefs.Validation when the suite's
 	// minimal test checkpoint fails admission; the suite accepts
 	// that as a valid SupportsResume=true outcome since the engine
 	// honestly rejected an unworkable resume request.
@@ -310,7 +310,7 @@ func testResumeNotSupported(t *testing.T, f Factory) {
 	// false). Either accepting the resume cleanly or rejecting the
 	// minimum-shape test checkpoint with Validation is acceptable —
 	// engines with strict Resumer.CanResume admission (e.g. graph
-	// runner) reject our naked-Step checkpoint here and that is
+	// runner) reject our Steps-less checkpoint here and that is
 	// honest, not a contract violation.
 	if err != nil && !errdefs.IsValidation(err) {
 		t.Fatalf("resumable engine returned non-Validation error on matching ExecID: %v", err)

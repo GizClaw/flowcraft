@@ -77,6 +77,47 @@ func publishStep(ctx context.Context, host agent.Host, subject event.Subject, in
 	}
 }
 
+// ParallelWaveEventPayload is the decoded payload shape of the
+// parallel fork/join envelopes bracketing a fan-out wave
+// (agent.SubjectParallelFork / agent.SubjectParallelJoin). Branch-level
+// accept/cancel signals travel as stream deltas instead
+// (agent.StreamDeltaParallelBranchAccept / …Cancel), so observers get
+// wave lifecycle from these envelopes and branch progress from deltas.
+type ParallelWaveEventPayload struct {
+	// ForkID correlates the fork and join envelopes of one wave.
+	ForkID string `json:"fork_id"`
+
+	// Branches lists the wave's branch node ids, in frontier order.
+	Branches []string `json:"branches"`
+
+	// Cancelled lists branch ids deliberately cancelled through the
+	// wave's ParallelController; set only on join envelopes.
+	Cancelled []string `json:"cancelled,omitempty"`
+
+	// Graph is the graph's name, for cross-graph filtering.
+	Graph string `json:"graph"`
+}
+
+// publishParallelWave emits a parallel fork/join envelope. Emission
+// is best-effort: a publishing failure never fails the wave.
+func publishParallelWave(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, subject event.Subject, payload ParallelWaveEventPayload) {
+	if host == nil {
+		return
+	}
+	payload.Graph = g.name
+	env, err := event.NewEnvelope(ctx, subject, payload)
+	if err != nil {
+		recordPublishError(ctx, "parallel_wave", info, payload.ForkID)
+		return
+	}
+	env.SetGraphID(payload.Graph)
+	env.SetAgentID(info.AgentID)
+	env.SetRunID(info.RunID)
+	if err := host.Publish(ctx, env); err != nil {
+		recordPublishError(ctx, "parallel_wave", info, payload.ForkID)
+	}
+}
+
 // publishStreamDelta mints a stream-delta envelope for a node —
 // subject agent.SubjectStreamDelta(runID, stepActor),
 // NodeID/GraphID/AgentID/RunID headers — and forwards it to

@@ -101,7 +101,7 @@ type Capabilities struct {
 // Semantics (advisory, not synchronous):
 //
 //   - The engine SHOULD call its host's Checkpointer at the next
-//     point in execution where Checkpoint.Step is well-defined. It is
+//     point in execution where Checkpoint.Steps is well-defined. It is
 //     NOT obligated to interrupt itself; SuggestCheckpoint returns
 //     immediately with no guarantee that the checkpoint has been
 //     written by the time it returns.

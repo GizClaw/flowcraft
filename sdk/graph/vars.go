@@ -14,4 +14,12 @@ const (
 	// run, appended by tool-calling node types (e.g. the LLM node)
 	// for observability and resume-time auditing.
 	VarToolCalls = "__tool_calls"
+
+	// VarIterations is the kernel-injected condition environment name
+	// holding the number of node invocations executed so far (the same
+	// counter WithMaxIterations budgets against; continuous across
+	// resume). A loop back-edge can soft-exit with "__iterations < 10".
+	// It lives in the reserved "__" namespace (see vars.go); the kernel
+	// value shadows any same-named board var as a second line of defense.
+	VarIterations = "__iterations"
 )

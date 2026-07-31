@@ -2,11 +2,14 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
@@ -132,6 +135,51 @@ type checkpointHost struct {
 func (h *checkpointHost) Checkpoint(_ context.Context, cp agent.Checkpoint) error {
 	h.cps = append(h.cps, cp)
 	return nil
+}
+
+// publishHost records published envelopes.
+type publishHost struct {
+	agent.NoopHost
+	mu   sync.Mutex
+	envs []event.Envelope
+}
+
+func (h *publishHost) Publish(_ context.Context, env event.Envelope) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.envs = append(h.envs, env)
+	return nil
+}
+
+// subjectsOf returns the recorded envelope subjects in publish order.
+func (h *publishHost) subjectsOf() []event.Subject {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]event.Subject, len(h.envs))
+	for i, env := range h.envs {
+		out[i] = env.Subject
+	}
+	return out
+}
+
+// decodePayloads unmarshals the payloads of envelopes whose subject
+// matches want, in publish order.
+func decodePayloads[T any](t *testing.T, h *publishHost, want event.Subject) []T {
+	t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []T
+	for _, env := range h.envs {
+		if env.Subject != want {
+			continue
+		}
+		var p T
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // interruptHost fires a cooperative interrupt after limit calls to

@@ -119,6 +119,10 @@ type ExecutionContext struct {
 	// definition.
 	NodeID string
 
+	// NodeType is the registered type name of the node being invoked
+	// (NodeDefinition.Type) — e.g. "inference", "tool", "script".
+	NodeType string
+
 	// GraphID identifies the graph being executed — the
 	// [GraphDefinition] name. Together with NodeID it locates the
 	// invocation: which graph, which node. The kernel stamps it onto

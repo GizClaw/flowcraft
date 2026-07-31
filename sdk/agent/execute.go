@@ -704,7 +704,7 @@ type Run struct {
 	// ResumeFrom, when non-nil, instructs the engine to continue
 	// execution from the provided checkpoint instead of starting a
 	// fresh run. The engine is the sole interpreter of
-	// [Checkpoint.Step] and [Checkpoint.Payload]; the host treats
+	// [Checkpoint.Steps] and [Checkpoint.Payload]; the host treats
 	// them as opaque.
 	//
 	// Contract:

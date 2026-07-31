@@ -13,7 +13,7 @@ func TestNoopCheckpointStore_SaveLoad(t *testing.T) {
 
 	cp := agent.Checkpoint{
 		ExecID:    "run-1",
-		Step:      "node-2",
+		Steps:     []string{"node-2"},
 		Iteration: 3,
 		Board:     agent.NewBoard().Snapshot(),
 		Timestamp: time.Now(),

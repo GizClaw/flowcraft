@@ -140,6 +140,22 @@ func SubjectStreamDelta(runID, stepActor string) event.Subject {
 	return event.Subject(fmt.Sprintf("%s%s.stream.%s.delta", SubjectPrefix, SanitiseID(runID), SanitiseID(stepActor)))
 }
 
+// SubjectParallelFork returns the subject an engine publishes when a
+// parallel fan-out wave begins, before any branch starts.
+//
+//	engine.run.<runID>.parallel.fork
+func SubjectParallelFork(runID string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.parallel.fork", SubjectPrefix, SanitiseID(runID)))
+}
+
+// SubjectParallelJoin returns the subject an engine publishes when a
+// parallel fan-out wave has merged back into the shared state.
+//
+//	engine.run.<runID>.parallel.join
+func SubjectParallelJoin(runID string) event.Subject {
+	return event.Subject(fmt.Sprintf("%s%s.parallel.join", SubjectPrefix, SanitiseID(runID)))
+}
+
 // ---------- Patterns ----------
 
 // PatternRun returns the wildcard pattern matching every event of one

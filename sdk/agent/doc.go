@@ -81,7 +81,7 @@
 // [Run.ResumeFrom] and overriding the run id to cp.ExecID. Engines
 // without [Resumer] surface NotAvailable; engines with it (graph
 // runner) restore board state from cp.Board and continue from
-// cp.Step. ResumeFrom applies to attempt 1 only — revise restarts
+// cp.Steps. ResumeFrom applies to attempt 1 only — revise restarts
 // are fresh runs, not checkpoint replays. [LoadAndResume] packages
 // the load-checkpoint-then-execute dance for hosts.
 //

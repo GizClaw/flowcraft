@@ -2,9 +2,11 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -138,6 +140,78 @@ func TestExecuteNodeRetry(t *testing.T) {
 	}
 }
 
+// TestExecuteNodeRetryRestoresBoard proves a failed attempt's writes
+// are rolled back before the next attempt: a node that appends a
+// message and then fails must not leave the duplicated message behind
+// when the retry succeeds.
+func TestExecuteNodeRetryRestoresBoard(t *testing.T) {
+	var calls atomic.Int32
+	reg := NewRegistry()
+	err := RegisterType(reg, "flaky-writer", NodeType[struct{}]{
+		Meta: Meta{Desc: "appends, fails once, then succeeds"},
+		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
+			board.AppendChannelMessage(agent.MainChannel,
+				inference.NewTextMessage(inference.RoleAssistant, "partial"))
+			if calls.Add(1) == 1 {
+				return errors.New("transient boom")
+			}
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "flaky-writer"}},
+	}, reg, WithMaxNodeRetries(1))
+
+	board := mustRun(t, g, agent.NewBoard())
+	if calls.Load() != 2 {
+		t.Fatalf("calls = %d, want 2 (one failure, one retry)", calls.Load())
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel len = %d, want 1 — the failed attempt's append must be rolled back", len(msgs))
+	}
+}
+
+// TestExecuteNodeRetryBackoffInterruptible proves the backoff wait
+// honours cancellation: a cancelled run returns promptly with the
+// context-classified error instead of sleeping out its retry budget.
+func TestExecuteNodeRetryBackoffInterruptible(t *testing.T) {
+	reg := NewRegistry()
+	err := RegisterType(reg, "always-fails", NodeType[struct{}]{
+		Meta:    Meta{Desc: "always fails retryably"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return errors.New("boom") },
+	})
+	if err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "always-fails"}},
+	}, reg, WithMaxNodeRetries(3)) // 500+1000+1500ms of backoff ahead
+
+	ctx, cancel := context.WithCancel(context.Background())
+	start := time.Now()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	_, err = g.Execute(ctx, testRun(), agent.NoopHost{}, agent.NewBoard())
+	if err == nil {
+		t.Fatal("cancelled run must fail")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("cancellation took %v — backoff slept through it", elapsed)
+	}
+	if !errdefs.IsAborted(err) && !errdefs.IsTimeout(err) {
+		t.Fatalf("error = %v, want context-classified", err)
+	}
+}
+
 func TestExecuteHandlerErrorPropagates(t *testing.T) {
 	reg := newTestRegistry(t)
 	g := mustBuild(t, &GraphDefinition{
@@ -173,7 +247,7 @@ func TestExecuteCheckpointsStamped(t *testing.T) {
 		t.Fatalf("expected 2 wave checkpoints, got %d", len(host.cps))
 	}
 	last := host.cps[len(host.cps)-1]
-	if last.Step != "b" || last.Iteration != 2 || last.Board == nil {
+	if len(last.Steps) != 1 || last.Steps[0] != "b" || last.Iteration != 2 || last.Board == nil {
 		t.Fatalf("last checkpoint = %+v", last)
 	}
 	if v := last.Board.Vars["x"]; v != float64(1) {
@@ -197,7 +271,7 @@ func TestExecuteResume(t *testing.T) {
 	// re-run (x comes from the checkpoint board, not from re-execution).
 	cp := &agent.Checkpoint{
 		ExecID: "run-1",
-		Step:   "a",
+		Steps:  []string{"a"},
 		Board: &agent.BoardSnapshot{
 			Vars:     map[string]any{"x": float64(1), "a_ran": true},
 			Channels: map[string][]inference.Message{agent.MainChannel: {}},
@@ -228,7 +302,7 @@ func TestExecuteResumeRejectsForeignCheckpoint(t *testing.T) {
 	run := testRun()
 	run.ResumeFrom = &agent.Checkpoint{
 		ExecID: "another-run",
-		Step:   "a",
+		Steps:  []string{"a"},
 		Board:  &agent.BoardSnapshot{Vars: map[string]any{}},
 	}
 	_, err := g.Execute(context.Background(), run, agent.NoopHost{}, agent.NewBoard())
@@ -236,7 +310,7 @@ func TestExecuteResumeRejectsForeignCheckpoint(t *testing.T) {
 		t.Fatalf("expected validation error, got %v", err)
 	}
 
-	if err := g.CanResume(agent.Checkpoint{Step: "ghost", Board: &agent.BoardSnapshot{}}); !errdefs.IsValidation(err) {
+	if err := g.CanResume(agent.Checkpoint{Steps: []string{"ghost"}, Board: &agent.BoardSnapshot{}}); !errdefs.IsValidation(err) {
 		t.Fatalf("unknown checkpoint node accepted: %v", err)
 	}
 }
@@ -313,5 +387,413 @@ func TestExecuteWriteRoleEnforced(t *testing.T) {
 	_, err := g.Execute(context.Background(), testRun(), agent.NoopHost{}, agent.NewBoard())
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("required write not enforced: %v", err)
+	}
+}
+
+// TestExecuteParallelCancelNode exercises the whole path: a healthy
+// branch cancels a blocked sibling through the context-carried
+// controller; the wave succeeds, the cancelled branch merges as a
+// no-op, and the sibling's writes land.
+func TestExecuteParallelCancelNode(t *testing.T) {
+	reg := NewRegistry()
+
+	bStarted := make(chan struct{})
+	err := RegisterType(reg, "blocker", NodeType[struct{}]{
+		Meta: Meta{Desc: "blocks until its context is cancelled"},
+		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
+			close(bStarted)
+			<-ec.Context.Done()
+			return ec.Context.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("register blocker: %v", err)
+	}
+	err = RegisterType(reg, "canceller", NodeType[struct{}]{
+		Meta: Meta{Desc: "cancels the sibling branch"},
+		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
+			<-bStarted // ensure the sibling is running, not just queued
+			ctrl, ok := ParallelControllerFromContext(ec.Context)
+			if !ok {
+				return errors.New("no parallel controller on branch context")
+			}
+			if !ctrl.CancelNode("b", "not needed") {
+				return errors.New("CancelNode(b) = false")
+			}
+			board.SetVar("from_c", true)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register canceller: %v", err)
+	}
+	err = RegisterType(reg, "noop", NodeType[struct{}]{
+		Meta:    Meta{Desc: "entry"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("register noop: %v", err)
+	}
+
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "cancel-wave",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "noop"},
+			{ID: "b", Type: "blocker"},
+			{ID: "c", Type: "canceller"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: END}, {From: "c", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true}))
+
+	board, err := g.Execute(context.Background(), testRun(), agent.NoopHost{}, agent.NewBoard())
+	if err != nil {
+		t.Fatalf("cancelled branch must not fail the wave: %v", err)
+	}
+	if v, _ := board.GetVar("from_c"); v != true {
+		t.Fatal("canceller's write missing — merge must still run")
+	}
+}
+
+// TestExecuteParallelMaxBranchesExceeded proves a fan-out wave larger
+// than MaxBranches fails the run with a budget-classified error
+// instead of silently truncating branches.
+func TestExecuteParallelMaxBranchesExceeded(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo"},
+			{ID: "b", Type: "echo"},
+			{ID: "c", Type: "echo"},
+			{ID: "d", Type: "echo"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"}, {From: "a", To: "d"},
+			{From: "b", To: END}, {From: "c", To: END}, {From: "d", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true, MaxBranches: 2}))
+
+	_, err := g.Execute(context.Background(), testRun(), agent.NoopHost{}, agent.NewBoard())
+	if err == nil {
+		t.Fatal("wave of 3 with max_branches 2 must fail")
+	}
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("err = %v, want budget-exceeded classification", err)
+	}
+
+	// At or under the cap the same graph runs fine.
+	g2 := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo"},
+			{ID: "b", Type: "echo"},
+		},
+		Edges: []EdgeDefinition{{From: "a", To: "b"}, {From: "b", To: END}},
+	}, reg, WithParallel(ParallelConfig{Enabled: true, MaxBranches: 2}))
+	mustRun(t, g2, agent.NewBoard())
+}
+
+// TestExecuteParallelForkJoinEvents proves the kernel brackets every
+// fan-out wave with fork/join envelopes carrying the branch roster —
+// the wave-level lifecycle hosts previously had to infer from branch
+// step events.
+func TestExecuteParallelForkJoinEvents(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo"},
+			{ID: "b", Type: "echo"},
+			{ID: "c", Type: "echo"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: END}, {From: "c", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true}))
+
+	host := &publishHost{}
+	if _, err := g.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	forks := decodePayloads[ParallelWaveEventPayload](t, host, agent.SubjectParallelFork("run-1"))
+	joins := decodePayloads[ParallelWaveEventPayload](t, host, agent.SubjectParallelJoin("run-1"))
+	if len(forks) != 1 || len(joins) != 1 {
+		t.Fatalf("forks = %d, joins = %d, want 1 each", len(forks), len(joins))
+	}
+	if len(forks[0].Branches) != 2 {
+		t.Fatalf("fork branches = %v, want [b c]", forks[0].Branches)
+	}
+	if forks[0].Graph != "g" || joins[0].Graph != "g" {
+		t.Fatalf("graph header = %q / %q", forks[0].Graph, joins[0].Graph)
+	}
+	if forks[0].ForkID == "" || forks[0].ForkID != joins[0].ForkID {
+		t.Fatalf("fork/join ForkID mismatch: %q vs %q", forks[0].ForkID, joins[0].ForkID)
+	}
+	if len(joins[0].Cancelled) != 0 {
+		t.Fatalf("join cancelled = %v, want empty", joins[0].Cancelled)
+	}
+
+	// Fork must precede join in publish order.
+	var forkIdx, joinIdx = -1, -1
+	for i, s := range host.subjectsOf() {
+		switch s {
+		case agent.SubjectParallelFork("run-1"):
+			forkIdx = i
+		case agent.SubjectParallelJoin("run-1"):
+			joinIdx = i
+		}
+	}
+	if forkIdx == -1 || joinIdx == -1 || forkIdx > joinIdx {
+		t.Fatalf("fork idx %d, join idx %d — fork must precede join", forkIdx, joinIdx)
+	}
+}
+
+// TestExecuteParallelJoinCancelledList proves the join envelope names
+// the branches cancelled through the wave's ParallelController.
+func TestExecuteParallelJoinCancelledList(t *testing.T) {
+	reg := NewRegistry()
+	bStarted := make(chan struct{})
+	if err := RegisterType(reg, "blocker", NodeType[struct{}]{
+		Meta: Meta{Desc: "blocks until cancelled"},
+		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
+			close(bStarted)
+			<-ec.Context.Done()
+			return ec.Context.Err()
+		},
+	}); err != nil {
+		t.Fatalf("register blocker: %v", err)
+	}
+	if err := RegisterType(reg, "canceller", NodeType[struct{}]{
+		Meta: Meta{Desc: "cancels the sibling branch"},
+		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
+			<-bStarted
+			ctrl, ok := ParallelControllerFromContext(ec.Context)
+			if !ok || !ctrl.CancelNode("b", "not needed") {
+				return errors.New("CancelNode(b) failed")
+			}
+			return nil
+		},
+	}); err != nil {
+		t.Fatalf("register canceller: %v", err)
+	}
+	if err := RegisterType(reg, "noop", NodeType[struct{}]{
+		Meta:    Meta{Desc: "entry"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	}); err != nil {
+		t.Fatalf("register noop: %v", err)
+	}
+
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "noop"},
+			{ID: "b", Type: "blocker"},
+			{ID: "c", Type: "canceller"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: END}, {From: "c", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true}))
+
+	host := &publishHost{}
+	if _, err := g.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	joins := decodePayloads[ParallelWaveEventPayload](t, host, agent.SubjectParallelJoin("run-1"))
+	if len(joins) != 1 {
+		t.Fatalf("joins = %d, want 1", len(joins))
+	}
+	if len(joins[0].Cancelled) != 1 || joins[0].Cancelled[0] != "b" {
+		t.Fatalf("join cancelled = %v, want [b]", joins[0].Cancelled)
+	}
+}
+
+// TestWithStartNode covers the debug entry override: the run begins
+// mid-graph (prefix never executes), unknown ids fail validation, and
+// a resume takes precedence over the override.
+func TestWithStartNode(t *testing.T) {
+	reg := newTestRegistry(t)
+	def := &GraphDefinition{
+		Name:  "start-g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo", Config: []byte(`{"set_var": "hit_a", "set_val": true}`)},
+			{ID: "b", Type: "echo", Config: []byte(`{"set_var": "hit_b", "set_val": true}`)},
+			{ID: "c", Type: "echo", Config: []byte(`{"set_var": "hit_c", "set_val": true}`)},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "b", To: "c"}, {From: "c", To: END},
+		},
+	}
+	g := mustBuild(t, def, reg)
+
+	// Mid-graph start: a is skipped, b and c run.
+	board, err := g.Execute(WithStartNode(context.Background(), "b"),
+		testRun(), agent.NoopHost{}, agent.NewBoard())
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, ok := board.GetVar("hit_a"); ok {
+		t.Fatal("prefix node a ran despite the start override")
+	}
+	for _, key := range []string{"hit_b", "hit_c"} {
+		if v, _ := board.GetVar(key); v != true {
+			t.Fatalf("%s missing after starting at b", key)
+		}
+	}
+
+	// Unknown start node: validation.
+	if _, err := g.Execute(WithStartNode(context.Background(), "ghost"),
+		testRun(), agent.NoopHost{}, agent.NewBoard()); !errdefs.IsValidation(err) {
+		t.Fatalf("unknown start node error = %v, want validation-classified", err)
+	}
+
+	// Resume wins over the override.
+	run := testRun()
+	run.ResumeFrom = &agent.Checkpoint{
+		ExecID: run.RunID,
+		Steps:  []string{"c"},
+		Board:  &agent.BoardSnapshot{Vars: map[string]any{}},
+	}
+	board, err = g.Execute(WithStartNode(context.Background(), "b"),
+		run, agent.NoopHost{}, agent.NewBoard())
+	if err != nil {
+		t.Fatalf("Execute with resume: %v", err)
+	}
+	// The resume frontier starts after c (END): nothing runs at all,
+	// and the start override must not fire either.
+	if _, ok := board.GetVar("hit_b"); ok {
+		t.Fatal("start override fired despite resume precedence")
+	}
+}
+
+// TestExecuteResumeRestoresFullFrontier is the regression test for
+// the lost-branch defect: a fan-out wave whose branches diverge
+// (b→d, c→e, no join) checkpoints the *whole* wave, so a resume
+// after a mid-[d,e]-wave crash rebuilds the frontier from every
+// branch's edges. The legacy single-node marker would have followed
+// only the last branch's edges and silently dropped d's subgraph.
+func TestExecuteResumeRestoresFullFrontier(t *testing.T) {
+	reg := newTestRegistry(t)
+	def := &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo"},
+			{ID: "b", Type: "echo"},
+			{ID: "c", Type: "echo"},
+			{ID: "d", Type: "echo", Config: []byte(`{"set_var": "hit_d", "set_val": true}`)},
+			{ID: "e", Type: "echo", Config: []byte(`{"set_var": "hit_e", "set_val": true}`)},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: "d"}, {From: "c", To: "e"},
+			{From: "d", To: END}, {From: "e", To: END},
+		},
+	}
+	g := mustBuild(t, def, reg)
+
+	// One full run, capturing wave-boundary checkpoints. The [b,c]
+	// checkpoint is taken *before* the [d,e] wave runs, so its board
+	// has no hit_d/hit_e — exactly the state a crash mid-[d,e]-wave
+	// would leave behind.
+	host := &checkpointHost{}
+	if _, err := g.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
+		t.Fatalf("seed Execute: %v", err)
+	}
+	var waveCP *agent.Checkpoint
+	for i := range host.cps {
+		steps := host.cps[i].Steps
+		if len(steps) == 2 && steps[0] == "b" && steps[1] == "c" {
+			waveCP = &host.cps[i]
+		}
+	}
+	if waveCP == nil {
+		t.Fatalf("no [b c] wave checkpoint captured: %+v", host.cps)
+	}
+	if v := waveCP.Board.Vars["hit_d"]; v != nil {
+		t.Fatalf("checkpoint board already has hit_d — bad test setup: %v", v)
+	}
+
+	// Resume from that checkpoint: BOTH divergent successors run.
+	run := testRun()
+	run.ResumeFrom = waveCP
+	board, err := g.Execute(context.Background(), run, agent.NoopHost{}, agent.NewBoard())
+	if err != nil {
+		t.Fatalf("resume Execute: %v", err)
+	}
+	if v, _ := board.GetVar("hit_d"); v != true {
+		t.Fatal("d (first branch's successor) lost on resume")
+	}
+	if v, _ := board.GetVar("hit_e"); v != true {
+		t.Fatal("e (last branch's successor) lost on resume")
+	}
+}
+
+// TestExecuteIterationsSoftExit proves the kernel injects the node
+// invocation count into edge conditions: a loop back-edge guarded by
+// "__iterations < 4" stops looping after 4 invocations and falls
+// through to the default END edge — a clean exit, not a budget error.
+func TestExecuteIterationsSoftExit(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo", Config: []byte(`{"message": "a"}`)},
+			{ID: "b", Type: "echo", Config: []byte(`{"message": "b"}`)},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"},
+			{From: "b", To: "a", Condition: "__iterations < 4"},
+			{From: "b", To: END},
+		},
+	}, reg)
+
+	board := mustRun(t, g, agent.NewBoard())
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 invocations (a,b,a,b), got %d", len(msgs))
+	}
+	if msgs[3].Content.Text() != "b" {
+		t.Fatalf("last invocation = %q, want b", msgs[3].Content.Text())
+	}
+}
+
+// TestExecuteIterationsShadowsBoardVar proves the kernel-injected
+// "__iterations" wins over a same-named board var in edge conditions —
+// even a rule-breaking user var cannot fake out a loop's soft exit.
+func TestExecuteIterationsShadowsBoardVar(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo", Config: []byte(`{"message": "a"}`)},
+			{ID: "b", Type: "echo", Config: []byte(`{"message": "b"}`)},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b", Condition: "__iterations < 2"},
+			{From: "b", To: END},
+		},
+	}, reg)
+
+	board := agent.NewBoard()
+	board.SetVar("__iterations", 999)
+	board = mustRun(t, g, board)
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 || msgs[1].Content.Text() != "b" {
+		t.Fatalf("user var 999 shadowed kernel counter; channel = %+v", msgs)
 	}
 }

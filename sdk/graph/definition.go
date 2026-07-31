@@ -83,6 +83,10 @@ type EdgeDefinition struct {
 	// only when the expression is absent or evaluates to true.
 	// Multiple outgoing edges may fire (fan-out); zero firing edges
 	// ends the branch.
+	//
+	// The environment also exposes VarIterations ("__iterations"), the
+	// node invocation count, so a loop back-edge can soft-exit with
+	// e.g. "__iterations < 10" instead of tripping WithMaxIterations.
 	Condition string `json:"condition,omitempty"`
 }
 

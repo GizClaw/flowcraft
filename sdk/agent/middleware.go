@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"slices"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -240,7 +241,7 @@ func (h tracingHost) Checkpoint(ctx context.Context, cp Checkpoint) error {
 	ctx, span := h.tracer.Start(ctx, "agent.host.checkpoint",
 		trace.WithAttributes(
 			attribute.String("checkpoint.exec_id", cp.ExecID),
-			attribute.String("checkpoint.step", cp.Step),
+			attribute.String("checkpoint.steps", strings.Join(cp.Steps, ",")),
 			attribute.Int("checkpoint.iteration", cp.Iteration),
 		),
 	)
