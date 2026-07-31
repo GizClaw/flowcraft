@@ -79,23 +79,20 @@ func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 		if entry.IsDir() {
 			return nil
 		}
-		rel := path
-		if len(rel) > 2 && rel[:2] == "./" {
-			rel = rel[2:]
-		}
-
+		// filepath.Join(".", name) is already Clean, so path carries no
+		// leading "./" — it is relative to the workspace root as-is.
 		var matched bool
 		if hasDoublestar {
-			matched = matchDoublestar(pattern, rel)
+			matched = matchDoublestar(pattern, path)
 		} else {
 			var matchErr error
-			matched, matchErr = filepath.Match(pattern, rel)
+			matched, matchErr = filepath.Match(pattern, path)
 			if matchErr != nil {
 				return matchErr
 			}
 		}
 		if matched {
-			matches = append(matches, rel)
+			matches = append(matches, path)
 		}
 		return nil
 	})
@@ -119,14 +116,11 @@ func matchDoublestar(pattern, path string) bool {
 	return matchParts(parts, segs)
 }
 
+// splitPath splits p into path segments. It deliberately does NOT use
+// filepath.SplitList, which splits on the OS list separator (":" on
+// Unix) and would corrupt patterns containing a literal colon.
 func splitPath(p string) []string {
-	var parts []string
-	for _, s := range filepath.SplitList(p) {
-		for _, seg := range split(s) {
-			parts = append(parts, seg)
-		}
-	}
-	return parts
+	return split(p)
 }
 
 func split(p string) []string {

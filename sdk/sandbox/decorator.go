@@ -2,8 +2,9 @@ package sandbox
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // AllowCommands returns a Runner that delegates to inner only when the
@@ -28,7 +29,7 @@ type allowCommandsRunner struct {
 
 func (r *allowCommandsRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
 	if !r.whitelist[cmd] {
-		return nil, fmt.Errorf("sandbox: command %q is not in the whitelist", cmd)
+		return nil, errdefs.PolicyDeniedf("sandbox: command %q is not in the whitelist", cmd)
 	}
 	return r.inner.Exec(ctx, cmd, args, opts)
 }

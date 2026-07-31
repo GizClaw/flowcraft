@@ -128,13 +128,13 @@ func NewNode(deps ScriptNodeDeps) graph.NodeType[ScriptConfig] {
 	}
 }
 
-// decodeScriptConfig strict-decodes the node config and enforces the
-// two required fields.
-// Register registers the "script" node type into reg.
 func Register(reg *graph.Registry, deps ScriptNodeDeps) error {
 	return graph.RegisterType(reg, "script", NewNode(deps))
 }
 
+// decodeScriptConfig strict-decodes the node config and enforces the
+// two required fields.
+// Register registers the "script" node type into reg.
 func decodeScriptConfig(raw json.RawMessage) (ScriptConfig, error) {
 	cfg, err := graph.DecodeConfig[ScriptConfig](raw)
 	if err != nil {

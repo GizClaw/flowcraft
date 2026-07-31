@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 )
 
@@ -55,6 +56,9 @@ func TestAllowCommands_Reject(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "whitelist") {
 		t.Fatalf("error should mention whitelist, got: %v", err)
+	}
+	if !errdefs.IsPolicyDenied(err) {
+		t.Fatalf("whitelist rejection should be classified policy-denied, got: %v", err)
 	}
 	if inner.called {
 		t.Fatal("blocked command must not reach inner runner")

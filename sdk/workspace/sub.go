@@ -22,6 +22,11 @@ var _ Workspace = (*subWorkspace)(nil)
 // All operations are forwarded to the parent workspace after prefixing the
 // caller's path. For local workspaces, the returned value also exposes Root()
 // so path-backed embedded stores can open files inside the subdirectory.
+// That extra is only preserved when the local workspace is reachable through
+// the wrap chain directly; a *ScopedWorkspace wrapping a *LocalWorkspace
+// yields the generic prefix view (no Root), because re-rooting the scope
+// would silently change what its relative permission patterns match. Use
+// [ScopedWorkspace.Unwrap] if direct root access is required.
 func Sub(inner Workspace, prefix string) Workspace {
 	if inner == nil {
 		return nil

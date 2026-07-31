@@ -69,15 +69,16 @@ func (w *LocalWorkspace) Sub(prefix string) (*LocalWorkspace, error) {
 
 // Capabilities reports LocalWorkspace's storage characteristics:
 // backed by the host filesystem, so Rename is atomic on the same
-// device, writes are read-after-write consistent, and durability
-// matches the underlying filesystem's default flush behaviour.
-// Distributed is false because LocalWorkspace assumes exclusive
-// access to its directory tree.
+// device and writes are read-after-write consistent. DurableOnWrite
+// is false because writes are not fsync'd before returning — a
+// successful Write only reaches the OS page cache. Distributed is
+// false because LocalWorkspace assumes exclusive access to its
+// directory tree.
 func (w *LocalWorkspace) Capabilities() Capabilities {
 	return Capabilities{
 		AtomicRename:   true,
 		ReadAfterWrite: true,
-		DurableOnWrite: true,
+		DurableOnWrite: false,
 		Distributed:    false,
 	}
 }
@@ -105,7 +106,10 @@ func (w *LocalWorkspace) Write(_ context.Context, path string, data []byte) erro
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("workspace: mkdir for %s: %w", path, err)
 	}
-	return os.WriteFile(full, data, 0o644)
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		return fmt.Errorf("workspace: write %s: %w", path, err)
+	}
+	return nil
 }
 
 func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) error {
@@ -121,8 +125,10 @@ func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) err
 		return fmt.Errorf("workspace: append %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
-	_, err = f.Write(data)
-	return err
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("workspace: append %s: %w", path, err)
+	}
+	return nil
 }
 
 func (w *LocalWorkspace) Rename(_ context.Context, src, dst string) error {

@@ -101,6 +101,17 @@ func (m *MemWorkspace) Rename(_ context.Context, src, dst string) error {
 	if srcP == dstP {
 		return nil
 	}
+	// POSIX rename(2) refuses to overwrite a directory with a file;
+	// silently dropping the entry would orphan the directory's children.
+	if existing, ok := m.files[dstP]; ok && existing.isDir {
+		return errdefs.Validationf("workspace: rename: %s is a directory", dst)
+	}
+	prefix := dstP + "/"
+	for k := range m.files {
+		if strings.HasPrefix(k, prefix) {
+			return errdefs.Validationf("workspace: rename: %s is a non-empty directory", dst)
+		}
+	}
 	m.ensureParents(dstP)
 	m.files[dstP] = f
 	delete(m.files, srcP)
@@ -166,7 +177,7 @@ func (m *MemWorkspace) List(_ context.Context, dir string) ([]fs.DirEntry, error
 	seen := make(map[string]bool)
 	var entries []fs.DirEntry
 	for k, f := range m.files {
-		if !strings.HasPrefix(k, prefix) && k != p {
+		if k == p || !strings.HasPrefix(k, prefix) {
 			continue
 		}
 		rest := strings.TrimPrefix(k, prefix)
@@ -222,7 +233,9 @@ func (m *MemWorkspace) Stat(_ context.Context, path string) (fs.FileInfo, error)
 	prefix := p + "/"
 	for k := range m.files {
 		if strings.HasPrefix(k, prefix) {
-			return &memFileInfo{name: filepath.Base(p), dir: true, modTime: time.Now()}, nil
+			// Implicit directory (no explicit entry): the zero modTime
+			// is more honest than a fresh time.Now() on every call.
+			return &memFileInfo{name: filepath.Base(p), dir: true}, nil
 		}
 	}
 	return nil, fmt.Errorf("%w: %s", ErrNotFound, path)

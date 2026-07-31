@@ -51,6 +51,15 @@ func NewScopedWorkspace(inner Workspace, opts ...ScopedOption) *ScopedWorkspace 
 	return sw
 }
 
+// Unwrap returns the wrapped Workspace. It lets callers recover
+// implementation-specific extras (e.g. *LocalWorkspace.Root) that
+// the scoped wrapper does not forward — at the caller's own risk,
+// since operations on the unwrapped workspace bypass this scope's
+// permission policy.
+func (s *ScopedWorkspace) Unwrap() Workspace {
+	return s.inner
+}
+
 // Capabilities forwards to the wrapped Workspace, since scoping
 // is a security boundary that does not change durability /
 // atomicity / consistency / distribution semantics. A wrapped

@@ -47,6 +47,21 @@ func TestLocalRunner_Exec_NonZeroExitCode(t *testing.T) {
 	}
 }
 
+func TestLocalRunner_Exec_CommandNotFound(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+	runner := sandbox.NewLocalRunner(t.TempDir())
+
+	_, err := runner.Exec(context.Background(), "definitely-not-a-real-binary-xyz", nil, sandbox.ExecOptions{})
+	if err == nil {
+		t.Fatal("missing binary should fail")
+	}
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("missing binary should be classified not-found, got: %v", err)
+	}
+}
+
 func TestLocalRunner_Exec_Timeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("skipping on windows")

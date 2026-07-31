@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -124,9 +125,24 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 			result.ExitCode = exitErr.ExitCode()
 			return result, nil
 		}
-		return result, fmt.Errorf("sandbox: exec %s: %w", cmd, err)
+		return result, classifyStartError(cmd, err)
 	}
 	return result, nil
+}
+
+// classifyStartError maps process-start failures onto errdefs
+// categories: a missing binary is NotFound, a permission refusal is
+// Forbidden, anything else is Internal. Callers (e.g. script bridges)
+// rely on these categories instead of string-matching os/exec errors.
+func classifyStartError(cmd string, err error) error {
+	switch {
+	case errors.Is(err, exec.ErrNotFound):
+		return errdefs.NotFound(fmt.Errorf("sandbox: exec %s: %w", cmd, err))
+	case errors.Is(err, os.ErrPermission):
+		return errdefs.Forbidden(fmt.Errorf("sandbox: exec %s: %w", cmd, err))
+	default:
+		return errdefs.Internal(fmt.Errorf("sandbox: exec %s: %w", cmd, err))
+	}
 }
 
 // buildEnv translates an EnvPolicy into a flat []string suitable for

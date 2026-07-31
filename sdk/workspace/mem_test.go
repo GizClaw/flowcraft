@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 func TestMemWorkspace_CRUD(t *testing.T) {
@@ -328,5 +330,39 @@ func TestMemWorkspace_DirEntryInfo(t *testing.T) {
 	mode := e.Type()
 	if mode != 0 {
 		t.Fatalf("Type = %v, want 0 for regular file", mode)
+	}
+}
+
+func TestMemWorkspace_ListExcludesSelf(t *testing.T) {
+	ws := NewMemWorkspace()
+	ws.MustWrite("a/b.txt", []byte("x"))
+
+	entries, err := ws.List(context.Background(), "a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "b.txt" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("List(a) = %v, want [b.txt] — the listed directory must not appear as its own child", names)
+	}
+}
+
+func TestMemWorkspace_RenameOntoDir(t *testing.T) {
+	ws := NewMemWorkspace()
+	ctx := context.Background()
+	ws.MustWrite("src.txt", []byte("x"))
+	ws.MustWrite("dst/child.txt", []byte("y"))
+
+	if err := ws.Rename(ctx, "src.txt", "dst"); err == nil {
+		t.Fatal("rename onto a non-empty directory should fail")
+	} else if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error, got %v", err)
+	}
+	// Orphan check: the child must still be reachable afterwards.
+	if !ws.Contains("dst/child.txt", "y") {
+		t.Fatal("child entry must survive the rejected rename")
 	}
 }
