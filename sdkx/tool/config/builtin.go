@@ -31,7 +31,7 @@ func (b *Builder) registerBuiltins() {
 	b.factories[KindTelemetry] = noSpecFactory(KindTelemetry,
 		func() tool.Middleware { return middleware.Telemetry() })
 	b.factories[KindConcurrency] = concurrencyFactory
-	b.factories[KindTimeout] = timeoutFactory
+	b.factories[KindTimeout] = b.timeoutFactory
 	b.factories[KindRateLimit] = b.rateLimitFactory
 	b.factories[KindApproval] = b.approvalFactory
 	b.factories[KindAudit] = b.auditFactory
@@ -88,7 +88,11 @@ type timeoutSpec struct {
 	PerTool map[string]Duration `json:"per_tool,omitempty"`
 }
 
-func timeoutFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
+// timeoutFactory closes over the Builder's registry so the middleware
+// can honour each tool's ToolMeta.SelfTimeout claim — the same catalog
+// the Executor dispatches on. A per_tool entry in the spec still wins,
+// keeping host policy authoritative over a tool's self-declaration.
+func (b *Builder) timeoutFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
 	var s timeoutSpec
 	if err := decodeSpec(spec, &s); err != nil {
 		return nil, err
@@ -97,7 +101,7 @@ func timeoutFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, e
 	for name, d := range s.PerTool {
 		perTool[name] = time.Duration(d)
 	}
-	return middleware.Timeout(time.Duration(s.Default), perTool), nil
+	return middleware.TimeoutWithCatalog(b.registry, time.Duration(s.Default), perTool), nil
 }
 
 // rateLimitFactory closes over the Builder's registry: the

@@ -306,3 +306,82 @@ func TestAudit_RecordsEveryCall(t *testing.T) {
 		t.Error("record duration should be positive")
 	}
 }
+
+// selfTimingTool declares SelfTimeout and sleeps past any deadline the
+// middleware might impose, so a wrapped call is distinguishable from an
+// exempt one by whether it completes.
+type selfTimingTool struct {
+	name        string
+	selfTimeout bool
+	sleep       time.Duration
+}
+
+func (s selfTimingTool) Definition() tool.Definition {
+	return tool.Definition{Name: s.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+}
+
+func (s selfTimingTool) Metadata() tool.ToolMeta {
+	return tool.ToolMeta{SelfTimeout: s.selfTimeout}
+}
+
+func (s selfTimingTool) Execute(ctx context.Context, _ string) (string, error) {
+	select {
+	case <-time.After(s.sleep):
+		return "finished", nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func TestTimeoutWithCatalog_SelfTimeoutExempt(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond})
+	registry.Register(selfTimingTool{name: "wrapped", selfTimeout: false, sleep: 20 * time.Millisecond})
+
+	executor := tool.NewExecutor(registry,
+		TimeoutWithCatalog(registry, time.Millisecond, nil))
+
+	self := executor.Execute(context.Background(), call("self"))
+	if self.IsError {
+		t.Errorf("self-timing tool was cut short: %q", self.Content)
+	}
+	if self.Content != "finished" {
+		t.Errorf("self-timing tool content = %q, want %q", self.Content, "finished")
+	}
+
+	wrapped := executor.Execute(context.Background(), call("wrapped"))
+	if !wrapped.IsError {
+		t.Errorf("tool without a SelfTimeout claim should have timed out, got %q", wrapped.Content)
+	}
+}
+
+// TestTimeoutWithCatalog_PerToolOverridesSelfTimeout pins the precedence
+// rule: a tool's claim is advisory, an explicit per-tool entry is host
+// policy and wins.
+func TestTimeoutWithCatalog_PerToolOverridesSelfTimeout(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond})
+
+	executor := tool.NewExecutor(registry, TimeoutWithCatalog(
+		registry, 0, map[string]time.Duration{"self": time.Millisecond}))
+
+	res := executor.Execute(context.Background(), call("self"))
+	if !res.IsError {
+		t.Errorf("per-tool override should bound a self-timing tool, got %q", res.Content)
+	}
+}
+
+// TestTimeout_IgnoresSelfTimeoutWithoutCatalog documents that the
+// catalog-free constructor cannot see the claim, so it keeps its
+// original behaviour of wrapping everything.
+func TestTimeout_IgnoresSelfTimeoutWithoutCatalog(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(selfTimingTool{name: "self", selfTimeout: true, sleep: 20 * time.Millisecond})
+
+	executor := tool.NewExecutor(registry, Timeout(time.Millisecond, nil))
+
+	res := executor.Execute(context.Background(), call("self"))
+	if !res.IsError {
+		t.Errorf("Timeout without a catalog should still wrap, got %q", res.Content)
+	}
+}

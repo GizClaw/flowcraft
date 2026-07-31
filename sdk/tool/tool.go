@@ -32,6 +32,8 @@ type Tool interface {
 //   - RateLimit drives request-per-second throttling middleware.
 //   - MutatesState gates whether retry-on-failure logic may safely
 //     re-invoke the tool with the same arguments.
+//   - SelfTimeout opts the tool out of the timeout middleware's
+//     default deadline.
 //
 // Network / filesystem / cost claims were deliberately deferred:
 // the in-process runtime cannot enforce process-boundary isolation,
@@ -56,6 +58,17 @@ type ToolMeta struct {
 	// MAY mutate state. Tools that are provably side-effect free should
 	// declare MutatesState=false explicitly via Metadata().
 	MutatesState bool
+
+	// SelfTimeout declares that the tool already bounds its own
+	// execution time, so the timeout middleware should not impose its
+	// default deadline on top. Tools that carry their own transport
+	// timeout and honour the caller's context — an RPC to a remote
+	// server, for instance — set this to avoid two competing deadlines
+	// where the outer one reports a less useful error.
+	//
+	// A per-tool override in the middleware's own table still wins:
+	// this is the tool's claim, not a veto over host policy.
+	SelfTimeout bool
 }
 
 // ToolMetadata is an optional interface a Tool may implement to

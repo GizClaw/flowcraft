@@ -18,7 +18,11 @@ const VersionV1 = "v1"
 
 // Document is the parsed tool-execution policy.
 type Document struct {
-	Version     string
+	Version string
+	// Sources declares external tool providers to attach before the
+	// chain is built, so their tools are registered by the time scopes
+	// and middleware reference them.
+	Sources     []SourceEntry
 	Middlewares []MiddlewareEntry
 	Scopes      map[string]string
 }
@@ -38,6 +42,12 @@ func (d Document) Validate() error {
 		return errdefs.Validation(fmt.Errorf(
 			"tool config version %q is not supported (want %q)",
 			d.Version, VersionV1))
+	}
+	for i, entry := range d.Sources {
+		if entry.Kind == "" {
+			return errdefs.Validation(fmt.Errorf(
+				"tool config sources[%d]: kind is required", i))
+		}
 	}
 	for i, entry := range d.Middlewares {
 		if entry.Kind == "" {
@@ -81,6 +91,12 @@ func Parse(data []byte) (Document, error) {
 		Version: wire.Version,
 		Scopes:  wire.Scopes,
 	}
+	for _, entry := range wire.Sources {
+		doc.Sources = append(doc.Sources, SourceEntry{
+			Kind: entry.Kind,
+			Spec: entry.Spec.value,
+		})
+	}
 	for _, entry := range wire.Middlewares {
 		doc.Middlewares = append(doc.Middlewares, MiddlewareEntry{
 			Kind: entry.Kind,
@@ -95,11 +111,14 @@ func Parse(data []byte) (Document, error) {
 
 type documentWire struct {
 	Version     string            `yaml:"version"`
-	Middlewares []middlewareWire  `yaml:"middlewares,omitempty"`
+	Sources     []entryWire       `yaml:"sources,omitempty"`
+	Middlewares []entryWire       `yaml:"middlewares,omitempty"`
 	Scopes      map[string]string `yaml:"scopes,omitempty"`
 }
 
-type middlewareWire struct {
+// entryWire is the shared shape of a sources and middlewares entry: a
+// kind naming a factory plus an opaque spec that factory owns.
+type entryWire struct {
 	Kind string  `yaml:"kind"`
 	Spec rawSpec `yaml:"spec,omitempty"`
 }

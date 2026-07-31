@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/middleware"
 	"github.com/GizClaw/flowcraft/sdkx/tool/config"
@@ -104,10 +105,11 @@ func TestBuild_GoldenChainExecutes(t *testing.T) {
 	})
 	builder := config.NewBuilder(registry, config.Deps{Approver: approver, AuditSink: sink})
 
-	exec, err := builder.Build(context.Background(), doc)
+	assembly, err := builder.Build(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	t.Cleanup(func() { _ = assembly.Close() })
 
 	// scope metadata applied
 	if got := registry.ScopeOf("exec"); got != tool.ScopePlatform {
@@ -115,7 +117,7 @@ func TestBuild_GoldenChainExecutes(t *testing.T) {
 	}
 
 	// approval gates exec: denied, tool never runs, audit still records
-	res := exec.Execute(context.Background(), call("exec"))
+	res := assembly.Executor.Execute(context.Background(), call("exec"))
 	if !res.IsError {
 		t.Fatal("gated call should be denied by approver")
 	}
@@ -124,7 +126,7 @@ func TestBuild_GoldenChainExecutes(t *testing.T) {
 	}
 
 	// ungated tool passes the whole chain
-	res = exec.Execute(context.Background(), call("echo"))
+	res = assembly.Executor.Execute(context.Background(), call("echo"))
 	if res.IsError {
 		t.Fatalf("ungated call failed: %s", res.Content)
 	}
@@ -161,11 +163,12 @@ func TestBuild_ChainOrderIsDocumentOrder(t *testing.T) {
 	builder.RegisterFactory("first", track("first"))
 	builder.RegisterFactory("second", track("second"))
 
-	exec, err := builder.Build(context.Background(), doc)
+	assembly, err := builder.Build(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	exec.Execute(context.Background(), call("x"))
+	t.Cleanup(func() { _ = assembly.Close() })
+	assembly.Executor.Execute(context.Background(), call("x"))
 	if strings.Join(order, ",") != "first,second" {
 		t.Errorf("order = %v, want [first second] (document order = outermost first)", order)
 	}
@@ -193,58 +196,67 @@ func TestBuild_FailFast(t *testing.T) {
 		{
 			name: "unknown kind",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "nope"}}},
+				{Kind: "nope"},
+			}},
 			tools:   []string{"x"},
 			wantErr: "unknown kind",
 		},
 		{
 			name: "scope on unregistered tool",
 			doc: config.Document{Version: "v1", Scopes: map[string]string{
-				"ghost": tool.ScopePlatform}},
+				"ghost": tool.ScopePlatform,
+			}},
 			tools:   []string{"x"},
 			wantErr: "not registered",
 		},
 		{
 			name: "approval without approver dep",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "approval", Spec: json.RawMessage(`{"tools":["x"]}`)}}},
+				{Kind: "approval", Spec: json.RawMessage(`{"tools":["x"]}`)},
+			}},
 			tools:   []string{"x"},
 			wantErr: "Approver",
 		},
 		{
 			name: "audit without sink dep",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "audit"}}},
+				{Kind: "audit"},
+			}},
 			tools:   []string{"x"},
 			wantErr: "AuditSink",
 		},
 		{
 			name: "concurrency zero limit",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "concurrency", Spec: json.RawMessage(`{"limit":0}`)}}},
+				{Kind: "concurrency", Spec: json.RawMessage(`{"limit":0}`)},
+			}},
 			tools:   []string{"x"},
 			wantErr: "limit",
 		},
 		{
 			name: "concurrency unknown spec field",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "concurrency", Spec: json.RawMessage(`{"limits":10}`)}}},
+				{Kind: "concurrency", Spec: json.RawMessage(`{"limits":10}`)},
+			}},
 			tools:   []string{"x"},
 			wantErr: "unknown field",
 		},
 		{
 			name: "approval empty tools",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "approval", Spec: json.RawMessage(`{"tools":[]}`)}}},
+				{Kind: "approval", Spec: json.RawMessage(`{"tools":[]}`)},
+			}},
 			deps: config.Deps{Approver: middleware.ApproverFunc(
-				func(context.Context, tool.Call) error { return nil })},
+				func(context.Context, tool.Call) error { return nil },
+			)},
 			tools:   []string{"x"},
 			wantErr: "at least one",
 		},
 		{
 			name: "recover rejects spec",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "recover", Spec: json.RawMessage(`{"x":1}`)}}},
+				{Kind: "recover", Spec: json.RawMessage(`{"x":1}`)},
+			}},
 			tools:   []string{"x"},
 			wantErr: "takes no spec",
 		},
@@ -285,12 +297,13 @@ middlewares:
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	exec, err := builder.Build(context.Background(), doc)
+	assembly, err := builder.Build(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
+	t.Cleanup(func() { _ = assembly.Close() })
 	start := time.Now()
-	res := exec.Execute(context.Background(), call("hang"))
+	res := assembly.Executor.Execute(context.Background(), call("hang"))
 	if !res.IsError || !strings.Contains(res.Content, "timed out") {
 		t.Errorf("expected timeout result, got %+v", res)
 	}
@@ -302,8 +315,285 @@ middlewares:
 func TestTimeoutSpec_RejectsNumericDuration(t *testing.T) {
 	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
 	doc := config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-		{Kind: "timeout", Spec: json.RawMessage(`{"default":30}`)}}}
+		{Kind: "timeout", Spec: json.RawMessage(`{"default":30}`)},
+	}}
 	if _, err := builder.Build(context.Background(), doc); err == nil {
 		t.Error("numeric duration should be rejected; units belong in the file")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// sources
+// ---------------------------------------------------------------------------
+
+// fakeSource is a Source that registers a fixed set of tools, so the
+// Builder's ordering and cleanup guarantees can be tested without an
+// external process.
+type fakeSource struct {
+	tools     []string
+	attachErr error
+	closeErr  error
+	registry  *tool.Registry
+	attached  int
+	closed    int
+}
+
+func (f *fakeSource) Attach(_ context.Context, registry *tool.Registry) error {
+	f.attached++
+	if f.attachErr != nil {
+		return f.attachErr
+	}
+	f.registry = registry
+	for _, name := range f.tools {
+		registry.Register(echoTool(name))
+	}
+	return nil
+}
+
+func (f *fakeSource) Close() error {
+	f.closed++
+	if f.registry != nil {
+		for _, name := range f.tools {
+			f.registry.Unregister(name)
+		}
+		f.registry = nil
+	}
+	return f.closeErr
+}
+
+func sourceDoc(kinds ...string) config.Document {
+	doc := config.Document{Version: config.VersionV1}
+	for _, kind := range kinds {
+		doc.Sources = append(doc.Sources, config.SourceEntry{
+			Kind: kind,
+			Spec: json.RawMessage(`{}`),
+		})
+	}
+	return doc
+}
+
+func TestParse_Sources(t *testing.T) {
+	doc, err := config.Parse([]byte(`version: v1
+sources:
+  - kind: mcp
+    spec:
+      servers:
+        - name: files
+          transport: stdio
+          command: npx
+middlewares:
+  - kind: recover
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if len(doc.Sources) != 1 {
+		t.Fatalf("len(Sources) = %d, want 1", len(doc.Sources))
+	}
+	if doc.Sources[0].Kind != "mcp" {
+		t.Errorf("Sources[0].Kind = %q, want %q", doc.Sources[0].Kind, "mcp")
+	}
+	var spec struct {
+		Servers []struct {
+			Name      string `json:"name"`
+			Transport string `json:"transport"`
+			Command   string `json:"command"`
+		} `json:"servers"`
+	}
+	if err := json.Unmarshal(doc.Sources[0].Spec, &spec); err != nil {
+		t.Fatalf("source spec is not decodable JSON: %v", err)
+	}
+	if len(spec.Servers) != 1 || spec.Servers[0].Name != "files" {
+		t.Errorf("source spec decoded as %+v", spec)
+	}
+}
+
+func TestParse_SourceRequiresKind(t *testing.T) {
+	if _, err := config.Parse([]byte("version: v1\nsources:\n  - spec: {}\n")); err == nil {
+		t.Error("source without a kind parsed, want error")
+	}
+}
+
+// TestBuild_SourceToolsJoinTheRegistry is the whole point of the sources
+// layer: a tool a source provides is dispatchable through the same
+// Executor as a hand-registered one, with the same middleware applied.
+func TestBuild_SourceToolsJoinTheRegistry(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(echoTool("builtin"))
+
+	builder := config.NewBuilder(registry, config.Deps{})
+	source := &fakeSource{tools: []string{"remote_a", "remote_b"}}
+	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+		return source, nil
+	})
+
+	assembly, err := builder.Build(context.Background(), sourceDoc("fake"))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if source.attached != 1 {
+		t.Errorf("attached = %d, want 1", source.attached)
+	}
+	for _, name := range []string{"builtin", "remote_a", "remote_b"} {
+		res := assembly.Executor.Execute(context.Background(), call(name))
+		if res.IsError {
+			t.Errorf("%s: unexpected error %q", name, res.Content)
+		}
+	}
+
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if source.closed != 1 {
+		t.Errorf("closed = %d, want 1", source.closed)
+	}
+	if _, ok := registry.Get("remote_a"); ok {
+		t.Error("Close did not unregister the source's tools")
+	}
+	if _, ok := registry.Get("builtin"); !ok {
+		t.Error("Close removed a tool the source did not own")
+	}
+}
+
+// TestBuild_SourceAttachesBeforeScopes proves the ordering that makes a
+// scope entry able to name a source-provided tool.
+func TestBuild_SourceAttachesBeforeScopes(t *testing.T) {
+	registry := tool.NewRegistry()
+	builder := config.NewBuilder(registry, config.Deps{})
+	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+		return &fakeSource{tools: []string{"remote"}}, nil
+	})
+
+	doc := sourceDoc("fake")
+	doc.Scopes = map[string]string{"remote": tool.ScopePlatform}
+
+	assembly, err := builder.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = assembly.Close() })
+
+	if got := registry.ScopeOf("remote"); got != tool.ScopePlatform {
+		t.Errorf("ScopeOf(remote) = %q, want %q", got, tool.ScopePlatform)
+	}
+}
+
+func TestBuild_UnknownSourceKind(t *testing.T) {
+	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
+	_, err := builder.Build(context.Background(), sourceDoc("nope"))
+	if err == nil {
+		t.Fatal("Build with an unregistered source kind succeeded, want error")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Errorf("want Validation, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "RegisterSourceFactory") {
+		t.Errorf("error should point at the fix, got %v", err)
+	}
+}
+
+// TestBuild_AttachFailureClosesEarlierSources is the guarantee that keeps
+// a bad document from leaking child processes: the first failure unwinds
+// everything already attached.
+func TestBuild_AttachFailureClosesEarlierSources(t *testing.T) {
+	registry := tool.NewRegistry()
+	builder := config.NewBuilder(registry, config.Deps{})
+
+	good := &fakeSource{tools: []string{"remote_ok"}}
+	bad := &fakeSource{attachErr: errors.New("connect refused")}
+	builder.RegisterSourceFactory("good", func(context.Context, json.RawMessage) (config.Source, error) {
+		return good, nil
+	})
+	builder.RegisterSourceFactory("bad", func(context.Context, json.RawMessage) (config.Source, error) {
+		return bad, nil
+	})
+
+	_, err := builder.Build(context.Background(), sourceDoc("good", "bad"))
+	if err == nil {
+		t.Fatal("Build succeeded despite a failing source, want error")
+	}
+	if good.closed != 1 {
+		t.Errorf("earlier source closed = %d, want 1", good.closed)
+	}
+	if bad.closed != 1 {
+		t.Errorf("failing source closed = %d, want 1", bad.closed)
+	}
+	if registry.Len() != 0 {
+		t.Errorf("failed build left %d tools registered: %v", registry.Len(), registry.Names())
+	}
+}
+
+// TestBuild_MiddlewareFailureClosesSources covers the same unwinding for a
+// failure that happens after every source attached.
+func TestBuild_MiddlewareFailureClosesSources(t *testing.T) {
+	registry := tool.NewRegistry()
+	builder := config.NewBuilder(registry, config.Deps{})
+	source := &fakeSource{tools: []string{"remote"}}
+	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+		return source, nil
+	})
+
+	doc := sourceDoc("fake")
+	// approval without an Approver in Deps fails at factory time.
+	doc.Middlewares = []config.MiddlewareEntry{{
+		Kind: config.KindApproval,
+		Spec: json.RawMessage(`{"tools":["remote"]}`),
+	}}
+
+	if _, err := builder.Build(context.Background(), doc); err == nil {
+		t.Fatal("Build succeeded without an Approver, want error")
+	}
+	if source.closed != 1 {
+		t.Errorf("source closed = %d, want 1", source.closed)
+	}
+	if registry.Len() != 0 {
+		t.Errorf("failed build left %d tools registered", registry.Len())
+	}
+}
+
+func TestBuild_NilSourceFromFactory(t *testing.T) {
+	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
+	builder.RegisterSourceFactory("nil", func(context.Context, json.RawMessage) (config.Source, error) {
+		return nil, nil
+	})
+	if _, err := builder.Build(context.Background(), sourceDoc("nil")); err == nil {
+		t.Error("Build with a nil source succeeded, want error")
+	}
+}
+
+func TestAssembly_CloseIsIdempotent(t *testing.T) {
+	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
+	source := &fakeSource{tools: []string{"remote"}}
+	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+		return source, nil
+	})
+	assembly, err := builder.Build(context.Background(), sourceDoc("fake"))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := assembly.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if source.closed != 1 {
+		t.Errorf("closed = %d, want 1 (Close must not re-close)", source.closed)
+	}
+}
+
+func TestRegisterSourceFactory_RejectsBadInput(t *testing.T) {
+	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
+	assertPanics(t, "empty kind", func() { builder.RegisterSourceFactory("", nil) })
+	assertPanics(t, "nil factory", func() { builder.RegisterSourceFactory("x", nil) })
+}
+
+func assertPanics(t *testing.T, what string, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Errorf("%s: expected a panic", what)
+		}
+	}()
+	fn()
 }
