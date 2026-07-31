@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
 	lua "github.com/yuin/gopher-lua"
 )

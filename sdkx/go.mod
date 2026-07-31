@@ -12,6 +12,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.11.0
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 	github.com/go-shiori/go-readability v0.0.0-20251205110129-5db1dc9836f0
+	github.com/yuin/gopher-lua v1.1.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/microcosm-cc/bluemonday v1.0.27
