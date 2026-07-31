@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -13,15 +14,41 @@ import (
 )
 
 // groupCapsAvailable reports whether group-level resource caps can be
-// enforced by a sampling watcher. True on unix (ps with pgid/rss/time
-// is available), false elsewhere — limits are then rejected with
-// errdefs.NotAvailable rather than silently skipped.
-func groupCapsAvailable() bool {
-	_, err := exec.LookPath("ps")
+// enforced by a sampling watcher: true when ps(1) process-group
+// accounting actually works here, false otherwise — limits are then
+// rejected with errdefs.NotAvailable rather than silently skipped.
+func groupCapsAvailable() bool { return groupSamplingUsable() }
+
+// groupSamplingUsable probes enforceability by running the very sample
+// the watcher depends on, once per process. exec.LookPath is not
+// enough: it only checks that a ps binary exists and carries the
+// execute bit, which stays true inside a restricted environment
+// (seccomp or MAC policy, a denied fork) where exec of ps fails at call
+// time. Trusting LookPath there makes Enforcement report
+// MemoryCap/CPUCap while every sample errors out and no cap ever
+// fires — silent non-enforcement, the one outcome this package promises
+// not to produce.
+//
+// The result is cached: whether ps can be executed at all is a property
+// of the process environment rather than of an individual call, and
+// Exec consults it on every invocation.
+var groupSamplingUsable = sync.OnceValue(func() bool {
+	_, _, err := sampleGroupFn(syscall.Getpgrp())
 	return err == nil
-}
+})
 
 const groupWatchInterval = 250 * time.Millisecond
+
+// maxSampleFailures is how many consecutive sampling errors the watcher
+// tolerates before declaring the caps unenforceable. One flaky ps run
+// (a transient fork failure under load) must not kill an innocent
+// group, but blindness must not be unbounded either: at the interval
+// above, three strikes bound it to roughly 750ms.
+const maxSampleFailures = 3
+
+// sampleGroupFn indirects the sampler so tests can simulate one that
+// stops working mid-run.
+var sampleGroupFn = sampleGroup
 
 // GroupCapsWatcher enforces MemoryBytes / cpu-time caps on a child
 // process group by sampling aggregate usage via ps and killing the
@@ -43,6 +70,10 @@ type GroupCapsWatcher struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 	exceeded atomic.Int32
+
+	// sampleErr is set when sampling broke down and the watcher killed
+	// the group rather than keep guarding it blindly.
+	sampleErr atomic.Pointer[error]
 }
 
 const (
@@ -77,15 +108,30 @@ func (w *GroupCapsWatcher) run() {
 	t := time.NewTicker(groupWatchInterval)
 	defer t.Stop()
 	defer close(w.doneCh)
+	failures := 0
 	for {
 		select {
 		case <-w.stopCh:
 			return
 		case <-t.C:
-			rssKB, cpu, err := sampleGroup(w.pgid)
+			rssKB, cpu, err := sampleGroupFn(w.pgid)
 			if err != nil {
-				continue // a flaky ps run must not kill an innocent group
+				// A flaky ps run must not kill an innocent group, but a
+				// sampler that stays broken means the caps the caller
+				// asked for have stopped being enforced. Polling on
+				// forever would let the child run unbounded while the
+				// watcher pretends to guard it, so fail closed once the
+				// failure looks persistent.
+				failures++
+				if failures < maxSampleFailures {
+					continue
+				}
+				wrapped := fmt.Errorf("group sampling failed %d times in a row: %w", failures, err)
+				w.sampleErr.Store(&wrapped)
+				w.killGroup()
+				return
 			}
+			failures = 0
 			if w.maxRSSKB > 0 && rssKB >= w.maxRSSKB {
 				w.exceeded.Store(groupCapMemory)
 				w.killGroup()
@@ -116,9 +162,26 @@ func (w *GroupCapsWatcher) Stop() {
 	<-w.doneCh
 }
 
+// Unenforceable returns a non-nil error when the watcher gave up on
+// sampling and killed the group because the requested caps could no
+// longer be measured. It is mutually exclusive with Exceeded — the
+// sampler stops at whichever condition it reaches first — and callers
+// should consult it first, surfacing errdefs.NotAvailable: nothing was
+// shown to exceed a budget, the budget stopped being observable.
+func (w *GroupCapsWatcher) Unenforceable() error {
+	if w == nil {
+		return nil
+	}
+	if p := w.sampleErr.Load(); p != nil {
+		return *p
+	}
+	return nil
+}
+
 // Exceeded reports which configured cap terminated the process group.
 // The empty string means the watcher did not trigger (the process may
-// have exited itself or been cancelled by its context).
+// have exited on its own, been cancelled by its context, or been killed
+// because sampling broke down — see Unenforceable).
 func (w *GroupCapsWatcher) Exceeded() string {
 	if w == nil {
 		return ""
@@ -139,7 +202,7 @@ func (w *GroupCapsWatcher) Exceeded() string {
 func sampleGroup(pgid int) (rssKB int64, cpu time.Duration, err error) {
 	out, err := exec.Command("ps", "-o", "pgid=,rss=,time=", "-ax").Output()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, fmt.Errorf("ps: %w", err)
 	}
 	target := strconv.Itoa(pgid)
 	for line := range strings.SplitSeq(string(out), "\n") {

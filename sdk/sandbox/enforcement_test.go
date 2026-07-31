@@ -21,12 +21,16 @@ func TestEnforcement_LocalRunner(t *testing.T) {
 	if !e.EnvAllowList {
 		t.Error("LocalRunner must claim EnvAllowList")
 	}
-	if runtime.GOOS != "windows" {
-		if !e.MemoryCap || !e.CPUCap {
-			t.Errorf("unix LocalRunner must claim MemoryCap+CPUCap, got %+v", e)
-		}
-	} else if e.MemoryCap || e.CPUCap {
-		t.Errorf("non-unix LocalRunner must not claim caps, got %+v", e)
+	// Resource caps track the group watcher's real operability, not
+	// GOOS: a unix host whose ps(1) cannot be executed (restricted
+	// container, MAC policy) enforces nothing, and claiming otherwise
+	// would be the silent non-enforcement this package rules out.
+	if want := sandbox.GroupCapsSupported(); e.MemoryCap != want || e.CPUCap != want {
+		t.Errorf("MemoryCap=%v CPUCap=%v, want both %v (GroupCapsSupported)",
+			e.MemoryCap, e.CPUCap, want)
+	}
+	if runtime.GOOS == "windows" && (e.MemoryCap || e.CPUCap) {
+		t.Errorf("windows has no group sampler; caps must stay unclaimed, got %+v", e)
 	}
 	if e.DiskCap {
 		t.Error("DiskCap must stay unclaimed (no quota mechanism)")

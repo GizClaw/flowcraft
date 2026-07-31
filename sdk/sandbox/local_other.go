@@ -25,6 +25,10 @@ func StartGroupCapsWatcher(_ int, _ ResourceLimits, _ time.Duration) *GroupCapsW
 // Stop is nil-safe and a no-op outside unix.
 func (*GroupCapsWatcher) Stop() {}
 
+// Unenforceable always reports nil outside unix: no sampler runs, so
+// it can never break mid-run.
+func (*GroupCapsWatcher) Unenforceable() error { return nil }
+
 // Exceeded always reports no cap outside unix.
 func (*GroupCapsWatcher) Exceeded() string { return "" }
 

@@ -107,7 +107,8 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 	maxRSSKB, maxCPU := deriveGroupCaps(opts.Resources, opts.Timeout)
 	if (maxRSSKB > 0 || maxCPU > 0) && !groupCapsAvailable() {
 		return nil, errdefs.NotAvailablef(
-			"sandbox: resource limits not supported on this platform")
+			"sandbox: resource limits require process-group sampling, which is unavailable here " +
+				"(non-unix platform, or ps(1) cannot be executed)")
 	}
 
 	if opts.Timeout > 0 {
@@ -158,6 +159,13 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 		Stderr: stderr.buf.String(),
 	}
 	if err != nil {
+		// Order matters: a watcher that gave up on sampling killed the
+		// group without proving any budget was exceeded, so reporting
+		// BudgetExceeded there would be a false accusation.
+		if sampleErr := watcher.Unenforceable(); sampleErr != nil {
+			return result, errdefs.NotAvailablef(
+				"sandbox: resource caps became unenforceable while executing %s: %v", cmd, sampleErr)
+		}
 		if cap := watcher.Exceeded(); cap != "" {
 			return result, errdefs.BudgetExceededf(
 				"sandbox: %s resource cap exceeded while executing %s", cap, cmd)

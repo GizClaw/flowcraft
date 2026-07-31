@@ -10,40 +10,61 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
-// SubmitTool allows LLM to submit tasks to the Kanban board.
-// Kanban is injected via struct field (when the instance is known
-// at construction) or resolved from context at execution time via
-// [KanbanFrom].
+// SubmitName and TaskContextName are the canonical tool ids. They are
+// stable across versions so prompts naming the tools keep working.
+const (
+	SubmitName      = "kanban_submit"
+	TaskContextName = "task_context"
+)
+
+// SubmitTool lets a model delegate work to another agent by putting a
+// card on the shared board.
+//
+// The board is supplied either at construction, via the Kanban field,
+// or per call from the context via [WithKanban] — for hosts that
+// register tools into a registry before the board exists.
 type SubmitTool struct {
 	Kanban *sdkkanban.Kanban
 }
 
 // Definition implements [tool.Tool].
+//
+// The description promises only what the board guarantees: the card is
+// queued. It deliberately does not promise a callback. Whether anything
+// executes the card, and how the result comes back, is the host's
+// wiring — a tool that pledged delivery would be lying whenever no
+// executor is attached, and a model told to expect a callback that
+// never arrives waits forever.
 func (t *SubmitTool) Definition() tool.Definition {
 	return tool.DefineSchema(
-		"kanban_submit",
-		"Dispatch a task to another agent. Returns a card_id. The agent executes in the background and the system delivers the result via a [Task Callback] message when done. "+
-			"You can optionally schedule the task with a delay or cron expression.",
-		tool.Property("target_agent_id", "string", "Target agent ID to execute the task"),
-		tool.Property("query", "string", "Specific task instruction for the target agent"),
+		SubmitName,
+		"Delegate a task to another agent. The task is queued on the shared board and "+
+			"returns a card_id immediately; it does not run during this call. "+
+			"Use "+TaskContextName+" with the card_id to check progress and read the result once finished.",
+		tool.Property("target_agent_id", "string",
+			"ID of the agent that should perform the task."),
+		tool.Property("query", "string",
+			"The instruction for the target agent."),
 		tool.Property("user_query", "string",
-			"The user's original request that triggered this task"),
+			"The user's original request that led to this delegation, so the target agent can see the intent behind the instruction."),
 		tool.Property("dispatch_note", "string",
-			"Brief note about the task purpose and how to summarize the result for the user"),
-		tool.Property("delay", "string",
-			"Execute after a delay instead of immediately. Go duration format, e.g. \"30s\", \"5m\", \"2h\""),
-		tool.Property("cron", "string",
-			"Execute on a recurring cron schedule. 5-field cron expression (minute hour day month weekday). Examples: \"0 9 * * MON-FRI\" = weekdays 9AM, \"*/30 * * * *\" = every 30 minutes"),
-		tool.Property("timezone", "string",
-			"Timezone for cron schedule, IANA format. e.g. \"Asia/Shanghai\", \"America/New_York\". Defaults to UTC"),
+			"A note to your future self: why you delegated this and what you expect back."),
 	).Required("target_agent_id", "query").Build()
+}
+
+// Metadata implements [tool.ToolMetadata]. Submitting places a card on
+// a shared board, which every other participant can observe.
+func (t *SubmitTool) Metadata() tool.ToolMeta {
+	return tool.ToolMeta{MutatesState: true}
 }
 
 // Execute implements [tool.Tool].
 func (t *SubmitTool) Execute(ctx context.Context, arguments string) (string, error) {
 	k := t.resolve(ctx)
 	if k == nil {
-		return "", errdefs.NotAvailablef("kanban_submit: no kanban instance available")
+		return "", errdefs.NotAvailablef(
+			"%s: no kanban board available; pass one via the Kanban field or WithKanban", SubmitName,
+		)
 	}
 
 	var args struct {
@@ -51,45 +72,27 @@ func (t *SubmitTool) Execute(ctx context.Context, arguments string) (string, err
 		Query         string `json:"query"`
 		UserQuery     string `json:"user_query"`
 		DispatchNote  string `json:"dispatch_note"`
-		Delay         string `json:"delay"`
-		Cron          string `json:"cron"`
-		Timezone      string `json:"timezone"`
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("kanban_submit: invalid arguments: %w", err)
+		return "", fmt.Errorf("%s: invalid arguments: %w", SubmitName, err)
 	}
 
-	cardID, err := k.Submit(ctx, sdkkanban.TaskOptions{
+	card, err := k.Submit(ctx, sdkkanban.Task{
 		TargetAgentID: args.TargetAgentID,
 		Query:         args.Query,
 		UserQuery:     args.UserQuery,
 		DispatchNote:  args.DispatchNote,
-		Delay:         args.Delay,
-		Cron:          args.Cron,
-		Timezone:      args.Timezone,
 	})
 	if err != nil {
 		return "", err
 	}
 
-	status := "submitted"
-	message := "Task submitted. The target agent is executing in the background. A [Task Callback] message will be delivered when done."
-	idLabel := "card_id"
-	if args.Cron != "" {
-		status = "scheduled"
-		message = fmt.Sprintf("Recurring task scheduled (cron: %s). The task will be submitted automatically on each trigger.", args.Cron)
-		idLabel = "schedule_id"
-	} else if args.Delay != "" {
-		status = "delayed"
-		message = fmt.Sprintf("Task will be submitted after %s delay.", args.Delay)
-		idLabel = "timer_id"
-	}
-
 	out, _ := json.Marshal(map[string]string{
-		idLabel:           cardID,
-		"status":          status,
+		"card_id":         card.ID,
+		"status":          string(card.Status),
 		"target_agent_id": args.TargetAgentID,
-		"message":         message,
+		"message": "Task queued on the board. Check " + TaskContextName +
+			" with this card_id for progress and the result.",
 	})
 	return string(out), nil
 }
@@ -101,9 +104,9 @@ func (t *SubmitTool) resolve(ctx context.Context) *sdkkanban.Kanban {
 	return KanbanFrom(ctx)
 }
 
-// TaskContextTool allows the Dispatcher to retrieve the full context
-// of a previously dispatched async task, including the original user
-// request, dispatch note, task instruction, and execution result.
+// TaskContextTool reads a card back: what was asked, why, and how it
+// turned out. It is the counterpart to [SubmitTool] — the model
+// delegates, then comes back to this tool to find out what happened.
 type TaskContextTool struct {
 	Kanban *sdkkanban.Kanban
 }
@@ -111,11 +114,12 @@ type TaskContextTool struct {
 // Definition implements [tool.Tool].
 func (t *TaskContextTool) Definition() tool.Definition {
 	return tool.DefineSchema(
-		"task_context",
-		"Retrieve the full context of a dispatched task, including original user request, "+
-			"your dispatch note, task instruction, and execution result. "+
-			"Use this when you receive a task callback and need to recall the original context.",
-		tool.Property("card_id", "string", "The card ID from the task callback message"),
+		TaskContextName,
+		"Read the full context of a task you delegated: the original request, your dispatch "+
+			"note, the instruction, and its current status or result. Call this to check whether "+
+			"a delegated task has finished and what it produced.",
+		tool.Property("card_id", "string",
+			"The card_id returned by "+SubmitName+"."),
 	).Required("card_id").Build()
 }
 
@@ -123,22 +127,23 @@ func (t *TaskContextTool) Definition() tool.Definition {
 func (t *TaskContextTool) Execute(ctx context.Context, arguments string) (string, error) {
 	k := t.resolve(ctx)
 	if k == nil {
-		return "", errdefs.NotAvailablef("task_context: no kanban instance available")
+		return "", errdefs.NotAvailablef(
+			"%s: no kanban board available; pass one via the Kanban field or WithKanban", TaskContextName,
+		)
 	}
 
 	var args struct {
 		CardID string `json:"card_id"`
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", fmt.Errorf("task_context: invalid arguments: %w", err)
+		return "", fmt.Errorf("%s: invalid arguments: %w", TaskContextName, err)
 	}
 
-	card, err := k.GetCard(ctx, args.CardID)
-	if err != nil {
-		return "", fmt.Errorf("task_context: %w", err)
+	card, ok := k.Card(args.CardID)
+	if !ok {
+		return "", errdefs.NotFoundf("%s: no card %q on the board", TaskContextName, args.CardID)
 	}
-
-	return sdkkanban.BuildTaskContext(card), nil
+	return card.TaskContext(), nil
 }
 
 func (t *TaskContextTool) resolve(ctx context.Context) *sdkkanban.Kanban {
@@ -148,30 +153,28 @@ func (t *TaskContextTool) resolve(ctx context.Context) *sdkkanban.Kanban {
 	return KanbanFrom(ctx)
 }
 
-// ctxKey is the package-private type backing the Kanban context value;
-// using a private type guarantees no external package can collide with
-// our key by accident.
+// ctxKey is private so no other package can collide with our context
+// key by accident.
 type ctxKey int
 
 const ctxKeyKanban ctxKey = iota
 
-// WithKanban attaches a [*sdkkanban.Kanban] instance to ctx so the
-// LLM-facing [SubmitTool] / [TaskContextTool] can resolve it without
-// a struct field. Used by hosts that wire tools into a registry
-// before the Kanban instance is constructed.
+// WithKanban attaches a board to ctx so the tools can resolve one
+// without a struct field. Hosts that build their tool registry before
+// the board exists use this.
 func WithKanban(ctx context.Context, k *sdkkanban.Kanban) context.Context {
 	return context.WithValue(ctx, ctxKeyKanban, k)
 }
 
-// KanbanFrom retrieves the [*sdkkanban.Kanban] instance previously
-// installed by [WithKanban], or nil when absent.
+// KanbanFrom returns the board installed by [WithKanban], or nil.
 func KanbanFrom(ctx context.Context) *sdkkanban.Kanban {
 	k, _ := ctx.Value(ctxKeyKanban).(*sdkkanban.Kanban)
 	return k
 }
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var (
-	_ tool.Tool = (*SubmitTool)(nil)
-	_ tool.Tool = (*TaskContextTool)(nil)
+	_ tool.Tool         = (*SubmitTool)(nil)
+	_ tool.Tool         = (*TaskContextTool)(nil)
+	_ tool.ToolMetadata = (*SubmitTool)(nil)
 )

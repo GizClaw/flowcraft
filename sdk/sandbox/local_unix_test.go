@@ -48,6 +48,18 @@ func TestHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+// requireGroupCaps skips tests whose subject is cap enforcement when the
+// sampling watcher cannot run here (ps(1) not executable under a
+// restricted container or MAC policy). Exec then correctly rejects the
+// call with NotAvailable, so asserting BudgetExceeded would be testing
+// the environment rather than the runner.
+func requireGroupCaps(t *testing.T) {
+	t.Helper()
+	if !sandbox.GroupCapsSupported() {
+		t.Skip("process-group sampling unavailable here; caps are rejected with NotAvailable by design")
+	}
+}
+
 func helperExec(mode string) (string, []string, sandbox.EnvPolicy) {
 	env := sandbox.EnvPolicy{
 		Allow: []string{"PATH", "HOME"},
@@ -60,6 +72,7 @@ func helperExec(mode string) (string, []string, sandbox.EnvPolicy) {
 }
 
 func TestLocalRunner_MemoryLimit_KillsChild(t *testing.T) {
+	requireGroupCaps(t)
 	runner := sandbox.NewLocalRunner(t.TempDir())
 	cmd, args, env := helperExec("alloc")
 
@@ -85,6 +98,7 @@ func TestLocalRunner_MemoryLimit_KillsChild(t *testing.T) {
 }
 
 func TestLocalRunner_CPUTimeLimit_KillsChild(t *testing.T) {
+	requireGroupCaps(t)
 	runner := sandbox.NewLocalRunner(t.TempDir())
 	cmd, args, env := helperExec("spin")
 
@@ -154,6 +168,7 @@ func TestLocalRunner_NoLimits_DoesNotInvokeShell(t *testing.T) {
 // The rlimit path must preserve the caller-visible argv and exit code
 // through "exec \"$@\"".
 func TestLocalRunner_WithLimits_PreservesArgAndExitSemantics(t *testing.T) {
+	requireGroupCaps(t)
 	runner := sandbox.NewLocalRunner(t.TempDir())
 	result, err := runner.Exec(context.Background(), "sh", []string{"-c", "printf %s \"$1\"; exit 7", "sh", "payload"}, sandbox.ExecOptions{
 		Timeout:   5 * time.Second,

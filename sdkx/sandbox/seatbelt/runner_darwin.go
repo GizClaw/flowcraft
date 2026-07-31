@@ -73,13 +73,17 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 }
 
 // Enforcement reports the policy dimensions Seatbelt plus the shared
-// process-group watcher enforce on macOS.
+// process-group watcher enforce on macOS. The Seatbelt profile itself
+// covers net and filesystem, but resource caps come from the shared
+// watcher, so they are claimed only when that watcher is actually
+// operable here — see sandbox.GroupCapsSupported.
 func (r *Runner) Enforcement() sandbox.Enforcement {
+	caps := sandbox.GroupCapsSupported()
 	return sandbox.Enforcement{
 		EnvAllowList:     true,
 		NetModes:         []sandbox.NetMode{sandbox.NetDenyAll},
-		MemoryCap:        true,
-		CPUCap:           true,
+		MemoryCap:        caps,
+		CPUCap:           caps,
 		FilesystemBounds: true,
 	}
 }
@@ -97,6 +101,15 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
 		return nil, errdefs.NotAvailablef(
 			"seatbelt: CPUMillicores requires a per-call Timeout to derive a cpu-time cap",
+		)
+	}
+	// Memory and cpu caps ride on the shared sampling watcher, not on
+	// the Seatbelt profile. Where that watcher cannot sample, honouring
+	// the call would run the child with no cap at all, so reject it
+	// instead of pretending.
+	if (opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0) && !sandbox.GroupCapsSupported() {
+		return nil, errdefs.NotAvailablef(
+			"seatbelt: resource limits require process-group sampling, which is unavailable here",
 		)
 	}
 
@@ -156,6 +169,12 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		Stderr: stderr.buf.String(),
 	}
 	if runErr != nil {
+		// Checked before Exceeded: a watcher that gave up on sampling
+		// killed the group without proving any budget was exceeded.
+		if sampleErr := watcher.Unenforceable(); sampleErr != nil {
+			return result, errdefs.NotAvailablef(
+				"seatbelt: resource caps became unenforceable while executing %s: %v", cmd, sampleErr)
+		}
 		if cap := watcher.Exceeded(); cap != "" {
 			return result, errdefs.BudgetExceededf(
 				"seatbelt: %s resource cap exceeded while executing %s", cap, cmd)

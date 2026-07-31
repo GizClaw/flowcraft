@@ -21,8 +21,15 @@ func TestRunner_Enforcement(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	got := runner.Enforcement()
-	if !got.EnvAllowList || !got.MemoryCap || !got.CPUCap || !got.FilesystemBounds {
-		t.Errorf("missing enforcement claims: %+v", got)
+	if !got.EnvAllowList || !got.FilesystemBounds {
+		t.Errorf("Seatbelt profile covers env and filesystem: %+v", got)
+	}
+	// Resource caps do not come from the Seatbelt profile — they come
+	// from the shared process-group sampler — so the claim must follow
+	// that sampler's real operability rather than being hardcoded.
+	if want := sandbox.GroupCapsSupported(); got.MemoryCap != want || got.CPUCap != want {
+		t.Errorf("MemoryCap=%v CPUCap=%v, want both %v (GroupCapsSupported)",
+			got.MemoryCap, got.CPUCap, want)
 	}
 	if got.DiskCap {
 		t.Error("Seatbelt must not claim disk quotas")

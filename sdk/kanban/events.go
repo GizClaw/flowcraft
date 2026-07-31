@@ -6,272 +6,135 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
-// EventKind labels the Kanban events surfaced via Board.Bus(). Subjects
-// emitted on the wire follow the format documented in subjects.go (e.g.
-// "kanban.card.<cardID>.task.submitted"); EventKind keeps the older
-// flat-type vocabulary available for callers that want to reason about
-// the action without parsing the Subject.
+// Event kinds published on [Kanban.Bus]. One kind per state
+// transition; the set is exactly the [Status] values a card can move
+// into.
 //
-// EventKind values are also written to a "kind" header on every emitted
-// Envelope so subscribers using a broad pattern (kanban.>) can route on
-// kind without re-parsing the subject.
+// The kind is written to the [HeaderKind] header on every envelope, so
+// a subscriber using a coarse pattern such as [PatternAll] can route
+// on it without re-parsing the subject.
 const (
-	EventTaskSubmitted    = "kanban.task.submitted"
-	EventTaskClaimed      = "kanban.task.claimed"
-	EventTaskCompleted    = "kanban.task.completed"
-	EventTaskFailed       = "kanban.task.failed"
-	EventTaskCancelled    = "kanban.task.cancelled"
-	EventCallbackStart    = "kanban.callback.start"
-	EventCallbackDone     = "kanban.callback.done"
-	EventCronRuleCreated  = "kanban.cron.rule.created"
-	EventCronRuleFired    = "kanban.cron.rule.fired"
-	EventCronRuleDisabled = "kanban.cron.rule.disabled"
+	EventCardSubmitted = "kanban.card.submitted"
+	EventCardClaimed   = "kanban.card.claimed"
+	EventCardSuspended = "kanban.card.suspended"
+	EventCardDone      = "kanban.card.done"
+	EventCardFailed    = "kanban.card.failed"
+	EventCardCancelled = "kanban.card.cancelled"
 )
 
-// Well-known header keys carried on every Envelope produced by this
-// package.
-//
-//	HeaderKanbanKind  the EventKind constant (e.g. "kanban.task.submitted")
-//	HeaderCardID      card_id (task / callback events only)
-//	HeaderScheduleID  schedule_id (cron events only)
-//
-// Subscribers using a broad subject pattern (e.g. kanban.>) can route on
-// these headers instead of re-parsing the subject.
+// Well-known headers on every envelope this package emits. The board
+// scope travels on event.HeaderKanbanScopeID, set via
+// [event.Envelope.SetKanbanScopeID].
 const (
-	HeaderKanbanKind = "kanban_kind"
-	HeaderCardID     = "card_id"
-	HeaderScheduleID = "schedule_id"
+	// HeaderKind carries the event kind constant.
+	HeaderKind = "kanban_kind"
+	// HeaderCardID carries the card id.
+	HeaderCardID = "card_id"
 )
 
-// payloadVersion is the schema version stamped onto every Kanban event payload.
-// Future fields are additive; consumers that pin Version=1 keep working.
-const payloadVersion = 1
+// PayloadVersion is stamped on every emitted payload. Future fields are
+// additive, so a consumer that pins version 1 keeps working.
+const PayloadVersion = 1
 
-// TaskSubmittedPayload is published when a task is submitted.
-type TaskSubmittedPayload struct {
-	Version       int            `json:"version"`
-	CardID        string         `json:"card_id"`
-	TargetAgentID string         `json:"target_agent_id"`
-	Query         string         `json:"query"`
-	RuntimeID     string         `json:"runtime_id"`
-	Inputs        map[string]any `json:"inputs,omitempty"`
+// CardEvent is the payload of every kanban event. One shape for all
+// transitions: a subscriber deserialises once and switches on Status,
+// rather than maintaining a struct per kind.
+type CardEvent struct {
+	Version int `json:"version"`
+
+	CardID  string `json:"card_id"`
+	ScopeID string `json:"scope_id"`
+
+	// Status is the state the card just entered. It mirrors the event
+	// kind, and is the field to switch on.
+	Status Status `json:"status"`
+
+	TargetAgentID string `json:"target_agent_id,omitempty"`
+	Producer      string `json:"producer,omitempty"`
+	Consumer      string `json:"consumer,omitempty"`
+	Query         string `json:"query,omitempty"`
+
+	// Output and Error mirror the card's Result, present on terminal
+	// transitions.
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
+
+	// ResumeRef is present on a suspend transition.
+	ResumeRef string `json:"resume_ref,omitempty"`
+
+	// ElapsedMs is the time from submission to this transition.
+	ElapsedMs int64 `json:"elapsed_ms"`
+
+	Meta map[string]string `json:"meta,omitempty"`
 }
 
-// TaskClaimedPayload is published when an agent claims a task.
-type TaskClaimedPayload struct {
-	Version       int    `json:"version"`
-	CardID        string `json:"card_id"`
-	TargetAgentID string `json:"target_agent_id"`
-	RuntimeID     string `json:"runtime_id"`
-	Consumer      string `json:"consumer"`
-}
-
-// TaskCompletedPayload is published when a task is completed.
-type TaskCompletedPayload struct {
-	Version       int    `json:"version"`
-	CardID        string `json:"card_id"`
-	TargetAgentID string `json:"target_agent_id"`
-	RuntimeID     string `json:"runtime_id"`
-	Output        string `json:"output"`
-	ElapsedMs     int64  `json:"elapsed_ms"`
-}
-
-// TaskFailedPayload is published when a task fails.
-type TaskFailedPayload struct {
-	Version       int    `json:"version"`
-	CardID        string `json:"card_id"`
-	TargetAgentID string `json:"target_agent_id"`
-	RuntimeID     string `json:"runtime_id"`
-	Error         string `json:"error"`
-	ElapsedMs     int64  `json:"elapsed_ms"`
-}
-
-// TaskCancelledPayload is published when a task is cancelled deliberately
-// (e.g. by Pod controller graceful shutdown), as distinct from a task
-// failure. Reason carries an optional human-readable note explaining why
-// cancellation happened; consumers may display it but should not parse it.
-type TaskCancelledPayload struct {
-	Version       int    `json:"version"`
-	CardID        string `json:"card_id"`
-	TargetAgentID string `json:"target_agent_id"`
-	RuntimeID     string `json:"runtime_id"`
-	Reason        string `json:"reason,omitempty"`
-	ElapsedMs     int64  `json:"elapsed_ms"`
-}
-
-// CallbackStartPayload is published just before the callback message is sent
-// to the Dispatcher Actor, so WS subscribers can start streaming.
-type CallbackStartPayload struct {
-	Version   int    `json:"version"`
-	CardID    string `json:"card_id"`
-	RuntimeID string `json:"runtime_id"`
-	AgentID   string `json:"agent_id"`
-	Query     string `json:"query"`
-}
-
-// CallbackDonePayload is published when the Dispatcher finishes processing
-// a task callback, signaling the frontend to finalize the streamed message.
-// Error is set when the callback turn ended unsuccessfully.
-type CallbackDonePayload struct {
-	Version   int    `json:"version"`
-	CardID    string `json:"card_id"`
-	RuntimeID string `json:"runtime_id"`
-	AgentID   string `json:"agent_id"`
-	Error     string `json:"error,omitempty"`
-}
-
-// CronRuleCreatedPayload is published when a new dynamic cron rule is registered.
-type CronRuleCreatedPayload struct {
-	Version    int    `json:"version"`
-	ScheduleID string `json:"schedule_id"`
-	AgentID    string `json:"agent_id"`
-	Cron       string `json:"cron"`
-	Query      string `json:"query"`
-	Timezone   string `json:"timezone,omitempty"`
-}
-
-// CronRuleFiredPayload is published each time a cron rule fires and produces a task card.
-type CronRuleFiredPayload struct {
-	Version    int    `json:"version"`
-	ScheduleID string `json:"schedule_id"`
-	AgentID    string `json:"agent_id"`
-	CardID     string `json:"card_id"`
-	Query      string `json:"query"`
-}
-
-// CronRuleDisabledPayload is published when a cron rule is removed (e.g. via RemoveAgent).
-type CronRuleDisabledPayload struct {
-	Version    int    `json:"version"`
-	ScheduleID string `json:"schedule_id"`
-	AgentID    string `json:"agent_id"`
-}
-
-// stampVersion fills in the Version field of any known payload via a
-// reflection-free type switch and returns the (possibly modified) value.
-// Unknown types pass through unchanged.
-func stampVersion(payload any) any {
-	switch p := payload.(type) {
-	case TaskSubmittedPayload:
-		p.Version = payloadVersion
-		return p
-	case TaskClaimedPayload:
-		p.Version = payloadVersion
-		return p
-	case TaskCompletedPayload:
-		p.Version = payloadVersion
-		return p
-	case TaskFailedPayload:
-		p.Version = payloadVersion
-		return p
-	case TaskCancelledPayload:
-		p.Version = payloadVersion
-		return p
-	case CallbackStartPayload:
-		p.Version = payloadVersion
-		return p
-	case CallbackDonePayload:
-		p.Version = payloadVersion
-		return p
-	case CronRuleCreatedPayload:
-		p.Version = payloadVersion
-		return p
-	case CronRuleFiredPayload:
-		p.Version = payloadVersion
-		return p
-	case CronRuleDisabledPayload:
-		p.Version = payloadVersion
-		return p
-	}
-	return payload
-}
-
-// publishCardEvent constructs and dispatches a card-scoped envelope.
-// The subject is computed from kind + cardID; HeaderRunID-style well-known
-// headers populate card_id and the kanban_kind label so subscribers using
-// a coarse Pattern can still filter cheaply.
-//
-// Errors from Publish are intentionally swallowed to match the previous
-// behaviour: Kanban state transitions must not fail because an observer's
-// bus is overloaded.
-func publishCardEvent(ctx context.Context, bus event.Bus, kind, cardID, scopeID string, payload any) {
-	subject := cardSubjectFor(kind, cardID)
-	if subject == "" {
-		// Unknown kind — refuse to silently emit a malformed subject.
-		return
-	}
-	env, err := event.NewEnvelope(ctx, subject, stampVersion(payload))
-	if err != nil {
-		return
-	}
-	env.SetHeader(HeaderKanbanKind, kind)
-	if cardID != "" {
-		env.SetHeader(HeaderCardID, cardID)
-	}
-	// scopeID identifies the producing Board; carry it on the
-	// well-known event.HeaderKanbanScopeID dimension (consistent with
-	// HeaderRunID / HeaderGraphID) so cross-module consumers can
-	// fan-in by board without inventing a parallel naming scheme on
-	// Envelope.Source. Producer kind ("kanban") is already encoded as
-	// the leading Subject segment — see event.ProducerKind.
-	if scopeID != "" {
-		env.SetKanbanScopeID(scopeID)
-	}
-	_ = bus.Publish(ctx, env)
-}
-
-// publishCronEvent is the cron analogue of publishCardEvent.
-func publishCronEvent(ctx context.Context, bus event.Bus, kind, scheduleID, scopeID string, payload any) {
-	subject := cronSubjectFor(kind, scheduleID)
-	if subject == "" {
-		return
-	}
-	env, err := event.NewEnvelope(ctx, subject, stampVersion(payload))
-	if err != nil {
-		return
-	}
-	env.SetHeader(HeaderKanbanKind, kind)
-	if scheduleID != "" {
-		env.SetHeader(HeaderScheduleID, scheduleID)
-	}
-	if scopeID != "" {
-		env.SetKanbanScopeID(scopeID)
-	}
-	_ = bus.Publish(ctx, env)
-}
-
-// cardSubjectFor maps an EventKind constant to the corresponding card
-// Subject helper. Returns "" for unknown kinds so the caller can refuse
-// to publish a malformed subject.
-func cardSubjectFor(kind, cardID string) event.Subject {
-	switch kind {
-	case EventTaskSubmitted:
-		return subjTaskSubmitted(cardID)
-	case EventTaskClaimed:
-		return subjTaskClaimed(cardID)
-	case EventTaskCompleted:
-		return subjTaskCompleted(cardID)
-	case EventTaskFailed:
-		return subjTaskFailed(cardID)
-	case EventTaskCancelled:
-		return subjTaskCancelled(cardID)
-	case EventCallbackStart:
-		return subjCallbackStart(cardID)
-	case EventCallbackDone:
-		return subjCallbackDone(cardID)
+// kindFor maps a status to the event kind announcing arrival in it.
+func kindFor(s Status) string {
+	switch s {
+	case StatusPending:
+		return EventCardSubmitted
+	case StatusClaimed:
+		return EventCardClaimed
+	case StatusSuspended:
+		return EventCardSuspended
+	case StatusDone:
+		return EventCardDone
+	case StatusFailed:
+		return EventCardFailed
+	case StatusCancelled:
+		return EventCardCancelled
 	}
 	return ""
 }
 
-// cronSubjectFor maps an EventKind cron constant to the corresponding
-// cron Subject helper.
-func cronSubjectFor(kind, scheduleID string) event.Subject {
-	switch kind {
-	case EventCronRuleCreated:
-		return subjCronCreated(scheduleID)
-	case EventCronRuleFired:
-		return subjCronFired(scheduleID)
-	case EventCronRuleDisabled:
-		return subjCronDisabled(scheduleID)
+// publish emits the transition snap represents. A publish failure is
+// swallowed: an overloaded observer must not roll back a state
+// transition that already happened.
+//
+// A resumed card re-enters StatusPending and therefore re-publishes
+// EventCardSubmitted. That is intended — to a consumer the card is
+// once again work waiting to be claimed, and ResumeRef distinguishes
+// it from a first submission.
+func (k *Kanban) publish(ctx context.Context, snap *Card) {
+	if k.bus == nil || snap == nil {
+		return
 	}
-	return ""
+	kind := kindFor(snap.Status)
+	if kind == "" {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	payload := CardEvent{
+		Version:   PayloadVersion,
+		CardID:    snap.ID,
+		ScopeID:   k.scopeID,
+		Status:    snap.Status,
+		Producer:  snap.Producer,
+		Consumer:  snap.Consumer,
+		ResumeRef: snap.ResumeRef,
+		ElapsedMs: snap.Elapsed().Milliseconds(),
+		Meta:      snap.Meta,
+	}
+	if snap.Task != nil {
+		payload.TargetAgentID = snap.Task.TargetAgentID
+		payload.Query = snap.Task.Query
+	}
+	if snap.Result != nil {
+		payload.Output = snap.Result.Output
+		payload.Error = snap.Result.Error
+	}
+
+	env, err := event.NewEnvelope(ctx, subjectFor(kind, snap.ID), payload)
+	if err != nil {
+		return
+	}
+	env.SetHeader(HeaderKind, kind)
+	env.SetHeader(HeaderCardID, snap.ID)
+	if k.scopeID != "" {
+		env.SetKanbanScopeID(k.scopeID)
+	}
+	_ = k.bus.Publish(ctx, env)
 }

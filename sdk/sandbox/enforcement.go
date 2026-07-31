@@ -41,6 +41,17 @@ type EnforcementReporter interface {
 	Enforcement() Enforcement
 }
 
+// GroupCapsSupported reports whether the shared process-group watcher
+// (StartGroupCapsWatcher) can enforce MemoryCap/CPUCap in this process:
+// unix, with a working ps(1). Backends that delegate resource caps to
+// that watcher — LocalRunner, sdkx/sandbox/seatbelt — must gate the
+// MemoryCap/CPUCap fields of their Enforcement on it instead of
+// hardcoding true, otherwise they advertise caps that silently never
+// fire in a restricted environment where ps cannot be executed.
+//
+// The probe result is cached for the process lifetime.
+func GroupCapsSupported() bool { return groupCapsAvailable() }
+
 // EnforcementOf returns r.Enforcement() when r implements
 // EnforcementReporter, or the conservative zero value otherwise. A nil
 // Runner also yields the zero value. Mirrors workspace.CapabilitiesOf.
