@@ -60,9 +60,22 @@ func TestNew_BinaryNotFound(t *testing.T) {
 	}
 }
 
-func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
+func TestRunner_EnforcementIncludesFilesystemBounds(t *testing.T) {
 	bin := fakeNsjail(t, echoScript)
 	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatal(err)
+	}
+	enforcement := r.Enforcement()
+	if !enforcement.FilesystemBounds {
+		t.Errorf("filesystem mount boundary must be reported: %+v", enforcement)
+	}
+}
+
+func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
+	bin := fakeNsjail(t, echoScript)
+	root := t.TempDir()
+	r, err := New(root, WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -85,7 +98,11 @@ func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
 	for _, want := range []string{
 		"ARG:-Mo",
 		"ARG:--quiet",
-		"ARG:--disable_clone_newns",
+		"ARG:--chroot",
+		"ARG:--tmpfsmount",
+		"ARG:/tmp",
+		"ARG:--bindmount",
+		"ARG:" + root,
 		"ARG:--time_limit",
 		"ARG:--cgroup_cpu_ms_per_sec",
 		"ARG:250",
@@ -102,6 +119,9 @@ func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
 	// NetDenyAll must NOT add --disable_clone_newnet.
 	if strings.Contains(stdout, "ARG:--disable_clone_newnet\n") {
 		t.Errorf("NetDenyAll leaked --disable_clone_newnet:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "ARG:--disable_clone_newns\n") {
+		t.Errorf("filesystem mount namespace was disabled:\n%s", stdout)
 	}
 }
 
@@ -196,7 +216,7 @@ func TestRunner_Exec_WorkDirEscapeRejected(t *testing.T) {
 
 func TestRunner_Exec_ExtraFlagsPropagated(t *testing.T) {
 	bin := fakeNsjail(t, echoScript)
-	r, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags("--bindmount", "/foo:/bar"))
+	r, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags("--log_level", "WARNING"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -204,8 +224,46 @@ func TestRunner_Exec_ExtraFlagsPropagated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	if !strings.Contains(res.Stdout, "ARG:--bindmount") || !strings.Contains(res.Stdout, "ARG:/foo:/bar") {
+	if !strings.Contains(res.Stdout, "ARG:--log_level") || !strings.Contains(res.Stdout, "ARG:WARNING") {
 		t.Errorf("extra flags not propagated, stdout=%q", res.Stdout)
+	}
+}
+
+func TestNew_RejectsFilesystemWeakeningExtraFlags(t *testing.T) {
+	bin := fakeNsjail(t, echoScript)
+	for _, flag := range []string{
+		"--disable_clone_newns",
+		"--rw",
+		"--chroot=/",
+		"--bindmount",
+		"--bindmount_ro",
+		"--tmpfsmount",
+		"--mount",
+		"--config",
+		"-B/foo:/bar",
+	} {
+		t.Run(strings.TrimLeft(flag, "-"), func(t *testing.T) {
+			_, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags(flag))
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("flag %q: expected Validation, got %v", flag, err)
+			}
+		})
+	}
+}
+
+func TestRunner_WithWritablePaths(t *testing.T) {
+	bin := fakeNsjail(t, echoScript)
+	cache := t.TempDir()
+	r, err := New(t.TempDir(), WithBinary(bin), WithWritablePaths(cache))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(res.Stdout, "ARG:--bindmount\nARG:"+cache+"\n") {
+		t.Errorf("writable path not emitted as bind mount: %q", res.Stdout)
 	}
 }
 

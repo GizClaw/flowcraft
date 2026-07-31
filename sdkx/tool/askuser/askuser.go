@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -59,17 +59,17 @@ func (askUserTool) Execute(ctx context.Context, arguments string) (string, error
 		return "", errdefs.Validationf("ask_user: prompt must be non-empty")
 	}
 
-	host, ok := engine.HostFromContext(ctx)
+	host, ok := agent.HostFromContext(ctx)
 	if !ok || host == nil {
 		// No host on ctx means the tool is running outside an
 		// engine that wired one up (raw test path, batch run
 		// with NoopHost). Surface NotAvailable so the LLM sees
 		// "this is not currently a supported capability" rather
 		// than crashing or returning nonsense.
-		return "", errdefs.NotAvailablef("ask_user: no engine.Host on ctx; did the engine wire it via engine.WithHost?")
+		return "", errdefs.NotAvailablef("ask_user: no agent.Host on ctx; did the engine wire it via agent.ContextWithHost?")
 	}
-	prompt := engine.UserPrompt{
-		Parts:  []model.Part{{Type: model.PartText, Text: a.Prompt}},
+	prompt := agent.UserPrompt{
+		Parts:  []inference.Part{inference.TextPart{Text: a.Prompt}},
 		Source: Name,
 	}
 	reply, err := host.AskUser(ctx, prompt)
@@ -86,23 +86,26 @@ func (askUserTool) Execute(ctx context.Context, arguments string) (string, error
 // learns "the user attached a thing of type X" rather than
 // silently dropping non-text replies. Hosts that need richer
 // shapes should wrap the tool with their own custom variant.
-func replyText(r engine.UserReply) string {
+func replyText(r agent.UserReply) string {
 	var b strings.Builder
 	wrote := false
 	for _, p := range r.Parts {
 		if wrote {
 			b.WriteByte('\n')
 		}
-		switch p.Type {
-		case model.PartText:
-			b.WriteString(p.Text)
+		// inference.Part is a sealed interface; switch on Kind().
+		switch p.Kind() {
+		case inference.PartText:
+			if tp, ok := p.(inference.TextPart); ok {
+				b.WriteString(tp.Text)
+			}
 		default:
 			// Non-text part: write a minimal marker. We
 			// deliberately avoid base64-blobbing media into
 			// the model context — that would balloon token
 			// counts for no immediate gain.
 			b.WriteString("[user attached a non-text part: ")
-			b.WriteString(string(p.Type))
+			b.WriteString(string(p.Kind()))
 			b.WriteString("]")
 		}
 		wrote = true

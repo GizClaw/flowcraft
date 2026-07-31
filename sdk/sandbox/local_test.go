@@ -252,9 +252,11 @@ func TestLocalRunner_Resources_NonZero_NotAvailable(t *testing.T) {
 	runner := sandbox.NewLocalRunner(t.TempDir())
 
 	for name, opts := range map[string]sandbox.ExecOptions{
-		"cpu":  {Resources: sandbox.ResourceLimits{CPUMillicores: 100}},
-		"mem":  {Resources: sandbox.ResourceLimits{MemoryBytes: 1 << 20}},
+		// DiskBytes has no quota mechanism anywhere; still rejected.
 		"disk": {Resources: sandbox.ResourceLimits{DiskBytes: 1 << 20}},
+		// CPUMillicores derives a cpu-time cap from the timeout, so it
+		// is not actionable without one.
+		"cpu-without-timeout": {Resources: sandbox.ResourceLimits{CPUMillicores: 100}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runner.Exec(context.Background(), "echo", nil, opts)

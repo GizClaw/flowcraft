@@ -20,11 +20,26 @@
 //     backend (namespace-based, container-based, or microVM-based) that
 //     can actually enforce the policy at the kernel level.
 //   - Resources (ResourceLimits): CPU / memory / disk caps plus
-//     MaxOutputBytes. LocalRunner only enforces MaxOutputBytes today; the
-//     hard caps require the same kernel-level enforcement as Net.
+//     MaxOutputBytes. On unix, LocalRunner enforces group-wide memory
+//     and cpu-time caps with a sampling watcher and kills the whole
+//     process group on overflow. DiskBytes still needs a quota-capable
+//     backend and is rejected with errdefs.NotAvailable.
 //
-// LocalRunner is the in-process, no-isolation backend used by tests and
-// single-tenant operators. Production deployments should compose it with
-// AllowCommands (whitelist) and eventually swap to a sandboxed Runner
-// once a real isolation backend is available.
+// EnforcementOf lets callers inspect the honest policy surface before
+// execution. LocalRunner reports env + process-group resource
+// enforcement but not filesystem or network confinement. Concrete
+// sdkx backends add those OS-level boundaries:
+//
+//	                         LocalRunner  seatbelt/macOS  nsjail/Linux
+//	Env allow-list               yes           yes             yes
+//	Filesystem write bounds       no           yes             yes
+//	NetDenyAll                     no           yes             yes
+//	MemoryBytes                   yes           yes             yes
+//	CPUMillicores                 yes           yes             yes
+//	DiskBytes                      no            no              no
+//
+// WithDefaults fixes daemon-owned policy, AllowCommands adds a hard
+// command-name gate, and WithApproval adds a fail-closed human decision
+// tripwire. The recommended local composition lives in
+// sdkx/sandbox.ComposeLocal.
 package sandbox

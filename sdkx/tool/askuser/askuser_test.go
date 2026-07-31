@@ -7,9 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/engine"
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	inference_media "github.com/GizClaw/flowcraft/sdk/inference/media"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/tooltest"
 	"github.com/GizClaw/flowcraft/sdkx/tool/askuser"
@@ -34,22 +35,22 @@ func TestAskUser_Contract(t *testing.T) {
 // captureHost records the prompt and returns a programmable reply.
 // Used by tests to assert prompt translation + reply marshalling.
 type captureHost struct {
-	engine.NoopHost
-	gotPrompt engine.UserPrompt
-	reply     engine.UserReply
+	agent.NoopHost
+	gotPrompt agent.UserPrompt
+	reply     agent.UserReply
 	err       error
 }
 
-func (h *captureHost) AskUser(_ context.Context, prompt engine.UserPrompt) (engine.UserReply, error) {
+func (h *captureHost) AskUser(_ context.Context, prompt agent.UserPrompt) (agent.UserReply, error) {
 	h.gotPrompt = prompt
 	return h.reply, h.err
 }
 
 func TestAskUser_HappyPath(t *testing.T) {
 	host := &captureHost{
-		reply: engine.UserReply{Parts: []model.Part{{Type: model.PartText, Text: "yes please"}}},
+		reply: agent.UserReply{Parts: []inference.Part{inference.TextPart{Text: "yes please"}}},
 	}
-	ctx := engine.WithHost(context.Background(), host)
+	ctx := agent.ContextWithHost(context.Background(), host)
 	out, err := askuser.New().Execute(ctx, `{"prompt":"shall I proceed?"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -57,7 +58,9 @@ func TestAskUser_HappyPath(t *testing.T) {
 	if out != "yes please" {
 		t.Errorf("reply = %q, want %q", out, "yes please")
 	}
-	if got := host.gotPrompt.Parts[0].Text; got != "shall I proceed?" {
+	if tp, ok := host.gotPrompt.Parts[0].(inference.TextPart); !ok || tp.Text != "shall I proceed?" {
+		t.Errorf("forwarded prompt: parts[0] = %T, want inference.TextPart with text %q", host.gotPrompt.Parts[0], "shall I proceed?")
+	} else if got := tp.Text; got != "shall I proceed?" {
 		t.Errorf("forwarded prompt = %q, want original", got)
 	}
 	if host.gotPrompt.Source != askuser.Name {
@@ -73,7 +76,7 @@ func TestAskUser_NoHostInCtxIsNotAvailable(t *testing.T) {
 }
 
 func TestAskUser_EmptyPromptIsValidation(t *testing.T) {
-	ctx := engine.WithHost(context.Background(), &captureHost{})
+	ctx := agent.ContextWithHost(context.Background(), &captureHost{})
 	for _, p := range []string{`{"prompt":""}`, `{"prompt":"   "}`, `{}`} {
 		_, err := askuser.New().Execute(ctx, p)
 		if !errdefs.IsValidation(err) {
@@ -83,7 +86,7 @@ func TestAskUser_EmptyPromptIsValidation(t *testing.T) {
 }
 
 func TestAskUser_BadJSONIsValidation(t *testing.T) {
-	ctx := engine.WithHost(context.Background(), &captureHost{})
+	ctx := agent.ContextWithHost(context.Background(), &captureHost{})
 	_, err := askuser.New().Execute(ctx, `{not-json`)
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("bad json: want Validation, got %v", err)
@@ -93,7 +96,7 @@ func TestAskUser_BadJSONIsValidation(t *testing.T) {
 func TestAskUser_HostErrorPropagates(t *testing.T) {
 	wantErr := errors.New("user declined")
 	host := &captureHost{err: wantErr}
-	ctx := engine.WithHost(context.Background(), host)
+	ctx := agent.ContextWithHost(context.Background(), host)
 	_, err := askuser.New().Execute(ctx, `{"prompt":"go?"}`)
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("error = %v, want %v", err, wantErr)
@@ -102,12 +105,12 @@ func TestAskUser_HostErrorPropagates(t *testing.T) {
 
 func TestAskUser_NonTextPartsRenderAsMarker(t *testing.T) {
 	host := &captureHost{
-		reply: engine.UserReply{Parts: []model.Part{
-			{Type: model.PartText, Text: "see attached"},
-			{Type: model.PartImage},
+		reply: agent.UserReply{Parts: []inference.Part{
+			inference.TextPart{Text: "see attached"},
+			inference.ImagePart{Source: mediaSource(t)},
 		}},
 	}
-	ctx := engine.WithHost(context.Background(), host)
+	ctx := agent.ContextWithHost(context.Background(), host)
 	out, err := askuser.New().Execute(ctx, `{"prompt":"q"}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -137,4 +140,16 @@ func TestAskUser_DefinitionStable(t *testing.T) {
 	if _, ok := schema.Properties["prompt"]; !ok {
 		t.Error("schema missing required 'prompt' property")
 	}
+}
+
+// mediaSource builds a valid [media.ImageSource] for the
+// NonTextPartsRenderAsMarker test; the actual URL is irrelevant — the
+// replyText code never decodes it, only inspects Part.Kind().
+func mediaSource(t *testing.T) inference_media.ImageSource {
+	t.Helper()
+	src, err := inference_media.NewImageURL("https://example.invalid/cat.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	return src
 }

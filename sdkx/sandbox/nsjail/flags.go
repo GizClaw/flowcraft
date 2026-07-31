@@ -23,10 +23,6 @@ func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
 	flags := []string{
 		"-Mo",
 		"--quiet",
-		// --disable_clone_newns: keep the host filesystem visible;
-		// WorkDir confinement is handled in Go. See doc.go for the
-		// rationale (full mount-ns isolation is a future RFC).
-		"--disable_clone_newns",
 		// --disable_clone_newuts: nsjail's default UTS-namespace
 		// behaviour invokes sethostname("NSJAIL"), which needs
 		// CAP_SYS_ADMIN in the new namespace. Unprivileged user-ns
@@ -66,6 +62,31 @@ func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
 	flags = append(flags, resF...)
 
 	return flags, nil
+}
+
+// filesystemFlags builds the mount boundary around rootDir:
+//
+//   - clone a mount namespace (the nsjail default);
+//   - expose the host root read-only, preserving access to toolchains;
+//   - mount a private writable tmpfs at /tmp;
+//   - bind rootDir and explicit exceptions read-write at the same path.
+//
+// Writable binds follow the /tmp mount intentionally: when rootDir is
+// itself under /tmp (common in tests and CI), the later nested bind
+// makes the workspace visible inside the otherwise-private tmpfs.
+func filesystemFlags(rootDir string, writable []string) []string {
+	flags := []string{
+		"--chroot", "/",
+		"--tmpfsmount", "/tmp",
+		"--bindmount", rootDir,
+	}
+	for _, path := range writable {
+		if path == "" || path == rootDir {
+			continue
+		}
+		flags = append(flags, "--bindmount", path)
+	}
+	return flags
 }
 
 // envFlags renders sandbox.EnvPolicy as a sequence of --env KEY=VALUE

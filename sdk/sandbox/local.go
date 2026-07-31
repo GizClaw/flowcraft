@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -39,11 +40,18 @@ func WithMaxOutputBytes(n int64) Option {
 //
 // Policy support matrix:
 //
-//   - ExecOptions.WorkDir / Stdin / Timeout: fully supported.
+//   - ExecOptions.WorkDir / Stdin / Timeout: fully supported. Every
+//     child runs in its own process group; timeout/cancel kills the
+//     whole group, not just the leader.
 //   - ExecOptions.Env: fully supported (see EnvPolicy doc).
 //   - ExecOptions.Net.Mode != NetDefault: returns errdefs.NotAvailable.
-//   - ExecOptions.Resources.{CPUMillicores,MemoryBytes,DiskBytes} != 0:
-//     returns errdefs.NotAvailable.
+//   - ExecOptions.Resources.MemoryBytes: enforced by a sampling
+//     watcher on aggregate group RSS; overflow kills the whole group.
+//   - ExecOptions.Resources.CPUMillicores: enforced by the same
+//     watcher as group cpu-time = Timeout x millicores/1000; requires
+//     Timeout > 0, otherwise errdefs.NotAvailable.
+//   - ExecOptions.Resources.DiskBytes != 0: returns
+//     errdefs.NotAvailable (no quota mechanism).
 //   - ExecOptions.Resources.MaxOutputBytes: enforced; per-call value
 //     overrides the runner's WithMaxOutputBytes default.
 type LocalRunner struct {
@@ -68,6 +76,19 @@ func NewLocalRunner(rootDir string, opts ...Option) *LocalRunner {
 	return r
 }
 
+// Enforcement reports LocalRunner's honest surface: the env allow-list
+// is honoured, memory/cpu caps are enforced by the group watcher where
+// the platform supports it, and everything that is call-time
+// validation only (WorkDir bounding, NetDefault pass-through) is
+// deliberately not claimed.
+func (r *LocalRunner) Enforcement() Enforcement {
+	return Enforcement{
+		EnvAllowList: true,
+		MemoryCap:    groupCapsAvailable(),
+		CPUCap:       groupCapsAvailable(),
+	}
+}
+
 // Exec runs cmd with args under opts. See LocalRunner doc for which
 // policy fields are honoured vs. rejected with errdefs.NotAvailable.
 func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
@@ -75,9 +96,18 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 		return nil, errdefs.NotAvailablef(
 			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
 	}
-	if opts.Resources.CPUMillicores != 0 || opts.Resources.MemoryBytes != 0 || opts.Resources.DiskBytes != 0 {
+	if opts.Resources.DiskBytes != 0 {
 		return nil, errdefs.NotAvailablef(
-			"sandbox: resource limits not supported by local runner")
+			"sandbox: disk limits not supported by local runner (no quota mechanism)")
+	}
+	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: CPUMillicores requires a per-call Timeout to derive a cpu-time cap")
+	}
+	maxRSSKB, maxCPU := deriveGroupCaps(opts.Resources, opts.Timeout)
+	if (maxRSSKB > 0 || maxCPU > 0) && !groupCapsAvailable() {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: resource limits not supported on this platform")
 	}
 
 	if opts.Timeout > 0 {
@@ -87,6 +117,7 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 	}
 
 	c := exec.CommandContext(ctx, cmd, args...)
+	applyProcAttrs(c)
 	c.Dir = r.rootDir
 	if opts.WorkDir != "" {
 		resolved, err := r.resolveWorkDir(opts.WorkDir)
@@ -112,12 +143,25 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 
-	err := c.Run()
+	if err := c.Start(); err != nil {
+		return nil, classifyStartError(cmd, err)
+	}
+	// The child leads its own process group (applyProcAttrs), so its pid
+	// is the pgid. The watcher enforces MemoryBytes / cpu caps by group
+	// aggregate; Stop is nil-safe and must follow Wait.
+	watcher := StartGroupCapsWatcher(c.Process.Pid, opts.Resources, opts.Timeout)
+
+	err := c.Wait()
+	watcher.Stop()
 	result := &ExecResult{
 		Stdout: stdout.buf.String(),
 		Stderr: stderr.buf.String(),
 	}
 	if err != nil {
+		if cap := watcher.Exceeded(); cap != "" {
+			return result, errdefs.BudgetExceededf(
+				"sandbox: %s resource cap exceeded while executing %s", cap, cmd)
+		}
 		if ctx.Err() != nil {
 			return result, errdefs.FromContext(fmt.Errorf("sandbox: exec %s: %w", cmd, ctx.Err()))
 		}
@@ -128,6 +172,27 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 		return result, classifyStartError(cmd, err)
 	}
 	return result, nil
+}
+
+// deriveGroupCaps converts policy resource limits into group-watcher
+// units. Memory: bytes -> KiB of aggregate group RSS. CPU: millicores
+// scaled by the per-call timeout -> a cpu-time budget for the whole
+// group (a cap on cumulative cpu time, not rate), so CPUMillicores is
+// only actionable together with Timeout — the caller-visible guard for
+// that lives in Exec.
+func deriveGroupCaps(res ResourceLimits, timeout time.Duration) (maxRSSKB int64, maxCPU time.Duration) {
+	if res.MemoryBytes > 0 {
+		maxRSSKB = 1 + (res.MemoryBytes-1)/1024
+	}
+	if res.CPUMillicores > 0 && timeout > 0 {
+		scaled := float64(timeout) * float64(res.CPUMillicores) / 1000
+		if scaled >= float64(math.MaxInt64) {
+			maxCPU = time.Duration(math.MaxInt64)
+		} else {
+			maxCPU = time.Duration(scaled)
+		}
+	}
+	return maxRSSKB, maxCPU
 }
 
 // classifyStartError maps process-start failures onto errdefs

@@ -188,7 +188,7 @@ func (t *Tool) view(ctx context.Context, a args) (string, error) {
 
 func (t *Tool) viewDir(ctx context.Context, rel string, tolerateMissing bool) (string, error) {
 	entries, err := t.ws.List(ctx, rel)
-	if err != nil && !(tolerateMissing && errors.Is(err, workspace.ErrNotFound)) {
+	if err != nil && (!tolerateMissing || !errors.Is(err, workspace.ErrNotFound)) {
 		return "", fmt.Errorf("memory.view: %w", err)
 	}
 	names := make([]string, 0, len(entries))

@@ -1,0 +1,33 @@
+//go:build !unix
+
+package sandbox
+
+import (
+	"os/exec"
+	"time"
+)
+
+// groupCapsAvailable is false on non-unix platforms: the sampling
+// watcher relies on ps(1) process-group accounting, so resource caps
+// must be rejected with errdefs.NotAvailable rather than silently
+// skipped.
+func groupCapsAvailable() bool { return false }
+
+// GroupCapsWatcher is the non-unix stub of the group sampler.
+type GroupCapsWatcher struct{}
+
+// StartGroupCapsWatcher returns nil outside unix. Runner.Exec rejects
+// actionable caps before reaching this function.
+func StartGroupCapsWatcher(_ int, _ ResourceLimits, _ time.Duration) *GroupCapsWatcher {
+	return nil
+}
+
+// Stop is nil-safe and a no-op outside unix.
+func (*GroupCapsWatcher) Stop() {}
+
+// Exceeded always reports no cap outside unix.
+func (*GroupCapsWatcher) Exceeded() string { return "" }
+
+// applyProcAttrs is a no-op off unix. The default CommandContext
+// behaviour (kill the direct child on cancel) remains in effect.
+func applyProcAttrs(*exec.Cmd) {}

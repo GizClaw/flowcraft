@@ -36,3 +36,8 @@ func (*Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox
 	_, _, _, _ = ctx, cmd, args, opts
 	return nil, errdefs.NotAvailablef("nsjail: not available on this platform")
 }
+
+// Enforcement reports no capabilities on unsupported platforms.
+func (*Runner) Enforcement() sandbox.Enforcement {
+	return sandbox.Enforcement{}
+}

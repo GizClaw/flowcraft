@@ -18,7 +18,10 @@ package nsjail
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -216,5 +219,122 @@ func TestIntegration_WorkDirEscapeRejected(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("expected path-traversal rejection")
+	}
+}
+
+func TestIntegration_FilesystemBounds(t *testing.T) {
+	requireNsjail(t)
+	root := t.TempDir()
+	runner, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(
+		home,
+		fmt.Sprintf(".flowcraft-nsjail-outside-%d", os.Getpid()),
+	)
+	_ = os.Remove(outside)
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	inside := filepath.Join(root, "inside.txt")
+	result, err := runner.Exec(
+		context.Background(),
+		"/bin/sh",
+		[]string{"-c", `printf inside > "$1"; printf outside > "$2"`, "sh", inside, outside},
+		sandbox.ExecOptions{Timeout: 5 * time.Second},
+	)
+	if err != nil {
+		stderr := ""
+		if result != nil {
+			stderr = result.Stderr
+		}
+		t.Fatalf("Exec: %v (stderr=%q)", err, stderr)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("write outside workspace unexpectedly succeeded: %+v", result)
+	}
+	if data, err := os.ReadFile(inside); err != nil || string(data) != "inside" {
+		t.Fatalf("workspace write failed: data=%q err=%v", data, err)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("outside file should not exist on host, stat err=%v", err)
+	}
+}
+
+func TestIntegration_PrivateTmpDoesNotReachHost(t *testing.T) {
+	runner := newIntegrationRunner(t)
+	marker := filepath.Join(
+		"/tmp",
+		fmt.Sprintf("flowcraft-nsjail-private-%d", os.Getpid()),
+	)
+	_ = os.Remove(marker)
+	t.Cleanup(func() { _ = os.Remove(marker) })
+
+	result, err := runner.Exec(
+		context.Background(),
+		"/bin/sh",
+		[]string{"-c", `printf private > "$1"`, "sh", marker},
+		sandbox.ExecOptions{Timeout: 5 * time.Second},
+	)
+	if err != nil {
+		stderr := ""
+		if result != nil {
+			stderr = result.Stderr
+		}
+		t.Fatalf("Exec: %v (stderr=%q)", err, stderr)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("private /tmp should be writable: %+v", result)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("private /tmp write leaked to host, stat err=%v", err)
+	}
+}
+
+func TestIntegration_SymlinkCannotEscapeWritableRoot(t *testing.T) {
+	requireNsjail(t)
+	root := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "escape")
+	if err := os.Symlink(home, link); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(
+		home,
+		fmt.Sprintf(".flowcraft-nsjail-symlink-%d", os.Getpid()),
+	)
+	_ = os.Remove(outside)
+	t.Cleanup(func() { _ = os.Remove(outside) })
+
+	runner, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Exec(
+		context.Background(),
+		"/bin/sh",
+		[]string{"-c", `printf escaped > "$1"`, "sh", filepath.Join(link, filepath.Base(outside))},
+		sandbox.ExecOptions{Timeout: 5 * time.Second},
+	)
+	if err != nil {
+		stderr := ""
+		if result != nil {
+			stderr = result.Stderr
+		}
+		t.Fatalf("Exec: %v (stderr=%q)", err, stderr)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("symlink escape unexpectedly succeeded: %+v", result)
+	}
+	if _, err := os.Stat(outside); !os.IsNotExist(err) {
+		t.Fatalf("symlink escape created host file, stat err=%v", err)
 	}
 }

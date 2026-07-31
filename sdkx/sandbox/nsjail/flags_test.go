@@ -15,10 +15,35 @@ func TestBuildFlags_BaseAlwaysIncluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildFlags: %v", err)
 	}
-	for _, want := range []string{"-Mo", "--quiet", "--disable_clone_newns"} {
+	for _, want := range []string{"-Mo", "--quiet"} {
 		if !contains(got, want) {
 			t.Errorf("missing base flag %q in %v", want, got)
 		}
+	}
+	if contains(got, "--disable_clone_newns") {
+		t.Errorf("mount namespace must stay enabled, got %v", got)
+	}
+}
+
+func TestFilesystemFlags(t *testing.T) {
+	got := filesystemFlags("/workspace", []string{"/cache", "/workspace"})
+	for key, value := range map[string]string{
+		"--chroot":     "/",
+		"--tmpfsmount": "/tmp",
+		"--bindmount":  "/workspace",
+	} {
+		if !hasPair(got, key, value) {
+			t.Errorf("missing %s %s in %v", key, value, got)
+		}
+	}
+	if !hasPair(got, "--bindmount", "/cache") {
+		t.Errorf("missing writable exception in %v", got)
+	}
+	if countPair(got, "--bindmount", "/workspace") != 1 {
+		t.Errorf("root bind should be emitted once, got %v", got)
+	}
+	if indexPair(got, "--tmpfsmount", "/tmp") > indexPair(got, "--bindmount", "/workspace") {
+		t.Errorf("private /tmp must mount before a workspace nested under it: %v", got)
 	}
 }
 
@@ -288,6 +313,25 @@ func hasPair(args []string, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func countPair(args []string, key, value string) int {
+	count := 0
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key && args[i+1] == value {
+			count++
+		}
+	}
+	return count
+}
+
+func indexPair(args []string, key, value string) int {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key && args[i+1] == value {
+			return i
+		}
+	}
+	return -1
 }
 
 func extractEnvAssignments(args []string) []string {
