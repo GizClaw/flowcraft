@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -182,7 +183,9 @@ func (s *ScopedWorkspace) logViolation(ctx context.Context, op, path, reason str
 //
 // To match a file extension at any depth, use the explicit "**/*.ext" form.
 func matchesAny(path string, patterns []string) bool {
+	path = filepath.ToSlash(path)
 	for _, p := range patterns {
+		p = filepath.ToSlash(p)
 		if strings.HasSuffix(p, "/**") {
 			prefix := strings.TrimSuffix(p, "/**")
 			if strings.HasPrefix(prefix, "**/") {
@@ -203,14 +206,14 @@ func matchesAny(path string, patterns []string) bool {
 			if path == suffix || strings.HasSuffix(path, "/"+suffix) {
 				return true
 			}
-			if strings.Contains(suffix, "*") || strings.Contains(suffix, "?") {
-				if matched, _ := filepath.Match(suffix, filepath.Base(path)); matched {
+			if strings.ContainsAny(suffix, "*?") {
+				if matched, _ := pathpkg.Match(suffix, pathpkg.Base(path)); matched {
 					return true
 				}
 			}
 			continue
 		}
-		if matched, _ := filepath.Match(p, path); matched {
+		if matched, _ := pathpkg.Match(p, path); matched {
 			return true
 		}
 	}
