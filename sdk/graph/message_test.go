@@ -10,11 +10,12 @@ import (
 
 func TestMessageStream(t *testing.T) {
 	board := agent.NewBoard()
+	ctx := agent.WithRunInfo(context.Background(),
+		agent.RunInfo{Identity: agent.Identity{AgentID: "a", RunID: "r"}})
 	ec := ExecutionContext{
-		Context: context.Background(),
+		Context: ctx,
 		Host:    agent.NoopHost{},
 		NodeID:  "n1",
-		RunInfo: agent.RunInfo{Identity: agent.Identity{AgentID: "a", RunID: "r"}},
 	}
 
 	s := ec.NewMessageStream("")

@@ -1609,3 +1609,28 @@ func TestResumeContextFromContext_NilCtxReturnsFalse(t *testing.T) {
 		t.Fatal("nil ctx must return ok=false")
 	}
 }
+
+func TestRunInfoContext_RoundTrip(t *testing.T) {
+	want := agent.RunInfo{
+		Identity:      agent.Identity{AgentID: "a", RunID: "r"},
+		ToolAllowList: []string{"search"},
+	}
+	ctx := agent.WithRunInfo(context.Background(), want)
+	got, ok := agent.RunInfoFromContext(ctx)
+	if !ok {
+		t.Fatal("RunInfoFromContext ok=false after WithRunInfo")
+	}
+	if got.AgentID != want.AgentID || got.RunID != want.RunID ||
+		len(got.ToolAllowList) != 1 || got.ToolAllowList[0] != "search" {
+		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestRunInfoFromContext_AbsentAndNil(t *testing.T) {
+	if _, ok := agent.RunInfoFromContext(context.Background()); ok {
+		t.Fatal("empty ctx must return ok=false")
+	}
+	if _, ok := agent.RunInfoFromContext(nil); ok {
+		t.Fatal("nil ctx must return ok=false")
+	}
+}

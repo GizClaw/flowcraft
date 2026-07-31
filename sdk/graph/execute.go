@@ -164,6 +164,9 @@ func (g *Graph) executeWave(ctx context.Context, run agent.Run, host agent.Host,
 func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, slot *nodeSlot) (skipped bool, err error) {
 	nodeID := slot.def.ID
 	info := run.Info()
+	// Run identity is ambient from here down: handlers, script
+	// bindings, and stream adapters pull it from the context.
+	ctx = agent.WithRunInfo(ctx, info)
 
 	if slot.skipCondition != nil {
 		skip, err := slot.skipCondition.Evaluate(board)
@@ -205,7 +208,7 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		return false, verr
 	}
 
-	ec := ExecutionContext{Context: ctx, Host: host, NodeID: nodeID, GraphID: g.name, RunInfo: info}
+	ec := ExecutionContext{Context: ctx, Host: host, NodeID: nodeID, GraphID: g.name}
 	publishStepStarted(ctx, host, g, info, nodeID)
 	preInvoke := channelLengths(board, slot.writes)
 

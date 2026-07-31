@@ -106,7 +106,8 @@ func DecodeConfig[C any](raw json.RawMessage) (C, error) {
 // ExecutionContext is the per-node, per-run invocation context handed
 // to a [NodeType] handler.
 type ExecutionContext struct {
-	// Context carries the run's deadline and cancellation. Handlers
+	// Context carries the run's deadline and cancellation, plus the
+	// ambient run identity (agent.RunInfoFromContext). Handlers
 	// should thread it through all blocking calls.
 	Context context.Context
 
@@ -123,10 +124,6 @@ type ExecutionContext struct {
 	// invocation: which graph, which node. The kernel stamps it onto
 	// envelope headers (event.HeaderGraphID).
 	GraphID string
-
-	// RunInfo is the node-facing projection of the current run:
-	// identity, attributes, and tool policy.
-	RunInfo agent.RunInfo
 }
 
 // EmitStreamDelta publishes a stream delta on this node's behalf.
@@ -137,7 +134,8 @@ type ExecutionContext struct {
 // assemble subjects or envelopes themselves. A nil Host (tests) makes
 // Emit a no-op.
 func (ec ExecutionContext) EmitStreamDelta(delta agent.StreamDeltaPayload) error {
-	return publishStreamDelta(ec.Context, ec.Host, ec.RunInfo, ec.GraphID, ec.NodeID, delta)
+	info, _ := agent.RunInfoFromContext(ec.Context)
+	return publishStreamDelta(ec.Context, ec.Host, info, ec.GraphID, ec.NodeID, delta)
 }
 
 // ---------- role resolution (build time) ----------

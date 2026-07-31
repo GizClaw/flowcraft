@@ -778,6 +778,29 @@ func (ri RunInfo) Attribute(key string) string {
 	return ri.Attributes[key]
 }
 
+type runInfoCtxKey struct{}
+
+// WithRunInfo returns a derived context carrying info. Run identity
+// is AMBIENT: deep components (script bindings, stream adapters,
+// helpers far below the engine's call sites) read it from the
+// context instead of receiving it through every intermediate
+// signature. Engines inject it once at the run boundary.
+func WithRunInfo(ctx context.Context, info RunInfo) context.Context {
+	return context.WithValue(ctx, runInfoCtxKey{}, info)
+}
+
+// RunInfoFromContext returns the RunInfo attached to ctx, plus an
+// "ok" flag. ok=false means the caller is outside an engine run (or
+// the engine did not populate the context) — consumers should treat
+// the zero RunInfo as "identity unknown" rather than an error.
+func RunInfoFromContext(ctx context.Context) (RunInfo, bool) {
+	if ctx == nil {
+		return RunInfo{}, false
+	}
+	info, ok := ctx.Value(runInfoCtxKey{}).(RunInfo)
+	return info, ok
+}
+
 // ---------- Resume ----------
 
 // Resumer is the optional capability an [Engine] may advertise to

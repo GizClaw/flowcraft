@@ -91,6 +91,38 @@ func testRun() agent.Run {
 	return agent.Run{Identity: agent.Identity{AgentID: "test-agent", RunID: "run-1"}}
 }
 
+// TestAmbientRunInfo proves the executor injects the run identity
+// into the handler's context: a handler deep in the call tree can
+// pull it out via agent.RunInfoFromContext without any field wiring.
+func TestAmbientRunInfo(t *testing.T) {
+	reg := NewRegistry()
+	var got agent.RunInfo
+	var ok bool
+	err := RegisterType(reg, "probe", NodeType[struct{}]{
+		Meta: Meta{Desc: "ambient identity probe"},
+		Handler: func(ec ExecutionContext, _ *agent.Board, _ struct{}) error {
+			got, ok = agent.RunInfoFromContext(ec.Context)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register probe: %v", err)
+	}
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "probe-graph",
+		Entry: "p",
+		Nodes: []NodeDefinition{{ID: "p", Type: "probe"}},
+	}, reg)
+	mustRun(t, g, agent.NewBoard())
+
+	if !ok {
+		t.Fatal("handler context carried no RunInfo")
+	}
+	if got.AgentID != "test-agent" || got.RunID != "run-1" {
+		t.Fatalf("ambient identity = %+v", got.Identity)
+	}
+}
+
 // checkpointHost records stamped checkpoints.
 type checkpointHost struct {
 	agent.NoopHost
