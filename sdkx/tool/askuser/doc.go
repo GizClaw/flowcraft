@@ -2,6 +2,16 @@
 // — a human-in-the-loop bridge that lets the model explicitly hand a
 // question back to the operator via [agent.Host.AskUser].
 //
+// # Primitive category: host bridge
+//
+// This tool ships built-in because the capability it exposes lives
+// in-process. ask_user forwards to [agent.Host.AskUser], reaching the
+// host's own UserPrompter — a UI controller, a queued kanban card, a
+// terminal prompt. An out-of-process MCP server has no path to that
+// surface: it cannot interrupt the run, cannot reach the operator, and
+// cannot return the reply into the same turn. See sdkx/tool's package
+// doc for the boundary this sits on.
+//
 // # Why sdkx
 //
 // sdk defines interfaces and primitives; sdkx ships concrete
@@ -9,7 +19,7 @@
 // protocol specs. tool.Tool implementations are concrete adapters
 // — they bridge the generic tool.Tool interface to one specific
 // service — and therefore belong here, mirroring the existing
-// sdkx/tool/anthropicmemory and sdkx/tool/exec layouts.
+// sdkx/tool/exec and sdkx/tool/kanban layouts.
 //
 // # Wiring
 //

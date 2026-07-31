@@ -6,13 +6,25 @@
 // runner, and the captured stdout/stderr/exit_code surfaces back as
 // the tool result.
 //
+// # Primitive category: sandbox boundary
+//
+// This tool ships built-in because it *is* the execution boundary. An
+// out-of-process MCP server cannot supply it: the point of exec is to
+// run a command under the host's own [sandbox.Runner], honouring that
+// runner's isolation, approval, and resource policy. A remote server
+// would run commands in its own environment under its own rules,
+// which is a different capability wearing the same name. See
+// sdkx/tool's package doc for the boundary this sits on; hosts wanting
+// command execution *somewhere else* should attach an MCP server for
+// that environment instead.
+//
 // # Why sdkx
 //
 // sdk defines interfaces and primitives; sdkx ships concrete
 // adapters. tool.Tool implementations are concrete adapters — they
 // bridge the generic tool.Tool interface to one specific service —
 // and therefore belong here, mirroring the existing
-// sdk/llm → sdkx/llm/*, sdk/workspace → sdkx/tool/anthropicmemory layouts.
+// sdk/inference → sdkx/inference/* layout.
 //
 // # Deny-by-default
 //

@@ -14,10 +14,6 @@ import (
 // Kanban is injected via struct field (when the instance is known
 // at construction) or resolved from context at execution time via
 // [KanbanFrom].
-//
-// This is the v0.3.0 location of the helper that lives at
-// [sdkkanban.SubmitTool] in v0.2.x. Behaviour is identical; only
-// the import path changes.
 type SubmitTool struct {
 	Kanban *sdkkanban.Kanban
 }
@@ -108,10 +104,6 @@ func (t *SubmitTool) resolve(ctx context.Context) *sdkkanban.Kanban {
 // TaskContextTool allows the Dispatcher to retrieve the full context
 // of a previously dispatched async task, including the original user
 // request, dispatch note, task instruction, and execution result.
-//
-// This is the v0.3.0 location of the helper that lives at
-// [sdkkanban.TaskContextTool] in v0.2.x. Behaviour is identical;
-// only the import path changes.
 type TaskContextTool struct {
 	Kanban *sdkkanban.Kanban
 }

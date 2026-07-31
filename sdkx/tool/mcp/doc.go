@@ -5,10 +5,10 @@
 // # Why this is an attachment, not a tool
 //
 // MCP is not a built-in tool. The built-in set is fixed and small
-// (sdkx/tool/{askuser,exec,kanban,anthropicmemory} plus
-// agent.HandoffTool); everything else is delegated to the MCP
-// ecosystem, which is what this package exists to reach. See
-// docs/prds/builtin-tools-boundary.md.
+// (sdkx/tool/{askuser,exec,kanban} plus agent.HandoffTool);
+// everything else is delegated to the MCP ecosystem, which is what
+// this package exists to reach. See sdkx/tool's package doc for the
+// boundary between the two.
 //
 // The unit of integration is therefore a [Source]: a host-owned handle
 // that connects to servers and writes their tools into the registry the
