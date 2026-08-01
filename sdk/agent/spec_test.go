@@ -32,7 +32,7 @@ func graphSpec() agent.EngineSpec {
 			EmitsCheckpoint: true,
 		},
 		Deps: []agent.DepSpec{
-			{Name: "llm", Type: "inference.Profile", Required: true},
+			{Name: "inference", Type: "inference.Runtime", Required: true},
 			{Name: "tools", Type: "tool.Catalog"},
 		},
 	}
@@ -112,7 +112,7 @@ func TestEngineSpec_RoundTripsThroughJSON(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("round-trip Unmarshal: %v", err)
 	}
-	if back.Kind != "graph" || !back.Capabilities.SupportsResume || len(back.Deps) != 2 || back.Deps[0].Name != "llm" {
+	if back.Kind != "graph" || !back.Capabilities.SupportsResume || len(back.Deps) != 2 || back.Deps[0].Name != "inference" {
 		t.Fatalf("round-trip = %+v", back)
 	}
 }

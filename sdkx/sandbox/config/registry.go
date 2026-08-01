@@ -53,10 +53,14 @@ func (r *Registry) Get(name string) (coresandbox.Runner, bool) {
 	return runner, ok
 }
 
-// Resolve adapts the registry to sdkx/agent/config.SourceFunc without
-// importing the agent config package. Register it directly:
+// Resolve adapts the registry to sdkx/deploy.SourceFunc for the case
+// where the HOST built this registry and keeps its lifetime. Register
+// it directly:
 //
-//	agentBuilder.RegisterSource("sandbox", sandboxes.Resolve)
+//	deployBuilder.RegisterSource("sandbox", sandboxes.Resolve)
+//
+// A registry the deployment document should own and close belongs in
+// the resource area instead — see [DeployResource].
 func (r *Registry) Resolve(_ context.Context, ref string) (any, error) {
 	runner, ok := r.Get(ref)
 	if !ok {
@@ -64,6 +68,18 @@ func (r *Registry) Resolve(_ context.Context, ref string) (any, error) {
 			"sandbox config: unknown sandbox %q", ref)
 	}
 	return runner, nil
+}
+
+// Lookup implements sdkx/deploy.RefLookup so a deployment document can
+// bind one runner out of this registry with the scalar dep form
+// ("sandboxes/coding"). It returns the sandbox.Runner as any; Get is
+// the typed accessor.
+func (r *Registry) Lookup(ref string) (any, bool) {
+	runner, ok := r.Get(ref)
+	if !ok {
+		return nil, false
+	}
+	return runner, true
 }
 
 // Names returns sorted sandbox names in a caller-owned slice.

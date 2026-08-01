@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/middleware"
 	"github.com/GizClaw/flowcraft/sdkx/tool/config"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func echoTool(name string) tool.Tool {
@@ -150,7 +151,7 @@ func TestBuild_ChainOrderIsDocumentOrder(t *testing.T) {
 
 	var order []string
 	track := func(label string) config.MiddlewareFactory {
-		return func(_ context.Context, _ json.RawMessage) (tool.Middleware, error) {
+		return func(_ context.Context, _ *yamlv3.Node) (tool.Middleware, error) {
 			return func(next tool.Dispatch) tool.Dispatch {
 				return func(ctx context.Context, c tool.Call) tool.Result {
 					order = append(order, label)
@@ -212,7 +213,7 @@ func TestBuild_FailFast(t *testing.T) {
 		{
 			name: "approval without approver dep",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "approval", Spec: json.RawMessage(`{"tools":["x"]}`)},
+				{Kind: "approval", Spec: yamlSpec(t, `tools: [x]`)},
 			}},
 			tools:   []string{"x"},
 			wantErr: "Approver",
@@ -228,7 +229,7 @@ func TestBuild_FailFast(t *testing.T) {
 		{
 			name: "concurrency zero limit",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "concurrency", Spec: json.RawMessage(`{"limit":0}`)},
+				{Kind: "concurrency", Spec: yamlSpec(t, `limit: 0`)},
 			}},
 			tools:   []string{"x"},
 			wantErr: "limit",
@@ -236,15 +237,15 @@ func TestBuild_FailFast(t *testing.T) {
 		{
 			name: "concurrency unknown spec field",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "concurrency", Spec: json.RawMessage(`{"limits":10}`)},
+				{Kind: "concurrency", Spec: yamlSpec(t, `limits: 10`)},
 			}},
 			tools:   []string{"x"},
-			wantErr: "unknown field",
+			wantErr: "field limits not found",
 		},
 		{
 			name: "approval empty tools",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "approval", Spec: json.RawMessage(`{"tools":[]}`)},
+				{Kind: "approval", Spec: yamlSpec(t, `tools: []`)},
 			}},
 			deps: config.Deps{Approver: middleware.ApproverFunc(
 				func(context.Context, tool.Call) error { return nil },
@@ -255,7 +256,7 @@ func TestBuild_FailFast(t *testing.T) {
 		{
 			name: "recover rejects spec",
 			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-				{Kind: "recover", Spec: json.RawMessage(`{"x":1}`)},
+				{Kind: "recover", Spec: yamlSpec(t, `x: 1`)},
 			}},
 			tools:   []string{"x"},
 			wantErr: "takes no spec",
@@ -315,7 +316,7 @@ middlewares:
 func TestTimeoutSpec_RejectsNumericDuration(t *testing.T) {
 	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
 	doc := config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
-		{Kind: "timeout", Spec: json.RawMessage(`{"default":30}`)},
+		{Kind: "timeout", Spec: yamlSpec(t, `default: 30`)},
 	}}
 	if _, err := builder.Build(context.Background(), doc); err == nil {
 		t.Error("numeric duration should be rejected; units belong in the file")
@@ -361,15 +362,30 @@ func (f *fakeSource) Close() error {
 	return f.closeErr
 }
 
-func sourceDoc(kinds ...string) config.Document {
+func sourceDoc(t *testing.T, kinds ...string) config.Document {
+	t.Helper()
 	doc := config.Document{Version: config.VersionV1}
 	for _, kind := range kinds {
 		doc.Sources = append(doc.Sources, config.SourceEntry{
 			Kind: kind,
-			Spec: json.RawMessage(`{}`),
+			Spec: yamlSpec(t, `{}`),
 		})
 	}
 	return doc
+}
+
+// yamlSpec builds an opaque spec subtree the way Parse would, so a test
+// constructing a Document by hand exercises the same factory decode
+// path a real YAML file does.
+func yamlSpec(t *testing.T, body string) *config.Opaque {
+	t.Helper()
+	var doc struct {
+		Spec *config.Opaque `yaml:"spec"`
+	}
+	if err := yamlv3.Unmarshal([]byte("spec:\n  "+strings.ReplaceAll(body, "\n", "\n  ")), &doc); err != nil {
+		t.Fatalf("yamlSpec(%q): %v", body, err)
+	}
+	return doc.Spec
 }
 
 func TestParse_Sources(t *testing.T) {
@@ -393,15 +409,16 @@ middlewares:
 	if doc.Sources[0].Kind != "mcp" {
 		t.Errorf("Sources[0].Kind = %q, want %q", doc.Sources[0].Kind, "mcp")
 	}
-	var spec struct {
-		Servers []struct {
-			Name      string `json:"name"`
-			Transport string `json:"transport"`
-			Command   string `json:"command"`
-		} `json:"servers"`
+	type serverSpec struct {
+		Name      string `yaml:"name"`
+		Transport string `yaml:"transport"`
+		Command   string `yaml:"command"`
 	}
-	if err := json.Unmarshal(doc.Sources[0].Spec, &spec); err != nil {
-		t.Fatalf("source spec is not decodable JSON: %v", err)
+	spec, err := config.DecodeSpec[struct {
+		Servers []serverSpec `yaml:"servers"`
+	}](doc.Sources[0].Spec.Node())
+	if err != nil {
+		t.Fatalf("source spec is not decodable YAML: %v", err)
 	}
 	if len(spec.Servers) != 1 || spec.Servers[0].Name != "files" {
 		t.Errorf("source spec decoded as %+v", spec)
@@ -423,11 +440,11 @@ func TestBuild_SourceToolsJoinTheRegistry(t *testing.T) {
 
 	builder := config.NewBuilder(registry, config.Deps{})
 	source := &fakeSource{tools: []string{"remote_a", "remote_b"}}
-	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("fake", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return source, nil
 	})
 
-	assembly, err := builder.Build(context.Background(), sourceDoc("fake"))
+	assembly, err := builder.Build(context.Background(), sourceDoc(t, "fake"))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -460,11 +477,11 @@ func TestBuild_SourceToolsJoinTheRegistry(t *testing.T) {
 func TestBuild_SourceAttachesBeforeScopes(t *testing.T) {
 	registry := tool.NewRegistry()
 	builder := config.NewBuilder(registry, config.Deps{})
-	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("fake", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return &fakeSource{tools: []string{"remote"}}, nil
 	})
 
-	doc := sourceDoc("fake")
+	doc := sourceDoc(t, "fake")
 	doc.Scopes = map[string]string{"remote": tool.ScopePlatform}
 
 	assembly, err := builder.Build(context.Background(), doc)
@@ -480,7 +497,7 @@ func TestBuild_SourceAttachesBeforeScopes(t *testing.T) {
 
 func TestBuild_UnknownSourceKind(t *testing.T) {
 	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
-	_, err := builder.Build(context.Background(), sourceDoc("nope"))
+	_, err := builder.Build(context.Background(), sourceDoc(t, "nope"))
 	if err == nil {
 		t.Fatal("Build with an unregistered source kind succeeded, want error")
 	}
@@ -501,14 +518,14 @@ func TestBuild_AttachFailureClosesEarlierSources(t *testing.T) {
 
 	good := &fakeSource{tools: []string{"remote_ok"}}
 	bad := &fakeSource{attachErr: errors.New("connect refused")}
-	builder.RegisterSourceFactory("good", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("good", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return good, nil
 	})
-	builder.RegisterSourceFactory("bad", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("bad", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return bad, nil
 	})
 
-	_, err := builder.Build(context.Background(), sourceDoc("good", "bad"))
+	_, err := builder.Build(context.Background(), sourceDoc(t, "good", "bad"))
 	if err == nil {
 		t.Fatal("Build succeeded despite a failing source, want error")
 	}
@@ -529,15 +546,15 @@ func TestBuild_MiddlewareFailureClosesSources(t *testing.T) {
 	registry := tool.NewRegistry()
 	builder := config.NewBuilder(registry, config.Deps{})
 	source := &fakeSource{tools: []string{"remote"}}
-	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("fake", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return source, nil
 	})
 
-	doc := sourceDoc("fake")
+	doc := sourceDoc(t, "fake")
 	// approval without an Approver in Deps fails at factory time.
 	doc.Middlewares = []config.MiddlewareEntry{{
 		Kind: config.KindApproval,
-		Spec: json.RawMessage(`{"tools":["remote"]}`),
+		Spec: yamlSpec(t, `tools: [remote]`),
 	}}
 
 	if _, err := builder.Build(context.Background(), doc); err == nil {
@@ -553,10 +570,10 @@ func TestBuild_MiddlewareFailureClosesSources(t *testing.T) {
 
 func TestBuild_NilSourceFromFactory(t *testing.T) {
 	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
-	builder.RegisterSourceFactory("nil", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("nil", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return nil, nil
 	})
-	if _, err := builder.Build(context.Background(), sourceDoc("nil")); err == nil {
+	if _, err := builder.Build(context.Background(), sourceDoc(t, "nil")); err == nil {
 		t.Error("Build with a nil source succeeded, want error")
 	}
 }
@@ -564,10 +581,10 @@ func TestBuild_NilSourceFromFactory(t *testing.T) {
 func TestAssembly_CloseIsIdempotent(t *testing.T) {
 	builder := config.NewBuilder(tool.NewRegistry(), config.Deps{})
 	source := &fakeSource{tools: []string{"remote"}}
-	builder.RegisterSourceFactory("fake", func(context.Context, json.RawMessage) (config.Source, error) {
+	builder.RegisterSourceFactory("fake", func(context.Context, *yamlv3.Node) (config.Source, error) {
 		return source, nil
 	})
-	assembly, err := builder.Build(context.Background(), sourceDoc("fake"))
+	assembly, err := builder.Build(context.Background(), sourceDoc(t, "fake"))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

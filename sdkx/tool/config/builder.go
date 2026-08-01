@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,12 +9,14 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/middleware"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// MiddlewareFactory instantiates one middleware from its raw spec.
-// Specs decode strictly: unknown fields must be an error so typos in
-// YAML surface at build time, not as silently ignored policy.
-type MiddlewareFactory func(ctx context.Context, spec json.RawMessage) (tool.Middleware, error)
+// MiddlewareFactory instantiates one middleware from its own YAML
+// subtree, nil when the entry declared no spec. Decode it with
+// [DecodeSpec]: unknown fields must be an error so typos in YAML
+// surface at build time, not as silently ignored policy.
+type MiddlewareFactory func(ctx context.Context, spec *yamlv3.Node) (tool.Middleware, error)
 
 // Deps carries the application-side dependencies YAML cannot express:
 // who approves gated calls and where audit records go. A document
@@ -81,6 +82,12 @@ type Assembly struct {
 	// the document's middleware chain.
 	Executor *tool.Executor
 
+	// Catalog is the registry Executor dispatches against. Consumers
+	// that must resolve tool names into definitions before calling —
+	// an LLM request builder, for one — need the catalog, not the
+	// executor, so the assembly exposes both halves.
+	Catalog tool.Catalog
+
 	sources []Source
 }
 
@@ -142,7 +149,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Assembly, error) {
 				"tool config middlewares[%d]: unknown kind %q", i, entry.Kind,
 			))
 		}
-		mw, err := factory(ctx, entry.Spec)
+		mw, err := factory(ctx, entry.Spec.Node())
 		if err != nil {
 			_ = assembly.Close()
 			return nil, fmt.Errorf(
@@ -152,5 +159,6 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Assembly, error) {
 		chain = append(chain, mw)
 	}
 	assembly.Executor = tool.NewExecutor(b.registry, chain...)
+	assembly.Catalog = b.registry
 	return assembly, nil
 }

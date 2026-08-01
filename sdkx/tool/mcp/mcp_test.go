@@ -10,6 +10,7 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/tool/mcp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -609,16 +610,39 @@ func TestClose_Idempotent(t *testing.T) {
 // config bridge
 // ---------------------------------------------------------------------------
 
+// specNode parses a spec body into the opaque YAML node a config
+// document would hand a source factory.
+func specNode(t *testing.T, body string) *yamlv3.Node {
+	t.Helper()
+	var node yamlv3.Node
+	if err := yamlv3.Unmarshal([]byte(body), &node); err != nil {
+		t.Fatalf("specNode(%q): %v", body, err)
+	}
+	if node.Kind == yamlv3.DocumentNode && len(node.Content) == 1 {
+		return node.Content[0]
+	}
+	return &node
+}
+
 // TestConfig_ParseSpecAcceptsBothTransports pins the declarative shape
 // hosts write in YAML. Attaching is covered by the AddServer tests; what
 // matters here is that a valid document decodes and an invalid one is
 // rejected at parse time rather than at first call.
 func TestConfig_ParseSpecAcceptsBothTransports(t *testing.T) {
-	raw := json.RawMessage(`{"servers":[
-		{"name":"files","transport":"stdio","command":"npx","args":["-y","server"],"env":{"TOKEN":"x"}},
-		{"name":"remote","transport":"http","url":"https://mcp.example.com","headers":{"Authorization":"Bearer x"},"scope":"platform","prefix":""}
-	]}`)
-	spec, err := mcp.ParseSpec(raw)
+	spec, err := mcp.ParseSpec(specNode(t, `
+servers:
+  - name: files
+    transport: stdio
+    command: npx
+    args: ["-y", "server"]
+    env: {TOKEN: x}
+  - name: remote
+    transport: http
+    url: https://mcp.example.com
+    headers: {Authorization: "Bearer x"}
+    scope: platform
+    prefix: ""
+`))
 	if err != nil {
 		t.Fatalf("ParseSpec: %v", err)
 	}
@@ -644,7 +668,7 @@ func TestConfig_ParseSpecAcceptsBothTransports(t *testing.T) {
 // subprocess, which is also what proves the transport wiring works
 // outside the in-memory harness.
 func TestConfig_SourceFactoryRejectsBadSpec(t *testing.T) {
-	if _, err := mcp.SourceFactory(t.Context(), json.RawMessage(`{"servers":[]}`)); err == nil {
+	if _, err := mcp.SourceFactory(t.Context(), specNode(t, `servers: []`)); err == nil {
 		t.Error("SourceFactory with no servers succeeded, want error")
 	}
 	if _, err := mcp.SourceFactory(t.Context(), nil); err == nil {
@@ -655,6 +679,7 @@ func TestConfig_SourceFactoryRejectsBadSpec(t *testing.T) {
 func TestConfig_ParseSpecRejectsBadInput(t *testing.T) {
 	for _, tc := range []struct{ name, raw string }{
 		{"empty", `{}`},
+		{"servers not a list", `{"servers": 3}`},
 		{"bad transport", `{"servers":[{"name":"x","transport":"telnet"}]}`},
 		{"missing name", `{"servers":[{"transport":"stdio","command":"x"}]}`},
 		{"duplicate name", `{"servers":[{"name":"a","transport":"stdio","command":"x"},{"name":"a","transport":"stdio","command":"y"}]}`},
@@ -663,7 +688,7 @@ func TestConfig_ParseSpecRejectsBadInput(t *testing.T) {
 		{"bad scope", `{"servers":[{"name":"x","transport":"stdio","command":"x","scope":"secret"}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := mcp.ParseSpec(json.RawMessage(tc.raw)); err == nil {
+			if _, err := mcp.ParseSpec(specNode(t, tc.raw)); err == nil {
 				t.Errorf("ParseSpec(%q) succeeded, want error", tc.name)
 			}
 		})

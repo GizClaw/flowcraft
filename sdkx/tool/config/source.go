@@ -2,12 +2,12 @@ package config
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Source is an attachment that populates a tool.Registry from
@@ -31,17 +31,18 @@ type Source interface {
 	Close() error
 }
 
-// SourceFactory instantiates one Source from its raw spec. Specs decode
-// strictly, mirroring MiddlewareFactory: an unknown field is a typo
-// that should fail at build time, not silently drop a server.
-type SourceFactory func(ctx context.Context, spec json.RawMessage) (Source, error)
+// SourceFactory instantiates one Source from its own YAML subtree, nil
+// when the entry declared no spec. Decode it with [DecodeSpec],
+// mirroring MiddlewareFactory: an unknown field is a typo that should
+// fail at build time, not silently drop a server.
+type SourceFactory func(ctx context.Context, spec *yamlv3.Node) (Source, error)
 
 // SourceEntry is one attachment declared in the document: a factory
-// kind plus its opaque spec. Spec stays raw so each factory owns its
-// own schema.
+// kind plus its opaque spec. Spec stays an undecoded YAML subtree so
+// each factory owns its own schema.
 type SourceEntry struct {
-	Kind string
-	Spec json.RawMessage
+	Kind string  `yaml:"kind"`
+	Spec *Opaque `yaml:"spec,omitempty"`
 }
 
 // RegisterSourceFactory adds (or replaces) a factory for kind. Empty
@@ -87,7 +88,7 @@ func (b *Builder) buildSources(ctx context.Context, entries []SourceEntry) ([]So
 					"(register it with Builder.RegisterSourceFactory)", i, entry.Kind,
 			))
 		}
-		source, err := factory(ctx, entry.Spec)
+		source, err := factory(ctx, entry.Spec.Node())
 		if err != nil {
 			closeAttached()
 			return nil, fmt.Errorf(

@@ -13,7 +13,7 @@ import (
 // assembly time. Names live in a single string key space so specs
 // round-trip through YAML / JSON and dashboards without any
 // Go-type-specific knowledge; Type is a documentation-and-validation
-// hint naming the expected contract (e.g. "inference.Profile",
+// hint naming the expected contract (e.g. "inference.Runtime",
 // "tool.Catalog").
 type DepSpec struct {
 	// Name is the assembly-time key the host binds a value to

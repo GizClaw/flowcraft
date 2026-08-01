@@ -1,11 +1,10 @@
-package config
+package deploy
 
 import (
 	"context"
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Builtin after-factory kinds.
@@ -25,8 +24,8 @@ type discardSettings struct {
 	Causes []string `yaml:"causes"`
 }
 
-func buildDiscardOnInterrupt(_ context.Context, settings *yamlv3.Node) (agent.AfterExecute, error) {
-	s, err := DecodeSettings[discardSettings](settings)
+func buildDiscardOnInterrupt(_ context.Context, in HookInput) (agent.AfterExecute, error) {
+	s, err := DecodeSettings[discardSettings](in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("decode %s settings: %w", AfterDiscardOnInterrupt, err)
 	}

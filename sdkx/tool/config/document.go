@@ -2,11 +2,8 @@ package config
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
-	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -18,21 +15,41 @@ const VersionV1 = "v1"
 
 // Document is the parsed tool-execution policy.
 type Document struct {
-	Version string
+	Version string `yaml:"version"`
 	// Sources declares external tool providers to attach before the
 	// chain is built, so their tools are registered by the time scopes
 	// and middleware reference them.
-	Sources     []SourceEntry
-	Middlewares []MiddlewareEntry
-	Scopes      map[string]string
+	Sources     []SourceEntry     `yaml:"sources,omitempty"`
+	Middlewares []MiddlewareEntry `yaml:"middlewares,omitempty"`
+	Scopes      map[string]string `yaml:"scopes,omitempty"`
 }
 
 // MiddlewareEntry is one chain link: a factory kind plus its opaque
-// spec. Spec stays raw so each factory decodes exactly the fields it
-// owns, strictly.
+// spec. Spec stays an undecoded YAML subtree so each factory decodes
+// exactly the fields it owns, strictly.
 type MiddlewareEntry struct {
-	Kind string
-	Spec json.RawMessage
+	Kind string  `yaml:"kind"`
+	Spec *Opaque `yaml:"spec,omitempty"`
+}
+
+// Opaque captures a factory-owned YAML subtree without decoding it.
+// Implementing UnmarshalYAML stops the document's KnownFields(true)
+// strictness from recursing into a spec whose schema this package does
+// not know, while every field it does own stays strictly checked.
+type Opaque yamlv3.Node
+
+// UnmarshalYAML stores the subtree verbatim.
+func (o *Opaque) UnmarshalYAML(node *yamlv3.Node) error {
+	*o = Opaque(*node)
+	return nil
+}
+
+// Node returns the captured subtree for [DecodeSpec].
+func (o *Opaque) Node() *yamlv3.Node {
+	if o == nil {
+		return nil
+	}
+	return (*yamlv3.Node)(o)
 }
 
 // Validate checks the document's own invariants. Factory-level spec
@@ -71,11 +88,16 @@ func (d Document) Validate() error {
 
 // Parse decodes strict YAML into a validated Document: unknown
 // fields, trailing documents, and invalid values are all errors.
+//
+// Specs are carried as YAML nodes rather than converted to JSON, so
+// any legal YAML a factory understands survives — timestamps, multi-line
+// block scalars, aliases — and there is only one encoding to reason
+// about.
 func Parse(data []byte) (Document, error) {
 	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
-	var wire documentWire
-	if err := decoder.Decode(&wire); err != nil {
+	var doc Document
+	if err := decoder.Decode(&doc); err != nil {
 		return Document{}, errdefs.Validation(fmt.Errorf(
 			"decode tool config YAML: %w", err))
 	}
@@ -87,132 +109,49 @@ func Parse(data []byte) (Document, error) {
 		return Document{}, errdefs.Validation(fmt.Errorf(
 			"decode tool config YAML: %w", err))
 	}
-	doc := Document{
-		Version: wire.Version,
-		Scopes:  wire.Scopes,
-	}
-	for _, entry := range wire.Sources {
-		doc.Sources = append(doc.Sources, SourceEntry{
-			Kind: entry.Kind,
-			Spec: entry.Spec.value,
-		})
-	}
-	for _, entry := range wire.Middlewares {
-		doc.Middlewares = append(doc.Middlewares, MiddlewareEntry{
-			Kind: entry.Kind,
-			Spec: entry.Spec.value,
-		})
-	}
 	if err := doc.Validate(); err != nil {
 		return Document{}, err
 	}
 	return doc, nil
 }
 
-type documentWire struct {
-	Version     string            `yaml:"version"`
-	Sources     []entryWire       `yaml:"sources,omitempty"`
-	Middlewares []entryWire       `yaml:"middlewares,omitempty"`
-	Scopes      map[string]string `yaml:"scopes,omitempty"`
-}
-
-// entryWire is the shared shape of a sources and middlewares entry: a
-// kind naming a factory plus an opaque spec that factory owns.
-type entryWire struct {
-	Kind string  `yaml:"kind"`
-	Spec rawSpec `yaml:"spec,omitempty"`
-}
-
-// rawSpec captures a middleware spec as JSON, preserving the
-// factory's ownership of its own schema.
-type rawSpec struct {
-	value json.RawMessage
-}
-
-func (s *rawSpec) UnmarshalYAML(node *yamlv3.Node) error {
-	data, err := yamlNodeJSON(node)
-	if err != nil {
-		return err
+// DecodeSpec strictly decodes a factory's spec subtree into T: unknown
+// keys are errors, so a YAML typo fails the build instead of silently
+// dropping policy. Factories SHOULD decode through this helper.
+//
+// A nil node is an error: a factory calling DecodeSpec has fields it
+// needs. Kinds that take no spec reject one explicitly instead.
+func DecodeSpec[T any](node *yamlv3.Node) (T, error) {
+	var out T
+	if node == nil {
+		return out, errdefs.Validation(fmt.Errorf("spec is required"))
 	}
-	s.value = data
-	return nil
+	raw, err := yamlv3.Marshal(node)
+	if err != nil {
+		return out, errdefs.Validation(fmt.Errorf(
+			"re-encode spec node: %w", err))
+	}
+	decoder := yamlv3.NewDecoder(bytes.NewReader(raw))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&out); err != nil {
+		return out, errdefs.Validation(fmt.Errorf("invalid spec: %w", err))
+	}
+	return out, nil
 }
 
-// yamlNodeJSON converts a YAML node tree to equivalent JSON. It is a
-// trimmed copy of the converter in sdkx/inference/config/yaml,
-// covering the scalar/mapping/sequence shapes a middleware spec
-// needs.
-func yamlNodeJSON(node *yamlv3.Node) (json.RawMessage, error) {
-	if node.Kind == yamlv3.DocumentNode {
-		if len(node.Content) != 1 {
-			return nil, fmt.Errorf("spec YAML document is empty")
-		}
-		return yamlNodeJSON(node.Content[0])
+// isEmptySpec reports whether a spec node carries no content, which is
+// how a "takes no spec" kind distinguishes an absent spec from one an
+// author wrote by mistake.
+func isEmptySpec(node *yamlv3.Node) bool {
+	if node == nil {
+		return true
 	}
 	switch node.Kind {
-	case yamlv3.MappingNode:
-		var output bytes.Buffer
-		output.WriteByte('{')
-		for index := 0; index < len(node.Content); index += 2 {
-			key := node.Content[index]
-			if key.Kind != yamlv3.ScalarNode || key.Tag != "!!str" {
-				return nil, fmt.Errorf("spec object keys must be strings")
-			}
-			if index > 0 {
-				output.WriteByte(',')
-			}
-			encodedKey, _ := json.Marshal(key.Value)
-			output.Write(encodedKey)
-			output.WriteByte(':')
-			encodedValue, err := yamlNodeJSON(node.Content[index+1])
-			if err != nil {
-				return nil, err
-			}
-			output.Write(encodedValue)
-		}
-		output.WriteByte('}')
-		return output.Bytes(), nil
-	case yamlv3.SequenceNode:
-		var output bytes.Buffer
-		output.WriteByte('[')
-		for index, child := range node.Content {
-			if index > 0 {
-				output.WriteByte(',')
-			}
-			encoded, err := yamlNodeJSON(child)
-			if err != nil {
-				return nil, err
-			}
-			output.Write(encoded)
-		}
-		output.WriteByte(']')
-		return output.Bytes(), nil
+	case yamlv3.MappingNode, yamlv3.SequenceNode:
+		return len(node.Content) == 0
 	case yamlv3.ScalarNode:
-		switch node.Tag {
-		case "!!str":
-			return json.Marshal(node.Value)
-		case "!!bool":
-			var value bool
-			if err := node.Decode(&value); err != nil {
-				return nil, err
-			}
-			return json.RawMessage(strconv.FormatBool(value)), nil
-		case "!!null":
-			return json.RawMessage("null"), nil
-		case "!!int", "!!float":
-			number := strings.ReplaceAll(node.Value, "_", "")
-			if !json.Valid([]byte(number)) {
-				return nil, fmt.Errorf(
-					"spec number %q must use JSON number syntax", node.Value)
-			}
-			return json.RawMessage(number), nil
-		default:
-			return nil, fmt.Errorf(
-				"spec scalar %q is not JSON-compatible", node.Value)
-		}
-	case yamlv3.AliasNode:
-		return yamlNodeJSON(node.Alias)
+		return node.Tag == "!!null"
 	default:
-		return nil, fmt.Errorf("unsupported YAML node in spec")
+		return false
 	}
 }

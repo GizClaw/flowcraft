@@ -34,7 +34,9 @@
 //
 // Builder validates declared defaults against the selected backend's
 // Enforcement report, so unsupported policy combinations fail during assembly
-// instead of on the first command. Registry.Resolve is directly assignable to
-// sdkx/agent/config.SourceFunc. Applications must close the Registry when
-// finished so custom closeable backends can release their resources.
+// instead of on the first command.
+//
+// Whoever builds the Registry closes it: sdkx/deploy does so for a Registry
+// declared in its resource area via [DeployResource], and the application
+// does so for one it built and exposed through [Registry.Resolve].
 package config

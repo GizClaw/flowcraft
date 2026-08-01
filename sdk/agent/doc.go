@@ -98,8 +98,8 @@
 //
 // This package contains no YAML loader: serialisable spec types
 // carry yaml/json tags, and the config-driven assembly of agents
-// (YAML → Factory → Engine) lives in an sdkx module layered on top,
-// mirroring sdkx/inference/config and sdkx/tool/config.
+// (YAML → Factory → Engine) lives in sdkx/deploy, which also builds
+// the shared resources an engine's deps bind to.
 //
 // # Allowed dependencies
 //

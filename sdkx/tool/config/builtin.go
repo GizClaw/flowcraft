@@ -1,16 +1,14 @@
 package config
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/middleware"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Built-in factory kinds, matching the sdk/tool/middleware
@@ -41,8 +39,8 @@ func (b *Builder) registerBuiltins() {
 // kind has no knobs, so a spec in YAML means the author confused
 // kinds.
 func noSpecFactory(kind string, make_ func() tool.Middleware) MiddlewareFactory {
-	return func(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-		if len(spec) > 0 && string(spec) != "null" && string(spec) != "{}" {
+	return func(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+		if !isEmptySpec(spec) {
 			return nil, errdefs.Validation(fmt.Errorf(
 				"kind %q takes no spec", kind))
 		}
@@ -51,12 +49,12 @@ func noSpecFactory(kind string, make_ func() tool.Middleware) MiddlewareFactory 
 }
 
 type concurrencySpec struct {
-	Limit int `json:"limit"`
+	Limit int `yaml:"limit"`
 }
 
-func concurrencyFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-	var s concurrencySpec
-	if err := decodeSpec(spec, &s); err != nil {
+func concurrencyFactory(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+	s, err := DecodeSpec[concurrencySpec](spec)
+	if err != nil {
 		return nil, err
 	}
 	if s.Limit <= 0 {
@@ -66,35 +64,35 @@ func concurrencyFactory(_ context.Context, spec json.RawMessage) (tool.Middlewar
 	return middleware.Concurrency(s.Limit), nil
 }
 
-// Duration decodes a Go duration string ("30s", "2m") from JSON.
-// Numbers are rejected on purpose: units belong in the config file.
+// Duration is a YAML duration string such as "30s" or "2m". Unitless
+// numbers are rejected on purpose: units belong in the config file.
 type Duration time.Duration
 
-func (d *Duration) UnmarshalJSON(data []byte) error {
-	var s string
-	if err := json.Unmarshal(data, &s); err != nil {
-		return fmt.Errorf("duration must be a string like \"30s\", got %s", data)
+// UnmarshalYAML rejects unitless numbers and parses Go duration strings.
+func (d *Duration) UnmarshalYAML(node *yamlv3.Node) error {
+	if node.Kind != yamlv3.ScalarNode || node.Tag != "!!str" {
+		return fmt.Errorf("duration must be a string like \"30s\"")
 	}
-	v, err := time.ParseDuration(s)
+	v, err := time.ParseDuration(node.Value)
 	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
+		return fmt.Errorf("invalid duration %q: %w", node.Value, err)
 	}
 	*d = Duration(v)
 	return nil
 }
 
 type timeoutSpec struct {
-	Default Duration            `json:"default,omitempty"`
-	PerTool map[string]Duration `json:"per_tool,omitempty"`
+	Default Duration            `yaml:"default,omitempty"`
+	PerTool map[string]Duration `yaml:"per_tool,omitempty"`
 }
 
 // timeoutFactory closes over the Builder's registry so the middleware
 // can honour each tool's ToolMeta.SelfTimeout claim — the same catalog
 // the Executor dispatches on. A per_tool entry in the spec still wins,
 // keeping host policy authoritative over a tool's self-declaration.
-func (b *Builder) timeoutFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-	var s timeoutSpec
-	if err := decodeSpec(spec, &s); err != nil {
+func (b *Builder) timeoutFactory(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+	s, err := DecodeSpec[timeoutSpec](spec)
+	if err != nil {
 		return nil, err
 	}
 	perTool := make(map[string]time.Duration, len(s.PerTool))
@@ -107,8 +105,8 @@ func (b *Builder) timeoutFactory(_ context.Context, spec json.RawMessage) (tool.
 // rateLimitFactory closes over the Builder's registry: the
 // middleware resolves per-tool ToolMeta.RateLimit from the same
 // catalog the Executor dispatches on.
-func (b *Builder) rateLimitFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-	if len(spec) > 0 && string(spec) != "null" && string(spec) != "{}" {
+func (b *Builder) rateLimitFactory(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+	if !isEmptySpec(spec) {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"kind %q takes no spec", KindRateLimit))
 	}
@@ -116,12 +114,12 @@ func (b *Builder) rateLimitFactory(_ context.Context, spec json.RawMessage) (too
 }
 
 type approvalSpec struct {
-	Tools []string `json:"tools"`
+	Tools []string `yaml:"tools"`
 }
 
-func (b *Builder) approvalFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-	var s approvalSpec
-	if err := decodeSpec(spec, &s); err != nil {
+func (b *Builder) approvalFactory(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+	s, err := DecodeSpec[approvalSpec](spec)
+	if err != nil {
 		return nil, err
 	}
 	if len(s.Tools) == 0 {
@@ -135,8 +133,8 @@ func (b *Builder) approvalFactory(_ context.Context, spec json.RawMessage) (tool
 	return middleware.Approval(b.deps.Approver, s.Tools...), nil
 }
 
-func (b *Builder) auditFactory(_ context.Context, spec json.RawMessage) (tool.Middleware, error) {
-	if len(spec) > 0 && string(spec) != "null" && string(spec) != "{}" {
+func (b *Builder) auditFactory(_ context.Context, spec *yamlv3.Node) (tool.Middleware, error) {
+	if !isEmptySpec(spec) {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"kind %q takes no spec", KindAudit))
 	}
@@ -145,25 +143,4 @@ func (b *Builder) auditFactory(_ context.Context, spec json.RawMessage) (tool.Mi
 			"kind %q requires an AuditSink in config.Deps", KindAudit))
 	}
 	return middleware.Audit(b.deps.AuditSink), nil
-}
-
-// decodeSpec strictly decodes a factory's spec: unknown fields and
-// trailing garbage are errors.
-func decodeSpec(spec json.RawMessage, v any) error {
-	if len(spec) == 0 {
-		return errdefs.Validation(fmt.Errorf("spec is required"))
-	}
-	decoder := json.NewDecoder(bytes.NewReader(spec))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(v); err != nil {
-		return errdefs.Validation(fmt.Errorf("invalid spec: %w", err))
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("unexpected trailing data")
-		}
-		return errdefs.Validation(fmt.Errorf("invalid spec: %w", err))
-	}
-	return nil
 }

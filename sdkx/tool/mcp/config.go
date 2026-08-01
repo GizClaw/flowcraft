@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,12 +10,13 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/tool/config"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // SpecKind is the conventional document kind for an MCP source entry.
 const SpecKind = "mcp"
 
-// Spec is the YAML/JSON shape of an MCP source declaration:
+// Spec is the YAML shape of an MCP source declaration:
 //
 //	sources:
 //	  - kind: mcp
@@ -37,33 +37,33 @@ const SpecKind = "mcp"
 // resolves secrets before handing the document over, so credentials
 // never have to live in a checked-in file.
 type Spec struct {
-	Servers []ServerSpec `json:"servers"`
+	Servers []ServerSpec `yaml:"servers"`
 }
 
 // ServerSpec declares one server attachment.
 type ServerSpec struct {
 	// Name identifies the server and, by default, prefixes its tool
 	// names as "<name>__".
-	Name string `json:"name"`
+	Name string `yaml:"name"`
 	// Transport selects the binding: "stdio" or "http".
-	Transport string `json:"transport"`
+	Transport string `yaml:"transport"`
 
 	// Stdio fields.
-	Command string            `json:"command,omitempty"`
-	Args    []string          `json:"args,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	Command string            `yaml:"command,omitempty"`
+	Args    []string          `yaml:"args,omitempty"`
+	Env     map[string]string `yaml:"env,omitempty"`
 
 	// HTTP fields.
-	URL     string            `json:"url,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
+	URL     string            `yaml:"url,omitempty"`
+	Headers map[string]string `yaml:"headers,omitempty"`
 
 	// Scope is the registry scope the server's tools register under:
 	// "agent" (default, visible to models) or "platform" (callable by
 	// explicit name, hidden from listings).
-	Scope string `json:"scope,omitempty"`
+	Scope string `yaml:"scope,omitempty"`
 	// Prefix overrides the default "<name>__" namespace. An explicit
 	// empty string registers tools under their bare server-side names.
-	Prefix *string `json:"prefix,omitempty"`
+	Prefix *string `yaml:"prefix,omitempty"`
 }
 
 // Transport constants for ServerSpec.Transport.
@@ -90,26 +90,21 @@ var _ config.Source = (*configSource)(nil)
 // The dependency direction matches sdkx/inference: the integration
 // package imports the config package, never the reverse, so a host that
 // never mentions MCP does not link the MCP SDK.
-func SourceFactory(_ context.Context, raw json.RawMessage) (config.Source, error) {
-	spec, err := ParseSpec(raw)
+func SourceFactory(_ context.Context, spec *yamlv3.Node) (config.Source, error) {
+	parsed, err := ParseSpec(spec)
 	if err != nil {
 		return nil, err
 	}
-	return &configSource{spec: spec}, nil
+	return &configSource{spec: parsed}, nil
 }
 
 // ParseSpec strictly decodes an MCP source spec, rejecting unknown
 // fields so a typo in a server declaration fails at build time instead
 // of silently omitting a server.
-func ParseSpec(raw json.RawMessage) (Spec, error) {
-	if len(raw) == 0 {
-		return Spec{}, errdefs.Validationf("mcp: spec is required")
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	var spec Spec
-	if err := decoder.Decode(&spec); err != nil {
-		return Spec{}, errdefs.Validationf("mcp: invalid spec: %v", err)
+func ParseSpec(node *yamlv3.Node) (Spec, error) {
+	spec, err := config.DecodeSpec[Spec](node)
+	if err != nil {
+		return Spec{}, fmt.Errorf("mcp: %w", err)
 	}
 	if err := spec.Validate(); err != nil {
 		return Spec{}, err

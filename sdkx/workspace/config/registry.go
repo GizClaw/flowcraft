@@ -57,10 +57,14 @@ func (r *Registry) Get(name string) (workspace.Workspace, bool) {
 	return ws, ok
 }
 
-// Resolve adapts the registry to sdkx/agent/config.SourceFunc without
-// importing the agent config package. Register it directly:
+// Resolve adapts the registry to sdkx/deploy.SourceFunc for the case
+// where the HOST built this registry and keeps its lifetime. Register
+// it directly:
 //
-//	agentBuilder.RegisterSource("workspace", workspaces.Resolve)
+//	deployBuilder.RegisterSource("workspace", workspaces.Resolve)
+//
+// A registry the deployment document should own and close belongs in
+// the resource area instead — see [DeployResource].
 func (r *Registry) Resolve(_ context.Context, ref string) (any, error) {
 	ws, ok := r.Get(ref)
 	if !ok {
@@ -68,6 +72,18 @@ func (r *Registry) Resolve(_ context.Context, ref string) (any, error) {
 			"workspace config: unknown workspace %q", ref)
 	}
 	return ws, nil
+}
+
+// Lookup implements sdkx/deploy.RefLookup so a deployment document can
+// bind one workspace out of this registry with the scalar dep form
+// ("workspaces/project"). It returns the workspace.Workspace as any;
+// Get is the typed accessor.
+func (r *Registry) Lookup(ref string) (any, bool) {
+	ws, ok := r.Get(ref)
+	if !ok {
+		return nil, false
+	}
+	return ws, true
 }
 
 // Root returns optional host-root metadata for a workspace.

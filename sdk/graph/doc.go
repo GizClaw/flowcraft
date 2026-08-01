@@ -9,9 +9,9 @@
 //
 //  1. Wire — [GraphDefinition] is the serialisable document. It is
 //     JSON-shaped; node configs stay opaque ([json.RawMessage]) so the
-//     kernel never interprets them. A YAML entry point belongs to a
-//     future sdkx/graph/config module, mirroring sdkx/agent/config —
-//     this kernel deliberately carries no YAML dependency.
+//     kernel never interprets them. Declarative authoring enters
+//     through an engine's settings in sdkx/deploy — this kernel
+//     deliberately carries no YAML dependency.
 //  2. Registration — node behaviour is supplied per type name via
 //     [RegisterType], which binds a typed config decoder and a handler
 //     closure into a [Registry]. The registry is plain in-memory
