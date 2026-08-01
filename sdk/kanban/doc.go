@@ -79,6 +79,11 @@
 // covers every kind: subscribers switch on [CardEvent.Status] instead
 // of maintaining a struct per event.
 //
+// The default bus is in-memory and owned by the board. [WithBus]
+// substitutes a caller-supplied one — typically a bus already shared
+// with other subsystems — and ownership stays with the caller, so
+// [Kanban.Close] leaves it open.
+//
 // # Scheduling is elsewhere
 //
 // Submitting a card later — after a delay, or on a cron expression — is

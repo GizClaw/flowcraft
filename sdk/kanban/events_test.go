@@ -3,6 +3,7 @@ package kanban_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -191,5 +192,105 @@ func TestEventsStopAfterClose(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("subscription channel not closed by board Close")
+	}
+}
+
+// TestCloseClosesOwnedBus pins the ownership rule for the default bus:
+// the board created it, so the board closes it.
+func TestCloseClosesOwnedBus(t *testing.T) {
+	k := kanban.New("scope")
+	bus := k.Bus()
+	if err := k.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	env, err := event.NewEnvelope(context.Background(), "kanban.card.x.done", nil)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	if err := bus.Publish(context.Background(), env); !errors.Is(err, event.ErrBusClosed) {
+		t.Errorf("Publish on owned bus after Close = %v, want ErrBusClosed", err)
+	}
+}
+
+// TestCloseLeavesInjectedBusOpen is the regression test for bus
+// ownership. WithBus exists so a board can publish onto a bus shared
+// with other subsystems; closing that bus on Kanban.Close would tear
+// down every unrelated subscription on it. Ownership follows
+// provenance, so an injected bus outlives the board.
+func TestCloseLeavesInjectedBusOpen(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	// A subscriber that has nothing to do with the board, standing in
+	// for a stream router or script bridge on the same transport.
+	outsider, err := bus.Subscribe(context.Background(), event.Pattern("unrelated.>"),
+		event.WithBufferSize(4))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = outsider.Close() })
+
+	k := kanban.New("scope", kanban.WithBus(bus))
+	if k.Bus() != bus {
+		t.Fatal("WithBus did not install the supplied bus")
+	}
+	if err := k.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	env, err := event.NewEnvelope(context.Background(), "unrelated.thing", nil)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	if err := bus.Publish(context.Background(), env); err != nil {
+		t.Fatalf("Publish on injected bus after board Close: %v", err)
+	}
+	select {
+	case _, ok := <-outsider.C():
+		if !ok {
+			t.Error("board Close tore down an unrelated subscription")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out; injected bus stopped delivering after board Close")
+	}
+}
+
+// TestBoardsShareOneInjectedBus covers the use case the ownership rule
+// unlocks: several boards on one transport, told apart by the scope id
+// header rather than by separate buses. Closing one must not silence
+// the other.
+func TestBoardsShareOneInjectedBus(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	sub, err := bus.Subscribe(context.Background(), kanban.PatternAll(),
+		event.WithBufferSize(16))
+	if err != nil {
+		t.Fatalf("Subscribe: %v", err)
+	}
+	t.Cleanup(func() { _ = sub.Close() })
+
+	first := kanban.New("board-a", kanban.WithBus(bus))
+	second := kanban.New("board-b", kanban.WithBus(bus))
+	t.Cleanup(func() { _ = second.Close() })
+
+	if _, err := first.Submit(context.Background(), kanban.Task{TargetAgentID: "w"}); err != nil {
+		t.Fatalf("Submit on first board: %v", err)
+	}
+	env, _ := nextEvent(t, sub)
+	if got := env.KanbanScopeID(); got != "board-a" {
+		t.Errorf("scope id = %q, want %q", got, "board-a")
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close first board: %v", err)
+	}
+
+	if _, err := second.Submit(context.Background(), kanban.Task{TargetAgentID: "w"}); err != nil {
+		t.Fatalf("Submit on second board after first closed: %v", err)
+	}
+	env, _ = nextEvent(t, sub)
+	if got := env.KanbanScopeID(); got != "board-b" {
+		t.Errorf("scope id = %q, want %q", got, "board-b")
 	}
 }

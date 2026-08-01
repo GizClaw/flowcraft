@@ -52,6 +52,7 @@ type Validator func(ctx context.Context, t Task) error
 type Kanban struct {
 	scopeID    string
 	bus        event.Bus
+	ownsBus    bool
 	maxPending int
 	cardTTL    time.Duration
 	maxCards   int
@@ -103,13 +104,24 @@ func WithValidator(v Validator) Option {
 	return func(k *Kanban) { k.validator = v }
 }
 
-// WithBus replaces the in-memory bus with a caller-supplied one, for
-// hosts that fan kanban events into an existing transport. The board
-// takes ownership: [Kanban.Close] closes it.
+// WithBus replaces the default in-memory bus with a caller-supplied
+// one, for hosts that fan kanban events into an existing transport.
+//
+// Ownership follows provenance: an injected bus stays the caller's, and
+// [Kanban.Close] does not close it. The intended use is a bus shared
+// with other subsystems — a stream router, a script bridge — and
+// closing it would tear down every unrelated subscription on it, not
+// just this board's. The default bus, which the board created, the
+// board does close.
+//
+// Sharing one bus across several boards is therefore fine: every
+// envelope carries its board on event.HeaderKanbanScopeID, so
+// consumers can still tell them apart.
 func WithBus(b event.Bus) Option {
 	return func(k *Kanban) {
 		if b != nil {
 			k.bus = b
+			k.ownsBus = false
 		}
 	}
 }
@@ -121,6 +133,7 @@ func New(scopeID string, opts ...Option) *Kanban {
 	k := &Kanban{
 		scopeID:     scopeID,
 		bus:         event.NewMemoryBus(),
+		ownsBus:     true,
 		index:       make(map[string]*Card),
 		statusCount: make(map[Status]int),
 		ctx:         ctx,
@@ -145,10 +158,13 @@ func (k *Kanban) Bus() event.Bus { return k.bus }
 // can derive from it so a board shutdown tears down in-flight work.
 func (k *Kanban) Context() context.Context { return k.ctx }
 
-// Close releases the bus and terminates every watcher. Safe to call
-// more than once. Close does not wait for executors — the board never
-// started them and does not track them; cancel [Kanban.Context] and
-// join them on your own side.
+// Close terminates every watcher and releases the bus the board owns.
+// A bus supplied through [WithBus] is left open — it belongs to the
+// caller. Safe to call more than once.
+//
+// Close does not wait for executors — the board never started them and
+// does not track them; cancel [Kanban.Context] and join them on your
+// own side.
 func (k *Kanban) Close() error {
 	var err error
 	k.closeOnce.Do(func() {
@@ -160,7 +176,7 @@ func (k *Kanban) Close() error {
 		for _, w := range watchers {
 			w.shutdown()
 		}
-		if k.bus != nil {
+		if k.bus != nil && k.ownsBus {
 			err = k.bus.Close()
 		}
 	})
