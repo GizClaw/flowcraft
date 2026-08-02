@@ -2,8 +2,6 @@ go 1.26.0
 
 use (
 	./cmd/claw
-	./eval
-	./memory
 	./sdk
 	./sdkx
 	./voice
