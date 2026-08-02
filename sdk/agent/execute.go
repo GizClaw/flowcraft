@@ -22,8 +22,8 @@ import (
 // metrics, route engine envelopes to a bus, accumulate token usage,
 // …) lives outside Execute on:
 //
-//   - [Hook] / [AfterExecute] for lifecycle hooks;
-//   - [BeforeExecute] for engine-input shaping;
+//   - [Observer] / [Referee] for lifecycle hooks;
+//   - [Preparer] for engine-input shaping;
 //   - the caller-supplied [Host] (see [WithHost]) for
 //     every host-side capability the engine needs (event publishing,
 //     interrupt injection, user prompting, checkpoint persistence,
@@ -35,7 +35,7 @@ import (
 //
 //  1. Mint a RunID (req.RunID wins, else autogenerate).
 //  2. Build an [Board] using either a caller-supplied
-//     BeforeExecute ([WithBeforeExecute]) or the default seeder, which
+//     Preparer ([WithPreparer]) or the default seeder, which
 //     simply appends req.Message to MainChannel and copies
 //     req.Inputs to board vars.
 //  3. Resolve the [Host] — caller-supplied via WithHost,
@@ -47,7 +47,7 @@ import (
 //  6. If the engine returned an interrupt, fire OnInterrupt with the
 //     destructured cause/detail.
 //  7. Translate the engine outcome into Status and assemble [Result].
-//  8. Run the AfterExecute chain ([AfterExecute.After]) and merge the
+//  8. Run the Referee chain ([Referee.After]) and merge the
 //     decisions; this fixes [Result.Committed] and any
 //     finalize_reason metadata.
 //  9. Fire OnRunEnd before returning. Hooks that persist data
@@ -59,8 +59,8 @@ import (
 // Execute returns (res, nil) for every business outcome — completion,
 // interrupt, cancel, abort, failure. (nil, err) is reserved for
 // infrastructure failures the caller cannot reasonably recover from:
-// nil engine, empty Agent.ID, a BeforeExecute that returned an error,
-// or a AfterExecute that returned an error.
+// nil engine, empty Agent.ID, a Preparer that returned an error,
+// or a Referee that returned an error.
 //
 // Hooks MUST NOT cause Execute to return an error; they are
 // advisory. After may return errors that surface back to the
@@ -117,10 +117,10 @@ func Execute(
 		toolAllowList = rc.toolAllowList
 	}
 	toolAllowList = append([]string(nil), toolAllowList...)
-	obs := composeHooks(rc.hooks)
+	obs := composeObservers(rc.hooks)
 
 	// Revise loop: each iteration is one Execute attempt
-	// followed by AfterExecute chain. Loop exits when a AfterExecute does
+	// followed by Referee chain. Loop exits when a Referee does
 	// not ask for revise OR the attempt counter reaches the
 	// configured WithMaxRevise budget. attempts is 1-indexed: 1
 	// means "first engine call". maxAttempts >= 1 always (the
@@ -130,7 +130,7 @@ func Execute(
 
 	var (
 		res         *Result
-		execDecided bool // set when a non-recoverable AfterExecute error short-circuited
+		execDecided bool // set when a non-recoverable Referee error short-circuited
 		decErr      error
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -139,12 +139,12 @@ func Execute(
 		// attempt's seeder error is fatal (infrastructure); a seeder
 		// error on a revise attempt is also surfaced as nil result +
 		// error so callers do not silently see stale Messages.
-		board, err := rc.before.Before(ctx, id, &req)
+		board, err := seedBoard(ctx, id, &req, rc.preparers)
 		if err != nil {
 			return nil, fmt.Errorf("agent: seed board (attempt %d): %w", attempt, err)
 		}
 		if board == nil {
-			return nil, errdefs.Validationf("agent: BeforeExecute returned nil board")
+			return nil, errdefs.Validationf("agent: Preparer chain returned nil board")
 		}
 
 		// Run is rebuilt each attempt: ResumeFrom is honoured
@@ -225,7 +225,7 @@ func Execute(
 		// attempt so DiscardOutput / Reason are honoured.
 		decision := Decision{}
 		if len(rc.afters) > 0 {
-			d, derr := runAfterExecute(ctx, rc.afters, id, &req, res)
+			d, derr := composeReferees(ctx, id, &req, res, rc.afters)
 			if derr != nil {
 				execDecided = true
 				decErr = derr
@@ -241,7 +241,7 @@ func Execute(
 		}
 
 		// Revise gate: only fires for completed attempts that have
-		// budget remaining AND a AfterExecute asked for revision. A
+		// budget remaining AND a Referee asked for revision. A
 		// non-completed status NEVER triggers revise (see comment
 		// above) so a flapping engine cannot consume the entire
 		// budget against transient failures.
@@ -378,12 +378,12 @@ func mintRunID() string {
 type ExecuteOption func(*execConfig)
 
 type execConfig struct {
-	before           BeforeExecute
+	preparers        []Preparer
 	toolAllowList    []string
 	host             Host
 	attributes       map[string]string
-	hooks            []Hook
-	afters           []AfterExecute
+	hooks            []Observer
+	afters           []Referee
 	resumeFrom       *Checkpoint
 	runID            string
 	parentRunID      string
@@ -395,13 +395,13 @@ type execConfig struct {
 // observers / deciders before per-call ones, mirroring OpenClaw's
 // "agent owns some hooks; the call adds more" pattern.
 func applyOptions(ag Agent, opts []ExecuteOption) execConfig {
-	rc := execConfig{before: defaultBefore{}}
-	for _, h := range ag.Hooks {
+	rc := execConfig{}
+	for _, h := range ag.Observers {
 		if h != nil {
 			rc.hooks = append(rc.hooks, h)
 		}
 	}
-	for _, d := range ag.After {
+	for _, d := range ag.Referees {
 		if d != nil {
 			rc.afters = append(rc.afters, d)
 		}
@@ -414,16 +414,18 @@ func applyOptions(ag Agent, opts []ExecuteOption) execConfig {
 	return rc
 }
 
-// WithBeforeExecute installs a custom [BeforeExecute] for this run. Use it
-// to inject conversation history, RAG-retrieved context, system
-// prompts, or any other board state the engine needs at start.
+// WithPreparer appends a [Preparer] to this run's chain. The chain
+// runs after agent applies any [Agent.Preparers] declared on the
+// agent value, so a call-site Preparer can build on top of
+// agent-level preparation (history load, system prompt, etc.).
 //
-// When omitted, agent uses [defaultBefore] which appends req.Message
-// to MainChannel and copies req.Inputs into board vars.
-func WithBeforeExecute(s BeforeExecute) ExecuteOption {
+// When no Preparer is registered anywhere, agent seeds a default
+// board that appends req.Message to MainChannel and copies
+// req.Inputs into board vars.
+func WithPreparer(p Preparer) ExecuteOption {
 	return func(rc *execConfig) {
-		if s != nil {
-			rc.before = s
+		if p != nil {
+			rc.preparers = append(rc.preparers, p)
 		}
 	}
 }
@@ -489,11 +491,11 @@ func WithAttributes(extra map[string]string) ExecuteOption {
 	}
 }
 
-// WithHook registers a [Hook] for this run. Multiple
+// WithObserver registers a [Observer] for this run. Multiple
 // observers can be registered; they fire in registration order, after
-// any [Agent.Hooks] declared on the agent value. Panics inside an
+// any [Agent.Observers] declared on the agent value. Panics inside an
 // observer are caught and dropped.
-func WithHook(o Hook) ExecuteOption {
+func WithObserver(o Observer) ExecuteOption {
 	return func(rc *execConfig) {
 		if o != nil {
 			rc.hooks = append(rc.hooks, o)
@@ -502,20 +504,20 @@ func WithHook(o Hook) ExecuteOption {
 }
 
 // WithMaxRevise sets the upper bound on Execute invocations
-// per Run call when a AfterExecute returns Decision{Revise: true}.
+// per Run call when a Referee returns Decision{Revise: true}.
 //
-//   - n <= 1 (default 0) disables the revise loop entirely. A AfterExecute
+//   - n <= 1 (default 0) disables the revise loop entirely. A Referee
 //     asking to revise records its Reason but Run still returns after
 //     the first attempt — the safe default avoids surprise infinite
 //     loops on misconfigured After.
 //
 //   - n >= 2 caps total attempts at n. The loop exits as soon as
-//     either no AfterExecute asks for revise OR the attempt counter
+//     either no Referee asks for revise OR the attempt counter
 //     reaches n. The final Result.Attempts is the actual number of
 //     Execute calls made.
 //
 // Revise restarts re-seed the board from the original Request via
-// the configured BeforeExecute, so the engine sees fresh inputs.
+// the configured Preparer, so the engine sees fresh inputs.
 // Run.ResumeFrom is dropped after the first attempt — Revise
 // means "retry from scratch", not "replay a checkpoint".
 //
@@ -585,8 +587,8 @@ func WithArtifactChannels(channels ...string) ExecuteOption {
 // against a stable correlation key.
 //
 // The empty string is a no-op; passing the parent's runID
-// (typically obtained from agent.Identity.RunID inside an Hook
-// / AfterExecute on the parent run) is the canonical use. agent.Execute does
+// (typically obtained from agent.Identity.RunID inside an Observer
+// / Referee on the parent run) is the canonical use. agent.Execute does
 // NOT auto-derive ParentRunID from any ambient context — explicit
 // is the only contract that survives ctx propagation rewrites and
 // cross-process dispatch (application runtimes, A2A bridges).
@@ -621,12 +623,12 @@ func WithResumeFrom(cp *Checkpoint) ExecuteOption {
 	return func(rc *execConfig) { rc.resumeFrom = cp }
 }
 
-// WithAfterExecute registers a [AfterExecute] for this run. Multiple
+// WithReferee registers a [Referee] for this run. Multiple
 // deciders can be registered; they fire in registration order, after
-// any [Agent.After] declared on the agent value. Their decisions
+// any [Agent.Referees] declared on the agent value. Their decisions
 // are merged via OR over boolean fields; the first non-empty Reason
 // wins.
-func WithAfterExecute(d AfterExecute) ExecuteOption {
+func WithReferee(d Referee) ExecuteOption {
 	return func(rc *execConfig) {
 		if d != nil {
 			rc.afters = append(rc.afters, d)

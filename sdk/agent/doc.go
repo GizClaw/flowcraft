@@ -25,7 +25,7 @@
 //	│  sdk/agent                     ← this pkg                │
 //	│      Agent / Request / Result / Identity                 │
 //	│      Execute(...) — the turn harness                     │
-//	│      Hook / BeforeExecute / AfterExecute — lifecycle     │
+//	│      Observer / Preparer / Referee — lifecycle     │
 //	│      Engine / Host / Board / Run / Checkpoint — contract │
 //	│                  ↑ implemented by                        │
 //	│  concrete engines        sdk/graph, (script flows, …)    │
@@ -55,15 +55,15 @@
 // [Status], and assembles [Result] — nothing else. Anything that
 // looks like "policy" lives on four orthogonal extension points:
 //
-//   - [BeforeExecute] (via [WithBeforeExecute]) builds the initial
+//   - [Preparer] (via [WithPreparer]) builds the initial
 //     board: load conversation history, run retrieval, materialise
 //     system prompts.
 //
-//   - [Hook] (via [WithHook] or [Agent.Hooks]) reacts to run
+//   - [Observer] (via [WithObserver] or [Agent.Observers]) reacts to run
 //     lifecycle events with no return value: transcript append,
 //     metrics, snapshots.
 //
-//   - [AfterExecute] (via [WithAfterExecute] or [Agent.After])
+//   - [Referee] (via [WithReferee] or [Agent.Referees])
 //     influences classification at the finalize boundary: its merged
 //     [Decision] drives [Result.Committed] and gates the revise loop
 //     ([WithMaxRevise]).

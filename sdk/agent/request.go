@@ -83,7 +83,7 @@ const (
 	// StatusInterrupted means the engine was stopped by a cooperative
 	// interrupt (host-injected). Result.Cause carries the reason.
 	// By default the partial output is NOT committed (Result.Committed
-	// is false); register a [AfterExecute] (or rely on the default
+	// is false); register a [Referee] (or rely on the default
 	// disposition) to override.
 	StatusInterrupted Status = "interrupted"
 
@@ -150,12 +150,12 @@ type Result struct {
 
 	// Committed reports whether agent considered this turn's output
 	// suitable for downstream commit (transcript append, archival,
-	// …). It is determined by the Round B AfterExecute chain
+	// …). It is determined by the Round B Referee chain
 	// (After) on top of agent's defaults:
 	//
 	//   - StatusCompleted defaults to Committed=true.
 	//   - All non-completed statuses default to Committed=false.
-	//   - Any AfterExecute returning DiscardOutput=true forces
+	//   - Any Referee returning DiscardOutput=true forces
 	//     Committed=false.
 	//
 	// Hooks that persist transcript / artifact data are
@@ -187,7 +187,7 @@ type Result struct {
 	// Attempts is the number of Execute invocations Run made
 	// before settling on this Result. 1 for fresh (single-shot)
 	// runs; >1 only when WithMaxRevise was enabled and at least
-	// one AfterExecute returned Decision{Revise: true}.
+	// one Referee returned Decision{Revise: true}.
 	//
 	// Attempts is the post-loop count, not "remaining budget":
 	// Attempts == 2 means the engine was invoked twice. Hooks

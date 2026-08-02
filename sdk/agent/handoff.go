@@ -28,7 +28,7 @@ import (
 //	    {ToAgentID: "tech",    Description: "Bugs, errors, integrations"},
 //	}
 //	tools := append(baseTools, agent.HandoffTools(hs)...)
-//	deciders := []agent.AfterExecute{agent.HandoffDecider(hs)}
+//	deciders := []agent.Referee{agent.HandoffDecider(hs)}
 //
 // Recommended host loop after Execute returns:
 //
@@ -196,7 +196,7 @@ func HandoffTools(ctx context.Context, req *Request, hs []Handoff) []tool.Tool {
 	return out
 }
 
-// HandoffDecider returns a [AfterExecute] that scans Result.Messages for
+// HandoffDecider returns a [Referee] that scans Result.Messages for
 // the FIRST tool call whose name matches one of hs and, when found,
 // records the hand-off in Result.State and emits a
 // [Decision] with Reason = [HandoffFinalizeReason] +
@@ -219,13 +219,13 @@ func HandoffTools(ctx context.Context, req *Request, hs []Handoff) []tool.Tool {
 //   - Multiple hand-offs in one turn are deduped to the first
 //     match (see Handoff doc).
 //
-// The returned AfterExecute stores the [HandoffEvent] under
+// The returned Referee stores the [HandoffEvent] under
 // [HandoffStateKey]; consumers retrieve it via
 // [HandoffFromResult] which performs the type assertion + map
 // initialisation safely.
-func HandoffDecider(hs []Handoff) AfterExecute {
+func HandoffDecider(hs []Handoff) Referee {
 	if len(hs) == 0 {
-		return BaseAfterExecute{}
+		return BaseReferee{}
 	}
 	// Build a name → handoff lookup once so per-turn detection
 	// stays O(message * tool_call) instead of O(× len(hs)).
@@ -241,11 +241,11 @@ func HandoffDecider(hs []Handoff) AfterExecute {
 }
 
 type handoffDecider struct {
-	BaseAfterExecute
+	BaseReferee
 	lookup map[string]Handoff
 }
 
-// After implements [AfterExecute]. It walks res.Messages from
+// After implements [Referee]. It walks res.Messages from
 // the FIRST message forward (the LLM's chronological order) so
 // "first tool call wins" reflects the natural sequence the model
 // produced.
@@ -344,9 +344,9 @@ func handoffToolDefinition(name, description string) tool.Definition {
 }
 
 // Compile-time assertion that the decider does not accidentally
-// drop the BaseAfterExecute embedding (which provides the no-op default
-// for any future AfterExecute methods we might add).
+// drop the BaseReferee embedding (which provides the no-op default
+// for any future Referee methods we might add).
 var (
-	_ AfterExecute = (*handoffDecider)(nil)
-	_              = errors.New
+	_ Referee = (*handoffDecider)(nil)
+	_         = errors.New
 )

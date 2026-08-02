@@ -20,6 +20,7 @@ import (
 //   - channel(name)              → []messageMap   (read; never returns null)
 //   - setChannel(name, msgs)     → throws on validation errors
 //   - appendChannel(name, msg)   → throws on validation errors
+//
 // Constants:
 //   - MAIN_CHANNEL — the engine's reserved default channel name; scripts
 //     should reference this rather than hard-coding the literal string
@@ -34,11 +35,11 @@ func NewBoardBridge(board *agent.Board) BindingFunc {
 		return "board", map[string]any{
 			"MAIN_CHANNEL": agent.MainChannel,
 
-			"getVar": func(key string) any { v, _ := board.GetVar(key); return v },
-			"setVar": func(key string, value any) { board.SetVar(key, value) },
+			"getVar":    func(key string) any { v, _ := board.GetVar(key); return v },
+			"setVar":    func(key string, value any) { board.SetVar(key, value) },
 			"deleteVar": func(key string) { board.DeleteVar(key) },
-			"getVars": func() map[string]any { return board.Vars() },
-			"hasVar":  func(key string) bool { _, ok := board.GetVar(key); return ok },
+			"getVars":   func() map[string]any { return board.Vars() },
+			"hasVar":    func(key string) bool { _, ok := board.GetVar(key); return ok },
 
 			"channel": func(name string) ([]any, error) {
 				return messagesToScript(board.Channel(name))

@@ -8,10 +8,10 @@ import (
 )
 
 // TestDeciderSuite_PassesBaseDecider asserts the no-op
-// [agent.BaseAfterExecute] satisfies every contract probe — embedding
-// BaseAfterExecute must remain a safe way to scaffold custom deciders.
+// [agent.BaseReferee] satisfies every contract probe — embedding
+// BaseReferee must remain a safe way to scaffold custom deciders.
 func TestDeciderSuite_PassesBaseDecider(t *testing.T) {
-	agenttest.AfterExecuteSuite(t, func() agent.AfterExecute { return agent.BaseAfterExecute{} })
+	agenttest.RefereeSuite(t, func() agent.Referee { return agent.BaseReferee{} })
 }
 
 // TestDeciderSuite_PassesDiscardOnInterruptCauses asserts the
@@ -19,15 +19,15 @@ func TestDeciderSuite_PassesBaseDecider(t *testing.T) {
 // remains contract-compliant: stateless, mutation-free,
 // concurrency-safe, panic-free across every Status.
 func TestDeciderSuite_PassesDiscardOnInterruptCauses(t *testing.T) {
-	agenttest.AfterExecuteSuite(t, func() agent.AfterExecute {
+	agenttest.RefereeSuite(t, func() agent.Referee {
 		return agent.NewDiscardOnInterruptCauses("barge-in",
 			agent.CauseUserInput, agent.CauseUserCancel)
 	})
 }
 
 // TestObserverSuite_PassesBaseObserver asserts the no-op
-// [agent.BaseHook] satisfies every contract probe — embedding
-// BaseHook must remain a safe scaffolding choice.
+// [agent.BaseObserver] satisfies every contract probe — embedding
+// BaseObserver must remain a safe scaffolding choice.
 func TestObserverSuite_PassesBaseObserver(t *testing.T) {
-	agenttest.HookSuite(t, func() agent.Hook { return agent.BaseHook{} })
+	agenttest.ObserverSuite(t, func() agent.Observer { return agent.BaseObserver{} })
 }

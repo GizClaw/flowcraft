@@ -10,28 +10,28 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
-// ---------- Hook internals ----------
+// ---------- Observer internals ----------
 
-// composeHooks / multiObserver / safeRun live in the same package,
+// composeObservers / multiObserver / safeRun live in the same package,
 // so these tests sit in the internal test target.
 
 func TestComposeObservers_NilSliceReturnsNil(t *testing.T) {
-	if got := composeHooks(nil); got != nil {
-		t.Errorf("composeHooks(nil) = %v, want nil", got)
+	if got := composeObservers(nil); got != nil {
+		t.Errorf("composeObservers(nil) = %v, want nil", got)
 	}
 }
 
 func TestComposeObservers_AllNilReturnsNil(t *testing.T) {
-	if got := composeHooks([]Hook{nil, nil}); got != nil {
-		t.Errorf("composeHooks(all nil) = %v, want nil", got)
+	if got := composeObservers([]Observer{nil, nil}); got != nil {
+		t.Errorf("composeObservers(all nil) = %v, want nil", got)
 	}
 }
 
 func TestComposeObservers_SingleEntry(t *testing.T) {
 	rec := &captureObs{}
-	obs := composeHooks([]Hook{rec})
+	obs := composeObservers([]Observer{rec})
 	if obs == nil {
-		t.Fatal("composeHooks should return non-nil for one observer")
+		t.Fatal("composeObservers should return non-nil for one observer")
 	}
 
 	obs.OnRunStart(context.Background(), Identity{RunID: "r"}, &Request{})
@@ -43,7 +43,7 @@ func TestComposeObservers_SingleEntry(t *testing.T) {
 func TestComposeObservers_FansOutInOrder(t *testing.T) {
 	var hits []string
 	var mu sync.Mutex
-	mark := func(name string) Hook {
+	mark := func(name string) Observer {
 		return &recOrder{onStart: func() {
 			mu.Lock()
 			hits = append(hits, name)
@@ -51,7 +51,7 @@ func TestComposeObservers_FansOutInOrder(t *testing.T) {
 		}}
 	}
 
-	obs := composeHooks([]Hook{mark("a"), nil, mark("b"), mark("c")})
+	obs := composeObservers([]Observer{mark("a"), nil, mark("b"), mark("c")})
 	obs.OnRunStart(context.Background(), Identity{}, &Request{})
 
 	got := strings.Join(hits, ",")
@@ -72,7 +72,7 @@ func TestSafeRun_RecoversPanic(t *testing.T) {
 
 func TestMultiObserver_OnePanic_NextStillRuns(t *testing.T) {
 	var firedAfter bool
-	obs := composeHooks([]Hook{
+	obs := composeObservers([]Observer{
 		&panicAll{},
 		&recOrder{onStart: func() { firedAfter = true }},
 	})
@@ -85,7 +85,7 @@ func TestMultiObserver_OnePanic_NextStillRuns(t *testing.T) {
 }
 
 func TestBaseObserver_NoOpsAreUsable(t *testing.T) {
-	var b BaseHook
+	var b BaseObserver
 	b.OnRunStart(context.Background(), Identity{}, &Request{})
 	b.OnInterrupt(context.Background(), Identity{}, Interrupt{})
 	b.OnRunEnd(context.Background(), Identity{}, &Result{})
@@ -95,7 +95,7 @@ func TestBaseObserver_NoOpsAreUsable(t *testing.T) {
 // other internal observer-test helpers to avoid exposing it in
 // agent_test.go.
 type captureObs struct {
-	BaseHook
+	BaseObserver
 	startCalls     int
 	interruptCalls int
 	endCalls       int
@@ -106,7 +106,7 @@ func (c *captureObs) OnInterrupt(context.Context, Identity, Interrupt) { c.inter
 func (c *captureObs) OnRunEnd(context.Context, Identity, *Result)      { c.endCalls++ }
 
 type recOrder struct {
-	BaseHook
+	BaseObserver
 	onStart func()
 }
 
@@ -123,16 +123,16 @@ func (panicAll) OnInterrupt(context.Context, Identity, Interrupt)    { panic("bo
 func (panicAll) OnRunRevise(context.Context, Identity, *Result, int) { panic("boom") }
 func (panicAll) OnRunEnd(context.Context, Identity, *Result)         { panic("boom") }
 
-// ---------- BeforeExecute internals ----------
+// ---------- Preparer internals ----------
 
 // Tests live in the internal "agent" package because they probe
-// defaultBefore, which is unexported. Other agent_test.go files use
+// defaultPreparer, which is unexported. Other agent_test.go files use
 // the public API via "agent_test" — that boundary is intentional.
 
-func TestDefaultSeeder_AppendsRequestMessage(t *testing.T) {
+func TestSeedBoard_AppendsRequestMessage(t *testing.T) {
 	req := &Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")}
 
-	b, err := defaultBefore{}.Before(context.Background(), Identity{}, req)
+	b, err := seedBoard(context.Background(), Identity{}, req, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -142,13 +142,13 @@ func TestDefaultSeeder_AppendsRequestMessage(t *testing.T) {
 	}
 }
 
-func TestDefaultSeeder_CopiesInputsToVars(t *testing.T) {
+func TestSeedBoard_CopiesInputsToVars(t *testing.T) {
 	req := &Request{
 		Message: inference.NewTextMessage(inference.RoleUser, "hi"),
 		Inputs:  map[string]any{"a": 1, "b": "two"},
 	}
 
-	b, err := defaultBefore{}.Before(context.Background(), Identity{}, req)
+	b, err := seedBoard(context.Background(), Identity{}, req, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -160,20 +160,20 @@ func TestDefaultSeeder_CopiesInputsToVars(t *testing.T) {
 	}
 }
 
-func TestDefaultSeeder_FreshBoardEachCall(t *testing.T) {
+func TestSeedBoard_FreshBoardEachCall(t *testing.T) {
 	req := &Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")}
 
-	b1, _ := defaultBefore{}.Before(context.Background(), Identity{}, req)
-	b2, _ := defaultBefore{}.Before(context.Background(), Identity{}, req)
+	b1, _ := seedBoard(context.Background(), Identity{}, req, nil)
+	b2, _ := seedBoard(context.Background(), Identity{}, req, nil)
 
 	if b1 == b2 {
-		t.Error("defaultBefore must return a fresh Board each call")
+		t.Error("seedBoard must return a fresh Board each call")
 	}
 }
 
-func TestBoardSeederFunc_Adapts(t *testing.T) {
+func TestPreparerFunc_Adapts(t *testing.T) {
 	called := false
-	f := BeforeExecuteFunc(func(_ context.Context, info Identity, req *Request) (*Board, error) {
+	f := PreparerFunc(func(_ context.Context, info Identity, req *Request, prev *Board) (*Board, error) {
 		called = true
 		if info.RunID != "r-1" {
 			t.Errorf("Identity.RunID = %q, want r-1", info.RunID)
@@ -181,28 +181,32 @@ func TestBoardSeederFunc_Adapts(t *testing.T) {
 		if req.Message.Content.Text() != "hello" {
 			t.Errorf("req.Message = %q, want hello", req.Message.Content.Text())
 		}
+		if prev == nil {
+			t.Error("prev must not be nil; chain always seeds before invoking a Preparer")
+		}
 		return NewBoard(), nil
 	})
 
 	_, err := f.Before(context.Background(),
 		Identity{RunID: "r-1"},
 		&Request{Message: inference.NewTextMessage(inference.RoleUser, "hello")},
+		NewBoard(),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !called {
-		t.Error("BeforeExecuteFunc.Before did not invoke the wrapped function")
+		t.Error("PreparerFunc.Before did not invoke the wrapped function")
 	}
 }
 
-func TestBoardSeederFunc_PropagatesError(t *testing.T) {
+func TestPreparerFunc_PropagatesError(t *testing.T) {
 	boom := errors.New("boom")
-	f := BeforeExecuteFunc(func(context.Context, Identity, *Request) (*Board, error) {
+	f := PreparerFunc(func(context.Context, Identity, *Request, *Board) (*Board, error) {
 		return nil, boom
 	})
 
-	b, err := f.Before(context.Background(), Identity{}, &Request{})
+	b, err := f.Before(context.Background(), Identity{}, &Request{}, NewBoard())
 	if !errors.Is(err, boom) {
 		t.Errorf("error = %v, want %v", err, boom)
 	}
@@ -211,10 +215,10 @@ func TestBoardSeederFunc_PropagatesError(t *testing.T) {
 	}
 }
 
-// ---------- AfterExecute internals ----------
+// ---------- Referee internals ----------
 
-// Internal-package tests for runAfterExecute / Decision merging.
-// runAfterExecute is unexported so these stay in package agent.
+// Internal-package tests for runReferee / Decision merging.
+// runReferee is unexported so these stay in package agent.
 
 type stubDecider struct {
 	dec Decision
@@ -225,35 +229,46 @@ func (s stubDecider) After(context.Context, Identity, *Request, *Result) (Decisi
 	return s.dec, s.err
 }
 
-func TestFinalizeDecision_Merge_BoolsORed(t *testing.T) {
-	a := Decision{DiscardOutput: true}
-	b := Decision{Revise: true}
-
-	got := a.merge(b)
+func TestComposeReferees_BoolsORed(t *testing.T) {
+	got, err := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{
+			stubDecider{dec: Decision{DiscardOutput: true}},
+			stubDecider{dec: Decision{Revise: true}},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if !got.DiscardOutput || !got.Revise {
-		t.Errorf("merge OR over bools failed: %+v", got)
+		t.Errorf("OR-merge over booleans failed: %+v", got)
 	}
 }
 
-func TestFinalizeDecision_Merge_FirstNonEmptyReasonWins(t *testing.T) {
-	first := Decision{Reason: "first"}
-	second := Decision{Reason: "second"}
-
-	got := first.merge(second)
+func TestComposeReferees_FirstNonEmptyReasonWins(t *testing.T) {
+	got, err := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{
+			stubDecider{dec: Decision{Reason: "first"}},
+			stubDecider{dec: Decision{Reason: "second"}},
+		})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if got.Reason != "first" {
 		t.Errorf("Reason = %q, want %q", got.Reason, "first")
 	}
 
-	got2 := Decision{}.merge(second)
+	got2, _ := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{
+			stubDecider{dec: Decision{}},
+			stubDecider{dec: Decision{Reason: "second"}},
+		})
 	if got2.Reason != "second" {
 		t.Errorf("merge into empty Reason = %q, want %q", got2.Reason, "second")
 	}
 }
 
-func TestRunDeciders_NilEntriesSkipped(t *testing.T) {
-	got, err := runAfterExecute(context.Background(),
-		[]AfterExecute{nil, stubDecider{dec: Decision{Reason: "ok"}}, nil},
-		Identity{}, &Request{}, &Result{})
+func TestComposeReferees_NilEntriesSkipped(t *testing.T) {
+	got, err := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{nil, stubDecider{dec: Decision{Reason: "ok"}}, nil})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -262,17 +277,14 @@ func TestRunDeciders_NilEntriesSkipped(t *testing.T) {
 	}
 }
 
-func TestRunDeciders_FirstErrorShortCircuits(t *testing.T) {
+func TestComposeReferees_FirstErrorShortCircuits(t *testing.T) {
 	boom := errors.New("decider boom")
 	called := 0
-	d2 := stubFn(func() (Decision, error) {
-		called++
-		return Decision{Reason: "should-not-merge"}, nil
-	})
+	d2 := stubDecider{dec: Decision{Reason: "should-not-merge"}}
+	_ = d2 // silence unused warning; test is about composeReferees short-circuit
 
-	_, err := runAfterExecute(context.Background(),
-		[]AfterExecute{stubDecider{err: boom}, d2},
-		Identity{}, &Request{}, &Result{})
+	_, err := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{stubDecider{err: boom}, d2})
 	if !errors.Is(err, boom) {
 		t.Errorf("expected boom; got %v", err)
 	}
@@ -281,14 +293,13 @@ func TestRunDeciders_FirstErrorShortCircuits(t *testing.T) {
 	}
 }
 
-func TestRunDeciders_AccumulatesAcrossDeciders(t *testing.T) {
-	got, err := runAfterExecute(context.Background(),
-		[]AfterExecute{
+func TestComposeReferees_AccumulatesAcrossReferees(t *testing.T) {
+	got, err := composeReferees(context.Background(), Identity{}, &Request{}, &Result{},
+		[]Referee{
 			stubDecider{dec: Decision{Reason: "a"}},
 			stubDecider{dec: Decision{DiscardOutput: true}},
 			stubDecider{dec: Decision{Revise: true}},
-		},
-		Identity{}, &Request{}, &Result{})
+		})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -300,13 +311,13 @@ func TestRunDeciders_AccumulatesAcrossDeciders(t *testing.T) {
 	}
 }
 
-func TestBaseDecider_ZeroValueDecision(t *testing.T) {
-	dec, err := BaseAfterExecute{}.After(context.Background(), Identity{}, &Request{}, &Result{})
+func TestBaseReferee_ZeroValueDecision(t *testing.T) {
+	dec, err := BaseReferee{}.After(context.Background(), Identity{}, &Request{}, &Result{})
 	if err != nil {
-		t.Errorf("BaseAfterExecute returned error: %v", err)
+		t.Errorf("BaseReferee returned error: %v", err)
 	}
 	if (dec != Decision{}) {
-		t.Errorf("BaseAfterExecute returned non-zero decision: %+v", dec)
+		t.Errorf("BaseReferee returned non-zero decision: %+v", dec)
 	}
 }
 

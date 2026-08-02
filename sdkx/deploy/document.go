@@ -79,13 +79,13 @@ type AgentEntry struct {
 	Deps map[string]DepRef `yaml:"deps,omitempty"`
 
 	// Before is the optional seed hook (singular).
-	Before *HookEntry `yaml:"before,omitempty"`
+	Prepare []PreparerEntry `yaml:"prepare,omitempty"`
 
 	// Hooks are lifecycle observers, fired in document order.
-	Hooks []HookEntry `yaml:"hooks,omitempty"`
+	Observe []ObserverEntry `yaml:"observe,omitempty"`
 
 	// After are decision hooks, merged in document order.
-	After []HookEntry `yaml:"after,omitempty"`
+	Referees []RefereeEntry `yaml:"referees,omitempty"`
 
 	// Policy is the per-call harness policy.
 	Policy struct {
@@ -168,18 +168,27 @@ func (d *DepRef) UnmarshalYAML(node *yamlv3.Node) error {
 	return nil
 }
 
-// HookEntry is one lifecycle extension point: a factory type, its
-// dependencies, and its opaque factory-owned settings subtree.
-type HookEntry struct {
+// PreparerEntry is one link in the prepare chain: a factory type,
+// its dependencies, and its opaque factory-owned settings subtree.
+// All three lifecycle stages — prepare / observe / referee — share
+// the same data shape; the three names exist so the type system
+// catches a factory registered against the wrong stage.
+type PreparerEntry struct {
 	Type string `yaml:"type"`
 
 	// Deps binds factory-defined dependency names to resources or
-	// sources, so a hook can reach a history store or a memory
-	// instance the resource area built.
+	// sources, so a Preparer can reach a store the resource area
+	// built.
 	Deps map[string]DepRef `yaml:"deps,omitempty"`
 
 	Settings *Opaque `yaml:"settings,omitempty"`
 }
+
+// ObserverEntry is one read-only lifecycle observer.
+type ObserverEntry = PreparerEntry
+
+// RefereeEntry is one decision hook.
+type RefereeEntry = PreparerEntry
 
 // Opaque captures a YAML subtree without decoding it. Implementing
 // UnmarshalYAML stops the document's KnownFields(true) strictness
@@ -245,22 +254,22 @@ func (d Document) Validate() error {
 			return errdefs.Validation(fmt.Errorf(
 				"deploy config agents[%q]: %w", id, err))
 		}
-		if a.Before != nil {
-			if err := a.Before.validate(); err != nil {
+		for i, p := range a.Prepare {
+			if err := p.validate(); err != nil {
 				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].before: %w", id, err))
+					"deploy config agents[%q].prepare[%d]: %w", id, i, err))
 			}
 		}
-		for i, h := range a.Hooks {
-			if err := h.validate(); err != nil {
+		for i, o := range a.Observe {
+			if err := o.validate(); err != nil {
 				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].hooks[%d]: %w", id, i, err))
+					"deploy config agents[%q].observe[%d]: %w", id, i, err))
 			}
 		}
-		for i, h := range a.After {
-			if err := h.validate(); err != nil {
+		for i, r := range a.Referees {
+			if err := r.validate(); err != nil {
 				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].after[%d]: %w", id, i, err))
+					"deploy config agents[%q].referees[%d]: %w", id, i, err))
 			}
 		}
 		if a.Policy.MaxRevise < 0 {
@@ -271,7 +280,7 @@ func (d Document) Validate() error {
 	return nil
 }
 
-func (h HookEntry) validate() error {
+func (h PreparerEntry) validate() error {
 	if h.Type == "" {
 		return fmt.Errorf("type is required")
 	}

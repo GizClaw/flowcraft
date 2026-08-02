@@ -1,6 +1,6 @@
 // Package agenttest provides reusable contract-test machinery for
 // the interfaces declared in sdk/agent — [agent.Engine], [agent.Host],
-// [agent.Hook] and [agent.AfterExecute] today.
+// [agent.Observer] and [agent.Referee] today.
 //
 // Modeled on net/http/httptest, testing/iotest, and
 // gocloud.dev/blob/drivertest: a single sibling package next to its
@@ -27,12 +27,12 @@
 //     agenttest.HostSuite(t, func() agent.Host { return newMyHost() })
 //     }
 //
-//   - [HookSuite] — the standard contract every [agent.Hook]
+//   - [ObserverSuite] — the standard contract every [agent.Observer]
 //     implementation should pass (no input mutation, prompt return,
 //     concurrent safety).
 //
-//   - [AfterExecuteSuite] — the standard contract every
-//     [agent.AfterExecute] implementation should pass.
+//   - [RefereeSuite] — the standard contract every
+//     [agent.Referee] implementation should pass.
 //
 //   - [MockHost] — a minimal Host implementation that records every
 //     interaction, lets tests inject interrupts / user replies, and

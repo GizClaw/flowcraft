@@ -66,6 +66,30 @@ func NewBoard() *Board {
 	}
 }
 
+// Clone returns an independent copy of the board: channels and vars
+// are deep-copied, the new board has its own mutex, and mutations on
+// either board do not affect the other. Use it from a Preparer that
+// wants to extend an existing board's state without mutating the
+// previous link's output.
+func (b *Board) Clone() *Board {
+	if b == nil {
+		return nil
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	channels := make(map[string][]inference.Message, len(b.channels))
+	for name, msgs := range b.channels {
+		copied := make([]inference.Message, len(msgs))
+		copy(copied, msgs)
+		channels[name] = copied
+	}
+	vars := make(map[string]any, len(b.vars))
+	for k, v := range b.vars {
+		vars[k] = v
+	}
+	return &Board{channels: channels, vars: vars}
+}
+
 // ---------- Vars ----------
 
 // SetVar sets a board-level variable. Concurrent-safe.

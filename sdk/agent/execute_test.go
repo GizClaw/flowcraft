@@ -198,7 +198,7 @@ func TestRun_ForeignInterruptStillClassifiedButObserverSkipsOnInterrupt(t *testi
 
 	rec := &recordingObs{}
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithHook(rec),
+		agent.WithObserver(rec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -284,7 +284,7 @@ func TestRun_NewMessagesIsTrailingAssistantBlock(t *testing.T) {
 
 	// Pre-seed the board with an assistant message that should NOT be
 	// counted as "new" (because it's part of the seeded transcript).
-	seeder := agent.BeforeExecuteFunc(func(_ context.Context, _ agent.Identity, req *agent.Request) (*agent.Board, error) {
+	seeder := agent.PreparerFunc(func(_ context.Context, _ agent.Identity, req *agent.Request, _ *agent.Board) (*agent.Board, error) {
 		b := agent.NewBoard()
 		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "old answer"))
 		b.AppendChannelMessage(agent.MainChannel, req.Message)
@@ -292,7 +292,7 @@ func TestRun_NewMessagesIsTrailingAssistantBlock(t *testing.T) {
 	})
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithBeforeExecute(seeder),
+		agent.WithPreparer(seeder),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -322,12 +322,12 @@ func TestRun_NoNewMessagesWhenLastIsUser(t *testing.T) {
 }
 
 func TestRun_SeederErrorFailsRun(t *testing.T) {
-	bad := agent.BeforeExecuteFunc(func(_ context.Context, _ agent.Identity, _ *agent.Request) (*agent.Board, error) {
+	bad := agent.PreparerFunc(func(_ context.Context, _ agent.Identity, _ *agent.Request, _ *agent.Board) (*agent.Board, error) {
 		return nil, errors.New("seed boom")
 	})
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithBeforeExecute(bad),
+		agent.WithPreparer(bad),
 	)
 	if err == nil {
 		t.Fatal("expected infrastructure error from failing seeder")
@@ -338,12 +338,12 @@ func TestRun_SeederErrorFailsRun(t *testing.T) {
 }
 
 func TestRun_SeederNilBoardFailsRun(t *testing.T) {
-	nilSeeder := agent.BeforeExecuteFunc(func(_ context.Context, _ agent.Identity, _ *agent.Request) (*agent.Board, error) {
+	nilSeeder := agent.PreparerFunc(func(_ context.Context, _ agent.Identity, _ *agent.Request, _ *agent.Board) (*agent.Board, error) {
 		return nil, nil
 	})
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithBeforeExecute(nilSeeder),
+		agent.WithPreparer(nilSeeder),
 	)
 	if err == nil {
 		t.Fatal("expected error when seeder returns nil board with nil error")
@@ -369,7 +369,7 @@ func TestRun_EngineReturnsNilBoardFallsBackToSeeded(t *testing.T) {
 
 // recordingObs counts callback invocations and orders them.
 type recordingObs struct {
-	agent.BaseHook
+	agent.BaseObserver
 
 	mu             sync.Mutex
 	startCalls     int
@@ -408,7 +408,7 @@ func (r *recordingObs) OnRunEnd(_ context.Context, _ agent.Identity, res *agent.
 func TestRun_ObserverLifecycleOrder_Completed(t *testing.T) {
 	rec := &recordingObs{}
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithHook(rec),
+		agent.WithObserver(rec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -432,7 +432,7 @@ func TestRun_ObserverLifecycleOrder_Interrupted(t *testing.T) {
 
 	rec := &recordingObs{}
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithHook(rec),
+		agent.WithObserver(rec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -447,15 +447,15 @@ func TestRun_ObserverLifecycleOrder_Interrupted(t *testing.T) {
 }
 
 func TestRun_ObserverPanicDoesNotCrash(t *testing.T) {
-	panicking := agent.BaseHook{}
+	panicking := agent.BaseObserver{}
 	good := &recordingObs{}
 
 	// Wrap a panicking observer behind a closure-typed observer.
 	rec := &panicObs{base: panicking}
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithHook(rec),
-		agent.WithHook(good),
+		agent.WithObserver(rec),
+		agent.WithObserver(good),
 	)
 	if err != nil {
 		t.Fatalf("agent.Run failed despite panic recovery: %v", err)
@@ -470,7 +470,7 @@ func TestRun_ObserverPanicDoesNotCrash(t *testing.T) {
 }
 
 type panicObs struct {
-	base agent.BaseHook
+	base agent.BaseObserver
 }
 
 func (p *panicObs) OnRunStart(context.Context, agent.Identity, *agent.Request) { panic("boom") }
@@ -485,7 +485,7 @@ func (p *panicObs) OnRunEnd(context.Context, agent.Identity, *agent.Result) { pa
 func TestRun_AgentScopedObserversFireBeforeCallScoped(t *testing.T) {
 	var hits []string
 	var mu sync.Mutex
-	mark := func(name string) agent.Hook {
+	mark := func(name string) agent.Observer {
 		return &markObs{
 			onStart: func() {
 				mu.Lock()
@@ -496,13 +496,13 @@ func TestRun_AgentScopedObserversFireBeforeCallScoped(t *testing.T) {
 	}
 
 	ag := agent.Agent{
-		ID:    "a",
-		Hooks: []agent.Hook{mark("agent-1"), mark("agent-2")},
+		ID:        "a",
+		Observers: []agent.Observer{mark("agent-1"), mark("agent-2")},
 	}
 
 	_, err := agent.Execute(context.Background(), ag, completedEngine("ok"), newReq("hi"),
-		agent.WithHook(mark("call-1")),
-		agent.WithHook(mark("call-2")),
+		agent.WithObserver(mark("call-1")),
+		agent.WithObserver(mark("call-2")),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -515,7 +515,7 @@ func TestRun_AgentScopedObserversFireBeforeCallScoped(t *testing.T) {
 }
 
 type markObs struct {
-	agent.BaseHook
+	agent.BaseObserver
 	onStart func()
 }
 
@@ -531,7 +531,7 @@ func TestRun_DeciderDiscardOutput(t *testing.T) {
 	})
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithAfterExecute(dec),
+		agent.WithReferee(dec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -552,8 +552,8 @@ func TestRun_DeciderError_RunReturnsError_ButObserverEndStillFires(t *testing.T)
 
 	rec := &recordingObs{}
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithAfterExecute(dec),
-		agent.WithHook(rec),
+		agent.WithReferee(dec),
+		agent.WithObserver(rec),
 	)
 	if !errors.Is(err, boom) {
 		t.Fatalf("agent.Run should surface decider error; got %v", err)
@@ -575,8 +575,8 @@ func TestRun_MultipleDecidersOR(t *testing.T) {
 	})
 
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
-		agent.WithAfterExecute(a),
-		agent.WithAfterExecute(b),
+		agent.WithReferee(a),
+		agent.WithReferee(b),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -592,7 +592,7 @@ func TestRun_MultipleDecidersOR(t *testing.T) {
 func TestRun_AgentScopedDecidersFireBeforeCallScoped(t *testing.T) {
 	var order []string
 	var mu sync.Mutex
-	mark := func(name string) agent.AfterExecute {
+	mark := func(name string) agent.Referee {
 		return deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
 			mu.Lock()
 			order = append(order, name)
@@ -602,12 +602,12 @@ func TestRun_AgentScopedDecidersFireBeforeCallScoped(t *testing.T) {
 	}
 
 	ag := agent.Agent{
-		ID:    "a",
-		After: []agent.AfterExecute{mark("agent-1")},
+		ID:       "a",
+		Referees: []agent.Referee{mark("agent-1")},
 	}
 
 	_, err := agent.Execute(context.Background(), ag, completedEngine("ok"), newReq("hi"),
-		agent.WithAfterExecute(mark("call-1")),
+		agent.WithReferee(mark("call-1")),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -722,7 +722,7 @@ func TestRun_RunInfoFieldsPropagated(t *testing.T) {
 	req.RunID = "run-99"
 
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "agent-7"}, completedEngine("ok"), req,
-		agent.WithHook(rec),
+		agent.WithObserver(rec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -749,7 +749,7 @@ func TestRun_NilOptionsAreSkipped(t *testing.T) {
 	}
 }
 
-// helper: deciderFunc adapts a closure into agent.AfterExecute.
+// helper: deciderFunc adapts a closure into agent.Referee.
 type deciderFunc func(ctx context.Context, info agent.Identity, req *agent.Request, res *agent.Result) (agent.Decision, error)
 
 func (f deciderFunc) After(ctx context.Context, info agent.Identity, req *agent.Request, res *agent.Result) (agent.Decision, error) {
@@ -853,11 +853,11 @@ func TestRun_WithResumeFrom_NilIsNoop(t *testing.T) {
 	}
 }
 
-// reviseDecider asks for revise on every AfterExecute call until the
+// reviseDecider asks for revise on every Referee call until the
 // configured number of decisions has been made. Lets tests pin the
 // "stop asking after N" boundary independently of WithMaxRevise.
 type reviseDecider struct {
-	agent.BaseAfterExecute
+	agent.BaseReferee
 	mu      sync.Mutex
 	calls   int
 	stopAt  int // stop asking for revise once calls > stopAt
@@ -881,7 +881,7 @@ func (d *reviseDecider) After(_ context.Context, _ agent.Identity, _ *agent.Requ
 // next-attempt index sequence and that the prev result is the
 // pre-replacement Result (Status / Attempts as of that attempt).
 type reviseObs struct {
-	agent.BaseHook
+	agent.BaseObserver
 	mu     sync.Mutex
 	starts int
 	revise []reviseEvent
@@ -912,7 +912,7 @@ func (r *reviseObs) OnRunEnd(_ context.Context, _ agent.Identity, res *agent.Res
 }
 
 // TestRun_Revise_DefaultDisabled asserts the safe default: a
-// AfterExecute that asks for Revise has its Reason recorded but does
+// Referee that asks for Revise has its Reason recorded but does
 // NOT trigger another engine call when WithMaxRevise was not set.
 func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	var calls int
@@ -923,7 +923,7 @@ func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	})
 	d := &reviseDecider{reason: "needs better citations"}
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithAfterExecute(d),
+		agent.WithReferee(d),
 	)
 	if err != nil {
 		t.Fatalf("agent.Run: %v", err)
@@ -940,7 +940,7 @@ func TestRun_Revise_DefaultDisabled(t *testing.T) {
 }
 
 // TestRun_Revise_HonoursMaxBudget asserts the loop runs until the
-// budget is reached, not until the AfterExecute stops asking. Caps
+// budget is reached, not until the Referee stops asking. Caps
 // runaway loops on always-asking After.
 func TestRun_Revise_HonoursMaxBudget(t *testing.T) {
 	var calls int
@@ -951,7 +951,7 @@ func TestRun_Revise_HonoursMaxBudget(t *testing.T) {
 	})
 	d := &reviseDecider{} // always asks for revise
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithAfterExecute(d),
+		agent.WithReferee(d),
 		agent.WithMaxRevise(3),
 	)
 	if err != nil {
@@ -966,7 +966,7 @@ func TestRun_Revise_HonoursMaxBudget(t *testing.T) {
 }
 
 // TestRun_Revise_StopsWhenDeciderSatisfied asserts the loop exits
-// early when no AfterExecute asks for revise — Attempts reflects the
+// early when no Referee asks for revise — Attempts reflects the
 // actual count, not the budget.
 func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
 	var calls int
@@ -977,7 +977,7 @@ func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
 	})
 	d := &reviseDecider{stopAt: 2} // asks twice, then satisfied
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithAfterExecute(d),
+		agent.WithReferee(d),
 		agent.WithMaxRevise(5),
 	)
 	if err != nil {
@@ -1002,8 +1002,8 @@ func TestRun_Revise_ObserverReceivesPrevResultAndNextAttempt(t *testing.T) {
 	d := &reviseDecider{}
 	obs := &reviseObs{}
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithAfterExecute(d),
-		agent.WithHook(obs),
+		agent.WithReferee(d),
+		agent.WithObserver(obs),
 		agent.WithMaxRevise(3),
 	)
 	if err != nil {
@@ -1038,7 +1038,7 @@ func TestRun_Revise_NotTriggeredOnNonCompleted(t *testing.T) {
 	})
 	d := &reviseDecider{} // always asks for revise
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
-		agent.WithAfterExecute(d),
+		agent.WithReferee(d),
 		agent.WithMaxRevise(5),
 	)
 	if err != nil {

@@ -25,15 +25,15 @@ type Agent struct {
 
 	// Hooks are agent-scoped lifecycle hooks. They fire on every
 	// [Execute] of this agent value, before any hooks added via
-	// [WithHook] for the specific call. JSON-skipped because hooks
+	// [WithObserver] for the specific call. JSON-skipped because hooks
 	// carry runtime state (channels, stores, …) that does not
 	// round-trip through serialisation.
-	Hooks []Hook `json:"-"`
+	Observers []Observer `json:"-"`
 
-	// After are agent-scoped decision hooks (see [AfterExecute]). They
-	// run before any AfterExecute added via [WithAfterExecute] for the
+	// After are agent-scoped decision hooks (see [Referee]). They
+	// run before any Referee added via [WithReferee] for the
 	// specific call. Same JSON-skip rationale as Hooks.
-	After []AfterExecute `json:"-"`
+	Referees []Referee `json:"-"`
 }
 
 // AgentCard describes an agent's capabilities for discovery. Field

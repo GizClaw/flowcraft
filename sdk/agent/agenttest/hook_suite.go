@@ -10,8 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 )
 
-// HookFactory builds a fresh [agent.Hook] for each subtest.
-type HookFactory func() agent.Hook
+// ObserverFactory builds a fresh [agent.Observer] for each subtest.
+type ObserverFactory func() agent.Observer
 
 // HookCapabilities lets observers opt out of subtests that
 // don't apply. Most observers pass the zero value.
@@ -30,9 +30,9 @@ type HookCapabilities struct {
 	SkipPromptReturnCheck bool
 }
 
-// HookSuite runs every applicable contract subtest against
+// ObserverSuite runs every applicable contract subtest against
 // observers produced by f.
-func HookSuite(t *testing.T, f HookFactory, caps ...HookCapabilities) {
+func ObserverSuite(t *testing.T, f ObserverFactory, caps ...HookCapabilities) {
 	t.Helper()
 	c := HookCapabilities{}
 	if len(caps) > 0 {
@@ -51,7 +51,7 @@ func HookSuite(t *testing.T, f HookFactory, caps ...HookCapabilities) {
 
 // ---------- subtests ----------
 
-func observerZeroInputs(t *testing.T, f HookFactory) {
+func observerZeroInputs(t *testing.T, f ObserverFactory) {
 	t.Helper()
 	o := f()
 	ctx := context.Background()
@@ -68,7 +68,7 @@ func observerZeroInputs(t *testing.T, f HookFactory) {
 	probe("OnRunEnd(zero)", func() { o.OnRunEnd(ctx, info, &agent.Result{}) })
 }
 
-func observerNoMutation(t *testing.T, f HookFactory) {
+func observerNoMutation(t *testing.T, f ObserverFactory) {
 	t.Helper()
 	o := f()
 	ctx := context.Background()
@@ -102,7 +102,7 @@ func observerNoMutation(t *testing.T, f HookFactory) {
 	check("OnRunEnd(res)", resCopy, *res)
 }
 
-func observerPromptReturn(t *testing.T, f HookFactory) {
+func observerPromptReturn(t *testing.T, f ObserverFactory) {
 	t.Helper()
 	o := f()
 	ctx := context.Background()
@@ -124,7 +124,7 @@ func observerPromptReturn(t *testing.T, f HookFactory) {
 	timed("OnRunEnd", func() { o.OnRunEnd(ctx, info, &agent.Result{}) })
 }
 
-func observerConcurrent(t *testing.T, f HookFactory) {
+func observerConcurrent(t *testing.T, f ObserverFactory) {
 	t.Helper()
 	o := f()
 	const n = 16
@@ -137,7 +137,7 @@ func observerConcurrent(t *testing.T, f HookFactory) {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
-					t.Errorf("concurrent observer dispatch panicked: %v — agent.Execute invokes a single Hook instance sequentially per run, but the same observer is reused across runs and must be safe for concurrent use", r)
+					t.Errorf("concurrent observer dispatch panicked: %v — agent.Execute invokes a single Observer instance sequentially per run, but the same observer is reused across runs and must be safe for concurrent use", r)
 				}
 			}()
 			o.OnRunStart(ctx, info, &agent.Request{})

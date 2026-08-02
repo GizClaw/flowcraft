@@ -16,7 +16,7 @@ const (
 )
 
 func (b *Builder) registerBuiltins() {
-	b.afters[AfterDiscardOnInterrupt] = buildDiscardOnInterrupt
+	b.referees[AfterDiscardOnInterrupt] = buildDiscardOnInterrupt
 }
 
 type discardSettings struct {
@@ -24,7 +24,7 @@ type discardSettings struct {
 	Causes []string `yaml:"causes"`
 }
 
-func buildDiscardOnInterrupt(_ context.Context, in HookInput) (agent.AfterExecute, error) {
+func buildDiscardOnInterrupt(_ context.Context, in HookInput) (agent.Referee, error) {
 	s, err := DecodeSettings[discardSettings](in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("decode %s settings: %w", AfterDiscardOnInterrupt, err)

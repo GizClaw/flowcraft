@@ -25,7 +25,7 @@ func TestDiscardOnInterruptCauses_FiresOnMatch(t *testing.T) {
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseUserInput),
 		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
-		agent.WithAfterExecute(dec),
+		agent.WithReferee(dec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -44,7 +44,7 @@ func TestDiscardOnInterruptCauses_SkipsForeignCause(t *testing.T) {
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseHostShutdown),
 		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
-		agent.WithAfterExecute(dec),
+		agent.WithReferee(dec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -67,7 +67,7 @@ func TestDiscardOnInterruptCauses_NotInterruptedDoesNotFire(t *testing.T) {
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, completed,
 		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
-		agent.WithAfterExecute(dec),
+		agent.WithReferee(dec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -88,7 +88,7 @@ func TestDiscardOnInterruptCauses_ZeroValueMatchesNothing(t *testing.T) {
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseUserInput),
 		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
-		agent.WithAfterExecute(dec),
+		agent.WithReferee(dec),
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

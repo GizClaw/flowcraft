@@ -48,19 +48,19 @@ agents:
       runner: box/coding
       script_runtime: js_main
       tools: {source: host.tools, ref: default}
-    before:
-      type: fake_before
-      deps:
-        store: store
-      settings:
-        window: 20
-    hooks:
+    prepare:
+      - type: fake_before
+        deps:
+          store: store
+        settings:
+          window: 20
+    observe:
       - type: fake_hook
         deps:
           store: store
         settings:
           store: main
-    after:
+    referees:
       - type: discard_on_interrupt
         settings:
           reason: barge-in

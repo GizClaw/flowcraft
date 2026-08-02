@@ -171,11 +171,11 @@ func TestResult_JSONKeys(t *testing.T) {
 // would not round-trip through serialisation cleanly.
 func TestAgent_JSONOmitsNonSerialisableHooks(t *testing.T) {
 	a := agent.Agent{
-		ID:    "a1",
-		Card:  agent.AgentCard{Name: "demo"},
-		Tools: []string{"web.search"},
-		Hooks: []agent.Hook{agent.BaseHook{}},
-		After: []agent.AfterExecute{agent.BaseAfterExecute{}},
+		ID:        "a1",
+		Card:      agent.AgentCard{Name: "demo"},
+		Tools:     []string{"web.search"},
+		Observers: []agent.Observer{agent.BaseObserver{}},
+		Referees:  []agent.Referee{agent.BaseReferee{}},
 	}
 
 	raw, err := json.Marshal(a)

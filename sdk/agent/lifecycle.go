@@ -2,9 +2,9 @@ package agent
 
 import "context"
 
-// ---------- Hook (observer) ----------
+// ---------- Observer (read-only lifecycle) ----------
 
-// Hook is a read-only lifecycle hook that lets callers react to
+// Observer is a read-only lifecycle hook that lets callers react to
 // stages of a [Run] without affecting its outcome. It is the plumbing
 // behind agent's "history append on completion", "metric emit on
 // start", "transcript snapshot on interrupt", and similar patterns,
@@ -12,20 +12,20 @@ import "context"
 //
 // Design rules:
 //
-//  1. Hooks MUST NOT change the [Result] returned by Run. agent
+//  1. Observers MUST NOT change the [Result] returned by Run. agent
 //     intentionally exposes the Result to OnRunEnd by pointer because
 //     it is the same value the caller will receive — observers may
 //     stash references to it (for logging, async append, …) but
 //     mutating it leaves agent's caller staring at the mutation. Treat
 //     this surface as advisory.
 //
-//  2. Hook methods MUST NOT return an error. Failures inside an
+//  2. Observer methods MUST NOT return an error. Failures inside an
 //     observer are the observer's problem; they MUST NOT propagate
 //     into Run. When an observer needs to fail or alter a turn (guard
-//     hooks, moderation, disposition), use a [AfterExecute] instead — its
+//     hooks, moderation, disposition), use a [Referee] instead — its
 //     explicit decision semantics keep the flow auditable.
 //
-//  3. Hook methods are called synchronously from Run on the
+//  3. Observer methods are called synchronously from Run on the
 //     caller's goroutine. Blocking inside them blocks the run.
 //     Long-running side effects MUST be dispatched asynchronously by
 //     the observer itself.
@@ -38,9 +38,19 @@ import "context"
 //     OnRunEnd fires exactly once after Execute returns,
 //     regardless of outcome.
 //
-// Embed [BaseHook] to satisfy the interface with no-op defaults
-// when only a subset of the methods are interesting.
-type Hook interface {
+// Embed [BaseObserver] to satisfy the interface with no-op defaults
+// when only a subset of the lifecycle is interesting:
+//
+//	type historyAppender struct {
+//	    agent.BaseObserver
+//	    store sdk_history.History
+//	}
+//
+//	func (h *historyAppender) OnRunEnd(ctx context.Context, id agent.Identity, res *agent.Result) {
+//	    if res.Status != agent.StatusCompleted { return }
+//	    _ = h.store.Append(ctx, id.ContextID, res.Messages)
+//	}
+type Observer interface {
 	// OnRunStart fires after Run prepared the engine inputs but
 	// before Execute is invoked. id carries the immutable
 	// identification fields agreed for this turn.
@@ -51,7 +61,7 @@ type Hook interface {
 	// reason supplied by the host.
 	OnInterrupt(ctx context.Context, id Identity, intr Interrupt)
 
-	// OnRunRevise fires when a AfterExecute asked agent.Execute to re-invoke
+	// OnRunRevise fires when a Referee asked agent.Execute to re-invoke
 	// Execute (Decision{Revise: true}) AND the
 	// per-call WithMaxRevise budget allows another attempt. It
 	// runs after the discarded attempt's classification but BEFORE
@@ -64,11 +74,8 @@ type Hook interface {
 	// is the 1-indexed attempt number the next Execute will
 	// be (== prevRes.Attempts + 1).
 	//
-	// OnRunRevise is the canonical hook for "log how many times the
-	// answer needed revision" / "page on excessive revise loops" /
-	// "snapshot intermediate boards before they are discarded". It
-	// fires zero times for runs that complete on the first attempt
-	// or whose AfterExecute never asks for revise.
+	// OnRunRevise fires zero times for runs that complete on the first
+	// attempt or whose Referee never asks for revise.
 	OnRunRevise(ctx context.Context, id Identity, prevRes *Result, nextAttempt int)
 
 	// OnRunEnd fires after Execute returned and Run finished
@@ -77,12 +84,12 @@ type Hook interface {
 	OnRunEnd(ctx context.Context, id Identity, res *Result)
 }
 
-// BaseHook provides no-op default implementations of every
-// Hook method. Embed it in custom observers that only care about a
-// subset of the lifecycle:
+// BaseObserver provides no-op default implementations of every
+// Observer method. Embed it in custom observers that only care
+// about a subset of the lifecycle:
 //
 //	type historyAppender struct {
-//	    agent.BaseHook
+//	    agent.BaseObserver
 //	    store sdk_history.History
 //	}
 //
@@ -90,30 +97,30 @@ type Hook interface {
 //	    if res.Status != agent.StatusCompleted { return }
 //	    _ = h.store.Append(ctx, id.ContextID, res.Messages)
 //	}
-type BaseHook struct{}
+type BaseObserver struct{}
 
 // OnRunStart is a no-op.
-func (BaseHook) OnRunStart(context.Context, Identity, *Request) {}
+func (BaseObserver) OnRunStart(context.Context, Identity, *Request) {}
 
 // OnInterrupt is a no-op.
-func (BaseHook) OnInterrupt(context.Context, Identity, Interrupt) {}
+func (BaseObserver) OnInterrupt(context.Context, Identity, Interrupt) {}
 
 // OnRunRevise is a no-op.
-func (BaseHook) OnRunRevise(context.Context, Identity, *Result, int) {}
+func (BaseObserver) OnRunRevise(context.Context, Identity, *Result, int) {}
 
 // OnRunEnd is a no-op.
-func (BaseHook) OnRunEnd(context.Context, Identity, *Result) {}
+func (BaseObserver) OnRunEnd(context.Context, Identity, *Result) {}
 
-// Compile-time assertion BaseHook satisfies Hook.
-var _ Hook = BaseHook{}
+// Compile-time assertion BaseObserver satisfies Observer.
+var _ Observer = BaseObserver{}
 
-// composeHooks returns a single Hook that fans every method
+// composeObservers returns a single Observer that fans every method
 // out to obs in registration order, swallowing panics so one bad
 // observer cannot tear down the run loop. nil entries are skipped.
 //
 // Returns nil when obs is empty so callers can branch on
 // "no observers" without paying the dispatch cost.
-func composeHooks(obs []Hook) Hook {
+func composeObservers(obs []Observer) Observer {
 	filtered := obs[:0:0]
 	for _, o := range obs {
 		if o != nil {
@@ -123,30 +130,30 @@ func composeHooks(obs []Hook) Hook {
 	if len(filtered) == 0 {
 		return nil
 	}
-	return multiHook(filtered)
+	return multiObserver(filtered)
 }
 
-type multiHook []Hook
+type multiObserver []Observer
 
-func (m multiHook) OnRunStart(ctx context.Context, id Identity, req *Request) {
+func (m multiObserver) OnRunStart(ctx context.Context, id Identity, req *Request) {
 	for _, o := range m {
 		safeRun(func() { o.OnRunStart(ctx, id, req) })
 	}
 }
 
-func (m multiHook) OnInterrupt(ctx context.Context, id Identity, intr Interrupt) {
+func (m multiObserver) OnInterrupt(ctx context.Context, id Identity, intr Interrupt) {
 	for _, o := range m {
 		safeRun(func() { o.OnInterrupt(ctx, id, intr) })
 	}
 }
 
-func (m multiHook) OnRunRevise(ctx context.Context, id Identity, prev *Result, next int) {
+func (m multiObserver) OnRunRevise(ctx context.Context, id Identity, prev *Result, next int) {
 	for _, o := range m {
 		safeRun(func() { o.OnRunRevise(ctx, id, prev, next) })
 	}
 }
 
-func (m multiHook) OnRunEnd(ctx context.Context, id Identity, res *Result) {
+func (m multiObserver) OnRunEnd(ctx context.Context, id Identity, res *Result) {
 	for _, o := range m {
 		safeRun(func() { o.OnRunEnd(ctx, id, res) })
 	}
@@ -162,9 +169,19 @@ func safeRun(f func()) {
 	f()
 }
 
-// ---------- BeforeExecute ----------
+// ---------- Preparer (board construction) ----------
 
-// BeforeExecute builds the initial [Board] for a run.
+// Preparer builds the initial [Board] for a run, building on the
+// board left by the previous link in the chain.
+//
+// A chain of Preparers is a linear pipeline: agent runs them in
+// registration order, threading the board through them. The first
+// link in the chain receives a board freshly seeded with
+// req.Message on MainChannel and req.Inputs as board vars; each
+// subsequent link receives the board its predecessor returned. Every
+// Preparer must return a fresh *Board (do not mutate and re-yield
+// the input) so the engine and downstream chain links can rely on
+// immutability of the previous board.
 //
 // It is the single extension point for "anything that should be on
 // the board before the engine sees it":
@@ -179,123 +196,124 @@ func safeRun(f func()) {
 //
 // Run guarantees:
 //
-//   - Before is called exactly once per Run, before
-//     Execute and before any Hook's OnRunStart.
-//   - The returned board is mutated by the engine; Before must
-//     therefore return a fresh value each call (do NOT cache and
-//     re-yield a single Board).
+//   - The chain is called exactly once per Run attempt, before
+//     Execute and before any Observer's OnRunStart. Revise attempts
+//     re-run the chain from the beginning with the same Request so
+//     boards are not stale across retries.
+//   - The returned board is mutated by the engine; Preparers MUST
+//     return a fresh value each call.
 //   - The returned board MUST be non-nil. Returning nil is a Run
 //     infrastructure error.
 //
 // Implementations are expected to be cheap and synchronous; long
 // async work (retrieval, IO) belongs in a wrapper that resolves
 // before Run.
-type BeforeExecute interface {
-	Before(ctx context.Context, id Identity, req *Request) (*Board, error)
+type Preparer interface {
+	Before(ctx context.Context, id Identity, req *Request, prev *Board) (*Board, error)
 }
 
-// BeforeExecuteFunc is the function-typed adapter for BeforeExecute.
+// PreparerFunc is the function-typed adapter for Preparer.
 //
 // Useful when the seed logic is a single closure over a transcript
 // loader or retriever:
 //
-//	agent.WithBeforeExecute(agent.BeforeExecuteFunc(func(ctx context.Context, id agent.Identity, req *agent.Request) (*Board, error) {
-//	    prior, err := store.Load(ctx, id.ContextID)
-//	    if err != nil { return nil, err }
-//	    b := NewBoard()
-//	    b.SetChannel(MainChannel, prior)
-//	    b.AppendChannelMessage(MainChannel, req.Message)
+//	agent.WithPreparer(agent.PreparerFunc(func(ctx context.Context, id agent.Identity, req *agent.Request, prev *agent.Board) (*agent.Board, error) {
+//	    b := prev.Clone()
+//	    b.SetChannel("memory", retrieved)
 //	    return b, nil
 //	}))
-type BeforeExecuteFunc func(ctx context.Context, id Identity, req *Request) (*Board, error)
+type PreparerFunc func(ctx context.Context, id Identity, req *Request, prev *Board) (*Board, error)
 
 // Before calls f.
-func (f BeforeExecuteFunc) Before(ctx context.Context, id Identity, req *Request) (*Board, error) {
-	return f(ctx, id, req)
+func (f PreparerFunc) Before(ctx context.Context, id Identity, req *Request, prev *Board) (*Board, error) {
+	return f(ctx, id, req, prev)
 }
 
-// defaultBefore is the seed Run uses when [WithBeforeExecute] is not
-// configured. It produces a fresh board, appends req.Message to
-// MainChannel, and copies req.Inputs into board vars. It does NOT
-// load any history; that is a deliberate choice — agents that need
-// transcript continuity wire it through a custom BeforeExecute (most
-// often a thin closure around memory/history).
-type defaultBefore struct{}
-
-// Before implements [BeforeExecute].
-func (defaultBefore) Before(_ context.Context, _ Identity, req *Request) (*Board, error) {
-	b := NewBoard()
-	b.AppendChannelMessage(MainChannel, req.Message)
+// seedBoard runs the Preparer chain against a fresh default board.
+// The default seed appends req.Message to MainChannel and copies
+// req.Inputs into board vars; chain links that want a different
+// starting state can ignore prev and return their own. A nil or
+// empty chain returns the default board unchanged.
+func seedBoard(ctx context.Context, id Identity, req *Request, chain []Preparer) (*Board, error) {
+	board := NewBoard()
+	board.AppendChannelMessage(MainChannel, req.Message)
 	for k, v := range req.Inputs {
-		b.SetVar(k, v)
+		board.SetVar(k, v)
 	}
-	return b, nil
+	for _, p := range chain {
+		next, err := p.Before(ctx, id, req, board)
+		if err != nil {
+			return nil, err
+		}
+		if next == nil {
+			return nil, nil // caller will translate to a validation error
+		}
+		board = next
+	}
+	return board, nil
 }
 
-var _ BeforeExecute = defaultBefore{}
-var _ BeforeExecute = BeforeExecuteFunc(nil)
+// ---------- Referee (decision) ----------
 
-// ---------- AfterExecute ----------
-
-// AfterExecute is a decision-making lifecycle hook that can influence what
+// Referee is a decision-making lifecycle hook that can influence what
 // agent.Execute does at well-defined boundaries. It is the read-write
-// counterpart of [Hook]:
+// counterpart of [Observer]:
 //
-//   - Hooks see what happened and emit side effects (logs,
+//   - Observers see what happened and emit side effects (logs,
 //     metrics, transcript persistence).
-//   - After return a structured decision agent.Run interprets.
+//   - Referees return a structured decision agent.Run interprets.
 //
-// Round B exposes one decision point — [AfterExecute.After] —
-// which fires after Execute returned but before [Run] commits
-// the produced messages to history (i.e., before any Hook's
-// OnRunEnd). This covers two real cases:
+// Referees expose one decision point — [Referee.After] — which fires
+// after Execute returned but before [Run] commits the produced
+// messages to history (i.e., before any Observer's OnRunEnd). This
+// covers two real cases:
 //
 //  1. Disposition: a barge-in cause means the assistant was cut off
 //     mid-thought; the half-baked output should not appear in the
-//     persistent transcript. A AfterExecute returns
+//     persistent transcript. A Referee returns
 //     Decision{DiscardOutput: true}.
 //
 //  2. (Reserved) Revise: the natural answer fails some quality bar
 //     (no citations, policy violation, refusal-without-reason); the
-//     AfterExecute asks for one more model pass. The wire field is
+//     Referee asks for one more model pass. The wire field is
 //     present for forward compatibility — agent does not yet honour
 //     it, and engines will need explicit support before it has any
 //     effect.
 //
 // # Composition
 //
-// Multiple After may be registered (Agent-scoped + per-call).
+// Multiple Referees may be registered (Agent-scoped + per-call).
 // They run in registration order. The merged decision is the OR over
-// boolean fields: any AfterExecute asking to discard wins; same for
+// boolean fields: any Referee asking to discard wins; same for
 // revise. The first non-empty Reason wins, so callers can attribute
 // the decision in logs.
 //
 // # Error contract
 //
-// A AfterExecute returning a non-nil error short-circuits the merge and
+// A Referee returning a non-nil error short-circuits the merge and
 // causes Run to return (Result, decider-error). agent does NOT swap
-// the error class — it surfaces the AfterExecute's own error so callers
+// the error class — it surfaces the Referee's own error so callers
 // can classify with errdefs. The Result is still populated
 // (including the engine's output) so the caller can decide what to
 // do next.
 //
-// Embed [BaseAfterExecute] to satisfy the interface with no-op defaults.
-type AfterExecute interface {
-	// After fires after Execute returns. The AfterExecute
+// Embed [BaseReferee] to satisfy the interface with no-op defaults.
+type Referee interface {
+	// After fires after Execute returns. The Referee
 	// inspects res (read-only) and the original req, and returns a
-	// Decision that Run merges with other After' decisions.
+	// Decision that Run merges with other Referees' decisions.
 	//
 	// id carries the immutable identification fields agreed for
-	// this turn. The AfterExecute MUST NOT mutate res; agent will surface
+	// this turn. The Referee MUST NOT mutate res; agent will surface
 	// the merged decision via [Result.Committed] and (when a Reason
 	// was supplied) [Result.State]["finalize_reason"].
 	After(ctx context.Context, id Identity, req *Request, res *Result) (Decision, error)
 }
 
-// Decision is the return type of [AfterExecute.After]. The
+// Decision is the return type of [Referee.After]. The
 // zero value means "no opinion" — agent applies its defaults.
 //
-// Defaults agent.Run uses when no AfterExecute returns a directive:
+// Defaults agent.Run uses when no Referee returns a directive:
 //
 //   - StatusCompleted runs are committed.
 //   - StatusInterrupted / StatusCanceled / StatusAborted /
@@ -305,7 +323,7 @@ type AfterExecute interface {
 //     makes it overridable.
 type Decision struct {
 	// DiscardOutput, when true, instructs Run to mark Result.Committed
-	// = false regardless of Status. Hooks reading Committed
+	// = false regardless of Status. Observers reading Committed
 	// (notably history-append observers) skip persistence on a
 	// discarded run.
 	//
@@ -321,135 +339,116 @@ type Decision struct {
 	// defaults to 0, so by default Revise is recorded as a
 	// finalize_reason but does NOT trigger another engine call —
 	// callers must opt in explicitly to avoid runaway loops on
-	// faulty After.
+	// faulty Referees.
 	//
 	// When honoured the lifecycle is:
 	//
-	//   1. AfterExecute returns Revise=true (and optionally Reason).
-	//   2. Run fires [Hook.OnRunRevise] with the about-to-be-
+	//   1. Referee returns Revise=true (and optionally Reason).
+	//   2. Run fires [Observer.OnRunRevise] with the about-to-be-
 	//      discarded Result and the next attempt index.
-	//   3. Board is re-seeded via the configured BeforeExecute; the
+	//   3. Board is re-seeded via the Preparer chain; the
 	//      same Run identifier is reused so observers that
 	//      key by run id can correlate attempts.
-	//   4. Execute runs again. The AfterExecute chain runs again
+	//   4. Execute runs again. The Referee chain runs again
 	//      on the new Result.
 	//   5. The loop exits when either Revise=false or the attempt
 	//      counter reaches WithMaxRevise. The final Result.Attempts
 	//      reflects how many Execute calls were made.
 	//
-	// Revise interacts with [WithResumeFrom]: ResumeFrom applies
-	// to the FIRST attempt only. Revise restarts are fresh runs
-	// (the engine should be re-entered from the start), so
-	// subsequent attempts drop ResumeFrom — replaying a checkpoint
-	// repeatedly would defeat the purpose of asking for a revision.
+	// The Reason field is exposed via [Result.State]["finalize_reason"]
+	// regardless of whether the Revise was honoured, so callers
+	// can audit why a particular attempt did not commit.
 	Revise bool
 
-	// Reason is a free-form short string explaining the decision.
-	// Agent stores the first non-empty Reason in Result.State under
-	// "finalize_reason" so logs / metrics can attribute the
-	// outcome.
+	// Reason, when non-empty, is propagated into
+	// [Result.State]["finalize_reason"] and is also returned to the
+	// caller through the same field. Referees that want to attribute
+	// a decision in logs (e.g. "moderation:violation") set this
+	// rather than relying on log scraping.
+	//
+	// Composition rule: the first non-empty Reason wins. This means
+	// Referees later in the chain should only set Reason if they
+	// have something more specific to add.
 	Reason string
 }
 
-// merge folds other into d using the Round B rules: OR over booleans,
-// first non-empty Reason wins.
-func (d Decision) merge(other Decision) Decision {
-	d.DiscardOutput = d.DiscardOutput || other.DiscardOutput
-	d.Revise = d.Revise || other.Revise
-	if d.Reason == "" {
-		d.Reason = other.Reason
-	}
-	return d
-}
+// BaseReferee provides no-op default implementations of every Referee
+// method. Embed it in custom referees that only override After.
+type BaseReferee struct{}
 
-// BaseAfterExecute provides a no-op default implementation of every
-// AfterExecute method. Embed it when only a subset of decision points
-// matter.
-type BaseAfterExecute struct{}
-
-// After returns the zero-value Decision (no
-// opinion).
-func (BaseAfterExecute) After(context.Context, Identity, *Request, *Result) (Decision, error) {
+// After is a no-op that returns a zero Decision (no opinion).
+func (BaseReferee) After(context.Context, Identity, *Request, *Result) (Decision, error) {
 	return Decision{}, nil
 }
 
-var _ AfterExecute = BaseAfterExecute{}
+// Compile-time assertion BaseReferee satisfies Referee.
+var _ Referee = BaseReferee{}
 
-// runAfterExecute executes all After in order, merges their decisions,
-// and returns the combined result. The first error short-circuits
-// the merge.
-func runAfterExecute(ctx context.Context, ds []AfterExecute, id Identity, req *Request, res *Result) (Decision, error) {
-	var out Decision
-	for _, d := range ds {
-		if d == nil {
+// composeReferees merges the decisions of every Referee in
+// registration order. Boolean fields are OR-merged; the first
+// non-empty Reason wins. The first non-nil error short-circuits and
+// is returned to the caller, with the partial Decision discarded.
+//
+// Returns the zero Decision and a nil error when refs is empty.
+func composeReferees(ctx context.Context, id Identity, req *Request, res *Result, refs []Referee) (Decision, error) {
+	var merged Decision
+	for _, r := range refs {
+		if r == nil {
 			continue
 		}
-		dec, err := d.After(ctx, id, req, res)
+		d, err := r.After(ctx, id, req, res)
 		if err != nil {
-			return out, err
+			return Decision{}, err
 		}
-		out = out.merge(dec)
+		if d.DiscardOutput {
+			merged.DiscardOutput = true
+		}
+		if d.Revise {
+			merged.Revise = true
+		}
+		if merged.Reason == "" && d.Reason != "" {
+			merged.Reason = d.Reason
+		}
 	}
-	return out, nil
+	return merged, nil
 }
 
-// ---------- Dispositions ----------
-
-// DiscardOnInterruptCauses is a [AfterExecute] that asks Run to discard
-// the produced output whenever the engine reported an interrupt with
-// any of the listed causes. It is the canonical disposition policy
-// for voice / streaming UX — a barge-in shouldn't leave half-baked
-// assistant text in the transcript.
+// DiscardOnInterruptCauses is a Referee factory: when ANY of the
+// named causes fires, DiscardOutput is set so a barge-in (or
+// equivalent host-side abort) keeps partial assistant output out
+// of the persistent transcript.
 //
-// Construct it with [NewDiscardOnInterruptCauses]; the zero value is
-// not useful (no causes match).
-//
-// # Default behaviour without this AfterExecute
-//
-// agent.Run already sets Result.Committed=false on every non-completed
-// outcome by default, so installing DiscardOnInterruptCauses purely
-// for "discard on barge-in" is technically redundant — the default
-// would discard anyway. The reason it is still a useful AfterExecute:
-//
-//   - it sets Result.State["finalize_reason"] to a caller-supplied
-//     attribution string, which the default policy cannot do;
-//
-//   - it makes the policy explicit at the call site so a future
-//     change to the default (e.g. "commit interrupted runs by
-//     default") would not silently change voice's behaviour.
+// Construct it with [NewDiscardOnInterruptCauses] and register as
+// one of [Agent.Referees] or via [WithReferee].
 type DiscardOnInterruptCauses struct {
+	Reason string
 	causes map[Cause]struct{}
-	reason string
 }
 
-// NewDiscardOnInterruptCauses returns a AfterExecute that discards output
-// for the given Cause set. Reason is recorded in
-// Result.State["finalize_reason"] when the decider fires.
-//
-// Common preset:
-//
-//	agent.NewDiscardOnInterruptCauses("barge-in",
-//	    CauseUserInput, CauseUserCancel)
+// NewDiscardOnInterruptCauses builds a Referee that marks a run
+// discarded whenever its interrupt cause matches one of causes.
+// Reason is the string used as [Decision.Reason] when discarding
+// fires, and is also surfaced in [Result.State]["finalize_reason"].
 func NewDiscardOnInterruptCauses(reason string, causes ...Cause) *DiscardOnInterruptCauses {
-	d := &DiscardOnInterruptCauses{
-		causes: make(map[Cause]struct{}, len(causes)),
-		reason: reason,
-	}
+	set := make(map[Cause]struct{}, len(causes))
 	for _, c := range causes {
-		d.causes[c] = struct{}{}
+		set[c] = struct{}{}
 	}
-	return d
+	return &DiscardOnInterruptCauses{Reason: reason, causes: set}
 }
 
-// After implements [AfterExecute].
+// After implements [Referee]. It inspects res.Status and the
+// interrupt cause attached to the run, returning a discarding
+// Decision when both are present and the cause matches.
 func (d *DiscardOnInterruptCauses) After(_ context.Context, _ Identity, _ *Request, res *Result) (Decision, error) {
-	if res.Status != StatusInterrupted {
+	if res == nil || res.Status != StatusInterrupted {
+		return Decision{}, nil
+	}
+	if res.Cause == "" {
 		return Decision{}, nil
 	}
 	if _, ok := d.causes[res.Cause]; !ok {
 		return Decision{}, nil
 	}
-	return Decision{DiscardOutput: true, Reason: d.reason}, nil
+	return Decision{DiscardOutput: true, Reason: d.Reason}, nil
 }
-
-var _ AfterExecute = (*DiscardOnInterruptCauses)(nil)

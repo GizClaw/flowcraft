@@ -13,21 +13,27 @@
 //   - board: scoped copy-on-read view of the engine board (namespace =
 //     node ID), with resolve/resolveString for ${board.<name>}
 //     interpolation
+//
 //   - expr: boolean expression evaluation with the same interpolation
+//
 //   - fs: scratch FS bridge (ls/read/write/replace/edit + glob/grep/
 //     stat on the OS scratch bridge)
+//
 //   - host: the script-facing handle onto agent.Host — publish (to
 //     arbitrary subjects), emit (per-node stream deltas via the
 //     graph-provided emitter), checkInterrupt, askUser and reportUsage.
 //     See NewHostBridge for the full method surface and identity
 //     semantics
+//
 //   - shell: run shell commands against a scratch filesystem with
 //     script-oriented output shape
+//
 //   - tools: script-callable facade over a tool.Dispatcher /
 //     tool.Catalog pair with an allow-list — call for one shot,
 //     callAll for an ordered batch that can forward model-issued
 //     call ids, definitions for wire-ready tool declarations
 //     (see NewToolBridge)
+//
 //   - inference: single-shot LLM generation — generate resolves an
 //     explicit model through the inference.Runtime, route defers
 //     target selection to a route.Router and adds a routing trace;
@@ -39,6 +45,7 @@
 //
 //   - runtime: named sub-script execution via runtime.execScript,
 //     with nested-exec capability probing (see NewRuntimeBridge)
+//
 //   - run: read-only run identity (run_id / task_id / agent_id /
 //     context_id / parent_run_id), sourced from the ambient RunInfo
 //     in the context (see NewRunInfoBridge)

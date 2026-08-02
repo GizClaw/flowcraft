@@ -78,16 +78,16 @@ func (in HookInput) Dep(name string) (any, bool) {
 	return v, ok
 }
 
-// HookFactory builds one lifecycle hook. Factories MUST decode
+// ObserverFactory builds one lifecycle hook. Factories MUST decode
 // settings strictly (see [DecodeSettings]) so a typo in YAML fails
 // the build rather than silently dropping policy.
-type HookFactory func(ctx context.Context, in HookInput) (agent.Hook, error)
+type ObserverFactory func(ctx context.Context, in HookInput) (agent.Observer, error)
 
-// BeforeFactory builds the [agent.BeforeExecute] seed hook.
-type BeforeFactory func(ctx context.Context, in HookInput) (agent.BeforeExecute, error)
+// PreparerFactory builds the [agent.Preparer] seed hook.
+type PreparerFactory func(ctx context.Context, in HookInput) (agent.Preparer, error)
 
-// AfterFactory builds one [agent.AfterExecute] decision hook.
-type AfterFactory func(ctx context.Context, in HookInput) (agent.AfterExecute, error)
+// RefereeFactory builds one [agent.Referee] decision hook.
+type RefereeFactory func(ctx context.Context, in HookInput) (agent.Referee, error)
 
 // Instance is one assembled, runnable agent: identity + engine + the
 // per-call options the document declared. Execute appends the
@@ -175,9 +175,9 @@ type Builder struct {
 	engines   *agent.Registry
 	sources   map[string]SourceFunc
 	resources map[resourceKey]ResourceFunc
-	hooks     map[string]HookFactory
-	befores   map[string]BeforeFactory
-	afters    map[string]AfterFactory
+	preparers map[string]PreparerFactory
+	observers map[string]ObserverFactory
+	referees  map[string]RefereeFactory
 }
 
 type resourceKey struct {
@@ -196,9 +196,9 @@ func NewBuilder(engines *agent.Registry) *Builder {
 		engines:   engines,
 		sources:   make(map[string]SourceFunc),
 		resources: make(map[resourceKey]ResourceFunc),
-		hooks:     make(map[string]HookFactory),
-		befores:   make(map[string]BeforeFactory),
-		afters:    make(map[string]AfterFactory),
+		preparers: make(map[string]PreparerFactory),
+		observers: make(map[string]ObserverFactory),
+		referees:  make(map[string]RefereeFactory),
 	}
 	b.registerBuiltins()
 	return b
@@ -230,36 +230,36 @@ func (b *Builder) RegisterSource(name string, fn SourceFunc) {
 }
 
 // RegisterHook adds (or replaces) a lifecycle hook factory.
-func (b *Builder) RegisterHook(typ string, fn HookFactory) {
+func (b *Builder) RegisterObserver(typ string, fn ObserverFactory) {
 	if typ == "" {
 		panic("deploy.RegisterHook: type is empty")
 	}
 	if fn == nil {
 		panic(fmt.Sprintf("deploy.RegisterHook: factory for type %q is nil", typ))
 	}
-	b.hooks[typ] = fn
+	b.observers[typ] = fn
 }
 
 // RegisterBefore adds (or replaces) a BeforeExecute factory.
-func (b *Builder) RegisterBefore(typ string, fn BeforeFactory) {
+func (b *Builder) RegisterPreparer(typ string, fn PreparerFactory) {
 	if typ == "" {
 		panic("deploy.RegisterBefore: type is empty")
 	}
 	if fn == nil {
 		panic(fmt.Sprintf("deploy.RegisterBefore: factory for type %q is nil", typ))
 	}
-	b.befores[typ] = fn
+	b.preparers[typ] = fn
 }
 
 // RegisterAfter adds (or replaces) an AfterExecute factory.
-func (b *Builder) RegisterAfter(typ string, fn AfterFactory) {
+func (b *Builder) RegisterReferee(typ string, fn RefereeFactory) {
 	if typ == "" {
 		panic("deploy.RegisterAfter: type is empty")
 	}
 	if fn == nil {
 		panic(fmt.Sprintf("deploy.RegisterAfter: factory for type %q is nil", typ))
 	}
-	b.afters[typ] = fn
+	b.referees[typ] = fn
 }
 
 // Build assembles the resource area and every agent in doc.
@@ -426,26 +426,26 @@ func (b *Builder) buildOne(ctx context.Context, id string, entry AgentEntry, res
 		Engine: eng,
 	}
 
-	if entry.Before != nil {
-		before, err := b.buildBefore(ctx, id, *entry.Before, resources, used)
+	for i, p := range entry.Prepare {
+		preparer, err := b.buildPreparer(ctx, id, i, p, resources, used)
 		if err != nil {
 			return nil, err
 		}
-		inst.opts = append(inst.opts, agent.WithBeforeExecute(before))
+		inst.opts = append(inst.opts, agent.WithPreparer(preparer))
 	}
-	for i, h := range entry.Hooks {
-		hook, err := b.buildHook(ctx, id, i, h, resources, used)
+	for i, o := range entry.Observe {
+		observer, err := b.buildObserver(ctx, id, i, o, resources, used)
 		if err != nil {
 			return nil, err
 		}
-		inst.opts = append(inst.opts, agent.WithHook(hook))
+		inst.opts = append(inst.opts, agent.WithObserver(observer))
 	}
-	for i, h := range entry.After {
-		after, err := b.buildAfter(ctx, id, i, h, resources, used)
+	for i, r := range entry.Referees {
+		referee, err := b.buildReferee(ctx, id, i, r, resources, used)
 		if err != nil {
 			return nil, err
 		}
-		inst.opts = append(inst.opts, agent.WithAfterExecute(after))
+		inst.opts = append(inst.opts, agent.WithReferee(referee))
 	}
 	if entry.Policy.MaxRevise > 0 {
 		inst.opts = append(inst.opts, agent.WithMaxRevise(entry.Policy.MaxRevise))
@@ -573,14 +573,14 @@ func resolveResourceRef(name string, ref DepRef, wantType string, resources map[
 	return item, nil
 }
 
-func (b *Builder) buildHook(ctx context.Context, id string, idx int, h HookEntry, resources map[string]builtResource, used map[string]bool) (agent.Hook, error) {
-	where := fmt.Sprintf("deploy config agents[%q].hooks[%d]", id, idx)
-	fn, ok := b.hooks[h.Type]
+func (b *Builder) buildObserver(ctx context.Context, id string, idx int, h ObserverEntry, resources map[string]builtResource, used map[string]bool) (agent.Observer, error) {
+	where := fmt.Sprintf("deploy config agents[%q].observe[%d]", id, idx)
+	fn, ok := b.observers[h.Type]
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: hook type %q is not registered", where, h.Type))
 	}
-	in, err := b.hookInput(ctx, h, resources, used, where)
+	in, err := b.factoryInput(ctx, h, resources, used, where)
 	if err != nil {
 		return nil, err
 	}
@@ -594,14 +594,14 @@ func (b *Builder) buildHook(ctx context.Context, id string, idx int, h HookEntry
 	return hook, nil
 }
 
-func (b *Builder) buildBefore(ctx context.Context, id string, h HookEntry, resources map[string]builtResource, used map[string]bool) (agent.BeforeExecute, error) {
-	where := fmt.Sprintf("deploy config agents[%q].before", id)
-	fn, ok := b.befores[h.Type]
+func (b *Builder) buildPreparer(ctx context.Context, id string, idx int, h PreparerEntry, resources map[string]builtResource, used map[string]bool) (agent.Preparer, error) {
+	where := fmt.Sprintf("deploy config agents[%q].prepare", id)
+	fn, ok := b.preparers[h.Type]
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: type %q is not registered", where, h.Type))
 	}
-	in, err := b.hookInput(ctx, h, resources, used, where)
+	in, err := b.factoryInput(ctx, h, resources, used, where)
 	if err != nil {
 		return nil, err
 	}
@@ -615,14 +615,14 @@ func (b *Builder) buildBefore(ctx context.Context, id string, h HookEntry, resou
 	return before, nil
 }
 
-func (b *Builder) buildAfter(ctx context.Context, id string, idx int, h HookEntry, resources map[string]builtResource, used map[string]bool) (agent.AfterExecute, error) {
-	where := fmt.Sprintf("deploy config agents[%q].after[%d]", id, idx)
-	fn, ok := b.afters[h.Type]
+func (b *Builder) buildReferee(ctx context.Context, id string, idx int, h RefereeEntry, resources map[string]builtResource, used map[string]bool) (agent.Referee, error) {
+	where := fmt.Sprintf("deploy config agents[%q].referees[%d]", id, idx)
+	fn, ok := b.referees[h.Type]
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: type %q is not registered", where, h.Type))
 	}
-	in, err := b.hookInput(ctx, h, resources, used, where)
+	in, err := b.factoryInput(ctx, h, resources, used, where)
 	if err != nil {
 		return nil, err
 	}
@@ -636,7 +636,7 @@ func (b *Builder) buildAfter(ctx context.Context, id string, idx int, h HookEntr
 	return after, nil
 }
 
-func (b *Builder) hookInput(ctx context.Context, h HookEntry, resources map[string]builtResource, used map[string]bool, where string) (HookInput, error) {
+func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources map[string]builtResource, used map[string]bool, where string) (HookInput, error) {
 	deps, err := b.resolveRefs(ctx, h.Deps, resources, used, where)
 	if err != nil {
 		return HookInput{}, err

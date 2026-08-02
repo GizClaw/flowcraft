@@ -72,7 +72,7 @@ func (f *fakeJSRuntime) Close() error {
 type fakeStore struct{ workspace string }
 
 type recordingHook struct {
-	agent.BaseHook
+	agent.BaseObserver
 	store *fakeStore
 }
 
@@ -81,8 +81,8 @@ type recordingBefore struct {
 	store  *fakeStore
 }
 
-func (r recordingBefore) Before(_ context.Context, _ agent.Identity, req *agent.Request) (*agent.Board, error) {
-	b := agent.NewBoard()
+func (r recordingBefore) Before(_ context.Context, _ agent.Identity, req *agent.Request, prev *agent.Board) (*agent.Board, error) {
+	b := prev.Clone()
 	b.AppendChannelMessage(agent.MainChannel, req.Message)
 	b.SetVar("window", r.window)
 	return b, nil
@@ -185,7 +185,7 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		return &fakeStore{workspace: ws.(string)}, nil
 	})
 
-	b.RegisterHook("fake_hook", func(_ context.Context, in deploy.HookInput) (agent.Hook, error) {
+	b.RegisterObserver("fake_hook", func(_ context.Context, in deploy.HookInput) (agent.Observer, error) {
 		type s struct {
 			Store string `yaml:"store"`
 		}
@@ -199,7 +199,7 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		captured.hook = h
 		return h, nil
 	})
-	b.RegisterBefore("fake_before", func(_ context.Context, in deploy.HookInput) (agent.BeforeExecute, error) {
+	b.RegisterPreparer("fake_before", func(_ context.Context, in deploy.HookInput) (agent.Preparer, error) {
 		type s struct {
 			Window int `yaml:"window"`
 		}
@@ -268,12 +268,12 @@ func TestParse_HappyPath(t *testing.T) {
 	if r.Engine.Kind != "graph" || r.Engine.Settings["max_steps"] != 8 {
 		t.Errorf("Engine = %+v", r.Engine)
 	}
-	if r.Before == nil || r.Before.Type != "fake_before" ||
-		r.Before.Deps["store"].Resource != "store" {
-		t.Errorf("Before = %+v", r.Before)
+	if len(r.Prepare) == 0 || r.Prepare[0].Type != "fake_before" ||
+		r.Prepare[0].Deps["store"].Resource != "store" {
+		t.Errorf("Prepare = %+v", r.Prepare)
 	}
-	if len(r.Hooks) != 1 || r.Hooks[0].Deps["store"].Resource != "store" {
-		t.Errorf("Hooks = %+v", r.Hooks)
+	if len(r.Observe) != 1 || r.Observe[0].Deps["store"].Resource != "store" {
+		t.Errorf("Observe = %+v", r.Observe)
 	}
 }
 
@@ -544,7 +544,7 @@ resources:
 agents:
   a:
     engine: {kind: inline}
-    hooks:
+    observe:
       - {type: fake_hook, deps: {store: store}}
 `)
 	res, err := tb.Build(context.Background(), doc)
@@ -716,7 +716,7 @@ agents:
 
 func TestBuild_UnknownHookTypeFails(t *testing.T) {
 	tb := newTestBuilder(t)
-	doc := parse(t, "version: v1\nagents:\n  a:\n    engine: {kind: inline}\n    hooks: [{type: ghost}]\n")
+	doc := parse(t, "version: v1\nagents:\n  a:\n    engine: {kind: inline}\n    observe: [{type: ghost}]\n")
 	if _, err := tb.Build(context.Background(), doc); err == nil {
 		t.Fatal("unregistered hook type must fail Build")
 	}
