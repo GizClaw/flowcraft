@@ -6,8 +6,8 @@ import "context"
 
 // Observer is a read-only lifecycle hook that lets callers react to
 // stages of a [Run] without affecting its outcome. It is the plumbing
-// behind agent's "history append on completion", "metric emit on
-// start", "transcript snapshot on interrupt", and similar patterns,
+// behind agent's "metric emit on start", "transcript snapshot on
+// interrupt", notifications, and similar best-effort patterns,
 // none of which agent hard-codes any more.
 //
 // Design rules:
@@ -21,9 +21,9 @@ import "context"
 //
 //  2. Observer methods MUST NOT return an error. Failures inside an
 //     observer are the observer's problem; they MUST NOT propagate
-//     into Run. When an observer needs to fail or alter a turn (guard
-//     hooks, moderation, disposition), use a [Referee] instead — its
-//     explicit decision semantics keep the flow auditable.
+//     into Run. Use a [Committer] for durable side effects that must
+//     report failure, or a [Referee] for policy decisions that alter
+//     whether a turn is accepted.
 //
 //  3. Observer methods are called synchronously from Run on the
 //     caller's goroutine. Blocking inside them blocks the run.
@@ -41,14 +41,13 @@ import "context"
 // Embed [BaseObserver] to satisfy the interface with no-op defaults
 // when only a subset of the lifecycle is interesting:
 //
-//	type historyAppender struct {
+//	type metricsObserver struct {
 //	    agent.BaseObserver
-//	    store sdk_history.History
+//	    metrics Metrics
 //	}
 //
-//	func (h *historyAppender) OnRunEnd(ctx context.Context, id agent.Identity, res *agent.Result) {
-//	    if res.Status != agent.StatusCompleted { return }
-//	    _ = h.store.Append(ctx, id.ContextID, res.Messages)
+//	func (o *metricsObserver) OnRunEnd(ctx context.Context, id agent.Identity, res *agent.Result) {
+//	    o.metrics.Record(res)
 //	}
 type Observer interface {
 	// OnRunStart fires after Run prepared the engine inputs but
@@ -88,14 +87,13 @@ type Observer interface {
 // Observer method. Embed it in custom observers that only care
 // about a subset of the lifecycle:
 //
-//	type historyAppender struct {
+//	type metricsObserver struct {
 //	    agent.BaseObserver
-//	    store sdk_history.History
+//	    metrics Metrics
 //	}
 //
-//	func (h *historyAppender) OnRunEnd(ctx context.Context, id agent.Identity, res *agent.Result) {
-//	    if res.Status != agent.StatusCompleted { return }
-//	    _ = h.store.Append(ctx, id.ContextID, res.Messages)
+//	func (o *metricsObserver) OnRunEnd(ctx context.Context, id agent.Identity, res *agent.Result) {
+//	    o.metrics.Record(res)
 //	}
 type BaseObserver struct{}
 
@@ -205,9 +203,12 @@ func safeRun(f func()) {
 //   - The returned board MUST be non-nil. Returning nil is a Run
 //     infrastructure error.
 //
-// Implementations are expected to be cheap and synchronous; long
-// async work (retrieval, IO) belongs in a wrapper that resolves
-// before Run.
+// Preparers may perform bounded I/O such as transcript loading or
+// retrieval. They run synchronously on the caller's goroutine, MUST
+// honor ctx cancellation and deadlines, and SHOULD apply their own
+// tighter timeout when calling a dependency whose latency is not
+// already bounded. A Preparer MUST NOT detach untracked background
+// work from the run.
 type Preparer interface {
 	Before(ctx context.Context, id Identity, req *Request, prev *Board) (*Board, error)
 }
@@ -253,19 +254,70 @@ func seedBoard(ctx context.Context, id Identity, req *Request, chain []Preparer)
 	return board, nil
 }
 
+// ---------- Committer (durable finalization) ----------
+
+// Committer persists or durably enqueues the final accepted result of a
+// run. It is the reliable side-effect boundary between [Referee] and
+// [Observer]:
+//
+//   - Referees decide whether the final result is accepted.
+//   - Committers make an accepted result durable and may fail the run.
+//   - Observers react best-effort after commitment has succeeded or
+//     failed.
+//
+// Committers run synchronously in registration order and only when the
+// final [Result] has Committed set. Revise attempts and discarded or
+// non-completed results are never committed. Implementations MUST treat
+// [Identity.RunID] as the operation's idempotency key because a caller
+// may retry after an ambiguous storage or transport failure.
+// A Referee's Revise request that the configured budget does not honor
+// is advisory and does not by itself clear Committed; Referees that
+// require the output to be withheld must also set DiscardOutput.
+//
+// A Committer MUST honor ctx cancellation and MUST NOT mutate req or
+// res. Multiple Committers do not form a transaction: if a later
+// Committer fails, earlier ones may already have succeeded. Prefer one
+// Committer that writes to a transactional store or durable outbox when
+// atomicity across side effects matters.
+type Committer interface {
+	Commit(ctx context.Context, id Identity, req *Request, res *Result) error
+}
+
+// CommitterFunc adapts a function to [Committer].
+type CommitterFunc func(ctx context.Context, id Identity, req *Request, res *Result) error
+
+// Commit calls f.
+func (f CommitterFunc) Commit(ctx context.Context, id Identity, req *Request, res *Result) error {
+	return f(ctx, id, req, res)
+}
+
+// commitResult runs Committers in registration order. The first error
+// stops the chain and is returned unchanged so callers can classify it.
+func commitResult(ctx context.Context, id Identity, req *Request, res *Result, committers []Committer) error {
+	for _, c := range committers {
+		if c == nil {
+			continue
+		}
+		if err := c.Commit(ctx, id, req, res); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ---------- Referee (decision) ----------
 
 // Referee is a decision-making lifecycle hook that can influence what
 // agent.Execute does at well-defined boundaries. It is the read-write
 // counterpart of [Observer]:
 //
-//   - Observers see what happened and emit side effects (logs,
-//     metrics, transcript persistence).
+//   - Committers persist accepted results and may return errors.
+//   - Observers see what happened and emit best-effort side effects.
 //   - Referees return a structured decision agent.Run interprets.
 //
 // Referees expose one decision point — [Referee.After] — which fires
-// after Execute returned but before [Run] commits the produced
-// messages to history (i.e., before any Observer's OnRunEnd). This
+// after Execute returned but before [Run] invokes [Committer] and
+// [Observer]. This
 // covers two real cases:
 //
 //  1. Disposition: a barge-in cause means the assistant was cut off
@@ -323,8 +375,7 @@ type Referee interface {
 //     makes it overridable.
 type Decision struct {
 	// DiscardOutput, when true, instructs Run to mark Result.Committed
-	// = false regardless of Status. Observers reading Committed
-	// (notably history-append observers) skip persistence on a
+	// = false regardless of Status. Committers are skipped for a
 	// discarded run.
 	//
 	// Setting DiscardOutput on a StatusCompleted run is allowed and
@@ -339,7 +390,9 @@ type Decision struct {
 	// defaults to 0, so by default Revise is recorded as a
 	// finalize_reason but does NOT trigger another engine call —
 	// callers must opt in explicitly to avoid runaway loops on
-	// faulty Referees.
+	// faulty Referees. An unhonored Revise does not change Committed;
+	// set DiscardOutput as well when the current output must not be
+	// persisted.
 	//
 	// When honoured the lifecycle is:
 	//

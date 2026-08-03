@@ -65,6 +65,10 @@ agents:
         settings:
           reason: barge-in
           causes: [user_input, user_cancel]
+    commit:
+      - type: fake_commit
+        deps:
+          store: store
     policy:
       max_revise: 2
       artifact_channels: [drafts]

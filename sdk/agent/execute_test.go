@@ -525,6 +525,182 @@ func (m *markObs) OnRunStart(context.Context, agent.Identity, *agent.Request) {
 	}
 }
 
+type endObserver struct {
+	agent.BaseObserver
+	onEnd func(*agent.Result)
+}
+
+func (o *endObserver) OnRunEnd(_ context.Context, _ agent.Identity, res *agent.Result) {
+	if o.onEnd != nil {
+		o.onEnd(res)
+	}
+}
+
+func TestRun_CommitterRunsAfterRefereeBeforeObserver(t *testing.T) {
+	var order []string
+	referee := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+		order = append(order, "referee")
+		return agent.Decision{}, nil
+	})
+	committer := agent.CommitterFunc(func(_ context.Context, id agent.Identity, _ *agent.Request, res *agent.Result) error {
+		if id.RunID == "" {
+			t.Error("Committer received empty RunID")
+		}
+		if !res.Committed {
+			t.Error("Committer received uncommitted result")
+		}
+		order = append(order, "committer")
+		return nil
+	})
+	observer := &endObserver{onEnd: func(*agent.Result) {
+		order = append(order, "observer")
+	}}
+
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
+		agent.WithObserver(observer),
+		agent.WithCommitter(committer),
+		agent.WithReferee(referee),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.Committed {
+		t.Fatal("successful Committer should preserve Committed=true")
+	}
+	if got, want := strings.Join(order, ","), "referee,committer,observer"; got != want {
+		t.Fatalf("lifecycle order = %q, want %q", got, want)
+	}
+}
+
+func TestRun_CommitterFailureReturnsResultAndNotifiesObserver(t *testing.T) {
+	boom := errors.New("commit boom")
+	var observed *agent.Result
+	observer := &endObserver{onEnd: func(res *agent.Result) {
+		observed = res
+	}}
+
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
+		agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			return boom
+		})),
+		agent.WithObserver(observer),
+	)
+	if !errors.Is(err, boom) {
+		t.Fatalf("Execute error = %v, want wrapped Committer error", err)
+	}
+	if res == nil {
+		t.Fatal("Execute returned nil Result after Committer failure")
+	}
+	if res.Committed {
+		t.Fatal("Committer failure should set Committed=false")
+	}
+	if got := res.State["finalize_reason"]; got != "commit_failed" {
+		t.Fatalf("finalize_reason = %v, want commit_failed", got)
+	}
+	if observed != res {
+		t.Fatal("Observer did not receive the failed-commit Result")
+	}
+	if observed.Committed {
+		t.Fatal("Observer saw Committed=true after Committer failure")
+	}
+}
+
+func TestRun_CommitterSkippedForUncommittedResult(t *testing.T) {
+	tests := map[string]struct {
+		engine  agent.Engine
+		referee agent.Referee
+	}{
+		"discarded": {
+			engine: completedEngine("ok"),
+			referee: deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+				return agent.Decision{DiscardOutput: true}, nil
+			}),
+		},
+		"failed": {
+			engine: agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+				return b, errors.New("engine failed")
+			}),
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			calls := 0
+			opts := []agent.ExecuteOption{
+				agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+					calls++
+					return nil
+				})),
+			}
+			if tc.referee != nil {
+				opts = append(opts, agent.WithReferee(tc.referee))
+			}
+			res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, tc.engine, newReq("hi"), opts...)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			if res.Committed {
+				t.Fatal("test setup produced committed Result")
+			}
+			if calls != 0 {
+				t.Fatalf("Committer calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestRun_CommitterRunsOnceAfterFinalReviseAttempt(t *testing.T) {
+	refereeCalls := 0
+	committerCalls := 0
+	referee := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+		refereeCalls++
+		return agent.Decision{Revise: refereeCalls == 1}, nil
+	})
+
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
+		agent.WithReferee(referee),
+		agent.WithMaxRevise(2),
+		agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			committerCalls++
+			return nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Attempts != 2 {
+		t.Fatalf("Attempts = %d, want 2", res.Attempts)
+	}
+	if committerCalls != 1 {
+		t.Fatalf("Committer calls = %d, want 1", committerCalls)
+	}
+}
+
+func TestRun_AgentScopedCommittersRunBeforeCallScoped(t *testing.T) {
+	var order []string
+	mark := func(name string) agent.Committer {
+		return agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			order = append(order, name)
+			return nil
+		})
+	}
+	ag := agent.Agent{
+		ID:         "a",
+		Committers: []agent.Committer{mark("agent-1"), mark("agent-2")},
+	}
+
+	_, err := agent.Execute(context.Background(), ag, completedEngine("ok"), newReq("hi"),
+		agent.WithCommitter(mark("call-1")),
+		agent.WithCommitter(mark("call-2")),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if got, want := strings.Join(order, ","), "agent-1,agent-2,call-1,call-2"; got != want {
+		t.Fatalf("Committer order = %q, want %q", got, want)
+	}
+}
+
 func TestRun_DeciderDiscardOutput(t *testing.T) {
 	dec := deciderFunc(func(_ context.Context, _ agent.Identity, _ *agent.Request, _ *agent.Result) (agent.Decision, error) {
 		return agent.Decision{DiscardOutput: true, Reason: "moderation"}, nil
@@ -551,8 +727,13 @@ func TestRun_DeciderError_RunReturnsError_ButObserverEndStillFires(t *testing.T)
 	})
 
 	rec := &recordingObs{}
+	commitCalls := 0
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, completedEngine("ok"), newReq("hi"),
 		agent.WithReferee(dec),
+		agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			commitCalls++
+			return nil
+		})),
 		agent.WithObserver(rec),
 	)
 	if !errors.Is(err, boom) {
@@ -563,6 +744,15 @@ func TestRun_DeciderError_RunReturnsError_ButObserverEndStillFires(t *testing.T)
 	}
 	if rec.endCalls != 1 {
 		t.Errorf("OnRunEnd must still fire on decider error; got %d", rec.endCalls)
+	}
+	if res.Committed {
+		t.Error("Referee error should leave Result uncommitted")
+	}
+	if got := res.State["finalize_reason"]; got != "referee_failed" {
+		t.Errorf("finalize_reason = %v, want referee_failed", got)
+	}
+	if commitCalls != 0 {
+		t.Errorf("Committer calls = %d, want 0 after Referee error", commitCalls)
 	}
 }
 
@@ -916,6 +1106,7 @@ func (r *reviseObs) OnRunEnd(_ context.Context, _ agent.Identity, res *agent.Res
 // NOT trigger another engine call when WithMaxRevise was not set.
 func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	var calls int
+	var commitCalls int
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		calls++
 		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
@@ -924,6 +1115,10 @@ func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	d := &reviseDecider{reason: "needs better citations"}
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
 		agent.WithReferee(d),
+		agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			commitCalls++
+			return nil
+		})),
 	)
 	if err != nil {
 		t.Fatalf("agent.Run: %v", err)
@@ -936,6 +1131,9 @@ func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	}
 	if got := res.State["finalize_reason"]; got != "needs better citations" {
 		t.Errorf("finalize_reason = %v, want recorded even when revise dropped", got)
+	}
+	if !res.Committed || commitCalls != 1 {
+		t.Errorf("unhonored Revise should remain committable: Committed=%v calls=%d", res.Committed, commitCalls)
 	}
 }
 

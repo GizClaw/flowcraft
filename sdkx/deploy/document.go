@@ -95,6 +95,10 @@ type AgentEntry struct {
 	// After are decision hooks, merged in document order.
 	Referees []RefereeEntry `yaml:"referees,omitempty"`
 
+	// Commit contains durable finalizers, run in document order after
+	// Referees accept the final result and before Observers finish it.
+	Commit []CommitterEntry `yaml:"commit,omitempty"`
+
 	// Policy is the per-call harness policy.
 	Policy struct {
 		MaxRevise        int      `yaml:"max_revise,omitempty"`
@@ -127,7 +131,7 @@ func (a *AgentEntry) UnmarshalYAML(node *yamlv3.Node) error {
 			switch node.Content[i].Value {
 			case "file":
 				hasFile = true
-			case "card", "tools", "engine", "deps", "prepare", "observe", "referees", "policy":
+			case "card", "tools", "engine", "deps", "prepare", "observe", "referees", "commit", "policy":
 				hasInline = true
 			}
 		}
@@ -224,8 +228,8 @@ func (d *DepRef) UnmarshalYAML(node *yamlv3.Node) error {
 
 // PreparerEntry is one link in the prepare chain: a factory type,
 // its dependencies, and its opaque factory-owned settings subtree.
-// All three lifecycle stages — prepare / observe / referee — share
-// the same data shape; the three names exist so the type system
+// All lifecycle stages — prepare / referee / commit / observe — share
+// the same data shape; the distinct names exist so the type system
 // catches a factory registered against the wrong stage.
 type PreparerEntry struct {
 	Type string `yaml:"type"`
@@ -243,6 +247,9 @@ type ObserverEntry = PreparerEntry
 
 // RefereeEntry is one decision hook.
 type RefereeEntry = PreparerEntry
+
+// CommitterEntry is one durable finalizer.
+type CommitterEntry = PreparerEntry
 
 // Opaque captures a YAML subtree without decoding it. Implementing
 // UnmarshalYAML stops the document's KnownFields(true) strictness
@@ -338,6 +345,7 @@ func hasInlineAgentValues(a AgentEntry) bool {
 		len(a.Prepare) != 0 ||
 		len(a.Observe) != 0 ||
 		len(a.Referees) != 0 ||
+		len(a.Commit) != 0 ||
 		a.Policy.MaxRevise != 0 ||
 		len(a.Policy.ArtifactChannels) != 0
 }
@@ -366,6 +374,12 @@ func validateAgentEntry(a AgentEntry, where string) error {
 		if err := r.validate(); err != nil {
 			return errdefs.Validation(fmt.Errorf(
 				"%s.referees[%d]: %w", where, i, err))
+		}
+	}
+	for i, c := range a.Commit {
+		if err := c.validate(); err != nil {
+			return errdefs.Validation(fmt.Errorf(
+				"%s.commit[%d]: %w", where, i, err))
 		}
 	}
 	if a.Policy.MaxRevise < 0 {

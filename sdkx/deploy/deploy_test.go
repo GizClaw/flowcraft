@@ -104,6 +104,16 @@ type recordingHook struct {
 	store *fakeStore
 }
 
+type recordingCommitter struct {
+	store *fakeStore
+	calls int
+}
+
+func (c *recordingCommitter) Commit(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+	c.calls++
+	return nil
+}
+
 type recordingBefore struct {
 	window int
 	store  *fakeStore
@@ -140,8 +150,9 @@ type testBuilder struct {
 // hookCapture records what the hook factories actually received, so
 // tests can assert that resource deps reach the hook layer.
 type hookCapture struct {
-	before *recordingBefore
-	hook   *recordingHook
+	before    *recordingBefore
+	hook      *recordingHook
+	committer *recordingCommitter
 }
 
 func newTestBuilder(t *testing.T) *testBuilder {
@@ -250,6 +261,14 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		}
 		captured.before = &out
 		return out, nil
+	})
+	b.RegisterCommitter("fake_commit", func(_ context.Context, in deploy.HookInput) (agent.Committer, error) {
+		committer := &recordingCommitter{}
+		if dep, ok := in.Dep("store"); ok {
+			committer.store, _ = dep.(*fakeStore)
+		}
+		captured.committer = committer
+		return committer, nil
 	})
 
 	return &testBuilder{Builder: b, graph: graph, inline: inline, journal: jr, hooks: captured}
@@ -480,6 +499,10 @@ func TestParse_HappyPath(t *testing.T) {
 	}
 	if len(r.Observe) != 1 || r.Observe[0].Deps["store"].Resource != "store" {
 		t.Errorf("Observe = %+v", r.Observe)
+	}
+	if len(r.Commit) != 1 || r.Commit[0].Type != "fake_commit" ||
+		r.Commit[0].Deps["store"].Resource != "store" {
+		t.Errorf("Commit = %+v", r.Commit)
 	}
 }
 
@@ -788,6 +811,9 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 	if execRes.Status != agent.StatusCompleted {
 		t.Errorf("Status = %q", execRes.Status)
 	}
+	if tb.hooks.committer == nil || tb.hooks.committer.calls != 1 {
+		t.Fatalf("Committer calls = %v, want 1", tb.hooks.committer)
+	}
 
 	minimal, ok := res.Instance("minimal")
 	if !ok {
@@ -800,6 +826,31 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 	}
 	if err := res.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestBuild_RejectsTypedNilCommitter(t *testing.T) {
+	b := agentFileBuilder(t)
+	b.RegisterCommitter("nil_commit", func(context.Context, deploy.HookInput) (agent.Committer, error) {
+		var committer *recordingCommitter
+		return committer, nil
+	})
+	doc := parse(t, `
+version: v1
+agents:
+  a:
+    engine: {kind: inline}
+    commit:
+      - {type: nil_commit}
+`)
+
+	_, err := b.Build(context.Background(), doc)
+	if err == nil || !errdefs.IsInternal(err) {
+		t.Fatalf("Build error = %v, want internal typed-nil error", err)
+	}
+	if !strings.Contains(err.Error(), `agents["a"].commit[0]`) ||
+		!strings.Contains(err.Error(), "returned nil") {
+		t.Fatalf("Build error = %v, want commit location and nil detail", err)
 	}
 }
 
@@ -1090,6 +1141,9 @@ func TestBuild_HookDepsReachResources(t *testing.T) {
 	if tb.hooks.hook == nil || tb.hooks.hook.store == nil {
 		t.Fatal("hook factory did not receive the store resource")
 	}
+	if tb.hooks.committer == nil || tb.hooks.committer.store == nil {
+		t.Fatal("committer factory did not receive the store resource")
+	}
 	// The hook's store is the same instance the resource area built,
 	// and it resolved its own workspace item dep.
 	store, err := deploy.ResourceAs[*fakeStore](res, "store")
@@ -1098,6 +1152,9 @@ func TestBuild_HookDepsReachResources(t *testing.T) {
 	}
 	if tb.hooks.hook.store != store {
 		t.Error("hook store should be the resource-area instance")
+	}
+	if tb.hooks.committer.store != store {
+		t.Error("committer store should be the resource-area instance")
 	}
 	if got := store.workspace; got != "fs:project" {
 		t.Errorf("store.workspace = %q, want fs:project", got)

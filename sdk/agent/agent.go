@@ -23,17 +23,22 @@ type Agent struct {
 	// run time; this list is the policy gate, not the wiring.
 	Tools []string `json:"tools,omitempty"`
 
-	// Hooks are agent-scoped lifecycle hooks. They fire on every
+	// Observers are agent-scoped read-only lifecycle hooks. They fire on every
 	// [Execute] of this agent value, before any hooks added via
 	// [WithObserver] for the specific call. JSON-skipped because hooks
 	// carry runtime state (channels, stores, …) that does not
 	// round-trip through serialisation.
 	Observers []Observer `json:"-"`
 
-	// After are agent-scoped decision hooks (see [Referee]). They
+	// Referees are agent-scoped decision hooks. They
 	// run before any Referee added via [WithReferee] for the
 	// specific call. Same JSON-skip rationale as Hooks.
 	Referees []Referee `json:"-"`
+
+	// Committers are agent-scoped durable finalizers. They persist
+	// accepted results after Referees run and before Observers receive
+	// OnRunEnd. Agent-scoped Committers run before per-call Committers.
+	Committers []Committer `json:"-"`
 }
 
 // AgentCard describes an agent's capabilities for discovery. Field

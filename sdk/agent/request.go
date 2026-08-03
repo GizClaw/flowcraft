@@ -148,24 +148,21 @@ type Result struct {
 	// emitted via dedicated board channels.
 	Artifacts []Artifact `json:"artifacts,omitempty"`
 
-	// Committed reports whether agent considered this turn's output
-	// suitable for downstream commit (transcript append, archival,
-	// …). It is determined by the Round B Referee chain
-	// (After) on top of agent's defaults:
+	// Committed reports whether this turn's output was accepted and,
+	// when Committers are registered, durably committed. Agent first
+	// derives commit eligibility from the Referee chain on top of its
+	// defaults:
 	//
 	//   - StatusCompleted defaults to Committed=true.
 	//   - All non-completed statuses default to Committed=false.
 	//   - Any Referee returning DiscardOutput=true forces
 	//     Committed=false.
-	//
-	// Hooks that persist transcript / artifact data are
-	// expected to short-circuit when Committed is false:
-	//
-	//	if !res.Committed { return }
+	//   - A Committer failure forces Committed=false and Execute
+	//     returns the Result together with that error.
 	//
 	// Independent of Committed, Result.Messages always reflects the
-	// engine's actual output; Committed is the *policy* signal, not
-	// a content flag.
+	// engine's actual output. When no Committer is registered,
+	// Committed reflects acceptance alone.
 	Committed bool `json:"committed"`
 
 	// State is a free-form bag carrying run-specific metadata. agent

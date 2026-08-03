@@ -22,7 +22,7 @@ import (
 // metrics, route engine envelopes to a bus, accumulate token usage,
 // …) lives outside Execute on:
 //
-//   - [Observer] / [Referee] for lifecycle hooks;
+//   - [Observer] / [Referee] / [Committer] for lifecycle hooks;
 //   - [Preparer] for engine-input shaping;
 //   - the caller-supplied [Host] (see [WithHost]) for
 //     every host-side capability the engine needs (event publishing,
@@ -50,22 +50,22 @@ import (
 //  8. Run the Referee chain ([Referee.After]) and merge the
 //     decisions; this fixes [Result.Committed] and any
 //     finalize_reason metadata.
-//  9. Fire OnRunEnd before returning. Hooks that persist data
-//     (transcript appenders, artifact archivers) MUST inspect
-//     Result.Committed and short-circuit when it is false.
+//  9. If the final result is committed, invoke the [Committer]
+//     chain to persist it.
+//  10. Fire Observer.OnRunEnd before returning.
 //
 // # Error contract
 //
 // Execute returns (res, nil) for every business outcome — completion,
 // interrupt, cancel, abort, failure. (nil, err) is reserved for
 // infrastructure failures the caller cannot reasonably recover from:
-// nil engine, empty Agent.ID, a Preparer that returned an error,
-// or a Referee that returned an error.
+// nil engine, empty Agent.ID, or a Preparer, Referee, or Committer
+// that returned an error.
 //
-// Hooks MUST NOT cause Execute to return an error; they are
-// advisory. After may return errors that surface back to the
-// caller — agent does not swap the error class so callers can
-// classify with errdefs.
+// Observers MUST NOT cause Execute to return an error; they are
+// advisory. Referee and Committer errors surface back to the caller —
+// agent does not swap their error class, so callers can classify with
+// errdefs.
 func Execute(
 	ctx context.Context,
 	ag Agent,
@@ -254,10 +254,23 @@ func Execute(
 	}
 
 	if execDecided {
+		res.Committed = false
+		res.State["finalize_reason"] = "referee_failed"
 		if obs != nil {
 			obs.OnRunEnd(ctx, id, res)
 		}
 		return res, decErr
+	}
+
+	if res.Committed && len(rc.committers) > 0 {
+		if err := commitResult(ctx, id, &req, res, rc.committers); err != nil {
+			res.Committed = false
+			res.State["finalize_reason"] = "commit_failed"
+			if obs != nil {
+				obs.OnRunEnd(ctx, id, res)
+			}
+			return res, fmt.Errorf("agent: commit result: %w", err)
+		}
 	}
 
 	if obs != nil {
@@ -384,6 +397,7 @@ type execConfig struct {
 	attributes       map[string]string
 	hooks            []Observer
 	afters           []Referee
+	committers       []Committer
 	resumeFrom       *Checkpoint
 	runID            string
 	parentRunID      string
@@ -404,6 +418,11 @@ func applyOptions(ag Agent, opts []ExecuteOption) execConfig {
 	for _, d := range ag.Referees {
 		if d != nil {
 			rc.afters = append(rc.afters, d)
+		}
+	}
+	for _, c := range ag.Committers {
+		if c != nil {
+			rc.committers = append(rc.committers, c)
 		}
 	}
 	for _, o := range opts {
@@ -504,6 +523,18 @@ func WithObserver(o Observer) ExecuteOption {
 	return func(rc *execConfig) {
 		if o != nil {
 			rc.hooks = append(rc.hooks, o)
+		}
+	}
+}
+
+// WithCommitter registers a [Committer] for this run. Committers run
+// in registration order after any [Agent.Committers], and only for the
+// final accepted result. The first error stops the chain and is
+// returned from [Execute].
+func WithCommitter(c Committer) ExecuteOption {
+	return func(rc *execConfig) {
+		if c != nil {
+			rc.committers = append(rc.committers, c)
 		}
 	}
 }

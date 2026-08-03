@@ -179,21 +179,22 @@ so configure its base directory separately when required.
 
 ### Lifecycle hooks
 
-Three hook sections, all sharing the same `{type, deps, settings}`
+Four hook sections, all sharing the same `{type, deps, settings}`
 shape:
 
-| Section    | Returns                                | Runs                                             | Use for                                               |
-| ---------- | -------------------------------------- | ------------------------------------------------ | ----------------------------------------------------- |
-| `prepare`  | `agent.Preparer` (mutates board)       | Before the engine, in declaration order          | Loading history, recall, system prompt, board seeding |
-| `observe`  | `agent.Observer` (read-only)           | Lifecycle events (start, interrupt, revise, end) | Logging, metrics, transcript persistence              |
-| `referees` | `agent.Referee` (returns a `Decision`) | After execution, merged by the harness           | Disposition, quality gates                            |
+| Section    | Returns                                | Runs                                               | Use for                                               |
+| ---------- | -------------------------------------- | -------------------------------------------------- | ----------------------------------------------------- |
+| `prepare`  | `agent.Preparer` (mutates board)       | Before the engine, in declaration order            | Loading history, recall, system prompt, board seeding |
+| `referees` | `agent.Referee` (returns a `Decision`) | After each attempt, merged by the harness           | Disposition, quality gates                            |
+| `commit`   | `agent.Committer` (returns an error)   | Once, after the final accepted result               | Durable transcript persistence or outbox enqueueing   |
+| `observe`  | `agent.Observer` (read-only)           | Lifecycle events (start, interrupt, revise, end)   | Logging, metrics, notifications, snapshots            |
 
 `policy` is **not** a hook — it is a per-call struct
 (`max_revise`, `artifact_channels`) read by the engine factory.
 
 Only `discard_on_interrupt` is built in. Every other hook kind must
-be registered on the `Builder` (`RegisterPreparer`, `RegisterObserver`,
-`RegisterReferee`).
+be registered on the `Builder` (`RegisterPreparer`, `RegisterReferee`,
+`RegisterCommitter`, `RegisterObserver`).
 
 ## First agent
 
@@ -391,8 +392,9 @@ agents:
     engine: { kind, settings }
     deps: { <engine dep name>: <DepRef> }
     prepare: [{ type, deps, settings }]
-    observe: [[same shape]]
     referees: [[same shape]]
+    commit: [[same shape]]
+    observe: [[same shape]]
     policy: { max_revise: N, artifact_channels: [...] }
 ```
 
@@ -473,7 +475,7 @@ agents:
             ref: default
         settings:
           max_hits: 8
-    observe:
+    commit:
       - type: transcript
         deps:
           store:
@@ -794,17 +796,18 @@ already have:
 | ---------------------- | ----------------------------------------------------------- | ------------------------------------- |
 | A new kind of resource | `MustRegisterResource`                                      | a new `kind` / `impl` pair            |
 | A new engine           | `agent.NewRegistry().MustRegister(...)`                     | a new `engine.kind`                   |
-| A new hook kind        | `RegisterPreparer` / `RegisterObserver` / `RegisterReferee` | a new `prepare/observe/referees.type` |
+| A new hook kind        | `RegisterPreparer` / `RegisterReferee` / `RegisterCommitter` / `RegisterObserver` | a new `prepare/referees/commit/observe.type` |
 | A host-owned value     | `RegisterSource`                                            | a new `source: <name>` dep ref        |
 
-The three hook factory types are distinct so a factory registered
+The four hook factory types are distinct so a factory registered
 against the wrong stage is a compile error — there is no implicit
 "if it has these methods it works":
 
 ```go
 b.RegisterPreparer("seed", seedFactory)
-b.RegisterObserver("audit", auditFactory)
 b.RegisterReferee("policy", policyFactory)
+b.RegisterCommitter("save", saveFactory)
+b.RegisterObserver("audit", auditFactory)
 ```
 
 Lifecycles are easy to test in isolation: each factory receives a
@@ -881,8 +884,8 @@ warms up its catalog on first use).
 - Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
-- Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Observer`,
-  `Referee`).
+- Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Referee`,
+  `Committer`, `Observer`).
 - A focused, on-disk example: `examples/voice-pipeline` (cloned via
   `cmd/claw` configs) and the inference guide's
   [deployment section](inference.md#deployment-configuration).

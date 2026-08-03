@@ -86,12 +86,13 @@
 // registered by the host before Build, or the document fails with
 // "is not registered".
 //
-// The three factory types are distinct so a factory registered
+// The four lifecycle factory types are distinct so a factory registered
 // against the wrong stage is a compile error:
 //
 //	b.RegisterPreparer("seed", seedFactory)     // then prepare: [{type: seed}]
 //	b.RegisterObserver("audit", auditFactory)   // then observe: [{type: audit}]
 //	b.RegisterReferee("policy", policyFactory)  // then referees: [{type: policy}]
+//	b.RegisterCommitter("save", saveFactory)    // then commit: [{type: save}]
 //	b.MustRegisterResource(workspaceFactory)    // Spec identifies kind + impl
 //
 // Lifecycle factories receive deps exactly like resources do, which
@@ -103,9 +104,9 @@
 //	    deps: {workspace: fs/project}
 //	    settings: {channel: drafts}
 //
-// # The four lifecycle sections
+// # The five lifecycle sections
 //
-// prepare / observe / referees are the three hook-shaped sections;
+// prepare / referees / commit / observe are the four hook-shaped sections;
 // policy is a struct, not a hook. They are not interchangeable:
 //
 //   - prepare is a chain of [agent.Preparer]. Each Preparer takes
@@ -114,16 +115,20 @@
 //     link receives a board freshly seeded with req.Message on
 //     MainChannel. Any error short-circuits the run.
 //
-//   - observe is a list of [agent.Observer]. Observers are
-//     read-only; their four methods (OnRunStart, OnInterrupt,
-//     OnRunRevise, OnRunEnd) cannot affect the outcome, and panics
-//     are swallowed. Use them for logging, metrics, transcript
-//     persistence.
-//
 //   - referees is a list of [agent.Referee]. Each Referee returns
 //     a [agent.Decision] which agent merges via OR over booleans
 //     and first-non-empty Reason. Use them for disposition
 //     (discard-on-interrupt) and quality control.
+//
+//   - commit is a chain of [agent.Committer]. It runs once for the
+//     final accepted result, and the first error fails the run. Use it
+//     for durable transcript persistence or outbox enqueueing.
+//
+//   - observe is a list of [agent.Observer]. Observers are
+//     read-only; their four methods (OnRunStart, OnInterrupt,
+//     OnRunRevise, OnRunEnd) cannot affect the outcome, and panics
+//     are swallowed. Use them for logging, metrics, notifications,
+//     and snapshots.
 //
 //   - policy is a struct, not a hook. It holds per-call harness
 //     knobs (max_revise, artifact_channels) and is read by the

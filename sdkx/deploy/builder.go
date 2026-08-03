@@ -111,6 +111,9 @@ type PreparerFactory func(ctx context.Context, in HookInput) (agent.Preparer, er
 // RefereeFactory builds one [agent.Referee] decision hook.
 type RefereeFactory func(ctx context.Context, in HookInput) (agent.Referee, error)
 
+// CommitterFactory builds one [agent.Committer] durable finalizer.
+type CommitterFactory func(ctx context.Context, in HookInput) (agent.Committer, error)
+
 // Instance is one assembled, runnable agent: identity + engine + the
 // per-call options the document declared. Execute appends the
 // document-derived options before the caller's own, so a call site
@@ -240,13 +243,14 @@ func (r *Result) fail(err error) error {
 // module plugs itself in as an impl, so a deployment links only the
 // integrations it actually names.
 type Builder struct {
-	engines   *agent.Registry
-	baseDir   string
-	sources   map[string]SourceFunc
-	resources map[resourceKey]registeredResource
-	preparers map[string]PreparerFactory
-	observers map[string]ObserverFactory
-	referees  map[string]RefereeFactory
+	engines    *agent.Registry
+	baseDir    string
+	sources    map[string]SourceFunc
+	resources  map[resourceKey]registeredResource
+	preparers  map[string]PreparerFactory
+	observers  map[string]ObserverFactory
+	referees   map[string]RefereeFactory
+	committers map[string]CommitterFactory
 }
 
 // BuilderOption configures a Builder.
@@ -279,12 +283,13 @@ func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
 		panic("deploy.NewBuilder: engine registry is nil")
 	}
 	b := &Builder{
-		engines:   engines,
-		sources:   make(map[string]SourceFunc),
-		resources: make(map[resourceKey]registeredResource),
-		preparers: make(map[string]PreparerFactory),
-		observers: make(map[string]ObserverFactory),
-		referees:  make(map[string]RefereeFactory),
+		engines:    engines,
+		sources:    make(map[string]SourceFunc),
+		resources:  make(map[resourceKey]registeredResource),
+		preparers:  make(map[string]PreparerFactory),
+		observers:  make(map[string]ObserverFactory),
+		referees:   make(map[string]RefereeFactory),
+		committers: make(map[string]CommitterFactory),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -380,6 +385,17 @@ func (b *Builder) RegisterReferee(typ string, fn RefereeFactory) {
 		panic(fmt.Sprintf("deploy.RegisterAfter: factory for type %q is nil", typ))
 	}
 	b.referees[typ] = fn
+}
+
+// RegisterCommitter adds (or replaces) a durable finalizer factory.
+func (b *Builder) RegisterCommitter(typ string, fn CommitterFactory) {
+	if typ == "" {
+		panic("deploy.RegisterCommitter: type is empty")
+	}
+	if fn == nil {
+		panic(fmt.Sprintf("deploy.RegisterCommitter: factory for type %q is nil", typ))
+	}
+	b.committers[typ] = fn
 }
 
 // Build assembles the resource area and every agent in doc.
@@ -666,6 +682,13 @@ func (b *Builder) buildOne(ctx context.Context, id string, entry AgentEntry, res
 		}
 		inst.opts = append(inst.opts, agent.WithReferee(referee))
 	}
+	for i, c := range entry.Commit {
+		committer, err := b.buildCommitter(ctx, id, i, c, resources, used)
+		if err != nil {
+			return nil, err
+		}
+		inst.opts = append(inst.opts, agent.WithCommitter(committer))
+	}
 	if entry.Policy.MaxRevise > 0 {
 		inst.opts = append(inst.opts, agent.WithMaxRevise(entry.Policy.MaxRevise))
 	}
@@ -904,6 +927,27 @@ func (b *Builder) buildReferee(ctx context.Context, id string, idx int, h Refere
 		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
 	}
 	return after, nil
+}
+
+func (b *Builder) buildCommitter(ctx context.Context, id string, idx int, h CommitterEntry, resources map[string]builtResource, used map[string]bool) (agent.Committer, error) {
+	where := fmt.Sprintf("deploy config agents[%q].commit[%d]", id, idx)
+	fn, ok := b.committers[h.Type]
+	if !ok {
+		return nil, errdefs.NotFound(fmt.Errorf(
+			"%s: type %q is not registered", where, h.Type))
+	}
+	in, err := b.factoryInput(ctx, h, resources, used, where)
+	if err != nil {
+		return nil, err
+	}
+	committer, err := fn(ctx, in)
+	if err != nil {
+		return nil, fmt.Errorf("%s (%q): %w", where, h.Type, err)
+	}
+	if isNil(committer) {
+		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
+	}
+	return committer, nil
 }
 
 func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources map[string]builtResource, used map[string]bool, where string) (HookInput, error) {

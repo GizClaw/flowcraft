@@ -53,15 +53,18 @@
 // [Execute] is intentionally minimalist: it mints the run id, builds
 // the board, dispatches lifecycle hooks, classifies the outcome into
 // [Status], and assembles [Result] — nothing else. Anything that
-// looks like "policy" lives on four orthogonal extension points:
+// looks like "policy" lives on five orthogonal extension points:
 //
 //   - [Preparer] (via [WithPreparer]) builds the initial
 //     board: load conversation history, run retrieval, materialise
 //     system prompts.
 //
+//   - [Committer] (via [WithCommitter] or [Agent.Committers]) makes a
+//     final accepted result durable and reports persistence failures.
+//
 //   - [Observer] (via [WithObserver] or [Agent.Observers]) reacts to run
-//     lifecycle events with no return value: transcript append,
-//     metrics, snapshots.
+//     lifecycle events with no return value: metrics, notifications,
+//     snapshots.
 //
 //   - [Referee] (via [WithReferee] or [Agent.Referees])
 //     influences classification at the finalize boundary: its merged
