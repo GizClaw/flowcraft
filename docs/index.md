@@ -11,9 +11,34 @@ retrieval, runtime orchestration, and voice. Source on
 
 ## Guides
 
+### Runtime
+
+- [Graph Runtime](guides/graph.md) — `sdk/graph`: declarative DAG
+  engine, node I/O roles, parallel branches, custom node types.
+- [Tool System](guides/tool.md) — `sdk/tool`: LLM function-calling
+  contract, Registry / Catalog / Executor split, middleware chain,
+  built-in tool adapters and the MCP bridge.
+- [Event Bus](guides/event.md) — `sdk/event`: subject-routed
+  publish/subscribe, in-process `MemoryBus`, host capability
+  wiring, backpressure policies.
+
+### State and execution boundary
+
+- [Workspace](guides/workspace.md) — `sdk/workspace`: per-run
+  filesystem abstraction, backends, capabilities, the
+  `state vs policy` split vs Sandbox.
+- [Sandbox](guides/sandbox.md) — `sdk/sandbox`: agent execution
+  boundary, env / net / resources policy, runners (local /
+  seatbelt / nsjail), decorators and approval.
+
+### Assembly
+
 - [Inference Runtime](guides/inference.md) — unified Generate / Embed /
   Transcription / Realtime: deployment config, routing, extensions,
   streaming, media intents, hot reload.
+- [Deployment Assembly](guides/deploy.md) — `sdkx/deploy`: one YAML
+  document + one `Build` call to wire shared resources, named agents,
+  engines, and lifecycle hooks.
 
 ## Migrations
 

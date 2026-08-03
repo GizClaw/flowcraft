@@ -2,18 +2,17 @@
 layout: default
 title: Inference Runtime
 ---
-
 # Inference Runtime Guide
 
 `sdk/inference` is FlowCraft's unified, instance-owned runtime for model
 inference. Every workload is one of four root operations:
 
-| Operation | Shape | Covers |
-| --- | --- | --- |
-| `Generate` | unary or finite stream | text, tools, JSON-schema output, image generation, speech synthesis, video generation |
-| `Embed` | unary | ordered items → ordered vectors (text and multimodal) |
-| `Transcription` | unary or session | speech recognition, long-lived ASR sessions |
-| `Realtime` | bidirectional session | full-duplex voice dialogue |
+| Operation       | Shape                  | Covers                                                                                |
+| --------------- | ---------------------- | ------------------------------------------------------------------------------------- |
+| `Generate`      | unary or finite stream | text, tools, JSON-schema output, image generation, speech synthesis, video generation |
+| `Embed`         | unary                  | ordered items → ordered vectors (text and multimodal)                                 |
+| `Transcription` | unary or session       | speech recognition, long-lived ASR sessions                                           |
+| `Realtime`      | bidirectional session  | full-duplex voice dialogue                                                            |
 
 Chat, image generation, and speech synthesis are **not** separate APIs —
 they are `Generate` requests with different intents, and share request,
@@ -426,13 +425,13 @@ Every operation emits one span at the `Runtime` funnel:
 
 Metrics (meter `flowcraft/inference`):
 
-| Metric | Labels | Meaning |
-| --- | --- | --- |
-| `executions.total` | operation, provider, model, status | calls by outcome |
-| `duration.seconds` | operation, provider, model | unary latency / stream time-to-close |
-| `errors.total` | operation, provider, model, error_kind | failures by `ErrorKind` |
-| `tokens.input` / `tokens.output` | provider, model | generate spend |
-| `tokens.input.cached` | provider, model | prompt-cache hits |
+| Metric                           | Labels                                 | Meaning                              |
+| -------------------------------- | -------------------------------------- | ------------------------------------ |
+| `executions.total`               | operation, provider, model, status     | calls by outcome                     |
+| `duration.seconds`               | operation, provider, model             | unary latency / stream time-to-close |
+| `errors.total`                   | operation, provider, model, error_kind | failures by `ErrorKind`              |
+| `tokens.input` / `tokens.output` | provider, model                        | generate spend                       |
+| `tokens.input.cached`            | provider, model                        | prompt-cache hits                    |
 
 A streaming span stays open for the life of the stream — it closes on
 `io.EOF`, on a terminal error, or on `Close`, and records the last
@@ -470,16 +469,16 @@ not on message text.
 All providers ship in `sdkx/inference/<name>` with per-package `doc.go`
 covering protocol quirks, catalog, spec schema, and extensions.
 
-| Driver | Generate | Embed | Transcription | Realtime | Secret(s) |
-| --- | :-: | :-: | :-: | :-: | --- |
-| `anthropic` | ✓ | | | | `api_key` |
-| `azure` | ✓ | ✓ | ✓ | | `api_key` |
-| `bytedance` | ✓ (+image/audio/video intents) | ✓ | ✓ (unary + session) | ✓ | `api_key`, `speech_api_key`, `access_key` / `secret_key` |
-| `deepseek` | ✓ | | | | `api_key` |
-| `kimi` | ✓ | | | | `api_key` |
-| `minimax` | ✓ (+image/audio/video intents) | | | | `api_key` |
-| `openai` | ✓ (+image/audio intents) | ✓ | ✓ | | `api_key` |
-| `qwen` | ✓ | ✓ (incl. multimodal) | | | `api_key` |
+| Driver      |            Generate            |        Embed         |    Transcription    | Realtime | Secret(s)                                                |
+| ----------- | :----------------------------: | :------------------: | :-----------------: | :------: | -------------------------------------------------------- |
+| `anthropic` |               ✓                |                      |                     |          | `api_key`                                                |
+| `azure`     |               ✓                |          ✓           |          ✓          |          | `api_key`                                                |
+| `bytedance` | ✓ (+image/audio/video intents) |          ✓           | ✓ (unary + session) |    ✓     | `api_key`, `speech_api_key`, `access_key` / `secret_key` |
+| `deepseek`  |               ✓                |                      |                     |          | `api_key`                                                |
+| `kimi`      |               ✓                |                      |                     |          | `api_key`                                                |
+| `minimax`   | ✓ (+image/audio/video intents) |                      |                     |          | `api_key`                                                |
+| `openai`    |    ✓ (+image/audio intents)    |          ✓           |          ✓          |          | `api_key`                                                |
+| `qwen`      |               ✓                | ✓ (incl. multimodal) |                     |          | `api_key`                                                |
 
 Each factory merges your `spec.models` over its built-in catalog, so new
 provider releases are usable the day they ship by declaring them
