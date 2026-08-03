@@ -11,7 +11,7 @@ import (
 // ResourceKind is the deploy resource category this package builds. A
 // dep bound to the whole resource must declare this as its Type; a dep
 // spelled "name/item" binds one workspace.Workspace out of it, because
-// [Registry] is a container (see [Registry.Lookup]).
+// [Registry] is a container (see [Registry.ResolveItem]).
 const ResourceKind = "workspace.Registry"
 
 // ResourceSettings is the settings subtree of a workspace resource.
@@ -24,16 +24,28 @@ type ResourceSettings struct {
 	deploy.SubDocument `yaml:",inline"`
 }
 
-// DeployResource builds a workspace [Registry] as a sdkx/deploy resource,
-// which makes the deployment document its owner: Result.Close closes
-// the Registry, and every consumer binding it — or an item inside it —
-// shares one instance.
+type deployFactory struct{}
+
+// NewDeployFactory returns the YAML deploy factory for workspace registries.
 //
 // Registration is opt-in from the host so that sdkx/deploy never
 // imports this package:
 //
-//	b.RegisterResource(config.ResourceKind, "yaml", config.DeployResource)
-func DeployResource(ctx context.Context, in deploy.ResourceInput) (any, error) {
+//	b.RegisterResource(config.NewDeployFactory())
+func NewDeployFactory() deploy.ResourceFactory {
+	return deployFactory{}
+}
+
+func (deployFactory) Spec() deploy.ResourceSpec {
+	return deploy.ResourceSpec{
+		Kind:     ResourceKind,
+		Impl:     "yaml",
+		ItemType: "workspace.Workspace",
+	}
+}
+
+// New builds a workspace [Registry] owned by the deployment result.
+func (deployFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
 	settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(

@@ -37,6 +37,6 @@
 // instead of on the first command.
 //
 // Whoever builds the Registry closes it: sdkx/deploy does so for a Registry
-// declared in its resource area via [DeployResource], and the application
+// declared in its resource area via [NewDeployFactory], and the application
 // does so for one it built and exposed through [Registry.Resolve].
 package config

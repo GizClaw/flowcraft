@@ -28,7 +28,7 @@ type Document struct {
 
 	// Resources is the resource area: named, shared, long-lived
 	// objects built once per Build and handed to whatever binds them.
-	// Each entry names a (kind, impl) constructor registered on the
+	// Each entry names a (kind, impl) factory registered on the
 	// Builder, so a module's own config package — inference, tool,
 	// workspace, sandbox — plugs in as one impl without this package
 	// importing it.
@@ -44,15 +44,19 @@ type Document struct {
 // (matched against DepSpec.Type when a whole resource is bound), an
 // implementation selector, that impl's dependencies on other
 // resources, and its opaque settings subtree (strictly decoded by the
-// registered ResourceFunc).
+// registered ResourceFactory).
 type ResourceEntry struct {
 	Kind string `yaml:"kind"`
 	Impl string `yaml:"impl"`
 
-	// Deps binds constructor-defined dependency names to other
-	// resources (or host sources). The constructor type-asserts each
-	// value: unlike an engine, a resource has no static DepSpec list
-	// to validate against.
+	// Export keeps a resource as an application-facing root even when no
+	// agent, hook, or other resource binds it. The application retrieves
+	// the value through ResourceAs and owns it through Result.Close.
+	Export bool `yaml:"export,omitempty"`
+
+	// Deps binds factory-declared dependency names to other resources
+	// (or host sources). Build validates these names and required
+	// bindings against ResourceSpec.Deps before calling the factory.
 	Deps map[string]DepRef `yaml:"deps,omitempty"`
 
 	Settings *Opaque `yaml:"settings,omitempty"`
@@ -332,8 +336,8 @@ func Parse(data []byte) (Document, error) {
 // DecodeSettings decodes an opaque settings subtree into T with
 // KnownFields strictness: unknown keys are errors, so a YAML typo
 // fails the build instead of silently dropping policy. Every
-// resource / hook / before / after factory SHOULD decode through
-// this helper.
+// resource / hook / before / after factory SHOULD decode through this
+// helper.
 //
 // A nil node decodes as the zero value of T.
 func DecodeSettings[T any](node *yamlv3.Node) (T, error) {

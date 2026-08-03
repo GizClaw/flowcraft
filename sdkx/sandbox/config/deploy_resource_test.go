@@ -2,14 +2,17 @@ package config_test
 
 import (
 	"context"
+	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coresandbox "github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	sandboxconfig "github.com/GizClaw/flowcraft/sdkx/sandbox/config"
 	workspaceconfig "github.com/GizClaw/flowcraft/sdkx/workspace/config"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type resourceEngineFactory struct {
@@ -50,10 +53,12 @@ func TestRegistriesWireAsDeployResources(t *testing.T) {
 	}
 
 	builder := deploy.NewBuilder(engineRegistry)
-	builder.RegisterResource(
-		workspaceconfig.ResourceKind, "yaml", workspaceconfig.DeployResource)
-	builder.RegisterResource(
-		sandboxconfig.ResourceKind, "yaml", sandboxconfig.DeployResource)
+	if err := builder.RegisterResource(workspaceconfig.NewDeployFactory()); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.RegisterResource(sandboxconfig.NewDeployFactory()); err != nil {
+		t.Fatal(err)
+	}
 
 	// "boxes" sorts before "files" so a lexical build order would try
 	// to construct the sandbox registry before its workspaces exist.
@@ -98,6 +103,12 @@ agents:
 	}
 	defer func() { _ = result.Close() }()
 
+	if _, err := deploy.ResourceAs[*workspaceconfig.Registry](result, "files"); err != nil {
+		t.Fatalf("ResourceAs(files): %v", err)
+	}
+	if _, err := deploy.ResourceAs[*sandboxconfig.Registry](result, "boxes"); err != nil {
+		t.Fatalf("ResourceAs(boxes): %v", err)
+	}
 	if _, ok := factory.got.Deps["workspace"].(workspace.Workspace); !ok {
 		t.Fatalf("workspace dep = %T, want workspace.Workspace",
 			factory.got.Deps["workspace"])
@@ -108,15 +119,61 @@ agents:
 	}
 }
 
-// TestSandboxResourceRejectsWrongWorkspacesDep pins the type assertion
-// in the adapter: deps are resolved by name, so a document binding the
-// wrong resource kind must fail at build time rather than at the first
-// command.
-func TestSandboxResourceRejectsWrongWorkspacesDep(t *testing.T) {
-	_, err := sandboxconfig.DeployResource(context.Background(), deploy.ResourceInput{
-		Deps: map[string]any{sandboxconfig.WorkspacesDep: "not a registry"},
-	})
-	if err == nil {
-		t.Fatal("want error for a non-Registry workspaces dep")
+func TestDeployFactorySpec(t *testing.T) {
+	got := sandboxconfig.NewDeployFactory().Spec()
+	want := deploy.ResourceSpec{
+		Kind: sandboxconfig.ResourceKind,
+		Impl: "yaml",
+		Deps: []deploy.ResourceDepSpec{{
+			Name:     sandboxconfig.WorkspacesDep,
+			Type:     workspaceconfig.ResourceKind,
+			Required: true,
+		}},
+		ItemType: "sandbox.Runner",
 	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Spec() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDeployFactoryNewRejectsInvalidDependenciesAndSettings(t *testing.T) {
+	factory := sandboxconfig.NewDeployFactory()
+	settings := sandboxSettingsNode(t, `
+inline:
+  version: v1
+  sandboxes: {}
+`)
+	for name, deps := range map[string]map[string]any{
+		"missing": nil,
+		"wrong type": {
+			sandboxconfig.WorkspacesDep: "not a registry",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := factory.New(context.Background(), deploy.ResourceInput{
+				Settings: settings,
+				Deps:     deps,
+			})
+			if err == nil || !errdefs.IsValidation(err) {
+				t.Fatalf("New error = %v, want validation", err)
+			}
+		})
+	}
+	if _, err := factory.New(context.Background(), deploy.ResourceInput{
+		Settings: sandboxSettingsNode(t, "unknown: true\n"),
+		Deps: map[string]any{
+			sandboxconfig.WorkspacesDep: (*workspaceconfig.Registry)(nil),
+		},
+	}); err == nil {
+		t.Fatal("New accepted an unknown resource setting")
+	}
+}
+
+func sandboxSettingsNode(t *testing.T, input string) *yamlv3.Node {
+	t.Helper()
+	var node yamlv3.Node
+	if err := yamlv3.Unmarshal([]byte(input), &node); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	return node.Content[0]
 }

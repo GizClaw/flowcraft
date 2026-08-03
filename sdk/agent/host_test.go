@@ -57,6 +57,82 @@ func TestNoopHost_ReportUsageDropsAndReturnsNil(t *testing.T) {
 	}
 }
 
+type eventBusHost struct {
+	agent.NoopHost
+	bus event.Bus
+}
+
+func (h *eventBusHost) EventBus() event.Bus { return h.bus }
+
+func TestEventBusFromHost(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	t.Run("supported", func(t *testing.T) {
+		got, ok := agent.EventBusFromHost(&eventBusHost{bus: bus})
+		if !ok || got != bus {
+			t.Fatalf("EventBusFromHost = (%v, %v), want (%v, true)", got, ok, bus)
+		}
+	})
+
+	t.Run("unsupported", func(t *testing.T) {
+		if got, ok := agent.EventBusFromHost(agent.NoopHost{}); ok || got != nil {
+			t.Fatalf("EventBusFromHost(NoopHost) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("typed nil host", func(t *testing.T) {
+		var host *eventBusHost
+		if got, ok := agent.EventBusFromHost(host); ok || got != nil {
+			t.Fatalf("EventBusFromHost(typed nil) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("typed nil bus", func(t *testing.T) {
+		var bus *event.MemoryBus
+		if got, ok := agent.EventBusFromHost(&eventBusHost{bus: bus}); ok || got != nil {
+			t.Fatalf("EventBusFromHost(typed nil bus) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("decorators preserve without claiming capability", func(t *testing.T) {
+		base := &eventBusHost{bus: bus}
+		wrapped := agent.ComposeHost(base,
+			func(inner agent.Host) agent.Host { return agent.HostFuncs{Inner: inner} },
+			agent.TracingMiddleware(),
+		)
+		if _, ok := wrapped.(agent.EventBusProvider); ok {
+			t.Fatal("decorated Host must not claim EventBusProvider directly")
+		}
+		got, ok := agent.EventBusFromHost(wrapped)
+		if !ok || got != bus {
+			t.Fatalf("EventBusFromHost(decorated) = (%v, %v), want (%v, true)", got, ok, bus)
+		}
+	})
+
+	t.Run("unsupported decorator remains unsupported", func(t *testing.T) {
+		wrapped := agent.HostFuncs{Inner: agent.NoopHost{}}
+		if _, ok := any(wrapped).(agent.EventBusProvider); ok {
+			t.Fatal("HostFuncs must not claim EventBusProvider")
+		}
+		if got, ok := agent.EventBusFromHost(wrapped); ok || got != nil {
+			t.Fatalf("EventBusFromHost(wrapped NoopHost) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+
+	t.Run("custom publisher hides inner event surface", func(t *testing.T) {
+		wrapped := agent.HostFuncs{
+			Inner: &eventBusHost{bus: bus},
+			PublishFn: func(context.Context, event.Envelope) error {
+				return nil
+			},
+		}
+		if got, ok := agent.EventBusFromHost(wrapped); ok || got != nil {
+			t.Fatalf("EventBusFromHost(custom publisher) = (%v, %v), want (nil, false)", got, ok)
+		}
+	})
+}
+
 func TestEngineFunc_NilSafe(t *testing.T) {
 	// Documented contract: a zero-value EngineFunc returns
 	// (board, nil) without panicking.

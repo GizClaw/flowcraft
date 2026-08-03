@@ -170,9 +170,12 @@ func (g *Graph) executeWave(ctx context.Context, run agent.Run, host agent.Host,
 func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, slot *nodeSlot) (skipped bool, err error) {
 	nodeID := slot.def.ID
 	info := run.Info()
-	// Run identity is ambient from here down: handlers, script
-	// bindings, and stream adapters pull it from the context.
+	// Run identity and Host are ambient from here down: handlers,
+	// dispatchers, script bindings, and stream adapters pull them from
+	// this per-invocation derived context. The caller's context is never
+	// mutated.
 	ctx = agent.WithRunInfo(ctx, info)
+	ctx = agent.ContextWithHost(ctx, host)
 
 	if slot.skipCondition != nil {
 		skip, err := slot.skipCondition.Evaluate(board)

@@ -1,5 +1,5 @@
 // Package config loads versioned YAML declarations of named workspace
-// resources. The loader itself knows nothing about agents; [DeployResource]
+// resources. The loader itself knows nothing about agents; [NewDeployFactory]
 // is the opt-in adapter that lets a sdkx/deploy document own a Registry, and
 // [Registry.Resolve] covers the opposite case where the host owns it.
 //

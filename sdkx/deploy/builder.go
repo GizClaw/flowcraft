@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -18,18 +20,33 @@ import (
 // closed by [Result.Close]: a source is borrowed, not owned.
 type SourceFunc func(ctx context.Context, ref string) (any, error)
 
-// ResourceInput is what a resource constructor receives: its own
-// opaque settings subtree plus the already-built values its Deps
-// named.
+// ResourceDepSpec declares one named dependency accepted by a resource
+// factory.
+type ResourceDepSpec struct {
+	Name     string `json:"name" yaml:"name"`
+	Type     string `json:"type" yaml:"type"`
+	Required bool   `json:"required,omitempty" yaml:"required,omitempty"`
+}
+
+// ResourceSpec is the static declaration for one resource factory.
+// Kind and Impl form its registry key. ItemType is non-empty when the
+// resource is a container whose named items can be resolved.
+type ResourceSpec struct {
+	Kind     string            `json:"kind" yaml:"kind"`
+	Impl     string            `json:"impl" yaml:"impl"`
+	Deps     []ResourceDepSpec `json:"deps,omitempty" yaml:"deps,omitempty"`
+	ItemType string            `json:"item_type,omitempty" yaml:"item_type,omitempty"`
+}
+
+// ResourceInput is what a resource factory receives: its own opaque
+// settings subtree plus the already-built values declared by its Spec.
 type ResourceInput struct {
 	// Settings is the impl-owned subtree. Decode it with
 	// [DecodeSettings] so unknown keys fail the build.
 	Settings *yamlv3.Node
 
 	// Deps holds resolved dependencies keyed by the names used in the
-	// document. A constructor type-asserts each value itself; there
-	// is no static spec to validate against, so a mismatch should be
-	// reported as errdefs.Validation.
+	// document. The factory type-asserts concrete Go values itself.
 	Deps map[string]any
 }
 
@@ -39,16 +56,17 @@ func (in ResourceInput) Dep(name string) (any, bool) {
 	return v, ok
 }
 
-// ResourceFunc builds one shared resource. Construction happens once
-// per Build; every consumer binding the resource receives the same
-// instance.
+// ResourceFactory declares and builds one shared resource.
 //
 // A returned value implementing io.Closer is closed by
 // [Result.Close] in reverse construction order. A constructor that
 // returns something it does NOT want closed should wrap it.
-type ResourceFunc func(ctx context.Context, in ResourceInput) (any, error)
+type ResourceFactory interface {
+	Spec() ResourceSpec
+	New(ctx context.Context, in ResourceInput) (any, error)
+}
 
-// RefLookup is implemented by CONTAINER resources that hold named
+// ItemResolver is implemented by container resources that hold named
 // items — a workspace registry's workspaces, a sandbox registry's
 // runners. The scalar dep form "resource/item" resolves through it.
 //
@@ -56,8 +74,8 @@ type ResourceFunc func(ctx context.Context, in ResourceInput) (any, error)
 // Assembly or a memory instance is a single object: models and tools
 // are selected inside a call, not bound per dep. Those bind whole,
 // and binding them with an item name is a build error.
-type RefLookup interface {
-	Lookup(ref string) (any, bool)
+type ItemResolver interface {
+	ResolveItem(ref string) (any, bool)
 }
 
 // HookInput is what a hook / before / after factory receives.
@@ -111,25 +129,21 @@ func (i *Instance) Execute(ctx context.Context, req agent.Request, opts ...agent
 }
 
 // builtResource is the internal build-time view of one shared
-// resource: the constructed value plus its declared kind (used to
-// match dep categories when a whole resource is bound).
+// resource: the constructed value plus its complete static spec.
 type builtResource struct {
-	kind  string
+	spec  ResourceSpec
 	value any
 }
 
 // Result is Build's output: the assembled instances plus the built
-// resource area. The result owns resource lifecycle — call Close when
-// the application shuts down, and do not close entries of Resources
-// directly.
+// resource area. The result owns resource lifecycle; call Close when
+// the application shuts down.
 type Result struct {
-	Instances map[string]*Instance
-
-	// Resources exposes the built resources by name for
-	// application-side wiring. Treat as read-only.
-	Resources map[string]any
-
-	closers []builtCloser // construction order; closed in reverse
+	instances map[string]*Instance
+	resources map[string]any
+	closers   []builtCloser // construction order; closed in reverse
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type builtCloser struct {
@@ -144,25 +158,75 @@ type builtCloser struct {
 //
 // Values bound through a source are NOT closed: the host owns them.
 func (r *Result) Close() error {
-	var errs []error
-	for i := len(r.closers) - 1; i >= 0; i-- {
-		if err := r.closers[i].value.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("resource %q close: %w", r.closers[i].name, err))
-		}
+	if r == nil {
+		return nil
 	}
-	return errors.Join(errs...)
+	r.closeOnce.Do(func() {
+		var errs []error
+		for i := len(r.closers) - 1; i >= 0; i-- {
+			if err := r.closers[i].value.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("resource %q close: %w", r.closers[i].name, err))
+			}
+		}
+		r.closeErr = errors.Join(errs...)
+	})
+	return r.closeErr
 }
 
-// closeBestEffort is the failure-path counterpart of Close: build
-// errors must not leak already-constructed pools / connections.
-func (r *Result) closeBestEffort() {
-	_ = r.Close()
+// Instance returns the assembled instance with id.
+func (r *Result) Instance(id string) (*Instance, bool) {
+	if r == nil {
+		return nil, false
+	}
+	inst, ok := r.instances[id]
+	return inst, ok
+}
+
+// InstanceNames returns assembled instance IDs in stable order.
+func (r *Result) InstanceNames() []string {
+	if r == nil {
+		return nil
+	}
+	return sortedKeys(r.instances)
+}
+
+// ResourceNames returns built resource names in stable order.
+func (r *Result) ResourceNames() []string {
+	if r == nil {
+		return nil
+	}
+	return sortedKeys(r.resources)
+}
+
+// ResourceAs returns a named resource as T. Missing names are
+// errdefs.NotFound; Go type mismatches are errdefs.Validation.
+func ResourceAs[T any](r *Result, name string) (T, error) {
+	var zero T
+	if r == nil {
+		return zero, errdefs.NotFoundf("deploy result: resource %q is not found", name)
+	}
+	v, ok := r.resources[name]
+	if !ok {
+		return zero, errdefs.NotFoundf("deploy result: resource %q is not found", name)
+	}
+	out, ok := v.(T)
+	if !ok {
+		return zero, errdefs.Validationf(
+			"deploy result: resource %q has Go type %T, want %v",
+			name, v, reflect.TypeFor[T]())
+	}
+	return out, nil
+}
+
+// fail joins a build error with every cleanup error.
+func (r *Result) fail(err error) error {
+	return errors.Join(err, r.Close())
 }
 
 // Builder turns validated Documents into a Result. It binds:
 //
 //   - an [agent.Registry] of engine factories (engine.kind lookup);
-//   - named resource (kind, impl) constructors — how a resources
+//   - named resource (kind, impl) factories — how a resources
 //     entry becomes a shared instance;
 //   - named dep SOURCES — how a host-owned instance enters;
 //   - named hook / before / after factories.
@@ -174,7 +238,7 @@ func (r *Result) closeBestEffort() {
 type Builder struct {
 	engines   *agent.Registry
 	sources   map[string]SourceFunc
-	resources map[resourceKey]ResourceFunc
+	resources map[resourceKey]registeredResource
 	preparers map[string]PreparerFactory
 	observers map[string]ObserverFactory
 	referees  map[string]RefereeFactory
@@ -183,6 +247,11 @@ type Builder struct {
 type resourceKey struct {
 	kind string
 	impl string
+}
+
+type registeredResource struct {
+	spec    ResourceSpec
+	factory ResourceFactory
 }
 
 // NewBuilder returns a Builder over the given engine registry with
@@ -195,7 +264,7 @@ func NewBuilder(engines *agent.Registry) *Builder {
 	b := &Builder{
 		engines:   engines,
 		sources:   make(map[string]SourceFunc),
-		resources: make(map[resourceKey]ResourceFunc),
+		resources: make(map[resourceKey]registeredResource),
 		preparers: make(map[string]PreparerFactory),
 		observers: make(map[string]ObserverFactory),
 		referees:  make(map[string]RefereeFactory),
@@ -204,17 +273,46 @@ func NewBuilder(engines *agent.Registry) *Builder {
 	return b
 }
 
-// RegisterResource adds (or replaces) the constructor for a
-// (kind, impl) pair — e.g. ("workspace.Registry", "yaml").
-// Empty fields and nil funcs are programming bugs.
-func (b *Builder) RegisterResource(kind, impl string, fn ResourceFunc) {
-	if kind == "" || impl == "" {
-		panic("deploy.RegisterResource: kind/impl is empty")
+// RegisterResource registers factory by its (kind, impl) pair.
+func (b *Builder) RegisterResource(factory ResourceFactory) error {
+	if isNil(factory) {
+		return errdefs.Validationf("deploy.Builder: nil resource factory")
 	}
-	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterResource: constructor for %q/%q is nil", kind, impl))
+	spec := cloneResourceSpec(factory.Spec())
+	if err := validateResourceSpec(spec); err != nil {
+		return err
 	}
-	b.resources[resourceKey{kind, impl}] = fn
+	key := resourceKey{spec.Kind, spec.Impl}
+	if _, dup := b.resources[key]; dup {
+		return errdefs.Validationf(
+			"deploy.Builder: resource kind %q impl %q already registered",
+			spec.Kind, spec.Impl)
+	}
+	b.resources[key] = registeredResource{spec: spec, factory: factory}
+	return nil
+}
+
+// MustRegisterResource is RegisterResource that panics on error.
+func (b *Builder) MustRegisterResource(factory ResourceFactory) {
+	if err := b.RegisterResource(factory); err != nil {
+		panic(err)
+	}
+}
+
+// ResourceSpecs returns defensive copies of all registered resource
+// specs in stable kind-then-impl order.
+func (b *Builder) ResourceSpecs() []ResourceSpec {
+	out := make([]ResourceSpec, 0, len(b.resources))
+	for _, registered := range b.resources {
+		out = append(out, cloneResourceSpec(registered.spec))
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind == out[j].Kind {
+			return out[i].Impl < out[j].Impl
+		}
+		return out[i].Kind < out[j].Kind
+	})
+	return out
 }
 
 // RegisterSource adds (or replaces) the resolver for a dep source
@@ -229,7 +327,7 @@ func (b *Builder) RegisterSource(name string, fn SourceFunc) {
 	b.sources[name] = fn
 }
 
-// RegisterHook adds (or replaces) a lifecycle hook factory.
+// RegisterObserver adds (or replaces) a lifecycle hook factory.
 func (b *Builder) RegisterObserver(typ string, fn ObserverFactory) {
 	if typ == "" {
 		panic("deploy.RegisterHook: type is empty")
@@ -240,7 +338,7 @@ func (b *Builder) RegisterObserver(typ string, fn ObserverFactory) {
 	b.observers[typ] = fn
 }
 
-// RegisterBefore adds (or replaces) a BeforeExecute factory.
+// RegisterPreparer adds (or replaces) a BeforeExecute factory.
 func (b *Builder) RegisterPreparer(typ string, fn PreparerFactory) {
 	if typ == "" {
 		panic("deploy.RegisterBefore: type is empty")
@@ -251,7 +349,7 @@ func (b *Builder) RegisterPreparer(typ string, fn PreparerFactory) {
 	b.preparers[typ] = fn
 }
 
-// RegisterAfter adds (or replaces) an AfterExecute factory.
+// RegisterReferee adds (or replaces) an AfterExecute factory.
 func (b *Builder) RegisterReferee(typ string, fn RefereeFactory) {
 	if typ == "" {
 		panic("deploy.RegisterAfter: type is empty")
@@ -269,9 +367,10 @@ func (b *Builder) RegisterReferee(typ string, fn RefereeFactory) {
 // Agents follow in sorted id order. On any failure the
 // already-constructed resources are closed before the error returns.
 //
-// A resource nothing binds is a build error — dead config is treated
-// like a typo. "Binds" counts every consumer: another resource, an
-// agent's engine dep, or a hook dep.
+// A resource nothing binds is a build error unless it declares
+// export: true for application retrieval through ResourceAs. "Binds"
+// counts every consumer: another resource, an agent's engine dep, or
+// a hook dep.
 func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	if err := doc.Validate(); err != nil {
 		return nil, err
@@ -283,41 +382,39 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	res := &Result{
-		Instances: make(map[string]*Instance, len(doc.Agents)),
-		Resources: make(map[string]any, len(doc.Resources)),
+		instances: make(map[string]*Instance, len(doc.Agents)),
+		resources: make(map[string]any, len(doc.Resources)),
 	}
 	used := make(map[string]bool, len(doc.Resources))
 	built := make(map[string]builtResource, len(doc.Resources))
 
 	for _, name := range order {
 		entry := doc.Resources[name]
-		fn, ok := b.resources[resourceKey{entry.Kind, entry.Impl}]
+		registered, ok := b.resources[resourceKey{entry.Kind, entry.Impl}]
 		if !ok {
-			res.closeBestEffort()
-			return nil, errdefs.NotFound(fmt.Errorf(
+			return nil, res.fail(errdefs.NotFound(fmt.Errorf(
 				"deploy config resources[%q]: no constructor registered for kind %q impl %q",
+				name, entry.Kind, entry.Impl)))
+		}
+		spec := registered.spec
+		where := fmt.Sprintf("deploy config resources[%q]", name)
+		deps, err := b.resolveResourceDeps(ctx, spec, entry.Deps, built, used, where)
+		if err != nil {
+			return nil, res.fail(err)
+		}
+		v, err := registered.factory.New(ctx, ResourceInput{Settings: entry.Settings.Node(), Deps: deps})
+		if err != nil {
+			return nil, res.fail(fmt.Errorf(
+				"deploy config resources[%q] (%s/%s): %w",
+				name, entry.Kind, entry.Impl, err))
+		}
+		if isNil(v) {
+			return nil, res.fail(errdefs.Internalf(
+				"deploy config resources[%q]: constructor for %s/%s returned nil",
 				name, entry.Kind, entry.Impl))
 		}
-		deps, err := b.resolveRefs(ctx, entry.Deps, built, used,
-			fmt.Sprintf("deploy config resources[%q]", name))
-		if err != nil {
-			res.closeBestEffort()
-			return nil, err
-		}
-		v, err := fn(ctx, ResourceInput{Settings: entry.Settings.Node(), Deps: deps})
-		if err != nil {
-			res.closeBestEffort()
-			return nil, fmt.Errorf("deploy config resources[%q] (%s/%s): %w",
-				name, entry.Kind, entry.Impl, err)
-		}
-		if v == nil {
-			res.closeBestEffort()
-			return nil, errdefs.Internalf(
-				"deploy config resources[%q]: constructor for %s/%s returned nil",
-				name, entry.Kind, entry.Impl)
-		}
-		built[name] = builtResource{kind: entry.Kind, value: v}
-		res.Resources[name] = v
+		built[name] = builtResource{spec: spec, value: v}
+		res.resources[name] = v
 		if c, ok := v.(io.Closer); ok {
 			res.closers = append(res.closers, builtCloser{name, c})
 		}
@@ -326,17 +423,15 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	for _, id := range sortedKeys(doc.Agents) {
 		inst, err := b.buildOne(ctx, id, doc.Agents[id], built, used)
 		if err != nil {
-			res.closeBestEffort()
-			return nil, err
+			return nil, res.fail(err)
 		}
-		res.Instances[id] = inst
+		res.instances[id] = inst
 	}
 
 	for _, name := range order {
-		if !used[name] {
-			res.closeBestEffort()
-			return nil, errdefs.Validation(fmt.Errorf(
-				"deploy config resources[%q]: nothing binds this resource", name))
+		if !used[name] && !doc.Resources[name].Export {
+			return nil, res.fail(errdefs.Validation(fmt.Errorf(
+				"deploy config resources[%q]: nothing binds this resource", name)))
 		}
 	}
 	return res, nil
@@ -493,9 +588,48 @@ func (b *Builder) resolveDeps(ctx context.Context, id string, spec agent.EngineS
 	return deps, nil
 }
 
-// resolveRefs binds a dep map that has no static spec to check
-// against — a resource's or a hook's. Type checking is the
-// constructor's job there.
+// resolveResourceDeps validates a resource entry against its factory
+// spec and resolves each declared binding.
+func (b *Builder) resolveResourceDeps(
+	ctx context.Context,
+	spec ResourceSpec,
+	refs map[string]DepRef,
+	resources map[string]builtResource,
+	used map[string]bool,
+	where string,
+) (map[string]any, error) {
+	declared := make(map[string]ResourceDepSpec, len(spec.Deps))
+	for _, ds := range spec.Deps {
+		declared[ds.Name] = ds
+	}
+
+	deps := make(map[string]any, len(refs))
+	for _, name := range sortedKeys(refs) {
+		ds, ok := declared[name]
+		if !ok {
+			return nil, errdefs.Validation(fmt.Errorf(
+				"%s.deps[%q]: resource %s/%s declares no such dep (declared: %v)",
+				where, name, spec.Kind, spec.Impl, resourceDepNames(spec.Deps)))
+		}
+		v, err := b.resolveRef(ctx, name, refs[name], ds.Type, resources, used, where)
+		if err != nil {
+			return nil, err
+		}
+		deps[name] = v
+	}
+	for _, ds := range spec.Deps {
+		if ds.Required {
+			if _, ok := deps[ds.Name]; !ok {
+				return nil, errdefs.NotFound(fmt.Errorf(
+					"%s: required dep %q (%s) is not bound",
+					where, ds.Name, ds.Type))
+			}
+		}
+	}
+	return deps, nil
+}
+
+// resolveRefs binds a hook dep map, which has no static spec.
 func (b *Builder) resolveRefs(ctx context.Context, refs map[string]DepRef, resources map[string]builtResource, used map[string]bool, where string) (map[string]any, error) {
 	if len(refs) == 0 {
 		return nil, nil
@@ -534,13 +668,9 @@ func (b *Builder) resolveRef(ctx context.Context, name string, ref DepRef, wantT
 // resolveResourceRef binds a dep from a document resource.
 //
 // With Ref empty the whole resource is bound; when the consumer
-// declares a type (an engine's DepSpec) the resource's kind must
+// declares a type, the resource's kind must
 // match it, which is what makes a resource the right category for the
-// slot. With Ref set the resource must be a container implementing
-// [RefLookup] and the named item is bound; there the resource kind
-// names the CONTAINER (workspace.Registry) while the dep type names
-// the ITEM (workspace.Workspace), so a successful Lookup is the
-// validation.
+// slot. With Ref set, ItemType is checked before ResolveItem is called.
 func resolveResourceRef(name string, ref DepRef, wantType string, resources map[string]builtResource, used map[string]bool, where string) (any, error) {
 	br, ok := resources[ref.Resource]
 	if !ok {
@@ -549,25 +679,41 @@ func resolveResourceRef(name string, ref DepRef, wantType string, resources map[
 			where, name, ref.Resource, sortedKeys(resources)))
 	}
 	if ref.Ref == "" {
-		if wantType != "" && br.kind != wantType {
+		if wantType != "" && br.spec.Kind != wantType {
 			return nil, errdefs.Validation(fmt.Errorf(
 				"%s.deps[%q]: resource %q has kind %q, dep expects %q",
-				where, name, ref.Resource, br.kind, wantType))
+				where, name, ref.Resource, br.spec.Kind, wantType))
 		}
 		used[ref.Resource] = true
 		return br.value, nil
 	}
-	container, ok := br.value.(RefLookup)
-	if !ok {
+	if br.spec.ItemType == "" {
 		return nil, errdefs.Validation(fmt.Errorf(
-			"%s.deps[%q]: resource %q (kind %q) is not a container, item %q cannot be resolved",
-			where, name, ref.Resource, br.kind, ref.Ref))
+			"%s.deps[%q]: resource %q (kind %q) is not a container: no item type is declared; item %q cannot be resolved",
+			where, name, ref.Resource, br.spec.Kind, ref.Ref))
 	}
-	item, ok := container.Lookup(ref.Ref)
+	if wantType != "" && br.spec.ItemType != wantType {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"%s.deps[%q]: resource %q has item type %q, dep expects %q",
+			where, name, ref.Resource, br.spec.ItemType, wantType))
+	}
+	container, ok := br.value.(ItemResolver)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"%s.deps[%q]: resource %q factory %s/%s declares item type %q but returned %T without ItemResolver",
+			where, name, ref.Resource, br.spec.Kind, br.spec.Impl,
+			br.spec.ItemType, br.value)
+	}
+	item, ok := container.ResolveItem(ref.Ref)
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s.deps[%q]: resource %q has no item %q",
 			where, name, ref.Resource, ref.Ref))
+	}
+	if isNil(item) {
+		return nil, errdefs.Internalf(
+			"%s.deps[%q]: resource %q factory %s/%s resolved item %q as nil",
+			where, name, ref.Resource, br.spec.Kind, br.spec.Impl, ref.Ref)
 	}
 	used[ref.Resource] = true
 	return item, nil
@@ -650,6 +796,63 @@ func depNames(specs []agent.DepSpec) []string {
 		out[i] = ds.Name
 	}
 	return out
+}
+
+func resourceDepNames(specs []ResourceDepSpec) []string {
+	out := make([]string, len(specs))
+	for i, ds := range specs {
+		out[i] = ds.Name
+	}
+	return out
+}
+
+func cloneResourceSpec(spec ResourceSpec) ResourceSpec {
+	spec.Deps = append([]ResourceDepSpec(nil), spec.Deps...)
+	return spec
+}
+
+func validateResourceSpec(spec ResourceSpec) error {
+	if spec.Kind == "" {
+		return errdefs.Validationf("deploy resource factory: kind is empty")
+	}
+	if spec.Impl == "" {
+		return errdefs.Validationf(
+			"deploy resource factory %q: impl is empty", spec.Kind)
+	}
+	seen := make(map[string]struct{}, len(spec.Deps))
+	for i, dep := range spec.Deps {
+		if dep.Name == "" {
+			return errdefs.Validationf(
+				"deploy resource factory %s/%s: deps[%d].name is empty",
+				spec.Kind, spec.Impl, i)
+		}
+		if dep.Type == "" {
+			return errdefs.Validationf(
+				"deploy resource factory %s/%s: dep %q type is empty",
+				spec.Kind, spec.Impl, dep.Name)
+		}
+		if _, dup := seen[dep.Name]; dup {
+			return errdefs.Validationf(
+				"deploy resource factory %s/%s: duplicate dep %q",
+				spec.Kind, spec.Impl, dep.Name)
+		}
+		seen[dep.Name] = struct{}{}
+	}
+	return nil
+}
+
+func isNil(v any) bool {
+	if v == nil {
+		return true
+	}
+	value := reflect.ValueOf(v)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func sortedKeys[V any](m map[string]V) []string {

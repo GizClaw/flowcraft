@@ -92,6 +92,17 @@ type streamAPI struct {
 	subscribeNode func(raw any) (map[string]any, error)
 }
 
+type eventBusHost struct {
+	agent.NoopHost
+	bus event.Bus
+}
+
+func (h *eventBusHost) Publish(ctx context.Context, env event.Envelope) error {
+	return h.bus.Publish(ctx, env)
+}
+
+func (h *eventBusHost) EventBus() event.Bus { return h.bus }
+
 func streamBinding(t *testing.T, env *agent.ScriptEnv) streamAPI {
 	t.Helper()
 	m, ok := env.Bindings["stream"].(map[string]any)
@@ -108,6 +119,7 @@ func streamBinding(t *testing.T, env *agent.ScriptEnv) streamAPI {
 func TestStreamBridge_SubscribeReceivesNodeEvents(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
+	host := &eventBusHost{bus: bus}
 
 	rt := fakeRuntime{exec: func(ctx context.Context, _, _ string, env *agent.ScriptEnv) (*agent.ScriptSignal, error) {
 		stream := streamBinding(t, env)
@@ -129,7 +141,7 @@ func TestStreamBridge_SubscribeReceivesNodeEvents(t *testing.T) {
 		env2.SetNodeID("n")
 		env2.SetHeader(event.HeaderRunID, "run-1")
 		env2.SetHeader(event.HeaderAgentID, "test-agent")
-		if err := bus.Publish(ctx, env2); err != nil {
+		if err := host.Publish(ctx, env2); err != nil {
 			t.Errorf("publish: %v", err)
 			return nil, nil
 		}
@@ -145,10 +157,9 @@ func TestStreamBridge_SubscribeReceivesNodeEvents(t *testing.T) {
 	}}
 	reg := scriptRegistry(t, ScriptNodeDeps{
 		Runtimes: map[string]agent.ScriptRuntime{"fake": rt},
-		Bus:      bus,
 	})
 	g := singleScriptGraph(t, reg, ScriptConfig{Runtime: "fake", Source: "x"})
-	if err := executeGraph(g, agent.NewBoard()); err != nil {
+	if err := executeGraphWithHost(g, host, agent.NewBoard()); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 }
@@ -156,6 +167,7 @@ func TestStreamBridge_SubscribeReceivesNodeEvents(t *testing.T) {
 func TestStreamBridge_SubscriptionFlushedAfterExec(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })
+	host := &eventBusHost{bus: bus}
 
 	var leakedNext func() bool
 	rt := fakeRuntime{exec: func(_ context.Context, _, _ string, env *agent.ScriptEnv) (*agent.ScriptSignal, error) {
@@ -172,10 +184,9 @@ func TestStreamBridge_SubscriptionFlushedAfterExec(t *testing.T) {
 	}}
 	reg := scriptRegistry(t, ScriptNodeDeps{
 		Runtimes: map[string]agent.ScriptRuntime{"fake": rt},
-		Bus:      bus,
 	})
 	g := singleScriptGraph(t, reg, ScriptConfig{Runtime: "fake", Source: "x"})
-	if err := executeGraph(g, agent.NewBoard()); err != nil {
+	if err := executeGraphWithHost(g, host, agent.NewBoard()); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if leakedNext == nil {

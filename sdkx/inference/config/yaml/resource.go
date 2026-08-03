@@ -21,49 +21,56 @@ type ResourceSettings struct {
 	deploy.SubDocument `yaml:",inline"`
 }
 
-// NewDeployResource returns a sdkx/deploy resource constructor for
-// inference.
+type deployFactory struct {
+	factories map[string]config.Factory
+	resolvers map[string]config.SecretResolver
+}
+
+// NewDeployFactory returns the YAML deploy factory for inference assemblies.
 //
-// Unlike workspace or sandbox, this is a constructor rather than a
-// plain ResourceFunc: provider factories and secret resolvers are Go
-// values that YAML cannot name. A deployment declares WHICH providers
+// Provider factories and secret resolvers are Go values that YAML cannot
+// name. A deployment declares WHICH providers
 // it wants and where their credentials live; the host decides which
 // driver code and which secret backends exist in the binary. That
 // split is what keeps credentials out of the document — profiles carry
 // [config.SecretRef], never values.
 //
-//	b.RegisterResource(yaml.ResourceKind, "yaml",
-//	    yaml.NewDeployResource(factories, resolvers))
-func NewDeployResource(
+//	b.RegisterResource(yaml.NewDeployFactory(factories, resolvers))
+func NewDeployFactory(
 	factories map[string]config.Factory,
 	resolvers map[string]config.SecretResolver,
-) deploy.ResourceFunc {
-	return func(ctx context.Context, in deploy.ResourceInput) (any, error) {
-		settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
-		if err != nil {
-			return nil, errdefs.Validation(fmt.Errorf(
-				"inference config: decode resource settings: %w", err))
-		}
-		data, err := settings.YAML()
-		if err != nil {
-			return nil, err
-		}
-		document, err := decode(data)
-		if err != nil {
-			return nil, errdefs.Validation(err)
-		}
-		builder, err := config.NewBuilder(factories, resolvers)
-		if err != nil {
-			return nil, errdefs.Validation(fmt.Errorf(
-				"inference config: %w", err))
-		}
-		assembly, err := builder.NewAssembly(ctx, document)
-		if err != nil {
-			return nil, err
-		}
-		// Return a pointer: Assembly is a two-field value, and every
-		// consumer must observe the same Runtime rather than a copy of
-		// the struct wrapping it.
-		return &assembly, nil
+) deploy.ResourceFactory {
+	return &deployFactory{factories: factories, resolvers: resolvers}
+}
+
+func (*deployFactory) Spec() deploy.ResourceSpec {
+	return deploy.ResourceSpec{Kind: ResourceKind, Impl: "yaml"}
+}
+
+func (f *deployFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
+	settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"inference config: decode resource settings: %w", err))
 	}
+	data, err := settings.YAML()
+	if err != nil {
+		return nil, err
+	}
+	document, err := decode(data)
+	if err != nil {
+		return nil, errdefs.Validation(err)
+	}
+	builder, err := config.NewBuilder(f.factories, f.resolvers)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"inference config: %w", err))
+	}
+	assembly, err := builder.NewAssembly(ctx, document)
+	if err != nil {
+		return nil, err
+	}
+	// Return a pointer: Assembly is a two-field value, and every consumer
+	// must observe the same Runtime rather than a copy of its wrapper.
+	return &assembly, nil
 }

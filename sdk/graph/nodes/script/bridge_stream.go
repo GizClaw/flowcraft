@@ -68,11 +68,16 @@ func (r *streamCleanupRegistry) flush() {
 //	stream.subscribe_node({ node_id: "planner", run_id: "...", buffer_size: 256 })
 //	stream.subscribe_node({ node_ids: ["planner", "executor"] })
 //	    -> { next, next_timeout_ms, current, close }
-func newStreamBridge(defaultRunID string, bus event.Bus) bindings.BindingFunc {
+func newStreamBridge(defaultRunID string, host agent.Host) bindings.BindingFunc {
 	return func(callCtx context.Context) (string, any) {
 		if callCtx == nil {
 			callCtx = context.Background()
 		}
+		// The bridge is built afresh for every script-node invocation.
+		// Borrow the bus from that invocation's Host so subscription and
+		// Host.Publish share one event surface; the bridge never owns or
+		// closes the bus.
+		bus, _ := agent.EventBusFromHost(host)
 
 		return "stream", map[string]any{
 			"subscribe_node": func(raw any) (map[string]any, error) {

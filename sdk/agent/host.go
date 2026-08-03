@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -32,6 +33,63 @@ type Host interface {
 	UserPrompter
 	Checkpointer
 	UsageReporter
+}
+
+// EventBusProvider is an optional Host capability for consumers that
+// need to subscribe to the same event surface used by [Publisher].
+//
+// The Host (or its owning engine/runtime) owns the returned bus and its
+// lifecycle. Consumers only borrow it: they may subscribe and publish
+// through the Host, but must not close the bus.
+//
+// EventBusProvider is intentionally not part of [Host]. Hosts that only
+// publish events do not need to manufacture a subscribable bus, and
+// [NoopHost] deliberately does not implement this capability.
+type EventBusProvider interface {
+	EventBus() event.Bus
+}
+
+type hostUnwrapper interface {
+	unwrapHost() Host
+}
+
+// EventBusFromHost returns h's borrowed event bus when h implements
+// [EventBusProvider]. It treats nil interfaces, typed-nil hosts, and
+// typed-nil buses as unsupported. Built-in Host decorators preserve the
+// optional capability without claiming EventBusProvider themselves.
+func EventBusFromHost(h Host) (event.Bus, bool) {
+	const maxWrapperDepth = 64
+	for range maxWrapperDepth {
+		if isNilInterface(h) {
+			return nil, false
+		}
+		if provider, ok := h.(EventBusProvider); ok && !isNilInterface(provider) {
+			bus := provider.EventBus()
+			if isNilInterface(bus) {
+				return nil, false
+			}
+			return bus, true
+		}
+		unwrapper, ok := h.(hostUnwrapper)
+		if !ok || isNilInterface(unwrapper) {
+			return nil, false
+		}
+		h = unwrapper.unwrapHost()
+	}
+	return nil, false
+}
+
+func isNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return rv.IsNil()
+	default:
+		return false
+	}
 }
 
 // Publisher emits a single event envelope.
@@ -418,7 +476,7 @@ type hostCtxKey struct{}
 // argument is the contract; the context-carried copy is purely a
 // transport for downstream extensions that lack a Host parameter.
 func ContextWithHost(ctx context.Context, h Host) context.Context {
-	if h == nil {
+	if isNilInterface(h) {
 		return ctx
 	}
 	return context.WithValue(ctx, hostCtxKey{}, h)
@@ -438,5 +496,8 @@ func HostFromContext(ctx context.Context) (Host, bool) {
 		return nil, false
 	}
 	h, ok := ctx.Value(hostCtxKey{}).(Host)
-	return h, ok
+	if !ok || isNilInterface(h) {
+		return nil, false
+	}
+	return h, true
 }

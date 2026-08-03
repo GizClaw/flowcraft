@@ -19,11 +19,13 @@ type ResourceSettings struct {
 	deploy.SubDocument `yaml:",inline"`
 }
 
-// NewDeployResource returns a sdkx/deploy resource constructor over
-// registry and deps.
+type deployFactory struct {
+	builder *Builder
+}
+
+// NewDeployFactory returns the YAML deploy factory over a tool builder.
 //
-// This is a constructor rather than a plain ResourceFunc because the
-// tool registry, the approver and the audit sink are Go values a
+// The tool registry, approver and audit sink are Go values a
 // document cannot name: YAML declares the POLICY over tools (scopes,
 // middleware order, which sources to attach) while the host decides
 // which tools exist and who approves gated calls.
@@ -33,25 +35,31 @@ type ResourceSettings struct {
 //
 //	tb := config.NewBuilder(registry, config.Deps{Approver: ask})
 //	mcp.Register(tb)
-//	b.RegisterResource(config.ResourceKind, "yaml", config.NewDeployResource(tb))
-func NewDeployResource(builder *Builder) deploy.ResourceFunc {
-	return func(ctx context.Context, in deploy.ResourceInput) (any, error) {
-		if builder == nil {
-			return nil, errdefs.Validationf("tool config: builder is nil")
-		}
-		settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
-		if err != nil {
-			return nil, errdefs.Validation(fmt.Errorf(
-				"tool config: decode resource settings: %w", err))
-		}
-		data, err := settings.YAML()
-		if err != nil {
-			return nil, err
-		}
-		doc, err := Parse(data)
-		if err != nil {
-			return nil, err
-		}
-		return builder.Build(ctx, doc)
+//	b.RegisterResource(config.NewDeployFactory(tb))
+func NewDeployFactory(builder *Builder) deploy.ResourceFactory {
+	return &deployFactory{builder: builder}
+}
+
+func (*deployFactory) Spec() deploy.ResourceSpec {
+	return deploy.ResourceSpec{Kind: ResourceKind, Impl: "yaml"}
+}
+
+func (f *deployFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
+	if f.builder == nil {
+		return nil, errdefs.Validationf("tool config: builder is nil")
 	}
+	settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
+	if err != nil {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"tool config: decode resource settings: %w", err))
+	}
+	data, err := settings.YAML()
+	if err != nil {
+		return nil, err
+	}
+	doc, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	return f.builder.Build(ctx, doc)
 }

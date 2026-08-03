@@ -51,9 +51,13 @@ func singleScriptGraph(t *testing.T, reg *graph.Registry, config any) *graph.Gra
 }
 
 func executeGraph(g *graph.Graph, board *agent.Board) error {
+	return executeGraphWithHost(g, agent.NoopHost{}, board)
+}
+
+func executeGraphWithHost(g *graph.Graph, host agent.Host, board *agent.Board) error {
 	_, err := g.Execute(context.Background(),
 		agent.Run{Identity: agent.Identity{AgentID: "test-agent", RunID: "run-1"}},
-		agent.NoopHost{}, board)
+		host, board)
 	return err
 }
 

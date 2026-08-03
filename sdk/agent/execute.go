@@ -452,6 +452,11 @@ func WithToolAllowList(names []string) ExecuteOption {
 // logger) and a host implementation is the cleanest place to keep
 // that state.
 //
+// A host that also supports event subscriptions may implement the
+// optional [EventBusProvider]. The host or engine owns that bus and
+// closes it at the end of its lifecycle; engine consumers only borrow
+// it and must not close it.
+//
 // Embed [NoopHost] in your host struct and override only the
 // methods you actually need:
 //

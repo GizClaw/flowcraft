@@ -1,0 +1,598 @@
+package graphagent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/tool"
+	inferenceconfig "github.com/GizClaw/flowcraft/sdkx/inference/config"
+	toolconfig "github.com/GizClaw/flowcraft/sdkx/tool/config"
+)
+
+type recordingRuntime struct {
+	calls atomic.Int32
+}
+
+func (r *recordingRuntime) Exec(context.Context, string, string, *agent.ScriptEnv) (*agent.ScriptSignal, error) {
+	r.calls.Add(1)
+	return &agent.ScriptSignal{Type: "done"}, nil
+}
+
+func TestFactorySpec(t *testing.T) {
+	spec := NewFactory().Spec()
+	if spec.Kind != Kind {
+		t.Fatalf("kind = %q, want %q", spec.Kind, Kind)
+	}
+	if !spec.Capabilities.SupportsResume ||
+		!spec.Capabilities.EmitsCheckpoint ||
+		!spec.Capabilities.EmitsUserPrompt {
+		t.Fatalf("capabilities = %+v", spec.Capabilities)
+	}
+	want := []agent.DepSpec{
+		{Name: DepInference, Type: "inference.Assembly"},
+		{Name: DepTools, Type: toolconfig.ResourceKind},
+		{Name: DepWorkspace, Type: "workspace.Workspace"},
+		{Name: DepSandbox, Type: "sandbox.Runner"},
+		{Name: DepScriptRuntime, Type: "agent.ScriptRuntime"},
+	}
+	if !reflect.DeepEqual(spec.Deps, want) {
+		t.Fatalf("deps = %#v, want %#v", spec.Deps, want)
+	}
+	data, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip agent.EngineSpec
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(roundTrip, spec) {
+		t.Fatalf("wire round trip = %#v, want %#v", roundTrip, spec)
+	}
+}
+
+func TestFactoryInlineBuildAndExecute(t *testing.T) {
+	rt := &recordingRuntime{}
+	engine, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
+		Settings: inlineSettings(map[string]any{
+			"name":  "simple",
+			"entry": "run",
+			"nodes": []any{
+				map[string]any{
+					"id": "run", "type": "script",
+					"config": map[string]any{
+						"runtime": "js",
+						"source":  "signal.done()",
+					},
+				},
+			},
+			"edges": []any{},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	g, ok := engine.(*coregraph.Graph)
+	if !ok {
+		t.Fatalf("engine = %T, want *graph.Graph", engine)
+	}
+	board := agent.NewBoard()
+	if _, err := g.Execute(context.Background(), agent.Run{
+		Identity: agent.Identity{RunID: "run-1"},
+	}, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if rt.calls.Load() != 1 {
+		t.Fatalf("runtime calls = %d, want 1", rt.calls.Load())
+	}
+}
+
+func TestFactoryFileBuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "graphs", "simple.json")
+	if err := os.Mkdir(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, definitionJSON("script", `{"runtime":"js","source":"ok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &recordingRuntime{}
+	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
+		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.json"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := engine.(*coregraph.Graph); !ok {
+		t.Fatalf("engine = %T", engine)
+	}
+
+	if _, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
+		Settings: map[string]any{"graph": "graphs/simple.json"},
+	}); err != nil {
+		t.Fatalf("New with scalar graph path: %v", err)
+	}
+}
+
+func TestFactoryFileBuildFromFS(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "simple.json"),
+		definitionJSON("script", `{"runtime":"js","source":"ok"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+	})
+	if err != nil {
+		t.Fatalf("New with fs.FS: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "large.json"),
+		make([]byte, MaxDefinitionBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
+		Settings: map[string]any{"graph": map[string]any{"file": "large.json"}},
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("oversized fs.FS error = %v, want Validation", err)
+	}
+}
+
+func TestFactoryGraphSourceValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings map[string]any
+	}{
+		{name: "missing", settings: map[string]any{}},
+		{name: "both", settings: map[string]any{"graph": map[string]any{
+			"file": "a.json", "inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"}),
+		}}},
+		{name: "unknown settings", settings: map[string]any{
+			"graph": map[string]any{"inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})},
+			"typo":  true,
+		}},
+		{name: "unknown graph", settings: map[string]any{"graph": map[string]any{
+			"inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"}),
+			"typo":   true,
+		}}},
+		{name: "unknown definition", settings: map[string]any{"graph": map[string]any{"inline": map[string]any{
+			"name": "g", "entry": "n", "nodes": []any{map[string]any{
+				"id": "n", "type": "script", "config": map[string]any{"runtime": "js", "source": "ok"},
+			}}, "edges": []any{}, "typo": true,
+		}}}},
+		{name: "unknown build", settings: mergeSettings(inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})), map[string]any{
+			"build": map[string]any{"typo": true},
+		})},
+		{name: "unknown parallel", settings: mergeSettings(inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})), map[string]any{
+			"build": map[string]any{"parallel": map[string]any{"typo": true}},
+		})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := NewFactory().New(context.Background(), agent.Config{
+				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+				Settings: tt.settings,
+			})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("error = %v, want Validation", err)
+			}
+		})
+	}
+}
+
+func TestFactoryFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	rt := agent.ScriptRuntime(&recordingRuntime{})
+	newWithFile := func(file string) error {
+		_, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+			Deps:     map[string]any{DepScriptRuntime: rt},
+			Settings: map[string]any{"graph": map[string]any{"file": file}},
+		})
+		return err
+	}
+
+	if err := newWithFile("missing.json"); !errdefs.IsNotFound(err) {
+		t.Fatalf("missing error = %v, want NotFound", err)
+	}
+	if err := newWithFile("../escape.json"); !errdefs.IsValidation(err) {
+		t.Fatalf("escape error = %v, want Validation", err)
+	}
+	if err := newWithFile("."); !errdefs.IsValidation(err) {
+		t.Fatalf("directory error = %v, want Validation", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "trailing.json"),
+		append(definitionJSON("script", `{"runtime":"js","source":"ok"}`), []byte(` {}`)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newWithFile("trailing.json"); !errdefs.IsValidation(err) {
+		t.Fatalf("trailing error = %v, want Validation", err)
+	}
+	large := make([]byte, MaxDefinitionBytes+1)
+	if err := os.WriteFile(filepath.Join(dir, "large.json"), large, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newWithFile("large.json"); !errdefs.IsValidation(err) {
+		t.Fatalf("large error = %v, want Validation", err)
+	}
+}
+
+func TestFactoryLoaderReceivesContext(t *testing.T) {
+	key := struct{}{}
+	ctx := context.WithValue(context.Background(), key, "seen")
+	var gotContext bool
+	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
+		gotContext = ctx.Value(key) == "seen"
+		return definitionJSON("script", `{"runtime":"js","source":"ok"}`), nil
+	}))
+	_, err := factory.New(ctx, agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gotContext {
+		t.Fatal("loader did not receive New context")
+	}
+}
+
+func TestFactoryBuildSettingsValidation(t *testing.T) {
+	base := inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"}))
+	tests := []map[string]any{
+		{"timeout": "-1s"},
+		{"timeout": "not-duration"},
+		{"max_node_retries": -1},
+		{"parallel": map[string]any{"enabled": true, "branch_timeout": "-1s"}},
+		{"parallel": map[string]any{"enabled": true, "max_concurrency": -1}},
+		{"parallel": map[string]any{"enabled": true, "max_branches": -1}},
+		{"parallel": map[string]any{"enabled": true, "merge_strategy": "random"}},
+	}
+	for _, build := range tests {
+		_, err := NewFactory().New(context.Background(), agent.Config{
+			Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+			Settings: mergeSettings(base, map[string]any{"build": build}),
+		})
+		if !errdefs.IsValidation(err) {
+			t.Fatalf("build %#v: error = %v, want Validation", build, err)
+		}
+	}
+
+	engine, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: mergeSettings(base, map[string]any{"build": map[string]any{
+			"max_iterations": 7,
+			"timeout":        "1s",
+			"parallel": map[string]any{
+				"enabled":         true,
+				"branch_timeout":  "250ms",
+				"max_concurrency": 2,
+				"max_branches":    3,
+				"merge_strategy":  "last_write_wins",
+			},
+		}}),
+	})
+	if err != nil {
+		t.Fatalf("valid build: %v", err)
+	}
+	stats := engine.(*coregraph.Graph).Stats()
+	if stats.MaxIterations != 7 || !stats.ParallelEnabled {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestFactoryConditionalDependencies(t *testing.T) {
+	tests := []struct {
+		nodeType string
+		config   map[string]any
+		depName  string
+	}{
+		{nodeType: "inference", config: map[string]any{}, depName: DepInference},
+		{nodeType: "tool", config: map[string]any{}, depName: DepTools},
+		{nodeType: "script", config: map[string]any{"runtime": "js", "source": "ok"}, depName: DepScriptRuntime},
+	}
+	for _, tt := range tests {
+		t.Run(tt.nodeType, func(t *testing.T) {
+			_, err := NewFactory().New(context.Background(), agent.Config{
+				Settings: inlineSettings(validDefinition(tt.nodeType, tt.config)),
+			})
+			if !errdefs.IsNotFound(err) {
+				t.Fatalf("error = %v, want NotFound", err)
+			}
+		})
+	}
+
+	// Optional means conditional: a graph without a script node does not
+	// require a script runtime.
+	assembly := &inferenceconfig.Assembly{Runtime: &inference.Runtime{}}
+	if _, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{DepInference: assembly},
+		Settings: inlineSettings(validDefinition("inference", map[string]any{
+			"model": map[string]any{
+				"id": map[string]any{"provider": "fake", "name": "model"},
+			},
+		})),
+	}); err != nil {
+		t.Fatalf("inference-only graph unexpectedly requires other deps: %v", err)
+	}
+}
+
+func TestFactoryInferenceConditionalDependencies(t *testing.T) {
+	inferenceAssembly := &inferenceconfig.Assembly{Runtime: &inference.Runtime{}}
+
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepInference: inferenceAssembly},
+		Settings: inlineSettings(validDefinition("inference", map[string]any{})),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("router error = %v, want NotFound", err)
+	}
+
+	withTools := map[string]any{
+		"model": map[string]any{
+			"id": map[string]any{"provider": "fake", "name": "model"},
+		},
+		"tools": []any{"missing"},
+	}
+	_, err = NewFactory().New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepInference: inferenceAssembly},
+		Settings: inlineSettings(validDefinition("inference", withTools)),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("tools dep error = %v, want NotFound", err)
+	}
+
+	registry := tool.NewRegistry()
+	toolAssembly := &toolconfig.Assembly{
+		Executor: tool.NewExecutor(registry),
+		Catalog:  registry,
+	}
+	_, err = NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{
+			DepInference: inferenceAssembly,
+			DepTools:     toolAssembly,
+		},
+		Settings: inlineSettings(validDefinition("inference", withTools)),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("unknown tool error = %v, want NotFound", err)
+	}
+}
+
+func TestFactoryInferenceDependencyScanPreservesBoardReferences(t *testing.T) {
+	registry := tool.NewRegistry()
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{
+			DepInference: &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
+			DepTools: &toolconfig.Assembly{
+				Executor: tool.NewExecutor(registry),
+				Catalog:  registry,
+			},
+		},
+		Settings: inlineSettings(validDefinition("inference", map[string]any{
+			"model":       "${board.model}",
+			"temperature": "${board.temperature}",
+			"tools":       []any{"${board.tool}"},
+		})),
+	})
+	if err != nil {
+		t.Fatalf("New with board references: %v", err)
+	}
+}
+
+func TestFactoryRejectsIncompleteAssemblies(t *testing.T) {
+	for name, deps := range map[string]map[string]any{
+		"inference runtime": {
+			DepInference: &inferenceconfig.Assembly{},
+		},
+		"tool executor": {
+			DepTools: &toolconfig.Assembly{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewFactory().New(context.Background(), agent.Config{
+				Deps:     deps,
+				Settings: inlineSettings(validDefinition("custom", map[string]any{})),
+			})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("error = %v, want Validation", err)
+			}
+		})
+	}
+}
+
+func TestFactoryDependencyTypeAndTypedNil(t *testing.T) {
+	var nilAssembly *inferenceconfig.Assembly
+	for name, value := range map[string]any{
+		"wrong type": "not-an-assembly",
+		"typed nil":  nilAssembly,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := NewFactory().New(context.Background(), agent.Config{
+				Deps:     map[string]any{DepInference: value},
+				Settings: inlineSettings(validDefinition("inference", map[string]any{})),
+			})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("error = %v, want Validation", err)
+			}
+		})
+	}
+
+	var nilRuntime *recordingRuntime
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: nilRuntime},
+		Settings: inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})),
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("typed nil runtime error = %v, want Validation", err)
+	}
+
+	_, err = NewFactory().New(context.Background(), agent.Config{
+		Deps:     map[string]any{"event_bus": struct{}{}},
+		Settings: inlineSettings(validDefinition("custom", map[string]any{})),
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("unknown dep error = %v, want Validation", err)
+	}
+}
+
+func TestFactoryScriptRuntimeName(t *testing.T) {
+	def := validDefinition("script", map[string]any{"runtime": "lua", "source": "ok"})
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: inlineSettings(def),
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("mismatch error = %v, want Validation", err)
+	}
+	if _, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: mergeSettings(inlineSettings(def), map[string]any{
+			"script_runtime_name": "lua",
+		}),
+	}); err != nil {
+		t.Fatalf("matching runtime name: %v", err)
+	}
+}
+
+func TestFactoryUnknownNodeDelegatesToBuild(t *testing.T) {
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Settings: inlineSettings(validDefinition("custom", map[string]any{})),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("error = %v, want graph.Build NotFound", err)
+	}
+}
+
+func TestFactoryNewRegistryIsolationAndConcurrency(t *testing.T) {
+	factory := NewFactory()
+	const count = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, count)
+	engines := make(chan agent.Engine, count)
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			engine, err := factory.New(context.Background(), agent.Config{
+				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+				Settings: inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})),
+			})
+			if err != nil {
+				errs <- err
+				return
+			}
+			engines <- engine
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(engines)
+	for err := range errs {
+		t.Errorf("concurrent New: %v", err)
+	}
+	seen := map[*coregraph.Graph]bool{}
+	for engine := range engines {
+		g := engine.(*coregraph.Graph)
+		if seen[g] {
+			t.Fatal("New returned the same graph instance twice")
+		}
+		seen[g] = true
+	}
+	if len(seen) != count {
+		t.Fatalf("built %d graphs, want %d", len(seen), count)
+	}
+}
+
+func TestFactoryContextCancellationFromLoader(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
+		return nil, ctx.Err()
+	}))
+	_, err := factory.New(ctx, agent.Config{
+		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if !errdefs.IsAborted(err) {
+		t.Fatalf("error = %v, want Aborted classification", err)
+	}
+}
+
+func TestFactoryPreservesLoaderErrorClassification(t *testing.T) {
+	for name, tc := range map[string]struct {
+		err   error
+		class func(error) bool
+	}{
+		"classified": {
+			err:   errdefs.NotAvailablef("remote definitions unavailable"),
+			class: errdefs.IsNotAvailable,
+		},
+		"permission": {
+			err:   fs.ErrPermission,
+			class: errdefs.IsForbidden,
+		},
+		"other IO": {
+			err:   errors.New("disk failed"),
+			class: errdefs.IsInternal,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			factory := NewFactory(WithFileLoader(func(context.Context, string) ([]byte, error) {
+				return nil, tc.err
+			}))
+			_, err := factory.New(context.Background(), agent.Config{
+				Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+			})
+			if !tc.class(err) {
+				t.Fatalf("error = %v, want expected classification", err)
+			}
+		})
+	}
+}
+
+func inlineSettings(def map[string]any) map[string]any {
+	return map[string]any{"graph": map[string]any{"inline": def}}
+}
+
+func validDefinition(nodeType string, config map[string]any) map[string]any {
+	return map[string]any{
+		"name": "simple", "entry": "node",
+		"nodes": []any{map[string]any{"id": "node", "type": nodeType, "config": config}},
+		"edges": []any{},
+	}
+}
+
+func mergeSettings(base, extra map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(extra))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func definitionJSON(nodeType, config string) []byte {
+	return []byte(`{"name":"simple","entry":"node","nodes":[{"id":"node","type":"` +
+		nodeType + `","config":` + config + `}],"edges":[]}`)
+}

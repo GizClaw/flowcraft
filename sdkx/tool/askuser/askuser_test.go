@@ -9,6 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/graph"
+	"github.com/GizClaw/flowcraft/sdk/graph/nodes"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	inference_media "github.com/GizClaw/flowcraft/sdk/inference/media"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -65,6 +67,67 @@ func TestAskUser_HappyPath(t *testing.T) {
 	}
 	if host.gotPrompt.Source != askuser.Name {
 		t.Errorf("prompt.Source = %q, want %q", host.gotPrompt.Source, askuser.Name)
+	}
+}
+
+func TestAskUser_GraphToolNodeUsesExecutionHost(t *testing.T) {
+	host := &captureHost{
+		reply: agent.UserReply{Parts: []inference.Part{inference.TextPart{Text: "ship it"}}},
+	}
+	tools := tool.NewRegistry()
+	tools.Register(askuser.New())
+	reg := graph.NewRegistry()
+	if err := nodes.RegisterTool(reg, tool.NewExecutor(tools)); err != nil {
+		t.Fatalf("register tool node: %v", err)
+	}
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "ask-user",
+		Entry: "ask",
+		Nodes: []graph.NodeDefinition{{ID: "ask", Type: "tool", Config: json.RawMessage(`{}`)}},
+	}, reg)
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+	board := agent.NewBoard()
+	board.AppendChannelMessage(agent.MainChannel, inference.Message{
+		Role: inference.RoleAssistant,
+		Content: inference.Content{Parts: []inference.Part{inference.ToolCallPart{Call: tool.Call{
+			ID:        "call_ask",
+			Name:      askuser.Name,
+			Arguments: json.RawMessage(`{"prompt":"deploy now?"}`),
+		}}}},
+	})
+
+	callerCtx := context.Background()
+	if _, err := g.Execute(callerCtx,
+		agent.Run{Identity: agent.Identity{AgentID: "agent-1", RunID: "run-1"}},
+		host, board); err != nil {
+		t.Fatalf("graph Execute: %v", err)
+	}
+	if len(host.gotPrompt.Parts) != 1 {
+		t.Fatalf("Host.AskUser prompt parts = %d, want 1", len(host.gotPrompt.Parts))
+	}
+	part, ok := host.gotPrompt.Parts[0].(inference.TextPart)
+	if !ok {
+		t.Fatalf("Host.AskUser prompt part = %T, want inference.TextPart", host.gotPrompt.Parts[0])
+	}
+	if got := part.Text; got != "deploy now?" {
+		t.Fatalf("Host.AskUser prompt = %q, want deploy now?", got)
+	}
+	messages := board.Channel(agent.MainChannel)
+	if len(messages) != 2 || len(messages[1].Content.Parts) != 1 {
+		t.Fatalf("tool-node messages = %+v, want assistant call plus one tool result", messages)
+	}
+	resultPart, ok := messages[1].Content.Parts[0].(inference.ToolResultPart)
+	if !ok {
+		t.Fatalf("tool result part = %T, want inference.ToolResultPart", messages[1].Content.Parts[0])
+	}
+	got := resultPart.Result
+	if got.IsError || got.Content != "ship it" {
+		t.Fatalf("tool result = %+v, want successful host reply", got)
+	}
+	if _, ok := agent.HostFromContext(callerCtx); ok {
+		t.Fatal("graph execution polluted the caller context with its Host")
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
@@ -33,14 +32,10 @@ type ScriptConfig struct {
 }
 
 // ScriptNodeDeps wires the script node's collaborators. Runtimes is
-// the only required entry; a nil dispatcher/router/bus simply disables
-// the corresponding global (calls on it fail closed).
+// the only required entry; a nil dispatcher/router simply disables the
+// corresponding global (calls on it fail closed).
 type ScriptNodeDeps struct {
 	Runtimes map[string]agent.ScriptRuntime
-
-	// Bus powers the "stream" global (stream.subscribe_node): scripts
-	// subscribe to this run's node events. Nil disables the global.
-	Bus event.Bus
 
 	// Tools global: dispatcher executes, catalog answers lookups;
 	// options carry the allow-list policy (e.g.
@@ -111,7 +106,7 @@ func NewNode(deps ScriptNodeDeps) graph.NodeType[ScriptConfig] {
 					bindings.NewToolBridge(deps.ToolDispatcher, deps.ToolCatalog, deps.ToolOptions...),
 					bindings.NewInferenceBridge(deps.InferenceRuntime, deps.InferenceRouter, deps.InferenceOptions...),
 					newNodeBridge(ec.NodeID, ec.NodeType),
-					newStreamBridge(info.RunID, deps.Bus),
+					newStreamBridge(info.RunID, ec.Host),
 					newParallelBridge(),
 				).
 				AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace)).

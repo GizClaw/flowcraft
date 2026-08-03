@@ -125,6 +125,15 @@ func (h HostFuncs) ReportUsage(ctx context.Context, usage inference.Usage) error
 	return h.requireInner().ReportUsage(ctx, usage)
 }
 
+// unwrapHost preserves optional capabilities only when Publish still delegates
+// to Inner. A custom publisher may use a different event surface.
+func (h HostFuncs) unwrapHost() Host {
+	if h.PublishFn != nil {
+		return nil
+	}
+	return h.requireInner()
+}
+
 // requireInner panics with a clear message when a delegated method
 // is invoked without an Inner host configured. Caught at the first
 // call rather than producing a confusing nil-pointer trace several
@@ -220,6 +229,8 @@ func (h tracingHost) Publish(ctx context.Context, env event.Envelope) error {
 func (h tracingHost) Interrupts() <-chan Interrupt {
 	return h.inner.Interrupts()
 }
+
+func (h tracingHost) unwrapHost() Host { return h.inner }
 
 func (h tracingHost) AskUser(ctx context.Context, prompt UserPrompt) (UserReply, error) {
 	ctx, span := h.tracer.Start(ctx, "agent.host.ask_user",

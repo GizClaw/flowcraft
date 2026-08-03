@@ -7,7 +7,10 @@
 // registered impl, so a deployment links only the integrations it
 // actually names — the same opt-in rule sdkx/tool/config applies to
 // MCP. Values YAML cannot express arrive through registered
-// constructors and sources supplied by the application.
+// factories and sources supplied by the application. Resource
+// factories publish a [ResourceSpec] before construction, allowing
+// Build to validate dependency names, required bindings, whole-resource
+// kinds, and item types before calling [ResourceFactory.New].
 //
 // The document is PURE YAML end to end — every settings block is
 // decoded by yaml.v3 into native Go values or yamlv3.Node; no JSON
@@ -78,6 +81,7 @@
 //	b.RegisterPreparer("seed", seedFactory)     // then prepare: [{type: seed}]
 //	b.RegisterObserver("audit", auditFactory)   // then observe: [{type: audit}]
 //	b.RegisterReferee("policy", policyFactory)  // then referees: [{type: policy}]
+//	b.MustRegisterResource(workspaceFactory)    // Spec identifies kind + impl
 //
 // Lifecycle factories receive deps exactly like resources do, which
 // is what lets them reach into the resource area rather than being
@@ -133,10 +137,11 @@
 //
 // # Containers and whole binding
 //
-// Some resources hold named items and implement [RefLookup]: a
+// Some resources hold named items and implement [ItemResolver]: a
 // workspace registry's workspaces, a sandbox registry's runners.
-// Those are addressed as "resource/item", and a successful Lookup
-// is the validation.
+// Those are addressed as "resource/item". The factory's
+// [ResourceSpec.ItemType] is checked against the consumer's declared
+// dep type before ResolveItem is called.
 //
 // Others are single objects — an inference Assembly, a tool
 // Assembly — because selection happens inside a call rather than
@@ -147,6 +152,11 @@
 // skips it, since there the kind names the container and the dep
 // type names the item.
 //
+// Build results keep their maps private. Use [Result.Instance],
+// [Result.InstanceNames], [Result.ResourceNames], and [ResourceAs] to
+// inspect assembled values without exposing an untyped mutable
+// resource map.
+//
 // # Dependency order
 //
 // Resources form a DAG, not a list: a sandbox registry needs a
@@ -155,9 +165,10 @@
 // cycle with the names involved. Nothing in the document declares
 // order.
 //
-// A resource nothing binds is a build error — dead config is treated
-// like a typo. Every consumer counts: another resource, an agent's
-// engine dep, or a prepare/observe/referee dep.
+// A resource nothing binds is a build error unless it sets export:
+// true for application retrieval through ResourceAs. Every consumer
+// counts: another resource, an agent's engine dep, or a
+// prepare/observe/referee dep.
 //
 // # What this package does not own
 //

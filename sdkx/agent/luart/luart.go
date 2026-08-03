@@ -63,6 +63,11 @@ type Runtime struct {
 	maxExecTime time.Duration
 	once        sync.Once
 	closeOnce   sync.Once
+	lifecycleMu sync.Mutex
+	active      sync.WaitGroup
+	done        chan struct{}
+	shutdownCtx context.Context
+	shutdown    context.CancelFunc
 	closed      atomic.Bool
 }
 
@@ -92,6 +97,8 @@ func (r *Runtime) SupportsNestedExec() bool {
 func (r *Runtime) init() {
 	r.once.Do(func() {
 		r.pool = make(chan *lua.LState, r.poolSize)
+		r.done = make(chan struct{})
+		r.shutdownCtx, r.shutdown = context.WithCancel(context.Background())
 		for i := 0; i < r.poolSize; i++ {
 			r.pool <- r.newVM()
 		}
@@ -123,10 +130,16 @@ func (r *Runtime) acquire(ctx context.Context) (*lua.LState, error) {
 	r.init()
 	select {
 	case L := <-r.pool:
-		if L == nil {
+		r.lifecycleMu.Lock()
+		closed := r.closed.Load()
+		r.lifecycleMu.Unlock()
+		if closed {
+			L.Close()
 			return nil, ErrRuntimeClosed
 		}
 		return L, nil
+	case <-r.done:
+		return nil, ErrRuntimeClosed
 	case <-ctx.Done():
 		return nil, ErrVMPoolExhausted
 	}
@@ -139,16 +152,24 @@ func (r *Runtime) tryAcquire() (*lua.LState, error) {
 	r.init()
 	select {
 	case L := <-r.pool:
-		if L == nil {
+		r.lifecycleMu.Lock()
+		closed := r.closed.Load()
+		r.lifecycleMu.Unlock()
+		if closed {
+			L.Close()
 			return nil, ErrRuntimeClosed
 		}
 		return L, nil
+	case <-r.done:
+		return nil, ErrRuntimeClosed
 	default:
 		return nil, ErrVMPoolBusy
 	}
 }
 
 func (r *Runtime) release(L *lua.LState) {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
 	if r.closed.Load() {
 		L.Close()
 		return
@@ -159,14 +180,23 @@ func (r *Runtime) release(L *lua.LState) {
 // Close drains the VM pool and closes every LState. It is safe to call
 // multiple times; subsequent calls are no-ops.
 func (r *Runtime) Close() error {
-	r.closed.Store(true)
 	r.closeOnce.Do(func() {
 		r.init()
-		close(r.pool)
-		for L := range r.pool {
-			L.Close()
+		r.lifecycleMu.Lock()
+		defer r.lifecycleMu.Unlock()
+		r.closed.Store(true)
+		close(r.done)
+		r.shutdown()
+		for {
+			select {
+			case L := <-r.pool:
+				L.Close()
+			default:
+				return
+			}
 		}
 	})
+	r.active.Wait()
 	return nil
 }
 
@@ -185,6 +215,18 @@ func (r *Runtime) ExecNested(ctx context.Context, name, source string, env *agen
 }
 
 func (r *Runtime) exec(ctx context.Context, name, source string, env *agent.ScriptEnv, nested bool) (*agent.ScriptSignal, error) {
+	if err := r.beginExec(); err != nil {
+		return nil, err
+	}
+	defer r.active.Done()
+
+	ctx, cancelShutdown := context.WithCancel(ctx)
+	stopShutdown := context.AfterFunc(r.shutdownCtx, cancelShutdown)
+	defer func() {
+		stopShutdown()
+		cancelShutdown()
+	}()
+
 	if r.maxExecTime > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, r.maxExecTime)
@@ -276,6 +318,17 @@ func (r *Runtime) exec(ctx context.Context, name, source string, env *agent.Scri
 	}
 
 	return nil, nil
+}
+
+func (r *Runtime) beginExec() error {
+	r.init()
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.closed.Load() {
+		return ErrRuntimeClosed
+	}
+	r.active.Add(1)
+	return nil
 }
 
 // parseSignalArg decodes the polymorphic argument to signal.interrupt
