@@ -64,6 +64,59 @@ type eventBusHost struct {
 
 func (h *eventBusHost) EventBus() event.Bus { return h.bus }
 
+type externalHostWrapper struct {
+	agent.Host
+}
+
+func (h externalHostWrapper) UnwrapHost() agent.Host { return h.Host }
+
+func TestCapabilityFromHost(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+
+	t.Run("direct", func(t *testing.T) {
+		got, ok := agent.CapabilityFromHost[agent.EventBusProvider](&eventBusHost{bus: bus})
+		if !ok || got.EventBus() != bus {
+			t.Fatalf("CapabilityFromHost = (%v, %v)", got, ok)
+		}
+	})
+
+	t.Run("typed nil host", func(t *testing.T) {
+		var host *eventBusHost
+		if got, ok := agent.CapabilityFromHost[agent.EventBusProvider](host); ok || got != nil {
+			t.Fatalf("CapabilityFromHost(typed nil) = (%v, %v)", got, ok)
+		}
+	})
+
+	t.Run("decorator", func(t *testing.T) {
+		host := agent.ComposeHost(&eventBusHost{bus: bus}, agent.TracingMiddleware())
+		got, ok := agent.CapabilityFromHost[agent.EventBusProvider](host)
+		if !ok || got.EventBus() != bus {
+			t.Fatalf("CapabilityFromHost(decorated) = (%v, %v)", got, ok)
+		}
+	})
+
+	t.Run("external decorator", func(t *testing.T) {
+		host := externalHostWrapper{Host: &eventBusHost{bus: bus}}
+		got, ok := agent.CapabilityFromHost[agent.EventBusProvider](host)
+		if !ok || got.EventBus() != bus {
+			t.Fatalf("CapabilityFromHost(external decorator) = (%v, %v)", got, ok)
+		}
+	})
+
+	t.Run("custom publisher is authoritative", func(t *testing.T) {
+		host := agent.HostFuncs{
+			Inner: &eventBusHost{bus: bus},
+			PublishFn: func(context.Context, event.Envelope) error {
+				return nil
+			},
+		}
+		if got, ok := agent.CapabilityFromHost[agent.EventBusProvider](host); ok || got != nil {
+			t.Fatalf("CapabilityFromHost(custom publisher) = (%v, %v)", got, ok)
+		}
+	})
+}
+
 func TestEventBusFromHost(t *testing.T) {
 	bus := event.NewMemoryBus()
 	t.Cleanup(func() { _ = bus.Close() })

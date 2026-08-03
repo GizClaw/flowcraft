@@ -19,7 +19,7 @@
 //	    spec: { default: 30s, per_tool: { exec: 120s } }
 //	  - kind: ratelimit
 //	  - kind: approval
-//	    spec: { tools: [exec, kanban_submit] }
+//	    spec: { tools: [exec] }
 //	scopes: { exec: platform }
 //
 // Built-in kinds: recover, telemetry, concurrency, timeout,

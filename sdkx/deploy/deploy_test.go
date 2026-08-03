@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -314,6 +315,24 @@ func parse(t *testing.T, body string) deploy.Document {
 	return doc
 }
 
+func writeAgentFile(t *testing.T, dir, name, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+		t.Fatalf("write agent file %s: %v", name, err)
+	}
+}
+
+func agentFileBuilder(t *testing.T, opts ...deploy.BuilderOption) *deploy.Builder {
+	t.Helper()
+	reg := agent.NewRegistry()
+	if err := reg.Register(&fakeEngineFactory{
+		spec: agent.EngineSpec{Kind: "inline"},
+	}); err != nil {
+		t.Fatalf("register inline engine: %v", err)
+	}
+	return deploy.NewBuilder(reg, opts...)
+}
+
 // ---------- Resource registration ----------
 
 func TestRegisterResource_ValidatesAndSortsSpecs(t *testing.T) {
@@ -532,7 +551,188 @@ func TestParse_StrictAndVersioned(t *testing.T) {
 	}
 }
 
+func TestParse_AgentFileAndInlineFieldsAreMutuallyExclusive(t *testing.T) {
+	_, err := deploy.Parse([]byte(`
+version: v1
+agents:
+  researcher:
+    file: ./agents/researcher.yaml
+    engine: {kind: inline}
+`))
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("Parse error = %v, want validation", err)
+	}
+	if !strings.Contains(err.Error(), `agents["researcher"]`) ||
+		!strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("Parse error = %v, want agent context and mutual-exclusion detail", err)
+	}
+}
+
 // ---------- Build ----------
+
+func TestBuild_LoadsSingleAgentFile(t *testing.T) {
+	dir := t.TempDir()
+	writeAgentFile(t, dir, "researcher.yaml", `
+version: v1
+card: {name: Researcher, description: Deep research}
+tools: [search, fetch]
+engine: {kind: inline}
+policy: {max_revise: 2, artifact_channels: [report]}
+`)
+	doc := parse(t, `
+version: v1
+agents:
+  researcher:
+    file: researcher.yaml
+`)
+	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+
+	inst, ok := result.Instance("researcher")
+	if !ok {
+		t.Fatal("Instance(researcher) missing")
+	}
+	if inst.Agent.ID != "researcher" || inst.Agent.Card.Name != "Researcher" ||
+		!reflect.DeepEqual(inst.Agent.Tools, []string{"search", "fetch"}) {
+		t.Fatalf("Agent = %+v", inst.Agent)
+	}
+}
+
+func TestBuild_LoadsMultipleAgentFilesAlongsideInlineAgents(t *testing.T) {
+	dir := t.TempDir()
+	writeAgentFile(t, dir, "researcher.yaml", `
+version: v1
+card: {name: Researcher}
+engine: {kind: inline}
+`)
+	writeAgentFile(t, dir, "writer.yaml", `
+version: v1
+card: {name: Writer}
+engine: {kind: inline}
+`)
+	doc := parse(t, `
+version: v1
+agents:
+  researcher: {file: researcher.yaml}
+  reviewer:
+    card: {name: Reviewer}
+    engine: {kind: inline}
+  writer: {file: writer.yaml}
+`)
+	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+	if got := result.InstanceNames(); !reflect.DeepEqual(got, []string{"researcher", "reviewer", "writer"}) {
+		t.Fatalf("InstanceNames = %v", got)
+	}
+}
+
+func TestBuild_ResolvesAgentFileRelativeToBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(dir+"/agents", 0o700); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	writeAgentFile(t, dir+"/agents", "researcher.yaml", `
+version: v1
+engine: {kind: inline}
+`)
+	doc := parse(t, `
+version: v1
+agents:
+  researcher: {file: agents/researcher.yaml}
+`)
+	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+	if _, ok := result.Instance("researcher"); !ok {
+		t.Fatal("Instance(researcher) missing")
+	}
+}
+
+func TestBuild_MissingAgentFileIsNotFound(t *testing.T) {
+	dir := t.TempDir()
+	doc := parse(t, `
+version: v1
+agents:
+  researcher: {file: agents/missing.yaml}
+`)
+	_, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
+	if err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("Build error = %v, want not found", err)
+	}
+	if !strings.Contains(err.Error(), `agents["researcher"]`) ||
+		!strings.Contains(err.Error(), "agents/missing.yaml") {
+		t.Fatalf("Build error = %v, want agent and path context", err)
+	}
+}
+
+func TestBuild_RejectsProgrammaticWhitespaceAgentFile(t *testing.T) {
+	doc := deploy.Document{
+		Version: deploy.VersionV1,
+		Agents: map[string]deploy.AgentEntry{
+			"researcher": {File: "   "},
+		},
+	}
+	_, err := agentFileBuilder(t).Build(context.Background(), doc)
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("Build error = %v, want validation", err)
+	}
+	if !strings.Contains(err.Error(), `agents["researcher"]`) ||
+		!strings.Contains(err.Error(), "file is required") {
+		t.Fatalf("Build error = %v, want agent and file validation context", err)
+	}
+}
+
+func TestBuild_RejectsInvalidAgentFiles(t *testing.T) {
+	for name, body := range map[string]string{
+		"unknown field": `
+version: v1
+engine: {kind: inline}
+bogus: true
+`,
+		"declared id": `
+version: v1
+id: forbidden
+engine: {kind: inline}
+`,
+		"wrong version": `
+version: v2
+engine: {kind: inline}
+`,
+		"trailing document": `
+version: v1
+engine: {kind: inline}
+---
+version: v1
+engine: {kind: inline}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeAgentFile(t, dir, "agent.yaml", body)
+			doc := parse(t, `
+version: v1
+agents:
+  a: {file: agent.yaml}
+`)
+			_, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
+			if err == nil || !errdefs.IsValidation(err) {
+				t.Fatalf("Build error = %v, want validation", err)
+			}
+			if !strings.Contains(err.Error(), `agents["a"]`) ||
+				!strings.Contains(err.Error(), "agent.yaml") {
+				t.Fatalf("Build error = %v, want agent and path context", err)
+			}
+		})
+	}
+}
 
 func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 	tb := newTestBuilder(t)

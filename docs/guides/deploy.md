@@ -127,6 +127,56 @@ Unknown dep names, missing required deps, and kind/type mismatches
 are all rejected at build time — a single source of validation
 across the document.
 
+An agent recipe can be inline or stored in one versioned YAML file.
+In both forms, the root `agents` map key is the agent ID; an agent
+file does not repeat the ID:
+
+```yaml
+# deployment.yaml
+version: v1
+agents:
+  dispatcher: # Agent.ID is "dispatcher"
+    card:
+      name: Dispatcher
+      description: Routes work to specialists
+    tools: [delegate, delegation_status]
+    engine:
+      kind: graph
+      settings:
+        graph: ./graphs/dispatcher.json
+    deps:
+      tools: tools
+    referees:
+      - type: delegation_handoff
+
+  researcher: # Agent.ID is "researcher"
+    file: ./agents/researcher.agent.yaml
+```
+
+```yaml
+# agents/researcher.agent.yaml -- exactly one agent recipe
+version: v1
+card:
+  name: Researcher
+  description: Produces sourced research
+tools: [delegate, delegation_status]
+engine:
+  kind: graph
+  settings:
+    graph: ./graphs/researcher.json
+deps:
+  tools: tools
+policy:
+  max_revise: 2
+  artifact_channels: [report]
+```
+
+`file` and inline fields are mutually exclusive. Agent files require
+their own `version: v1` and reject unknown fields. Relative agent file
+paths are resolved against `deploy.WithBaseDir(configDir)` on the
+`Builder`; paths inside engine settings are interpreted by that engine,
+so configure its base directory separately when required.
+
 ### Lifecycle hooks
 
 Three hook sections, all sharing the same `{type, deps, settings}`
@@ -186,7 +236,7 @@ import (
 
     "github.com/GizClaw/flowcraft/sdk/agent"
     "github.com/GizClaw/flowcraft/sdkx/deploy"
-    "github.com/GizClaw/flowcraft/sdkx/agent/graphagent"
+    graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
     "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
 )
 
@@ -246,15 +296,16 @@ resource is dead configuration and fails the build.
 
 ### First-party impls
 
-| Kind                  | Impl     | Result                      | Lives in                     |
-| --------------------- | -------- | --------------------------- | ---------------------------- |
-| `workspace.Registry`  | `yaml`   | workspace container         | `sdkx/workspace/config`      |
-| `sandbox.Registry`    | `yaml`   | sandbox container           | `sdkx/sandbox/config`        |
-| `inference.Assembly`  | `yaml`   | runtime (+ optional router) | `sdkx/inference/config/yaml` |
-| `tool.Assembly`       | `yaml`   | catalog + executor          | `sdkx/tool/config`           |
-| `agent.ScriptRuntime` | `js`     | JavaScript runtime          | `sdkx/agent/jsrt`            |
-| `agent.ScriptRuntime` | `lua`    | Lua runtime                 | `sdkx/agent/luart`           |
-| `event.Bus`           | `memory` | in-process bus              | `sdkx/event/config`          |
+| Kind                      | Impl            | Result                          | Lives in                        |
+| ------------------------- | --------------- | ------------------------------- | ------------------------------- |
+| `workspace.Registry`      | `yaml`          | workspace container             | `sdkx/workspace/config`         |
+| `sandbox.Registry`        | `yaml`          | sandbox container               | `sdkx/sandbox/config`           |
+| `inference.Assembly`      | `yaml`          | runtime (+ optional router)     | `sdkx/inference/config/yaml`    |
+| `tool.Assembly`           | `yaml`          | catalog + executor              | `sdkx/tool/config`              |
+| `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/jsrt`               |
+| `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
+| `event.Bus`               | `memory`        | in-process bus                  | `sdkx/event/config`             |
+| `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
@@ -358,7 +409,7 @@ agents:
 
 ### Engines
 
-The graph engine (`sdkx/agent/graphagent`) is the built-in. Its
+The graph engine (`sdkx/agent/graph`) is the built-in. Its
 settings accept a graph definition by file path, by explicit
 `{file: ...}`, or by `{inline: ...}`:
 
@@ -445,6 +496,185 @@ built.
 `discard_on_interrupt` is the only built-in referee. It maps
 `agent.DiscardOnInterruptCauses` to the run's `Committed` flag and is
 the canonical disposition for voice / streaming UX.
+
+## Delegation assembly
+
+Local delegation joins deploy-built agents, an application-created
+directory, execution-time tools, an optional asynchronous backend,
+and a host capability. The directory must exist before `Build` because
+the tool definitions and dynamic handoff referee capture it; bind it
+to the successful result before serving requests.
+
+Register the complete assembly in Go:
+
+```go
+directory := delegation.NewDirectory()
+
+toolRegistry := tool.NewRegistry()
+for _, delegationTool := range tooldelegation.New(directory) {
+    toolRegistry.Register(delegationTool)
+}
+toolBuilder := toolconfig.NewBuilder(toolRegistry, toolconfig.Deps{})
+
+engines := agent.NewRegistry()
+engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
+
+builder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
+builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
+builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
+builder.RegisterReferee(
+    delegationconfig.RefereeType,
+    delegationconfig.NewHandoffRefereeFactory(directory),
+)
+```
+
+The deployment exports the shared event bus and backend, binds the
+backend to that bus, and enables the dynamic referee on agents that
+may initiate handoff:
+
+```yaml
+version: v1
+resources:
+  events:
+    kind: event.Bus
+    impl: memory
+    export: true
+    settings:
+      route_cache_size: 1024
+
+  delegations:
+    kind: delegation.AsyncBackend
+    impl: kanban-memory
+    export: true
+    deps:
+      event_bus: events
+    settings:
+      scope_id: local-delegation
+      max_pending: 100
+      max_cards: 1000
+      card_ttl: 24h
+
+  tools:
+    kind: tool.Assembly
+    impl: yaml
+    settings:
+      inline:
+        version: v1
+        middlewares:
+          - kind: recover
+          - kind: telemetry
+
+agents:
+  dispatcher:
+    card:
+      name: Dispatcher
+      description: Routes work to local specialists
+    tools: [delegate, delegation_status]
+    engine:
+      kind: graph
+      settings:
+        graph: ./graphs/dispatcher.json
+    deps:
+      tools: tools
+    referees:
+      - type: delegation_handoff
+
+  researcher:
+    file: ./agents/researcher.agent.yaml
+```
+
+After `Build`, bind and construct the runtime-facing pieces:
+
+```go
+result, err := builder.Build(ctx, document)
+if err != nil {
+    return err
+}
+
+if err := directory.Bind(result); err != nil {
+    _ = result.Close()
+    return err
+}
+backend, err := deploy.ResourceAs[delegation.AsyncBackend](result, "delegations")
+if err != nil {
+    _ = result.Close()
+    return err
+}
+bus, err := deploy.ResourceAs[event.Bus](result, "events")
+if err != nil {
+    _ = result.Close()
+    return err
+}
+baseHost := runtimeHost{bus: bus}
+service, err := delegation.NewService(
+    directory,
+    backend,
+    delegation.WithWorkerHost(baseHost),
+)
+if err != nil {
+    _ = result.Close()
+    return err
+}
+
+host := sdkdelegation.WithService(baseHost, service)
+```
+
+`sdkx/tool/delegation` obtains the service from the execution host.
+`WithWorkerHost` gives asynchronous agents the same long-lived host
+capabilities; the service adds its own delegation capability to that
+host before running claimed work.
+`delegate` returns a backend-neutral `delegation_id`; callers pass
+only that ID to `delegation_status`. A direct synchronous call and an
+agent execution use the same service and host:
+
+```go
+execCtx := agent.ContextWithHost(ctx, host)
+syncResult, err := service.Delegate(execCtx, sdkdelegation.Request{
+    Mode:   sdkdelegation.ModeSync,
+    Target: "researcher",
+    Input:  "Summarize the release notes",
+})
+if err != nil {
+    return err
+}
+
+dispatcher, ok := result.Instance("dispatcher")
+if !ok {
+    return fmt.Errorf("dispatcher instance is not built")
+}
+turn, err := dispatcher.Execute(execCtx, request, agent.WithHost(host))
+if err != nil {
+    return err
+}
+if handoff, ok := sdkdelegation.HandoffFromResult(turn); ok {
+    // The referee validated the target at decision time. Transfer the
+    // application/session interaction to handoff.Target and preserve
+    // handoff.Args.Input, Note, and Metadata.
+}
+```
+
+The handoff event is structured data in `agent.Result.State`; deploy
+does not transfer a session by itself. The application remains
+responsible for routing the interaction and deciding what session
+state to preserve.
+
+Shutdown order is part of the ownership contract:
+
+```go
+// First stop delegation workers that borrow the backend and event bus.
+if err := service.Close(); err != nil {
+    return err
+}
+// Then close deploy-owned resources, including the backend and bus.
+if err := result.Close(); err != nil {
+    return err
+}
+```
+
+`Service.Close` never closes the injected backend or its shared event
+bus. Closing `Result` first can invalidate resources still used by
+delegation workers.
 
 ## Event bus and the host
 
@@ -543,13 +773,17 @@ A successful `Build` produces a `Result` that owns every `io.Closer`
 returned by a resource factory; values resolved through a `Source` are
 never closed by `Result.Close`.
 
-Shutdown:
+Shutdown when no delegation service borrows the result:
 
 1. Stop request/session loops.
 2. `defer result.Close()` from the function that called `Build` runs
    (or call it explicitly at shutdown).
 3. `Close` is idempotent, runs in reverse construction order, joins
    all errors.
+
+When a local delegation service exists, close it after stopping
+request/session loops and before `Result.Close`, as shown in
+[Delegation assembly](#delegation-assembly).
 
 ## Extending deploy
 
@@ -631,8 +865,8 @@ For lifecycle hooks, exercise the factory directly with a hand-built
 factory is registered.
 
 For full turn-level tests (the engine, the host, the hook chain),
-see `tests/conformance` and the engine-specific packages
-(`sdkx/agent/graphagent/doc.go`). The deploy layer itself is
+see `sdkx/delegation/integration_test.go`, `tests/conformance`, and the
+engine-specific packages (`sdkx/agent/graph`). The deploy layer itself is
 hermetic: a `Build` over a parsed document does not perform network
 I/O unless a resource factory does (e.g. an inference provider that
 warms up its catalog on first use).
@@ -644,9 +878,16 @@ warms up its catalog on first use).
 - Per-resource config schemas: `sdkx/workspace/config/doc.go`,
   `sdkx/sandbox/config/doc.go`, `sdkx/inference/config/doc.go`,
   `sdkx/tool/config/doc.go`, `sdkx/event/config/doc.go`.
-- Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graphagent/doc.go`.
+- Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
+- Delegation contracts and local runtime: `sdk/delegation/doc.go`,
+  `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
 - Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Observer`,
   `Referee`).
 - A focused, on-disk example: `examples/voice-pipeline` (cloned via
   `cmd/claw` configs) and the inference guide's
   [deployment section](inference.md#deployment-configuration).
+
+`sdkx/deploy` remains an assembly layer, not a session runtime. It
+constructs and owns resources and agent instances; applications still
+own turn loops, conversation/session state, handoff routing, interrupts,
+and process startup.

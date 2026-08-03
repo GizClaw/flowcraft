@@ -1,10 +1,14 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"sync"
@@ -237,11 +241,23 @@ func (r *Result) fail(err error) error {
 // integrations it actually names.
 type Builder struct {
 	engines   *agent.Registry
+	baseDir   string
 	sources   map[string]SourceFunc
 	resources map[resourceKey]registeredResource
 	preparers map[string]PreparerFactory
 	observers map[string]ObserverFactory
 	referees  map[string]RefereeFactory
+}
+
+// BuilderOption configures a Builder.
+type BuilderOption func(*Builder)
+
+// WithBaseDir sets the directory used to resolve relative agent file
+// paths. Absolute paths are used unchanged.
+func WithBaseDir(dir string) BuilderOption {
+	return func(b *Builder) {
+		b.baseDir = dir
+	}
 }
 
 type resourceKey struct {
@@ -255,9 +271,10 @@ type registeredResource struct {
 }
 
 // NewBuilder returns a Builder over the given engine registry with
-// the built-in after factories registered. A nil registry panics — a
+// the built-in after factories registered. Options may configure
+// loading behavior such as [WithBaseDir]. A nil registry panics — a
 // Builder without engine kinds cannot assemble anything.
-func NewBuilder(engines *agent.Registry) *Builder {
+func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
 	if engines == nil {
 		panic("deploy.NewBuilder: engine registry is nil")
 	}
@@ -268,6 +285,11 @@ func NewBuilder(engines *agent.Registry) *Builder {
 		preparers: make(map[string]PreparerFactory),
 		observers: make(map[string]ObserverFactory),
 		referees:  make(map[string]RefereeFactory),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(b)
+		}
 	}
 	b.registerBuiltins()
 	return b
@@ -375,6 +397,10 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
+	agents, err := b.loadAgents(doc.Agents)
+	if err != nil {
+		return nil, err
+	}
 
 	order, err := resourceOrder(doc.Resources)
 	if err != nil {
@@ -382,7 +408,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	res := &Result{
-		instances: make(map[string]*Instance, len(doc.Agents)),
+		instances: make(map[string]*Instance, len(agents)),
 		resources: make(map[string]any, len(doc.Resources)),
 	}
 	used := make(map[string]bool, len(doc.Resources))
@@ -420,8 +446,8 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		}
 	}
 
-	for _, id := range sortedKeys(doc.Agents) {
-		inst, err := b.buildOne(ctx, id, doc.Agents[id], built, used)
+	for _, id := range sortedKeys(agents) {
+		inst, err := b.buildOne(ctx, id, agents[id], built, used)
 		if err != nil {
 			return nil, res.fail(err)
 		}
@@ -435,6 +461,104 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		}
 	}
 	return res, nil
+}
+
+func (b *Builder) loadAgents(entries map[string]AgentEntry) (map[string]AgentEntry, error) {
+	agents := make(map[string]AgentEntry, len(entries))
+	for _, id := range sortedKeys(entries) {
+		source := entries[id]
+		if !source.usesFile() {
+			agents[id] = source
+			continue
+		}
+
+		path := source.File
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(b.baseDir, path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			wrapped := fmt.Errorf(
+				"deploy config agents[%q] file %q: read: %w", id, path, err)
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil, errdefs.NotFound(wrapped)
+			}
+			return nil, errdefs.Validation(wrapped)
+		}
+
+		where := fmt.Sprintf("deploy config agents[%q] file %q", id, path)
+		entry, err := parseAgentFile(data)
+		if err != nil {
+			return nil, errdefs.Validation(fmt.Errorf("%s: %w", where, err))
+		}
+		if err := validateAgentEntry(entry, where); err != nil {
+			return nil, err
+		}
+		agents[id] = entry
+	}
+	return agents, nil
+}
+
+func parseAgentFile(data []byte) (AgentEntry, error) {
+	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
+	var document yamlv3.Node
+	if err := decoder.Decode(&document); err != nil {
+		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			err = fmt.Errorf("multiple YAML documents")
+		}
+		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yamlv3.MappingNode {
+		return AgentEntry{}, fmt.Errorf("decode agent YAML: document must be a mapping")
+	}
+
+	root := document.Content[0]
+	entryNode := &yamlv3.Node{
+		Kind: yamlv3.MappingNode,
+		Tag:  "!!map",
+	}
+	var version string
+	hasVersion := false
+	seen := make(map[string]struct{}, len(root.Content)/2)
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		key := root.Content[i]
+		value := root.Content[i+1]
+		if _, duplicate := seen[key.Value]; duplicate {
+			return AgentEntry{}, fmt.Errorf(
+				"decode agent YAML: field %q is duplicated", key.Value)
+		}
+		seen[key.Value] = struct{}{}
+		if key.Value == "version" {
+			hasVersion = true
+			if err := value.Decode(&version); err != nil {
+				return AgentEntry{}, fmt.Errorf(
+					"decode agent YAML: version: %w", err)
+			}
+			continue
+		}
+		if key.Value == "file" {
+			return AgentEntry{}, fmt.Errorf(
+				"decode agent YAML: field file is not allowed in an agent file")
+		}
+		entryNode.Content = append(entryNode.Content, key, value)
+	}
+	if !hasVersion || version != VersionV1 {
+		return AgentEntry{}, fmt.Errorf(
+			"agent config version %q is not supported (want %q)",
+			version, VersionV1)
+	}
+
+	wire, err := DecodeSettings[agentEntryWire](entryNode)
+	if err != nil {
+		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
+	}
+	entry := AgentEntry(wire)
+	entry.source = agentEntrySourceInline
+	return entry, nil
 }
 
 // resourceOrder returns resource names in construction order: every

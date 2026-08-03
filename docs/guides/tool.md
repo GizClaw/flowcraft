@@ -190,7 +190,7 @@ exe := tool.NewExecutor(reg,
         "exec": 2 * time.Minute,                  // per-tool override; 0 exempts
     }),
     middleware.RateLimit(reg),                    // honors ToolMeta.RateLimit
-    middleware.Approval(approver, "exec", "kanban_submit"),
+    middleware.Approval(approver, "exec", "delegate"),
     middleware.Audit(sink),
 )
 ```
@@ -213,22 +213,39 @@ capability is delegated to MCP. The rule:
 > separate process cannot: the in-process `agent.Host`, the sandbox
 > boundary, or live orchestration state.
 
-| Package                 | Tool name(s)                    | Category                                                       |
-| ----------------------- | ------------------------------- | -------------------------------------------------------------- |
-| `sdkx/tool/askuser`     | `ask_user`                      | host bridge (reaches the `agent.UserPrompter` host capability) |
-| `sdkx/tool/exec`        | `exec`                          | sandbox boundary (reaches `sandbox.Runner`)                    |
-| `sdkx/tool/kanban`      | `kanban_submit`, `task_context` | orchestration state                                            |
-| `sdkx/tool/mcp`         | (catalog from MCP servers)      | adapter                                                        |
-| `sdk/agent.HandoffTool` | handoff                         | agent-layer carve-out (composes `agent.Handoff` directly)      |
+| Package                | Tool name(s)                     | Category                                                       |
+| ---------------------- | -------------------------------- | -------------------------------------------------------------- |
+| `sdkx/tool/askuser`    | `ask_user`                       | host bridge (reaches the `agent.UserPrompter` host capability) |
+| `sdkx/tool/exec`       | `exec`                           | sandbox boundary (reaches `sandbox.Runner`)                    |
+| `sdkx/tool/delegation` | `delegate`, `delegation_status` | orchestration state through `sdk/delegation` contracts         |
+| `sdkx/tool/mcp`        | (catalog from MCP servers)       | adapter                                                        |
 
 Per-tool schema, secrets, and usage live in each package's `doc.go`.
+
+`delegate` supports `sync`, `handoff`, and `async`. Its result always
+uses `delegation_id`; `delegation_status` accepts only that external
+identifier. Kanban cards and other backend records are operational
+implementation details and are not part of the tool contract.
 
 ## Deploy integration
 
 `tool.Assembly` is a first-party resource in deployment documents.
-The YAML document describes the middleware chain and the tool
-factories; the application injects the runtime collaborators
-(approver, audit sink) at `Build` time:
+The application registers in-process tools and injects runtime
+collaborators (delegation directory, approver, audit sink) before
+`Build`; YAML describes execution policy and external sources:
+
+```go
+directory := delegation.NewDirectory()
+registry := tool.NewRegistry()
+for _, delegationTool := range tooldelegation.New(directory) {
+    registry.Register(delegationTool)
+}
+toolBuilder := toolconfig.NewBuilder(registry, toolconfig.Deps{
+    Approver: approver,
+    AuditSink: auditSink,
+})
+builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+```
 
 ```yaml
 resources:
@@ -242,10 +259,6 @@ resources:
 ```yaml
 # tools.yaml
 version: v1
-factories:
-  - kind: exec
-  - kind: askuser
-  - kind: kanban
 middlewares:
   - kind: recover
   - kind: telemetry
@@ -254,7 +267,7 @@ middlewares:
   - kind: timeout
     spec: { default: 30s, per_tool: { exec: 120s } }
   - kind: approval
-    spec: { tools: [exec, kanban_submit] }
+    spec: { tools: [exec, delegate] }
 scopes: { exec: platform }
 ```
 
@@ -294,6 +307,6 @@ the same shape as the [deploy guide's testing section](deploy.md#testing-your-de
 - Built-in middleware: `sdk/tool/middleware/doc.go` (per-middleware
   semantics), `sdk/tool/tooltest` (shared test contracts).
 - Built-in tools: `sdkx/tool/doc.go` (the curation rule),
-  `sdkx/tool/{exec,askuser,kanban,mcp}/doc.go`.
+  `sdkx/tool/{exec,askuser,delegation,mcp}/doc.go`.
 - Assembly: `sdkx/tool/config/doc.go`, the `tool.Assembly` resource
   in [deploy.md](deploy.md#first-party-impls).

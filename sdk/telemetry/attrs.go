@@ -3,7 +3,7 @@ package telemetry
 // This file collects the well-known OpenTelemetry attribute / log key
 // names that flowcraft components emit. Centralising them here means:
 //
-//   - producers (sdk/engine, sdk/graph, sdk/tool, sdk/kanban, ...) can
+//   - producers (sdk/engine, sdk/graph, sdk/tool, ...) can
 //     reference one constant instead of re-typing string literals,
 //     guaranteeing key parity across the codebase;
 //   - consumers (dashboards, alerting, log queries) have one place to
@@ -146,12 +146,11 @@ const (
 
 	// AttrConversationID identifies the conversation an operation
 	// belongs to. Shared by memory/history (transcript / DAG / archive),
-	// memory/recall (long-term memory writes keyed by conversation),
-	// sdk/kanban (when the kanban scope mirrors a conversation), and
+	// memory/recall (long-term memory writes keyed by conversation), and
 	// the future sdk/pod controller (multi-agent pods that share a
 	// conversation context). Producers MUST use this constant
 	// instead of legacy snake_case "conversation_id" string literals
-	// so dashboards can join across the four packages by a single
+	// so dashboards can join across these packages by a single
 	// dimension.
 	AttrConversationID = "conversation.id"
 
@@ -178,20 +177,4 @@ const (
 	// SDK (sometimes the message, sometimes a code) — switching to
 	// a single canonical name makes the intent unambiguous.
 	AttrErrorMessage = "error.message"
-
-	// ----- Kanban -----
-
-	// AttrKanbanCardID identifies one kanban Card (kanban.Card.ID).
-	AttrKanbanCardID = "kanban.card.id"
-
-	// AttrKanbanCardKind identifies the card kind ("task" / "signal" / ...).
-	AttrKanbanCardKind = "kanban.card.kind"
-
-	// AttrKanbanProducerID identifies the agent that produced a
-	// card; mirrors kanban.WithProducerID.
-	AttrKanbanProducerID = "kanban.producer.id"
-
-	// AttrKanbanTargetAgentID identifies the consumer agent a task
-	// card is targeted at.
-	AttrKanbanTargetAgentID = "kanban.target.agent.id"
 )

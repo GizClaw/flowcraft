@@ -13,7 +13,7 @@
 //	        "exec": 2 * time.Minute,   // per-tool override; 0 exempts
 //	    }),
 //	    middleware.RateLimit(registry),// honors ToolMeta.RateLimit
-//	    middleware.Approval(approver, "exec", "kanban_submit"),
+//	    middleware.Approval(approver, "exec"),
 //	    middleware.Audit(sink),
 //	)
 //

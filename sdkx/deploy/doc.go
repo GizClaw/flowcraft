@@ -65,6 +65,17 @@
 //	    policy:                           # per-call harness knobs
 //	      max_revise: 2
 //
+// An agent may instead live in its own strict, versioned YAML file:
+//
+//	agents:
+//	  researcher:
+//	    file: ./agents/researcher.yaml
+//
+// The map key remains the Agent ID; the referenced file starts with
+// version: v1 and then contains the AgentEntry fields directly (no ID).
+// Relative paths resolve against [WithBaseDir]. File and inline fields
+// cannot be mixed in one agent entry.
+//
 // # Extension kinds are host-supplied
 //
 // Every name in kind / impl / engine.kind / prepare[].type /

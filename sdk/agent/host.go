@@ -49,8 +49,42 @@ type EventBusProvider interface {
 	EventBus() event.Bus
 }
 
-type hostUnwrapper interface {
-	unwrapHost() Host
+// HostUnwrapper is the opt-in contract for Host decorators that preserve
+// access to optional capabilities on an inner Host.
+//
+// UnwrapHost is read-only: callers may inspect the returned Host for
+// capabilities but do not replace the decorator's inner Host. Decorators must
+// return nil when crossing their boundary would bypass an authoritative
+// replacement surface. For example, HostFuncs does not unwrap when PublishFn
+// replaces the inner publisher.
+type HostUnwrapper interface {
+	UnwrapHost() Host
+}
+
+// CapabilityFromHost finds an optional capability implemented by h or by an
+// inner Host explicitly exposed through [HostUnwrapper]. Typed-nil hosts and
+// capabilities are treated as unsupported.
+//
+// Only decorators explicitly implementing HostUnwrapper are traversed. A
+// wrapper can stop traversal by returning nil when it replaces the surface
+// that authorises access.
+func CapabilityFromHost[T any](h Host) (T, bool) {
+	var zero T
+	const maxWrapperDepth = 64
+	for range maxWrapperDepth {
+		if isNilInterface(h) {
+			return zero, false
+		}
+		if capability, ok := any(h).(T); ok && !isNilInterface(capability) {
+			return capability, true
+		}
+		unwrapper, ok := h.(HostUnwrapper)
+		if !ok || isNilInterface(unwrapper) {
+			return zero, false
+		}
+		h = unwrapper.UnwrapHost()
+	}
+	return zero, false
 }
 
 // EventBusFromHost returns h's borrowed event bus when h implements
@@ -58,25 +92,15 @@ type hostUnwrapper interface {
 // typed-nil buses as unsupported. Built-in Host decorators preserve the
 // optional capability without claiming EventBusProvider themselves.
 func EventBusFromHost(h Host) (event.Bus, bool) {
-	const maxWrapperDepth = 64
-	for range maxWrapperDepth {
-		if isNilInterface(h) {
-			return nil, false
-		}
-		if provider, ok := h.(EventBusProvider); ok && !isNilInterface(provider) {
-			bus := provider.EventBus()
-			if isNilInterface(bus) {
-				return nil, false
-			}
-			return bus, true
-		}
-		unwrapper, ok := h.(hostUnwrapper)
-		if !ok || isNilInterface(unwrapper) {
-			return nil, false
-		}
-		h = unwrapper.unwrapHost()
+	provider, ok := CapabilityFromHost[EventBusProvider](h)
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	bus := provider.EventBus()
+	if isNilInterface(bus) {
+		return nil, false
+	}
+	return bus, true
 }
 
 func isNilInterface(v any) bool {

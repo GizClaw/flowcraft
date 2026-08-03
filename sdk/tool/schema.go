@@ -49,6 +49,18 @@ func ObjectProperty(name, description string, properties map[string]any) Propert
 	return PropertyDef{name: name, schema: schema}
 }
 
+// StringMapProperty creates an object property whose values must be strings.
+func StringMapProperty(name, description string) PropertyDef {
+	return PropertyDef{
+		name: name,
+		schema: map[string]any{
+			"type":                 "object",
+			"description":          description,
+			"additionalProperties": map[string]any{"type": "string"},
+		},
+	}
+}
+
 // PropertyWithDefault creates a typed property with a default value.
 func PropertyWithDefault(name, typ, description string, defaultVal any) PropertyDef {
 	return PropertyDef{

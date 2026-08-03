@@ -63,8 +63,12 @@ type ResourceEntry struct {
 }
 
 // AgentEntry is one agent's declarative assembly recipe. The map key
-// in [Document.Agents] becomes Agent.ID.
+// in [Document.Agents] becomes Agent.ID. An entry may instead set File
+// to load the recipe during [Builder.Build]; File and the inline fields
+// are mutually exclusive.
 type AgentEntry struct {
+	File string `yaml:"file,omitempty"`
+
 	// Card is the declarative subset of agent.AgentCard.
 	Card struct {
 		Name        string `yaml:"name,omitempty"`
@@ -96,6 +100,52 @@ type AgentEntry struct {
 		MaxRevise        int      `yaml:"max_revise,omitempty"`
 		ArtifactChannels []string `yaml:"artifact_channels,omitempty"`
 	} `yaml:"policy,omitempty"`
+
+	source         agentEntrySource
+	inlineDeclared bool
+}
+
+type agentEntrySource uint8
+
+const (
+	agentEntrySourceDirect agentEntrySource = iota
+	agentEntrySourceInline
+	agentEntrySourceFile
+)
+
+type agentEntryWire AgentEntry
+
+// UnmarshalYAML records whether the mapping selected a file or inline
+// source while retaining strict decoding for the complete AgentEntry
+// schema. Presence is recorded separately from values so file plus an
+// empty-but-declared inline field is still rejected.
+func (a *AgentEntry) UnmarshalYAML(node *yamlv3.Node) error {
+	hasFile := false
+	hasInline := false
+	if node.Kind == yamlv3.MappingNode {
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			switch node.Content[i].Value {
+			case "file":
+				hasFile = true
+			case "card", "tools", "engine", "deps", "prepare", "observe", "referees", "policy":
+				hasInline = true
+			}
+		}
+	}
+
+	wire, err := DecodeSettings[agentEntryWire](node)
+	if err != nil {
+		return err
+	}
+	*a = AgentEntry(wire)
+	a.inlineDeclared = hasInline
+	switch {
+	case hasFile:
+		a.source = agentEntrySourceFile
+	case hasInline:
+		a.source = agentEntrySourceInline
+	}
+	return nil
 }
 
 // EngineEntry selects an engine kind and carries its kind-specific
@@ -250,36 +300,77 @@ func (d Document) Validate() error {
 			return errdefs.Validation(fmt.Errorf(
 				"deploy config agents: empty agent id"))
 		}
-		if a.Engine.Kind == "" {
+		where := fmt.Sprintf("deploy config agents[%q]", id)
+		if err := validateAgentSource(a); err != nil {
+			return errdefs.Validation(fmt.Errorf("%s: %w", where, err))
+		}
+		if a.usesFile() {
+			continue
+		}
+		if err := validateAgentEntry(a, where); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a AgentEntry) usesFile() bool {
+	return a.source == agentEntrySourceFile || a.File != ""
+}
+
+func validateAgentSource(a AgentEntry) error {
+	if (a.source == agentEntrySourceFile || a.File != "") && strings.TrimSpace(a.File) == "" {
+		return fmt.Errorf("file is required")
+	}
+	if a.usesFile() && (a.inlineDeclared || hasInlineAgentValues(a)) {
+		return fmt.Errorf("file and inline agent fields are mutually exclusive")
+	}
+	return nil
+}
+
+func hasInlineAgentValues(a AgentEntry) bool {
+	return a.Card.Name != "" ||
+		a.Card.Description != "" ||
+		len(a.Tools) != 0 ||
+		a.Engine.Kind != "" ||
+		len(a.Engine.Settings) != 0 ||
+		len(a.Deps) != 0 ||
+		len(a.Prepare) != 0 ||
+		len(a.Observe) != 0 ||
+		len(a.Referees) != 0 ||
+		a.Policy.MaxRevise != 0 ||
+		len(a.Policy.ArtifactChannels) != 0
+}
+
+func validateAgentEntry(a AgentEntry, where string) error {
+	if a.Engine.Kind == "" {
+		return errdefs.Validation(fmt.Errorf(
+			"%s: engine.kind is required", where))
+	}
+	if err := validateDeps(a.Deps); err != nil {
+		return errdefs.Validation(fmt.Errorf("%s: %w", where, err))
+	}
+	for i, p := range a.Prepare {
+		if err := p.validate(); err != nil {
 			return errdefs.Validation(fmt.Errorf(
-				"deploy config agents[%q]: engine.kind is required", id))
+				"%s.prepare[%d]: %w", where, i, err))
 		}
-		if err := validateDeps(a.Deps); err != nil {
+	}
+	for i, o := range a.Observe {
+		if err := o.validate(); err != nil {
 			return errdefs.Validation(fmt.Errorf(
-				"deploy config agents[%q]: %w", id, err))
+				"%s.observe[%d]: %w", where, i, err))
 		}
-		for i, p := range a.Prepare {
-			if err := p.validate(); err != nil {
-				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].prepare[%d]: %w", id, i, err))
-			}
-		}
-		for i, o := range a.Observe {
-			if err := o.validate(); err != nil {
-				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].observe[%d]: %w", id, i, err))
-			}
-		}
-		for i, r := range a.Referees {
-			if err := r.validate(); err != nil {
-				return errdefs.Validation(fmt.Errorf(
-					"deploy config agents[%q].referees[%d]: %w", id, i, err))
-			}
-		}
-		if a.Policy.MaxRevise < 0 {
+	}
+	for i, r := range a.Referees {
+		if err := r.validate(); err != nil {
 			return errdefs.Validation(fmt.Errorf(
-				"deploy config agents[%q].policy.max_revise: must be >= 0", id))
+				"%s.referees[%d]: %w", where, i, err))
 		}
+	}
+	if a.Policy.MaxRevise < 0 {
+		return errdefs.Validation(fmt.Errorf(
+			"%s.policy.max_revise: must be >= 0", where))
 	}
 	return nil
 }

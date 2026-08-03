@@ -31,22 +31,18 @@
 //
 // # Built-in tools
 //
-// Three packages plus one agent-layer carve-out. Each declares its
-// primitive category in its own doc.go:
+// Three packages. Each declares its primitive category in its own doc.go:
 //
-//	package      tool name(s)      category
-//	------------ ----------------- --------------------------
-//	askuser      ask_user          host bridge
-//	exec         exec              sandbox boundary
-//	kanban       kanban_submit,    orchestration mechanism
-//	             task_context
+//	package      tool name(s)                 category
+//	------------ ---------------------------- --------------------------
+//	askuser      ask_user                     host bridge
+//	exec         exec                         sandbox boundary
+//	delegation   delegate, delegation_status  orchestration state
 //
-//	agent.HandoffTool (in sdk/agent)  orchestration mechanism
-//
-// [agent.HandoffTool] lives in sdk/agent rather than here because it
-// composes agent.Handoff and other agent-layer types directly. Future
-// orchestration primitives that depend on agent-layer state may follow
-// the same carve-out; everything else belongs under sdkx/tool.
+// The delegation tools adapt the backend-neutral sdk/delegation contracts.
+// They discover targets through a Directory and recover a Service from the
+// execution Host; asynchronous callers see only delegation_id, never backend
+// card identifiers or operational storage details.
 //
 // # Everything else: MCP
 //

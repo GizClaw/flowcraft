@@ -71,9 +71,11 @@
 //   - [Host] (via [WithHost]) is the bag of host-side capabilities
 //     the engine reaches for during execution: event publishing,
 //     interrupt injection, user prompting, checkpoint persistence,
-//     token-usage reporting. Embed [NoopHost] and override the
-//     methods you need; decorate with [HostMiddleware] (e.g.
-//     [TracingMiddleware]) via [ComposeHost].
+//     token-usage reporting. Optional capabilities are discovered with
+//     [CapabilityFromHost] through the authority boundary maintained by
+//     built-in decorators. Embed [NoopHost] and override the methods you
+//     need; decorate with [HostMiddleware] (e.g. [TracingMiddleware]) via
+//     [ComposeHost].
 //
 // # Resume
 //

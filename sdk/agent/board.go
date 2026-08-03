@@ -84,9 +84,7 @@ func (b *Board) Clone() *Board {
 		channels[name] = copied
 	}
 	vars := make(map[string]any, len(b.vars))
-	for k, v := range b.vars {
-		vars[k] = v
-	}
+	maps.Copy(vars, b.vars)
 	return &Board{channels: channels, vars: vars}
 }
 

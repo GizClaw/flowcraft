@@ -5,9 +5,8 @@
 // implementing [tool.Tool] should pass [RunSuite] to be considered
 // "contract-compliant" — i.e., its behaviour matches what
 // sdk/tool/registry.go and the LLM-tool wire protocol expect from
-// it. Built-in tools (askuser, dispatcher kanban tools) call
-// RunSuite from their own *_test.go; third-party tool authors
-// should do the same.
+// it. Built-in tools call RunSuite from their own *_test.go;
+// third-party tool authors should do the same.
 //
 // # What the suite covers
 //

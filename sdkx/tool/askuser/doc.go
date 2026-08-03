@@ -19,7 +19,7 @@
 // protocol specs. tool.Tool implementations are concrete adapters
 // — they bridge the generic tool.Tool interface to one specific
 // service — and therefore belong here, mirroring the existing
-// sdkx/tool/exec and sdkx/tool/kanban layouts.
+// sdkx/tool/exec layout.
 //
 // # Wiring
 //

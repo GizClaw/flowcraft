@@ -125,9 +125,10 @@ func (h HostFuncs) ReportUsage(ctx context.Context, usage inference.Usage) error
 	return h.requireInner().ReportUsage(ctx, usage)
 }
 
-// unwrapHost preserves optional capabilities only when Publish still delegates
-// to Inner. A custom publisher may use a different event surface.
-func (h HostFuncs) unwrapHost() Host {
+// UnwrapHost preserves optional capabilities only when Publish still delegates
+// to Inner. A custom publisher may use a different event surface, so PublishFn
+// is an authoritative boundary that stops capability traversal.
+func (h HostFuncs) UnwrapHost() Host {
 	if h.PublishFn != nil {
 		return nil
 	}
@@ -230,7 +231,7 @@ func (h tracingHost) Interrupts() <-chan Interrupt {
 	return h.inner.Interrupts()
 }
 
-func (h tracingHost) unwrapHost() Host { return h.inner }
+func (h tracingHost) UnwrapHost() Host { return h.inner }
 
 func (h tracingHost) AskUser(ctx context.Context, prompt UserPrompt) (UserReply, error) {
 	ctx, span := h.tracer.Start(ctx, "agent.host.ask_user",

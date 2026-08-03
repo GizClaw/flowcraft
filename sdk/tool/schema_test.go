@@ -119,6 +119,24 @@ func TestObjectProperty_EmptyProperties(t *testing.T) {
 	}
 }
 
+func TestStringMapProperty(t *testing.T) {
+	def := DefineSchema("metadata", "accepts metadata",
+		StringMapProperty("metadata", "string metadata"),
+	).Build()
+	props := schemaMap(t, def)["properties"].(map[string]any)
+	metadata := props["metadata"].(map[string]any)
+	if metadata["type"] != "object" {
+		t.Fatalf("type = %v, want object", metadata["type"])
+	}
+	if metadata["description"] != "string metadata" {
+		t.Fatalf("description = %v, want string metadata", metadata["description"])
+	}
+	additional := metadata["additionalProperties"].(map[string]any)
+	if additional["type"] != "string" {
+		t.Fatalf("additionalProperties.type = %v, want string", additional["type"])
+	}
+}
+
 func TestSchemaBuilder_MultipleRequired(t *testing.T) {
 	def := DefineSchema("t", "d",
 		Property("a", "string", "a"),

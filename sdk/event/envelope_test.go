@@ -74,21 +74,13 @@ func TestEnvelope_HeadersHelpers(t *testing.T) {
 	env.SetAgentID("a1")
 	env.SetGraphID("g1")
 	env.SetTenant("t1")
-	env.SetKanbanScopeID("k1")
 
-	if env.RunID() != "r1" || env.NodeID() != "n1" || env.AgentID() != "a1" || env.GraphID() != "g1" || env.Tenant() != "t1" || env.KanbanScopeID() != "k1" {
+	if env.RunID() != "r1" || env.NodeID() != "n1" || env.AgentID() != "a1" || env.GraphID() != "g1" || env.Tenant() != "t1" {
 		t.Fatalf("typed accessors disagree: %+v", env.Headers)
-	}
-	// The KanbanScopeID accessor must read from the documented header
-	// key so external consumers (e.g. cross-process bus adapters) that
-	// inspect the raw header map see the same value the typed accessor
-	// returns.
-	if got := env.Header(HeaderKanbanScopeID); got != "k1" {
-		t.Fatalf("Header[%s] = %q, want k1", HeaderKanbanScopeID, got)
 	}
 	// Zero envelope returns "" without panic.
 	var zero Envelope
-	if zero.RunID() != "" || zero.NodeID() != "" || zero.KanbanScopeID() != "" {
+	if zero.RunID() != "" || zero.NodeID() != "" {
 		t.Fatal("zero envelope should return empty strings")
 	}
 }
