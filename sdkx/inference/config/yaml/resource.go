@@ -44,7 +44,11 @@ func NewDeployFactory(
 }
 
 func (*deployFactory) Spec() deploy.ResourceSpec {
-	return deploy.ResourceSpec{Kind: ResourceKind, Impl: "yaml"}
+	return deploy.ResourceSpec{
+		Kind:     ResourceKind,
+		Impl:     "yaml",
+		ItemType: "inference.Runtime",
+	}
 }
 
 func (f *deployFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {

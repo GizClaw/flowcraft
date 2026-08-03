@@ -14,8 +14,9 @@ import (
 func TestDeployFactorySpec(t *testing.T) {
 	got := NewDeployFactory(nil, nil).Spec()
 	want := deploy.ResourceSpec{
-		Kind: ResourceKind,
-		Impl: "yaml",
+		Kind:     ResourceKind,
+		Impl:     "yaml",
+		ItemType: "inference.Runtime",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
@@ -62,6 +63,12 @@ inline:
 	assembly, ok := value.(*inferenceconfig.Assembly)
 	if !ok || assembly.Runtime == nil {
 		t.Fatalf("New returned %#v, want assembly with runtime", value)
+	}
+	if item, ok := assembly.ResolveItem("runtime"); !ok || item != assembly.Runtime {
+		t.Fatalf("ResolveItem(runtime) = (%T, %v), want runtime", item, ok)
+	}
+	if item, ok := assembly.ResolveItem("missing"); ok || item != nil {
+		t.Fatalf("ResolveItem(missing) = (%#v, %v), want nil, false", item, ok)
 	}
 
 	if _, err := factory.New(context.Background(), deploy.ResourceInput{

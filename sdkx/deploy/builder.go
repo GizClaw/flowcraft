@@ -74,10 +74,10 @@ type ResourceFactory interface {
 // items — a workspace registry's workspaces, a sandbox registry's
 // runners. The scalar dep form "resource/item" resolves through it.
 //
-// Not every resource is a container. An inference.Runtime, a tool
-// Assembly or a memory instance is a single object: models and tools
-// are selected inside a call, not bound per dep. Those bind whole,
-// and binding them with an item name is a build error.
+// A resource may bind whole and also expose deliberately typed items. For
+// example, inference.Assembly binds whole to graph engines and exposes its
+// exact inference.Runtime as "runtime". An undeclared item name is a build
+// error.
 type ItemResolver interface {
 	ResolveItem(ref string) (any, bool)
 }

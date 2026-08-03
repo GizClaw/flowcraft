@@ -205,6 +205,15 @@ type Assembly struct {
 	Router *route.Router
 }
 
+// ResolveItem exposes the exact inference runtime as "runtime" while keeping
+// the Assembly as the deploy-owned resource and optional router container.
+func (a *Assembly) ResolveItem(ref string) (any, bool) {
+	if a == nil || ref != "runtime" || a.Runtime == nil {
+		return nil, false
+	}
+	return a.Runtime, true
+}
+
 // NewAssembly builds the runtime and, when document.Route is set, composes the
 // deployment Router above it. The Router is driven by the route policy in
 // declared order (see Policy.Selectors); callers that need score-aware or

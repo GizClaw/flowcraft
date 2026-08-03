@@ -323,6 +323,43 @@ func TestRestoreSkipsInvalidRules(t *testing.T) {
 	}
 }
 
+func TestValueValidatorIsSharedByAddAndRestore(t *testing.T) {
+	validate := func(value string) error {
+		if value == "bad" {
+			return errdefs.Validationf("bad value")
+		}
+		return nil
+	}
+	store := newStore()
+	s := newScheduler(t, newDispatch(),
+		scheduler.WithRuleStore[string](store),
+		scheduler.WithValueValidator(validate))
+	if _, err := s.Add(context.Background(), scheduler.Rule[string]{
+		ID: "bad-add", Cron: "@hourly", Value: "bad",
+	}); !errdefs.IsValidation(err) {
+		t.Fatalf("Add error = %v, want validation", err)
+	}
+	store.mu.Lock()
+	_, persisted := store.rules["bad-add"]
+	store.rules["good"] = scheduler.Rule[string]{
+		ID: "good", Cron: "@hourly", Value: "ok",
+	}
+	store.rules["bad-restore"] = scheduler.Rule[string]{
+		ID: "bad-restore", Cron: "@hourly", Value: "bad",
+	}
+	store.mu.Unlock()
+	if persisted {
+		t.Fatal("Add persisted an invalid value")
+	}
+	n, err := s.Restore(context.Background())
+	if n != 1 || !errdefs.IsValidation(err) {
+		t.Fatalf("Restore = (%d, %v), want one plus validation", n, err)
+	}
+	if got := s.Rules(); len(got) != 1 || got[0] != "good" {
+		t.Fatalf("Rules = %v, want [good]", got)
+	}
+}
+
 func TestReplacementValidationFailurePreservesPersistedRule(t *testing.T) {
 	store := newStore()
 	s := newScheduler(t, newDispatch(), scheduler.WithRuleStore[string](store))

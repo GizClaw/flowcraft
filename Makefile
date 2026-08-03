@@ -5,10 +5,9 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# sdk + memory + sdkx + voice are the tightly-coupled core that needs atomic
-# in-tree edits (memory depends on sdk, sdk compatibility shims point at
-# memory, sdkx imports both, and voice depends on the same sdk source).
-MODULES_WORK := sdk memory sdkx voice cmd/claw eval
+# sdk + sdkx + voice are the tightly-coupled core that needs atomic
+# in-tree edits (sdkx imports sdk, and voice depends on the same sdk source).
+MODULES_WORK := sdk sdkx voice cmd/claw eval
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.

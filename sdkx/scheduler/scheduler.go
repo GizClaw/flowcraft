@@ -83,6 +83,14 @@ func WithRuleStore[T any](store RuleStore[T]) Option[T] {
 	}
 }
 
+// WithValueValidator validates rule values before Add persists them and before
+// Restore arms persisted rules.
+func WithValueValidator[T any](validate func(T) error) Option[T] {
+	return func(s *Scheduler[T]) {
+		s.valueValidator = validate
+	}
+}
+
 type ruleState[T any] struct {
 	entry      cron.EntryID
 	rule       Rule[T]
@@ -94,10 +102,11 @@ type ruleState[T any] struct {
 
 // Scheduler dispatches typed values after delays or on cron schedules.
 type Scheduler[T any] struct {
-	dispatcher Dispatcher[T]
-	cron       *cron.Cron
-	store      RuleStore[T]
-	storeSet   bool
+	dispatcher     Dispatcher[T]
+	cron           *cron.Cron
+	store          RuleStore[T]
+	storeSet       bool
+	valueValidator func(T) error
 
 	mu          sync.Mutex
 	opsMu       sync.Mutex
@@ -212,7 +221,7 @@ func (s *Scheduler[T]) Add(ctx context.Context, rule Rule[T]) (string, error) {
 	if rule.ID == "" {
 		rule.ID = "rule-" + newID()
 	}
-	spec, err := validateRule(rule, false)
+	spec, err := s.validateRule(rule, false)
 	if err != nil {
 		return "", err
 	}
@@ -298,7 +307,7 @@ func (s *Scheduler[T]) Restore(ctx context.Context) (int, error) {
 	var errs []error
 	armed := 0
 	for _, rule := range rules {
-		spec, err := validateRule(rule, true)
+		spec, err := s.validateRule(rule, true)
 		if err == nil {
 			s.mu.Lock()
 			state := s.rules[rule.ID]
@@ -322,7 +331,7 @@ func (s *Scheduler[T]) Restore(ctx context.Context) (int, error) {
 	return armed, errors.Join(errs...)
 }
 
-func validateRule[T any](rule Rule[T], persisted bool) (string, error) {
+func (s *Scheduler[T]) validateRule(rule Rule[T], persisted bool) (string, error) {
 	if rule.ID == "" && persisted {
 		return "", errdefs.Validationf("scheduler: persisted Rule.ID is required")
 	}
@@ -339,6 +348,11 @@ func validateRule[T any](rule Rule[T], persisted bool) (string, error) {
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
 	if _, err := parser.Parse(spec); err != nil {
 		return "", errdefs.Validationf("scheduler: invalid cron %q: %v", rule.Cron, err)
+	}
+	if s.valueValidator != nil {
+		if err := s.valueValidator(rule.Value); err != nil {
+			return "", fmt.Errorf("scheduler: invalid Rule.Value: %w", err)
+		}
 	}
 	return spec, nil
 }

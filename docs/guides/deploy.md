@@ -95,10 +95,11 @@ deps:
   sandbox: box/coding
 ```
 
-A resource is **whole** when selection happens inside a call, not at
-binding time: an inference runtime picks a model per request via
-`inference.ModelRef`, a tool catalog picks a tool by name. Binding
-those with an item name is a build error.
+A resource may expose both its whole assembly and a deliberately typed item.
+For example, graph agents bind the whole `inference.Assembly` as `infer`, while
+resources that need only exact inference calls bind its
+`inference.Runtime` item as `infer/runtime`. Undeclared item names are build
+errors.
 
 ### Agents and engines
 
@@ -307,6 +308,7 @@ resource is dead configuration and fails the build.
 | `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
 | `event.Bus`               | `memory`        | in-process bus                  | `sdkx/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
+| `memory.Assembly`         | `yaml`          | runtime container                | `sdkx/memory/config/yaml`       |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
@@ -494,6 +496,112 @@ Hooks can bind the same kinds of dep references as resources — they
 read the resource area through the same `DepRef` resolution path,
 which is how a recall preparer reaches a memory store the deployment
 built.
+
+A `memory.Assembly` exposes its runtime item as `memory/runtime`.
+Memory lifecycle hooks therefore bind it directly:
+
+```yaml
+prepare:
+  - type: memory.load
+    deps: {runtime: memory/runtime}
+    settings: {into: transcript, limit: 50}
+  - type: memory.recall
+    deps: {runtime: memory/runtime}
+    settings:
+      into: hits
+      query: {board: query}
+      top_k: 8
+commit:
+  - type: memory.append
+    deps: {runtime: memory/runtime}
+    settings: {channel: __main_channel}
+```
+
+`memory.recall.settings.query` accepts exactly one of `literal` or `board`.
+`board` reads the Board passed by the previous preparer. The default seeder
+copies `Request.Inputs` into Board vars first, so it supports both request
+inputs and values produced by earlier preparers without template expansion.
+
+An embedding-enabled memory resource depends on the runtime item exported by
+the inference assembly:
+
+```yaml
+# deploy.yaml
+version: v1
+resources:
+  infer:
+    kind: inference.Assembly
+    impl: yaml
+    settings: {file: ./inference.yaml}
+  memory:
+    kind: memory.Assembly
+    impl: yaml
+    deps:
+      inference: infer/runtime
+    settings: {file: ./memory.yaml}
+agents:
+  researcher:
+    engine: {kind: graph, settings: {graph: ./graphs/researcher.json}}
+    deps: {inference: infer}
+    prepare:
+      - type: memory.recall
+        deps: {runtime: memory/runtime}
+        settings: {into: hits, query: {board: query}, top_k: 8}
+    commit:
+      - type: memory.append
+        deps: {runtime: memory/runtime}
+        settings: {channel: __main_channel}
+```
+
+```yaml
+# inference.yaml
+version: v1
+providers:
+  - id: openai
+    driver: openai
+    profiles:
+      - id: default
+        operations: [embed]
+        secrets:
+          api_key: {resolver: env, key: OPENAI_API_KEY}
+```
+
+```yaml
+# memory.yaml
+version: v1
+runtime:
+  hard_partition: [runtime_id, user_id]
+  default_scope: {runtime_id: prod}
+  clock: {impl: system}
+stores:
+  messages: {impl: sqlite, settings: {file: ./memory/messages.db}}
+  documents: {impl: sqlite, settings: {file: ./memory/documents.db}}
+embedding:
+  model:
+    id: {provider: openai, name: text-embedding-3-small}
+    profile: default
+  dimensions: 1536
+  batch_size: 32
+  timeout: 30s
+```
+
+Credentials and provider catalogs stay in `inference.yaml`; `memory.yaml`
+contains only the typed model reference and memory-side embedding policy.
+
+The assembly also retains the scheduler lifecycle configuration:
+
+```yaml
+lifecycle:
+  compact: {cron: "@hourly", older_than: 168h, keep: 50}
+  archive:
+    cron: "0 3 * * *"
+    older_than: 2160h
+    destination: s3://bucket/archive
+```
+
+The application passes `assembly.Runtime` and `assembly.Lifecycle` to
+`sdkx/scheduler/memory`. Scheduling remains host-owned; `sdkx/deploy`
+does not start background maintenance.
 
 `discard_on_interrupt` is the only built-in referee. It maps
 `agent.DiscardOnInterruptCauses` to the run's `Committed` flag and is
@@ -880,7 +988,8 @@ warms up its catalog on first use).
   `sdkx/deploy/builder.go`.
 - Per-resource config schemas: `sdkx/workspace/config/doc.go`,
   `sdkx/sandbox/config/doc.go`, `sdkx/inference/config/doc.go`,
-  `sdkx/tool/config/doc.go`, `sdkx/event/config/doc.go`.
+  `sdkx/tool/config/doc.go`, `sdkx/event/config/doc.go`,
+  `sdkx/memory/config/doc.go`.
 - Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
@@ -889,6 +998,9 @@ warms up its catalog on first use).
 - A focused, on-disk example: `examples/voice-pipeline` (cloned via
   `cmd/claw` configs) and the inference guide's
   [deployment section](inference.md#deployment-configuration).
+- Memory stack and the four integration surfaces
+  (Preparer / Committer / Tool / Scheduler):
+  [memory.md](memory.md).
 
 `sdkx/deploy` remains an assembly layer, not a session runtime. It
 constructs and owns resources and agent instances; applications still
