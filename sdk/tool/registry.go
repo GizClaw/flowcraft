@@ -19,6 +19,7 @@ const (
 type entry struct {
 	tool  Tool
 	scope string
+	owner uint64
 }
 
 // Registry is a thread-safe, mutable Catalog of tools plus their
@@ -28,6 +29,7 @@ type entry struct {
 type Registry struct {
 	mu    sync.RWMutex
 	tools map[string]entry
+	owner uint64
 }
 
 // NewRegistry creates an empty registry.
@@ -46,6 +48,50 @@ func (r *Registry) RegisterWithScope(tool Tool, scope string) {
 	defer r.mu.Unlock()
 	name := tool.Definition().Name
 	r.tools[name] = entry{tool: tool, scope: scope}
+}
+
+// RegisterAllIfAbsent atomically registers tools with ScopeAgent only when
+// none of their names already exist. It returns an idempotent release function
+// that removes only entries still owned by this registration, so a later
+// replacement is never deleted accidentally.
+func (r *Registry) RegisterAllIfAbsent(tools ...Tool) (release func(), ok bool) {
+	names := make([]string, len(tools))
+	seen := make(map[string]struct{}, len(tools))
+	for i, item := range tools {
+		name := item.Definition().Name
+		if _, duplicate := seen[name]; duplicate {
+			return nil, false
+		}
+		seen[name] = struct{}{}
+		names[i] = name
+	}
+
+	r.mu.Lock()
+	for _, name := range names {
+		if _, exists := r.tools[name]; exists {
+			r.mu.Unlock()
+			return nil, false
+		}
+	}
+	r.owner++
+	owner := r.owner
+	for i, name := range names {
+		r.tools[name] = entry{tool: tools[i], scope: ScopeAgent, owner: owner}
+	}
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for _, name := range names {
+				if current, exists := r.tools[name]; exists && current.owner == owner {
+					delete(r.tools, name)
+				}
+			}
+		})
+	}, true
 }
 
 // Unregister removes a tool by name. Returns true if the tool existed.

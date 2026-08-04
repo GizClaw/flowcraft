@@ -2,7 +2,6 @@
 layout: default
 title: FlowCraft Documentation
 ---
-
 # FlowCraft
 
 Go SDK for building AI agents with long-term memory, knowledge
@@ -51,16 +50,17 @@ retrieval, runtime orchestration, and voice. Source on
 
 The repository is organised as independently released Go modules:
 
-| Layer | Package | Responsibility |
-| --- | --- | --- |
-| Primitives | `sdk/engine` | Board / Run / Host / Interrupt / Checkpoint contracts |
-| DAG executor | `sdk/graph` | Declarative graph runtime (`runner.Runner` implements `engine.Engine`) |
-| Agent runtime | `sdk/agent` | Agents, observers, referees, board seeders, and execution lifecycle |
-| Delegation contracts | `sdk/delegation` | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts |
-| Async delegation | `sdkx/delegation/kanban` | In-memory `AsyncBackend` / `WorkSource` implementation and operational views |
-| Generic scheduling | `sdkx/scheduler` | Independent typed delay and recurring-rule scheduler; optional delegation dispatcher adapter at `sdkx/scheduler/delegation` |
-| Memory services | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing |
-| Adapters | `sdkx/...` | Concrete provider / protocol bindings layered on the SDK and memory contracts |
+| Layer                | Package                                            | Responsibility                                                                                 |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Primitives           | `sdk/engine`                                       | Board / Run / Host / Interrupt / Checkpoint contracts                                          |
+| DAG executor         | `sdk/graph`                                        | Declarative graph runtime (`runner.Runner` implements `engine.Engine`)                         |
+| Agent runtime        | `sdk/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
+| Delegation contracts | `sdk/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
+| Async delegation     | `sdkx/delegation/kanban`                           | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
+| Scheduling contracts | `sdk/scheduler`                                    | Backend-neutral control plane, leased delivery, typed Client/Worker, and task registration     |
+| Local scheduling     | `sdkx/scheduler`                                   | In-process cron, timer, execution queue, lease, memory, and delegation adapters                 |
+| Memory services      | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing              |
+| Adapters             | `sdkx/...`                                         | Concrete provider / protocol bindings layered on the SDK and memory contracts                  |
 
 ## Repository layout
 

@@ -3,10 +3,12 @@ package deploy_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
@@ -283,14 +285,61 @@ type closeRecorder struct {
 	calls   int
 	journal *[]string
 	err     error
+	started chan<- struct{}
+	release <-chan struct{}
 }
 
 func (c *closeRecorder) Close() error {
 	c.calls++
+	if c.started != nil {
+		close(c.started)
+	}
+	if c.release != nil {
+		<-c.release
+	}
 	if c.journal != nil {
 		*c.journal = append(*c.journal, c.name)
 	}
 	return c.err
+}
+
+func buildOwnedResult(t *testing.T, values map[string]any) *deploy.Result {
+	t.Helper()
+	return buildDependencyResult(t, values, nil)
+}
+
+func buildDependencyResult(t *testing.T, values map[string]any, deps map[string][]string) *deploy.Result {
+	t.Helper()
+	b := deploy.NewBuilder(agent.NewRegistry())
+	resources := make(map[string]deploy.ResourceEntry, len(values))
+	for name, value := range values {
+		kind := name + ".Kind"
+		specDeps := make([]deploy.ResourceDepSpec, 0, len(deps[name]))
+		entryDeps := make(map[string]deploy.DepRef, len(deps[name]))
+		for i, dependency := range deps[name] {
+			depName := fmt.Sprintf("dep%d", i)
+			specDeps = append(specDeps, deploy.ResourceDepSpec{
+				Name: depName, Type: dependency + ".Kind", Required: true,
+			})
+			entryDeps[depName] = deploy.DepRef{Resource: dependency}
+		}
+		b.MustRegisterResource(resourceFactory(
+			kind, "fake", "", specDeps,
+			func(context.Context, deploy.ResourceInput) (any, error) { return value, nil },
+		))
+		resources[name] = deploy.ResourceEntry{
+			Kind: kind, Impl: "fake", Export: true, Deps: entryDeps,
+		}
+	}
+	result, err := b.Build(context.Background(), deploy.Document{
+		Version:   deploy.VersionV1,
+		Resources: resources,
+		Agents:    map[string]deploy.AgentEntry{},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	return result
 }
 
 type countingResolver struct {
@@ -571,6 +620,28 @@ func TestParse_StrictAndVersioned(t *testing.T) {
 	if _, err := deploy.Parse([]byte(
 		"version: v1\nresources:\n  a: {impl: i}\nagents: {}\n")); err == nil {
 		t.Error("resource without kind must fail")
+	}
+}
+
+func TestParse_RuntimeIsOpaqueButOtherTopLevelFieldsRemainStrict(t *testing.T) {
+	doc := parse(t, `
+version: v1
+runtime:
+  arbitrary:
+    nested: [one, {two: true}]
+agents: {}
+`)
+	if doc.Runtime == nil {
+		t.Fatal("Runtime = nil, want opaque subtree")
+	}
+
+	if _, err := deploy.Parse([]byte(`
+version: v1
+runtime: {arbitrary: true}
+bogus: true
+agents: {}
+`)); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("unknown top-level field error = %v, want validation", err)
 	}
 }
 
@@ -991,6 +1062,225 @@ agents:
 	}
 }
 
+func TestResultCloseResourceThenClose(t *testing.T) {
+	var closed []string
+	secondErr := errors.New("second close failed")
+	first := &closeRecorder{name: "first", journal: &closed}
+	second := &closeRecorder{name: "second", journal: &closed, err: secondErr}
+	res := buildOwnedResult(t, map[string]any{"first": first, "second": second})
+
+	resourceErr := res.CloseResource("second")
+	if !errors.Is(resourceErr, secondErr) {
+		t.Fatalf("CloseResource(second) error = %v, want %v", resourceErr, secondErr)
+	}
+	if err := res.Close(); !errors.Is(err, resourceErr) {
+		t.Fatalf("Close error = %v, want cached resource error %v", err, resourceErr)
+	}
+	if !reflect.DeepEqual(closed, []string{"second", "first"}) {
+		t.Fatalf("closed = %v, want individually closed resource skipped by Close", closed)
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("close calls = (%d, %d), want (1, 1)", first.calls, second.calls)
+	}
+}
+
+func TestResultCloseThenCloseResourceReturnsStableError(t *testing.T) {
+	closeErr := errors.New("close failed")
+	resource := &closeRecorder{err: closeErr}
+	res := buildOwnedResult(t, map[string]any{"runtime": resource})
+
+	allErr := res.Close()
+	firstErr := res.CloseResource("runtime")
+	secondErr := res.CloseResource("runtime")
+	if !errors.Is(allErr, closeErr) || !errors.Is(firstErr, closeErr) {
+		t.Fatalf("close errors = (%v, %v), want stable underlying error", allErr, firstErr)
+	}
+	if firstErr != secondErr {
+		t.Fatalf("CloseResource errors are not stable: %p != %p", firstErr, secondErr)
+	}
+	if !errors.Is(allErr, firstErr) {
+		t.Fatalf("Close error = %v, want cached resource error %v", allErr, firstErr)
+	}
+	if resource.calls != 1 {
+		t.Fatalf("close calls = %d, want 1", resource.calls)
+	}
+}
+
+func TestResultCloseAndCloseResourceConcurrent(t *testing.T) {
+	closeErr := errors.New("close failed")
+	resource := &closeRecorder{err: closeErr}
+	res := buildOwnedResult(t, map[string]any{"runtime": resource})
+
+	const goroutines = 64
+	errs := make(chan error, goroutines)
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				errs <- res.Close()
+				return
+			}
+			errs <- res.CloseResource("runtime")
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if !errors.Is(err, closeErr) {
+			t.Errorf("concurrent close error = %v, want %v", err, closeErr)
+		}
+	}
+	if resource.calls != 1 {
+		t.Fatalf("close calls = %d, want 1", resource.calls)
+	}
+}
+
+func TestResultCloseResourceNonCloserAndMissing(t *testing.T) {
+	res := buildOwnedResult(t, map[string]any{"config": struct{}{}})
+	if err := res.CloseResource("config"); err != nil {
+		t.Fatalf("CloseResource(non-closer): %v", err)
+	}
+	if err := res.CloseResource("missing"); err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("CloseResource(missing) error = %v, want not found", err)
+	}
+	var nilResult *deploy.Result
+	if err := nilResult.CloseResource("missing"); err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("nil Result.CloseResource error = %v, want not found", err)
+	}
+}
+
+func TestResultCloseResourceRejectsActiveTransitiveDependents(t *testing.T) {
+	base := &closeRecorder{name: "base"}
+	middle := &closeRecorder{name: "middle"}
+	leaf := &closeRecorder{name: "leaf"}
+	res := buildDependencyResult(t,
+		map[string]any{"base": base, "middle": middle, "leaf": leaf},
+		map[string][]string{"middle": {"base"}, "leaf": {"middle"}},
+	)
+
+	if err := res.CloseResource("base"); err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("CloseResource(base) error = %v, want conflict", err)
+	}
+	if base.calls != 0 {
+		t.Fatalf("base close calls = %d, want 0", base.calls)
+	}
+	if err := res.CloseResource("leaf"); err != nil {
+		t.Fatalf("CloseResource(leaf): %v", err)
+	}
+	if err := res.CloseResource("middle"); err != nil {
+		t.Fatalf("CloseResource(middle): %v", err)
+	}
+	if err := res.CloseResource("base"); err != nil {
+		t.Fatalf("CloseResource(base) after dependents: %v", err)
+	}
+	if base.calls != 1 || middle.calls != 1 || leaf.calls != 1 {
+		t.Fatalf("close calls = (%d, %d, %d), want (1, 1, 1)",
+			base.calls, middle.calls, leaf.calls)
+	}
+}
+
+func TestResultCloseResourceCountsNonCloserDependentAsActive(t *testing.T) {
+	base := &closeRecorder{}
+	res := buildDependencyResult(t,
+		map[string]any{"base": base, "consumer": struct{}{}},
+		map[string][]string{"consumer": {"base"}},
+	)
+
+	if err := res.CloseResource("base"); err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("CloseResource(base) error = %v, want conflict", err)
+	}
+	if err := res.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if base.calls != 1 {
+		t.Fatalf("base close calls = %d, want Result.Close to bypass conflict", base.calls)
+	}
+}
+
+func TestResultCloseResourceConcurrentWithClosePreservesDependencyOrder(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var closed []string
+	base := &closeRecorder{name: "base", journal: &closed}
+	dependent := &closeRecorder{
+		name: "dependent", journal: &closed, started: started, release: release,
+	}
+	res := buildDependencyResult(t,
+		map[string]any{"base": base, "dependent": dependent},
+		map[string][]string{"dependent": {"base"}},
+	)
+
+	dependentErr := make(chan error, 1)
+	go func() {
+		dependentErr <- res.CloseResource("dependent")
+	}()
+	<-started
+
+	if err := res.CloseResource("base"); err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("CloseResource(base) while dependent closes = %v, want conflict", err)
+	}
+	closeErr := make(chan error, 1)
+	go func() {
+		closeErr <- res.Close()
+	}()
+	close(release)
+
+	if err := <-dependentErr; err != nil {
+		t.Fatalf("CloseResource(dependent): %v", err)
+	}
+	if err := <-closeErr; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !reflect.DeepEqual(closed, []string{"dependent", "base"}) {
+		t.Fatalf("closed = %v, want dependency-safe order", closed)
+	}
+	if base.calls != 1 || dependent.calls != 1 {
+		t.Fatalf("close calls = (%d, %d), want (1, 1)", base.calls, dependent.calls)
+	}
+}
+
+func TestResultCloseResourceWaitsForResultCloseOrder(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var closed []string
+	base := &closeRecorder{name: "base", journal: &closed}
+	dependent := &closeRecorder{
+		name: "dependent", journal: &closed, started: started, release: release,
+	}
+	res := buildDependencyResult(t,
+		map[string]any{"base": base, "dependent": dependent},
+		map[string][]string{"dependent": {"base"}},
+	)
+
+	closeErr := make(chan error, 1)
+	go func() {
+		closeErr <- res.Close()
+	}()
+	<-started
+
+	baseErr := make(chan error, 1)
+	go func() {
+		baseErr <- res.CloseResource("base")
+	}()
+	close(release)
+
+	if err := <-closeErr; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := <-baseErr; err != nil {
+		t.Fatalf("CloseResource(base): %v", err)
+	}
+	if !reflect.DeepEqual(closed, []string{"dependent", "base"}) {
+		t.Fatalf("closed = %v, want Result.Close order", closed)
+	}
+	if base.calls != 1 || dependent.calls != 1 {
+		t.Fatalf("close calls = (%d, %d), want (1, 1)", base.calls, dependent.calls)
+	}
+}
+
 func TestResultCloseBorrowsSourcesAndClosesOnlyContainer(t *testing.T) {
 	item := &closeRecorder{}
 	source := &closeRecorder{}
@@ -1028,6 +1318,9 @@ agents:
 `)
 	res, err := b.Build(context.Background(), doc)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := res.CloseResource("container"); err != nil {
 		t.Fatal(err)
 	}
 	if err := res.Close(); err != nil {
@@ -1218,6 +1511,90 @@ agents: {}
 	t.Cleanup(func() { _ = result.Close() })
 	if _, err := deploy.ResourceAs[*fakeJSRuntime](result, "runtime"); err != nil {
 		t.Fatalf("ResourceAs: %v", err)
+	}
+}
+
+func TestBuild_ExternalResourceConsumerRetainsUnexportedResource(t *testing.T) {
+	tb := newTestBuilder(t)
+	doc := parse(t, `
+version: v1
+resources:
+  runtime:
+    kind: script.runtime
+    impl: fakejs
+    settings: {pool_size: 1}
+agents: {}
+`)
+	result, err := tb.Build(
+		context.Background(),
+		doc,
+		deploy.WithExternalResourceConsumers("runtime"),
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+
+	got, err := result.Resource("runtime")
+	if err != nil {
+		t.Fatalf("Resource(runtime): %v", err)
+	}
+	if _, ok := got.(*fakeJSRuntime); !ok {
+		t.Fatalf("Resource(runtime) = %T, want *fakeJSRuntime", got)
+	}
+}
+
+func TestBuild_UnknownExternalResourceConsumerFailsBeforeConstruction(t *testing.T) {
+	calls := 0
+	b := deploy.NewBuilder(agent.NewRegistry())
+	b.MustRegisterResource(resourceFactory(
+		"runtime.Kind", "fake", "", nil,
+		func(context.Context, deploy.ResourceInput) (any, error) {
+			calls++
+			return struct{}{}, nil
+		},
+	))
+	doc := parse(t, `
+version: v1
+resources:
+  runtime: {kind: runtime.Kind, impl: fake, export: true}
+agents: {}
+`)
+
+	_, err := b.Build(
+		context.Background(),
+		doc,
+		deploy.WithExternalResourceConsumers("missing"),
+	)
+	if err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("Build error = %v, want not found", err)
+	}
+	if calls != 0 {
+		t.Fatalf("resource factory calls = %d, want 0", calls)
+	}
+}
+
+func TestBuild_OriginalCallAndBorrowedResourceErrors(t *testing.T) {
+	tb := newTestBuilder(t)
+	doc := parse(t, `
+version: v1
+resources:
+  runtime: {kind: script.runtime, impl: fakejs, export: true}
+agents: {}
+`)
+
+	result, err := tb.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("original Build call: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+
+	if _, err := result.Resource("missing"); err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("Resource(missing) error = %v, want not found", err)
+	}
+	var nilResult *deploy.Result
+	if _, err := nilResult.Resource("runtime"); err == nil || !errdefs.IsNotFound(err) {
+		t.Fatalf("nil Result.Resource error = %v, want not found", err)
 	}
 }
 

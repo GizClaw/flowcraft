@@ -175,6 +175,9 @@ func Execute(
 		if finalBoard == nil {
 			finalBoard = board
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil && !errdefs.IsInterrupted(execErr) {
+			execErr = ctxErr
+		}
 
 		res = &Result{
 			TaskID:    req.TaskID,
@@ -232,6 +235,9 @@ func Execute(
 				break
 			}
 			decision = d
+			if decision.AcceptOutput {
+				res.Committed = true
+			}
 			if decision.DiscardOutput {
 				res.Committed = false
 			}
@@ -262,6 +268,12 @@ func Execute(
 		return res, decErr
 	}
 
+	if ctxErr := ctx.Err(); ctxErr != nil && res.Status != StatusInterrupted {
+		res.Status = StatusCanceled
+		res.Cause = ""
+		res.Err = ctxErr
+		res.Committed = false
+	}
 	if res.Committed && len(rc.committers) > 0 {
 		if err := commitResult(ctx, id, &req, res, rc.committers); err != nil {
 			res.Committed = false

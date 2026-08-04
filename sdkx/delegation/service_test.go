@@ -153,6 +153,40 @@ func TestDirectoryLookupUsesTargetIDIndex(t *testing.T) {
 	}
 }
 
+type readOnlyDeployment struct {
+	names     []string
+	instances map[string]*deploy.Instance
+}
+
+func (d readOnlyDeployment) Instance(name string) (*deploy.Instance, bool) {
+	instance, ok := d.instances[name]
+	return instance, ok
+}
+
+func (d readOnlyDeployment) InstanceNames() []string {
+	return append([]string(nil), d.names...)
+}
+
+func TestDirectoryBindAcceptsReadOnlyDeployment(t *testing.T) {
+	instance := &deploy.Instance{Agent: agent.Agent{
+		ID: "worker",
+		Card: agent.AgentCard{
+			Name:        "Worker",
+			Description: "Does work",
+		},
+	}}
+	directory := NewDirectory()
+	if err := directory.Bind(readOnlyDeployment{
+		names:     []string{"worker"},
+		instances: map[string]*deploy.Instance{"worker": instance},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := directory.Lookup(context.Background(), "worker"); err != nil || got != instance {
+		t.Fatalf("Lookup = (%v, %v), want (%v, nil)", got, err, instance)
+	}
+}
+
 func TestServiceSyncAndHandoff(t *testing.T) {
 	service, err := NewService(boundDirectory(t, completedEngine("finished")), nil)
 	if err != nil {
@@ -181,12 +215,304 @@ func TestServiceSyncAndHandoff(t *testing.T) {
 	}
 }
 
+func TestServiceIdempotencySingleFlightConflictAndWaiterContext(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls atomic.Int32
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		board.AppendChannelMessage(agent.MainChannel,
+			inference.NewTextMessage(inference.RoleAssistant, "done"))
+		return board, nil
+	})
+	service, err := NewService(boundDirectory(t, engine), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("writer")
+	request.IdempotencyKey = "delivery-1"
+	type result struct {
+		response sdkdelegation.Response
+		err      error
+	}
+	first := make(chan result, 1)
+	go func() {
+		response, err := service.Delegate(context.Background(), request)
+		first <- result{response: response, err: err}
+	}()
+	<-started
+
+	second := make(chan result, 1)
+	go func() {
+		response, err := service.Delegate(context.Background(), request)
+		second <- result{response: response, err: err}
+	}()
+	waiterCtx, cancelWaiter := context.WithCancel(context.Background())
+	cancelWaiter()
+	if _, err := service.Delegate(waiterCtx, request); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled waiter error = %v, want context canceled", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("engine calls before release = %d, want 1", got)
+	}
+	conflict := request
+	conflict.Input = "different work"
+	if _, err := service.Delegate(context.Background(), conflict); !errdefs.IsConflict(err) {
+		t.Fatalf("in-flight request with reused key error = %v, want conflict", err)
+	}
+
+	close(release)
+	original := <-first
+	if original.err != nil {
+		t.Fatal(original.err)
+	}
+	concurrent := <-second
+	if concurrent.err != nil {
+		t.Fatal(concurrent.err)
+	}
+	if concurrent.response.ID != original.response.ID {
+		t.Fatalf("concurrent response = %+v, want operation %q", concurrent.response, original.response.ID)
+	}
+	replayed, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ID != original.response.ID || replayed.Output != original.response.Output {
+		t.Fatalf("replayed response = %+v, want %+v", replayed, original.response)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("engine calls after replay = %d, want 1", got)
+	}
+
+	if _, err := service.Delegate(context.Background(), conflict); !errdefs.IsConflict(err) {
+		t.Fatalf("cached request with reused key error = %v, want conflict", err)
+	}
+}
+
+func TestServiceIdempotencyCachesHandoffWithDefensiveCopies(t *testing.T) {
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("researcher")
+	request.Mode = sdkdelegation.ModeHandoff
+	request.IdempotencyKey = "handoff-1"
+	request.Metadata = map[string]string{"tenant": "acme"}
+	first, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.Metadata["target"] = "mutated"
+	request.Metadata["tenant"] = "mutated-after-call"
+
+	replayRequest := request
+	replayRequest.Metadata = map[string]string{"tenant": "acme"}
+	replayed, err := service.Delegate(context.Background(), replayRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ID != first.ID ||
+		replayed.Metadata["target"] != "researcher" ||
+		replayed.Metadata["control_transfer"] != "true" {
+		t.Fatalf("replayed handoff = %+v", replayed)
+	}
+}
+
+type idempotencyBackend struct {
+	calls      atomic.Int32
+	operations atomic.Int32
+	mu         sync.Mutex
+	byKey      map[string]string
+}
+
+func (b *idempotencyBackend) Submit(_ context.Context, request AsyncRequest) (string, error) {
+	call := b.calls.Add(1)
+	b.mu.Lock()
+	id, ok := b.byKey[request.Request.IdempotencyKey]
+	if !ok {
+		id = "job-" + strconv.Itoa(int(b.operations.Add(1)))
+		b.byKey[request.Request.IdempotencyKey] = id
+	}
+	b.mu.Unlock()
+	if call == 1 {
+		return "", errors.New("submit result was uncertain")
+	}
+	return id, nil
+}
+
+func (*idempotencyBackend) Status(context.Context, string) (sdkdelegation.Response, error) {
+	return sdkdelegation.Response{Status: sdkdelegation.StatusAccepted}, nil
+}
+
+func TestServiceIdempotencyRetriesFailuresThenCachesAsyncAccepted(t *testing.T) {
+	backend := &idempotencyBackend{byKey: make(map[string]string)}
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeAsync
+	request.IdempotencyKey = "async-1"
+	if _, err := service.Delegate(context.Background(), request); err == nil {
+		t.Fatal("first async delegation succeeded, want temporary failure")
+	}
+	succeeded, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if succeeded.ID != "job-1" || replayed.ID != succeeded.ID {
+		t.Fatalf("async responses = (%+v, %+v)", succeeded, replayed)
+	}
+	if got := backend.calls.Load(); got != 2 {
+		t.Fatalf("Submit calls = %d, want retry plus cached replay", got)
+	}
+	if got := backend.operations.Load(); got != 1 {
+		t.Fatalf("backend operations = %d, want 1", got)
+	}
+}
+
+func TestServiceIdempotencyRetentionDoesNotEvictByCount(t *testing.T) {
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	first := syncRequest("writer")
+	first.Mode = sdkdelegation.ModeHandoff
+	first.IdempotencyKey = "handoff-0"
+	original, err := service.Delegate(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 1; index <= 1024; index++ {
+		request := syncRequest("writer")
+		request.Mode = sdkdelegation.ModeHandoff
+		request.IdempotencyKey = "handoff-" + strconv.Itoa(index)
+		if _, err := service.Delegate(context.Background(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	replayed, err := service.Delegate(context.Background(), first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ID != original.ID {
+		t.Fatalf("first operation was evicted before retention elapsed: %q != %q", replayed.ID, original.ID)
+	}
+}
+
+func TestServiceIdempotencyRetentionExpiresResults(t *testing.T) {
+	service, err := NewService(
+		boundDirectory(t, completedEngine("unused")),
+		nil,
+		WithIdempotencyRetention(time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeHandoff
+	request.IdempotencyKey = "expiring"
+	first, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	second, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.ID == first.ID {
+		t.Fatalf("expired result replayed operation %q", first.ID)
+	}
+}
+
+func TestServiceIdempotencyJanitorExpiresIdleResults(t *testing.T) {
+	service, err := NewService(
+		boundDirectory(t, completedEngine("unused")),
+		nil,
+		WithIdempotencyRetention(5*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeHandoff
+	request.IdempotencyKey = "idle-expiring"
+	if _, err := service.Delegate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(100 * time.Millisecond)
+	for {
+		service.idempotencyMu.Lock()
+		cached := len(service.idempotencyCache)
+		service.idempotencyMu.Unlock()
+		if cached == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("idle idempotency result was not cleaned automatically")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-service.workerCtx.Done():
+	default:
+		t.Fatal("Close did not stop the idempotency janitor context")
+	}
+}
+
+func TestServiceIdempotencyRetentionMustBePositive(t *testing.T) {
+	if _, err := NewService(
+		boundDirectory(t, completedEngine("unused")),
+		nil,
+		WithIdempotencyRetention(0),
+	); !errdefs.IsValidation(err) {
+		t.Fatalf("zero idempotency retention error = %v, want validation", err)
+	}
+}
+
 type fakeAsyncBackend struct {
 	mu        sync.Mutex
 	submitted []AsyncRequest
 	id        string
 	response  sdkdelegation.Response
 	err       error
+}
+
+type retainedAsyncBackend struct {
+	*fakeAsyncBackend
+	retention time.Duration
+}
+
+func (b *retainedAsyncBackend) IdempotencyRetention() time.Duration {
+	return b.retention
 }
 
 func (b *fakeAsyncBackend) Submit(_ context.Context, request AsyncRequest) (string, error) {
@@ -239,6 +565,71 @@ func TestServiceAsyncSubmitAndStatus(t *testing.T) {
 	if response.ID != "job-1" || response.Status != sdkdelegation.StatusRunning ||
 		response.Output != "" || response.Error != "" {
 		t.Fatalf("normalized status = %+v", response)
+	}
+}
+
+func TestServiceIdempotencyKeyIsSharedAcrossDelegationModes(t *testing.T) {
+	backend := &fakeAsyncBackend{id: "job-shared"}
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeAsync
+	request.IdempotencyKey = "shared-key"
+	first, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.Delegate(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != "job-shared" || replayed.ID != first.ID || len(backend.submitted) != 1 {
+		t.Fatalf("async replay = (%+v, %+v), submissions %d", first, replayed, len(backend.submitted))
+	}
+
+	differentMode := request
+	differentMode.Mode = sdkdelegation.ModeSync
+	if _, err := service.Delegate(context.Background(), differentMode); !errdefs.IsConflict(err) {
+		t.Fatalf("same key with sync mode error = %v, want conflict", err)
+	}
+	differentBusiness := request
+	differentBusiness.Input = "different work"
+	if _, err := service.Delegate(context.Background(), differentBusiness); !errdefs.IsConflict(err) {
+		t.Fatalf("same key with different input error = %v, want conflict", err)
+	}
+}
+
+func TestServiceAsyncIdempotencyUsesBackendRetentionWhenShorter(t *testing.T) {
+	backend := &retainedAsyncBackend{
+		fakeAsyncBackend: &fakeAsyncBackend{id: "job-retained"},
+		retention:        time.Millisecond,
+	}
+	service, err := NewService(
+		boundDirectory(t, completedEngine("unused")),
+		backend,
+		WithIdempotencyRetention(time.Hour),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeAsync
+	request.IdempotencyKey = "backend-window"
+	if _, err := service.Delegate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	if _, err := service.Delegate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(backend.submitted); got != 2 {
+		t.Fatalf("submissions after backend retention elapsed = %d, want 2", got)
 	}
 }
 
@@ -320,6 +711,67 @@ func TestServiceWorkerExecutesWorkWithoutOwningBackend(t *testing.T) {
 	}
 	if got := backend.closeCall.Load(); got != 0 {
 		t.Fatalf("backend Close calls = %d, want 0", got)
+	}
+}
+
+func TestServiceDeferredWorkersStartOnce(t *testing.T) {
+	backend := newQueueBackend()
+	service, err := NewService(
+		boundDirectory(t, completedEngine("from deferred worker")),
+		backend,
+		WithMaxConcurrency(1),
+		WithDeferredWorkers(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := syncRequest("writer")
+	request.Mode = sdkdelegation.ModeAsync
+	if _, err := service.Delegate(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-backend.completed:
+		t.Fatal("deferred service claimed work before Start")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := service.Start(); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+	select {
+	case completed := <-backend.completed:
+		if completed.Output != "from deferred worker" {
+			t.Fatalf("completed work = %+v", completed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not claim after Start")
+	}
+	if err := service.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestServiceDeferredCloseBeforeStart(t *testing.T) {
+	backend := newQueueBackend()
+	service, err := NewService(
+		boundDirectory(t, completedEngine("unused")),
+		backend,
+		WithDeferredWorkers(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := service.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := service.Start(); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Start after Close error = %v, want not available", err)
 	}
 }
 
@@ -611,10 +1063,12 @@ func TestServiceCloseWaitsRejectsAndIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	request := syncRequest("writer")
+	request.IdempotencyKey = "close-in-flight"
 	delegated := make(chan struct{})
 	go func() {
 		defer close(delegated)
-		_, _ = service.Delegate(context.Background(), syncRequest("writer"))
+		_, _ = service.Delegate(context.Background(), request)
 	}()
 	<-started
 
@@ -632,7 +1086,7 @@ func TestServiceCloseWaitsRejectsAndIsIdempotent(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := service.Delegate(context.Background(), syncRequest("writer")); !errdefs.IsNotAvailable(err) {
+	if _, err := service.Delegate(context.Background(), request); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("Delegate during Close error = %v, want not available", err)
 	}
 	select {

@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
+	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 	"github.com/GizClaw/flowcraft/sdkx/memory/config"
+	localscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
 )
 
 type fixedClock struct {
@@ -26,7 +29,7 @@ type maintenanceImpl struct {
 	archiveRequests []sdkmemory.ArchiveRequest
 	err             error
 	block           bool
-	entered         chan Operation
+	entered         chan string
 	release         chan struct{}
 	active          int
 	overlapped      bool
@@ -37,8 +40,11 @@ func (m *maintenanceImpl) CompileCompact(context.Context, sdkmemory.CompactReque
 		sdkmemory.FieldCompactScope, sdkmemory.FieldCompactOlderThan, sdkmemory.FieldCompactKeep)
 }
 
-func (m *maintenanceImpl) ExecuteCompact(ctx context.Context, request sdkmemory.CompactRequest) (sdkmemory.CompactResponse, error) {
-	if err := m.enter(ctx, OperationCompact); err != nil {
+func (m *maintenanceImpl) ExecuteCompact(
+	ctx context.Context,
+	request sdkmemory.CompactRequest,
+) (sdkmemory.CompactResponse, error) {
+	if err := m.enter(ctx, "compact"); err != nil {
 		return sdkmemory.CompactResponse{}, err
 	}
 	m.mu.Lock()
@@ -53,8 +59,11 @@ func (m *maintenanceImpl) CompileArchive(context.Context, sdkmemory.ArchiveReque
 		sdkmemory.FieldArchiveScope, sdkmemory.FieldArchiveOlderThan, sdkmemory.FieldArchiveDestination)
 }
 
-func (m *maintenanceImpl) ExecuteArchive(ctx context.Context, request sdkmemory.ArchiveRequest) (sdkmemory.ArchiveResponse, error) {
-	if err := m.enter(ctx, OperationArchive); err != nil {
+func (m *maintenanceImpl) ExecuteArchive(
+	ctx context.Context,
+	request sdkmemory.ArchiveRequest,
+) (sdkmemory.ArchiveResponse, error) {
+	if err := m.enter(ctx, "archive"); err != nil {
 		return sdkmemory.ArchiveResponse{}, err
 	}
 	m.mu.Lock()
@@ -64,7 +73,7 @@ func (m *maintenanceImpl) ExecuteArchive(ctx context.Context, request sdkmemory.
 	return sdkmemory.ArchiveResponse{}, err
 }
 
-func (m *maintenanceImpl) enter(ctx context.Context, operation Operation) error {
+func (m *maintenanceImpl) enter(ctx context.Context, operation string) error {
 	m.mu.Lock()
 	if !m.block {
 		m.mu.Unlock()
@@ -80,19 +89,17 @@ func (m *maintenanceImpl) enter(ctx context.Context, operation Operation) error 
 		m.active--
 		m.mu.Unlock()
 	}()
-	m.entered <- operation
+	select {
+	case m.entered <- operation:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	select {
 	case <-m.release:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func (m *maintenanceImpl) counts() (int, int) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return len(m.compactRequests), len(m.archiveRequests)
 }
 
 func native(operation sdkmemory.Operation, fields ...sdkmemory.FieldID) sdkmemory.CompileResult {
@@ -122,91 +129,53 @@ func newRuntime(t *testing.T, impl *maintenanceImpl, clock sdkmemory.Clock) *sdk
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = runtime.Close() })
 	return runtime
 }
 
-func TestDispatcherMapsCompactAndArchiveTasks(t *testing.T) {
-	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
-	impl := &maintenanceImpl{}
-	scheduler, err := New(newRuntime(t, impl, fixedClock{now: now}), config.LifecycleSpec{})
+func newLocalServer(t *testing.T) *localscheduler.LocalServer {
+	t.Helper()
+	server, err := localscheduler.NewLocalServer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	return server
+}
+
+func newScheduler(
+	t *testing.T,
+	server sdkscheduler.Server,
+	namespace string,
+	runtime *sdkmemory.Runtime,
+	lifecycle LifecycleSpec,
+) *Scheduler {
+	t.Helper()
+	scheduler, err := New(
+		t.Context(), server, namespace, runtime, lifecycle,
+		WithWorkerOptions(sdkscheduler.WithPollInterval(time.Millisecond)),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = scheduler.Close() })
+	return scheduler
+}
 
-	compactWork, err := scheduler.dispatcher.Dispatch(t.Context(), "compact-test", Task{
-		Operation: OperationCompact,
-		OlderThan: 7 * 24 * time.Hour,
-		Keep:      50,
-	})
-	if err != nil {
+func start(t *testing.T, scheduler *Scheduler, server *localscheduler.LocalServer) {
+	t.Helper()
+	if err := scheduler.Start(); err != nil {
 		t.Fatal(err)
 	}
-	if outstanding, err := compactWork.IsOutstanding(t.Context()); err != nil || outstanding {
-		t.Fatalf("compact outstanding = %v, error = %v", outstanding, err)
-	}
-	archiveWork, err := scheduler.dispatcher.Dispatch(t.Context(), "archive-test", Task{
-		Operation:   OperationArchive,
-		OlderThan:   90 * 24 * time.Hour,
-		Destination: "s3://bucket/archive",
-	})
-	if err != nil {
+	if err := server.Start(); err != nil {
 		t.Fatal(err)
-	}
-	if outstanding, err := archiveWork.IsOutstanding(t.Context()); err != nil || outstanding {
-		t.Fatalf("archive outstanding = %v, error = %v", outstanding, err)
-	}
-
-	impl.mu.Lock()
-	defer impl.mu.Unlock()
-	compact := impl.compactRequests[0]
-	if compact.Scope.RuntimeID != "prod" || compact.Scope.UserID != "tenant" ||
-		!compact.OlderThan.Equal(now.Add(-7*24*time.Hour)) || compact.Keep != 50 {
-		t.Fatalf("compact request = %+v", compact)
-	}
-	archive := impl.archiveRequests[0]
-	if archive.Scope.RuntimeID != "prod" || archive.Scope.UserID != "tenant" ||
-		!archive.OlderThan.Equal(now.Add(-90*24*time.Hour)) ||
-		archive.Destination != "s3://bucket/archive" {
-		t.Fatalf("archive request = %+v", archive)
 	}
 }
 
-func TestDispatcherUsesRuntimeIDWhenDefaultScopeIsZero(t *testing.T) {
-	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
-	impl := &maintenanceImpl{}
-	runtime, err := sdkmemory.New(sdkmemory.Spec{
-		RuntimeID: "prod",
-		Clock:     fixedClock{now: now},
-	}, sdkmemory.Impls{Compact: impl})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = runtime.Close() })
-
-	scheduler, err := New(runtime, config.LifecycleSpec{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = scheduler.Close() })
-	if _, err := scheduler.dispatcher.Dispatch(t.Context(), "compact-test", Task{
-		Operation: OperationCompact,
-		OlderThan: time.Hour,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	impl.mu.Lock()
-	defer impl.mu.Unlock()
-	if len(impl.compactRequests) != 1 ||
-		impl.compactRequests[0].Scope != (sdkmemory.Scope{RuntimeID: "prod"}) {
-		t.Fatalf("compact requests = %+v, want RuntimeID-only scope", impl.compactRequests)
-	}
-}
-
-func TestNewRegistersEnabledCronRulesAndSkipsEmptyBlocks(t *testing.T) {
-	impl := &maintenanceImpl{}
-	runtime := newRuntime(t, impl, fixedClock{now: time.Now()})
-	scheduler, err := New(runtime, config.LifecycleSpec{
+func TestNewRegistersLifecycleRules(t *testing.T) {
+	server := newLocalServer(t)
+	runtime := newRuntime(t, &maintenanceImpl{}, fixedClock{now: time.Now()})
+	scheduler := newScheduler(t, server, "memory", runtime, config.LifecycleSpec{
 		Compact: config.CompactLifecycleSpec{
 			Cron:      "@hourly",
 			OlderThan: 7 * 24 * time.Hour,
@@ -218,77 +187,136 @@ func TestNewRegistersEnabledCronRulesAndSkipsEmptyBlocks(t *testing.T) {
 			Destination: "s3://bucket/archive",
 		},
 	})
+
+	rules, err := scheduler.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = scheduler.Close() })
-	if got := scheduler.Rules(); !slices.Equal(got, []string{ArchiveRuleID, CompactRuleID}) {
-		t.Fatalf("Rules = %v", got)
+	if len(rules) != 2 {
+		t.Fatalf("rules = %d, want 2", len(rules))
+	}
+	if got := []string{rules[0].ID, rules[1].ID}; !slices.Equal(got, []string{ArchiveRuleID, CompactRuleID}) {
+		t.Fatalf("rule IDs = %v", got)
+	}
+	for _, rule := range rules {
+		if rule.Namespace != "memory" || rule.Timezone != "UTC" ||
+			rule.Overlap != sdkscheduler.OverlapSkip {
+			t.Fatalf("rule = %+v", rule)
+		}
 	}
 
-	disabled, err := New(runtime, config.LifecycleSpec{})
+	empty := newScheduler(t, server, "disabled", runtime, config.LifecycleSpec{})
+	emptyRules, err := empty.List(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = disabled.Close() })
-	if got := disabled.Rules(); len(got) != 0 {
-		t.Fatalf("disabled Rules = %v", got)
+	if len(emptyRules) != 0 {
+		t.Fatalf("disabled rules = %+v", emptyRules)
 	}
 }
 
-func TestDispatcherSerializesCompactAndArchiveAcrossRules(t *testing.T) {
-	impl := &maintenanceImpl{
-		block:   true,
-		entered: make(chan Operation, 2),
-		release: make(chan struct{}, 2),
-	}
-	scheduler, err := New(newRuntime(t, impl, fixedClock{now: time.Now()}), config.LifecycleSpec{})
-	if err != nil {
+func TestWorkerClaimsAndExecutesMaintenance(t *testing.T) {
+	now := time.Date(2026, 8, 3, 9, 0, 0, 0, time.UTC)
+	impl := &maintenanceImpl{}
+	server := newLocalServer(t)
+	scheduler := newScheduler(
+		t, server, "memory", newRuntime(t, impl, fixedClock{now: now}), config.LifecycleSpec{},
+	)
+	start(t, scheduler, server)
+
+	if _, err := scheduler.After(t.Context(), 0, Task{Compact: &CompactTask{
+		OlderThan: 7 * 24 * time.Hour,
+		Keep:      50,
+	}}); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = scheduler.Close() })
-
-	done := make(chan error, 2)
-	go func() {
-		_, err := scheduler.dispatcher.Dispatch(context.Background(), "compact", Task{
-			Operation: OperationCompact, OlderThan: time.Hour,
-		})
-		done <- err
-	}()
-	select {
-	case operation := <-impl.entered:
-		if operation != OperationCompact {
-			t.Fatalf("first operation = %q", operation)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("compact did not start")
+	if _, err := scheduler.After(t.Context(), 0, Task{Archive: &ArchiveTask{
+		OlderThan:   90 * 24 * time.Hour,
+		Destination: "s3://bucket/archive",
+	}}); err != nil {
+		t.Fatal(err)
 	}
-	go func() {
-		_, err := scheduler.dispatcher.Dispatch(context.Background(), "archive", Task{
-			Operation: OperationArchive, OlderThan: time.Hour, Destination: "memory://archive",
-		})
-		done <- err
-	}()
+	waitFor(t, time.Second, func() bool {
+		impl.mu.Lock()
+		defer impl.mu.Unlock()
+		return len(impl.compactRequests) == 1 && len(impl.archiveRequests) == 1
+	})
+
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
+	compact := impl.compactRequests[0]
+	if compact.Scope != (sdkmemory.Scope{RuntimeID: "prod", UserID: "tenant"}) ||
+		!compact.OlderThan.Equal(now.Add(-7*24*time.Hour)) || compact.Keep != 50 {
+		t.Fatalf("compact request = %+v", compact)
+	}
+	archive := impl.archiveRequests[0]
+	if archive.Scope != (sdkmemory.Scope{RuntimeID: "prod", UserID: "tenant"}) ||
+		!archive.OlderThan.Equal(now.Add(-90*24*time.Hour)) ||
+		archive.Destination != "s3://bucket/archive" {
+		t.Fatalf("archive request = %+v", archive)
+	}
+}
+
+func TestLifecycleRuleIsClaimedAndExecuted(t *testing.T) {
+	impl := &maintenanceImpl{}
+	server := newLocalServer(t)
+	scheduler := newScheduler(
+		t,
+		server,
+		"memory",
+		newRuntime(t, impl, fixedClock{now: time.Now()}),
+		config.LifecycleSpec{Compact: config.CompactLifecycleSpec{
+			Cron:      "@every 1s",
+			OlderThan: time.Hour,
+		}},
+	)
+	start(t, scheduler, server)
+	waitFor(t, 2*time.Second, func() bool {
+		impl.mu.Lock()
+		defer impl.mu.Unlock()
+		return len(impl.compactRequests) != 0
+	})
+}
+
+func TestWorkerSerializesCompactAndArchive(t *testing.T) {
+	impl := &maintenanceImpl{
+		block:   true,
+		entered: make(chan string, 2),
+		release: make(chan struct{}, 2),
+	}
+	server := newLocalServer(t)
+	scheduler := newScheduler(
+		t, server, "memory", newRuntime(t, impl, fixedClock{now: time.Now()}), config.LifecycleSpec{},
+	)
+	start(t, scheduler, server)
+
+	if _, err := scheduler.After(t.Context(), 0, Task{
+		Compact: &CompactTask{OlderThan: time.Hour},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := scheduler.After(t.Context(), 0, Task{
+		Archive: &ArchiveTask{OlderThan: time.Hour, Destination: "memory://archive"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := receive(t, impl.entered)
 	select {
 	case operation := <-impl.entered:
-		t.Fatalf("%s overlapped compact", operation)
+		t.Fatalf("%s overlapped %s", operation, first)
 	case <-time.After(50 * time.Millisecond):
 	}
 	impl.release <- struct{}{}
-	select {
-	case operation := <-impl.entered:
-		if operation != OperationArchive {
-			t.Fatalf("second operation = %q", operation)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("archive did not start after compact")
+	second := receive(t, impl.entered)
+	if first == second {
+		t.Fatalf("operations = %q then %q", first, second)
 	}
 	impl.release <- struct{}{}
-	for range 2 {
-		if err := <-done; err != nil {
-			t.Fatal(err)
-		}
-	}
+	waitFor(t, time.Second, func() bool {
+		impl.mu.Lock()
+		defer impl.mu.Unlock()
+		return len(impl.compactRequests) == 1 && len(impl.archiveRequests) == 1
+	})
 	impl.mu.Lock()
 	defer impl.mu.Unlock()
 	if impl.overlapped {
@@ -296,27 +324,63 @@ func TestDispatcherSerializesCompactAndArchiveAcrossRules(t *testing.T) {
 	}
 }
 
-func TestCloseCancelsBlockedExecute(t *testing.T) {
-	impl := &maintenanceImpl{
-		block:   true,
-		entered: make(chan Operation, 1),
-		release: make(chan struct{}),
+type observingServer struct {
+	*localscheduler.LocalServer
+	completed chan sdkscheduler.CompleteRequest
+}
+
+func (s *observingServer) Complete(ctx context.Context, request sdkscheduler.CompleteRequest) error {
+	err := s.LocalServer.Complete(ctx, request)
+	if err == nil {
+		s.completed <- request
 	}
-	scheduler, err := New(newRuntime(t, impl, fixedClock{now: time.Now()}), config.LifecycleSpec{
-		Compact: config.CompactLifecycleSpec{
-			Cron:      "@every 1s",
-			OlderThan: time.Hour,
-		},
-	})
-	if err != nil {
+	return err
+}
+
+func TestOperationFailureCompletesExecutionFailed(t *testing.T) {
+	local := newLocalServer(t)
+	server := &observingServer{
+		LocalServer: local,
+		completed:   make(chan sdkscheduler.CompleteRequest, 1),
+	}
+	impl := &maintenanceImpl{err: errors.New("storage unavailable")}
+	scheduler := newScheduler(
+		t, server, "memory", newRuntime(t, impl, fixedClock{now: time.Now()}), config.LifecycleSpec{},
+	)
+	start(t, scheduler, local)
+	if _, err := scheduler.After(t.Context(), 0, Task{
+		Compact: &CompactTask{OlderThan: time.Hour},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	scheduler.Start()
 	select {
-	case <-impl.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("compact did not start")
+	case completion := <-server.completed:
+		if completion.Status != sdkscheduler.StatusFailed ||
+			!strings.Contains(completion.Error, "compact") {
+			t.Fatalf("completion = %+v", completion)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("execution was not completed")
 	}
+}
+
+func TestCloseCancelsBlockedIOAndKeepsBorrowedResourcesOpen(t *testing.T) {
+	impl := &maintenanceImpl{
+		block:   true,
+		entered: make(chan string, 1),
+		release: make(chan struct{}),
+	}
+	server := newLocalServer(t)
+	runtime := newRuntime(t, impl, fixedClock{now: time.Now()})
+	scheduler := newScheduler(t, server, "memory", runtime, config.LifecycleSpec{})
+	start(t, scheduler, server)
+	if _, err := scheduler.After(t.Context(), 0, Task{
+		Compact: &CompactTask{OlderThan: time.Hour},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	receive(t, impl.entered)
+
 	done := make(chan error, 1)
 	go func() { done <- scheduler.Close() }()
 	select {
@@ -325,118 +389,148 @@ func TestCloseCancelsBlockedExecute(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Close did not cancel blocked ExecuteCompact")
+		t.Fatal("Close did not cancel blocked maintenance I/O")
 	}
-}
-
-func TestNewRejectsNilRuntimeAndInvalidLifecycle(t *testing.T) {
-	if _, err := New(nil, config.LifecycleSpec{}); !errdefs.IsValidation(err) {
-		t.Fatalf("New(nil) error = %v", err)
+	if err := scheduler.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
-	runtime := newRuntime(t, &maintenanceImpl{}, fixedClock{now: time.Now()})
-	if _, err := New(runtime, config.LifecycleSpec{
-		Compact: config.CompactLifecycleSpec{Cron: "@hourly"},
-	}); !errdefs.IsValidation(err) {
-		t.Fatalf("incomplete lifecycle error = %v", err)
+	if _, err := server.ListRules(t.Context(), "memory"); err != nil {
+		t.Fatalf("borrowed server was closed: %v", err)
 	}
-}
-
-type ruleStore struct {
-	called bool
-}
-
-func (s *ruleStore) Save(context.Context, Rule) error {
-	s.called = true
-	return nil
-}
-
-func (s *ruleStore) Delete(context.Context, string) error {
-	s.called = true
-	return nil
-}
-
-func (s *ruleStore) List(context.Context) ([]Rule, error) {
-	s.called = true
-	return nil, nil
-}
-
-func TestNewDoesNotPerformRuleStoreIO(t *testing.T) {
-	store := &ruleStore{}
-	runtime := newRuntime(t, &maintenanceImpl{}, fixedClock{now: time.Now()})
-	_, err := New(runtime, config.LifecycleSpec{
-		Compact: config.CompactLifecycleSpec{
-			Cron:      "@hourly",
-			OlderThan: time.Hour,
-		},
-	}, WithRuleStore(store))
-	if !errdefs.IsValidation(err) {
-		t.Fatalf("New error = %v, want validation", err)
-	}
-	if store.called {
-		t.Fatal("New performed rule store I/O")
-	}
-}
-
-type persistedRuleStore struct {
-	rules []Rule
-}
-
-func (*persistedRuleStore) Save(context.Context, Rule) error     { return nil }
-func (*persistedRuleStore) Delete(context.Context, string) error { return nil }
-func (s *persistedRuleStore) List(context.Context) ([]Rule, error) {
-	return slices.Clone(s.rules), nil
-}
-
-func TestRestoreValidatesPersistedMemoryTasks(t *testing.T) {
-	store := &persistedRuleStore{rules: []Rule{
-		{
-			ID: "valid", Cron: "@hourly",
-			Value: Task{Operation: OperationCompact, OlderThan: time.Hour},
-		},
-		{
-			ID: "invalid", Cron: "@hourly",
-			Value: Task{Operation: OperationArchive, OlderThan: time.Hour},
-		},
-	}}
-	runtime := newRuntime(t, &maintenanceImpl{}, fixedClock{now: time.Now()})
-	scheduler, err := New(runtime, config.LifecycleSpec{}, WithRuleStore(store))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = scheduler.Close() })
-	n, err := scheduler.Restore(t.Context())
-	if n != 1 || !errdefs.IsValidation(err) {
-		t.Fatalf("Restore = (%d, %v), want one plus validation", n, err)
-	}
-	if got := scheduler.Rules(); !slices.Equal(got, []string{"valid"}) {
-		t.Fatalf("Rules = %v, want [valid]", got)
-	}
-}
-
-func TestExecuteErrorDoesNotStopScheduler(t *testing.T) {
-	impl := &maintenanceImpl{err: errors.New("storage unavailable")}
-	scheduler, err := New(newRuntime(t, impl, fixedClock{now: time.Now()}), config.LifecycleSpec{
-		Compact: config.CompactLifecycleSpec{
-			Cron:      "@every 1s",
-			OlderThan: time.Hour,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = scheduler.Close() })
-	scheduler.Start()
-	waitFor(t, 2*time.Second, func() bool {
-		compact, _ := impl.counts()
-		return compact >= 1
-	})
 	impl.mu.Lock()
-	impl.err = nil
+	impl.block = false
 	impl.mu.Unlock()
-	waitFor(t, 2*time.Second, func() bool {
-		compact, _ := impl.counts()
-		return compact >= 2
+	if _, err := runtime.ExecuteCompact(t.Context(), sdkmemory.CompactRequest{
+		Scope:     sdkmemory.Scope{RuntimeID: "prod", UserID: "tenant"},
+		OlderThan: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("borrowed runtime was closed or canceled: %v", err)
+	}
+}
+
+func TestStartDoesNotDependOnNewContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := newLocalServer(t)
+	impl := &maintenanceImpl{}
+	scheduler, err := New(
+		ctx,
+		server,
+		"memory",
+		newRuntime(t, impl, fixedClock{now: time.Now()}),
+		config.LifecycleSpec{},
+		WithWorkerOptions(sdkscheduler.WithPollInterval(time.Millisecond)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = scheduler.Close() })
+	cancel()
+	start(t, scheduler, server)
+	if _, err := scheduler.After(t.Context(), 0, Task{
+		Compact: &CompactTask{OlderThan: time.Hour},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, time.Second, func() bool {
+		impl.mu.Lock()
+		defer impl.mu.Unlock()
+		return len(impl.compactRequests) == 1
 	})
+	if err := scheduler.Start(); err != nil {
+		t.Fatalf("second Start: %v", err)
+	}
+}
+
+func TestValidation(t *testing.T) {
+	server := newLocalServer(t)
+	runtime := newRuntime(t, &maintenanceImpl{}, fixedClock{now: time.Now()})
+	var nilServer *localscheduler.LocalServer
+	tests := []struct {
+		name string
+		call func() error
+	}{
+		{"nil context", func() error {
+			_, err := New(nil, server, "memory", runtime, config.LifecycleSpec{})
+			return err
+		}},
+		{"nil server", func() error {
+			_, err := New(t.Context(), nil, "memory", runtime, config.LifecycleSpec{})
+			return err
+		}},
+		{"typed nil server", func() error {
+			_, err := New(t.Context(), nilServer, "memory", runtime, config.LifecycleSpec{})
+			return err
+		}},
+		{"empty namespace", func() error {
+			_, err := New(t.Context(), server, " ", runtime, config.LifecycleSpec{})
+			return err
+		}},
+		{"nil runtime", func() error {
+			_, err := New(t.Context(), server, "memory", nil, config.LifecycleSpec{})
+			return err
+		}},
+		{"invalid lifecycle", func() error {
+			_, err := New(t.Context(), server, "memory", runtime, config.LifecycleSpec{
+				Compact: config.CompactLifecycleSpec{Cron: "@hourly"},
+			})
+			return err
+		}},
+		{"nil option", func() error {
+			_, err := New(t.Context(), server, "memory", runtime, config.LifecycleSpec{}, nil)
+			return err
+		}},
+		{"nil clock", func() error {
+			_, err := New(
+				t.Context(), server, "memory", runtime, config.LifecycleSpec{}, WithClock(nil),
+			)
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(); !errdefs.IsValidation(err) {
+				t.Fatalf("error = %v, want validation", err)
+			}
+		})
+	}
+
+	invalidTasks := []Task{
+		{},
+		{Compact: &CompactTask{OlderThan: time.Hour}, Archive: &ArchiveTask{
+			OlderThan: time.Hour, Destination: "archive",
+		}},
+		{Compact: &CompactTask{}},
+		{Compact: &CompactTask{OlderThan: time.Hour, Keep: -1}},
+		{Archive: &ArchiveTask{OlderThan: time.Hour}},
+	}
+	for _, task := range invalidTasks {
+		if err := task.Validate(); !errdefs.IsValidation(err) {
+			t.Fatalf("Task.Validate(%+v) = %v, want validation", task, err)
+		}
+	}
+
+	scheduler := newScheduler(t, server, "task-validation", runtime, config.LifecycleSpec{})
+	if _, err := scheduler.PutRule(t.Context(), Rule{
+		ID:   "invalid",
+		Cron: "@hourly",
+		Task: Task{},
+	}); !errdefs.IsValidation(err) {
+		t.Fatalf("PutRule invalid task error = %v, want validation", err)
+	}
+	if _, err := scheduler.After(t.Context(), 0, Task{}); !errdefs.IsValidation(err) {
+		t.Fatalf("After invalid task error = %v, want validation", err)
+	}
+}
+
+func receive(t *testing.T, channel <-chan string) string {
+	t.Helper()
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for maintenance operation")
+		return ""
+	}
 }
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
@@ -446,7 +540,7 @@ func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 		if condition() {
 			return
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("condition not met within %s", timeout)
 }

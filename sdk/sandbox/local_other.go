@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"os/exec"
 	"time"
 )
@@ -18,7 +19,7 @@ type GroupCapsWatcher struct{}
 
 // StartGroupCapsWatcher returns nil outside unix. Runner.Exec rejects
 // actionable caps before reaching this function.
-func StartGroupCapsWatcher(_ int, _ ResourceLimits, _ time.Duration) *GroupCapsWatcher {
+func StartGroupCapsWatcher(_ context.Context, _ int, _ ResourceLimits, _ time.Duration) *GroupCapsWatcher {
 	return nil
 }
 

@@ -16,6 +16,35 @@ func stepActorFor(nodeID string) string {
 	return "graph_node_" + agent.SanitiseID(nodeID)
 }
 
+// RunEventPayload describes the graph execution bracket.
+type RunEventPayload struct {
+	Graph string `json:"graph"`
+	Error string `json:"error,omitempty"`
+}
+
+func publishRunEvent(ctx context.Context, host agent.Host, g *Graph, run agent.Run, subject event.Subject, runErr error) error {
+	if host == nil {
+		return nil
+	}
+	payload := RunEventPayload{Graph: g.name}
+	if runErr != nil {
+		payload.Error = runErr.Error()
+	}
+	env, err := event.NewEnvelope(ctx, subject, payload)
+	if err != nil {
+		recordPublishError(ctx, "run", run.Info(), "")
+		return err
+	}
+	env.SetGraphID(g.name)
+	env.SetAgentID(run.AgentID)
+	env.SetRunID(run.RunID)
+	if err := host.Publish(ctx, env); err != nil {
+		recordPublishError(ctx, "run", run.Info(), "")
+		return err
+	}
+	return nil
+}
+
 // StepEventPayload is the decoded payload shape of the step lifecycle
 // envelopes published around every node invocation.
 type StepEventPayload struct {

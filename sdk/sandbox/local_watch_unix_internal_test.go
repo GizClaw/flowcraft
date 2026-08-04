@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"syscall"
@@ -40,7 +41,7 @@ func TestWatcherFailsClosedWhenSamplingBreaks(t *testing.T) {
 		t.Skipf("cannot spawn a child here: %v", err)
 	}
 
-	w := StartGroupCapsWatcher(c.Process.Pid, ResourceLimits{MemoryBytes: 128 << 20}, time.Second)
+	w := StartGroupCapsWatcher(context.Background(), c.Process.Pid, ResourceLimits{MemoryBytes: 128 << 20}, time.Second)
 	if w == nil {
 		t.Fatal("an actionable MemoryBytes cap must produce a watcher")
 	}
@@ -93,7 +94,7 @@ func TestWatcherToleratesTransientSampleFailure(t *testing.T) {
 		_ = c.Wait()
 	})
 
-	w := StartGroupCapsWatcher(c.Process.Pid, ResourceLimits{MemoryBytes: 128 << 20}, time.Second)
+	w := StartGroupCapsWatcher(context.Background(), c.Process.Pid, ResourceLimits{MemoryBytes: 128 << 20}, time.Second)
 	time.Sleep(groupWatchInterval * time.Duration(maxSampleFailures+2))
 	w.Stop()
 

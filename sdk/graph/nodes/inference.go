@@ -10,7 +10,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // InferenceConfig is the config of the "inference" node type. Board
@@ -262,25 +265,41 @@ func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg In
 	if err != nil {
 		return inference.GenerateResponse{}, err
 	}
-	defer func() { _ = stream.Close() }()
+	defer func() {
+		if cerr := stream.Close(); cerr != nil {
+			telemetry.WarnErr(ec.Context, "inference node: close stream after drain", cerr,
+				otellog.String("node.type", "inference"))
+		}
+	}()
 
-	channel := cfg.MessagesChannel
+	return drainGenerateStream(ec, board, cfg.MessagesChannel, stream)
+}
+
+func drainGenerateStream(ec graph.ExecutionContext, board *agent.Board, channel string, stream inference.GenerateStream) (response inference.GenerateResponse, err error) {
 	s := ec.NewMessageStream(channel)
+	defer func() {
+		if err != nil {
+			// Preserve the original stream error; partial materialization
+			// is best effort, but if Close itself fails the caller should
+			// still see why their partial materialization didn't land.
+			if _, cerr := s.Close(board); cerr != nil {
+				telemetry.WarnErr(ec.Context, "inference node: materialize partial stream", cerr,
+					otellog.String("node.type", "inference"),
+					otellog.String("channel", channel))
+			}
+		}
+	}()
 	for {
-		event, err := stream.Next(ec.Context)
-		if errors.Is(err, io.EOF) {
+		event, nextErr := stream.Next(ec.Context)
+		if errors.Is(nextErr, io.EOF) {
 			break
 		}
-		if err != nil {
-			// Best-effort partial commit; the original error is
-			// what propagates.
-			_, _ = s.Close(board)
-			return inference.GenerateResponse{}, err
+		if nextErr != nil {
+			return response, nextErr
 		}
 		if delta, ok := event.Delta.(inference.TextPartDelta); ok && delta.Text != "" {
-			if err := s.Emit(delta.Text); err != nil {
-				_, _ = s.Close(board)
-				return inference.GenerateResponse{}, err
+			if emitErr := s.Emit(delta.Text); emitErr != nil {
+				return response, emitErr
 			}
 		}
 	}

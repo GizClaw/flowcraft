@@ -82,6 +82,35 @@ func TestUnregister_NonExistent(t *testing.T) {
 	}
 }
 
+func TestRegisterAllIfAbsentIsAtomicAndReleasePreservesReplacement(t *testing.T) {
+	r := NewRegistry()
+	existing := stubTool("existing")
+	r.Register(existing)
+
+	if release, ok := r.RegisterAllIfAbsent(stubTool("new"), stubTool("existing")); ok || release != nil {
+		t.Fatal("batch with a conflicting name was registered")
+	}
+	if _, ok := r.Get("new"); ok {
+		t.Fatal("non-conflicting member of rejected batch was registered")
+	}
+	if got, _ := r.Get("existing"); got != existing {
+		t.Fatal("rejected batch replaced the existing tool")
+	}
+
+	owned := stubTool("owned")
+	release, ok := r.RegisterAllIfAbsent(owned)
+	if !ok || release == nil {
+		t.Fatal("conflict-free batch was rejected")
+	}
+	replacement := stubTool("owned")
+	r.Register(replacement)
+	release()
+	release()
+	if got, ok := r.Get("owned"); !ok || got != replacement {
+		t.Fatal("release removed a later replacement")
+	}
+}
+
 func TestDefinitionsByScope_Empty(t *testing.T) {
 	r := NewRegistry()
 	r.RegisterWithScope(stubTool("only_platform"), ScopePlatform)

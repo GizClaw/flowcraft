@@ -5,13 +5,14 @@ title: Deployment Assembly
 # Deployment Assembly Guide
 
 `sdkx/deploy` is FlowCraft's **assembly layer**: one YAML document
-names the shared resources, the agents, and the lifecycle hooks; one
-Go call wires the document to your application and returns runnable
-agent instances.
+names shared resources, agents and their lifecycle hooks, and optional
+application-runtime configuration. One Go call assembles the deployment
+and returns runnable agent instances.
 
 It does **not** own turn loops, sessions, conversation persistence,
-interrupts, or application startup. Those are runtime concerns, layered
-on top of the assembled `Instance` values.
+interrupts, or application startup. `sdkx/runtime` can own those
+process-level concerns above the assembled `Instance` values; deploy
+itself is never the session owner.
 
 ## What you get from one Build call
 
@@ -38,12 +39,13 @@ The application still owns:
 
 ### Document
 
-`deploy.Document` is the parsed YAML. It has two areas:
+`deploy.Document` is the parsed YAML. It has three top-level areas:
 
-| Area        | What it names                             | Who builds it                                   |
-| ----------- | ----------------------------------------- | ----------------------------------------------- |
-| `resources` | shared, long-lived objects                | registered `ResourceFactory` per `(kind, impl)` |
-| `agents`    | named agent instances with engine + hooks | engine factory + registered hook factories      |
+| Area        | What it names                              | Who owns its schema or construction              |
+| ----------- | ------------------------------------------ | ------------------------------------------------ |
+| `resources` | shared, long-lived objects                 | registered `ResourceFactory` per `(kind, impl)`  |
+| `agents`    | named agent instances with engine + hooks  | engine factory + registered hook factories       |
+| `runtime`   | optional application-runtime configuration | preserved opaquely by deploy; strictly decoded by `sdkx/runtime` |
 
 ```yaml
 version: v1
@@ -59,6 +61,13 @@ agents:
     engine: { kind: graph, settings: { graph: ./graphs/greeter.json } }
     deps: { inference: infer }
 ```
+
+The `runtime` subtree is deliberately opaque to `deploy.Parse`; the public
+`sdkx/runtime.Builder` decodes it strictly. Runtime resource references are
+passed to deployment assembly as external consumers, so those resources are
+retained even when no agent binds them and they do not set `export: true`.
+See the [Runtime and Sessions guide](runtime.md) for its complete schema,
+registration, ownership, and turn APIs.
 
 Everything else — every `kind`, `impl`, `engine.kind`, hook `type` —
 is looked up in a registry. `sdkx/deploy` ships **exactly one** entry
@@ -293,8 +302,8 @@ resources:
 - `export: true` lets the application retrieve a value via
   `deploy.ResourceAs[T](result, "<name>")` even if nothing binds it.
 
-Anything built and not consumed by an agent, a hook, or another
-resource is dead configuration and fails the build.
+Anything built and not consumed by an agent, a hook, another resource, or an
+explicit external consumer is dead configuration and fails the build.
 
 ### First-party impls
 
@@ -427,6 +436,7 @@ engine:
     build:
       max_iterations: 100
       timeout: 5m
+      run_end_publish_timeout: 5s
       max_node_retries: 2
       parallel:
         enabled: true
@@ -437,7 +447,8 @@ engine:
 
 File definitions are limited to 1 MiB. Unknown graph fields are
 rejected. Built-in merge strategies: `first_write_wins`,
-`last_write_wins`.
+`last_write_wins`. `run_end_publish_timeout` bounds the best-effort terminal
+event publication and must be greater than zero.
 
 The graph factory's dep contract:
 
@@ -599,9 +610,14 @@ lifecycle:
     destination: s3://bucket/archive
 ```
 
-The application passes `assembly.Runtime` and `assembly.Lifecycle` to
-`sdkx/scheduler/memory`. Scheduling remains host-owned; `sdkx/deploy`
-does not start background maintenance.
+The application registers `assembly.Runtime` and `assembly.Lifecycle` against a
+shared `scheduler.Server` through `sdkx/scheduler/memory`. The backend-neutral
+control, delivery, and lease contracts live in `sdk/scheduler`; the local cron
+and queue implementation lives in `sdkx/scheduler`. In an application Runtime,
+declare the Server as a deployment resource and reference it through
+`runtime.scheduler`; Runtime starts a local Server after integrations register
+their rules and workers. Plain `sdkx/deploy` still does not start background
+maintenance itself.
 
 `discard_on_interrupt` is the only built-in referee. It maps
 `agent.DiscardOnInterruptCauses` to the run's `Committed` flag and is
@@ -939,7 +955,7 @@ Parsing and `Build` reject (all with structured errors, not panics):
   `ItemResolver`.
 - Resource dependency cycles.
 - Resources that nothing binds and that are not `export: true`
-  (dead configuration).
+  or retained for an explicit external consumer (dead configuration).
 - Unknown resource, engine, or hook `settings` keys.
 - Typed-nil resources and dependencies.
 - Invalid graph settings or graph node dependencies the engine
@@ -984,6 +1000,8 @@ warms up its catalog on first use).
 
 ## Further reading
 
+- Application runtime, sessions, ownership, and runtime configuration:
+  [runtime.md](runtime.md).
 - Package contracts: `sdkx/deploy/doc.go`, `sdkx/deploy/document.go`,
   `sdkx/deploy/builder.go`.
 - Per-resource config schemas: `sdkx/workspace/config/doc.go`,
@@ -1002,7 +1020,8 @@ warms up its catalog on first use).
   (Preparer / Committer / Tool / Scheduler):
   [memory.md](memory.md).
 
-`sdkx/deploy` remains an assembly layer, not a session runtime. It
-constructs and owns resources and agent instances; applications still
-own turn loops, conversation/session state, handoff routing, interrupts,
-and process startup.
+`sdkx/deploy` remains an assembly layer, not a session runtime. It constructs
+and owns resources and agent instances. When an application uses
+`sdkx/runtime`, Runtime owns the deployment result and process lifecycle while
+Session owns conversational execution; deploy owns neither sessions nor
+transports.

@@ -61,10 +61,11 @@ func (t Target) Validate() error {
 
 // Request is the portable input accepted by a Service.
 type Request struct {
-	Mode     Mode              `json:"mode"`
-	Target   string            `json:"target"`
-	Input    string            `json:"input"`
-	Metadata map[string]string `json:"metadata,omitempty"`
+	Mode           Mode              `json:"mode"`
+	Target         string            `json:"target"`
+	Input          string            `json:"input"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	IdempotencyKey string            `json:"idempotency_key,omitempty"`
 }
 
 // Validate checks fields required by every delegation backend.
@@ -77,6 +78,9 @@ func (r Request) Validate() error {
 	}
 	if strings.TrimSpace(r.Input) == "" {
 		return errdefs.Validationf("delegation: request input is required")
+	}
+	if r.IdempotencyKey != "" && strings.TrimSpace(r.IdempotencyKey) == "" {
+		return errdefs.Validationf("delegation: request idempotency key must not be blank")
 	}
 	return nil
 }
@@ -156,6 +160,13 @@ type Directory interface {
 }
 
 // Service starts delegated work and retrieves its latest response.
+// Implementations must declare and guarantee a finite idempotency retention
+// window. Within that window, requests with the same non-empty idempotency key
+// and business fields must safely replay the same operation, and its response
+// must remain queryable; reusing the key for a semantically different request
+// must return a conflict-classified error. After the declared window expires,
+// the key may start a new operation: this contract is bounded idempotency, not
+// permanent exactly-once execution.
 type Service interface {
 	Delegate(ctx context.Context, req Request) (Response, error)
 	Get(ctx context.Context, id string) (Response, error)

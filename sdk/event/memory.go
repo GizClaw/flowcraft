@@ -9,7 +9,10 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/rs/xid"
+
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -496,7 +499,11 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = sub.Close()
+			if err := sub.Close(); err != nil {
+				telemetry.WarnErr(ctx, "event memory: close subscriber on context done", err,
+					otellog.String("op", "subscribe"),
+					otellog.String("subscriber.id", string(sub.id)))
+			}
 		case <-sub.done:
 		}
 	}()

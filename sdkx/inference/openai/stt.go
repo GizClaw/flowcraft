@@ -7,9 +7,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Transcription runs on the audio transcriptions endpoint, unary only: the
@@ -156,7 +158,14 @@ func transportTranscription(
 			// though their raw payload is present.
 			extra := response.JSON.ExtraFields
 			if field, ok := extra["language"]; ok {
-				_ = json.Unmarshal([]byte(field.Raw()), &raw.language)
+				// Language defaults to the SDK's empty value on parse
+				// failure; surface the malformed payload so a server-
+				// side change to the verbose_json shape is visible.
+				if err := json.Unmarshal([]byte(field.Raw()), &raw.language); err != nil {
+					telemetry.WarnErr(ctx, "openai stt: parse verbose_json.language", err,
+						otellog.String("provider", "openai"),
+						otellog.String("field", "language"))
+				}
 			}
 			if field, ok := extra["duration"]; ok {
 				var seconds float64

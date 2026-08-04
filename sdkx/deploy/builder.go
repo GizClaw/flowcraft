@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 
@@ -146,16 +147,49 @@ type builtResource struct {
 // resource area. The result owns resource lifecycle; call Close when
 // the application shuts down.
 type Result struct {
-	instances map[string]*Instance
-	resources map[string]any
-	closers   []builtCloser // construction order; closed in reverse
-	closeOnce sync.Once
-	closeErr  error
+	instances    map[string]*Instance
+	resources    map[string]any
+	closers      []*builtCloser // construction order; closed in reverse
+	closerByName map[string]*builtCloser
+	dependents   map[string][]string
+
+	lifecycleMu sync.Mutex
+	closingAll  bool
+	closeDone   chan struct{}
+	closeOnce   sync.Once
+	closeErr    error
 }
+
+type resourceCloseState uint8
+
+const (
+	resourceOpen resourceCloseState = iota
+	resourceClosing
+	resourceClosed
+)
 
 type builtCloser struct {
 	name  string
 	value io.Closer
+	once  sync.Once
+	mu    sync.Mutex
+	err   error
+	state resourceCloseState // guarded by Result.lifecycleMu
+}
+
+func (c *builtCloser) close() error {
+	c.once.Do(func() {
+		err := c.value.Close()
+		if err != nil {
+			err = fmt.Errorf("resource %q close: %w", c.name, err)
+		}
+		c.mu.Lock()
+		c.err = err
+		c.mu.Unlock()
+	})
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
 }
 
 // Close releases every built resource that implements io.Closer, in
@@ -169,15 +203,117 @@ func (r *Result) Close() error {
 		return nil
 	}
 	r.closeOnce.Do(func() {
+		r.lifecycleMu.Lock()
+		r.closingAll = true
+		r.closeDone = make(chan struct{})
+		r.lifecycleMu.Unlock()
+
 		var errs []error
-		for i := len(r.closers) - 1; i >= 0; i-- {
-			if err := r.closers[i].value.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("resource %q close: %w", r.closers[i].name, err))
+		for _, v := range slices.Backward(r.closers) {
+			if err := r.closeBuilt(v); err != nil {
+				errs = append(errs, err)
 			}
 		}
 		r.closeErr = errors.Join(errs...)
+
+		r.lifecycleMu.Lock()
+		close(r.closeDone)
+		r.lifecycleMu.Unlock()
 	})
 	return r.closeErr
+}
+
+// CloseResource releases one named resource owned by this Result when it
+// implements io.Closer. Closing is concurrency-safe and idempotent across
+// CloseResource and [Result.Close]; every caller receives the resource's
+// cached close error. A resource that is not an io.Closer is a successful
+// no-op. Missing names are errdefs.NotFound. If an unclosed direct or
+// transitive resource still depends on name, CloseResource returns
+// errdefs.Conflict without closing it.
+//
+// Values bound through a source are borrowed and cannot be closed through
+// Result because they are not entries in its resource area.
+func (r *Result) CloseResource(name string) error {
+	if r == nil {
+		return errdefs.NotFoundf("deploy result: resource %q is not found", name)
+	}
+	if _, ok := r.resources[name]; !ok {
+		return errdefs.NotFoundf("deploy result: resource %q is not found", name)
+	}
+	closer, ok := r.closerByName[name]
+	if !ok {
+		return nil
+	}
+
+	r.lifecycleMu.Lock()
+	if r.closingAll {
+		done := r.closeDone
+		r.lifecycleMu.Unlock()
+		<-done
+		return closer.close()
+	}
+	switch closer.state {
+	case resourceClosing, resourceClosed:
+		r.lifecycleMu.Unlock()
+		return closer.close()
+	}
+	active := r.activeDependents(name)
+	if len(active) > 0 {
+		r.lifecycleMu.Unlock()
+		return errdefs.Conflictf(
+			"deploy result: resource %q is still required by active resources %v",
+			name, active)
+	}
+	closer.state = resourceClosing
+	r.lifecycleMu.Unlock()
+
+	err := closer.close()
+	r.lifecycleMu.Lock()
+	closer.state = resourceClosed
+	r.lifecycleMu.Unlock()
+	return err
+}
+
+// activeDependents returns every direct or transitive dependent that has not
+// completed closing. r.lifecycleMu must be held. Non-closers remain active for
+// the Result's lifetime and therefore always block individual dependency
+// closure; Result.Close bypasses this check.
+func (r *Result) activeDependents(name string) []string {
+	var active []string
+	visited := make(map[string]bool)
+	var visit func(string)
+	visit = func(dependency string) {
+		for _, dependent := range r.dependents[dependency] {
+			if visited[dependent] {
+				continue
+			}
+			visited[dependent] = true
+			closer, ok := r.closerByName[dependent]
+			if !ok || closer.state != resourceClosed {
+				active = append(active, dependent)
+			}
+			visit(dependent)
+		}
+	}
+	visit(name)
+	sort.Strings(active)
+	return active
+}
+
+func (r *Result) closeBuilt(closer *builtCloser) error {
+	r.lifecycleMu.Lock()
+	if closer.state == resourceClosed {
+		r.lifecycleMu.Unlock()
+		return closer.close()
+	}
+	closer.state = resourceClosing
+	r.lifecycleMu.Unlock()
+
+	err := closer.close()
+	r.lifecycleMu.Lock()
+	closer.state = resourceClosed
+	r.lifecycleMu.Unlock()
+	return err
 }
 
 // Instance returns the assembled instance with id.
@@ -205,16 +341,34 @@ func (r *Result) ResourceNames() []string {
 	return sortedKeys(r.resources)
 }
 
-// ResourceAs returns a named resource as T. Missing names are
-// errdefs.NotFound; Go type mismatches are errdefs.Validation.
-func ResourceAs[T any](r *Result, name string) (T, error) {
-	var zero T
+// Resource returns a borrowed reference to a named resource. The
+// [Result] retains lifecycle ownership; callers must not close the
+// returned value. Missing names are errdefs.NotFound, while a nil or
+// typed-nil stored value is errdefs.Internal.
+func (r *Result) Resource(name string) (any, error) {
 	if r == nil {
-		return zero, errdefs.NotFoundf("deploy result: resource %q is not found", name)
+		return nil, errdefs.NotFoundf("deploy result: resource %q is not found", name)
 	}
 	v, ok := r.resources[name]
 	if !ok {
-		return zero, errdefs.NotFoundf("deploy result: resource %q is not found", name)
+		return nil, errdefs.NotFoundf("deploy result: resource %q is not found", name)
+	}
+	if isNil(v) {
+		return nil, errdefs.Internalf(
+			"deploy result: resource %q has a nil value", name)
+	}
+	return v, nil
+}
+
+// ResourceAs returns a named resource as T. Missing names are
+// errdefs.NotFound; nil values are errdefs.Internal; Go type
+// mismatches are errdefs.Validation. The returned value is borrowed:
+// Result retains lifecycle ownership.
+func ResourceAs[T any](r *Result, name string) (T, error) {
+	var zero T
+	v, err := r.Resource(name)
+	if err != nil {
+		return zero, err
 	}
 	out, ok := v.(T)
 	if !ok {
@@ -223,6 +377,28 @@ func ResourceAs[T any](r *Result, name string) (T, error) {
 			name, v, reflect.TypeFor[T]())
 	}
 	return out, nil
+}
+
+type buildConfig struct {
+	externalResourceConsumers map[string]struct{}
+}
+
+// BuildOption configures one [Builder.Build] call.
+type BuildOption func(*buildConfig)
+
+// WithExternalResourceConsumers marks named deployment resources as
+// borrowed by a consumer outside deploy. Such resources count as used
+// without requiring export: true. Build rejects unknown names before
+// invoking any resource factory.
+func WithExternalResourceConsumers(names ...string) BuildOption {
+	return func(cfg *buildConfig) {
+		if cfg.externalResourceConsumers == nil {
+			cfg.externalResourceConsumers = make(map[string]struct{}, len(names))
+		}
+		for _, name := range names {
+			cfg.externalResourceConsumers[name] = struct{}{}
+		}
+	}
 }
 
 // fail joins a build error with every cleanup error.
@@ -406,12 +582,25 @@ func (b *Builder) RegisterCommitter(typ string, fn CommitterFactory) {
 // already-constructed resources are closed before the error returns.
 //
 // A resource nothing binds is a build error unless it declares
-// export: true for application retrieval through ResourceAs. "Binds"
-// counts every consumer: another resource, an agent's engine dep, or
-// a hook dep.
-func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
+// export: true for application retrieval through ResourceAs or a
+// [BuildOption] marks it as consumed externally. "Binds" counts every
+// consumer: another resource, an agent's engine dep, or a hook dep.
+func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) (*Result, error) {
 	if err := doc.Validate(); err != nil {
 		return nil, err
+	}
+	cfg := buildConfig{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	for _, name := range sortedKeys(cfg.externalResourceConsumers) {
+		if _, ok := doc.Resources[name]; !ok {
+			return nil, errdefs.NotFoundf(
+				"deploy config external resource consumer %q: resource is not defined (defined: %v)",
+				name, sortedKeys(doc.Resources))
+		}
 	}
 	agents, err := b.loadAgents(doc.Agents)
 	if err != nil {
@@ -424,10 +613,26 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	res := &Result{
-		instances: make(map[string]*Instance, len(agents)),
-		resources: make(map[string]any, len(doc.Resources)),
+		instances:    make(map[string]*Instance, len(agents)),
+		resources:    make(map[string]any, len(doc.Resources)),
+		closerByName: make(map[string]*builtCloser, len(doc.Resources)),
+		dependents:   make(map[string][]string, len(doc.Resources)),
+	}
+	for _, dependent := range order {
+		seen := make(map[string]bool)
+		for _, depName := range sortedKeys(doc.Resources[dependent].Deps) {
+			dependency := doc.Resources[dependent].Deps[depName].Resource
+			if dependency == "" || seen[dependency] {
+				continue
+			}
+			seen[dependency] = true
+			res.dependents[dependency] = append(res.dependents[dependency], dependent)
+		}
 	}
 	used := make(map[string]bool, len(doc.Resources))
+	for name := range cfg.externalResourceConsumers {
+		used[name] = true
+	}
 	built := make(map[string]builtResource, len(doc.Resources))
 
 	for _, name := range order {
@@ -458,7 +663,9 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		built[name] = builtResource{spec: spec, value: v}
 		res.resources[name] = v
 		if c, ok := v.(io.Closer); ok {
-			res.closers = append(res.closers, builtCloser{name, c})
+			closer := &builtCloser{name: name, value: c}
+			res.closers = append(res.closers, closer)
+			res.closerByName[name] = closer
 		}
 	}
 

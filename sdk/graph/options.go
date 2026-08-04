@@ -10,18 +10,25 @@ import (
 type BuildOption func(*buildOptions)
 
 type buildOptions struct {
-	maxIterations  int
-	timeout        time.Duration
-	parallel       ParallelConfig
-	maxNodeRetries int
+	maxIterations        int
+	timeout              time.Duration
+	runEndPublishTimeout time.Duration
+	parallel             ParallelConfig
+	maxNodeRetries       int
 }
 
-// defaultMaxIterations is the built-in loop guard: a run may invoke at
-// most this many nodes before Execute fails with a validation error.
-const defaultMaxIterations = 100
+const (
+	// defaultMaxIterations is the built-in loop guard: a run may invoke at
+	// most this many nodes before Execute fails with a validation error.
+	defaultMaxIterations        = 100
+	defaultRunEndPublishTimeout = 5 * time.Second
+)
 
 func defaultBuildOptions() buildOptions {
-	return buildOptions{maxIterations: defaultMaxIterations}
+	return buildOptions{
+		maxIterations:        defaultMaxIterations,
+		runEndPublishTimeout: defaultRunEndPublishTimeout,
+	}
 }
 
 // WithMaxIterations caps the total number of node invocations per run
@@ -40,6 +47,13 @@ func WithTimeout(d time.Duration) BuildOption {
 	return func(o *buildOptions) { o.timeout = d }
 }
 
+// WithRunEndPublishTimeout bounds the best-effort terminal event publish.
+// It must be positive. The default is five seconds, allowing normal network
+// and subscriber backpressure while still preventing an unbounded Execute.
+func WithRunEndPublishTimeout(d time.Duration) BuildOption {
+	return func(o *buildOptions) { o.runEndPublishTimeout = d }
+}
+
 // WithParallel configures concurrent execution of independent frontier
 // nodes. See [ParallelConfig] for the isolation and merge model.
 func WithParallel(cfg ParallelConfig) BuildOption {
@@ -56,6 +70,9 @@ func WithMaxNodeRetries(n int) BuildOption {
 func (o *buildOptions) validate() error {
 	if o.timeout < 0 {
 		return errdefs.Validationf("graph: timeout must be >= 0")
+	}
+	if o.runEndPublishTimeout <= 0 {
+		return errdefs.Validationf("graph: run-end publish timeout must be > 0")
 	}
 	if o.maxNodeRetries < 0 {
 		return errdefs.Validationf("graph: max node retries must be >= 0")

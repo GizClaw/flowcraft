@@ -9,6 +9,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 	"golang.org/x/sys/windows"
 )
 
@@ -39,7 +42,11 @@ func lockFile(ctx context.Context, path string) (fileLocker, error) {
 			return &windowsFileLock{file: file}, nil
 		}
 		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
-			_ = file.Close()
+			if cErr := file.Close(); cErr != nil {
+				telemetry.WarnErr(ctx, "yaml filelock: close after lock failure", cErr,
+					otellog.String("op", "lock_file"),
+					otellog.String("path", path))
+			}
 			return nil, fmt.Errorf(
 				"lock YAML inference config: %w",
 				err,
@@ -47,7 +54,11 @@ func lockFile(ctx context.Context, path string) (fileLocker, error) {
 		}
 		select {
 		case <-ctx.Done():
-			_ = file.Close()
+			if cErr := file.Close(); cErr != nil {
+				telemetry.WarnErr(ctx, "yaml filelock: close on context done", cErr,
+					otellog.String("op", "lock_file"),
+					otellog.String("path", path))
+			}
 			return nil, ctx.Err()
 		case <-ticker.C:
 		}

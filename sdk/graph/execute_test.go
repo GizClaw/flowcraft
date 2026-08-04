@@ -10,8 +10,18 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
+
+type memoryBusHost struct {
+	agent.NoopHost
+	bus *event.MemoryBus
+}
+
+func (h memoryBusHost) Publish(ctx context.Context, env event.Envelope) error {
+	return h.bus.Publish(ctx, env)
+}
 
 func TestExecuteLinearRun(t *testing.T) {
 	reg := newTestRegistry(t)
@@ -115,6 +125,29 @@ func TestExecuteInterrupt(t *testing.T) {
 	}
 	if v, _ := board.GetVar(VarInterruptedNode); v == nil {
 		t.Fatal("interrupted node not recorded")
+	}
+}
+
+func TestExecuteContextCausePreservesInterrupt(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+	}, reg)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cause := agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput, Detail: "replacement turn"})
+	cancel(cause)
+
+	board, err := g.Execute(ctx, testRun(), agent.NoopHost{}, agent.NewBoard())
+	if !errdefs.IsInterrupted(err) {
+		t.Fatalf("error = %v, want interrupted cause preserved", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("error = %v, want original cause %v", err, cause)
+	}
+	if got, _ := board.GetVar(VarInterruptedNode); got != "a" {
+		t.Fatalf("interrupted node = %v, want a", got)
 	}
 }
 
@@ -795,5 +828,119 @@ func TestExecuteIterationsShadowsBoardVar(t *testing.T) {
 	msgs := board.Channel(agent.MainChannel)
 	if len(msgs) != 2 || msgs[1].Content.Text() != "b" {
 		t.Fatalf("user var 999 shadowed kernel counter; channel = %+v", msgs)
+	}
+}
+
+func TestGraphExecutePublishesRunLifecycleOnSuccessAndFailure(t *testing.T) {
+	registry := NewRegistry()
+	if err := RegisterType(registry, "run-lifecycle", NodeType[struct{}]{
+		Meta:    Meta{Desc: "run lifecycle"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	graph := mustBuild(t, &GraphDefinition{
+		Name:  "run-lifecycle",
+		Entry: "entry",
+		Nodes: []NodeDefinition{{ID: "entry", Type: "run-lifecycle"}},
+		Edges: []EdgeDefinition{{From: "entry", To: END}},
+	}, registry)
+
+	for _, test := range []struct {
+		name string
+		run  agent.Run
+	}{
+		{name: "success", run: testRun()},
+		{
+			name: "validation failure",
+			run: agent.Run{
+				Identity: agent.Identity{AgentID: "agent-1", RunID: "run-failed"},
+				ResumeFrom: &agent.Checkpoint{
+					ExecID: "different-run",
+				},
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := &publishHost{}
+			_, _ = graph.Execute(context.Background(), test.run, host, agent.NewBoard())
+			subjects := host.subjectsOf()
+			if len(subjects) < 2 {
+				t.Fatalf("subjects = %v, want run start and end", subjects)
+			}
+			if subjects[0] != agent.SubjectRunStart(test.run.RunID) {
+				t.Fatalf("first subject = %q, want run start", subjects[0])
+			}
+			if subjects[len(subjects)-1] != agent.SubjectRunEnd(test.run.RunID) {
+				t.Fatalf("last subject = %q, want run end", subjects[len(subjects)-1])
+			}
+		})
+	}
+
+	_, err := graph.Execute(context.Background(), testRun(), &runEndFailHost{}, agent.NewBoard())
+	var publishErr *agent.RunEndPublishError
+	if !errors.As(err, &publishErr) {
+		t.Fatalf("run-end publish error = %v, want RunEndPublishError", err)
+	}
+	if !errdefs.IsInternal(err) {
+		t.Fatalf("run-end publish error = %v, want internal classification", err)
+	}
+}
+
+func TestGraphExecuteRunEndPublishIsBoundedWhenBlockSubscriberStopsConsuming(t *testing.T) {
+	registry := NewRegistry()
+	if err := RegisterType(registry, "run-end-timeout", NodeType[struct{}]{
+		Meta:    Meta{Desc: "run end timeout"},
+		Handler: func(ExecutionContext, *agent.Board, struct{}) error { return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	graph := mustBuild(t, &GraphDefinition{
+		Name:  "run-end-timeout",
+		Entry: "entry",
+		Nodes: []NodeDefinition{{ID: "entry", Type: "run-end-timeout"}},
+		Edges: []EdgeDefinition{{From: "entry", To: END}},
+	}, registry, WithRunEndPublishTimeout(30*time.Millisecond))
+
+	run := agent.Run{Identity: agent.Identity{AgentID: "agent-1", RunID: "run-blocked-end"}}
+	bus := event.NewMemoryBus()
+	sub, err := bus.Subscribe(
+		context.Background(),
+		event.Pattern(agent.SubjectRunEnd(run.RunID)),
+		event.WithBufferSize(1),
+		event.WithBackpressure(event.Block),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = sub.Close()
+		_ = bus.Close()
+	}()
+	if err := bus.Publish(context.Background(), event.Envelope{
+		Subject: agent.SubjectRunEnd(run.RunID),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := make(chan error, 1)
+	go func() {
+		_, executeErr := graph.Execute(context.Background(), run, memoryBusHost{bus: bus}, agent.NewBoard())
+		result <- executeErr
+	}()
+
+	select {
+	case err := <-result:
+		var publishErr *agent.RunEndPublishError
+		if !errors.As(err, &publishErr) {
+			t.Fatalf("Execute error = %v, want RunEndPublishError", err)
+		}
+		if !errdefs.IsInternal(err) {
+			t.Fatalf("Execute error = %v, want internal classification", err)
+		}
+	case <-time.After(time.Second):
+		_ = sub.Close()
+		<-result
+		t.Fatal("Execute remained blocked publishing run.end")
 	}
 }

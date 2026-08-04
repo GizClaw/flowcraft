@@ -3,6 +3,7 @@
 package sandbox
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strconv"
@@ -11,6 +12,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // groupCapsAvailable reports whether group-level resource caps can be
@@ -63,6 +68,12 @@ var sampleGroupFn = sampleGroup
 // sdkx/sandbox/seatbelt): start it after launching a child that leads
 // its own process group, and Stop it after reaping the child.
 type GroupCapsWatcher struct {
+	// ctx is captured at Start time so telemetry emitted by the
+	// sampler (notably a failed SIGKILL) carries the originating
+	// Runner.Exec context — its trace span, deadline, and any
+	// downstream caller attributes. Background if the caller passed
+	// nil; we never derive from inside the sampler.
+	ctx      context.Context
 	pgid     int
 	maxRSSKB int64
 	maxCPU   time.Duration
@@ -70,6 +81,11 @@ type GroupCapsWatcher struct {
 	doneCh   chan struct{}
 	stopOnce sync.Once
 	exceeded atomic.Int32
+
+	// killReason is captured just before SIGKILL is delivered so a
+	// failed kill can be reported in telemetry with the original
+	// reason (memory cap, cpu cap, sample breakdown) attached.
+	killReason atomic.Pointer[string]
 
 	// sampleErr is set when sampling broke down and the watcher killed
 	// the group rather than keep guarding it blindly.
@@ -88,12 +104,16 @@ const (
 // callers may invoke Stop unconditionally. Stop must follow the
 // child's Wait; stopping is synchronous so no ps invocation can
 // outlive the Exec call.
-func StartGroupCapsWatcher(pgid int, res ResourceLimits, timeout time.Duration) *GroupCapsWatcher {
+func StartGroupCapsWatcher(ctx context.Context, pgid int, res ResourceLimits, timeout time.Duration) *GroupCapsWatcher {
 	maxRSSKB, maxCPU := deriveGroupCaps(res, timeout)
 	if maxRSSKB == 0 && maxCPU == 0 {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	w := &GroupCapsWatcher{
+		ctx:      ctx,
 		pgid:     pgid,
 		maxRSSKB: maxRSSKB,
 		maxCPU:   maxCPU,
@@ -128,17 +148,23 @@ func (w *GroupCapsWatcher) run() {
 				}
 				wrapped := fmt.Errorf("group sampling failed %d times in a row: %w", failures, err)
 				w.sampleErr.Store(&wrapped)
+				reason := "sample_failure"
+				w.killReason.Store(&reason)
 				w.killGroup()
 				return
 			}
 			failures = 0
 			if w.maxRSSKB > 0 && rssKB >= w.maxRSSKB {
 				w.exceeded.Store(groupCapMemory)
+				reason := "memory_cap"
+				w.killReason.Store(&reason)
 				w.killGroup()
 				return
 			}
 			if w.maxCPU > 0 && cpu >= w.maxCPU {
 				w.exceeded.Store(groupCapCPU)
+				reason := "cpu_cap"
+				w.killReason.Store(&reason)
 				w.killGroup()
 				return
 			}
@@ -148,7 +174,21 @@ func (w *GroupCapsWatcher) run() {
 
 func (w *GroupCapsWatcher) killGroup() {
 	// The child leads its own group (Setpgid), so pid == pgid.
-	_ = syscall.Kill(-w.pgid, syscall.SIGKILL)
+	//
+	// A failed SIGKILL is rare but consequential: the cap we tripped
+	// then stops being enforced. Surface it as a warning so an operator
+	// can see the child was left running unconstrained.
+	if err := syscall.Kill(-w.pgid, syscall.SIGKILL); err != nil {
+		attrs := []otellog.KeyValue{
+			otellog.String("sandbox.pgid", strconv.Itoa(w.pgid)),
+		}
+		if rp := w.killReason.Load(); rp != nil {
+			attrs = append(attrs, otellog.String("sandbox.kill_reason", *rp))
+		}
+		telemetry.WarnErr(w.ctx,
+			"sandbox: failed to deliver SIGKILL to process group",
+			err, attrs...)
+	}
 }
 
 // Stop ends sampling and waits for the sampler goroutine to exit. It

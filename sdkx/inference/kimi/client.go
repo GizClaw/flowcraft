@@ -110,7 +110,7 @@ func (c *kimiClient) postJSON(ctx context.Context, body any, out any) error {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: read response: %w", err))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return classifyHTTPError(response.StatusCode, payload)
+		return classifyHTTPError(ctx, response.StatusCode, payload)
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: decode response: %w", err))

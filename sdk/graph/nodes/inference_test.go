@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 
@@ -402,5 +403,44 @@ func TestInferenceNode_StreamMidFailureCommitsPartial(t *testing.T) {
 	}
 	if msgs[1].Role != inference.RoleAssistant || msgs[1].Content.Text() != "hello" {
 		t.Fatalf("partial message = %+v, want assistant \"hello\"", msgs[1])
+	}
+}
+
+type resultFailingStream struct {
+	next int
+	err  error
+}
+
+func (s *resultFailingStream) Next(context.Context) (inference.GenerateStreamEvent, error) {
+	if s.next > 0 {
+		return inference.GenerateStreamEvent{}, io.EOF
+	}
+	s.next++
+	return inference.GenerateStreamEvent{
+		PartIndex: 0,
+		Delta:     inference.TextPartDelta{Text: "partial"},
+	}, nil
+}
+
+func (s *resultFailingStream) Result() (inference.GenerateResponse, error) {
+	return inference.GenerateResponse{}, s.err
+}
+
+func (*resultFailingStream) Close() error { return nil }
+
+func TestInferenceNode_StreamResultFailureCommitsPartialExactlyOnce(t *testing.T) {
+	board := userBoard()
+	stream := &resultFailingStream{err: errors.New("invalid terminal response")}
+	ec := graph.ExecutionContext{Context: context.Background(), Host: agent.NoopHost{}, NodeID: "n"}
+
+	if _, err := drainGenerateStream(ec, board, "", stream); !errors.Is(err, stream.err) {
+		t.Fatalf("drainGenerateStream error = %v, want %v", err, stream.err)
+	}
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 {
+		t.Fatalf("channel len = %d, want user + exactly one partial assistant", len(msgs))
+	}
+	if msgs[1].Role != inference.RoleAssistant || msgs[1].Content.Text() != "partial" {
+		t.Fatalf("partial message = %+v", msgs[1])
 	}
 }

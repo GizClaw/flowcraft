@@ -65,6 +65,13 @@
 //	    policy:                           # per-call harness knobs
 //	      max_revise: 2
 //
+//	runtime:                              # opaque to deploy
+//	  event_bus: events                   # runtime decodes this strictly
+//
+// The runtime subtree is preserved as [Document.Runtime]. Its owner
+// must decode it with [DecodeSettings]; unknown fields elsewhere in
+// the deployment document remain parse errors.
+//
 // An agent may instead live in its own strict, versioned YAML file:
 //
 //	agents:
@@ -169,9 +176,10 @@
 // type names the item.
 //
 // Build results keep their maps private. Use [Result.Instance],
-// [Result.InstanceNames], [Result.ResourceNames], and [ResourceAs] to
-// inspect assembled values without exposing an untyped mutable
-// resource map.
+// [Result.InstanceNames], [Result.ResourceNames], [Result.Resource],
+// and [ResourceAs] to inspect assembled values without exposing an
+// untyped mutable resource map. Resource access is borrowed:
+// [Result] keeps close ownership.
 //
 // # Dependency order
 //
@@ -182,9 +190,11 @@
 // order.
 //
 // A resource nothing binds is a build error unless it sets export:
-// true for application retrieval through ResourceAs. Every consumer
-// counts: another resource, an agent's engine dep, or a
-// prepare/observe/referee dep.
+// true for application retrieval through ResourceAs, or the caller
+// names it in [WithExternalResourceConsumers]. External consumer names
+// are validated before resource construction. Every consumer counts:
+// another resource, an agent's engine dep, a prepare/observe/referee
+// dep, or an explicit external consumer.
 //
 // # What this package does not own
 //

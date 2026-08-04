@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	defaultMaxConcurrency = 4
-	defaultMaxDepth       = 8
+	defaultMaxConcurrency       = 4
+	defaultMaxDepth             = 8
+	defaultIdempotencyRetention = time.Hour
 
 	workerRetryInitial     = 10 * time.Millisecond
 	workerRetryMax         = 250 * time.Millisecond
@@ -46,11 +47,21 @@ type Work struct {
 	Context    context.Context `json:"-"`
 }
 
-// AsyncBackend stores asynchronous delegations and reports their status. The
-// service borrows an injected backend and never closes it.
+// AsyncBackend stores asynchronous delegations and reports their status. Submit
+// must safely replay the same non-empty Request.IdempotencyKey and identical
+// AsyncRequest during the backend's declared retention window, returning the
+// same id; reuse with different request semantics must return a
+// conflict-classified error. The service borrows an injected backend and never
+// closes it.
 type AsyncBackend interface {
 	Submit(ctx context.Context, req AsyncRequest) (id string, err error)
 	Status(ctx context.Context, id string) (sdkdelegation.Response, error)
+}
+
+// IdempotencyRetentionProvider optionally exposes an AsyncBackend's finite
+// terminal replay and status-query window.
+type IdempotencyRetentionProvider interface {
+	IdempotencyRetention() time.Duration
 }
 
 // WorkSource is the optional worker side of an AsyncBackend. When implemented,
@@ -73,10 +84,25 @@ type Runner interface {
 type Option func(*serviceConfig) error
 
 type serviceConfig struct {
-	maxConcurrency int
-	maxDepth       int
-	timeout        time.Duration
-	workerHost     agent.Host
+	maxConcurrency       int
+	maxDepth             int
+	timeout              time.Duration
+	idempotencyRetention time.Duration
+	workerHost           agent.Host
+	deferWorkers         bool
+}
+
+type idempotencyCall struct {
+	request  sdkdelegation.Request
+	done     chan struct{}
+	response sdkdelegation.Response
+	err      error
+}
+
+type idempotencyResult struct {
+	request  sdkdelegation.Request
+	response sdkdelegation.Response
+	expires  time.Time
 }
 
 // WithMaxConcurrency bounds all local agent executions, including sync calls
@@ -115,6 +141,18 @@ func WithTimeout(timeout time.Duration) Option {
 	}
 }
 
+// WithIdempotencyRetention sets how long successful responses remain safely
+// replayable. The retention must be positive.
+func WithIdempotencyRetention(retention time.Duration) Option {
+	return func(config *serviceConfig) error {
+		if retention <= 0 {
+			return errdefs.Validationf("local delegation: idempotency retention must be positive")
+		}
+		config.idempotencyRetention = retention
+		return nil
+	}
+}
+
 // WithWorkerHost sets the stable base Host used by asynchronous workers.
 // Service adds its delegation capability without replacing optional
 // capabilities such as EventBusProvider. The caller retains Host ownership.
@@ -128,18 +166,37 @@ func WithWorkerHost(host agent.Host) Option {
 	}
 }
 
+// WithDeferredWorkers defers asynchronous worker startup until Start. This is
+// useful when a lifecycle owner must finish binding all dependencies before
+// background work begins.
+func WithDeferredWorkers() Option {
+	return func(config *serviceConfig) error {
+		config.deferWorkers = true
+		return nil
+	}
+}
+
 // Service executes local sync delegations and coordinates optional async
 // storage/workers.
 type Service struct {
-	directory *Directory
-	backend   AsyncBackend
-	work      WorkSource
-	config    serviceConfig
-	slots     chan struct{}
+	directory      *Directory
+	backend        AsyncBackend
+	work           WorkSource
+	maxConcurrency int
+	maxDepth       int
+	timeout        time.Duration
+	slots          chan struct{}
 
-	stateMu sync.Mutex
-	closed  bool
-	active  sync.WaitGroup
+	idempotencyRetention time.Duration
+	asyncRetention       time.Duration
+	idempotencyMu        sync.Mutex
+	idempotencyCalls     map[string]*idempotencyCall
+	idempotencyCache     map[string]idempotencyResult
+
+	stateMu        sync.Mutex
+	closed         bool
+	workersStarted bool
+	active         sync.WaitGroup
 
 	workerCtx    context.Context
 	cancelWorker context.CancelFunc
@@ -151,9 +208,12 @@ type Service struct {
 	workerErrs []error
 }
 
-// NewService constructs a local service. If backend also implements
-// WorkSource, bounded workers start immediately. The backend remains owned by
-// the deploy Result or caller.
+// NewService constructs a local service. Successful responses in every mode
+// retain one shared idempotency key and request fingerprint. Async Accepted
+// responses use the shorter of the service retention and a positive backend
+// retention declaration, so replay cannot outlive backend queryability. If the
+// backend also implements WorkSource, bounded workers start immediately. The
+// backend remains owned by the deploy Result or caller.
 func NewService(directory *Directory, backend AsyncBackend, opts ...Option) (*Service, error) {
 	if directory == nil {
 		return nil, errdefs.Validationf("local delegation: directory is nil")
@@ -162,9 +222,10 @@ func NewService(directory *Directory, backend AsyncBackend, opts ...Option) (*Se
 		backend = nil
 	}
 	config := serviceConfig{
-		maxConcurrency: defaultMaxConcurrency,
-		maxDepth:       defaultMaxDepth,
-		workerHost:     agent.NoopHost{},
+		maxConcurrency:       defaultMaxConcurrency,
+		maxDepth:             defaultMaxDepth,
+		idempotencyRetention: defaultIdempotencyRetention,
+		workerHost:           agent.NoopHost{},
 	}
 	for _, option := range opts {
 		if option != nil {
@@ -175,23 +236,62 @@ func NewService(directory *Directory, backend AsyncBackend, opts ...Option) (*Se
 	}
 
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
+	asyncRetention := config.idempotencyRetention
+	if provider, ok := backend.(IdempotencyRetentionProvider); ok && !isNilInterface(provider) {
+		if retention := provider.IdempotencyRetention(); retention > 0 {
+			asyncRetention = min(asyncRetention, retention)
+		}
+	}
 	service := &Service{
-		directory:    directory,
-		backend:      backend,
-		config:       config,
-		slots:        make(chan struct{}, config.maxConcurrency),
-		workerCtx:    workerCtx,
-		cancelWorker: cancelWorker,
+		directory:            directory,
+		backend:              backend,
+		maxConcurrency:       config.maxConcurrency,
+		maxDepth:             config.maxDepth,
+		timeout:              config.timeout,
+		slots:                make(chan struct{}, config.maxConcurrency),
+		idempotencyRetention: config.idempotencyRetention,
+		asyncRetention:       asyncRetention,
+		idempotencyCalls:     make(map[string]*idempotencyCall),
+		idempotencyCache:     make(map[string]idempotencyResult),
+		workerCtx:            workerCtx,
+		cancelWorker:         cancelWorker,
 	}
 	service.workerHost = sdkdelegation.WithService(config.workerHost, service)
+	service.workers.Add(1)
+	go service.idempotencyJanitor()
 	if source, ok := backend.(WorkSource); ok && !isNilInterface(source) {
 		service.work = source
-		for range config.maxConcurrency {
-			service.workers.Add(1)
-			go service.worker()
+		if !config.deferWorkers {
+			if err := service.Start(); err != nil {
+				cancelWorker()
+				service.workers.Wait()
+				return nil, err
+			}
 		}
 	}
 	return service, nil
+}
+
+// Start begins asynchronous workers when the backend supports WorkSource.
+// Repeated calls are safe and do not create duplicate workers.
+func (s *Service) Start() error {
+	if s == nil {
+		return errdefs.NotAvailablef("local delegation: nil service")
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.closed {
+		return errdefs.NotAvailablef("local delegation: service is closed")
+	}
+	if s.work == nil || s.workersStarted {
+		return nil
+	}
+	s.workersStarted = true
+	for range s.maxConcurrency {
+		s.workers.Add(1)
+		go s.worker()
+	}
+	return nil
 }
 
 // Delegate implements sdk/delegation.Service.
@@ -199,11 +299,22 @@ func (s *Service) Delegate(ctx context.Context, req sdkdelegation.Request) (sdkd
 	if err := req.Validate(); err != nil {
 		return sdkdelegation.Response{}, err
 	}
+	req = cloneRequest(req)
 	if err := s.begin(); err != nil {
 		return sdkdelegation.Response{}, err
 	}
 	defer s.active.Done()
 
+	if req.IdempotencyKey != "" {
+		return s.delegateIdempotent(ctx, req)
+	}
+	return s.delegate(ctx, req)
+}
+
+func (s *Service) delegate(
+	ctx context.Context,
+	req sdkdelegation.Request,
+) (sdkdelegation.Response, error) {
 	if _, err := s.directory.Lookup(ctx, req.Target); err != nil {
 		return sdkdelegation.Response{}, err
 	}
@@ -249,6 +360,127 @@ func (s *Service) Delegate(ctx context.Context, req sdkdelegation.Request) (sdkd
 	default:
 		return sdkdelegation.Response{}, sdkdelegation.UnsupportedMode(req.Mode)
 	}
+}
+
+func (s *Service) delegateIdempotent(
+	ctx context.Context,
+	req sdkdelegation.Request,
+) (sdkdelegation.Response, error) {
+	key := req.IdempotencyKey
+	s.idempotencyMu.Lock()
+	s.expireIdempotencyResults(time.Now())
+	if result, ok := s.idempotencyCache[key]; ok {
+		if !sameRequest(result.request, req) {
+			s.idempotencyMu.Unlock()
+			return sdkdelegation.Response{}, idempotencyConflict(key)
+		}
+		response := cloneResponse(result.response)
+		s.idempotencyMu.Unlock()
+		return response, nil
+	}
+	if call, ok := s.idempotencyCalls[key]; ok {
+		if !sameRequest(call.request, req) {
+			s.idempotencyMu.Unlock()
+			return sdkdelegation.Response{}, idempotencyConflict(key)
+		}
+		done := call.done
+		s.idempotencyMu.Unlock()
+		if ctx == nil {
+			<-done
+		} else {
+			select {
+			case <-ctx.Done():
+				return sdkdelegation.Response{}, ctx.Err()
+			case <-done:
+			}
+			if err := ctx.Err(); err != nil {
+				return sdkdelegation.Response{}, err
+			}
+		}
+		return cloneResponse(call.response), call.err
+	}
+
+	call := &idempotencyCall{
+		request: cloneRequest(req),
+		done:    make(chan struct{}),
+	}
+	s.idempotencyCalls[key] = call
+	s.idempotencyMu.Unlock()
+
+	response, err := s.delegate(ctx, req)
+	s.idempotencyMu.Lock()
+	delete(s.idempotencyCalls, key)
+	call.response = cloneResponse(response)
+	call.err = err
+	if err == nil {
+		s.cacheIdempotencyResult(key, call.request, call.response, time.Now())
+	}
+	close(call.done)
+	s.idempotencyMu.Unlock()
+	return cloneResponse(response), err
+}
+
+func (s *Service) cacheIdempotencyResult(
+	key string,
+	request sdkdelegation.Request,
+	response sdkdelegation.Response,
+	now time.Time,
+) {
+	retention := s.idempotencyRetention
+	if request.Mode == sdkdelegation.ModeAsync {
+		retention = s.asyncRetention
+	}
+	s.idempotencyCache[key] = idempotencyResult{
+		request:  cloneRequest(request),
+		response: cloneResponse(response),
+		expires:  now.Add(retention),
+	}
+}
+
+func (s *Service) expireIdempotencyResults(now time.Time) {
+	for key, result := range s.idempotencyCache {
+		if !now.Before(result.expires) {
+			delete(s.idempotencyCache, key)
+		}
+	}
+}
+
+func (s *Service) idempotencyJanitor() {
+	defer s.workers.Done()
+	interval := min(s.idempotencyRetention, s.asyncRetention) / 2
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.workerCtx.Done():
+			return
+		case now := <-ticker.C:
+			s.idempotencyMu.Lock()
+			s.expireIdempotencyResults(now)
+			s.idempotencyMu.Unlock()
+		}
+	}
+}
+
+func sameRequest(left, right sdkdelegation.Request) bool {
+	return left.Mode == right.Mode &&
+		left.Target == right.Target &&
+		left.Input == right.Input &&
+		left.IdempotencyKey == right.IdempotencyKey &&
+		maps.Equal(left.Metadata, right.Metadata)
+}
+
+func idempotencyConflict(key string) error {
+	return errdefs.Conflictf(
+		"local delegation: idempotency key %q was already used for a different request",
+		key,
+	)
 }
 
 // Get returns a normalized backend status snapshot.
@@ -398,8 +630,8 @@ func (s *Service) runAt(ctx context.Context, req AsyncRequest, reuseSlot bool) (
 		leased: true,
 	})
 	cancel := func() {}
-	if s.config.timeout > 0 {
-		execCtx, cancel = context.WithTimeout(execCtx, s.config.timeout)
+	if s.timeout > 0 {
+		execCtx, cancel = context.WithTimeout(execCtx, s.timeout)
 	}
 	defer cancel()
 
@@ -452,10 +684,10 @@ func (s *Service) checkDepth(depth int) error {
 	if depth <= 0 {
 		return errdefs.Validationf("local delegation: depth must be positive")
 	}
-	if depth > s.config.maxDepth {
+	if depth > s.maxDepth {
 		return errdefs.PolicyDeniedf(
 			"local delegation: maximum depth %d exceeded at depth %d",
-			s.config.maxDepth, depth)
+			s.maxDepth, depth)
 	}
 	return nil
 }
@@ -549,6 +781,11 @@ func normalizeResponse(id string, response sdkdelegation.Response) (sdkdelegatio
 func cloneRequest(req sdkdelegation.Request) sdkdelegation.Request {
 	req.Metadata = cloneMetadata(req.Metadata)
 	return req
+}
+
+func cloneResponse(response sdkdelegation.Response) sdkdelegation.Response {
+	response.Metadata = cloneMetadata(response.Metadata)
+	return response
 }
 
 func cloneMetadata(metadata map[string]string) map[string]string {

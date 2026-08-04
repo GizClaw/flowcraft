@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // LocalWorkspace implements Workspace backed by a local directory.
@@ -112,7 +115,7 @@ func (w *LocalWorkspace) Write(_ context.Context, path string, data []byte) erro
 	return nil
 }
 
-func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) error {
+func (w *LocalWorkspace) Append(ctx context.Context, path string, data []byte) error {
 	full, err := w.resolve(path)
 	if err != nil {
 		return err
@@ -124,7 +127,13 @@ func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) err
 	if err != nil {
 		return fmt.Errorf("workspace: append %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "workspace: close after append", cerr,
+				otellog.String("op", "append"),
+				otellog.String("path", path))
+		}
+	}()
 	if _, err := f.Write(data); err != nil {
 		return fmt.Errorf("workspace: append %s: %w", path, err)
 	}

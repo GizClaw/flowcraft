@@ -2,7 +2,22 @@ package graph
 
 import (
 	"testing"
+	"time"
 )
+
+func TestBuildRejectsNonPositiveRunEndPublishTimeout(t *testing.T) {
+	reg := newTestRegistry(t)
+	def := &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+	}
+	for _, timeout := range []time.Duration{0, -time.Millisecond} {
+		if _, err := Build(def, reg, WithRunEndPublishTimeout(timeout)); err == nil {
+			t.Fatalf("run-end publish timeout %s accepted", timeout)
+		}
+	}
+}
 
 func TestBuildRejectsUnknownConfigField(t *testing.T) {
 	reg := newTestRegistry(t)

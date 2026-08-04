@@ -22,10 +22,11 @@ type Graph struct {
 	order []string // definition order, for deterministic waves
 	edges map[string][]Edge
 
-	maxIterations  int
-	timeout        time.Duration
-	parallel       ParallelConfig
-	maxNodeRetries int
+	maxIterations        int
+	timeout              time.Duration
+	runEndPublishTimeout time.Duration
+	parallel             ParallelConfig
+	maxNodeRetries       int
 
 	warnings []Warning
 }
@@ -103,14 +104,15 @@ func Build(def *GraphDefinition, reg *Registry, opts ...BuildOption) (*Graph, er
 	}
 
 	g := &Graph{
-		name:           def.Name,
-		entry:          def.Entry,
-		nodes:          make(map[string]*nodeSlot, len(def.Nodes)),
-		edges:          make(map[string][]Edge, len(def.Edges)),
-		maxIterations:  options.maxIterations,
-		timeout:        options.timeout,
-		parallel:       options.parallel,
-		maxNodeRetries: options.maxNodeRetries,
+		name:                 def.Name,
+		entry:                def.Entry,
+		nodes:                make(map[string]*nodeSlot, len(def.Nodes)),
+		edges:                make(map[string][]Edge, len(def.Edges)),
+		maxIterations:        options.maxIterations,
+		timeout:              options.timeout,
+		runEndPublishTimeout: options.runEndPublishTimeout,
+		parallel:             options.parallel,
+		maxNodeRetries:       options.maxNodeRetries,
 	}
 
 	for _, nd := range def.Nodes {

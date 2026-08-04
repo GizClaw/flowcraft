@@ -183,6 +183,73 @@ func TestRun_InterruptedDefaultsToDiscarded(t *testing.T) {
 	}
 }
 
+func TestRun_AcceptedInterruptedOutputRunsCommitterWithLiveContext(t *testing.T) {
+	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
+	})
+	commits := 0
+	committer := agent.CommitterFunc(func(ctx context.Context, _ agent.Identity, _ *agent.Request, res *agent.Result) error {
+		commits++
+		if err := ctx.Err(); err != nil {
+			t.Fatalf("Committer context canceled after cooperative interrupt: %v", err)
+		}
+		if res.Status != agent.StatusInterrupted || res.Text() != "partial" {
+			t.Fatalf("Committer result = status %q text %q", res.Status, res.Text())
+		}
+		return nil
+	})
+	accept := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+		return agent.Decision{AcceptOutput: true}, nil
+	})
+
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithReferee(accept),
+		agent.WithCommitter(committer),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !res.Committed {
+		t.Fatal("accepted interrupted output should be committed")
+	}
+	if commits != 1 {
+		t.Fatalf("Committer calls = %d, want 1", commits)
+	}
+}
+
+func TestRun_DiscardWinsOverAcceptOutput(t *testing.T) {
+	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
+	})
+	accept := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+		return agent.Decision{AcceptOutput: true}, nil
+	})
+	discard := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
+		return agent.Decision{DiscardOutput: true}, nil
+	})
+	commits := 0
+
+	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, newReq("hi"),
+		agent.WithReferee(accept),
+		agent.WithReferee(discard),
+		agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+			commits++
+			return nil
+		})),
+	)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Committed {
+		t.Fatal("DiscardOutput must win over AcceptOutput")
+	}
+	if commits != 0 {
+		t.Fatalf("Committer calls = %d, want 0", commits)
+	}
+}
+
 // foreignInterrupt only satisfies the errdefs marker. agent should
 // classify it as interrupted but skip OnInterrupt because there is no
 // agent.InterruptedError to destructure.
@@ -234,6 +301,42 @@ func TestRun_ContextCanceledClassified(t *testing.T) {
 	}
 	if res.Committed {
 		t.Error("canceled run must not be Committed by default")
+	}
+}
+
+func TestRun_ContextCanceledAfterEngineReturnSkipsCommit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
+		close(started)
+		<-release
+		return board, nil
+	})
+	var commits atomic.Int64
+	done := make(chan *agent.Result, 1)
+	go func() {
+		result, _ := agent.Execute(
+			ctx,
+			agent.Agent{ID: "a"},
+			eng,
+			newReq("hi"),
+			agent.WithCommitter(agent.CommitterFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) error {
+				commits.Add(1)
+				return nil
+			})),
+		)
+		done <- result
+	}()
+	<-started
+	cancel()
+	close(release)
+	result := <-done
+	if result.Status != agent.StatusCanceled || result.Committed {
+		t.Fatalf("result = %+v, want canceled and uncommitted", result)
+	}
+	if got := commits.Load(); got != 0 {
+		t.Fatalf("committer calls = %d, want 0", got)
 	}
 }
 

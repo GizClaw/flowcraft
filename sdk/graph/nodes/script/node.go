@@ -10,8 +10,11 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // ScriptConfig is the config of the "script" node type. Decoding is
@@ -157,12 +160,23 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		delta.Content = p
 	case map[string]any:
 		// Scripts may pass a full payload object; project it over the
-		// type the call site named.
-		if buf, err := json.Marshal(p); err == nil {
-			_ = json.Unmarshal(buf, &delta)
-			if delta.Type == "" {
-				delta.Type = agent.StreamDeltaType(eventType)
-			}
+		// type the call site named. The marshal/unmarshal errors are
+		// non-fatal — the delta still carries the original eventType so
+		// downstream consumers see *something* — but they are worth
+		// surfacing because a malformed payload is almost always a
+		// script bug, not a runtime condition.
+		buf, mErr := json.Marshal(p)
+		if mErr != nil {
+			telemetry.WarnErr(e.ec.Context, "script emitter: marshal payload", mErr,
+				otellog.String("node.type", "script"),
+				otellog.String("event", eventType))
+		} else if uErr := json.Unmarshal(buf, &delta); uErr != nil {
+			telemetry.WarnErr(e.ec.Context, "script emitter: project payload", uErr,
+				otellog.String("node.type", "script"),
+				otellog.String("event", eventType))
+		}
+		if delta.Type == "" {
+			delta.Type = agent.StreamDeltaType(eventType)
 		}
 	}
 	_ = e.ec.EmitStreamDelta(delta)

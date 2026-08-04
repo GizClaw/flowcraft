@@ -2,6 +2,7 @@ package graph
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -24,7 +25,11 @@ import (
 type MessageStream struct {
 	ec      ExecutionContext
 	channel string
+	mu      sync.Mutex
 	buf     strings.Builder
+
+	materialized bool
+	message      inference.Message
 }
 
 // NewMessageStream starts a stream bound to channel. An empty channel
@@ -39,7 +44,9 @@ func (ec ExecutionContext) NewMessageStream(channel string) *MessageStream {
 // Emit publishes one text increment as a token stream-delta and buffers
 // it for Close.
 func (s *MessageStream) Emit(token string) error {
+	s.mu.Lock()
 	s.buf.WriteString(token)
+	s.mu.Unlock()
 	return s.ec.EmitStreamDelta(agent.StreamDeltaPayload{
 		Type:    agent.StreamDeltaToken,
 		Content: token,
@@ -50,12 +57,19 @@ func (s *MessageStream) Emit(token string) error {
 // bound channel and returns the message. Closing an empty stream is a
 // no-op returning an empty message and nil error.
 func (s *MessageStream) Close(board *agent.Board) (inference.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.materialized {
+		return s.message, nil
+	}
+	s.materialized = true
 	text := s.buf.String()
 	if text == "" {
 		return inference.Message{}, nil
 	}
 	msg := inference.NewTextMessage(inference.RoleAssistant, text)
 	board.AppendChannelMessage(s.channel, msg)
+	s.message = msg
 	return msg, nil
 }
 

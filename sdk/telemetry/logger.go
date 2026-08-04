@@ -85,3 +85,31 @@ func Warn(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
 func Error(ctx context.Context, msg string, attrs ...otellog.KeyValue) {
 	emit(ctx, otellog.SeverityError, msg, attrs...)
 }
+
+// WarnErr is a convenience for the very common SDK pattern of intentionally
+// swallowing an error at a best-effort boundary (defer Close, deferred
+// cleanup, post-error fallback) while still making the error visible to
+// telemetry. The error, if non-nil, is attached as AttrErrorMessage so
+// dashboards can filter swallowed errors uniformly across modules.
+//
+// Callers should still log through the regular Warn/Error helpers when the
+// error is the primary outcome of a call — WarnErr exists specifically for
+// the "we already returned a richer error / we already moved on, but the
+// dropped value is still worth seeing" case.
+//
+// Example:
+//
+//	if err := f.Close(); err != nil {
+//	    telemetry.WarnErr(ctx, "workspace: close after append", err,
+//	        otellog.String("path", path))
+//	}
+//
+// A nil err produces no log record; calling this with a nil error is a
+// cheap no-op so defer chains can use it unconditionally.
+func WarnErr(ctx context.Context, msg string, err error, attrs ...otellog.KeyValue) {
+	if err == nil {
+		return
+	}
+	attrs = append(attrs, otellog.String(AttrErrorMessage, err.Error()))
+	emit(ctx, otellog.SeverityWarn, msg, attrs...)
+}

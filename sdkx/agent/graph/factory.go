@@ -167,10 +167,11 @@ func (s *graphSource) UnmarshalJSON(data []byte) error {
 }
 
 type buildSettings struct {
-	MaxIterations  *int              `json:"max_iterations,omitempty"`
-	Timeout        *string           `json:"timeout,omitempty"`
-	MaxNodeRetries *int              `json:"max_node_retries,omitempty"`
-	Parallel       *parallelSettings `json:"parallel,omitempty"`
+	MaxIterations        *int              `json:"max_iterations,omitempty"`
+	Timeout              *string           `json:"timeout,omitempty"`
+	RunEndPublishTimeout *string           `json:"run_end_publish_timeout,omitempty"`
+	MaxNodeRetries       *int              `json:"max_node_retries,omitempty"`
+	Parallel             *parallelSettings `json:"parallel,omitempty"`
 }
 
 type parallelSettings struct {
@@ -595,6 +596,20 @@ func (b buildSettings) options() ([]coregraph.BuildOption, error) {
 			return nil, err
 		}
 		options = append(options, coregraph.WithTimeout(timeout))
+	}
+	if b.RunEndPublishTimeout != nil {
+		timeout, err := parseDuration(
+			"build.run_end_publish_timeout",
+			*b.RunEndPublishTimeout,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if timeout == 0 {
+			return nil, errdefs.Validationf(
+				"graph agent: build.run_end_publish_timeout must be > 0")
+		}
+		options = append(options, coregraph.WithRunEndPublishTimeout(timeout))
 	}
 	if b.MaxNodeRetries != nil {
 		if *b.MaxNodeRetries < 0 {

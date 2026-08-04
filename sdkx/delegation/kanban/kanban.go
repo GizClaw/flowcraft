@@ -3,7 +3,9 @@ package kanban
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"sync"
 	"time"
 
@@ -13,7 +15,11 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/delegation"
 )
 
-const workSourceConsumer = "delegation-worker"
+const (
+	workSourceConsumer          = "delegation-worker"
+	defaultIdempotencyRetention = time.Hour
+	maxJanitorInterval          = time.Minute
+)
 
 // Validator vets a typed asynchronous delegation before it is admitted.
 type Validator func(context.Context, delegation.AsyncRequest) error
@@ -22,15 +28,18 @@ type Validator func(context.Context, delegation.AsyncRequest) error
 //
 // Its card, query, transition, watch, event, and metric APIs are operational
 // views of that backend. AsyncBackend callers receive only delegation ids and
-// delegation responses.
+// delegation responses. Operational cards and terminal idempotency records
+// have independent retention: terminal cards may be evicted from the board
+// while their minimal replay record remains queryable.
 type Board struct {
-	scopeID    string
-	bus        event.Bus
-	ownsBus    bool
-	maxPending int
-	cardTTL    time.Duration
-	maxCards   int
-	validator  Validator
+	scopeID              string
+	bus                  event.Bus
+	ownsBus              bool
+	maxPending           int
+	cardTTL              time.Duration
+	maxCards             int
+	idempotencyRetention time.Duration
+	validator            Validator
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -39,6 +48,8 @@ type Board struct {
 	closed      bool
 	cards       []*Card
 	index       map[string]*Card
+	idempotency map[string]*retainedOperation
+	tombstones  map[string]*retainedOperation
 	statusCount map[Status]int
 	workReady   chan struct{}
 	leases      map[string]lease
@@ -47,7 +58,16 @@ type Board struct {
 	watchers []*watcher
 
 	metrics   *metrics
+	janitor   sync.WaitGroup
 	closeOnce sync.Once
+}
+
+type retainedOperation struct {
+	id          string
+	key         string
+	fingerprint [sha256.Size]byte
+	response    sdkdelegation.Response
+	expires     time.Time
 }
 
 type lease struct {
@@ -73,6 +93,12 @@ func WithCardTTL(d time.Duration) Option {
 	return func(board *Board) { board.cardTTL = d }
 }
 
+// WithIdempotencyRetention sets how long a terminal operation remains
+// replayable and queryable after completion. The duration must be positive.
+func WithIdempotencyRetention(d time.Duration) Option {
+	return func(board *Board) { board.idempotencyRetention = d }
+}
+
 // WithValidator installs an asynchronous delegation admission gate.
 func WithValidator(validator Validator) Option {
 	return func(board *Board) { board.validator = validator }
@@ -92,22 +118,30 @@ func WithBus(bus event.Bus) Option {
 func New(scopeID string, options ...Option) *Board {
 	ctx, cancel := context.WithCancel(context.Background())
 	board := &Board{
-		scopeID:     scopeID,
-		bus:         event.NewMemoryBus(),
-		ownsBus:     true,
-		ctx:         ctx,
-		cancel:      cancel,
-		index:       make(map[string]*Card),
-		statusCount: make(map[Status]int),
-		workReady:   make(chan struct{}),
-		leases:      make(map[string]lease),
+		scopeID:              scopeID,
+		bus:                  event.NewMemoryBus(),
+		ownsBus:              true,
+		ctx:                  ctx,
+		cancel:               cancel,
+		index:                make(map[string]*Card),
+		idempotency:          make(map[string]*retainedOperation),
+		tombstones:           make(map[string]*retainedOperation),
+		statusCount:          make(map[Status]int),
+		workReady:            make(chan struct{}),
+		leases:               make(map[string]lease),
+		idempotencyRetention: defaultIdempotencyRetention,
 	}
 	for _, option := range options {
 		if option != nil {
 			option(board)
 		}
 	}
+	if board.idempotencyRetention <= 0 {
+		panic("delegation kanban: idempotency retention must be positive")
+	}
 	board.metrics = newMetrics(ctx)
+	board.janitor.Add(1)
+	go board.runJanitor()
 	return board
 }
 
@@ -119,6 +153,9 @@ func (b *Board) Bus() event.Bus { return b.bus }
 
 // Context is canceled when the backend closes.
 func (b *Board) Context() context.Context { return b.ctx }
+
+// IdempotencyRetention reports the guaranteed terminal replay window.
+func (b *Board) IdempotencyRetention() time.Duration { return b.idempotencyRetention }
 
 // Close wakes blocked claims, stops watchers, and closes an owned bus.
 func (b *Board) Close() error {
@@ -139,6 +176,7 @@ func (b *Board) Close() error {
 			cancel()
 		}
 		b.cancel()
+		b.janitor.Wait()
 
 		b.wmu.Lock()
 		watchers := b.watchers
@@ -167,6 +205,19 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 		return "", errdefs.Validationf(
 			"delegation kanban: request mode must be %q", sdkdelegation.ModeAsync)
 	}
+	request = cloneAsyncRequest(request)
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
+		return "", errdefs.NotAvailablef("delegation kanban: backend is closed")
+	}
+	b.evictLocked()
+	if id, found, err := b.idempotentSubmissionLocked(request); found || err != nil {
+		b.mu.Unlock()
+		return id, err
+	}
+	b.mu.Unlock()
+
 	if b.validator != nil {
 		if err := b.validator(ctx, cloneAsyncRequest(request)); err != nil {
 			return "", err
@@ -174,7 +225,6 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	}
 
 	now := time.Now()
-	request = cloneAsyncRequest(request)
 	card := &Card{
 		ID:        newCardID(),
 		Producer:  request.Caller,
@@ -190,6 +240,11 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 		b.mu.Unlock()
 		return "", errdefs.NotAvailablef("delegation kanban: backend is closed")
 	}
+	b.evictLocked()
+	if id, found, err := b.idempotentSubmissionLocked(request); found || err != nil {
+		b.mu.Unlock()
+		return id, err
+	}
 	if b.maxPending > 0 && b.statusCount[StatusPending] >= b.maxPending {
 		b.mu.Unlock()
 		return "", errdefs.RateLimitf(
@@ -197,6 +252,13 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	}
 	b.cards = append(b.cards, card)
 	b.index[card.ID] = card
+	if key := request.Request.IdempotencyKey; key != "" {
+		b.idempotency[key] = &retainedOperation{
+			id:          card.ID,
+			key:         key,
+			fingerprint: asyncRequestFingerprint(request),
+		}
+	}
 	b.statusCount[StatusPending]++
 	b.evictLocked()
 	b.signalWorkLocked()
@@ -207,6 +269,31 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	b.notify(snapshot)
 	b.publish(ctx, snapshot)
 	return card.ID, nil
+}
+
+func (b *Board) idempotentSubmissionLocked(
+	request delegation.AsyncRequest,
+) (string, bool, error) {
+	key := request.Request.IdempotencyKey
+	if key == "" {
+		return "", false, nil
+	}
+	retained, ok := b.idempotency[key]
+	if !ok {
+		return "", false, nil
+	}
+	if !retained.expires.IsZero() && !time.Now().Before(retained.expires) {
+		delete(b.idempotency, key)
+		delete(b.tombstones, retained.id)
+		return "", false, nil
+	}
+	if retained.fingerprint != asyncRequestFingerprint(request) {
+		return "", false, errdefs.Conflictf(
+			"delegation kanban: idempotency key %q was already used for a different request",
+			key,
+		)
+	}
+	return retained.id, true, nil
 }
 
 // Status implements delegation.AsyncBackend.
@@ -225,13 +312,19 @@ func (b *Board) Status(ctx context.Context, id string) (sdkdelegation.Response, 
 	}
 	b.mu.RLock()
 	card, ok := b.index[id]
-	if !ok {
+	if ok {
+		response := responseForCard(card)
 		b.mu.RUnlock()
-		return sdkdelegation.Response{}, sdkdelegation.RequestNotFound(id)
+		return response, nil
 	}
-	response := responseForCard(card)
+	retained, ok := b.tombstones[id]
+	if ok && time.Now().Before(retained.expires) {
+		response := cloneResponse(retained.response)
+		b.mu.RUnlock()
+		return response, nil
+	}
 	b.mu.RUnlock()
-	return response, nil
+	return sdkdelegation.Response{}, sdkdelegation.RequestNotFound(id)
 }
 
 // Claim implements delegation.WorkSource. It blocks until pending work is
@@ -485,6 +578,9 @@ func (b *Board) finishTransitionLocked(card *Card, from Status) *Card {
 	card.UpdatedAt = time.Now()
 	b.statusCount[from]--
 	b.statusCount[card.Status]++
+	if card.Status.IsTerminal() && card.Result != nil {
+		b.retainTerminalLocked(card)
+	}
 	return card.clone()
 }
 
@@ -506,12 +602,13 @@ func (b *Board) afterTransition(snapshot *Card) {
 }
 
 func (b *Board) evictLocked() {
+	b.expireRetainedLocked(time.Now())
 	if b.cardTTL > 0 {
 		now := time.Now()
 		kept := b.cards[:0]
 		for _, card := range b.cards {
 			if card.Status.IsTerminal() && now.Sub(card.UpdatedAt) > b.cardTTL {
-				delete(b.index, card.ID)
+				b.removeCardLocked(card)
 				b.statusCount[card.Status]--
 				continue
 			}
@@ -526,7 +623,7 @@ func (b *Board) evictLocked() {
 	kept := b.cards[:0]
 	for _, card := range b.cards {
 		if excess > 0 && card.Status.IsTerminal() {
-			delete(b.index, card.ID)
+			b.removeCardLocked(card)
 			b.statusCount[card.Status]--
 			excess--
 			continue
@@ -534,6 +631,89 @@ func (b *Board) evictLocked() {
 		kept = append(kept, card)
 	}
 	b.cards = kept
+}
+
+func (b *Board) removeCardLocked(card *Card) {
+	delete(b.index, card.ID)
+	if !card.Status.IsTerminal() || card.Result == nil {
+		return
+	}
+	b.retainTerminalLocked(card)
+}
+
+func (b *Board) retainTerminalLocked(card *Card) {
+	if card == nil || card.Task == nil || card.Result == nil {
+		return
+	}
+	key := card.Task.Request.Request.IdempotencyKey
+	expires := card.UpdatedAt.Add(b.idempotencyRetention)
+	if !time.Now().Before(expires) {
+		return
+	}
+	retained := b.idempotency[key]
+	if key == "" || retained == nil || retained.id != card.ID {
+		retained = &retainedOperation{
+			id:          card.ID,
+			key:         key,
+			fingerprint: asyncRequestFingerprint(card.Task.Request),
+		}
+		if key != "" && b.idempotency[key] == nil {
+			b.idempotency[key] = retained
+		}
+	}
+	retained.response = cloneResponse(card.Result.Response)
+	retained.response.ID = card.ID
+	retained.expires = expires
+	b.tombstones[card.ID] = retained
+}
+
+func (b *Board) expireRetainedLocked(now time.Time) {
+	for id, retained := range b.tombstones {
+		if now.Before(retained.expires) {
+			continue
+		}
+		delete(b.tombstones, id)
+		key := retained.key
+		if key != "" && b.idempotency[key] == retained {
+			delete(b.idempotency, key)
+		}
+	}
+}
+
+func (b *Board) runJanitor() {
+	defer b.janitor.Done()
+	interval := b.idempotencyRetention / 2
+	if b.cardTTL > 0 && b.cardTTL/2 < interval {
+		interval = b.cardTTL / 2
+	}
+	if interval > maxJanitorInterval {
+		interval = maxJanitorInterval
+	}
+	if interval < time.Millisecond {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			b.mu.Lock()
+			if !b.closed {
+				b.evictLocked()
+			}
+			b.mu.Unlock()
+		}
+	}
+}
+
+func asyncRequestFingerprint(request delegation.AsyncRequest) [sha256.Size]byte {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		panic("delegation kanban: fingerprint request: " + err.Error())
+	}
+	return sha256.Sum256(encoded)
 }
 
 func responseForCard(card *Card) sdkdelegation.Response {
@@ -566,6 +746,7 @@ func newLeaseToken() string {
 }
 
 var (
-	_ delegation.AsyncBackend = (*Board)(nil)
-	_ delegation.WorkSource   = (*Board)(nil)
+	_ delegation.AsyncBackend                 = (*Board)(nil)
+	_ delegation.IdempotencyRetentionProvider = (*Board)(nil)
+	_ delegation.WorkSource                   = (*Board)(nil)
 )

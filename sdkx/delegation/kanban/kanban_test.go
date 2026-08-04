@@ -48,6 +48,7 @@ func submit(t *testing.T, board *kanban.Board, target string) string {
 func TestAsyncBackendSubmitAndStatus(t *testing.T) {
 	board := newBoard(t)
 	req := request("worker")
+	req.Request.IdempotencyKey = "delivery-1"
 	id, err := board.Submit(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Submit: %v", err)
@@ -62,6 +63,7 @@ func TestAsyncBackendSubmitAndStatus(t *testing.T) {
 		t.Fatal("Card not retained")
 	}
 	if card.Task.Request.Request.Target != "worker" ||
+		card.Task.Request.Request.IdempotencyKey != "delivery-1" ||
 		card.Task.Request.Request.Metadata["tenant"] != "acme" ||
 		card.Producer != "planner" {
 		t.Fatalf("typed request not preserved: %+v", card)
@@ -72,6 +74,72 @@ func TestAsyncBackendSubmitAndStatus(t *testing.T) {
 	}
 	if response.ID != id || response.Status != sdkdelegation.StatusAccepted {
 		t.Fatalf("Status = %+v", response)
+	}
+}
+
+func TestAsyncBackendSubmitIdempotency(t *testing.T) {
+	board := newBoard(t)
+	req := request("worker")
+	req.Request.IdempotencyKey = "delivery-1"
+	first, err := board.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := board.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed != first || board.Len() != 1 {
+		t.Fatalf("replay = %q, first = %q, cards = %d", replayed, first, board.Len())
+	}
+
+	conflict := req
+	conflict.Request.Input = "different work"
+	if _, err := board.Submit(context.Background(), conflict); !errdefs.IsConflict(err) {
+		t.Fatalf("different request with reused key error = %v, want conflict", err)
+	}
+}
+
+func TestAsyncBackendSubmitIdempotencyIsConcurrent(t *testing.T) {
+	board := newBoard(t)
+	req := request("worker")
+	req.Request.IdempotencyKey = "delivery-concurrent"
+	const callers = 64
+	start := make(chan struct{})
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var waiters sync.WaitGroup
+	for range callers {
+		waiters.Add(1)
+		go func() {
+			defer waiters.Done()
+			<-start
+			id, err := board.Submit(context.Background(), req)
+			ids <- id
+			errs <- err
+		}()
+	}
+	close(start)
+	waiters.Wait()
+	close(ids)
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var want string
+	for id := range ids {
+		if want == "" {
+			want = id
+		}
+		if id != want {
+			t.Fatalf("concurrent IDs include %q and %q", want, id)
+		}
+	}
+	if board.Len() != 1 {
+		t.Fatalf("concurrent submissions retained %d cards, want 1", board.Len())
 	}
 }
 
@@ -582,6 +650,152 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 			t.Fatal("TTL evicted pending work")
 		}
 	})
+	t.Run("ttl eviction preserves terminal tombstone during retention", func(t *testing.T) {
+		board := newBoard(t,
+			kanban.WithCardTTL(time.Millisecond),
+			kanban.WithIdempotencyRetention(100*time.Millisecond),
+		)
+		req := request("worker")
+		req.Request.IdempotencyKey = "ttl-key"
+		first, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		work, err := board.Claim(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
+			Status: sdkdelegation.StatusSucceeded,
+			Output: "done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for {
+			if _, ok := board.Card(first); !ok {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("terminal card was not evicted while board was idle")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		replayed, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replayed != first {
+			t.Fatalf("replayed id = %q, want %q", replayed, first)
+		}
+		status, err := board.Status(context.Background(), first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Status != sdkdelegation.StatusSucceeded || status.Output != "done" {
+			t.Fatalf("tombstone status = %+v", status)
+		}
+		different := req
+		different.Request.Input = "different"
+		if _, err := board.Submit(context.Background(), different); !errdefs.IsConflict(err) {
+			t.Fatalf("different request error = %v, want conflict", err)
+		}
+		if board.Len() != 0 {
+			t.Fatalf("replay created work; retained cards = %d", board.Len())
+		}
+	})
+	t.Run("capacity eviction preserves terminal tombstone during retention", func(t *testing.T) {
+		board := newBoard(t,
+			kanban.WithMaxCards(1),
+			kanban.WithIdempotencyRetention(time.Second),
+		)
+		req := request("worker")
+		req.Request.IdempotencyKey = "evicted-key"
+		first, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		work, err := board.Claim(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
+			Status: sdkdelegation.StatusSucceeded,
+			Output: "done",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		submit(t, board, "other")
+		if _, ok := board.Card(first); ok {
+			t.Fatal("terminal card survived max-card eviction")
+		}
+		replayed, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if replayed != first {
+			t.Fatalf("replayed id = %q, want %q", replayed, first)
+		}
+		status, err := board.Status(context.Background(), first)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Status != sdkdelegation.StatusSucceeded || status.Output != "done" {
+			t.Fatalf("tombstone status = %+v", status)
+		}
+	})
+	t.Run("expired tombstone permits a new operation", func(t *testing.T) {
+		board := newBoard(t,
+			kanban.WithCardTTL(time.Millisecond),
+			kanban.WithIdempotencyRetention(5*time.Millisecond),
+		)
+		req := request("worker")
+		req.Request.IdempotencyKey = "expiring-key"
+		first, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		work, err := board.Claim(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
+			Status: sdkdelegation.StatusSucceeded,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for {
+			_, err = board.Status(context.Background(), first)
+			if errdefs.IsNotFound(err) {
+				break
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("expired tombstone remained queryable")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		req.Request.Input = "new operation after retention"
+		second, err := board.Submit(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if second == first {
+			t.Fatalf("expired tombstone replayed id %q", first)
+		}
+	})
+}
+
+func TestIdempotencyRetentionMustBePositive(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New accepted a non-positive idempotency retention")
+		}
+	}()
+	_ = kanban.New("invalid", kanban.WithIdempotencyRetention(0))
 }
 
 func TestCompleteRejectsInvalidTransitions(t *testing.T) {

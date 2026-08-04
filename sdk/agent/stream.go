@@ -223,6 +223,9 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 //   - MUST NOT block longer than the transport's natural backoff;
 //     long-running work belongs in a worker goroutine that the sink
 //     drains into.
+//   - MUST observe ctx.Done and return promptly. Router and graph sink
+//     timeouts are bounded only for implementations that honor this
+//     cooperative cancellation contract.
 //
 // [StreamSinkFunc] is the canonical func adapter.
 type StreamSink interface {

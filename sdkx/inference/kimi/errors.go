@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // errorEnvelope is Kimi's failure body: {"error": {message, type, code}}.
@@ -49,9 +51,17 @@ func classifyError(err error) error {
 
 // classifyHTTPError classifies a non-2xx response from its status plus
 // the error envelope's type/code pair.
-func classifyHTTPError(status int, body []byte) error {
+func classifyHTTPError(ctx context.Context, status int, body []byte) error {
 	var envelope errorEnvelope
-	_ = json.Unmarshal(body, &envelope)
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		// Body did not match the documented envelope shape. Status
+		// still drives the classification, but make the parse failure
+		// visible — it usually means the upstream changed its error
+		// contract.
+		telemetry.WarnErr(ctx, "kimi: parse error envelope", err,
+			otellog.String("provider", "kimi"),
+			otellog.Int("http.status", status))
+	}
 	message := envelope.Error.Message
 	if message == "" {
 		message = http.StatusText(status)

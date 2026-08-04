@@ -98,7 +98,7 @@ func transportGenerateStream(client *kimiClient) inference.Transport[generateWir
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			defer response.Body.Close()
 			payload, _ := io.ReadAll(response.Body)
-			return nil, classifyHTTPError(response.StatusCode, payload)
+			return nil, classifyHTTPError(ctx, response.StatusCode, payload)
 		}
 		streamCtx, cancel := context.WithCancel(ctx)
 		return &chatStream{

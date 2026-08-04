@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 
 	"github.com/fsnotify/fsnotify"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // watchDebounce coalesces the burst of create/write/rename events one atomic
@@ -35,14 +37,25 @@ func (s *Store) Notify(ctx context.Context) (<-chan struct{}, error) {
 		)
 	}
 	if err := watcher.Add(filepath.Dir(s.path)); err != nil {
-		_ = watcher.Close()
+		if cErr := watcher.Close(); cErr != nil {
+			telemetry.WarnErr(ctx, "yaml watcher: close after dir watch failure", cErr,
+				otellog.String("op", "watch_file"),
+				otellog.String("path", s.path),
+				otellog.String("dir", filepath.Dir(s.path)))
+		}
 		return nil, fmt.Errorf(
 			"watch YAML inference config directory: %w",
 			err,
 		)
 	}
-	// Best-effort: the file may not exist yet. Creation events re-arm this.
-	_ = watcher.Add(s.path)
+	// Best-effort: the file may not exist yet. Creation events re-arm
+	// this. A failure here is *usually* the file being absent, but can
+	// also be a real I/O problem; warn on it so the latter is visible.
+	if err := watcher.Add(s.path); err != nil {
+		telemetry.WarnErr(ctx, "yaml watcher: initial file watch (file may not exist yet)", err,
+			otellog.String("op", "watch_file"),
+			otellog.String("path", s.path))
+	}
 	signals := make(chan struct{}, 1)
 	go s.forwardWatchEvents(ctx, watcher, signals)
 	return signals, nil
@@ -80,7 +93,11 @@ func (s *Store) forwardWatchEvents(
 				// Atomic replacement and deletion kill the in-place file
 				// watch. Re-adding is harmless when the file is absent or
 				// already watched, and retry happens on the next create.
-				_ = watcher.Add(s.path)
+				if err := watcher.Add(s.path); err != nil {
+					telemetry.WarnErr(ctx, "yaml watcher: re-arm file watch after create/rename/remove", err,
+						otellog.String("op", "watch_file"),
+						otellog.String("path", s.path))
+				}
 			}
 			if debounce == nil {
 				debounce = time.NewTimer(watchDebounce)

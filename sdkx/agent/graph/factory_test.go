@@ -258,6 +258,9 @@ func TestFactoryBuildSettingsValidation(t *testing.T) {
 	tests := []map[string]any{
 		{"timeout": "-1s"},
 		{"timeout": "not-duration"},
+		{"run_end_publish_timeout": "0s"},
+		{"run_end_publish_timeout": "-1s"},
+		{"run_end_publish_timeout": "not-duration"},
 		{"max_node_retries": -1},
 		{"parallel": map[string]any{"enabled": true, "branch_timeout": "-1s"}},
 		{"parallel": map[string]any{"enabled": true, "max_concurrency": -1}},
@@ -277,8 +280,9 @@ func TestFactoryBuildSettingsValidation(t *testing.T) {
 	engine, err := NewFactory().New(context.Background(), agent.Config{
 		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 		Settings: mergeSettings(base, map[string]any{"build": map[string]any{
-			"max_iterations": 7,
-			"timeout":        "1s",
+			"max_iterations":          7,
+			"timeout":                 "1s",
+			"run_end_publish_timeout": "2s",
 			"parallel": map[string]any{
 				"enabled":         true,
 				"branch_timeout":  "250ms",

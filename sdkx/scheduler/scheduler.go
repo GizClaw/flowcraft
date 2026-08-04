@@ -1,162 +1,295 @@
-// Package scheduler provides type-safe in-process delay and cron scheduling.
-//
-// The package owns timekeeping only. Dispatching work and deciding whether
-// previously dispatched work is still outstanding are supplied by adapters.
+// Package scheduler provides an in-process implementation of the scheduler
+// control and leased-work protocols.
 package scheduler
 
 import (
+	"container/heap"
 	"context"
 	"errors"
 	"fmt"
 	"reflect"
-	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
-
+	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 	"github.com/robfig/cron/v3"
-	"go.opentelemetry.io/otel/attribute"
-	otellog "go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/trace"
 )
+
+// Timer is the timer capability needed by LocalServer.
+type Timer interface {
+	Stop() bool
+}
+
+// Clock supplies time and one-shot timers. Implementations must be safe for
+// concurrent use.
+type Clock interface {
+	Now() time.Time
+	AfterFunc(time.Duration, func()) Timer
+}
+
+type wallClock struct{}
+
+func (wallClock) Now() time.Time { return time.Now() }
+func (wallClock) AfterFunc(delay time.Duration, fn func()) Timer {
+	return time.AfterFunc(delay, fn)
+}
+
+// RuleStore persists recurring rules for Restore.
+type RuleStore interface {
+	Save(context.Context, sdkscheduler.Rule) error
+	Delete(ctx context.Context, namespace, id string) error
+	List(context.Context) ([]sdkscheduler.Rule, error)
+}
+
+// Option configures a LocalServer.
+type Option func(*serverOptions) error
+
+type serverOptions struct {
+	store               RuleStore
+	clock               Clock
+	completionRetention time.Duration
+	maxCompletion       time.Duration
+	onceRetention       time.Duration
+	rollbackTimeout     time.Duration
+}
 
 const (
-	// MetaScheduleID is the metadata key adapters should use to correlate
-	// dispatched work with the schedule that produced it.
-	MetaScheduleID = "schedule_id"
-
-	// AttrScheduleID identifies a schedule in telemetry.
-	AttrScheduleID = "scheduler.schedule.id"
-	// AttrScheduleKind identifies whether a trigger is a delay or cron rule.
-	AttrScheduleKind = "scheduler.schedule.kind"
+	defaultCompletionRetention = time.Hour
+	defaultMaxCompletion       = 24 * time.Hour
+	defaultOnceRetention       = time.Hour
+	defaultRollbackTimeout     = 5 * time.Second
+	scheduleGateStripes        = 64
 )
 
-// Dispatcher submits one typed value for execution and returns the business
-// execution whose lifecycle an overlap policy may inspect.
-type Dispatcher[T any] interface {
-	Dispatch(ctx context.Context, scheduleID string, value T) (Outstanding, error)
-}
-
-// Outstanding represents one dispatched business execution. IsOutstanding
-// must describe that execution's lifecycle, not callback submission.
-type Outstanding interface {
-	IsOutstanding(ctx context.Context) (bool, error)
-}
-
-// Rule is a recurring typed dispatch.
-type Rule[T any] struct {
-	ID       string  `json:"id"`
-	Cron     string  `json:"cron"`
-	Timezone string  `json:"timezone,omitempty"`
-	Value    T       `json:"value"`
-	Overlap  Overlap `json:"overlap,omitempty"`
-}
-
-// Overlap controls a trigger arriving while prior business work is outstanding.
-type Overlap string
-
-const (
-	// OverlapSkip suppresses a trigger while prior work remains outstanding.
-	OverlapSkip Overlap = ""
-	// OverlapAllow dispatches every trigger.
-	OverlapAllow Overlap = "allow"
-)
-
-// RuleStore persists recurring rules. Implementations must be concurrency-safe.
-type RuleStore[T any] interface {
-	Save(ctx context.Context, rule Rule[T]) error
-	Delete(ctx context.Context, ruleID string) error
-	List(ctx context.Context) ([]Rule[T], error)
-}
-
-// Option configures a Scheduler.
-type Option[T any] func(*Scheduler[T])
-
-// WithRuleStore enables persistence and Restore.
-func WithRuleStore[T any](store RuleStore[T]) Option[T] {
-	return func(s *Scheduler[T]) {
-		s.store = store
-		s.storeSet = true
+// WithRuleStore enables recurring-rule persistence and startup restoration.
+func WithRuleStore(store RuleStore) Option {
+	return func(options *serverOptions) error {
+		if isNil(store) {
+			return errdefs.Validationf("scheduler: rule store must not be nil")
+		}
+		options.store = store
+		return nil
 	}
 }
 
-// WithValueValidator validates rule values before Add persists them and before
-// Restore arms persisted rules.
-func WithValueValidator[T any](validate func(T) error) Option[T] {
-	return func(s *Scheduler[T]) {
-		s.valueValidator = validate
+// WithClock overrides time and one-shot timers, primarily for deterministic
+// tests.
+func WithClock(clock Clock) Option {
+	return func(options *serverOptions) error {
+		if isNil(clock) {
+			return errdefs.Validationf("scheduler: clock must not be nil")
+		}
+		options.clock = clock
+		return nil
 	}
 }
 
-type ruleState[T any] struct {
+// WithCompletionRetention configures how long terminal Complete requests are
+// retained for idempotent replay.
+func WithCompletionRetention(retention time.Duration) Option {
+	return func(options *serverOptions) error {
+		if retention <= 0 {
+			return errdefs.Validationf("scheduler: completion retention must be positive")
+		}
+		options.completionRetention = retention
+		return nil
+	}
+}
+
+// WithMaxCompletionRetention limits caller-requested Complete tombstone
+// retention. Requests beyond this bound are rejected as validation errors.
+func WithMaxCompletionRetention(retention time.Duration) Option {
+	return func(options *serverOptions) error {
+		if retention <= 0 {
+			return errdefs.Validationf("scheduler: maximum completion retention must be positive")
+		}
+		options.maxCompletion = retention
+		return nil
+	}
+}
+
+// WithOnceRetention configures how long fired and canceled one-shot requests
+// remain available for idempotent replay before automatic cleanup.
+func WithOnceRetention(retention time.Duration) Option {
+	return func(options *serverOptions) error {
+		if retention <= 0 {
+			return errdefs.Validationf("scheduler: one-shot retention must be positive")
+		}
+		options.onceRetention = retention
+		return nil
+	}
+}
+
+// WithRollbackTimeout bounds each RuleStore compensation attempt independently
+// from the originating request context.
+func WithRollbackTimeout(timeout time.Duration) Option {
+	return func(options *serverOptions) error {
+		if timeout <= 0 {
+			return errdefs.Validationf("scheduler: rollback timeout must be positive")
+		}
+		options.rollbackTimeout = timeout
+		return nil
+	}
+}
+
+type scheduleKey struct {
+	namespace string
+	id        string
+}
+
+type ruleState struct {
+	rule       sdkscheduler.Rule
 	entry      cron.EntryID
-	rule       Rule[T]
 	generation uint64
-
-	gateMu sync.Mutex
-	firing bool
 }
 
-// Scheduler dispatches typed values after delays or on cron schedules.
-type Scheduler[T any] struct {
-	dispatcher     Dispatcher[T]
-	cron           *cron.Cron
-	store          RuleStore[T]
-	storeSet       bool
-	valueValidator func(T) error
+type onceStatus uint8
+
+const (
+	oncePending onceStatus = iota
+	onceFired
+	onceCanceled
+)
+
+type onceState struct {
+	once   sdkscheduler.Once
+	timer  Timer
+	expiry Timer
+	status onceStatus
+}
+
+type executionState struct {
+	execution  sdkscheduler.Execution
+	deliveryID string
+	leaseToken string
+	leaseUntil time.Time
+}
+
+type completionTombstone struct {
+	request   sdkscheduler.CompleteRequest
+	expiresAt time.Time
+}
+
+type completionExpiry struct {
+	executionID string
+	expiresAt   time.Time
+}
+
+type completionHeap []completionExpiry
+
+func (h completionHeap) Len() int           { return len(h) }
+func (h completionHeap) Less(i, j int) bool { return h[i].expiresAt.Before(h[j].expiresAt) }
+func (h completionHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *completionHeap) Push(value any) {
+	*h = append(*h, value.(completionExpiry))
+}
+
+func (h *completionHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	value := old[last]
+	old[last] = completionExpiry{}
+	*h = old[:last]
+	return value
+}
+
+// LocalServer is a single-process scheduler.Server. Trigger callbacks only
+// enqueue protocol executions; business handlers run in sdk/scheduler.Worker.
+type LocalServer struct {
+	cron  *cron.Cron
+	store RuleStore
+	clock Clock
 
 	mu          sync.Mutex
-	opsMu       sync.Mutex
-	rules       map[string]*ruleState[T]
-	timers      map[string]*time.Timer
-	outstanding map[string][]Outstanding
+	rules       map[scheduleKey]*ruleState
+	once        map[scheduleKey]*onceState
+	gates       [scheduleGateStripes]sync.Mutex
+	executions  map[string]*executionState
+	queues      map[string][]string
+	completions map[string]completionTombstone
+	completeExp completionHeap
+	completeTTL time.Duration
+	maxComplete time.Duration
+	onceTTL     time.Duration
+	rollbackTTL time.Duration
 	callbacks   sync.WaitGroup
 	closeDone   chan struct{}
 	started     bool
+	restored    bool
+	restoring   bool
+	restoreDone chan struct{}
+	restoreN    int
+	restoreErr  error
 	closed      bool
 }
 
-// New constructs a scheduler. Start begins cron evaluation; delays are armed
-// immediately.
-func New[T any](dispatcher Dispatcher[T], opts ...Option[T]) (*Scheduler[T], error) {
-	if isNil(dispatcher) {
-		return nil, errdefs.Validationf("scheduler: dispatcher is required")
+var _ sdkscheduler.Server = (*LocalServer)(nil)
+
+// NewLocalServer constructs an unstarted local scheduler server.
+func NewLocalServer(options ...Option) (*LocalServer, error) {
+	config := serverOptions{
+		clock:               wallClock{},
+		completionRetention: defaultCompletionRetention,
+		maxCompletion:       defaultMaxCompletion,
+		onceRetention:       defaultOnceRetention,
+		rollbackTimeout:     defaultRollbackTimeout,
 	}
-	s := &Scheduler[T]{
-		dispatcher:  dispatcher,
-		cron:        cron.New(cron.WithLocation(time.UTC)),
-		rules:       make(map[string]*ruleState[T]),
-		timers:      make(map[string]*time.Timer),
-		outstanding: make(map[string][]Outstanding),
-		closeDone:   make(chan struct{}),
-	}
-	for _, option := range opts {
-		if option != nil {
-			option(s)
+	for _, option := range options {
+		if option == nil {
+			return nil, errdefs.Validationf("scheduler: option must not be nil")
+		}
+		if err := option(&config); err != nil {
+			return nil, err
 		}
 	}
-	if s.storeSet && isNil(s.store) {
-		return nil, errdefs.Validationf("scheduler: rule store must not be nil")
+	if config.maxCompletion < config.completionRetention {
+		return nil, errdefs.Validationf(
+			"scheduler: maximum completion retention must not be shorter than default retention",
+		)
 	}
-	return s, nil
+	return &LocalServer{
+		cron:        cron.New(cron.WithLocation(time.UTC)),
+		store:       config.store,
+		clock:       config.clock,
+		rules:       make(map[scheduleKey]*ruleState),
+		once:        make(map[scheduleKey]*onceState),
+		executions:  make(map[string]*executionState),
+		queues:      make(map[string][]string),
+		completions: make(map[string]completionTombstone),
+		completeTTL: config.completionRetention,
+		maxComplete: config.maxCompletion,
+		onceTTL:     config.onceRetention,
+		rollbackTTL: config.rollbackTimeout,
+		closeDone:   make(chan struct{}),
+	}, nil
 }
 
-// Start begins evaluating cron rules. It is safe to call repeatedly.
-func (s *Scheduler[T]) Start() {
+// Start restores persisted rules once, then begins cron evaluation. It is
+// idempotent. Valid restored rules remain armed even when Restore reports
+// skipped invalid rows.
+func (s *LocalServer) Start() error {
+	if s == nil {
+		return errdefs.Validationf("scheduler: local server is required")
+	}
+	_, restoreErr := s.Restore(context.Background())
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.started || s.closed {
-		return
+	if s.closed {
+		return errdefs.NotAvailablef("scheduler: local server closed")
 	}
-	s.started = true
-	s.cron.Start()
+	if !s.started {
+		s.started = true
+		s.cron.Start()
+	}
+	return restoreErr
 }
 
-// Close stops cron evaluation and pending delays. It is idempotent.
-func (s *Scheduler[T]) Close() error {
+// Close stops cron and one-shot timers, rejects further operations, and waits
+// for trigger callbacks admitted before closure. It is idempotent.
+func (s *LocalServer) Close() error {
 	if s == nil {
 		return nil
 	}
@@ -168,10 +301,15 @@ func (s *Scheduler[T]) Close() error {
 		return nil
 	}
 	s.closed = true
-	timers := s.timers
-	s.timers = make(map[string]*time.Timer)
-	s.rules = make(map[string]*ruleState[T])
-	s.outstanding = make(map[string][]Outstanding)
+	timers := make([]Timer, 0, len(s.once)*2)
+	for _, state := range s.once {
+		if state.status == oncePending && state.timer != nil {
+			timers = append(timers, state.timer)
+		}
+		if state.expiry != nil {
+			timers = append(timers, state.expiry)
+		}
+	}
 	s.mu.Unlock()
 
 	for _, timer := range timers {
@@ -183,370 +321,734 @@ func (s *Scheduler[T]) Close() error {
 	return nil
 }
 
-// After dispatches value once after delay and returns a cancellation handle.
-func (s *Scheduler[T]) After(ctx context.Context, delay time.Duration, value T) (string, error) {
-	if delay < 0 {
-		return "", errdefs.Validationf("scheduler: delay must not be negative")
+// Restore arms persisted recurring rules once. Invalid rows are skipped and
+// returned as a joined error without preventing valid rows from being restored.
+func (s *LocalServer) Restore(ctx context.Context) (int, error) {
+	if s == nil {
+		return 0, errdefs.Validationf("scheduler: local server is required")
 	}
-	handle := "delay-" + newID()
-	fireCtx := triggerContext(ctx)
-
+	if ctx == nil {
+		return 0, errdefs.Validationf("scheduler: Restore context must not be nil")
+	}
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return "", errdefs.NotAvailablef("scheduler: closed")
+		return 0, errdefs.NotAvailablef("scheduler: local server closed")
 	}
-	s.timers[handle] = time.AfterFunc(delay, func() {
-		if !s.admitDelay(handle) {
-			return
-		}
-		defer s.callbacks.Done()
-		s.fire(fireCtx, "delay", handle, value, OverlapAllow, nil, 0)
-	})
-	s.mu.Unlock()
-	return handle, nil
-}
-
-// CancelDelay cancels a still-pending delay.
-func (s *Scheduler[T]) CancelDelay(handle string) bool {
-	s.mu.Lock()
-	timer, ok := s.timers[handle]
-	delete(s.timers, handle)
-	s.mu.Unlock()
-	return ok && timer.Stop()
-}
-
-// Add persists and arms a recurring rule.
-func (s *Scheduler[T]) Add(ctx context.Context, rule Rule[T]) (string, error) {
-	if rule.ID == "" {
-		rule.ID = "rule-" + newID()
-	}
-	spec, err := s.validateRule(rule, false)
-	if err != nil {
-		return "", err
-	}
-
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-
-	s.mu.Lock()
-	if s.closed {
+	if s.restored {
 		s.mu.Unlock()
-		return "", errdefs.NotAvailablef("scheduler: closed")
-	}
-	state := s.rules[rule.ID]
-	var oldRule Rule[T]
-	hadOld := state != nil
-	if hadOld {
-		oldRule = state.rule
-	} else {
-		state = &ruleState[T]{}
-	}
-	generation := state.generation + 1
-	s.mu.Unlock()
-
-	if s.store != nil {
-		if err := s.store.Save(ctx, rule); err != nil {
-			return "", fmt.Errorf("scheduler: persist rule %q: %w", rule.ID, err)
-		}
-	}
-	if err := s.arm(rule, spec, state, generation); err != nil {
-		return "", errors.Join(err, s.rollbackRule(ctx, rule.ID, oldRule, hadOld))
-	}
-	return rule.ID, nil
-}
-
-// Remove disarms and deletes a recurring rule.
-// The bool reports whether an armed rule existed; persistence failures are
-// returned even though the in-memory rule has already been disarmed.
-func (s *Scheduler[T]) Remove(ctx context.Context, ruleID string) (bool, error) {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-
-	s.mu.Lock()
-	state, ok := s.rules[ruleID]
-	delete(s.rules, ruleID)
-	delete(s.outstanding, ruleID)
-	s.mu.Unlock()
-	if ok {
-		s.cron.Remove(state.entry)
-	}
-	if s.store != nil {
-		if err := s.store.Delete(ctx, ruleID); err != nil {
-			return ok, fmt.Errorf("scheduler: delete persisted rule %q: %w", ruleID, err)
-		}
-	}
-	return ok, nil
-}
-
-// Rules returns armed rule IDs in stable order.
-func (s *Scheduler[T]) Rules() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ids := make([]string, 0, len(s.rules))
-	for id := range s.rules {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-// Restore re-arms persisted rules. Invalid rows are skipped and joined into
-// the returned error so one bad row does not prevent startup.
-func (s *Scheduler[T]) Restore(ctx context.Context) (int, error) {
-	if s.store == nil {
 		return 0, nil
 	}
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
+	if s.restoring {
+		done := s.restoreDone
+		s.mu.Unlock()
+		select {
+		case <-done:
+			s.mu.Lock()
+			count, err := s.restoreN, s.restoreErr
+			s.mu.Unlock()
+			return count, err
+		case <-ctx.Done():
+			return 0, errdefs.FromContext(ctx.Err())
+		}
+	}
+	s.restoring = true
+	s.restoreDone = make(chan struct{})
+	done := s.restoreDone
+	s.mu.Unlock()
 
+	count, complete, restoreErr := s.restore(ctx)
+	s.mu.Lock()
+	s.restoring = false
+	s.restored = complete
+	s.restoreN = count
+	s.restoreErr = restoreErr
+	close(done)
+	s.mu.Unlock()
+	return count, restoreErr
+}
+
+func (s *LocalServer) restore(ctx context.Context) (int, bool, error) {
+	if s.store == nil {
+		return 0, true, nil
+	}
 	rules, err := s.store.List(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("scheduler: list persisted rules: %w", err)
+		return 0, false, fmt.Errorf("scheduler: list persisted rules: %w", err)
 	}
-	var errs []error
-	armed := 0
+	count := 0
+	var joined []error
 	for _, rule := range rules {
-		spec, err := s.validateRule(rule, true)
-		if err == nil {
-			s.mu.Lock()
-			state := s.rules[rule.ID]
-			if state == nil {
-				state = &ruleState[T]{}
-			}
-			generation := state.generation + 1
-			s.mu.Unlock()
-			err = s.arm(rule, spec, state, generation)
-		}
+		normalized, spec, err := validateRule(rule)
 		if err != nil {
-			errs = append(errs, err)
-			telemetry.Warn(ctx, "scheduler: skipping unusable persisted rule",
-				otellog.String("rule_id", rule.ID),
-				otellog.String("cron", rule.Cron),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			joined = append(joined, fmt.Errorf("scheduler: restore rule %q/%q: %w", rule.Namespace, rule.ID, err))
 			continue
 		}
-		armed++
+		if err := s.putRule(ctx, normalized, spec, false); err != nil {
+			joined = append(joined, fmt.Errorf("scheduler: restore rule %q/%q: %w", rule.Namespace, rule.ID, err))
+			continue
+		}
+		count++
 	}
-	return armed, errors.Join(errs...)
+	return count, true, errors.Join(joined...)
 }
 
-func (s *Scheduler[T]) validateRule(rule Rule[T], persisted bool) (string, error) {
-	if rule.ID == "" && persisted {
-		return "", errdefs.Validationf("scheduler: persisted Rule.ID is required")
+// PutRule creates or replaces a recurring rule by namespace and caller ID.
+func (s *LocalServer) PutRule(ctx context.Context, rule sdkscheduler.Rule) error {
+	if ctx == nil {
+		return errdefs.Validationf("scheduler: PutRule context must not be nil")
 	}
-	if rule.Cron == "" {
-		return "", errdefs.Validationf("scheduler: Rule.Cron is required")
-	}
-	if rule.Overlap != OverlapSkip && rule.Overlap != OverlapAllow {
-		return "", errdefs.Validationf("scheduler: unsupported overlap policy %q", rule.Overlap)
-	}
-	spec := rule.Cron
-	if rule.Timezone != "" {
-		spec = "CRON_TZ=" + rule.Timezone + " " + spec
-	}
-	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor)
-	if _, err := parser.Parse(spec); err != nil {
-		return "", errdefs.Validationf("scheduler: invalid cron %q: %v", rule.Cron, err)
-	}
-	if s.valueValidator != nil {
-		if err := s.valueValidator(rule.Value); err != nil {
-			return "", fmt.Errorf("scheduler: invalid Rule.Value: %w", err)
-		}
-	}
-	return spec, nil
-}
-
-func (s *Scheduler[T]) arm(rule Rule[T], spec string, state *ruleState[T], generation uint64) error {
-	entry, err := s.cron.AddFunc(spec, func() {
-		if !s.admitRule(rule.ID, state, generation) {
-			return
-		}
-		defer s.callbacks.Done()
-		s.fire(context.Background(), "cron", rule.ID, rule.Value, rule.Overlap, state, generation)
-	})
+	normalized, spec, err := validateRule(rule)
 	if err != nil {
-		return errdefs.Validationf("scheduler: invalid cron %q: %v", rule.Cron, err)
+		return err
 	}
+	return s.putRule(ctx, normalized, spec, true)
+}
+
+func (s *LocalServer) putRule(
+	ctx context.Context,
+	rule sdkscheduler.Rule,
+	spec string,
+	persist bool,
+) error {
+	key := scheduleKey{namespace: rule.Namespace, id: rule.ID}
+	gate, err := s.gate(key)
+	if err != nil {
+		return err
+	}
+	gate.Lock()
+	defer gate.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	old := s.rules[key]
+	if old != nil && rulesEqual(old.rule, rule) {
+		s.mu.Unlock()
+		return nil
+	}
+	var oldRule sdkscheduler.Rule
+	if old != nil {
+		oldRule = old.rule
+	}
+	s.mu.Unlock()
+
+	if persist && s.store != nil {
+		if err := s.store.Save(ctx, rule); err != nil {
+			return fmt.Errorf("scheduler: persist rule %q/%q: %w", rule.Namespace, rule.ID, err)
+		}
+	}
+
+	state := &ruleState{rule: rule}
+	if old != nil {
+		state.generation = old.generation + 1
+	} else {
+		state.generation = 1
+	}
+	generation := state.generation
+	entry, err := s.cron.AddFunc(spec, func() { s.fireRule(key, state, generation) })
+	if err != nil {
+		originalErr := errdefs.Validationf("scheduler: invalid cron %q: %v", rule.Cron, err)
+		return errors.Join(originalErr, s.rollbackRule(ctx, rule, oldRule, old != nil, persist))
+	}
+	state.entry = entry
 
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
 		s.cron.Remove(entry)
-		return errdefs.NotAvailablef("scheduler: closed")
+		originalErr := errdefs.NotAvailablef("scheduler: local server closed")
+		return errors.Join(originalErr, s.rollbackRule(ctx, rule, oldRule, old != nil, persist))
 	}
-	previous := state.entry
-	state.entry = entry
-	state.rule = rule
-	state.generation = generation
-	s.rules[rule.ID] = state
+	s.rules[key] = state
 	s.mu.Unlock()
-	if previous != 0 {
-		s.cron.Remove(previous)
+	if old != nil {
+		s.cron.Remove(old.entry)
 	}
 	return nil
 }
 
-func (s *Scheduler[T]) rollbackRule(ctx context.Context, id string, old Rule[T], hadOld bool) error {
+func (s *LocalServer) rollbackRule(
+	ctx context.Context,
+	rule, old sdkscheduler.Rule,
+	hadOld, persist bool,
+) error {
+	if !persist || s.store == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.rollbackTTL)
+	defer cancel()
+	if hadOld {
+		if err := s.store.Save(ctx, old); err != nil {
+			return fmt.Errorf(
+				"scheduler: restore persisted rule %q/%q: %w",
+				old.Namespace, old.ID, err,
+			)
+		}
+		return nil
+	}
+	if err := s.store.Delete(ctx, rule.Namespace, rule.ID); err != nil {
+		return fmt.Errorf(
+			"scheduler: remove persisted rule %q/%q: %w",
+			rule.Namespace, rule.ID, err,
+		)
+	}
+	return nil
+}
+
+// DeleteRule removes a recurring rule. Already queued or running executions
+// are deliberately left untouched.
+func (s *LocalServer) DeleteRule(ctx context.Context, namespace, id string) error {
+	if ctx == nil {
+		return errdefs.Validationf("scheduler: DeleteRule context must not be nil")
+	}
+	if err := validateKey(namespace, id); err != nil {
+		return err
+	}
+	key := scheduleKey{namespace: namespace, id: id}
+	gate, err := s.gate(key)
+	if err != nil {
+		return err
+	}
+	gate.Lock()
+	defer gate.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	state := s.rules[key]
+	s.mu.Unlock()
+	if state == nil {
+		return errdefs.NotFoundf("scheduler: rule %q/%q not found", namespace, id)
+	}
+	if s.store != nil {
+		if err := s.store.Delete(ctx, namespace, id); err != nil {
+			return fmt.Errorf("scheduler: delete persisted rule %q/%q: %w", namespace, id, err)
+		}
+	}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		originalErr := errdefs.NotAvailablef("scheduler: local server closed")
+		return errors.Join(originalErr, s.restoreDeletedRule(ctx, state.rule))
+	}
+	if s.rules[key] != state {
+		s.mu.Unlock()
+		originalErr := errdefs.Conflictf(
+			"scheduler: rule %q/%q changed during delete", namespace, id,
+		)
+		return errors.Join(originalErr, s.restoreDeletedRule(ctx, state.rule))
+	}
+	delete(s.rules, key)
+	s.mu.Unlock()
+	s.cron.Remove(state.entry)
+	return nil
+}
+
+func (s *LocalServer) restoreDeletedRule(ctx context.Context, rule sdkscheduler.Rule) error {
 	if s.store == nil {
 		return nil
 	}
-	if hadOld {
-		if err := s.store.Save(ctx, old); err != nil {
-			return fmt.Errorf("scheduler: restore persisted rule %q after arm failure: %w", id, err)
-		}
-		return nil
-	}
-	if err := s.store.Delete(ctx, id); err != nil {
-		return fmt.Errorf("scheduler: roll back persisted rule %q after arm failure: %w", id, err)
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.rollbackTTL)
+	defer cancel()
+	if err := s.store.Save(ctx, rule); err != nil {
+		return fmt.Errorf(
+			"scheduler: restore persisted rule %q/%q after delete: %w",
+			rule.Namespace, rule.ID, err,
+		)
 	}
 	return nil
 }
 
-func (s *Scheduler[T]) admitDelay(handle string) bool {
+// ListRules lists recurring rules in one namespace in stable ID order.
+func (s *LocalServer) ListRules(
+	ctx context.Context,
+	namespace string,
+) ([]sdkscheduler.Rule, error) {
+	if ctx == nil {
+		return nil, errdefs.Validationf("scheduler: ListRules context must not be nil")
+	}
+	if err := validateKeyPart("namespace", namespace); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		delete(s.timers, handle)
-		return false
+		return nil, errdefs.NotAvailablef("scheduler: local server closed")
 	}
-	if _, ok := s.timers[handle]; !ok {
-		return false
+	rules := make([]sdkscheduler.Rule, 0)
+	for key, state := range s.rules {
+		if key.namespace == namespace {
+			rules = append(rules, cloneRule(state.rule))
+		}
 	}
-	delete(s.timers, handle)
-	s.callbacks.Add(1)
-	return true
+	sort.Slice(rules, func(i, j int) bool { return rules[i].ID < rules[j].ID })
+	return rules, nil
 }
 
-func (s *Scheduler[T]) admitRule(id string, state *ruleState[T], generation uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.rules[id] != state || state.generation != generation {
-		return false
-	}
-	s.callbacks.Add(1)
-	return true
-}
-
-func (s *Scheduler[T]) fire(ctx context.Context, kind, id string, value T, overlap Overlap, state *ruleState[T], generation uint64) {
-	ctx, span := telemetry.TracerWithSuffix("scheduler").Start(ctx, "scheduler."+kind,
-		trace.WithAttributes(
-			attribute.String(AttrScheduleID, id),
-			attribute.String(AttrScheduleKind, kind),
-		))
-	defer span.End()
-
-	if overlap == OverlapSkip {
-		state.gateMu.Lock()
-		if state.firing {
-			state.gateMu.Unlock()
-			return
-		}
-		state.firing = true
-		state.gateMu.Unlock()
-		defer func() {
-			state.gateMu.Lock()
-			state.firing = false
-			state.gateMu.Unlock()
-		}()
-		if !s.ruleIsCurrent(id, state, generation) {
-			return
-		}
-		pending, err := s.hasOutstanding(ctx, id)
-		if err != nil {
-			span.RecordError(err)
-			telemetry.Warn(ctx, "scheduler: outstanding check failed; skipping trigger",
-				otellog.String("rule_id", id),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
-			return
-		}
-		if pending {
-			telemetry.Info(ctx, "scheduler: skipping trigger, previous work still outstanding",
-				otellog.String("rule_id", id))
-			return
-		}
-		if !s.ruleIsCurrent(id, state, generation) {
-			return
-		}
-	}
-	work, err := s.dispatcher.Dispatch(ctx, id, value)
-	if err != nil {
-		span.RecordError(err)
-		telemetry.Warn(ctx, "scheduler: dispatch failed",
-			otellog.String("rule_id", id),
-			otellog.String(telemetry.AttrErrorMessage, err.Error()))
-		return
-	}
-	if overlap == OverlapSkip {
-		if isNil(work) {
-			err := errdefs.Internalf("scheduler: dispatcher returned nil outstanding work")
-			span.RecordError(err)
-			telemetry.Warn(ctx, "scheduler: dispatch returned no outstanding handle",
-				otellog.String("rule_id", id),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
-			return
-		}
-		s.mu.Lock()
-		if s.rules[id] == state {
-			s.outstanding[id] = append(s.outstanding[id], work)
-		}
-		s.mu.Unlock()
-	}
-}
-
-func (s *Scheduler[T]) ruleIsCurrent(id string, state *ruleState[T], generation uint64) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return !s.closed && s.rules[id] == state && state.generation == generation
-}
-
-func (s *Scheduler[T]) hasOutstanding(ctx context.Context, scheduleID string) (bool, error) {
-	s.mu.Lock()
-	work := slices.Clone(s.outstanding[scheduleID])
-	s.mu.Unlock()
-
-	remaining := work[:0]
-	for index, item := range work {
-		pending, err := item.IsOutstanding(ctx)
-		if err != nil {
-			return false, err
-		}
-		if pending {
-			remaining = append(remaining, item)
-			remaining = append(remaining, work[index+1:]...)
-			s.replaceOutstanding(scheduleID, remaining)
-			return true, nil
-		}
-	}
-	s.replaceOutstanding(scheduleID, remaining)
-	return false, nil
-}
-
-func (s *Scheduler[T]) replaceOutstanding(scheduleID string, remaining []Outstanding) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed || s.rules[scheduleID] == nil {
-		return
-	}
-	if len(remaining) == 0 {
-		delete(s.outstanding, scheduleID)
-		return
-	}
-	s.outstanding[scheduleID] = slices.Clone(remaining)
-}
-
-func triggerContext(ctx context.Context) context.Context {
+// ScheduleOnce arms an absolute one-shot schedule. Identical replay is a no-op
+// and a different request using the same key is a conflict until the fired or
+// canceled record's configured retention expires.
+func (s *LocalServer) ScheduleOnce(ctx context.Context, once sdkscheduler.Once) error {
 	if ctx == nil {
-		return context.Background()
+		return errdefs.Validationf("scheduler: ScheduleOnce context must not be nil")
 	}
-	spanCtx := trace.SpanFromContext(ctx).SpanContext()
-	if spanCtx.IsValid() {
-		return trace.ContextWithSpanContext(context.Background(), spanCtx)
+	if err := once.Validate(); err != nil {
+		return err
 	}
-	return context.Background()
+	once.At = once.At.UTC()
+	key := scheduleKey{namespace: once.Namespace, id: once.ID}
+	gate, err := s.gate(key)
+	if err != nil {
+		return err
+	}
+	gate.Lock()
+	defer gate.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	if current := s.once[key]; current != nil {
+		if onceEqual(current.once, once) {
+			return nil
+		}
+		return errdefs.Conflictf("scheduler: one-shot %q/%q already exists", once.Namespace, once.ID)
+	}
+	state := &onceState{once: cloneOnce(once), status: oncePending}
+	delay := max(once.At.Sub(s.clock.Now()), 0)
+	state.timer = s.clock.AfterFunc(delay, func() { s.fireOnce(key, state) })
+	s.once[key] = state
+	return nil
 }
 
-func isNil(value any) bool {
+// CancelOnce cancels a pending one-shot schedule. Canceled records remain
+// idempotently cancelable until the configured one-shot retention expires.
+func (s *LocalServer) CancelOnce(ctx context.Context, namespace, id string) error {
+	if ctx == nil {
+		return errdefs.Validationf("scheduler: CancelOnce context must not be nil")
+	}
+	if err := validateKey(namespace, id); err != nil {
+		return err
+	}
+	key := scheduleKey{namespace: namespace, id: id}
+	gate, err := s.gate(key)
+	if err != nil {
+		return err
+	}
+	gate.Lock()
+	defer gate.Unlock()
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	state := s.once[key]
+	if state == nil {
+		s.mu.Unlock()
+		return errdefs.NotFoundf("scheduler: one-shot %q/%q not found", namespace, id)
+	}
+	switch state.status {
+	case onceCanceled:
+		s.mu.Unlock()
+		return nil
+	case onceFired:
+		s.mu.Unlock()
+		return errdefs.Conflictf("scheduler: one-shot %q/%q already fired", namespace, id)
+	default:
+		state.status = onceCanceled
+		timer := state.timer
+		s.armOnceExpiryLocked(key, state)
+		s.mu.Unlock()
+		timer.Stop()
+		return nil
+	}
+}
+
+func (s *LocalServer) fireOnce(key scheduleKey, state *onceState) {
+	s.mu.Lock()
+	if s.closed || s.once[key] != state || state.status != oncePending {
+		s.mu.Unlock()
+		return
+	}
+	state.status = onceFired
+	s.callbacks.Add(1)
+	s.mu.Unlock()
+	defer s.callbacks.Done()
+
+	gate, err := s.gate(key)
+	if err != nil {
+		return
+	}
+	gate.Lock()
+	defer gate.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.once[key] != state || state.status != onceFired {
+		return
+	}
+	s.enqueueLocked(key, state.once.Task, state.once.At)
+	s.armOnceExpiryLocked(key, state)
+}
+
+func (s *LocalServer) armOnceExpiryLocked(key scheduleKey, state *onceState) {
+	state.expiry = s.clock.AfterFunc(s.onceTTL, func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.once[key] == state && state.status != oncePending {
+			delete(s.once, key)
+		}
+	})
+}
+
+func (s *LocalServer) fireRule(key scheduleKey, state *ruleState, generation uint64) {
+	s.mu.Lock()
+	if s.closed || s.rules[key] != state || state.generation != generation {
+		s.mu.Unlock()
+		return
+	}
+	s.callbacks.Add(1)
+	s.mu.Unlock()
+	defer s.callbacks.Done()
+
+	gate, err := s.gate(key)
+	if err != nil {
+		return
+	}
+	gate.Lock()
+	defer gate.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.rules[key] != state || state.generation != generation {
+		return
+	}
+	if state.rule.Overlap == sdkscheduler.OverlapSkip && s.hasOutstandingLocked(key) {
+		return
+	}
+	s.enqueueLocked(key, state.rule.Task, s.clock.Now())
+}
+
+func (s *LocalServer) enqueueLocked(
+	key scheduleKey,
+	task sdkscheduler.Task,
+	scheduledAt time.Time,
+) {
+	executionID := "exec-" + newID()
+	state := &executionState{
+		execution: sdkscheduler.Execution{
+			ID:          executionID,
+			Namespace:   key.namespace,
+			ScheduleID:  key.id,
+			Task:        cloneTask(task),
+			Status:      sdkscheduler.StatusQueued,
+			ScheduledAt: scheduledAt.UTC(),
+		},
+		deliveryID: "delivery-" + newID(),
+	}
+	s.executions[executionID] = state
+	s.queues[key.namespace] = append(s.queues[key.namespace], executionID)
+}
+
+func (s *LocalServer) hasOutstandingLocked(key scheduleKey) bool {
+	for _, state := range s.executions {
+		if state.execution.Namespace == key.namespace &&
+			state.execution.ScheduleID == key.id &&
+			state.execution.Status.Outstanding() {
+			return true
+		}
+	}
+	return false
+}
+
+// Claim leases one queued execution in a namespace. Expired running
+// executions are first re-queued with their stable identity.
+func (s *LocalServer) Claim(
+	ctx context.Context,
+	request sdkscheduler.ClaimRequest,
+) (*sdkscheduler.Delivery, error) {
+	if ctx == nil {
+		return nil, errdefs.Validationf("scheduler: Claim context must not be nil")
+	}
+	if err := request.Validate(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	now := s.clock.Now().UTC()
+	s.pruneCompletionsLocked(now)
+	s.requeueExpiredLocked(request.Namespace, now)
+	queue := s.queues[request.Namespace]
+	for len(queue) > 0 {
+		executionID := queue[0]
+		queue = queue[1:]
+		state := s.executions[executionID]
+		if state == nil || state.execution.Status != sdkscheduler.StatusQueued {
+			continue
+		}
+		state.execution.Status = sdkscheduler.StatusRunning
+		state.execution.Attempt++
+		started := now
+		state.execution.StartedAt = &started
+		state.leaseToken = "lease-" + newID()
+		state.leaseUntil = now.Add(request.LeaseDuration)
+		s.queues[request.Namespace] = queue
+		return &sdkscheduler.Delivery{
+			ID:          state.deliveryID,
+			ExecutionID: state.execution.ID,
+			Namespace:   state.execution.Namespace,
+			ScheduleID:  state.execution.ScheduleID,
+			Task:        cloneTask(state.execution.Task),
+			Attempt:     state.execution.Attempt,
+			LeaseToken:  state.leaseToken,
+			LeaseUntil:  state.leaseUntil,
+			ScheduledAt: state.execution.ScheduledAt,
+		}, nil
+	}
+	s.queues[request.Namespace] = queue
+	return nil, nil
+}
+
+func (s *LocalServer) requeueExpiredLocked(namespace string, now time.Time) {
+	for _, state := range s.executions {
+		if state.execution.Namespace != namespace ||
+			state.execution.Status != sdkscheduler.StatusRunning ||
+			now.Before(state.leaseUntil) {
+			continue
+		}
+		state.execution.Status = sdkscheduler.StatusQueued
+		state.leaseToken = ""
+		state.leaseUntil = time.Time{}
+		s.queues[namespace] = append(s.queues[namespace], state.execution.ID)
+	}
+}
+
+// Renew extends a currently owned, unexpired lease.
+func (s *LocalServer) Renew(ctx context.Context, request sdkscheduler.RenewRequest) error {
+	if ctx == nil {
+		return errdefs.Validationf("scheduler: Renew context must not be nil")
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	state := s.executions[request.ExecutionID]
+	if state == nil {
+		return errdefs.NotFoundf("scheduler: execution %q not found", request.ExecutionID)
+	}
+	now := s.clock.Now().UTC()
+	if state.execution.Status != sdkscheduler.StatusRunning ||
+		state.leaseToken != request.LeaseToken ||
+		!now.Before(state.leaseUntil) {
+		return errdefs.Conflictf("scheduler: execution %q lease is stale", request.ExecutionID)
+	}
+	state.leaseUntil = now.Add(request.LeaseDuration)
+	return nil
+}
+
+// Complete settles a currently owned, unexpired lease at a terminal status.
+// Exact retries remain idempotent until the later of the default retention and
+// request RetainUntil. RetainUntil beyond WithMaxCompletionRetention is
+// rejected as validation rather than silently capped.
+func (s *LocalServer) Complete(
+	ctx context.Context,
+	request sdkscheduler.CompleteRequest,
+) error {
+	if ctx == nil {
+		return errdefs.Validationf("scheduler: Complete context must not be nil")
+	}
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	state := s.executions[request.ExecutionID]
+	now := s.clock.Now().UTC()
+	if request.RetainUntil != nil && request.RetainUntil.After(now.Add(s.maxComplete)) {
+		return errdefs.Validationf(
+			"scheduler: CompleteRequest.RetainUntil exceeds maximum completion retention",
+		)
+	}
+	s.pruneCompletionsLocked(now)
+	if state == nil {
+		if completed, ok := s.completions[request.ExecutionID]; ok {
+			if completeRequestsEqual(completed.request, request) {
+				return nil
+			}
+			return errdefs.Conflictf(
+				"scheduler: execution %q was completed by a different request",
+				request.ExecutionID,
+			)
+		}
+		return errdefs.NotFoundf("scheduler: execution %q not found", request.ExecutionID)
+	}
+	if state.execution.Status != sdkscheduler.StatusRunning ||
+		state.leaseToken != request.LeaseToken ||
+		!now.Before(state.leaseUntil) {
+		return errdefs.Conflictf("scheduler: execution %q lease is stale", request.ExecutionID)
+	}
+	state.execution.Status = request.Status
+	state.execution.Error = request.Error
+	finished := now
+	state.execution.FinishedAt = &finished
+	delete(s.executions, request.ExecutionID)
+	s.rememberCompletionLocked(request, now)
+	return nil
+}
+
+func (s *LocalServer) rememberCompletionLocked(
+	request sdkscheduler.CompleteRequest,
+	completedAt time.Time,
+) {
+	expiresAt := completedAt.Add(s.completeTTL)
+	if request.RetainUntil != nil && request.RetainUntil.After(expiresAt) {
+		expiresAt = *request.RetainUntil
+	}
+	s.completions[request.ExecutionID] = completionTombstone{
+		request:   request,
+		expiresAt: expiresAt,
+	}
+	heap.Push(&s.completeExp, completionExpiry{
+		executionID: request.ExecutionID,
+		expiresAt:   expiresAt,
+	})
+}
+
+func (s *LocalServer) pruneCompletionsLocked(now time.Time) {
+	for s.completeExp.Len() > 0 && !now.Before(s.completeExp[0].expiresAt) {
+		expired := heap.Pop(&s.completeExp).(completionExpiry)
+		if tombstone, ok := s.completions[expired.executionID]; ok &&
+			tombstone.expiresAt.Equal(expired.expiresAt) {
+			delete(s.completions, expired.executionID)
+		}
+	}
+	if s.completeExp.Len() == 0 {
+		s.completeExp = nil
+		if len(s.completions) == 0 {
+			s.completions = make(map[string]completionTombstone)
+		}
+	}
+}
+
+func (s *LocalServer) gate(key scheduleKey) (*sync.Mutex, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil, errdefs.NotAvailablef("scheduler: local server closed")
+	}
+	return s.gateForKey(key), nil
+}
+
+func (s *LocalServer) gateForKey(key scheduleKey) *sync.Mutex {
+	const (
+		offset64 = uint64(14695981039346656037)
+		prime64  = uint64(1099511628211)
+	)
+	hash := offset64
+	for i := 0; i < len(key.namespace); i++ {
+		hash ^= uint64(key.namespace[i])
+		hash *= prime64
+	}
+	hash ^= 0
+	hash *= prime64
+	for i := 0; i < len(key.id); i++ {
+		hash ^= uint64(key.id[i])
+		hash *= prime64
+	}
+	return &s.gates[hash%scheduleGateStripes]
+}
+
+func validateRule(rule sdkscheduler.Rule) (sdkscheduler.Rule, string, error) {
+	if rule.Timezone == "" {
+		rule.Timezone = "UTC"
+	}
+	if err := rule.Validate(); err != nil {
+		return sdkscheduler.Rule{}, "", err
+	}
+	spec := "CRON_TZ=" + rule.Timezone + " " + rule.Cron
+	parser := cron.NewParser(
+		cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
+	)
+	if _, err := parser.Parse(spec); err != nil {
+		return sdkscheduler.Rule{}, "", errdefs.Validationf(
+			"scheduler: invalid cron %q: %v", rule.Cron, err,
+		)
+	}
+	return cloneRule(rule), spec, nil
+}
+
+func validateKey(namespace, id string) error {
+	if err := validateKeyPart("namespace", namespace); err != nil {
+		return err
+	}
+	return validateKeyPart("schedule ID", id)
+}
+
+func validateKeyPart(field, value string) error {
+	if strings.TrimSpace(value) == "" {
+		return errdefs.Validationf("scheduler: %s is required", field)
+	}
+	if strings.ContainsRune(value, '\x00') {
+		return errdefs.Validationf("scheduler: %s must not contain NUL", field)
+	}
+	return nil
+}
+
+func rulesEqual(left, right sdkscheduler.Rule) bool {
+	return reflect.DeepEqual(left, right)
+}
+
+func onceEqual(left, right sdkscheduler.Once) bool {
+	return left.Namespace == right.Namespace &&
+		left.ID == right.ID &&
+		left.At.Equal(right.At) &&
+		reflect.DeepEqual(left.Task, right.Task)
+}
+
+func completeRequestsEqual(left, right sdkscheduler.CompleteRequest) bool {
+	if left.ExecutionID != right.ExecutionID ||
+		left.LeaseToken != right.LeaseToken ||
+		left.Status != right.Status ||
+		left.Error != right.Error {
+		return false
+	}
+	if left.RetainUntil == nil || right.RetainUntil == nil {
+		return left.RetainUntil == nil && right.RetainUntil == nil
+	}
+	return left.RetainUntil.Equal(*right.RetainUntil)
+}
+
+func cloneRule(rule sdkscheduler.Rule) sdkscheduler.Rule {
+	rule.Task = cloneTask(rule.Task)
+	return rule
+}
+
+func cloneOnce(once sdkscheduler.Once) sdkscheduler.Once {
+	once.Task = cloneTask(once.Task)
+	return once
+}
+
+func cloneTask(task sdkscheduler.Task) sdkscheduler.Task {
+	task.Payload.Data = append([]byte(nil), task.Payload.Data...)
+	return task
+}
+
+func isNil(value interface{}) bool {
 	if value == nil {
 		return true
 	}

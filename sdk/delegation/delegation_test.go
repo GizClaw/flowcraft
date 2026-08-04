@@ -2,7 +2,9 @@ package delegation_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/delegation"
@@ -49,11 +51,34 @@ func TestRequestValidate(t *testing.T) {
 		{Target: "research", Input: "work"},
 		{Mode: delegation.ModeSync, Input: "work"},
 		{Mode: delegation.ModeSync, Target: "research"},
+		{
+			Mode:           delegation.ModeSync,
+			Target:         "research",
+			Input:          "work",
+			IdempotencyKey: " \t",
+		},
 	}
 	for _, req := range tests {
 		if err := req.Validate(); !errdefs.IsValidation(err) {
 			t.Errorf("%+v.Validate() = %v, want validation classification", req, err)
 		}
+	}
+}
+
+func TestRequestIdempotencyKeyJSON(t *testing.T) {
+	encoded, err := json.Marshal(delegation.Request{IdempotencyKey: "delivery-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"idempotency_key":"delivery-1"`) {
+		t.Fatalf("encoded request = %s", encoded)
+	}
+	encoded, err = json.Marshal(delegation.Request{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "idempotency_key") {
+		t.Fatalf("empty idempotency key was not omitted: %s", encoded)
 	}
 }
 

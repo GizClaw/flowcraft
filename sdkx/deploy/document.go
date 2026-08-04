@@ -38,6 +38,11 @@ type Document struct {
 	Resources map[string]ResourceEntry `yaml:"resources,omitempty"`
 
 	Agents map[string]AgentEntry `yaml:"agents"`
+
+	// Runtime is an application-runtime-owned configuration subtree.
+	// Parse preserves it verbatim so the runtime layer can decode it
+	// strictly without weakening strictness for the deployment schema.
+	Runtime *Opaque `yaml:"runtime,omitempty"`
 }
 
 // ResourceEntry is one shared resource definition: a category kind

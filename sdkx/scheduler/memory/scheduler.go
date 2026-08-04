@@ -1,5 +1,4 @@
-// Package memory adapts memory maintenance operations to the generic
-// sdkx/scheduler runtime.
+// Package memory adapts memory maintenance operations to sdk/scheduler.
 package memory
 
 import (
@@ -7,83 +6,127 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
+	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 	"github.com/GizClaw/flowcraft/sdkx/memory/config"
-	corescheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
 )
 
 const (
+	// PayloadKind identifies memory maintenance task payloads.
+	PayloadKind = "memory.maintenance"
+	// PayloadVersion is the current memory maintenance task schema.
+	PayloadVersion = 1
+
 	// CompactRuleID is the stable ID of the lifecycle compact rule.
 	CompactRuleID = "memory-compact"
 	// ArchiveRuleID is the stable ID of the lifecycle archive rule.
 	ArchiveRuleID = "memory-archive"
 )
 
-// Operation identifies a memory maintenance operation.
-type Operation string
+// CompactTask configures one compaction execution.
+type CompactTask struct {
+	OlderThan time.Duration `json:"older_than"`
+	Keep      int           `json:"keep,omitempty"`
+}
 
-const (
-	OperationCompact Operation = "compact"
-	OperationArchive Operation = "archive"
-)
-
-// Task is the typed value dispatched by the generic scheduler.
-type Task struct {
-	Operation   Operation     `json:"operation"`
+// ArchiveTask configures one archive execution.
+type ArchiveTask struct {
 	OlderThan   time.Duration `json:"older_than"`
-	Keep        int           `json:"keep,omitempty"`
-	Destination string        `json:"destination,omitempty"`
+	Destination string        `json:"destination"`
+}
+
+// Task is a typed memory maintenance payload. Exactly one operation is set.
+type Task struct {
+	Compact *CompactTask `json:"compact,omitempty"`
+	Archive *ArchiveTask `json:"archive,omitempty"`
+}
+
+// Validate checks that exactly one complete maintenance operation is present.
+func (t Task) Validate() error {
+	if (t.Compact == nil) == (t.Archive == nil) {
+		return errdefs.Validationf("memory scheduler: task must contain exactly one of compact or archive")
+	}
+	if t.Compact != nil {
+		if t.Compact.OlderThan <= 0 {
+			return errdefs.Validationf("memory scheduler: compact older_than must be greater than zero")
+		}
+		if t.Compact.Keep < 0 {
+			return errdefs.Validationf("memory scheduler: compact keep must not be negative")
+		}
+		return nil
+	}
+	if t.Archive.OlderThan <= 0 {
+		return errdefs.Validationf("memory scheduler: archive older_than must be greater than zero")
+	}
+	if strings.TrimSpace(t.Archive.Destination) == "" {
+		return errdefs.Validationf("memory scheduler: archive destination is required")
+	}
+	return nil
 }
 
 type (
 	// LifecycleSpec is the deploy configuration accepted by New.
 	LifecycleSpec = config.LifecycleSpec
 	// Rule is a recurring memory maintenance task.
-	Rule = corescheduler.Rule[Task]
-	// RuleStore persists memory scheduling rules.
-	RuleStore = corescheduler.RuleStore[Task]
+	Rule = sdkscheduler.TypedRule[Task]
+	// Scheduler registers and executes memory maintenance tasks.
+	Scheduler = sdkscheduler.Registration[Task]
 )
 
 // Option configures a Scheduler.
-type Option func(*options)
+type Option func(*options) error
 
 type options struct {
-	clock    sdkmemory.Clock
-	store    RuleStore
-	storeSet bool
+	clock         sdkmemory.Clock
+	workerOptions []sdkscheduler.WorkerOption
 }
 
 // WithClock overrides the runtime clock used to calculate retention cutoffs.
 func WithClock(clock sdkmemory.Clock) Option {
-	return func(options *options) {
+	return func(options *options) error {
+		if isNil(clock) {
+			return errdefs.Validationf("memory scheduler: clock must not be nil")
+		}
 		options.clock = clock
+		return nil
 	}
 }
 
-// WithRuleStore enables persistence for rules added after construction and
-// enables Restore. A store cannot be combined with lifecycle rules in New,
-// because constructors do not perform persistence I/O; add those rules later
-// with Add and an explicit context.
-func WithRuleStore(store RuleStore) Option {
-	return func(options *options) {
-		options.store = store
-		options.storeSet = true
+// WithWorkerOptions configures worker lease and polling behavior.
+func WithWorkerOptions(workerOptions ...sdkscheduler.WorkerOption) Option {
+	return func(options *options) error {
+		for _, option := range workerOptions {
+			if option == nil {
+				return errdefs.Validationf("memory scheduler: worker option must not be nil")
+			}
+		}
+		options.workerOptions = append(options.workerOptions, workerOptions...)
+		return nil
 	}
 }
 
-// Scheduler schedules synchronous, process-local memory maintenance.
-type Scheduler struct {
-	core       *corescheduler.Scheduler[Task]
-	dispatcher *adapter
-}
-
-// New constructs a memory scheduler and registers each enabled lifecycle block.
-// Empty blocks are disabled. Lifecycle rules use stable IDs and OverlapSkip.
-func New(rt *sdkmemory.Runtime, lifecycle LifecycleSpec, opts ...Option) (*Scheduler, error) {
+// New constructs a scheduler and registers each enabled lifecycle rule with ctx.
+// Empty lifecycle blocks are disabled. The Server and Runtime remain caller-owned.
+func New(
+	ctx context.Context,
+	server sdkscheduler.Server,
+	namespace string,
+	rt *sdkmemory.Runtime,
+	lifecycle LifecycleSpec,
+	opts ...Option,
+) (*Scheduler, error) {
+	if ctx == nil {
+		return nil, errdefs.Validationf("memory scheduler: context is required")
+	}
+	if isNil(server) {
+		return nil, errdefs.Validationf("memory scheduler: server is required")
+	}
+	if strings.TrimSpace(namespace) == "" {
+		return nil, errdefs.Validationf("memory scheduler: namespace is required")
+	}
 	if rt == nil {
 		return nil, errdefs.Validationf("memory scheduler: runtime is required")
 	}
@@ -93,223 +136,107 @@ func New(rt *sdkmemory.Runtime, lifecycle LifecycleSpec, opts ...Option) (*Sched
 
 	settings := options{clock: rt.Spec().Clock}
 	for _, option := range opts {
-		if option != nil {
-			option(&settings)
+		if option == nil {
+			return nil, errdefs.Validationf("memory scheduler: option must not be nil")
+		}
+		if err := option(&settings); err != nil {
+			return nil, err
 		}
 	}
 	if isNil(settings.clock) {
 		return nil, errdefs.Validationf("memory scheduler: clock must not be nil")
 	}
-	if settings.storeSet && isNil(settings.store) {
-		return nil, errdefs.Validationf("memory scheduler: rule store must not be nil")
-	}
-	rules := lifecycleRules(lifecycle)
-	if settings.store != nil && len(rules) != 0 {
-		return nil, errdefs.Validationf(
-			"memory scheduler: lifecycle rules cannot be persisted during New; use an empty lifecycle and Add with an explicit context")
-	}
 
-	lifecycleCtx, cancel := context.WithCancel(context.Background())
 	scope := rt.Spec().DefaultScope
 	if scope.IsZero() {
 		scope = sdkmemory.Scope{RuntimeID: rt.Spec().RuntimeID}
 	}
-	dispatcher := &adapter{
+	handler := &maintenanceHandler{
 		runtime: rt,
 		scope:   scope,
 		clock:   settings.clock,
-		ctx:     lifecycleCtx,
-		cancel:  cancel,
-		serial:  make(chan struct{}, 1),
 	}
-	var coreOptions []corescheduler.Option[Task]
-	coreOptions = append(coreOptions, corescheduler.WithValueValidator(Task.validate))
-	if settings.store != nil {
-		coreOptions = append(coreOptions, corescheduler.WithRuleStore(settings.store))
-	}
-	core, err := corescheduler.New[Task](dispatcher, coreOptions...)
+	workerOptions := append([]sdkscheduler.WorkerOption(nil), settings.workerOptions...)
+	workerOptions = append(workerOptions, sdkscheduler.WithMaxConcurrency(1))
+	registration, err := sdkscheduler.Register(ctx, server, sdkscheduler.RegistrationSpec[Task]{
+		Namespace:      namespace,
+		PayloadKind:    PayloadKind,
+		PayloadVersion: PayloadVersion,
+		Rules:          lifecycleRules(namespace, lifecycle),
+		Handler:        handler,
+		ClientOptions: []sdkscheduler.ClientOption{
+			sdkscheduler.WithClientClock(settings.clock.Now),
+		},
+		WorkerOptions: workerOptions,
+	})
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-	s := &Scheduler{core: core, dispatcher: dispatcher}
-	for _, rule := range rules {
-		if _, err := s.Add(context.Background(), rule); err != nil {
-			cancel()
-			_ = core.Close()
-			return nil, err
-		}
-	}
-	return s, nil
+	return registration, nil
 }
 
-// Start begins cron evaluation.
-func (s *Scheduler) Start() {
-	if s != nil && s.core != nil {
-		s.core.Start()
-	}
-}
-
-// Close first cancels memory I/O and then waits for scheduler callbacks.
-func (s *Scheduler) Close() error {
-	if s == nil {
-		return nil
-	}
-	if s.dispatcher != nil {
-		s.dispatcher.close()
-	}
-	if s.core == nil {
-		return nil
-	}
-	return s.core.Close()
-}
-
-// Add validates and registers a recurring memory maintenance task.
-func (s *Scheduler) Add(ctx context.Context, rule Rule) (string, error) {
-	if s == nil || s.core == nil {
-		return "", errdefs.NotAvailablef("memory scheduler: nil scheduler")
-	}
-	if err := rule.Value.validate(); err != nil {
-		return "", err
-	}
-	return s.core.Add(ctx, rule)
-}
-
-// Remove disarms and deletes a recurring rule.
-func (s *Scheduler) Remove(ctx context.Context, ruleID string) (bool, error) {
-	if s == nil || s.core == nil {
-		return false, nil
-	}
-	return s.core.Remove(ctx, ruleID)
-}
-
-// Rules returns armed rule IDs in stable order.
-func (s *Scheduler) Rules() []string {
-	if s == nil || s.core == nil {
-		return nil
-	}
-	return s.core.Rules()
-}
-
-// Restore re-arms persisted rules through the generic scheduler.
-func (s *Scheduler) Restore(ctx context.Context) (int, error) {
-	if s == nil || s.core == nil {
-		return 0, errdefs.NotAvailablef("memory scheduler: nil scheduler")
-	}
-	return s.core.Restore(ctx)
-}
-
-// adapter synchronously maps Tasks to Runtime maintenance requests.
-// All compact and archive executions share one gate so rules cannot mutate the
-// same backing stores concurrently.
-type adapter struct {
+type maintenanceHandler struct {
 	runtime *sdkmemory.Runtime
 	scope   sdkmemory.Scope
 	clock   sdkmemory.Clock
-	ctx     context.Context
-	cancel  context.CancelFunc
-	serial  chan struct{}
-	once    sync.Once
 }
 
-// Dispatch executes one maintenance task using the scheduler lifecycle context.
-func (d *adapter) Dispatch(_ context.Context, scheduleID string, task Task) (corescheduler.Outstanding, error) {
-	if err := task.validate(); err != nil {
-		return nil, err
+func (h *maintenanceHandler) Handle(
+	ctx context.Context,
+	delivery sdkscheduler.Delivery,
+	task Task,
+) error {
+	if err := task.Validate(); err != nil {
+		return err
 	}
-	select {
-	case d.serial <- struct{}{}:
-		defer func() { <-d.serial }()
-	case <-d.ctx.Done():
-		return nil, d.ctx.Err()
-	}
-	if err := d.ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	cutoff := d.clock.Now().Add(-task.OlderThan)
-	switch task.Operation {
-	case OperationCompact:
-		_, err := d.runtime.ExecuteCompact(d.ctx, sdkmemory.CompactRequest{
-			Scope:     d.scope,
-			OlderThan: cutoff,
-			Keep:      task.Keep,
+	if task.Compact != nil {
+		_, err := h.runtime.ExecuteCompact(ctx, sdkmemory.CompactRequest{
+			Scope:     h.scope,
+			OlderThan: h.clock.Now().Add(-task.Compact.OlderThan),
+			Keep:      task.Compact.Keep,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("memory scheduler: compact schedule %q: %w", scheduleID, err)
+			return fmt.Errorf("memory scheduler: compact schedule %q: %w", delivery.ScheduleID, err)
 		}
-	case OperationArchive:
-		_, err := d.runtime.ExecuteArchive(d.ctx, sdkmemory.ArchiveRequest{
-			Scope:       d.scope,
-			OlderThan:   cutoff,
-			Destination: task.Destination,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("memory scheduler: archive schedule %q: %w", scheduleID, err)
-		}
+		return nil
 	}
-	return completedOutstanding{}, nil
-}
-
-func (d *adapter) close() {
-	d.once.Do(d.cancel)
-}
-
-type completedOutstanding struct{}
-
-func (completedOutstanding) IsOutstanding(context.Context) (bool, error) {
-	return false, nil
-}
-
-func (t Task) validate() error {
-	if t.OlderThan <= 0 {
-		return errdefs.Validationf("memory scheduler: task older_than must be greater than zero")
-	}
-	switch t.Operation {
-	case OperationCompact:
-		if t.Keep < 0 {
-			return errdefs.Validationf("memory scheduler: compact keep must not be negative")
-		}
-		if t.Destination != "" {
-			return errdefs.Validationf("memory scheduler: compact destination is not supported")
-		}
-	case OperationArchive:
-		if strings.TrimSpace(t.Destination) == "" {
-			return errdefs.Validationf("memory scheduler: archive destination is required")
-		}
-		if t.Keep != 0 {
-			return errdefs.Validationf("memory scheduler: archive keep is not supported")
-		}
-	default:
-		return errdefs.Validationf("memory scheduler: unsupported operation %q", t.Operation)
+	_, err := h.runtime.ExecuteArchive(ctx, sdkmemory.ArchiveRequest{
+		Scope:       h.scope,
+		OlderThan:   h.clock.Now().Add(-task.Archive.OlderThan),
+		Destination: task.Archive.Destination,
+	})
+	if err != nil {
+		return fmt.Errorf("memory scheduler: archive schedule %q: %w", delivery.ScheduleID, err)
 	}
 	return nil
 }
 
-func lifecycleRules(lifecycle LifecycleSpec) []Rule {
+func lifecycleRules(namespace string, lifecycle LifecycleSpec) []Rule {
 	rules := make([]Rule, 0, 2)
 	if lifecycle.Compact.Cron != "" {
 		rules = append(rules, Rule{
-			ID:      CompactRuleID,
-			Cron:    lifecycle.Compact.Cron,
-			Overlap: corescheduler.OverlapSkip,
-			Value: Task{
-				Operation: OperationCompact,
+			Namespace: namespace,
+			ID:        CompactRuleID,
+			Cron:      lifecycle.Compact.Cron,
+			Timezone:  "UTC",
+			Overlap:   sdkscheduler.OverlapSkip,
+			Task: Task{Compact: &CompactTask{
 				OlderThan: lifecycle.Compact.OlderThan,
 				Keep:      lifecycle.Compact.Keep,
-			},
+			}},
 		})
 	}
 	if lifecycle.Archive.Cron != "" {
 		rules = append(rules, Rule{
-			ID:      ArchiveRuleID,
-			Cron:    lifecycle.Archive.Cron,
-			Overlap: corescheduler.OverlapSkip,
-			Value: Task{
-				Operation:   OperationArchive,
+			Namespace: namespace,
+			ID:        ArchiveRuleID,
+			Cron:      lifecycle.Archive.Cron,
+			Timezone:  "UTC",
+			Overlap:   sdkscheduler.OverlapSkip,
+			Task: Task{Archive: &ArchiveTask{
 				OlderThan:   lifecycle.Archive.OlderThan,
 				Destination: lifecycle.Archive.Destination,
-			},
+			}},
 		})
 	}
 	return rules
@@ -327,3 +254,5 @@ func isNil(value any) bool {
 		return false
 	}
 }
+
+var _ sdkscheduler.Handler[Task] = (*maintenanceHandler)(nil)

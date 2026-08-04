@@ -155,8 +155,10 @@ type Result struct {
 	//
 	//   - StatusCompleted defaults to Committed=true.
 	//   - All non-completed statuses default to Committed=false.
+	//   - Any Referee returning AcceptOutput=true makes the result
+	//     eligible for the normal Committer chain.
 	//   - Any Referee returning DiscardOutput=true forces
-	//     Committed=false.
+	//     Committed=false, overriding AcceptOutput.
 	//   - A Committer failure forces Committed=false and Execute
 	//     returns the Result together with that error.
 	//

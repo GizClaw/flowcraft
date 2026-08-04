@@ -7,15 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
-
-	otellog "go.opentelemetry.io/otel/log"
-
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	otellog "go.opentelemetry.io/otel/log"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Execute implements [agent.Engine]: it runs the graph against board
@@ -77,6 +76,23 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		defer cancel()
 	}
 
+	_ = publishRunEvent(ctx, host, g, run, agent.SubjectRunStart(run.RunID), nil)
+	defer func() {
+		publishCtx, cancel := context.WithTimeout(
+			context.WithoutCancel(ctx),
+			g.runEndPublishTimeout,
+		)
+		defer cancel()
+		if err := publishRunEvent(
+			publishCtx, host, g, run,
+			agent.SubjectRunEnd(run.RunID), runErr,
+		); err != nil {
+			runErr = errors.Join(runErr, errdefs.Internal(
+				&agent.RunEndPublishError{Err: err},
+			))
+		}
+	}()
+
 	telemetry.Info(ctx, "graph execution started",
 		otellog.String(telemetry.AttrGraphName, g.name),
 		otellog.String(telemetry.AttrRunID, run.RunID))
@@ -118,6 +134,9 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 
 	for len(frontier) > 0 {
 		if ctx.Err() != nil {
+			if cause := context.Cause(ctx); errdefs.IsInterrupted(cause) {
+				board.SetVar(VarInterruptedNode, frontier[0])
+			}
 			return retBoard, classifyContextError(ctx, g.name, "")
 		}
 		if intr, ok := pollInterrupt(host); ok {
@@ -136,6 +155,13 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 				otellog.String(telemetry.AttrRunID, run.RunID),
 				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			return retBoard, err
+		}
+		if ctx.Err() != nil {
+			return retBoard, classifyContextError(ctx, g.name, "")
+		}
+		if intr, ok := pollInterrupt(host); ok {
+			board.SetVar(VarInterruptedNode, wave[len(wave)-1])
+			return retBoard, agent.Interrupted(intr)
 		}
 		iterations += len(wave)
 		g.stampCheckpoint(ctx, host, run, board, wave, iterations, originalStartedAt)
@@ -261,6 +287,9 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		if cerr := classifyContextError(ctx, g.name, nodeID); cerr != nil {
 			invokeErr = cerr
 		}
+		if errdefs.IsInterrupted(invokeErr) {
+			board.SetVar(VarInterruptedNode, nodeID)
+		}
 		telemetry.Error(ctx, "node execution failed",
 			otellog.String(telemetry.AttrGraphName, g.name),
 			otellog.String(telemetry.AttrNodeID, nodeID),
@@ -341,6 +370,7 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		ParallelWaveEventPayload{ForkID: forkID, Branches: wave})
 
 	results := make([]BranchResult, len(wave))
+	failedBoards := make([]*agent.Board, len(wave))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelLimit(g.parallel.MaxConcurrency, len(wave)))
 
@@ -396,6 +426,7 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 					reason = cancelReason
 				} else {
 					results[i] = BranchResult{NodeID: id, Err: err}
+					failedBoards[i] = branchBoard
 				}
 				publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
 					Type:     agent.StreamDeltaParallelBranchCancel,
@@ -410,10 +441,41 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 	}
 	wg.Wait()
 
+	var waveErr error
+	if cause := context.Cause(ctx); errdefs.IsInterrupted(cause) {
+		waveErr = cause
+	}
 	for _, res := range results {
-		if res.Err != nil {
-			return res.Err
+		if waveErr == nil && errdefs.IsInterrupted(res.Err) {
+			waveErr = res.Err
 		}
+	}
+	if waveErr == nil {
+		for _, res := range results {
+			if res.Err != nil {
+				waveErr = res.Err
+				break
+			}
+		}
+	}
+	if waveErr != nil {
+		if errdefs.IsInterrupted(waveErr) {
+			for i, branchBoard := range failedBoards {
+				if branchBoard != nil {
+					results[i].Snapshot = branchBoard.Snapshot()
+				}
+			}
+			mergeInterruptedAssistantMessages(board, preFork, results)
+			interruptedNode := wave[0]
+			for _, res := range results {
+				if errdefs.IsInterrupted(res.Err) {
+					interruptedNode = res.NodeID
+					break
+				}
+			}
+			board.SetVar(VarInterruptedNode, interruptedNode)
+		}
+		return waveErr
 	}
 	if err := g.parallel.mergeFunc()(ctx, board, preFork, results); err != nil {
 		return err
@@ -465,7 +527,11 @@ func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.
 	if host == nil {
 		return
 	}
-	_ = host.Checkpoint(ctx, agent.Checkpoint{
+	// Checkpoint is best-effort by design (durability is the host's
+	// choice) but a silent failure here means the host can't resume a
+	// crashed run, so surface it as a warning. RunID is included for
+	// correlation with the surrounding span.
+	if err := host.Checkpoint(ctx, agent.Checkpoint{
 		ExecID:            run.RunID,
 		Steps:             wave,
 		Iteration:         iterations,
@@ -474,7 +540,12 @@ func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.
 		Timestamp:         time.Now(),
 		OriginalStartedAt: startedAt,
 		SpecVersion:       g.name,
-	})
+	}); err != nil {
+		telemetry.WarnErr(ctx, "graph: checkpoint write failed", err,
+			otellog.String(telemetry.AttrGraphName, g.name),
+			otellog.String(telemetry.AttrRunID, run.RunID),
+			otellog.Int("graph.iteration", iterations))
+	}
 }
 
 // resolveNext computes the next frontier after a wave: every outgoing
@@ -515,13 +586,16 @@ func conditionEnv(board *agent.Board, iterations int) map[string]any {
 }
 
 // classifyContextError converts context termination into a classified
-// error: deadline → Timeout, cancellation → Aborted. nodeID may be
-// empty for run-level termination. Returns nil when the context is
-// still alive.
+// error. An interrupted cancellation cause is preserved verbatim before
+// generic deadline/cancellation classification. nodeID may be empty for
+// run-level termination. Returns nil when the context is still alive.
 func classifyContextError(ctx context.Context, graphName, nodeID string) error {
 	where := fmt.Sprintf("graph %q", graphName)
 	if nodeID != "" {
 		where = fmt.Sprintf("graph %q node %q", graphName, nodeID)
+	}
+	if cause := context.Cause(ctx); errdefs.IsInterrupted(cause) {
+		return cause
 	}
 	switch {
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):

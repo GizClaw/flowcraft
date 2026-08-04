@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -487,5 +488,120 @@ func TestFormatPlainTextRecordLine_ZeroTimestamp(t *testing.T) {
 	line := FormatPlainTextRecordLine(&rec)
 	if len(line) == 0 {
 		t.Fatal("expected non-empty output")
+	}
+}
+
+// captureProcessor collects records into an in-memory slice for assertion.
+// Records land here only when the wrapping LoggerProvider's Enabled gate
+// passes; OnEmit returns nil unconditionally.
+type captureProcessor struct {
+	mu      sync.Mutex
+	records []sdklog.Record
+}
+
+func (c *captureProcessor) Enabled(context.Context, sdklog.EnabledParameters) bool {
+	return true
+}
+
+func (c *captureProcessor) OnEmit(_ context.Context, r *sdklog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, *r)
+	return nil
+}
+
+func (c *captureProcessor) Shutdown(context.Context) error   { return nil }
+func (c *captureProcessor) ForceFlush(context.Context) error { return nil }
+
+func (c *captureProcessor) snapshot() []sdklog.Record {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]sdklog.Record, len(c.records))
+	copy(out, c.records)
+	return out
+}
+
+func attrValue(rec sdklog.Record, key string) (otellog.Value, bool) {
+	var found bool
+	var val otellog.Value
+	rec.WalkAttributes(func(kv otellog.KeyValue) bool {
+		if kv.Key == key {
+			val = kv.Value
+			found = true
+			return false
+		}
+		return true
+	})
+	return val, found
+}
+
+func TestWarnErr_NilError_NoRecord(t *testing.T) {
+	cap := &captureProcessor{}
+	shutdown, err := InitLog(context.Background(), WithLogProcessor(cap))
+	if err != nil {
+		t.Fatalf("InitLog error: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	Enable()
+	WarnErr(context.Background(), "should be dropped", nil,
+		otellog.String("extra", "ignored"))
+
+	if got := cap.snapshot(); len(got) != 0 {
+		t.Fatalf("expected 0 records on nil err, got %d", len(got))
+	}
+}
+
+func TestWarnErr_NonNilError_EmitsWarnWithAttr(t *testing.T) {
+	cap := &captureProcessor{}
+	shutdown, err := InitLog(context.Background(), WithLogProcessor(cap))
+	if err != nil {
+		t.Fatalf("InitLog error: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	Enable()
+	WarnErr(context.Background(), "swallowed: file close", errors.New("disk full"),
+		otellog.String("path", "/tmp/x"))
+
+	recs := cap.snapshot()
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(recs))
+	}
+	rec := recs[0]
+
+	if rec.Severity() != otellog.SeverityWarn {
+		t.Fatalf("expected severity=Warn, got %v", rec.Severity())
+	}
+	if rec.Body().AsString() != "swallowed: file close" {
+		t.Fatalf("unexpected body: %q", rec.Body().AsString())
+	}
+
+	if v, ok := attrValue(rec, AttrErrorMessage); !ok {
+		t.Fatal("expected AttrErrorMessage attribute")
+	} else if v.AsString() != "disk full" {
+		t.Fatalf("expected AttrErrorMessage=disk full, got %q", v.AsString())
+	}
+
+	if v, ok := attrValue(rec, "path"); !ok {
+		t.Fatal("expected path attribute to be preserved")
+	} else if v.AsString() != "/tmp/x" {
+		t.Fatalf("expected path=/tmp/x, got %q", v.AsString())
+	}
+}
+
+func TestWarnErr_Disabled_NoRecord(t *testing.T) {
+	cap := &captureProcessor{}
+	shutdown, err := InitLog(context.Background(), WithLogProcessor(cap))
+	if err != nil {
+		t.Fatalf("InitLog error: %v", err)
+	}
+	defer func() { _ = shutdown(context.Background()) }()
+
+	Disable()
+	WarnErr(context.Background(), "should be dropped", errors.New("ignored"))
+
+	if got := cap.snapshot(); len(got) != 0 {
+		t.Fatalf("expected 0 records when disabled, got %d", len(got))
 	}
 }

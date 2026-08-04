@@ -127,6 +127,10 @@ func isNilInterface(v any) bool {
 // by default; the engine should log/record and continue. Backpressure
 // or transport failures are an observability concern, not a control-
 // flow signal.
+//
+// Implementations MUST observe ctx.Done and return promptly. Graph-level
+// publish timeouts are bounded only for implementations that honor this
+// cooperative cancellation contract.
 type Publisher interface {
 	Publish(ctx context.Context, env event.Envelope) error
 }

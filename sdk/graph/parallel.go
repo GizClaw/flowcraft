@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // MergeStrategy selects the built-in [MergeFunc] used to fold parallel
@@ -164,8 +165,21 @@ func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res Branc
 // convention; a branch that replaced a channel outright contributes
 // only the suffix beyond the pre-fork length.
 func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
+	mergeChannelMessages(board, preFork, results,
+		func(res BranchResult) bool { return res.Err == nil },
+		func(inference.Message) bool { return true },
+	)
+}
+
+func mergeChannelMessages(
+	board *agent.Board,
+	preFork *agent.BoardSnapshot,
+	results []BranchResult,
+	includeResult func(BranchResult) bool,
+	includeMessage func(inference.Message) bool,
+) {
 	for _, res := range results {
-		if res.Err != nil || res.Snapshot == nil {
+		if !includeResult(res) || res.Snapshot == nil {
 			continue
 		}
 		for ch, msgs := range res.Snapshot.Channels {
@@ -173,11 +187,23 @@ func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, res
 			if len(msgs) <= base {
 				continue
 			}
-			for _, m := range msgs[base:] {
-				board.AppendChannelMessage(ch, m)
+			for _, msg := range msgs[base:] {
+				if includeMessage(msg) {
+					board.AppendChannelMessage(ch, msg)
+				}
 			}
 		}
 	}
+}
+
+// mergeInterruptedAssistantMessages retains only assistant messages written
+// by failed branches when a parallel wave terminates as interrupted. Branch
+// order is results order; vars and non-assistant channels/state are ignored.
+func mergeInterruptedAssistantMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
+	mergeChannelMessages(board, preFork, results,
+		func(res BranchResult) bool { return errdefs.IsInterrupted(res.Err) },
+		func(msg inference.Message) bool { return msg.Role == inference.RoleAssistant },
+	)
 }
 
 type parallelCtxKey struct{}

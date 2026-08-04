@@ -10,8 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Endpoint paths under the API root; the multimodal-generation endpoint
@@ -108,7 +111,15 @@ func (c *dashClient) request(
 			Message string `json:"message"`
 		}
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		_ = json.Unmarshal(snippet, &failure)
+		// A failure here means we cannot enrich classifyHTTPError with
+		// the upstream code/message, but the snippet itself is still
+		// passed through. Surface it so a malformed error body doesn't
+		// go completely dark in logs.
+		if uErr := json.Unmarshal(snippet, &failure); uErr != nil {
+			telemetry.WarnErr(ctx, "qwen: parse error response body", uErr,
+				otellog.String("provider", "qwen"),
+				otellog.Int("http.status", resp.StatusCode))
+		}
 		return nil, classifyHTTPError(
 			resp.StatusCode, failure.Code, failure.Message, snippet,
 		)

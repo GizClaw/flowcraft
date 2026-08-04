@@ -150,7 +150,7 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 	// The child leads its own process group (applyProcAttrs), so its pid
 	// is the pgid. The watcher enforces MemoryBytes / cpu caps by group
 	// aggregate; Stop is nil-safe and must follow Wait.
-	watcher := StartGroupCapsWatcher(c.Process.Pid, opts.Resources, opts.Timeout)
+	watcher := StartGroupCapsWatcher(ctx, c.Process.Pid, opts.Resources, opts.Timeout)
 
 	err := c.Wait()
 	watcher.Stop()

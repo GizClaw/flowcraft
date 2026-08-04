@@ -144,6 +144,17 @@ type publishHost struct {
 	envs []event.Envelope
 }
 
+type runEndFailHost struct {
+	publishHost
+}
+
+func (h *runEndFailHost) Publish(ctx context.Context, env event.Envelope) error {
+	if env.Subject == agent.SubjectRunEnd(env.RunID()) {
+		return errors.New("run-end unavailable")
+	}
+	return h.publishHost.Publish(ctx, env)
+}
+
 func (h *publishHost) Publish(_ context.Context, env event.Envelope) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()

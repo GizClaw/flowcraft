@@ -160,7 +160,7 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if err := c.Start(); err != nil {
 		return nil, classifyStartError(cmd, err)
 	}
-	watcher := sandbox.StartGroupCapsWatcher(c.Process.Pid, opts.Resources, opts.Timeout)
+	watcher := sandbox.StartGroupCapsWatcher(ctx, c.Process.Pid, opts.Resources, opts.Timeout)
 
 	runErr := c.Wait()
 	watcher.Stop()

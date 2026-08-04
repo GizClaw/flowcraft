@@ -8,6 +8,27 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
+// RunEndPublishError reports that an engine could not publish its required
+// terminal run envelope. Consumers that use run-end as a delivery barrier
+// must stop waiting and detach instead.
+type RunEndPublishError struct {
+	Err error
+}
+
+func (e *RunEndPublishError) Error() string {
+	if e == nil {
+		return "agent: publish run-end"
+	}
+	return fmt.Sprintf("agent: publish run-end: %v", e.Err)
+}
+
+func (e *RunEndPublishError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // This file defines the cross-engine event subject convention.
 //
 // Why subjects live in sdk/agent

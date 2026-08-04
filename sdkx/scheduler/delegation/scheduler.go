@@ -1,5 +1,4 @@
-// Package scheduler provides an optional sdk/delegation dispatcher adapter
-// for the generic sdkx/scheduler package.
+// Package scheduler adapts sdk/delegation requests to sdk/scheduler.
 package scheduler
 
 import (
@@ -7,184 +6,206 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"time"
 
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	corescheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
-
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
+	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 )
 
 const (
-	// MetaScheduleID correlates delegation requests with their schedule.
-	MetaScheduleID = corescheduler.MetaScheduleID
-	// AttrDelegationID identifies a dispatched delegation in telemetry.
-	AttrDelegationID = "scheduler.delegation.id"
+	// PayloadKind identifies scheduled delegation request payloads.
+	PayloadKind = "delegation.request"
+	// PayloadVersion is the current scheduled delegation request schema.
+	PayloadVersion = 1
+
+	defaultDelegationPollInterval = 250 * time.Millisecond
 )
 
 type (
-	// Rule is a recurring delegation request.
-	Rule = corescheduler.Rule[sdkdelegation.Request]
-	// RuleStore persists delegation scheduling rules.
-	RuleStore = corescheduler.RuleStore[sdkdelegation.Request]
-	// Option configures a delegation Scheduler.
-	Option = corescheduler.Option[sdkdelegation.Request]
+	// Task is a scheduled delegation request.
+	Task = sdkdelegation.Request
+	// Rule is a recurring scheduled delegation request.
+	Rule = sdkscheduler.TypedRule[Task]
+	// Scheduler is a typed scheduler registration for delegation tasks.
+	Scheduler = sdkscheduler.Registration[Task]
 )
 
-// WithRuleStore enables recurring-rule persistence.
-func WithRuleStore(store RuleStore) Option {
-	return corescheduler.WithRuleStore(store)
+// Option configures a Scheduler.
+type Option func(*options) error
+
+type options struct {
+	workerOptions          []sdkscheduler.WorkerOption
+	delegationPollInterval time.Duration
 }
 
-// Scheduler schedules asynchronous delegation requests.
-type Scheduler struct {
-	core *corescheduler.Scheduler[sdkdelegation.Request]
+// WithWorkerOptions configures worker leasing, concurrency, and server polling.
+func WithWorkerOptions(workerOptions ...sdkscheduler.WorkerOption) Option {
+	return func(options *options) error {
+		for _, option := range workerOptions {
+			if option == nil {
+				return errdefs.Validationf("delegation scheduler: worker option must not be nil")
+			}
+		}
+		options.workerOptions = append(options.workerOptions, workerOptions...)
+		return nil
+	}
 }
 
-// New creates a delegation scheduler backed by service.
-func New(service sdkdelegation.Service, opts ...Option) (*Scheduler, error) {
+// WithDelegationPollInterval sets the delay between delegation status reads.
+func WithDelegationPollInterval(interval time.Duration) Option {
+	return func(options *options) error {
+		if interval <= 0 {
+			return errdefs.Validationf(
+				"delegation scheduler: delegation poll interval must be greater than zero",
+			)
+		}
+		options.delegationPollInterval = interval
+		return nil
+	}
+}
+
+// New constructs a namespace-scoped delegation scheduler. The Server and
+// delegation Service remain caller-owned.
+func New(
+	ctx context.Context,
+	server sdkscheduler.Server,
+	namespace string,
+	service sdkdelegation.Service,
+	opts ...Option,
+) (*Scheduler, error) {
 	if isNil(service) {
 		return nil, errdefs.Validationf("delegation scheduler: service is required")
 	}
-	adapter := &adapter{service: service}
-	core, err := corescheduler.New(adapter, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &Scheduler{core: core}, nil
-}
 
-// Start begins cron evaluation.
-func (s *Scheduler) Start() {
-	if s != nil && s.core != nil {
-		s.core.Start()
-	}
-}
-
-// Close stops cron evaluation and pending delays.
-func (s *Scheduler) Close() error {
-	if s == nil {
-		return nil
-	}
-	return s.core.Close()
-}
-
-// After schedules one asynchronous delegation.
-func (s *Scheduler) After(ctx context.Context, delay time.Duration, request sdkdelegation.Request) (string, error) {
-	request, err := normalizeRequest(request, "")
-	if err != nil {
-		return "", err
-	}
-	return s.core.After(ctx, delay, request)
-}
-
-// CancelDelay cancels a pending delay.
-func (s *Scheduler) CancelDelay(handle string) bool {
-	return s != nil && s.core.CancelDelay(handle)
-}
-
-// Add validates and registers a recurring asynchronous delegation.
-func (s *Scheduler) Add(ctx context.Context, rule Rule) (string, error) {
-	request, err := normalizeRequest(rule.Value, "")
-	if err != nil {
-		return "", err
-	}
-	rule.Value = request
-	return s.core.Add(ctx, rule)
-}
-
-// Remove disarms and deletes a recurring rule.
-// The bool reports whether an armed rule existed; persistence failures are
-// returned after the in-memory rule has been disarmed.
-func (s *Scheduler) Remove(ctx context.Context, ruleID string) (bool, error) {
-	if s == nil {
-		return false, nil
-	}
-	return s.core.Remove(ctx, ruleID)
-}
-
-// Rules returns armed rule IDs.
-func (s *Scheduler) Rules() []string {
-	if s == nil {
-		return nil
-	}
-	return s.core.Rules()
-}
-
-// Restore re-arms persisted rules through the generic scheduler.
-func (s *Scheduler) Restore(ctx context.Context) (int, error) {
-	if s == nil {
-		return 0, errdefs.NotAvailablef("delegation scheduler: nil scheduler")
-	}
-	return s.core.Restore(ctx)
-}
-
-type adapter struct {
-	service sdkdelegation.Service
-}
-
-func (a *adapter) Dispatch(ctx context.Context, scheduleID string, request sdkdelegation.Request) (corescheduler.Outstanding, error) {
-	request, err := normalizeRequest(request, scheduleID)
-	if err != nil {
-		return nil, err
-	}
-	response, err := a.service.Delegate(ctx, request)
-	if err != nil {
-		return nil, fmt.Errorf("delegation scheduler: delegate schedule %q: %w", scheduleID, err)
-	}
-	if err := response.Validate(); err != nil {
-		return nil, errdefs.Internal(fmt.Errorf(
-			"delegation scheduler: invalid Delegate response: %w", err))
-	}
-	trace.SpanFromContext(ctx).SetAttributes(attribute.String(AttrDelegationID, response.ID))
-	return &delegationOutstanding{
-		service: a.service,
-		id:      response.ID,
-		status:  response.Status,
-	}, nil
-}
-
-type delegationOutstanding struct {
-	service sdkdelegation.Service
-	id      string
-	status  sdkdelegation.Status
-}
-
-func (o *delegationOutstanding) IsOutstanding(ctx context.Context) (bool, error) {
-	if o.status.Terminal() {
-		return false, nil
-	}
-	response, err := o.service.Get(ctx, o.id)
-	if err != nil {
-		return false, fmt.Errorf("delegation scheduler: get delegation %q: %w", o.id, err)
-	}
-	if err := response.Validate(); err != nil {
-		return false, errdefs.Internal(fmt.Errorf(
-			"delegation scheduler: invalid Get response for %q: %w", o.id, err))
-	}
-	o.status = response.Status
-	return !response.Status.Terminal(), nil
-}
-
-func normalizeRequest(request sdkdelegation.Request, scheduleID string) (sdkdelegation.Request, error) {
-	request.Mode = sdkdelegation.ModeAsync
-	request.Metadata = cloneMetadata(request.Metadata)
-	if scheduleID != "" {
-		if request.Metadata == nil {
-			request.Metadata = make(map[string]string, 1)
+	settings := options{delegationPollInterval: defaultDelegationPollInterval}
+	for _, option := range opts {
+		if option == nil {
+			return nil, errdefs.Validationf("delegation scheduler: option must not be nil")
 		}
-		request.Metadata[MetaScheduleID] = scheduleID
+		if err := option(&settings); err != nil {
+			return nil, err
+		}
 	}
-	if err := request.Validate(); err != nil {
-		return sdkdelegation.Request{}, err
-	}
-	return request, nil
+
+	return sdkscheduler.Register(ctx, server, sdkscheduler.RegistrationSpec[Task]{
+		Namespace:      namespace,
+		PayloadKind:    PayloadKind,
+		PayloadVersion: PayloadVersion,
+		Handler: &handler{
+			service:      service,
+			pollInterval: settings.delegationPollInterval,
+		},
+		WorkerOptions: append([]sdkscheduler.WorkerOption(nil), settings.workerOptions...),
+	})
 }
 
-func cloneMetadata(metadata map[string]string) map[string]string {
-	return maps.Clone(metadata)
+type handler struct {
+	service      sdkdelegation.Service
+	pollInterval time.Duration
+}
+
+func (h *handler) Handle(
+	ctx context.Context,
+	delivery sdkscheduler.Delivery,
+	request Task,
+) error {
+	request.IdempotencyKey = delivery.ID
+	if err := request.Validate(); err != nil {
+		return err
+	}
+	request.Metadata = maps.Clone(request.Metadata)
+	if request.Metadata == nil {
+		request.Metadata = make(map[string]string, 3)
+	}
+	request.Metadata[sdkscheduler.MetaScheduleID] = delivery.ScheduleID
+	request.Metadata[sdkscheduler.MetaDeliveryID] = delivery.ID
+	request.Metadata[sdkscheduler.MetaExecutionID] = delivery.ExecutionID
+
+	response, err := h.service.Delegate(ctx, request)
+	if err != nil {
+		return fmt.Errorf(
+			"delegation scheduler: delegate delivery %q: %w",
+			delivery.ID,
+			err,
+		)
+	}
+	if err := validateResponse("Delegate", response); err != nil {
+		return err
+	}
+	delegationID := response.ID
+	for !response.Status.Terminal() {
+		timer := time.NewTimer(h.pollInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		}
+		response, err = h.service.Get(ctx, delegationID)
+		if err != nil {
+			return fmt.Errorf(
+				"delegation scheduler: get delegation %q for delivery %q: %w",
+				delegationID,
+				delivery.ID,
+				err,
+			)
+		}
+		if err := validateResponse("Get", response); err != nil {
+			return err
+		}
+		if response.ID != delegationID {
+			return errdefs.Internalf(
+				"delegation scheduler: Get response ID %q does not match delegation %q",
+				response.ID,
+				delegationID,
+			)
+		}
+	}
+	return terminalError(response)
+}
+
+func validateResponse(operation string, response sdkdelegation.Response) error {
+	if err := response.Validate(); err != nil {
+		return errdefs.Internal(fmt.Errorf(
+			"delegation scheduler: invalid %s response: %w",
+			operation,
+			err,
+		))
+	}
+	return nil
+}
+
+func terminalError(response sdkdelegation.Response) error {
+	switch response.Status {
+	case sdkdelegation.StatusSucceeded:
+		return nil
+	case sdkdelegation.StatusFailed:
+		return fmt.Errorf(
+			"delegation scheduler: delegation %q failed: %s",
+			response.ID,
+			response.Error,
+		)
+	case sdkdelegation.StatusCanceled:
+		reason := response.Error
+		if strings.TrimSpace(reason) == "" {
+			reason = "canceled"
+		}
+		return fmt.Errorf(
+			"delegation scheduler: delegation %q canceled: %s",
+			response.ID,
+			reason,
+		)
+	default:
+		return errdefs.Internalf(
+			"delegation scheduler: delegation %q reached invalid terminal status %q",
+			response.ID,
+			response.Status,
+		)
+	}
 }
 
 func isNil(value any) bool {
@@ -199,3 +220,5 @@ func isNil(value any) bool {
 		return false
 	}
 }
+
+var _ sdkscheduler.Handler[Task] = (*handler)(nil)

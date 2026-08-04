@@ -440,23 +440,39 @@ lifecycle:
 ```
 
 ```go
+import localscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
 import memoryscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler/memory"
 
-sched, err := memoryscheduler.New(assembly.Runtime, assembly.Lifecycle)
+server, err := localscheduler.NewLocalServer()
 if err != nil { /* ... */ }
-sched.Start()
+sched, err := memoryscheduler.New(
+    ctx,
+    server,
+    "memory",
+    assembly.Runtime,
+    assembly.Lifecycle,
+)
+if err != nil { /* ... */ }
+if err := sched.Start(); err != nil { /* ... */ }
+if err := server.Start(); err != nil { /* ... */ }
+defer server.Close()
 defer sched.Close()
 ```
 
 Each empty operation block is disabled. An enabled block requires both
 `cron` and a positive `older_than`; archive also requires `destination`.
-The adapter registers stable compact/archive rules in
-`sdkx/scheduler`, using `OverlapSkip` by default. At trigger time it
-computes the cutoff from the runtime clock and executes the operation
-synchronously. Compact and Archive share one serial gate, so rules
-cannot mutate the same storage concurrently. Execution errors do not
-stop cron evaluation; a later trigger retries. `Close` first cancels
-in-flight memory I/O, then waits for generic scheduler callbacks.
+The adapter creates one `sdk/scheduler.Registration` on the shared Server. It
+registers stable compact/archive rules using `OverlapSkip` and starts a leased
+worker for its namespace. The Server only stores wire tasks and execution
+leases; it never receives a Go callback. This allows the same registration to
+use a local or remote Server.
+
+At trigger time the worker computes the cutoff from the runtime clock and
+executes the operation synchronously. Compact and Archive use worker
+concurrency one, so they cannot mutate the same storage concurrently.
+Execution errors become failed scheduler executions; a later cron trigger can
+retry. `Close` cancels in-flight memory I/O and stops only the worker; the
+application owns and closes the shared Server.
 
 ## Testing
 

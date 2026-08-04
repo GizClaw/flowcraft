@@ -21,6 +21,13 @@ type Directory struct {
 	lookup  map[string]*deploy.Instance
 }
 
+// Deployment is the minimal read-only deployment view needed by Directory.
+// *deploy.Result implements this interface, preserving existing callers.
+type Deployment interface {
+	Instance(id string) (*deploy.Instance, bool)
+	InstanceNames() []string
+}
+
 // NewDirectory creates an unbound directory.
 func NewDirectory() *Directory {
 	return &Directory{}
@@ -28,12 +35,12 @@ func NewDirectory() *Directory {
 
 // Bind installs Build's instances. A directory is immutable after a successful
 // bind and borrows the instances; the result retains lifecycle ownership.
-func (d *Directory) Bind(result *deploy.Result) error {
+func (d *Directory) Bind(result Deployment) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
 	}
-	if result == nil {
-		return errdefs.Validationf("local delegation directory: nil deploy result")
+	if isNilInterface(result) {
+		return errdefs.Validationf("local delegation directory: nil deployment")
 	}
 
 	d.mu.Lock()

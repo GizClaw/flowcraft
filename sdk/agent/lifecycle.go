@@ -336,8 +336,9 @@ func commitResult(ctx context.Context, id Identity, req *Request, res *Result, c
 //
 // Multiple Referees may be registered (Agent-scoped + per-call).
 // They run in registration order. The merged decision is the OR over
-// boolean fields: any Referee asking to discard wins; same for
-// revise. The first non-empty Reason wins, so callers can attribute
+// boolean fields: any Referee asking to accept, discard, or revise is
+// retained. Discard has final precedence when Run applies the merged
+// decision. The first non-empty Reason wins, so callers can attribute
 // the decision in logs.
 //
 // # Error contract
@@ -374,6 +375,15 @@ type Referee interface {
 //     conservative behaviour Round A had hard-coded; round B simply
 //     makes it overridable.
 type Decision struct {
+	// AcceptOutput, when true, positively accepts the engine-produced
+	// output regardless of Status. This is primarily used to retain
+	// useful partial output from a cooperative interruption through the
+	// normal Committer chain.
+	//
+	// DiscardOutput has final precedence when both directives are
+	// present, including when they come from different Referees.
+	AcceptOutput bool
+
 	// DiscardOutput, when true, instructs Run to mark Result.Committed
 	// = false regardless of Status. Committers are skipped for a
 	// discarded run.
@@ -452,6 +462,9 @@ func composeReferees(ctx context.Context, id Identity, req *Request, res *Result
 		d, err := r.After(ctx, id, req, res)
 		if err != nil {
 			return Decision{}, err
+		}
+		if d.AcceptOutput {
+			merged.AcceptOutput = true
 		}
 		if d.DiscardOutput {
 			merged.DiscardOutput = true
