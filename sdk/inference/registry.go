@@ -8,13 +8,21 @@ import (
 type (
 	// OpenGenerate materializes unary and/or finite streaming Generate drivers.
 	// Openers must not send inference requests, perform remote model discovery,
-	// or otherwise depend on provider I/O.
+	// or otherwise depend on provider I/O. Runtime may share one opener across
+	// callers and lets it finish after an individual caller is canceled, so the
+	// context is runtime-owned rather than the context passed to an operation.
+	// Openers must therefore be local, bounded construction work.
 	OpenGenerate func(context.Context, ModelRef) (GenerateOperations, error)
-	OpenEmbed    func(context.Context, ModelRef) (EmbedDriver, error)
+	// OpenEmbed materializes an embedding driver. It follows OpenGenerate's
+	// runtime-owned context and local, bounded construction contract.
+	OpenEmbed func(context.Context, ModelRef) (EmbedDriver, error)
 	// OpenTranscription materializes unary and/or session transcription drivers.
+	// It follows OpenGenerate's runtime-owned context and local, bounded
+	// construction contract.
 	OpenTranscription func(context.Context, ModelRef) (TranscriptionOperations, error)
 	// OpenRealtime materializes a realtime session factory without opening a
-	// remote session.
+	// remote session. It follows OpenGenerate's runtime-owned context and local,
+	// bounded construction contract.
 	OpenRealtime func(context.Context, ModelRef) (RealtimeDriver, error)
 )
 

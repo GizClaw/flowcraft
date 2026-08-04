@@ -50,7 +50,7 @@ func TestGenerateStreamAggregatesPartsAndFinishedState(t *testing.T) {
 		nativeGenerateCompile(wire{}),
 		func(context.Context, wire) (ProviderStream[GenerateStreamEvent], error) {
 			return &generateEventStream{events: []GenerateStreamEvent{
-				{PartIndex: 0, Delta: TextPartDelta{Text: "hello"}},
+				{PartIndex: 0, Delta: &TextPartDelta{Text: "hello"}},
 				{PartIndex: 0, Delta: TextPartDelta{Text: " world"}},
 				{
 					Usage:        &Usage{InputTokens: 1, OutputTokens: 2, TotalTokens: 3},
@@ -72,6 +72,13 @@ func TestGenerateStreamAggregatesPartsAndFinishedState(t *testing.T) {
 	}
 	if _, err := stream.Result(); !IsKind(err, InvalidProviderResponse) {
 		t.Fatalf("partial Result error = %v, want InvalidProviderResponse", err)
+	}
+	first, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatalf("first Next: %v", err)
+	}
+	if _, ok := first.Delta.(TextPartDelta); !ok {
+		t.Fatalf("first delta type = %T, want normalized TextPartDelta", first.Delta)
 	}
 	for {
 		_, err = stream.Next(context.Background())

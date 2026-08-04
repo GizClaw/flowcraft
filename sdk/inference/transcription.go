@@ -386,7 +386,9 @@ func (TranscriptionUsageEvent) inferenceTranscriptionEvent() {}
 
 // TranscriptionSession is a bidirectional streaming transcription operation.
 // Implementations must allow one SendAudio caller and one Next caller to run
-// concurrently. CloseInput sends the provider's terminal input marker.
+// concurrently. Close may run concurrently with Next and must promptly unblock
+// it. Canceling a Next context ends only that wait and must not close the
+// session. CloseInput sends the provider's terminal input marker.
 type TranscriptionSession interface {
 	SendAudio(context.Context, media.AudioChunk) error
 	CloseInput(context.Context) error

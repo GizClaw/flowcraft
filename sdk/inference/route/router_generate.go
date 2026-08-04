@@ -2,7 +2,6 @@ package route
 
 import (
 	"context"
-	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
@@ -114,29 +113,8 @@ func (r *Router) GenerateStream(
 			Outcome: AttemptOutcomeOpened,
 		})
 		trace.Executed = target
-		return &observableGenerateStream{
-			GenerateStream: stream,
-			attempt:        &trace.Attempts[len(trace.Attempts)-1],
-		}, trace, nil
+		return stream, trace, nil
 	}
-}
-
-type observableGenerateStream struct {
-	inference.GenerateStream
-	attempt *Attempt
-	once    sync.Once
-}
-
-func (s *observableGenerateStream) Next(
-	ctx context.Context,
-) (inference.GenerateStreamEvent, error) {
-	event, err := s.GenerateStream.Next(ctx)
-	if err == nil {
-		s.once.Do(func() {
-			s.attempt.ObservableOutput = true
-		})
-	}
-	return event, err
 }
 
 // ExplainGenerate explains the selected target's unary Generate compilation.

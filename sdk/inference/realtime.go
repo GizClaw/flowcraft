@@ -263,7 +263,9 @@ func (e RealtimeResponseDoneEvent) Validate() error {
 func (RealtimeResponseDoneEvent) inferenceRealtimeEvent() {}
 
 // RealtimeSession is a stateful bidirectional conversation. Implementations
-// must allow one Send caller and one Next caller to run concurrently.
+// must allow one Send caller and one Next caller to run concurrently. Close may
+// run concurrently with Next and must promptly unblock it. Canceling a Next
+// context ends only that wait and must not close the session.
 type RealtimeSession interface {
 	Send(context.Context, RealtimeInput) error
 	Next(context.Context) (RealtimeEvent, error)

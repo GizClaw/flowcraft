@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"iter"
 	"strings"
 	"sync"
 
@@ -184,13 +183,12 @@ func openASRSession(
 		if err != nil {
 			return nil, classifyError(err)
 		}
-		pull, stop := iter.Pull2(session.Recv())
 		adapted := &asrSession{
 			session: session,
-			pull:    pull,
-			stop:    stop,
 			wire:    wire,
+			stop:    make(chan struct{}),
 		}
+		adapted.results = pumpASRResults(session, adapted.stop)
 		if wire.language != "" {
 			adapted.language = &inference.TranscriptLanguage{
 				Code:   wire.language,
@@ -207,8 +205,9 @@ func openASRSession(
 // final transcript events surface.
 type asrSession struct {
 	session  *doubaospeech.ASRV2Session
-	pull     func() (*doubaospeech.ASRV2Result, error, bool)
-	stop     func()
+	results  <-chan asrResult
+	stop     chan struct{}
+	stopOnce sync.Once
 	wire     asrWire
 	language *inference.TranscriptLanguage
 
@@ -217,6 +216,32 @@ type asrSession struct {
 	segments  []inference.TranscriptSegment
 	duration  int64
 	inputDone bool
+}
+
+type asrResult struct {
+	value *doubaospeech.ASRV2Result
+	err   error
+}
+
+func pumpASRResults(
+	session *doubaospeech.ASRV2Session,
+	stop <-chan struct{},
+) <-chan asrResult {
+	results := make(chan asrResult, 1)
+	go func() {
+		defer close(results)
+		for value, err := range session.Recv() {
+			select {
+			case results <- asrResult{value: value, err: err}:
+			case <-stop:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return results
 }
 
 func (s *asrSession) SendAudio(
@@ -244,13 +269,20 @@ func (s *asrSession) Next(
 		return nil, err
 	}
 	for {
-		result, err, ok := s.pull()
-		if err != nil {
-			return nil, classifyError(err)
+		var received asrResult
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case received, ok = <-s.results:
 		}
 		if !ok {
 			return nil, io.EOF
 		}
+		if received.err != nil {
+			return nil, classifyError(received.err)
+		}
+		result := received.value
 		if result == nil {
 			continue
 		}
@@ -329,7 +361,7 @@ func (s *asrSession) Result() (inference.TranscriptionResponse, error) {
 }
 
 func (s *asrSession) Close() error {
-	s.stop()
+	s.stopOnce.Do(func() { close(s.stop) })
 	return classifyError(s.session.Close())
 }
 

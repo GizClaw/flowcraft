@@ -42,7 +42,11 @@ func (r EmbedRequest) ActiveFields() []FieldID {
 	for _, item := range r.Items {
 		hasMultiPart = hasMultiPart || len(item.Content.Parts) > 1
 		for _, part := range item.Content.Parts {
-			switch part.(type) {
+			normalized, err := normalizePart(part)
+			if err != nil {
+				continue
+			}
+			switch normalized.(type) {
 			case TextPart:
 				hasText = true
 			case ImagePart:

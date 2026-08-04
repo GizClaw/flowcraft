@@ -2,7 +2,6 @@ package inferencetest_test
 
 import (
 	"context"
-	"io"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -13,7 +12,9 @@ import (
 type transcriptionSession struct {
 	sends       *inferencetest.Counter
 	inputCloses *inferencetest.Counter
+	nexts       *inferencetest.Counter
 	closes      *inferencetest.Counter
+	closed      chan struct{}
 }
 
 func (s *transcriptionSession) SendAudio(
@@ -27,19 +28,26 @@ func (s *transcriptionSession) CloseInput(context.Context) error {
 	s.inputCloses.Inc()
 	return nil
 }
-func (*transcriptionSession) Next(context.Context) (inference.TranscriptionEvent, error) {
-	return nil, io.EOF
+func (s *transcriptionSession) Next(ctx context.Context) (inference.TranscriptionEvent, error) {
+	s.nexts.Inc()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-s.closed:
+		return nil, context.Canceled
+	}
 }
 func (*transcriptionSession) Result() (inference.TranscriptionResponse, error) {
 	return inference.TranscriptionResponse{}, nil
 }
 func (s *transcriptionSession) Close() error {
 	s.closes.Inc()
+	close(s.closed)
 	return nil
 }
 
 func TestTranscriptionSessionSuite(t *testing.T) {
-	var opens, sends, inputCloses, closes inferencetest.Counter
+	var opens, sends, inputCloses, nexts, closes inferencetest.Counter
 	driver, err := inference.BindTranscriptionSession(
 		func(
 			context.Context,
@@ -60,7 +68,8 @@ func TestTranscriptionSessionSuite(t *testing.T) {
 		func(context.Context, string) (inference.TranscriptionSession, error) {
 			opens.Inc()
 			return &transcriptionSession{
-				sends: &sends, inputCloses: &inputCloses, closes: &closes,
+				sends: &sends, inputCloses: &inputCloses, nexts: &nexts,
+				closes: &closes, closed: make(chan struct{}),
 			}, nil
 		},
 	)
@@ -98,6 +107,7 @@ func TestTranscriptionSessionSuite(t *testing.T) {
 			SessionOpens:  opens.Load,
 			AudioSends:    sends.Load,
 			InputCloses:   inputCloses.Load,
+			NextCalls:     nexts.Load,
 			SessionCloses: closes.Load,
 		},
 	)
@@ -106,15 +116,23 @@ func TestTranscriptionSessionSuite(t *testing.T) {
 type realtimeSession struct {
 	sends         *inferencetest.Counter
 	cancellations *inferencetest.Counter
+	nexts         *inferencetest.Counter
 	closes        *inferencetest.Counter
+	closed        chan struct{}
 }
 
 func (s *realtimeSession) Send(context.Context, string) error {
 	s.sends.Inc()
 	return nil
 }
-func (*realtimeSession) Next(context.Context) (string, error) {
-	return "", io.EOF
+func (s *realtimeSession) Next(ctx context.Context) (string, error) {
+	s.nexts.Inc()
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-s.closed:
+		return "", context.Canceled
+	}
 }
 func (s *realtimeSession) CancelResponse(context.Context) error {
 	s.cancellations.Inc()
@@ -122,11 +140,12 @@ func (s *realtimeSession) CancelResponse(context.Context) error {
 }
 func (s *realtimeSession) Close() error {
 	s.closes.Inc()
+	close(s.closed)
 	return nil
 }
 
 func TestRealtimeSessionSuite(t *testing.T) {
-	var opens, compiles, sends, cancellations, closes inferencetest.Counter
+	var opens, compiles, sends, cancellations, nexts, closes inferencetest.Counter
 	driver, err := inference.BindRealtime(
 		func(
 			context.Context,
@@ -150,7 +169,8 @@ func TestRealtimeSessionSuite(t *testing.T) {
 		) (inference.ProviderRealtimeSession[string, string], error) {
 			opens.Inc()
 			return &realtimeSession{
-				sends: &sends, cancellations: &cancellations, closes: &closes,
+				sends: &sends, cancellations: &cancellations, nexts: &nexts,
+				closes: &closes, closed: make(chan struct{}),
 			}, nil
 		},
 		func(
@@ -203,6 +223,7 @@ func TestRealtimeSessionSuite(t *testing.T) {
 		InputCompiles: compiles.Load,
 		InputSends:    sends.Load,
 		Cancellations: cancellations.Load,
+		NextCalls:     nexts.Load,
 		SessionCloses: closes.Load,
 	})
 }

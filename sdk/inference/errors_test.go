@@ -10,17 +10,21 @@ import (
 )
 
 func TestErrorFormattingRedactsCause(t *testing.T) {
+	cause := errors.New("prompt=secret")
 	err := NewError(
 		InvalidRequest,
 		OperationGenerate,
 		FieldGenerateInputText,
-		errors.New("prompt=secret"),
+		cause,
 	)
 	if got := err.Error(); got == "" || strings.Contains(got, "secret") {
 		t.Fatalf("Error() leaked cause: %q", got)
 	}
 	if !errdefs.IsValidation(err) {
 		t.Fatal("InvalidRequest must interoperate with errdefs validation")
+	}
+	if !errors.Is(err, cause) {
+		t.Fatal("error chain must retain its diagnostic cause")
 	}
 }
 

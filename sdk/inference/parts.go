@@ -37,6 +37,40 @@ type Part interface {
 	inferencePart()
 }
 
+// normalizePart collapses the pointer method set inherited from the canonical
+// value types. Both T and *T satisfy Part in Go; runtime boundaries therefore
+// accept either form and normalize pointers back to values.
+func normalizePart(part Part) (Part, error) {
+	if isNilValue(part) {
+		return nil, fmt.Errorf("content part is nil")
+	}
+	switch value := part.(type) {
+	case TextPart, ImagePart, AudioPart, VideoPart, FilePart, DataPart,
+		ToolCallPart, ToolResultPart, ReasoningPart:
+		return value, nil
+	case *TextPart:
+		return *value, nil
+	case *ImagePart:
+		return *value, nil
+	case *AudioPart:
+		return *value, nil
+	case *VideoPart:
+		return *value, nil
+	case *FilePart:
+		return *value, nil
+	case *DataPart:
+		return *value, nil
+	case *ToolCallPart:
+		return *value, nil
+	case *ToolResultPart:
+		return *value, nil
+	case *ReasoningPart:
+		return *value, nil
+	default:
+		return nil, fmt.Errorf("unsupported content part type %T", part)
+	}
+}
+
 type TextPart struct {
 	Text string `json:"text"`
 }
@@ -198,8 +232,9 @@ func (c Content) Clone() Content {
 	}
 	cloned := Content{Parts: make([]Part, len(c.Parts))}
 	for i, part := range c.Parts {
-		if part != nil {
-			cloned.Parts[i] = part.Clone()
+		if !isNilValue(part) {
+			normalized, _ := normalizePart(part)
+			cloned.Parts[i] = normalized.Clone()
 		}
 	}
 	return cloned
@@ -210,13 +245,11 @@ func (c Content) Validate() error {
 		return fmt.Errorf("content must contain at least one part")
 	}
 	for i, part := range c.Parts {
-		switch part.(type) {
-		case TextPart, ImagePart, AudioPart, VideoPart, FilePart, DataPart,
-			ToolCallPart, ToolResultPart, ReasoningPart:
-		default:
-			return fmt.Errorf("content part %d has unsupported value type %T", i, part)
+		normalized, err := normalizePart(part)
+		if err != nil {
+			return fmt.Errorf("content part %d: %w", i, err)
 		}
-		if err := part.Validate(); err != nil {
+		if err := normalized.Validate(); err != nil {
 			return fmt.Errorf("content part %d: %w", i, err)
 		}
 	}
@@ -229,7 +262,11 @@ func (c Content) MarshalJSON() ([]byte, error) {
 	}
 	wire := make([]any, len(c.Parts))
 	for i, part := range c.Parts {
-		switch value := part.(type) {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			return nil, fmt.Errorf("content part %d: %w", i, err)
+		}
+		switch value := normalized.(type) {
 		case TextPart:
 			wire[i] = struct {
 				Type PartKind `json:"type"`
@@ -440,7 +477,11 @@ func decodeStrict(data []byte, dst any) error {
 func (c Content) Text() string {
 	var b strings.Builder
 	for _, part := range c.Parts {
-		if tp, ok := part.(TextPart); ok {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if tp, ok := normalized.(TextPart); ok {
 			b.WriteString(tp.Text)
 		}
 	}

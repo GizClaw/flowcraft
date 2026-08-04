@@ -20,6 +20,28 @@ type PartDelta interface {
 	inferencePartDelta()
 }
 
+func normalizePartDelta(delta PartDelta) (PartDelta, error) {
+	if isNilValue(delta) {
+		return nil, fmt.Errorf("generate part delta is nil")
+	}
+	switch value := delta.(type) {
+	case TextPartDelta, ToolCallDelta, ReasoningDelta, AudioPartDelta, ImagePartDelta:
+		return value, nil
+	case *TextPartDelta:
+		return *value, nil
+	case *ToolCallDelta:
+		return *value, nil
+	case *ReasoningDelta:
+		return *value, nil
+	case *AudioPartDelta:
+		return *value, nil
+	case *ImagePartDelta:
+		return *value, nil
+	default:
+		return nil, fmt.Errorf("unsupported generate part delta %T", delta)
+	}
+}
+
 type TextPartDelta struct {
 	Text string `json:"text"`
 }
@@ -232,6 +254,15 @@ func (s *decodedGenerateStream[RawEvent]) Next(
 		s.done = true
 		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
 		return GenerateStreamEvent{}, s.resultErr
+	}
+	if event.Delta != nil {
+		normalized, err := normalizePartDelta(event.Delta)
+		if err != nil {
+			s.done = true
+			s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+			return GenerateStreamEvent{}, s.resultErr
+		}
+		event.Delta = normalized
 	}
 	if err := s.accumulate(event); err != nil {
 		s.done = true

@@ -24,8 +24,13 @@ const (
 	InvalidProviderResponse   ErrorKind = "invalid_provider_response"
 )
 
-// Error carries safe structural context. Error deliberately excludes the
-// underlying cause, which may contain prompts, credentials, or wire payloads.
+// Error carries safe structural context. Error() deliberately excludes the
+// underlying cause, so its text is safe for routine logs and API responses.
+//
+// Unwrap retains the cause for errors.Is/errors.As and errdefs classification.
+// The error chain is therefore diagnostic data, not redacted output: callers
+// must not serialize or log unwrapped causes where prompts, credentials, or
+// provider wire payloads could be exposed.
 type Error struct {
 	Kind      ErrorKind
 	Operation Operation

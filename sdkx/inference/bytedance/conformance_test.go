@@ -469,6 +469,7 @@ type countingTranscriptionSession struct {
 	inference.TranscriptionSession
 	sends       *inferencetest.Counter
 	inputCloses *inferencetest.Counter
+	nexts       *inferencetest.Counter
 	closes      *inferencetest.Counter
 }
 
@@ -485,6 +486,13 @@ func (s *countingTranscriptionSession) CloseInput(ctx context.Context) error {
 	return s.TranscriptionSession.CloseInput(ctx)
 }
 
+func (s *countingTranscriptionSession) Next(
+	ctx context.Context,
+) (inference.TranscriptionEvent, error) {
+	s.nexts.Inc()
+	return s.TranscriptionSession.Next(ctx)
+}
+
 func (s *countingTranscriptionSession) Close() error {
 	s.closes.Inc()
 	return s.TranscriptionSession.Close()
@@ -497,6 +505,7 @@ func TestConformanceTranscriptionSession(t *testing.T) {
 	opens := &inferencetest.Counter{}
 	sends := &inferencetest.Counter{}
 	inputCloses := &inferencetest.Counter{}
+	nexts := &inferencetest.Counter{}
 	closes := &inferencetest.Counter{}
 
 	driver, err := inference.BindTranscriptionSession(
@@ -514,6 +523,7 @@ func TestConformanceTranscriptionSession(t *testing.T) {
 				TranscriptionSession: session,
 				sends:                sends,
 				inputCloses:          inputCloses,
+				nexts:                nexts,
 				closes:               closes,
 			}, nil
 		},
@@ -548,6 +558,7 @@ func TestConformanceTranscriptionSession(t *testing.T) {
 		SessionOpens:  opens.Load,
 		AudioSends:    sends.Load,
 		InputCloses:   inputCloses.Load,
+		NextCalls:     nexts.Load,
 		SessionCloses: closes.Load,
 	})
 }
@@ -558,6 +569,7 @@ type countingRealtimeSession struct {
 	inference.ProviderRealtimeSession[realtimeInputWire, realtimeRaw]
 	sends   *inferencetest.Counter
 	cancels *inferencetest.Counter
+	nexts   *inferencetest.Counter
 	closes  *inferencetest.Counter
 }
 
@@ -572,6 +584,11 @@ func (s *countingRealtimeSession) Send(
 func (s *countingRealtimeSession) CancelResponse(ctx context.Context) error {
 	s.cancels.Inc()
 	return s.ProviderRealtimeSession.CancelResponse(ctx)
+}
+
+func (s *countingRealtimeSession) Next(ctx context.Context) (realtimeRaw, error) {
+	s.nexts.Inc()
+	return s.ProviderRealtimeSession.Next(ctx)
 }
 
 func (s *countingRealtimeSession) Close() error {
@@ -609,6 +626,7 @@ func TestConformanceRealtimeSession(t *testing.T) {
 	inputCompiles := &inferencetest.Counter{}
 	sends := &inferencetest.Counter{}
 	cancels := &inferencetest.Counter{}
+	nexts := &inferencetest.Counter{}
 	closes := &inferencetest.Counter{}
 
 	driver, err := inference.BindRealtime(
@@ -626,6 +644,7 @@ func TestConformanceRealtimeSession(t *testing.T) {
 				ProviderRealtimeSession: session,
 				sends:                   sends,
 				cancels:                 cancels,
+				nexts:                   nexts,
 				closes:                  closes,
 			}, nil
 		},
@@ -676,6 +695,7 @@ func TestConformanceRealtimeSession(t *testing.T) {
 		InputCompiles: inputCompiles.Load,
 		InputSends:    sends.Load,
 		Cancellations: cancels.Load,
+		NextCalls:     nexts.Load,
 		SessionCloses: closes.Load,
 	})
 }

@@ -36,7 +36,9 @@ type Decoder[Raw, Resp any] func(context.Context, Raw) (Resp, error)
 
 // ProviderRealtimeSession is the provider-native transport behind a bound
 // RealtimeDriver. Canonical inputs and events never cross this boundary. It
-// must allow one Send caller and one Next caller to run concurrently.
+// must allow one Send caller and one Next caller to run concurrently. Close may
+// run concurrently with Next and must promptly unblock it. Canceling a Next
+// context ends only that wait and must not close the session.
 type ProviderRealtimeSession[WireInput, RawEvent any] interface {
 	Send(context.Context, WireInput) error
 	Next(context.Context) (RawEvent, error)

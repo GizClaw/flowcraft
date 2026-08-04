@@ -45,7 +45,11 @@ func (m Message) Validate() error {
 	}
 	hasToolResults := false
 	for _, part := range m.Content.Parts {
-		switch part.(type) {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			return err
+		}
+		switch normalized.(type) {
 		case ToolCallPart:
 			if m.Role != RoleAssistant {
 				return fmt.Errorf("tool call parts require assistant role")
@@ -70,7 +74,11 @@ func (m Message) Validate() error {
 func (m Message) ToolCalls() []tool.Call {
 	var calls []tool.Call
 	for _, part := range m.Content.Parts {
-		if call, ok := part.(ToolCallPart); ok {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if call, ok := normalized.(ToolCallPart); ok {
 			calls = append(calls, call.Call.Clone())
 		}
 	}
@@ -80,7 +88,11 @@ func (m Message) ToolCalls() []tool.Call {
 func (m Message) ToolResults() []tool.Result {
 	var results []tool.Result
 	for _, part := range m.Content.Parts {
-		if result, ok := part.(ToolResultPart); ok {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if result, ok := normalized.(ToolResultPart); ok {
 			results = append(results, result.Result)
 		}
 	}
@@ -89,7 +101,11 @@ func (m Message) ToolResults() []tool.Result {
 
 func (m Message) HasToolCalls() bool {
 	for _, part := range m.Content.Parts {
-		if _, ok := part.(ToolCallPart); ok {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if _, ok := normalized.(ToolCallPart); ok {
 			return true
 		}
 	}

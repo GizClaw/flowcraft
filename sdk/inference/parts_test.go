@@ -106,6 +106,68 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 	}
 }
 
+func TestContentAcceptsPointerPartsConsistently(t *testing.T) {
+	call, err := tool.NewCall("call-1", "search", map[string]any{"query": "cat"})
+	if err != nil {
+		t.Fatalf("NewCall: %v", err)
+	}
+	text := &TextPart{Text: "hello"}
+	data := &DataPart{Value: json.RawMessage(`{"answer":42}`)}
+	content := Content{Parts: []Part{text, data}}
+	if err := content.Validate(); err != nil {
+		t.Fatalf("Validate pointer parts: %v", err)
+	}
+	if got := content.Text(); got != "hello" {
+		t.Fatalf("Text() = %q, want hello", got)
+	}
+	if _, err := json.Marshal(content); err != nil {
+		t.Fatalf("Marshal pointer parts: %v", err)
+	}
+	clone := content.Clone()
+	if _, ok := clone.Parts[0].(TextPart); !ok {
+		t.Fatalf("Clone part type = %T, want normalized TextPart", clone.Parts[0])
+	}
+
+	message := Message{
+		Role: RoleAssistant,
+		Content: Content{Parts: []Part{
+			&ToolCallPart{Call: call},
+		}},
+	}
+	if err := message.Validate(); err != nil {
+		t.Fatalf("Validate pointer tool call: %v", err)
+	}
+	if calls := message.ToolCalls(); len(calls) != 1 || calls[0].Name != "search" {
+		t.Fatalf("ToolCalls() = %+v", calls)
+	}
+	if !message.HasToolCalls() {
+		t.Fatal("HasToolCalls() ignored pointer tool call")
+	}
+
+	embed := EmbedRequest{Items: []EmbedItem{{Content: Content{
+		Parts: []Part{&TextPart{Text: "hello"}},
+	}}}}
+	hasTextField := false
+	for _, field := range embed.ActiveFields() {
+		hasTextField = hasTextField || field == FieldEmbedItemText
+	}
+	if !hasTextField {
+		t.Fatalf("Embed ActiveFields() ignored pointer text: %+v", embed.ActiveFields())
+	}
+
+	request := validGenerateTextRequest()
+	response := GenerateResponse{
+		Message: Message{
+			Role:    RoleAssistant,
+			Content: Content{Parts: []Part{&TextPart{Text: "ok"}}},
+		},
+		FinishReason: FinishCompleted,
+	}
+	if err := response.ValidateFor(request); err != nil {
+		t.Fatalf("GenerateResponse pointer part: %v", err)
+	}
+}
+
 func TestPartValidationLeavesEmbedSupportToCompiler(t *testing.T) {
 	audio, err := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
 	if err != nil {

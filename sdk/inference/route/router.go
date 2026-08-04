@@ -110,10 +110,8 @@ type Attempt struct {
 
 // Trace separates route selection from compiler field dispositions. Executed
 // records the exact selected model and credential profile after response
-// metadata confirms the public model identity. GenerateStream returns a Trace
-// whose opened attempt shares internal state with the stream: read that Trace
-// only after a Next call has returned, never concurrently with Next. Successful
-// Next calls set the opened attempt's ObservableOutput.
+// metadata confirms the public model identity. A returned Trace is an immutable
+// snapshot: stream and session activity after a successful open never mutates it.
 type Trace struct {
 	Decision  Decision           `json:"decision"`
 	Executed  inference.ModelRef `json:"executed"`
@@ -122,8 +120,7 @@ type Trace struct {
 }
 
 // Clone returns an owned copy safe to share beyond the call that produced the
-// trace. GenerateStream callers must still respect the read-after-Next rule:
-// Clone copies the attempt values observed at call time.
+// trace.
 func (t Trace) Clone() Trace {
 	t.Fallbacks = append([]FallbackHop(nil), t.Fallbacks...)
 	t.Attempts = append([]Attempt(nil), t.Attempts...)

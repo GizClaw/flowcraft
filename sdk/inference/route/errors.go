@@ -24,8 +24,11 @@ const (
 	FallbackLimitExceeded     ErrorKind = "fallback_limit_exceeded"
 )
 
-// Error carries safe route context without exposing selector inputs or
-// implementation details.
+// Error carries safe route context. Error() excludes selector inputs and
+// implementation details and is safe for routine logs and API responses.
+// Unwrap retains the diagnostic cause for errors.Is/errors.As and errdefs
+// classification; callers must treat that error chain as potentially
+// sensitive rather than as redacted output.
 type Error struct {
 	Kind      ErrorKind
 	Operation inference.Operation

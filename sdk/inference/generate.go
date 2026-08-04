@@ -695,10 +695,14 @@ func (r GenerateResponse) Validate() error {
 		return fmt.Errorf("tool-call finish reason does not match response tool calls")
 	}
 	for _, part := range r.Message.Content.Parts {
-		switch part.(type) {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			return err
+		}
+		switch normalized.(type) {
 		case TextPart, ImagePart, AudioPart, VideoPart, ToolCallPart, ReasoningPart:
 		default:
-			return fmt.Errorf("generate response contains unsupported part %q", part.Kind())
+			return fmt.Errorf("generate response contains unsupported part %q", normalized.Kind())
 		}
 	}
 	return nil
@@ -718,7 +722,11 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	var videos []VideoPart
 	var toolCalls []ToolCallPart
 	for _, part := range r.Message.Content.Parts {
-		switch value := part.(type) {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			return err
+		}
+		switch value := normalized.(type) {
 		case TextPart:
 			if intent.Text == nil {
 				return fmt.Errorf("generate response contains unrequested text")
@@ -845,7 +853,11 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 	videoCount := int64(0)
 	hasVideo := false
 	for _, part := range response.Message.Content.Parts {
-		switch value := part.(type) {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		switch value := normalized.(type) {
 		case ImagePart:
 			hasImage = true
 			imageCount++

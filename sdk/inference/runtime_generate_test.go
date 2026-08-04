@@ -161,6 +161,61 @@ func TestRuntimeGenerateUsesExactTargetPolicyCacheAndMetadata(t *testing.T) {
 	}
 }
 
+func TestRuntimeOpenerCompletesAfterCallerCancellationAndCachesResult(t *testing.T) {
+	var opens atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var unaryCalls atomic.Int32
+	operations := newRuntimeGenerateOperations(t, &unaryCalls)
+	runtime, err := NewRuntime([]ProviderDefinition{{
+		ID: "fake",
+		Models: []ModelImplementation{{
+			Descriptor: ModelDescriptor{
+				ID: ModelID{Provider: "fake", Name: "context"},
+			},
+			Openers: Openers{
+				Generate: func(context.Context, ModelRef) (GenerateOperations, error) {
+					if opens.Add(1) == 1 {
+						close(started)
+					}
+					<-release
+					return operations, nil
+				},
+			},
+		}},
+	}})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, callErr := runtime.ExplainGenerate(
+			ctx,
+			ModelRef{ID: ModelID{Provider: "fake", Name: "context"}},
+			validGenerateTextRequest(),
+		)
+		firstDone <- callErr
+	}()
+	<-started
+	cancel()
+	if err := <-firstDone; !IsKind(err, OperationInterrupted) ||
+		!errors.Is(err, context.Canceled) {
+		t.Fatalf("first ExplainGenerate error = %v, want canceled interruption", err)
+	}
+	close(release)
+	if _, err := runtime.ExplainGenerate(
+		context.Background(),
+		ModelRef{ID: ModelID{Provider: "fake", Name: "context"}},
+		validGenerateTextRequest(),
+	); err != nil {
+		t.Fatalf("second ExplainGenerate: %v", err)
+	}
+	if opens.Load() != 1 {
+		t.Fatalf("opener calls = %d, want one shared cached open", opens.Load())
+	}
+}
+
 func TestRuntimeGenerateStreamDoesNotFallbackToUnary(t *testing.T) {
 	var unaryCalls atomic.Int32
 	operations := newRuntimeGenerateOperations(t, &unaryCalls)

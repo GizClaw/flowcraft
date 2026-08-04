@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"iter"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/media"
@@ -411,8 +411,12 @@ func openRealtimeSession(
 		if err != nil {
 			return nil, classifyError(err)
 		}
-		pull, stop := iter.Pull2(session.Recv())
-		return &realtimeSession{session: session, pull: pull, stop: stop}, nil
+		adapted := &realtimeSession{
+			session: session,
+			stop:    make(chan struct{}),
+		}
+		adapted.events = pumpRealtimeEvents(session, adapted.stop)
+		return adapted, nil
 	}
 }
 
@@ -420,9 +424,37 @@ func openRealtimeSession(
 // events (session.created, buffer commits, transcription completion) are
 // protocol bookkeeping and never surface as canonical events.
 type realtimeSession struct {
-	session *doubaospeech.RealtimeDuplexSession
-	pull    func() (*doubaospeech.RealtimeDuplexEvent, error, bool)
-	stop    func()
+	session  *doubaospeech.RealtimeDuplexSession
+	events   <-chan realtimeReceived
+	stop     chan struct{}
+	stopOnce sync.Once
+}
+
+type realtimeReceived struct {
+	event *doubaospeech.RealtimeDuplexEvent
+	err   error
+}
+
+func pumpRealtimeEvents(
+	session *doubaospeech.RealtimeDuplexSession,
+	stop <-chan struct{},
+) <-chan realtimeReceived {
+	events := make(chan realtimeReceived, 1)
+	go func() {
+		defer close(events)
+		for {
+			event, err := session.RecvEvent(context.Background())
+			select {
+			case events <- realtimeReceived{event: event, err: err}:
+			case <-stop:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return events
 }
 
 func (s *realtimeSession) Send(
@@ -456,13 +488,20 @@ func (s *realtimeSession) Next(ctx context.Context) (realtimeRaw, error) {
 		return realtimeRaw{}, err
 	}
 	for {
-		event, err, ok := s.pull()
-		if err != nil {
-			return realtimeRaw{}, classifyError(err)
+		var received realtimeReceived
+		var ok bool
+		select {
+		case <-ctx.Done():
+			return realtimeRaw{}, ctx.Err()
+		case received, ok = <-s.events:
 		}
 		if !ok {
 			return realtimeRaw{}, io.EOF
 		}
+		if received.err != nil {
+			return realtimeRaw{}, classifyError(received.err)
+		}
+		event := received.event
 		if event == nil {
 			continue
 		}
@@ -522,7 +561,7 @@ func (s *realtimeSession) CancelResponse(ctx context.Context) error {
 }
 
 func (s *realtimeSession) Close() error {
-	s.stop()
+	s.stopOnce.Do(func() { close(s.stop) })
 	return classifyError(s.session.Close())
 }
 

@@ -343,7 +343,7 @@ func TestGenerateStreamDoesNotFallbackAfterReturn(t *testing.T) {
 	}
 }
 
-func TestGenerateStreamMarksOpenedAttemptObservableAfterSuccessfulNext(t *testing.T) {
+func TestGenerateStreamTraceRemainsAnImmutableOpenSnapshot(t *testing.T) {
 	first := generateModel("stream")
 	runtime := newGenerateRouteRuntime(t, map[string]generateRouteBehavior{
 		"stream": {streamEvents: []streamRaw{{}, {finish: true}}},
@@ -368,7 +368,7 @@ func TestGenerateStreamMarksOpenedAttemptObservableAfterSuccessfulNext(t *testin
 	if fallbackCalls != 0 {
 		t.Fatalf("fallback calls = %d, want 0", fallbackCalls)
 	}
-	if len(trace.Attempts) != 2 || !trace.Attempts[1].ObservableOutput {
+	if len(trace.Attempts) != 2 || trace.Attempts[1].ObservableOutput {
 		t.Fatalf("trace after successful Next = %+v", trace.Attempts)
 	}
 }
