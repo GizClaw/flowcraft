@@ -103,6 +103,26 @@ func TestContractsValidateTypedNil(t *testing.T) {
 	}), DeliveryTimeout: -time.Millisecond}).Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("negative delivery timeout error = %v, want validation", err)
 	}
+	validSink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+		return nil
+	})
+	for _, spec := range []SinkSpec{
+		{ID: "raw-explicit", Sink: validSink, AckMode: AckExplicit},
+		{ID: "confirmed-observer-explicit", Sink: validSink, Visibility: VisibilityConfirmed, AckMode: AckExplicit},
+		{ID: "raw-max-unacked", Sink: validSink, MaxUnacked: 1},
+		{ID: "confirmed-observer-max-unacked", Sink: validSink, Visibility: VisibilityConfirmed, MaxUnacked: 1},
+	} {
+		if err := spec.Validate(); !errdefs.IsValidation(err) {
+			t.Fatalf("invalid acknowledgement spec %+v error = %v, want validation", spec, err)
+		}
+	}
+	if err := (SinkSpec{
+		ID: "confirmed-authority", Sink: validSink,
+		Visibility: VisibilityConfirmed, Authority: AuthorityAuthoritative,
+		AckMode: AckExplicit, MaxUnacked: 1,
+	}).Validate(); err != nil {
+		t.Fatalf("valid confirmed authority error = %v", err)
+	}
 
 	request := HostRequest{
 		Key:        Key{AgentID: "agent", ContextID: "ctx"},

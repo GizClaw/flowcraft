@@ -208,6 +208,28 @@ func mergeInterruptedAssistantMessages(board *agent.Board, preFork *agent.BoardS
 
 type parallelCtxKey struct{}
 
+type parallelBranchIdentityKey struct{}
+
+// parallelBranchIdentity is kernel-owned producer identity for stream
+// deltas emitted while a parallel branch is executing. It is deliberately
+// private so plugins cannot mint identities for another fork or branch.
+type parallelBranchIdentity struct {
+	forkID   string
+	branchID string
+}
+
+func withParallelBranchIdentity(ctx context.Context, identity parallelBranchIdentity) context.Context {
+	return context.WithValue(ctx, parallelBranchIdentityKey{}, identity)
+}
+
+func parallelBranchIdentityFromContext(ctx context.Context) (parallelBranchIdentity, bool) {
+	if ctx == nil {
+		return parallelBranchIdentity{}, false
+	}
+	identity, ok := ctx.Value(parallelBranchIdentityKey{}).(parallelBranchIdentity)
+	return identity, ok
+}
+
 // ParallelController exposes limited control over the currently executing
 // parallel fork. It is intentionally context-scoped: outside a fork it is absent.
 type ParallelController interface {

@@ -80,6 +80,8 @@ runtime:
   sessions:
     idle_timeout: 10m
     sink_buffer: 256
+    speculative_buffer_events: 1024
+    speculative_buffer_bytes: 1048576
   integrations:
     - name: delegation
       kind: delegation.local
@@ -262,16 +264,59 @@ Initial sinks are attached before the engine can publish. `DeliveryTimeout`
 bounds each transport write; zero uses the 30-second default. A timed-out sink
 is detached so it cannot block turn or Runtime shutdown.
 
+The zero-value `SinkSpec` remains a raw observer with delivery-time ACK
+semantics. Raw sinks receive every event immediately, including speculative
+branch output, and their envelopes do not carry delivery cursors. Set
+`Visibility: session.VisibilityConfirmed` to buffer speculative output until
+the graph accepts its `(ForkID, BranchID)`. Confirmed sinks receive the accept
+control event followed by the branch events in original order; cancellation
+drops the buffered events. Their cloned envelopes carry
+`session.HeaderDeliveryCursor`, readable with
+`session.DeliveryCursorFromEnvelope`. Cursors are contiguous and shared by all
+confirmed sinks in a turn.
+
+At most one confirmed sink may set
+`Authority: session.AuthorityAuthoritative`. With the default
+`AckMode: session.AckOnDelivery`, a successful `OnDelta` acknowledges its
+cursor automatically. With `AckMode: session.AckExplicit`, the transport calls
+`turn.Ack(sinkID, cursor)` cumulatively. `MaxUnacked: 0` uses the sink's
+effective queue size. An interrupt freezes the acknowledged token prefix
+before the interrupt reaches the engine. If the engine returns interrupted,
+that prefix—not the engine's unacknowledged suffix—is exposed to Committers;
+the original `Turn.Wait` result is unchanged. A deployed Referee that discards
+the result still takes precedence.
+
+When a Referee requests a revise, confirmed delivery cursors remain
+turn-global and cumulative, but commit authority moves to the new attempt.
+Previously acknowledged text is cleared, and delayed delivery or ACK activity
+from an older attempt may advance the cursor without entering the new
+attempt's committable prefix.
+
+Engine or Graph `run.end` events delimit internal attempts and are not exposed
+to session sinks. Raw and confirmed sinks each receive one synthetic
+`run.end` only when the logical turn finishes, after all attempts. If an
+attempt leaves a speculative branch unresolved, confirmed sinks detach with a
+conflict while raw sinks still receive the logical end. A Graph run-end
+publication failure remains an error path and does not produce a synthetic
+success.
+
+Speculative buffering is aggregated once per turn, not once per sink. The
+defaults are 1,024 events and 1 MiB and can be changed with
+`runtime.sessions.speculative_buffer_events` and
+`runtime.sessions.speculative_buffer_bytes`. Both must be positive. A protocol
+conflict or limit overflow detaches confirmed sinks while raw sinks and engine
+execution continue.
+
 One turn may have multiple concurrent `AskUser` calls. Every request has a
 distinct `PromptID` and carries the turn's RunID. Unknown, duplicate, expired,
 interrupted, and closed replies return deterministic errors. A transport should
 route replies by both Turn/RunID and PromptID.
 
-Interrupted output is not committed by default. A Referee may return
+Interrupted output is not committed by default. Without an authoritative sink,
+delivery progress has no durable meaning and existing behavior is unchanged. A Referee may return
 `agent.Decision{AcceptOutput: true}` to send engine-materialized partial output
 through the normal Committer chain. `DiscardOutput` always wins over
-`AcceptOutput`. Sink delivery progress never decides durable output, and
-Session never writes partial output directly.
+`AcceptOutput`. Session never writes partial output directly.
 
 ## Tools and application state
 

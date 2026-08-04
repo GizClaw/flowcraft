@@ -21,11 +21,13 @@ const (
 // Session owns conversational activity for one Key while borrowing all
 // deployment and event-routing dependencies from the runtime.
 type Session struct {
-	key         Key
-	instance    *deploy.Instance
-	hostFactory HostFactory
-	router      *agent.StreamRouter
-	sinkBuffer  int
+	key               Key
+	instance          *deploy.Instance
+	hostFactory       HostFactory
+	router            *agent.StreamRouter
+	sinkBuffer        int
+	speculativeEvents int
+	speculativeBytes  int
 
 	startMu        sync.Mutex
 	mu             sync.Mutex
@@ -45,15 +47,19 @@ func newSession(
 	hostFactory HostFactory,
 	router *agent.StreamRouter,
 	sinkBuffer int,
+	speculativeEvents int,
+	speculativeBytes int,
 	activityNotify func(*Session),
 ) *Session {
 	return &Session{
-		key:            key,
-		instance:       instance,
-		hostFactory:    hostFactory,
-		router:         router,
-		sinkBuffer:     sinkBuffer,
-		activityNotify: activityNotify,
+		key:               key,
+		instance:          instance,
+		hostFactory:       hostFactory,
+		router:            router,
+		sinkBuffer:        sinkBuffer,
+		speculativeEvents: speculativeEvents,
+		speculativeBytes:  speculativeBytes,
+		activityNotify:    activityNotify,
 	}
 }
 
@@ -72,11 +78,18 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 		}
 	}
 	seen := make(map[string]struct{}, len(sinks))
+	authorities := 0
 	for _, spec := range sinks {
 		if _, exists := seen[spec.ID]; exists {
 			return nil, errdefs.Validationf("runtime session: duplicate SinkSpec.ID %q", spec.ID)
 		}
 		seen[spec.ID] = struct{}{}
+		if spec.Authority == AuthorityAuthoritative {
+			authorities++
+		}
+	}
+	if authorities > 1 {
+		return nil, errdefs.Validationf("runtime session: at most one authoritative sink is allowed per turn")
 	}
 
 	s.startMu.Lock()
@@ -133,31 +146,54 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	turn.host = host
 
 	attachments := make([]*queuedSink, 0, len(sinks))
+	raw := make([]*queuedSink, 0, len(sinks))
+	confirmed := make([]*queuedSink, 0, len(sinks))
 	for _, spec := range sinks {
 		size := spec.QueueSize
 		if size == 0 {
 			size = s.sinkBuffer
 		}
 		attachment := newQueuedSink(s, runID, spec, size)
-		s.changeActivity(activitySink, 1)
-		detach, attachErr := s.router.Attach(runID, spec.ID, attachment)
-		if attachErr != nil {
-			attachment.detach(attachErr)
-			for _, attached := range attachments {
-				attached.detach(attachErr)
-			}
-			turn.cancel()
-			return nil, attachErr
+		attachment.delivered = turn.sinkDelivered
+		attachment.onDetach = func(err error) {
+			turn.sinkDetached(spec.ID, err)
 		}
-		attachment.setRouterDetach(detach)
+		s.changeActivity(activitySink, 1)
+		if spec.Visibility == VisibilityConfirmed {
+			confirmed = append(confirmed, attachment)
+			if spec.Authority == AuthorityAuthoritative {
+				attachment.offered = turn.sinkOffered
+				turn.configureAuthority(spec, size, attachment)
+			}
+		} else {
+			raw = append(raw, attachment)
+		}
 		attachments = append(attachments, attachment)
 		attachment.start()
 	}
+	coordinator := newStreamCoordinator(
+		turn, raw, confirmed, s.speculativeEvents, s.speculativeBytes)
+	detach, attachErr := s.router.Attach(
+		runID,
+		"runtime-session-"+runID,
+		coordinator,
+		agent.WithStreamRetainAfterRunEnd(),
+	)
+	if attachErr != nil {
+		for _, attachment := range attachments {
+			attachment.detach(attachErr)
+		}
+		turn.cancel()
+		return nil, attachErr
+	}
+	turn.coordinator = coordinator
+	turn.coordinatorDetach = detach
 	turn.attachments = attachments
 
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
+		detach()
 		for _, attachment := range attachments {
 			attachment.detach(ErrSessionClosed)
 		}

@@ -173,7 +173,7 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 	switch p.Type {
 	case StreamDeltaToken:
 		// Content is allowed to be empty — see EmitStreamToken docs.
-		return nil
+		return validateStreamDataIdentity(p)
 	case StreamDeltaToolCall:
 		if p.ID == "" {
 			return fmt.Errorf("engine: stream delta tool_call requires ID")
@@ -181,12 +181,12 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 		if p.Name == "" {
 			return fmt.Errorf("engine: stream delta tool_call requires Name")
 		}
-		return nil
+		return validateStreamDataIdentity(p)
 	case StreamDeltaToolResult:
 		if p.ToolCallID == "" {
 			return fmt.Errorf("engine: stream delta tool_result requires ToolCallID")
 		}
-		return nil
+		return validateStreamDataIdentity(p)
 	case StreamDeltaParallelBranchAccept, StreamDeltaParallelBranchCancel:
 		if p.ForkID == "" {
 			return fmt.Errorf("engine: stream delta %s requires ForkID", p.Type)
@@ -201,6 +201,27 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 		// Forward-compatible Type — accept it.
 		return nil
 	}
+}
+
+// validateStreamDataIdentity keeps ordinary and speculative data deltas
+// unambiguous. Speculative branch output always carries both correlation
+// identifiers; non-speculative output carries neither.
+func validateStreamDataIdentity(p StreamDeltaPayload) error {
+	if p.Speculative {
+		if p.ForkID == "" {
+			return fmt.Errorf("engine: speculative stream delta %s requires ForkID", p.Type)
+		}
+		if p.BranchID == "" {
+			return fmt.Errorf("engine: speculative stream delta %s requires BranchID", p.Type)
+		}
+		return nil
+	}
+	if p.ForkID != "" || p.BranchID != "" {
+		return fmt.Errorf(
+			"engine: non-speculative stream delta %s must not carry ForkID or BranchID",
+			p.Type)
+	}
+	return nil
 }
 
 // ---------- Stream router / sinks ----------
@@ -247,6 +268,23 @@ func (f StreamSinkFunc) OnDelta(ctx context.Context, env event.Envelope, delta S
 
 // StreamRouterOption tunes [NewStreamRouter] behaviour.
 type StreamRouterOption func(*streamRouterOpts)
+
+// AttachOption tunes one [StreamRouter.Attach] attachment.
+type AttachOption func(*streamAttachOpts)
+
+type streamAttachOpts struct {
+	retainAfterRunEnd bool
+}
+
+// WithStreamRetainAfterRunEnd keeps an attachment subscribed after a
+// SubjectRunEnd envelope. This is intended for one logical run whose
+// revise attempts reuse a RunID. The caller must invoke the returned
+// detach function after the logical run finishes.
+func WithStreamRetainAfterRunEnd() AttachOption {
+	return func(o *streamAttachOpts) {
+		o.retainAfterRunEnd = true
+	}
+}
 
 type streamRouterOpts struct {
 	bufferSize  int
@@ -306,10 +344,10 @@ func WithStreamIncludeAllRunEvents() StreamRouterOption {
 
 // StreamRouter forwards stream deltas (and optionally the rest of
 // a run's lifecycle events) from one [event.Bus] to a dynamic set
-// of sinks. It owns one subscription per run and tears it down
-// automatically when the run's `engine.run.<id>.end` envelope is
-// observed, so callers do not have to thread cleanup through their
-// transport layer.
+// of sinks. It owns one subscription per run. By default an
+// attachment is removed when the run's `engine.run.<id>.end`
+// envelope is observed; [WithStreamRetainAfterRunEnd] keeps selected
+// attachments alive across attempt boundaries.
 //
 // Typical use inside an HTTP handler that streams an SSE response:
 //
@@ -343,8 +381,13 @@ type runFanout struct {
 	cancel context.CancelFunc
 	sub    event.Subscription
 	mu     sync.Mutex
-	sinks  map[string]StreamSink
+	sinks  map[string]*streamAttachment
 	done   chan struct{}
+}
+
+type streamAttachment struct {
+	sink              StreamSink
+	retainAfterRunEnd bool
 }
 
 // NewStreamRouter constructs a router bound to bus. The router
@@ -372,12 +415,27 @@ func NewStreamRouter(bus event.Bus, opts ...StreamRouterOption) *StreamRouter {
 //
 // Returns an error if the router has been Close-d. Re-attaching a
 // previously-detached sinkID is allowed.
-func (r *StreamRouter) Attach(runID, sinkID string, sink StreamSink) (detach func(), err error) {
+func (r *StreamRouter) Attach(
+	runID, sinkID string,
+	sink StreamSink,
+	opts ...AttachOption,
+) (detach func(), err error) {
 	if sink == nil {
 		return nil, errors.New("engine.StreamRouter.Attach: sink is nil")
 	}
 	if runID == "" || sinkID == "" {
 		return nil, errors.New("engine.StreamRouter.Attach: runID and sinkID are required")
+	}
+
+	var attachOpts streamAttachOpts
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&attachOpts)
+		}
+	}
+	attachment := &streamAttachment{
+		sink:              sink,
+		retainAfterRunEnd: attachOpts.retainAfterRunEnd,
 	}
 
 	r.mu.Lock()
@@ -395,19 +453,20 @@ func (r *StreamRouter) Attach(runID, sinkID string, sink StreamSink) (detach fun
 		}
 		r.runs[runID] = rf
 	}
-	r.mu.Unlock()
-
 	rf.mu.Lock()
-	rf.sinks[sinkID] = sink
+	rf.sinks[sinkID] = attachment
 	rf.mu.Unlock()
+	r.mu.Unlock()
 
 	return func() {
 		rf.mu.Lock()
-		delete(rf.sinks, sinkID)
+		if rf.sinks[sinkID] == attachment {
+			delete(rf.sinks, sinkID)
+		}
 		empty := len(rf.sinks) == 0
 		rf.mu.Unlock()
 		if empty {
-			r.detachRun(runID)
+			r.detachRunIfEmpty(runID, rf)
 		}
 	}, nil
 }
@@ -429,7 +488,7 @@ func (r *StreamRouter) spawnFanoutLocked(runID string) (*runFanout, error) {
 	rf := &runFanout{
 		cancel: cancel,
 		sub:    sub,
-		sinks:  make(map[string]StreamSink),
+		sinks:  make(map[string]*streamAttachment),
 		done:   make(chan struct{}),
 	}
 	go r.runLoop(runID, rf, subCtx)
@@ -437,11 +496,9 @@ func (r *StreamRouter) spawnFanoutLocked(runID string) (*runFanout, error) {
 }
 
 // runLoop drains rf.sub and fans each envelope out to every
-// currently-attached sink. It returns when the subscription
-// channel closes (bus close, ctx cancel, or run end). The "run
-// end" auto-cleanup is implemented by recognising
-// [SubjectRunEnd] and cancelling our own subCtx — the subsequent
-// channel close terminates the loop naturally.
+// currently-attached sink. It returns when the subscription channel
+// closes. On [SubjectRunEnd], default attachments are removed while
+// retained attachments keep the subscription alive.
 func (r *StreamRouter) runLoop(runID string, rf *runFanout, subCtx context.Context) {
 	defer close(rf.done)
 	endSubject := SubjectRunEnd(runID)
@@ -463,41 +520,55 @@ func (r *StreamRouter) runLoop(runID string, rf *runFanout, subCtx context.Conte
 		// Attach / Detach for siblings.
 		rf.mu.Lock()
 		snap := make([]struct {
-			id   string
-			sink StreamSink
+			id         string
+			attachment *streamAttachment
 		}, 0, len(rf.sinks))
-		for id, s := range rf.sinks {
+		for id, attachment := range rf.sinks {
 			snap = append(snap, struct {
-				id   string
-				sink StreamSink
-			}{id, s})
+				id         string
+				attachment *streamAttachment
+			}{id, attachment})
 		}
 		rf.mu.Unlock()
 
 		for _, p := range snap {
-			if err := p.sink.OnDelta(subCtx, env, delta); err != nil {
+			if err := p.attachment.sink.OnDelta(subCtx, env, delta); err != nil {
 				r.opts.onSinkError(p.id, err)
 			}
 		}
 
 		if env.Subject == endSubject {
-			// Schedule teardown after we have delivered the end
-			// event to subscribers — they may want to render a
-			// terminal "[done]" frame. The detach removes us
-			// from r.runs so any future Attach re-creates a
-			// fresh fanout.
-			r.detachRun(runID)
+			rf.mu.Lock()
+			for _, p := range snap {
+				if !p.attachment.retainAfterRunEnd &&
+					rf.sinks[p.id] == p.attachment {
+					delete(rf.sinks, p.id)
+				}
+			}
+			empty := len(rf.sinks) == 0
+			rf.mu.Unlock()
+			if empty {
+				r.detachRunIfEmpty(runID, rf)
+			}
 		}
 	}
 }
 
-// detachRun cancels and removes the per-run fanout if present.
-// Idempotent.
-func (r *StreamRouter) detachRun(runID string) {
+// detachRunIfEmpty cancels and removes target only when it is still the
+// current fanout and no attachment arrived after the caller's empty check.
+func (r *StreamRouter) detachRunIfEmpty(runID string, target *runFanout) {
 	r.mu.Lock()
 	rf, ok := r.runs[runID]
-	if ok {
-		delete(r.runs, runID)
+	if ok && rf == target {
+		rf.mu.Lock()
+		if len(rf.sinks) == 0 {
+			delete(r.runs, runID)
+		} else {
+			ok = false
+		}
+		rf.mu.Unlock()
+	} else {
+		ok = false
 	}
 	r.mu.Unlock()
 	if ok {

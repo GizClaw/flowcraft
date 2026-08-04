@@ -50,8 +50,9 @@ import (
 //  8. Run the Referee chain ([Referee.After]) and merge the
 //     decisions; this fixes [Result.Committed] and any
 //     finalize_reason metadata.
-//  9. If the final result is committed, invoke the [Committer]
-//     chain to persist it.
+//  9. If the final result is committed and Committers exist, resolve
+//     any per-call [CommitViewProvider], then invoke the [Committer]
+//     chain with that view.
 //  10. Fire Observer.OnRunEnd before returning.
 //
 // # Error contract
@@ -59,8 +60,8 @@ import (
 // Execute returns (res, nil) for every business outcome — completion,
 // interrupt, cancel, abort, failure. (nil, err) is reserved for
 // infrastructure failures the caller cannot reasonably recover from:
-// nil engine, empty Agent.ID, or a Preparer, Referee, or Committer
-// that returned an error.
+// nil engine, empty Agent.ID, or a Preparer, Referee,
+// CommitViewProvider, or Committer that returned an error.
 //
 // Observers MUST NOT cause Execute to return an error; they are
 // advisory. Referee and Committer errors surface back to the caller —
@@ -180,14 +181,12 @@ func Execute(
 		}
 
 		res = &Result{
-			TaskID:    req.TaskID,
-			RunID:     runID,
-			LastBoard: finalBoard,
-			State:     map[string]any{"run_id": runID},
-			Attempts:  attempt,
+			TaskID:   req.TaskID,
+			RunID:    runID,
+			State:    map[string]any{"run_id": runID},
+			Attempts: attempt,
 		}
-		res.Messages = newAssistantMessages(finalBoard)
-		res.Artifacts = collectArtifacts(finalBoard, rc.artifactChannels)
+		materializeResult(res, finalBoard, rc.artifactChannels)
 
 		switch {
 		case execErr == nil:
@@ -275,7 +274,30 @@ func Execute(
 		res.Committed = false
 	}
 	if res.Committed && len(rc.committers) > 0 {
-		if err := commitResult(ctx, id, &req, res, rc.committers); err != nil {
+		commitRes := res
+		if rc.commitViewProvider != nil {
+			view, err := rc.commitViewProvider.CommitView(ctx, id, &req, res)
+			if err != nil {
+				res.Committed = false
+				res.State["finalize_reason"] = "commit_view_failed"
+				if obs != nil {
+					obs.OnRunEnd(ctx, id, res)
+				}
+				return res, fmt.Errorf("agent: provide commit view: %w", err)
+			}
+			if view.LastBoard == nil {
+				res.Committed = false
+				res.State["finalize_reason"] = "commit_view_failed"
+				if obs != nil {
+					obs.OnRunEnd(ctx, id, res)
+				}
+				return res, errdefs.Validationf("agent: CommitViewProvider returned nil board")
+			}
+			projected := *res
+			materializeResult(&projected, view.LastBoard, rc.artifactChannels)
+			commitRes = &projected
+		}
+		if err := commitResult(ctx, id, &req, commitRes, rc.committers); err != nil {
 			res.Committed = false
 			res.State["finalize_reason"] = "commit_failed"
 			if obs != nil {
@@ -290,6 +312,15 @@ func Execute(
 	}
 
 	return res, nil
+}
+
+// materializeResult derives every board-backed Result field from board.
+// Keeping this in one helper ensures engine results and Committer-only
+// projections follow exactly the same message and artifact rules.
+func materializeResult(res *Result, board *Board, artifactChannels []string) {
+	res.LastBoard = board
+	res.Messages = newAssistantMessages(board)
+	res.Artifacts = collectArtifacts(board, artifactChannels)
 }
 
 // itoa is a zero-alloc small-int formatter used for the attempt
@@ -403,18 +434,19 @@ func mintRunID() string {
 type ExecuteOption func(*execConfig)
 
 type execConfig struct {
-	preparers        []Preparer
-	toolAllowList    []string
-	host             Host
-	attributes       map[string]string
-	hooks            []Observer
-	afters           []Referee
-	committers       []Committer
-	resumeFrom       *Checkpoint
-	runID            string
-	parentRunID      string
-	maxRevise        int
-	artifactChannels []string
+	preparers          []Preparer
+	toolAllowList      []string
+	host               Host
+	attributes         map[string]string
+	hooks              []Observer
+	afters             []Referee
+	committers         []Committer
+	commitViewProvider CommitViewProvider
+	resumeFrom         *Checkpoint
+	runID              string
+	parentRunID        string
+	maxRevise          int
+	artifactChannels   []string
 }
 
 // applyOptions threads ag through so we can apply Agent-scoped
@@ -548,6 +580,22 @@ func WithCommitter(c Committer) ExecuteOption {
 		if c != nil {
 			rc.committers = append(rc.committers, c)
 		}
+	}
+}
+
+// WithCommitViewProvider installs the Committer-only result projection
+// provider for this call. It runs after the final Referee decision and
+// only when an accepted Result has at least one Committer to invoke.
+//
+// Multiple calls use last-write-wins semantics. A final nil or
+// typed-nil provider disables an earlier provider for this call.
+func WithCommitViewProvider(p CommitViewProvider) ExecuteOption {
+	return func(rc *execConfig) {
+		if isNilInterface(p) {
+			rc.commitViewProvider = nil
+			return
+		}
+		rc.commitViewProvider = p
 	}
 }
 

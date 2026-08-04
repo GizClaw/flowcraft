@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -17,6 +18,21 @@ type captureSink struct {
 	mu     sync.Mutex
 	deltas []agent.StreamDeltaPayload
 	err    error
+}
+
+type blockingSink struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (s *blockingSink) OnDelta(
+	_ context.Context,
+	_ event.Envelope,
+	_ agent.StreamDeltaPayload,
+) error {
+	close(s.entered)
+	<-s.release
+	return nil
 }
 
 func (s *captureSink) OnDelta(_ context.Context, _ event.Envelope, d agent.StreamDeltaPayload) error {
@@ -99,6 +115,106 @@ func TestStreamRouter_AutoTeardownOnRunEnd(t *testing.T) {
 			return true
 		}
 		return false
+	})
+
+	if err := agent.EmitStreamToken(context.Background(), bus, "run-2", "node-x", "late"); err != nil {
+		t.Fatalf("emit after end: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if got := sink.snapshot(); len(got) != 1 {
+		t.Fatalf("default attachment received post-end event: %+v", got)
+	}
+}
+
+func TestStreamRouter_RetainedAttachmentSurvivesRunEnd(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+	router := agent.NewStreamRouter(bus, agent.WithStreamIncludeAllRunEvents())
+	t.Cleanup(func() { _ = router.Close() })
+
+	sink := &captureSink{}
+	stop, err := router.Attach(
+		"run-retained",
+		"s",
+		sink,
+		agent.WithStreamRetainAfterRunEnd(),
+	)
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	defer stop()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		if err := agent.EmitStreamToken(
+			context.Background(),
+			bus,
+			"run-retained",
+			"node-x",
+			fmt.Sprintf("attempt-%d", attempt),
+		); err != nil {
+			t.Fatalf("emit attempt %d: %v", attempt, err)
+		}
+		endEnv, _ := event.NewEnvelope(
+			context.Background(),
+			agent.SubjectRunEnd("run-retained"),
+			nil,
+		)
+		if err := bus.Publish(context.Background(), endEnv); err != nil {
+			t.Fatalf("publish end %d: %v", attempt, err)
+		}
+	}
+
+	waitFor(t, time.Second, func() bool { return len(sink.snapshot()) == 4 })
+	got := sink.snapshot()
+	if got[0].Content != "attempt-1" || got[2].Content != "attempt-2" {
+		t.Fatalf("retained delivery order/content wrong: %+v", got)
+	}
+}
+
+func TestStreamRouter_RunEndCleanupPreservesReplacementAttachment(t *testing.T) {
+	bus := event.NewMemoryBus()
+	t.Cleanup(func() { _ = bus.Close() })
+	router := agent.NewStreamRouter(bus, agent.WithStreamIncludeAllRunEvents())
+	t.Cleanup(func() { _ = router.Close() })
+
+	blocked := &blockingSink{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	if _, err := router.Attach("run-replaced", "sink", blocked); err != nil {
+		t.Fatalf("attach blocking sink: %v", err)
+	}
+
+	endEnv, _ := event.NewEnvelope(
+		context.Background(),
+		agent.SubjectRunEnd("run-replaced"),
+		nil,
+	)
+	if err := bus.Publish(context.Background(), endEnv); err != nil {
+		t.Fatalf("publish end: %v", err)
+	}
+	<-blocked.entered
+
+	replacement := &captureSink{}
+	stop, err := router.Attach("run-replaced", "sink", replacement)
+	if err != nil {
+		t.Fatalf("attach replacement sink: %v", err)
+	}
+	defer stop()
+	close(blocked.release)
+
+	if err := agent.EmitStreamToken(
+		context.Background(),
+		bus,
+		"run-replaced",
+		"node-x",
+		"next-attempt",
+	); err != nil {
+		t.Fatalf("emit next attempt: %v", err)
+	}
+	waitFor(t, time.Second, func() bool {
+		got := replacement.snapshot()
+		return len(got) == 1 && got[0].Content == "next-attempt"
 	})
 }
 

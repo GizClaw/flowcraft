@@ -302,6 +302,10 @@ const (
 //	tool_result    ToolCallID, Content    Name, IsError, Cancelled
 //	parallel_branch_accept ForkID, BranchID —
 //	parallel_branch_cancel ForkID, BranchID Reason
+//
+// Speculative token/tool_call/tool_result deltas additionally require both
+// ForkID and BranchID. Non-speculative data deltas MUST carry neither field,
+// avoiding a half-speculative state that consumers cannot interpret safely.
 type StreamDeltaPayload struct {
 	// Type discriminates the payload variant. See StreamDeltaType
 	// constants for the standard values.

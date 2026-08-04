@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -149,7 +150,7 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 				"graph %q exceeded max iterations (%d) — possible cycle",
 				g.name, g.maxIterations)
 		}
-		if err := g.executeWave(ctx, run, host, board, wave); err != nil {
+		if err := g.executeWave(ctx, run, host, board, wave, iterations); err != nil {
 			telemetry.Error(ctx, "graph execution failed",
 				otellog.String(telemetry.AttrGraphName, g.name),
 				otellog.String(telemetry.AttrRunID, run.RunID),
@@ -175,7 +176,7 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 }
 
 // executeWave invokes one frontier, sequentially or in parallel.
-func (g *Graph) executeWave(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, wave []string) error {
+func (g *Graph) executeWave(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, wave []string, iteration int) error {
 	if len(wave) == 1 || !g.parallel.Enabled {
 		for _, id := range wave {
 			if _, err := g.invokeNode(ctx, run, host, board, g.nodes[id]); err != nil {
@@ -184,7 +185,7 @@ func (g *Graph) executeWave(ctx context.Context, run agent.Run, host agent.Host,
 		}
 		return nil
 	}
-	return g.executeParallel(ctx, run, host, board, wave)
+	return g.executeParallel(ctx, run, host, board, wave, iteration)
 }
 
 // invokeNode runs a single node: skip check → config reference
@@ -355,7 +356,7 @@ func (g *Graph) validateWrites(board *agent.Board, slot *nodeSlot, preInvoke map
 // failing branch fails without merging — but a branch cancelled
 // through the wave's [ParallelController] is not a failure: it merges
 // as a no-op, like a skipped node.
-func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, wave []string) error {
+func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board, wave []string, iteration int) error {
 	if g.parallel.MaxBranches > 0 && len(wave) > g.parallel.MaxBranches {
 		return errdefs.BudgetExceededf(
 			"graph %q: parallel wave of %d branches exceeds max_branches %d",
@@ -363,7 +364,17 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 	}
 	preFork := board.Snapshot()
 	info := run.Info()
-	forkID := fmt.Sprintf("%s#%s", run.RunID, wave[0])
+	attempt := 1
+	if parsed, err := strconv.Atoi(run.Attributes["agent.attempt"]); err == nil && parsed > 0 {
+		attempt = parsed
+	}
+	forkID := fmt.Sprintf(
+		"%s#attempt-%d#iteration-%d#%s",
+		run.RunID,
+		attempt,
+		iteration,
+		wave[0],
+	)
 	controller := newForkController(wave)
 
 	publishParallelWave(ctx, host, g, info, agent.SubjectParallelFork(info.RunID),
@@ -371,6 +382,7 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 
 	results := make([]BranchResult, len(wave))
 	failedBoards := make([]*agent.Board, len(wave))
+	terminal := make([]bool, len(wave))
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, parallelLimit(g.parallel.MaxConcurrency, len(wave)))
 
@@ -393,47 +405,53 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 
 			// A branch cancelled while queued skips invocation entirely.
 			if reason, cancelled := controller.start(id, cancelBranch); cancelled {
-				publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
+				g.publishBranchTerminal(bctx, host, info, id, agent.StreamDeltaPayload{
 					Type:     agent.StreamDeltaParallelBranchCancel,
 					ForkID:   forkID,
 					BranchID: id,
 					Reason:   reason,
 				})
 				results[i] = BranchResult{NodeID: id, Cancelled: true}
+				terminal[i] = true
 				return
 			}
 			defer controller.finish(id)
 			bctx = WithParallelController(bctx, controller.view(id))
-
-			publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
-				Type:     agent.StreamDeltaParallelBranchAccept,
-				ForkID:   forkID,
-				BranchID: id,
+			bctx = withParallelBranchIdentity(bctx, parallelBranchIdentity{
+				forkID:   forkID,
+				branchID: id,
 			})
 
 			branchBoard := agent.NewBoard()
 			branchBoard.RestoreFrom(preFork)
 			skipped, err := g.invokeNode(bctx, run, host, branchBoard, slot)
-			switch {
-			case skipped:
-				results[i] = BranchResult{NodeID: id}
-			case err != nil:
-				reason := err.Error()
-				if cancelReason, cancelled := controller.cancelledReason(id); cancelled {
-					// Deliberate cancellation, not a failure: the
-					// branch merges as a no-op and the wave proceeds.
-					results[i] = BranchResult{NodeID: id, Cancelled: true}
-					reason = cancelReason
-				} else {
-					results[i] = BranchResult{NodeID: id, Err: err}
-					failedBoards[i] = branchBoard
-				}
-				publishBranchDelta(bctx, host, info, g.name, id, agent.StreamDeltaPayload{
+			if reason, cancelled := controller.cancelledReason(id); cancelled {
+				// Cancellation wins over every handler outcome. A
+				// handler may ignore ctx and return success/skipped;
+				// its private board must still be discarded.
+				results[i] = BranchResult{NodeID: id, Cancelled: true}
+				g.publishBranchTerminal(bctx, host, info, id, agent.StreamDeltaPayload{
 					Type:     agent.StreamDeltaParallelBranchCancel,
 					ForkID:   forkID,
 					BranchID: id,
 					Reason:   reason,
 				})
+				terminal[i] = true
+				return
+			}
+			switch {
+			case skipped:
+				results[i] = BranchResult{NodeID: id}
+			case err != nil:
+				results[i] = BranchResult{NodeID: id, Err: err}
+				failedBoards[i] = branchBoard
+				g.publishBranchTerminal(bctx, host, info, id, agent.StreamDeltaPayload{
+					Type:     agent.StreamDeltaParallelBranchCancel,
+					ForkID:   forkID,
+					BranchID: id,
+					Reason:   err.Error(),
+				})
+				terminal[i] = true
 			default:
 				results[i] = BranchResult{NodeID: id, Snapshot: branchBoard.Snapshot()}
 			}
@@ -459,6 +477,8 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		}
 	}
 	if waveErr != nil {
+		publishUnterminatedBranchCancels(
+			ctx, host, info, g.name, forkID, wave, terminal, waveErr.Error(), g.runEndPublishTimeout)
 		if errdefs.IsInterrupted(waveErr) {
 			for i, branchBoard := range failedBoards {
 				if branchBoard != nil {
@@ -478,11 +498,74 @@ func (g *Graph) executeParallel(ctx context.Context, run agent.Run, host agent.H
 		return waveErr
 	}
 	if err := g.parallel.mergeFunc()(ctx, board, preFork, results); err != nil {
+		publishUnterminatedBranchCancels(
+			ctx, host, info, g.name, forkID, wave, terminal, err.Error(), g.runEndPublishTimeout)
 		return err
+	}
+	acceptCtx, cancelAccept := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		g.runEndPublishTimeout,
+	)
+	defer cancelAccept()
+	for i, id := range wave {
+		if terminal[i] {
+			continue
+		}
+		publishBranchDelta(acceptCtx, host, info, g.name, id, agent.StreamDeltaPayload{
+			Type:     agent.StreamDeltaParallelBranchAccept,
+			ForkID:   forkID,
+			BranchID: id,
+		})
+		terminal[i] = true
 	}
 	publishParallelWave(ctx, host, g, info, agent.SubjectParallelJoin(info.RunID),
 		ParallelWaveEventPayload{ForkID: forkID, Branches: wave, Cancelled: cancelledBranches(results)})
 	return nil
+}
+
+// publishBranchTerminal gives one branch terminal its own bounded
+// cleanup window even when the run or branch context is already done.
+func (g *Graph) publishBranchTerminal(
+	ctx context.Context,
+	host agent.Host,
+	info agent.RunInfo,
+	nodeID string,
+	delta agent.StreamDeltaPayload,
+) {
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), g.runEndPublishTimeout)
+	defer cancel()
+	publishBranchDelta(publishCtx, host, info, g.name, nodeID, delta)
+}
+
+// publishUnterminatedBranchCancels closes every branch that completed
+// successfully but cannot be accepted because its wave or merge failed.
+// Iterating in wave order keeps the terminal stream deterministic. All
+// missing terminals share one cleanup deadline so a blocked host cannot
+// multiply the shutdown latency by the branch count.
+func publishUnterminatedBranchCancels(
+	ctx context.Context,
+	host agent.Host,
+	info agent.RunInfo,
+	graphID, forkID string,
+	wave []string,
+	terminal []bool,
+	reason string,
+	timeout time.Duration,
+) {
+	publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	defer cancel()
+	for i, id := range wave {
+		if terminal[i] {
+			continue
+		}
+		publishBranchDelta(publishCtx, host, info, graphID, id, agent.StreamDeltaPayload{
+			Type:     agent.StreamDeltaParallelBranchCancel,
+			ForkID:   forkID,
+			BranchID: id,
+			Reason:   reason,
+		})
+		terminal[i] = true
+	}
 }
 
 // cancelledBranches lists the wave's deliberately cancelled branch

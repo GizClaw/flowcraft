@@ -19,12 +19,15 @@ type sinkItem struct {
 }
 
 type queuedSink struct {
-	spec    SinkSpec
-	session *Session
-	runEnd  event.Subject
-	queue   chan sinkItem
-	stop    chan struct{}
-	done    chan struct{}
+	spec      SinkSpec
+	session   *Session
+	runEnd    event.Subject
+	offered   func(string, DeliveryCursor)
+	delivered func(string, DeliveryCursor)
+	onDetach  func(error)
+	queue     chan sinkItem
+	stop      chan struct{}
+	done      chan struct{}
 
 	mu           sync.Mutex
 	detached     bool
@@ -59,7 +62,7 @@ func (s *queuedSink) OnDelta(ctx context.Context, env event.Envelope, delta agen
 		return nil
 	default:
 		err := fmt.Errorf("%w: %s", ErrSinkQueueFull, s.spec.ID)
-		cleanup := s.markDetachedLocked()
+		cleanup := s.markDetachedLocked(err)
 		s.mu.Unlock()
 		go s.completeDetach(cleanup, err)
 		return nil
@@ -73,9 +76,15 @@ func (s *queuedSink) start() {
 			case <-s.stop:
 				return
 			case item := <-s.queue:
-				if err := s.deliver(item); err != nil {
+				delivered, err := s.deliver(item)
+				if err != nil {
 					s.detach(err)
 					return
+				}
+				if delivered && s.delivered != nil {
+					if cursor, err := DeliveryCursorFromEnvelope(item.env); err == nil {
+						s.delivered(s.spec.ID, cursor)
+					}
 				}
 				if item.env.Subject == s.runEnd {
 					s.detach(nil)
@@ -86,7 +95,7 @@ func (s *queuedSink) start() {
 	}()
 }
 
-func (s *queuedSink) deliver(item sinkItem) error {
+func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 	timeout := s.spec.DeliveryTimeout
 	if timeout == 0 {
 		timeout = defaultSinkDeliveryTimeout
@@ -94,6 +103,11 @@ func (s *queuedSink) deliver(item sinkItem) error {
 	ctx, cancel := context.WithTimeout(item.ctx, timeout)
 	defer cancel()
 
+	if s.offered != nil {
+		if cursor, err := DeliveryCursorFromEnvelope(item.env); err == nil {
+			s.offered(s.spec.ID, cursor)
+		}
+	}
 	result := make(chan error, 1)
 	go func() {
 		result <- s.spec.Sink.OnDelta(ctx, item.env, item.delta)
@@ -101,11 +115,11 @@ func (s *queuedSink) deliver(item sinkItem) error {
 
 	select {
 	case err := <-result:
-		return err
+		return err == nil, err
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-s.stop:
-		return nil
+		return false, nil
 	}
 }
 
@@ -126,14 +140,17 @@ func (s *queuedSink) detach(err error) {
 		s.mu.Unlock()
 		return
 	}
-	cleanup := s.markDetachedLocked()
+	cleanup := s.markDetachedLocked(err)
 	s.mu.Unlock()
 	s.completeDetach(cleanup, err)
 }
 
-func (s *queuedSink) markDetachedLocked() sinkDetach {
+func (s *queuedSink) markDetachedLocked(err error) sinkDetach {
 	s.detached = true
 	close(s.stop)
+	if s.onDetach != nil {
+		s.onDetach(err)
+	}
 	return sinkDetach{router: s.routerDetach, callback: s.spec.OnDetach}
 }
 

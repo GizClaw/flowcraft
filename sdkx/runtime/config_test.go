@@ -23,13 +23,15 @@ func parseRuntimeDocument(t *testing.T, runtimeYAML string) deploy.Document {
 
 func TestDecodeConfigStrictAndValidated(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, "  event_bus: events\n  scheduler: ' shared-scheduler '\n  sessions:\n    idle_timeout: 30s\n    sink_buffer: 17\n  integrations:\n    - name: one\n      kind: test.kind\n      deps: {store: data}\n      settings: {answer: 42}\n")
+		doc := parseRuntimeDocument(t, "  event_bus: events\n  scheduler: ' shared-scheduler '\n  sessions:\n    idle_timeout: 30s\n    sink_buffer: 17\n    speculative_buffer_events: 23\n    speculative_buffer_bytes: 4096\n  integrations:\n    - name: one\n      kind: test.kind\n      deps: {store: data}\n      settings: {answer: 42}\n")
 		cfg, err := DecodeConfig(doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
 		if cfg.EventBus != "events" || cfg.Scheduler != "shared-scheduler" ||
-			cfg.Sessions.IdleTimeout != 30*time.Second || cfg.Sessions.SinkBuffer != 17 {
+			cfg.Sessions.IdleTimeout != 30*time.Second || cfg.Sessions.SinkBuffer != 17 ||
+			cfg.Sessions.SpeculativeBufferEvents != 23 ||
+			cfg.Sessions.SpeculativeBufferBytes != 4096 {
 			t.Fatalf("unexpected config: %#v", cfg)
 		}
 		if len(cfg.Integrations) != 1 || cfg.Integrations[0].Settings == nil {
@@ -49,13 +51,15 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 	})
 
 	for name, runtimeYAML := range map[string]string{
-		"absent":                "",
-		"empty":                 "  {}\n",
-		"unknown runtime field": "  event_bus: events\n  surprise: true\n",
-		"duplicate name":        "  event_bus: events\n  integrations:\n    - {name: same, kind: a}\n    - {name: same, kind: a}\n",
-		"empty kind":            "  event_bus: events\n  integrations:\n    - {name: one, kind: ''}\n",
-		"bad duration":          "  event_bus: events\n  sessions: {idle_timeout: soon}\n",
-		"bad sink buffer":       "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
+		"absent":                 "",
+		"empty":                  "  {}\n",
+		"unknown runtime field":  "  event_bus: events\n  surprise: true\n",
+		"duplicate name":         "  event_bus: events\n  integrations:\n    - {name: same, kind: a}\n    - {name: same, kind: a}\n",
+		"empty kind":             "  event_bus: events\n  integrations:\n    - {name: one, kind: ''}\n",
+		"bad duration":           "  event_bus: events\n  sessions: {idle_timeout: soon}\n",
+		"bad sink buffer":        "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
+		"bad speculative events": "  event_bus: events\n  sessions: {speculative_buffer_events: 0}\n",
+		"bad speculative bytes":  "  event_bus: events\n  sessions: {speculative_buffer_bytes: -1}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var doc deploy.Document

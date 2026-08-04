@@ -29,11 +29,13 @@ type managerEntry struct {
 // Manager shares Sessions by Key and reclaims unleased idle Sessions.
 // It borrows its resolver, HostFactory, and StreamRouter and never closes them.
 type Manager struct {
-	resolver    InstanceResolver
-	hostFactory HostFactory
-	router      *agent.StreamRouter
-	idleTimeout time.Duration
-	sinkBuffer  int
+	resolver          InstanceResolver
+	hostFactory       HostFactory
+	router            *agent.StreamRouter
+	idleTimeout       time.Duration
+	sinkBuffer        int
+	speculativeEvents int
+	speculativeBytes  int
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -59,7 +61,11 @@ func NewManager(
 		return nil, errdefs.Validationf("runtime session: StreamRouter is required")
 	}
 
-	opts := managerOptions{idleTimeout: defaultIdleTimeout, sinkBuffer: defaultSinkBuffer}
+	opts := managerOptions{
+		idleTimeout: defaultIdleTimeout, sinkBuffer: defaultSinkBuffer,
+		speculativeEvents: defaultSpeculativeBufferEvents,
+		speculativeBytes:  defaultSpeculativeBufferBytes,
+	}
 	for _, option := range options {
 		if isNil(option) {
 			return nil, errdefs.Validationf("runtime session: ManagerOption must not be nil")
@@ -69,12 +75,14 @@ func NewManager(
 		}
 	}
 	return &Manager{
-		resolver:    resolver,
-		hostFactory: hostFactory,
-		router:      router,
-		idleTimeout: opts.idleTimeout,
-		sinkBuffer:  opts.sinkBuffer,
-		entries:     make(map[Key]*managerEntry),
+		resolver:          resolver,
+		hostFactory:       hostFactory,
+		router:            router,
+		idleTimeout:       opts.idleTimeout,
+		sinkBuffer:        opts.sinkBuffer,
+		speculativeEvents: opts.speculativeEvents,
+		speculativeBytes:  opts.speculativeBytes,
+		entries:           make(map[Key]*managerEntry),
 	}, nil
 }
 
@@ -124,9 +132,12 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	if instance == nil {
 		return nil, errdefs.Internalf("runtime session: resolver returned a nil instance for agent %q", key.AgentID)
 	}
-	session := newSession(key, instance, m.hostFactory, m.router, m.sinkBuffer, func(changed *Session) {
-		m.activityChanged(key, changed)
-	})
+	session := newSession(
+		key, instance, m.hostFactory, m.router, m.sinkBuffer,
+		m.speculativeEvents, m.speculativeBytes,
+		func(changed *Session) {
+			m.activityChanged(key, changed)
+		})
 	m.entries[key] = &managerEntry{session: session, leases: 1}
 	return newLease(m, key, session), nil
 }

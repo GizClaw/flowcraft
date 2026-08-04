@@ -135,9 +135,34 @@ type ExecutionContext struct {
 // The kernel mints the envelope — subject
 // agent.SubjectStreamDelta(runID, stepActor), NodeID/AgentID/RunID
 // headers — and forwards it to Host.Publish, so node plugins never
-// assemble subjects or envelopes themselves. A nil Host (tests) makes
-// Emit a no-op.
+// assemble subjects or envelopes themselves. During a parallel branch,
+// the kernel stamps non-control deltas as speculative with the fork and
+// branch identity. A plugin-supplied conflicting identity is rejected.
+// Parallel branch accept/cancel deltas are kernel-owned and are always
+// rejected from this plugin-facing method with a validation error.
+// A nil Host (tests) makes Emit a no-op.
 func (ec ExecutionContext) EmitStreamDelta(delta agent.StreamDeltaPayload) error {
+	switch delta.Type {
+	case agent.StreamDeltaParallelBranchAccept, agent.StreamDeltaParallelBranchCancel:
+		return errdefs.Validationf(
+			"graph: node %q cannot emit kernel-owned stream delta type %q",
+			ec.NodeID, delta.Type)
+	}
+	if identity, ok := parallelBranchIdentityFromContext(ec.Context); ok {
+		if delta.ForkID != "" && delta.ForkID != identity.forkID {
+			return errdefs.Conflictf(
+				"graph: node %q stream delta ForkID %q conflicts with branch fork %q",
+				ec.NodeID, delta.ForkID, identity.forkID)
+		}
+		if delta.BranchID != "" && delta.BranchID != identity.branchID {
+			return errdefs.Conflictf(
+				"graph: node %q stream delta BranchID %q conflicts with branch %q",
+				ec.NodeID, delta.BranchID, identity.branchID)
+		}
+		delta.Speculative = true
+		delta.ForkID = identity.forkID
+		delta.BranchID = identity.branchID
+	}
 	info, _ := agent.RunInfoFromContext(ec.Context)
 	return publishStreamDelta(ec.Context, ec.Host, info, ec.GraphID, ec.NodeID, delta)
 }

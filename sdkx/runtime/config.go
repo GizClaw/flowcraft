@@ -12,8 +12,10 @@ import (
 )
 
 const (
-	defaultIdleTimeout = 10 * time.Minute
-	defaultSinkBuffer  = 256
+	defaultIdleTimeout             = 10 * time.Minute
+	defaultSinkBuffer              = 256
+	defaultSpeculativeBufferEvents = 1024
+	defaultSpeculativeBufferBytes  = 1 << 20
 )
 
 // Config is the strictly decoded deploy.Document.Runtime subtree.
@@ -26,8 +28,10 @@ type Config struct {
 
 // SessionConfig configures the runtime-owned session manager.
 type SessionConfig struct {
-	IdleTimeout time.Duration
-	SinkBuffer  int
+	IdleTimeout             time.Duration
+	SinkBuffer              int
+	SpeculativeBufferEvents int
+	SpeculativeBufferBytes  int
 }
 
 // IntegrationConfig configures one independently prepared integration.
@@ -46,8 +50,10 @@ type configWire struct {
 }
 
 type sessionConfigWire struct {
-	IdleTimeout *string `yaml:"idle_timeout,omitempty"`
-	SinkBuffer  *int    `yaml:"sink_buffer,omitempty"`
+	IdleTimeout             *string `yaml:"idle_timeout,omitempty"`
+	SinkBuffer              *int    `yaml:"sink_buffer,omitempty"`
+	SpeculativeBufferEvents *int    `yaml:"speculative_buffer_events,omitempty"`
+	SpeculativeBufferBytes  *int    `yaml:"speculative_buffer_bytes,omitempty"`
 }
 
 type integrationConfigWire struct {
@@ -70,8 +76,10 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		EventBus:  strings.TrimSpace(wire.EventBus),
 		Scheduler: strings.TrimSpace(wire.Scheduler),
 		Sessions: SessionConfig{
-			IdleTimeout: defaultIdleTimeout,
-			SinkBuffer:  defaultSinkBuffer,
+			IdleTimeout:             defaultIdleTimeout,
+			SinkBuffer:              defaultSinkBuffer,
+			SpeculativeBufferEvents: defaultSpeculativeBufferEvents,
+			SpeculativeBufferBytes:  defaultSpeculativeBufferBytes,
 		},
 		Integrations: make([]IntegrationConfig, len(wire.Items)),
 	}
@@ -96,6 +104,20 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.sink_buffer must be positive")
 		}
 		cfg.Sessions.SinkBuffer = *wire.Sessions.SinkBuffer
+	}
+	if wire.Sessions.SpeculativeBufferEvents != nil {
+		if *wire.Sessions.SpeculativeBufferEvents <= 0 {
+			return Config{}, errdefs.Validationf(
+				"runtime config: sessions.speculative_buffer_events must be positive")
+		}
+		cfg.Sessions.SpeculativeBufferEvents = *wire.Sessions.SpeculativeBufferEvents
+	}
+	if wire.Sessions.SpeculativeBufferBytes != nil {
+		if *wire.Sessions.SpeculativeBufferBytes <= 0 {
+			return Config{}, errdefs.Validationf(
+				"runtime config: sessions.speculative_buffer_bytes must be positive")
+		}
+		cfg.Sessions.SpeculativeBufferBytes = *wire.Sessions.SpeculativeBufferBytes
 	}
 
 	seenNames := make(map[string]struct{}, len(wire.Items))

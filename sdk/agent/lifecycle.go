@@ -254,6 +254,42 @@ func seedBoard(ctx context.Context, id Identity, req *Request, chain []Preparer)
 	return board, nil
 }
 
+// ---------- Commit view (Committer-only projection) ----------
+
+// CommitView is the board projection a [CommitViewProvider] exposes only
+// to [Committer] hooks. The engine-produced board remains authoritative
+// for the Result returned to the caller and delivered to [Observer].
+type CommitView struct {
+	// LastBoard is materialized into the shallow Result copy passed to
+	// Committers. It must be non-nil.
+	LastBoard *Board
+}
+
+// CommitViewProvider builds a Committer-only projection after the final
+// [Referee] decision accepts the result and immediately before the
+// Committer chain runs.
+//
+// Providers run only when at least one Committer is registered and the
+// final Result is committed. They MUST honor ctx cancellation and MUST
+// NOT mutate req or res. Returning an error, or a CommitView with a nil
+// LastBoard, skips every Committer and fails finalization.
+type CommitViewProvider interface {
+	CommitView(ctx context.Context, id Identity, req *Request, res *Result) (CommitView, error)
+}
+
+// CommitViewProviderFunc adapts a function to [CommitViewProvider].
+type CommitViewProviderFunc func(ctx context.Context, id Identity, req *Request, res *Result) (CommitView, error)
+
+// CommitView calls f.
+func (f CommitViewProviderFunc) CommitView(
+	ctx context.Context,
+	id Identity,
+	req *Request,
+	res *Result,
+) (CommitView, error) {
+	return f(ctx, id, req, res)
+}
+
 // ---------- Committer (durable finalization) ----------
 
 // Committer persists or durably enqueues the final accepted result of a
@@ -266,8 +302,11 @@ func seedBoard(ctx context.Context, id Identity, req *Request, chain []Preparer)
 //     failed.
 //
 // Committers run synchronously in registration order and only when the
-// final [Result] has Committed set. Revise attempts and discarded or
-// non-completed results are never committed. Implementations MUST treat
+// final [Result] has Committed set. When a [CommitViewProvider] is
+// configured, Committers receive a shallow Result copy materialized from
+// its projected board; callers and Observers retain the engine result.
+// Revise attempts and discarded or non-completed results are never
+// committed. Implementations MUST treat
 // [Identity.RunID] as the operation's idempotency key because a caller
 // may retry after an ambiguous storage or transport failure.
 // A Referee's Revise request that the configured budget does not honor

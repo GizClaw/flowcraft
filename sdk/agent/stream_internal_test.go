@@ -174,6 +174,87 @@ func TestEmitStreamDelta_ParallelBranchControlRequiredFields(t *testing.T) {
 	}
 }
 
+func TestEmitStreamDelta_SpeculativeDataRequiresCompleteBranchIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload StreamDeltaPayload
+	}{
+		{
+			name: "speculative token missing identity",
+			payload: StreamDeltaPayload{
+				Type:        StreamDeltaToken,
+				Speculative: true,
+			},
+		},
+		{
+			name: "speculative tool call missing branch",
+			payload: StreamDeltaPayload{
+				Type:        StreamDeltaToolCall,
+				ID:          "call-1",
+				Name:        "lookup",
+				Speculative: true,
+				ForkID:      "fork-1",
+			},
+		},
+		{
+			name: "speculative tool result missing fork",
+			payload: StreamDeltaPayload{
+				Type:        StreamDeltaToolResult,
+				ToolCallID:  "call-1",
+				Speculative: true,
+				BranchID:    "branch-a",
+			},
+		},
+		{
+			name: "non speculative token with full identity",
+			payload: StreamDeltaPayload{
+				Type:     StreamDeltaToken,
+				ForkID:   "fork-1",
+				BranchID: "branch-a",
+			},
+		},
+		{
+			name: "non speculative tool call with partial identity",
+			payload: StreamDeltaPayload{
+				Type:   StreamDeltaToolCall,
+				ID:     "call-1",
+				Name:   "lookup",
+				ForkID: "fork-1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pub := &capturePublisher{}
+			err := EmitStreamDelta(context.Background(), pub, "r", "branch-a", tt.payload)
+			if err == nil {
+				t.Fatal("expected invalid speculative identity to be rejected")
+			}
+			if len(pub.got) != 0 {
+				t.Fatalf("invalid delta leaked through: %d envelopes", len(pub.got))
+			}
+		})
+	}
+
+	for _, payload := range []StreamDeltaPayload{
+		{Type: StreamDeltaToken, Speculative: true, ForkID: "fork-1", BranchID: "branch-a"},
+		{Type: StreamDeltaToolCall, ID: "call-1", Name: "lookup", Speculative: true, ForkID: "fork-1", BranchID: "branch-a"},
+		{Type: StreamDeltaToolResult, ToolCallID: "call-1", Speculative: true, ForkID: "fork-1", BranchID: "branch-a"},
+		{Type: StreamDeltaToken},
+	} {
+		pub := &capturePublisher{}
+		if err := EmitStreamDelta(context.Background(), pub, "r", "branch-a", payload); err != nil {
+			t.Fatalf("valid payload %+v rejected: %v", payload, err)
+		}
+		if len(pub.got) != 1 {
+			t.Fatalf("valid payload %+v published %d envelopes", payload, len(pub.got))
+		}
+	}
+}
+
 func TestEmitStreamDelta_AcceptsForwardCompatibleType(t *testing.T) {
 	t.Parallel()
 	pub := &capturePublisher{}

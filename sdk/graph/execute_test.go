@@ -590,6 +590,76 @@ func TestExecuteParallelForkJoinEvents(t *testing.T) {
 	}
 }
 
+func TestExecuteParallelForkIDChangesWhenLoopRepeatsWave(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "looping-wave",
+		Entry: "a",
+		Nodes: []NodeDefinition{
+			{ID: "a", Type: "echo"},
+			{ID: "b", Type: "echo"},
+			{ID: "c", Type: "echo"},
+		},
+		Edges: []EdgeDefinition{
+			{From: "a", To: "b"}, {From: "a", To: "c"},
+			{From: "b", To: "a", Condition: "__iterations < 4"},
+			{From: "b", To: END},
+			{From: "c", To: "a", Condition: "__iterations < 4"},
+			{From: "c", To: END},
+		},
+	}, reg, WithParallel(ParallelConfig{Enabled: true}))
+
+	host := &publishHost{}
+	if _, err := g.Execute(context.Background(), testRun(), host, agent.NewBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	forks := decodePayloads[ParallelWaveEventPayload](t, host, agent.SubjectParallelFork("run-1"))
+	if len(forks) != 2 {
+		t.Fatalf("forks = %d, want 2", len(forks))
+	}
+	if forks[0].ForkID == forks[1].ForkID {
+		t.Fatalf("loop reused ForkID %q", forks[0].ForkID)
+	}
+	if forks[0].ForkID != "run-1#attempt-1#iteration-1#b" ||
+		forks[1].ForkID != "run-1#attempt-1#iteration-4#b" {
+		t.Fatalf("ForkIDs = %q, %q", forks[0].ForkID, forks[1].ForkID)
+	}
+
+	resumed := testRun()
+	resumed.ResumeFrom = &agent.Checkpoint{
+		ExecID:    resumed.RunID,
+		Steps:     []string{"a"},
+		Iteration: 1,
+		Board:     &agent.BoardSnapshot{},
+	}
+	resumeHost := &publishHost{}
+	if _, err := g.Execute(context.Background(), resumed, resumeHost, agent.NewBoard()); err != nil {
+		t.Fatalf("resume Execute: %v", err)
+	}
+	resumedForks := decodePayloads[ParallelWaveEventPayload](
+		t, resumeHost, agent.SubjectParallelFork("run-1"))
+	if len(resumedForks) != len(forks) {
+		t.Fatalf("resumed forks = %d, want %d", len(resumedForks), len(forks))
+	}
+	for i := range forks {
+		if resumedForks[i].ForkID != forks[i].ForkID {
+			t.Fatalf("resumed ForkID[%d] = %q, want %q", i, resumedForks[i].ForkID, forks[i].ForkID)
+		}
+	}
+
+	revised := testRun()
+	revised.Attributes = map[string]string{"agent.attempt": "2"}
+	revisedHost := &publishHost{}
+	if _, err := g.Execute(context.Background(), revised, revisedHost, agent.NewBoard()); err != nil {
+		t.Fatalf("revised Execute: %v", err)
+	}
+	revisedForks := decodePayloads[ParallelWaveEventPayload](
+		t, revisedHost, agent.SubjectParallelFork("run-1"))
+	if revisedForks[0].ForkID != "run-1#attempt-2#iteration-1#b" {
+		t.Fatalf("revised ForkID = %q", revisedForks[0].ForkID)
+	}
+}
+
 // TestExecuteParallelJoinCancelledList proves the join envelope names
 // the branches cancelled through the wave's ParallelController.
 func TestExecuteParallelJoinCancelledList(t *testing.T) {

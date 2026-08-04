@@ -200,6 +200,10 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		router,
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
+		session.WithSpeculativeBufferLimits(
+			cfg.Sessions.SpeculativeBufferEvents,
+			cfg.Sessions.SpeculativeBufferBytes,
+		),
 	)
 	if err != nil {
 		return nil, fail(fmt.Errorf("runtime create session manager: %w", err))
