@@ -10,7 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // echoCfg is the config of the "echo" test node type.
@@ -52,7 +52,7 @@ func echoNode(failsBeforeSuccess *atomic.Int32) NodeType[echoCfg] {
 			}
 			if cfg.Message != "" {
 				board.AppendChannelMessage(agent.MainChannel,
-					inference.NewTextMessage(inference.RoleAssistant, cfg.Message))
+					message.NewTextMessage(message.RoleAssistant, cfg.Message))
 			}
 			return nil
 		},

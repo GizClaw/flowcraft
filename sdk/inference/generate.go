@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // GenerateExecutionShape identifies the provider execution contract being
@@ -52,7 +52,7 @@ type GenerateCompiler[Wire any] func(
 	GenerateExecutionShape,
 ) (Compiled[Wire], error)
 
-// InputRole is deliberately narrower than Message Role: only a user turn or a
+// InputRole is deliberately narrower than [message.Message].Role: only a user turn or a
 // tool continuation may be the one current input to Generate.
 type InputRole string
 
@@ -60,64 +60,6 @@ const (
 	InputRoleUser InputRole = "user"
 	InputRoleTool InputRole = "tool"
 )
-
-type InputContent struct {
-	Content
-	Intent Intent `json:"intent"`
-}
-
-// MarshalJSON is explicit because Content implements json.Marshaler; without
-// this method the embedded marshaler would otherwise hide Intent.
-func (c InputContent) MarshalJSON() ([]byte, error) {
-	contentData, err := json.Marshal(c.Content)
-	if err != nil {
-		return nil, err
-	}
-	var content struct {
-		Parts json.RawMessage `json:"parts"`
-	}
-	if err := json.Unmarshal(contentData, &content); err != nil {
-		return nil, err
-	}
-	return json.Marshal(struct {
-		Parts  json.RawMessage `json:"parts"`
-		Intent Intent          `json:"intent"`
-	}{Parts: content.Parts, Intent: c.Intent})
-}
-
-func (c *InputContent) UnmarshalJSON(data []byte) error {
-	var wire struct {
-		Parts  json.RawMessage `json:"parts"`
-		Intent Intent          `json:"intent"`
-	}
-	if err := decodeStrict(data, &wire); err != nil {
-		return err
-	}
-	contentData, err := json.Marshal(struct {
-		Parts json.RawMessage `json:"parts"`
-	}{Parts: wire.Parts})
-	if err != nil {
-		return err
-	}
-	if err := json.Unmarshal(contentData, &c.Content); err != nil {
-		return err
-	}
-	c.Intent = wire.Intent
-	return nil
-}
-
-func (c InputContent) Clone() InputContent {
-	c.Content = c.Content.Clone()
-	c.Intent = c.Intent.Clone()
-	return c
-}
-
-func (c InputContent) Validate() error {
-	if err := c.Content.Validate(); err != nil {
-		return err
-	}
-	return c.Intent.Validate()
-}
 
 type GenerateInput struct {
 	Role    InputRole    `json:"role"`
@@ -130,36 +72,36 @@ func (i GenerateInput) Clone() GenerateInput {
 }
 
 func (i GenerateInput) Validate() error {
-	var role Role
+	var role message.Role
 	switch i.Role {
 	case InputRoleUser:
-		role = RoleUser
+		role = message.RoleUser
 	case InputRoleTool:
-		role = RoleTool
+		role = message.RoleTool
 	default:
 		return fmt.Errorf("generate input role must be user or tool")
 	}
 	if err := i.Content.Validate(); err != nil {
 		return err
 	}
-	return (Message{Role: role, Content: i.Content.Content}).Validate()
+	return (message.Message{Role: role, Content: i.Content.Content}).Validate()
 }
 
 // Message converts an executed input into ordinary history. The returned
 // message owns a clone of the parts and cannot retain Intent by construction.
-func (i GenerateInput) Message() Message {
-	return Message{Role: Role(i.Role), Content: i.Content.Content.Clone()}
+func (i GenerateInput) Message() message.Message {
+	return message.Message{Role: message.Role(i.Role), Content: i.Content.Content.Clone()}
 }
 
 type GenerateRequest struct {
-	Context    []Message     `json:"context,omitempty" ledger:"generate.context.*.role"`
-	Input      GenerateInput `json:"input" ledger:"generate.input.role"`
-	Extensions Extensions    `json:"-" ledger:"extension"`
+	Context    []message.Message `json:"context,omitempty" ledger:"generate.context.*.role"`
+	Input      GenerateInput     `json:"input" ledger:"generate.input.role"`
+	Extensions Extensions        `json:"-" ledger:"extension"`
 }
 
 func (r GenerateRequest) Clone() GenerateRequest {
 	clone := r
-	clone.Context = make([]Message, len(r.Context))
+	clone.Context = make([]message.Message, len(r.Context))
 	for i, message := range r.Context {
 		clone.Context[i] = message.Clone()
 	}
@@ -206,9 +148,9 @@ func (r GenerateRequest) ActiveFieldsFor(shape GenerateExecutionShape) []FieldID
 
 func appendGenerateContextPartFields(
 	fields []FieldID,
-	messages []Message,
+	messages []message.Message,
 ) []FieldID {
-	seen := make(map[PartKind]bool)
+	seen := make(map[message.PartKind]bool)
 	for _, message := range messages {
 		for _, part := range message.Content.Parts {
 			if part != nil {
@@ -217,18 +159,18 @@ func appendGenerateContextPartFields(
 		}
 	}
 	for _, item := range []struct {
-		kind  PartKind
+		kind  message.PartKind
 		field FieldID
 	}{
-		{PartText, FieldGenerateContextText},
-		{PartImage, FieldGenerateContextImage},
-		{PartAudio, FieldGenerateContextAudio},
-		{PartVideo, FieldGenerateContextVideo},
-		{PartFile, FieldGenerateContextFile},
-		{PartData, FieldGenerateContextData},
-		{PartToolCall, FieldGenerateContextToolCall},
-		{PartToolResult, FieldGenerateContextToolResult},
-		{PartReasoning, FieldGenerateContextReasoning},
+		{message.PartText, FieldGenerateContextText},
+		{message.PartImage, FieldGenerateContextImage},
+		{message.PartAudio, FieldGenerateContextAudio},
+		{message.PartVideo, FieldGenerateContextVideo},
+		{message.PartFile, FieldGenerateContextFile},
+		{message.PartData, FieldGenerateContextData},
+		{message.PartToolCall, FieldGenerateContextToolCall},
+		{message.PartToolResult, FieldGenerateContextToolResult},
+		{message.PartReasoning, FieldGenerateContextReasoning},
 	} {
 		if seen[item.kind] {
 			fields = append(fields, item.field)
@@ -237,26 +179,26 @@ func appendGenerateContextPartFields(
 	return fields
 }
 
-func appendGenerateInputPartFields(fields []FieldID, parts []Part) []FieldID {
-	seen := make(map[PartKind]bool)
+func appendGenerateInputPartFields(fields []FieldID, parts []message.Part) []FieldID {
+	seen := make(map[message.PartKind]bool)
 	for _, part := range parts {
 		if part != nil {
 			seen[part.Kind()] = true
 		}
 	}
 	for _, item := range []struct {
-		kind  PartKind
+		kind  message.PartKind
 		field FieldID
 	}{
-		{PartText, FieldGenerateInputText},
-		{PartImage, FieldGenerateInputImage},
-		{PartAudio, FieldGenerateInputAudio},
-		{PartVideo, FieldGenerateInputVideo},
-		{PartFile, FieldGenerateInputFile},
-		{PartData, FieldGenerateInputData},
-		{PartToolCall, FieldGenerateInputToolCall},
-		{PartToolResult, FieldGenerateInputToolResult},
-		{PartReasoning, FieldGenerateInputReasoning},
+		{message.PartText, FieldGenerateInputText},
+		{message.PartImage, FieldGenerateInputImage},
+		{message.PartAudio, FieldGenerateInputAudio},
+		{message.PartVideo, FieldGenerateInputVideo},
+		{message.PartFile, FieldGenerateInputFile},
+		{message.PartData, FieldGenerateInputData},
+		{message.PartToolCall, FieldGenerateInputToolCall},
+		{message.PartToolResult, FieldGenerateInputToolResult},
+		{message.PartReasoning, FieldGenerateInputReasoning},
 	} {
 		if seen[item.kind] {
 			fields = append(fields, item.field)
@@ -442,8 +384,8 @@ type TextIntent struct {
 	// Tools lists the tool definitions the model may call; ToolChoice
 	// constrains when and which. Either one marks tool calling as
 	// requested.
-	Tools      []tool.Definition `json:"tools,omitempty"`
-	ToolChoice *ToolChoice       `json:"tool_choice,omitempty"`
+	Tools      []message.Definition `json:"tools,omitempty"`
+	ToolChoice *ToolChoice          `json:"tool_choice,omitempty"`
 	// Sampling controls: temperature in [0, 2], top_p in [0, 1].
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
@@ -470,7 +412,7 @@ func (i TextIntent) Clone() TextIntent {
 	}
 	i.MaxOutputTokens = clonePointer(i.MaxOutputTokens)
 	if i.Tools != nil {
-		tools := make([]tool.Definition, len(i.Tools))
+		tools := make([]message.Definition, len(i.Tools))
 		for index, definition := range i.Tools {
 			tools[index] = definition.Clone()
 		}
@@ -623,7 +565,7 @@ func (i AudioIntent) Validate() error {
 // synthesis as a long task behind the scenes; the unary contract still
 // applies — the provider must complete within the caller's context
 // deadline. Videos are all-or-nothing: there is no count knob, and a
-// completed response carries at least one VideoPart.
+// completed response carries at least one message.VideoPart.
 type VideoIntent struct {
 	DurationMillis *int64            `json:"duration_millis,omitempty"`
 	Resolution     string            `json:"resolution,omitempty"`
@@ -660,10 +602,10 @@ func (i VideoIntent) Validate() error {
 }
 
 type GenerateResponse struct {
-	Message      Message      `json:"message"`
-	FinishReason FinishReason `json:"finish_reason"`
-	Usage        Usage        `json:"usage"`
-	Metadata     Metadata     `json:"metadata"`
+	Message      message.Message `json:"message"`
+	FinishReason FinishReason    `json:"finish_reason"`
+	Usage        Usage           `json:"usage"`
+	Metadata     Metadata        `json:"metadata"`
 }
 
 func (r GenerateResponse) Clone() GenerateResponse {
@@ -674,7 +616,7 @@ func (r GenerateResponse) Clone() GenerateResponse {
 }
 
 func (r GenerateResponse) Validate() error {
-	if r.Message.Role != RoleAssistant {
+	if r.Message.Role != message.RoleAssistant {
 		return fmt.Errorf("generate response message must have assistant role")
 	}
 	if err := r.FinishReason.Validate(); err != nil {
@@ -700,7 +642,7 @@ func (r GenerateResponse) Validate() error {
 			return err
 		}
 		switch normalized.(type) {
-		case TextPart, ImagePart, AudioPart, VideoPart, ToolCallPart, ReasoningPart:
+		case message.TextPart, message.ImagePart, message.AudioPart, message.VideoPart, message.ToolCallPart, message.ReasoningPart:
 		default:
 			return fmt.Errorf("generate response contains unsupported part %q", normalized.Kind())
 		}
@@ -717,23 +659,23 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	toolsRequested := intent.Text != nil && intent.Text.toolsRequested()
 	var text strings.Builder
 	textParts := 0
-	var images []ImagePart
-	var audio []AudioPart
-	var videos []VideoPart
-	var toolCalls []ToolCallPart
+	var images []message.ImagePart
+	var audio []message.AudioPart
+	var videos []message.VideoPart
+	var toolCalls []message.ToolCallPart
 	for _, part := range r.Message.Content.Parts {
 		normalized, err := normalizePart(part)
 		if err != nil {
 			return err
 		}
 		switch value := normalized.(type) {
-		case TextPart:
+		case message.TextPart:
 			if intent.Text == nil {
 				return fmt.Errorf("generate response contains unrequested text")
 			}
 			textParts++
 			text.WriteString(value.Text)
-		case ImagePart:
+		case message.ImagePart:
 			if intent.Image == nil {
 				return fmt.Errorf("generate response contains unrequested image")
 			}
@@ -741,7 +683,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			if err := validateGenerateImage(value, *intent.Image); err != nil {
 				return fmt.Errorf("generate image %d: %w", len(images)-1, err)
 			}
-		case AudioPart:
+		case message.AudioPart:
 			if intent.Audio == nil {
 				return fmt.Errorf("generate response contains unrequested audio")
 			}
@@ -749,7 +691,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			if err := validateGenerateAudio(value, *intent.Audio); err != nil {
 				return fmt.Errorf("generate audio %d: %w", len(audio)-1, err)
 			}
-		case VideoPart:
+		case message.VideoPart:
 			if intent.Video == nil {
 				return fmt.Errorf("generate response contains unrequested video")
 			}
@@ -757,12 +699,12 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 			if err := validateGenerateVideo(value); err != nil {
 				return fmt.Errorf("generate video %d: %w", len(videos)-1, err)
 			}
-		case ToolCallPart:
+		case message.ToolCallPart:
 			if !toolsRequested {
 				return fmt.Errorf("generate response contains an unrequested tool call")
 			}
 			toolCalls = append(toolCalls, value)
-		case ReasoningPart:
+		case message.ReasoningPart:
 			// Reasoning is a trace of the model's own process, not a
 			// requested artifact: reasoning-capable models emit it whether
 			// or not the request set a reasoning intent, so responses may
@@ -837,7 +779,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 // validateGenerateVideo checks the output part is genuinely video. Unlike
 // image and audio, no canonical video parameter constrains the returned
 // encoding beyond the media family.
-func validateGenerateVideo(part VideoPart) error {
+func validateGenerateVideo(part message.VideoPart) error {
 	if mediaType := part.Source.BaseMediaType(); !strings.HasPrefix(mediaType, "video/") {
 		return fmt.Errorf("video part media type %q is not video", part.Source.MediaType())
 	}
@@ -858,17 +800,17 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 			continue
 		}
 		switch value := normalized.(type) {
-		case ImagePart:
+		case message.ImagePart:
 			hasImage = true
 			imageCount++
-		case AudioPart:
+		case message.AudioPart:
 			hasAudio = true
 			if value.DurationMillis == nil {
 				audioDurationKnown = false
 			} else {
 				audioDuration += *value.DurationMillis
 			}
-		case VideoPart:
+		case message.VideoPart:
 			hasVideo = true
 			videoCount++
 		}
@@ -908,7 +850,7 @@ func validateGenerateCount(name string, actual int, requested *int) error {
 	return nil
 }
 
-func validateGenerateImage(part ImagePart, intent ImageIntent) error {
+func validateGenerateImage(part message.ImagePart, intent ImageIntent) error {
 	if intent.Delivery != "" && part.Source.Kind() != intent.Delivery {
 		return fmt.Errorf(
 			"delivery %q does not match requested delivery %q",
@@ -927,7 +869,7 @@ func validateGenerateImage(part ImagePart, intent ImageIntent) error {
 	return nil
 }
 
-func validateGenerateAudio(part AudioPart, intent AudioIntent) error {
+func validateGenerateAudio(part message.AudioPart, intent AudioIntent) error {
 	if part.Format == nil {
 		return fmt.Errorf("audio format is required")
 	}

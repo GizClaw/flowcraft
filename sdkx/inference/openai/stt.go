@@ -6,7 +6,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/openai/openai-go"

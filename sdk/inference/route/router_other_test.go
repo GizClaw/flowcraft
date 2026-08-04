@@ -8,7 +8,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 type embedSelectorFunc func(context.Context, inference.EmbedRequest) (Decision, error)
@@ -58,8 +59,8 @@ func TestRouterExposesSelectorsForCurrentOperations(t *testing.T) {
 			t.Fatalf("New: %v", err)
 		}
 		_, _, err = router.ExplainEmbed(context.Background(), inference.EmbedRequest{
-			Items: []inference.EmbedItem{{Content: inference.Content{
-				Parts: []inference.Part{inference.TextPart{Text: "hello"}},
+			Items: []inference.EmbedItem{{Content: message.Content{
+				Parts: []message.Part{message.TextPart{Text: "hello"}},
 			}}},
 		})
 		assertSelectorContractViolation(t, err)
@@ -200,7 +201,7 @@ func TestEmbedFallsBackOnCompilerRejection(t *testing.T) {
 			_ context.Context,
 			request inference.EmbedRequest,
 		) (Decision, error) {
-			request.Items[0].Content.Parts[0] = inference.TextPart{Text: "selector mutation"}
+			request.Items[0].Content.Parts[0] = message.TextPart{Text: "selector mutation"}
 			return embedDecision(first), nil
 		}),
 		EmbedFallback: embedFallbackFunc(func(
@@ -209,7 +210,7 @@ func TestEmbedFallsBackOnCompilerRejection(t *testing.T) {
 			attempt Attempt,
 		) (inference.ModelRef, bool, error) {
 			fallbackCalls++
-			request.Items[0].Content.Parts[0] = inference.TextPart{Text: "fallback mutation"}
+			request.Items[0].Content.Parts[0] = message.TextPart{Text: "fallback mutation"}
 			if attempt.Target != first ||
 				attempt.Phase != AttemptPhaseExecute ||
 				attempt.ErrorKind != inference.UnsupportedFeature {
@@ -237,7 +238,7 @@ func TestEmbedFallsBackOnCompilerRejection(t *testing.T) {
 		trace.Attempts[1].Outcome != AttemptOutcomeSucceeded {
 		t.Fatalf("trace attempts = %+v", trace.Attempts)
 	}
-	if got := request.Items[0].Content.Parts[0].(inference.TextPart).Text; got != "original" {
+	if got := request.Items[0].Content.Parts[0].(message.TextPart).Text; got != "original" {
 		t.Fatalf("caller request mutated to %q", got)
 	}
 }
@@ -907,8 +908,8 @@ func realtimeDecision(model inference.ModelRef) Decision {
 
 func embedRequest(text string) inference.EmbedRequest {
 	return inference.EmbedRequest{
-		Items: []inference.EmbedItem{{Content: inference.Content{
-			Parts: []inference.Part{inference.TextPart{Text: text}},
+		Items: []inference.EmbedItem{{Content: message.Content{
+			Parts: []message.Part{message.TextPart{Text: text}},
 		}}},
 	}
 }

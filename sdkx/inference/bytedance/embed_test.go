@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func embedModel(name string) inference.ModelRef {
@@ -48,8 +49,8 @@ func TestEmbedTextCapturedWire(t *testing.T) {
 		embedModel("doubao-embedding-large"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "first"}}}},
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "second"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "first"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "second"}}}},
 			},
 			Dimensions: &dimensions,
 		},
@@ -104,12 +105,12 @@ func TestEmbedMultimodalPerItemCalls(t *testing.T) {
 		embedModel("doubao-embedding-vision"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "caption"},
-					inference.ImagePart{Source: image},
+				{Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "caption"},
+					message.ImagePart{Source: image},
 				}}},
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "text only"},
+				{Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "text only"},
 				}}},
 			},
 		},
@@ -156,7 +157,7 @@ func TestEmbedRejections(t *testing.T) {
 			name:  "image on text model",
 			model: "doubao-embedding-large",
 			request: inference.EmbedRequest{Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{inference.ImagePart{Source: image}}}},
+				{Content: message.Content{Parts: []message.Part{message.ImagePart{Source: image}}}},
 			}},
 			field: inference.FieldEmbedItemImage,
 		},
@@ -164,9 +165,9 @@ func TestEmbedRejections(t *testing.T) {
 			name:  "multi-part on text model",
 			model: "doubao-embedding-large",
 			request: inference.EmbedRequest{Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "a"},
-					inference.TextPart{Text: "b"},
+				{Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "a"},
+					message.TextPart{Text: "b"},
 				}}},
 			}},
 			field: inference.FieldEmbedItemMultiPart,
@@ -175,8 +176,8 @@ func TestEmbedRejections(t *testing.T) {
 			name:  "audio part",
 			model: "doubao-embedding-vision",
 			request: inference.EmbedRequest{Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.AudioPart{Source: mustAudio(t)},
+				{Content: message.Content{Parts: []message.Part{
+					message.AudioPart{Source: mustAudio(t)},
 				}}},
 			}},
 			field: inference.FieldEmbedItemAudio,

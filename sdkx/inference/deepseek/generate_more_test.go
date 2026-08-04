@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 )
 
@@ -77,11 +77,11 @@ func TestGenerateUnaryReasoning(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %d (%#v)", len(parts), parts)
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok || reasoning.Text != "thinking aloud" {
 		t.Fatalf("part[0] = %#v", parts[0])
 	}
-	if _, ok := parts[1].(inference.TextPart); !ok {
+	if _, ok := parts[1].(message.TextPart); !ok {
 		t.Fatalf("part[1] = %#v", parts[1])
 	}
 	if response.Usage.Input.CacheReadTokens == nil || *response.Usage.Input.CacheReadTokens != 3 {
@@ -172,7 +172,7 @@ func TestGenerateStreamToolCalls(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("find something")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{toolCallDefinition()}
+	request.Input.Content.Intent.Text.Tools = []message.Definition{toolCallDefinition()}
 
 	stream, err := runtime.GenerateStream(context.Background(), generateModel("deepseek-v4-pro"), request)
 	if err != nil {
@@ -222,18 +222,18 @@ func TestReasoningRoundTripPolicy(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("again")
-	request.Context = []inference.Message{
+	request.Context = []message.Message{
 		{
-			Role: inference.RoleUser,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "find something"},
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "find something"},
 			}},
 		},
 		{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "trace"},
-				inference.ToolCallPart{Call: tool.Call{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "trace"},
+				message.ToolCallPart{Call: message.Call{
 					ID:        "call_9",
 					Name:      "lookup",
 					Arguments: json.RawMessage(`{"q":"ark"}`),
@@ -241,9 +241,9 @@ func TestReasoningRoundTripPolicy(t *testing.T) {
 			}},
 		},
 		{
-			Role: inference.RoleTool,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ToolResultPart{Result: tool.Result{CallID: "call_9", Content: "found it"}},
+			Role: message.RoleTool,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolResultPart{Result: message.Result{CallID: "call_9", Content: "found it"}},
 			}},
 		},
 	}

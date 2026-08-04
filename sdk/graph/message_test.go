@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func TestMessageStream(t *testing.T) {
@@ -32,7 +32,7 @@ func TestMessageStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg.Role != inference.RoleAssistant || msg.Content.Text() != "hello world" {
+	if msg.Role != message.RoleAssistant || msg.Content.Text() != "hello world" {
 		t.Fatalf("message = %+v", msg)
 	}
 	msgs := board.Channel(agent.MainChannel)

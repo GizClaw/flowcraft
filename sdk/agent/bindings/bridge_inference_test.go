@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // The inference bridge projects wire JSON straight into Runtime/Router
@@ -128,13 +128,13 @@ func TestInferenceBridge_Generate_RoundTrip(t *testing.T) {
 	if resp["finish_reason"] != string(inference.FinishCompleted) {
 		t.Fatalf("finish_reason = %v, want %q", resp["finish_reason"], inference.FinishCompleted)
 	}
-	message, ok := resp["message"].(map[string]any)
+	msg, ok := resp["message"].(map[string]any)
 	if !ok {
 		t.Fatalf("message = %T, want object", resp["message"])
 	}
-	parts, ok := message["content"].(map[string]any)["parts"].([]any)
+	parts, ok := msg["content"].(map[string]any)["parts"].([]any)
 	if !ok || len(parts) != 1 || parts[0].(map[string]any)["text"] != "ok" {
-		t.Fatalf("message parts = %v, want one text part %q", message["content"], "ok")
+		t.Fatalf("message parts = %v, want one text part %q", msg["content"], "ok")
 	}
 
 	// The canonical request reached the provider intact: context plus
@@ -143,7 +143,7 @@ func TestInferenceBridge_Generate_RoundTrip(t *testing.T) {
 	if len(reqs) != 1 || len(reqs[0].Context) != 1 || len(reqs[0].Context[0].Content.Parts) != 1 {
 		t.Fatalf("provider saw context = %+v, want one message", reqs)
 	}
-	text, ok := reqs[0].Input.Content.Parts[0].(inference.TextPart)
+	text, ok := reqs[0].Input.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != "hi" || reqs[0].Input.Role != inference.InputRoleUser {
 		t.Fatalf("provider saw input = %+v, want user text %q", reqs[0].Input, "hi")
 	}
@@ -263,10 +263,10 @@ func TestInferenceBridge_Generate_ToolCallResponse(t *testing.T) {
 	fake := &inferencetest.GenerateFake{
 		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
 			return inference.GenerateResponse{
-				Message: inference.Message{
-					Role: inference.RoleAssistant,
-					Content: inference.Content{Parts: []inference.Part{
-						inference.ToolCallPart{Call: tool.Call{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.Call{
 							ID:        "call_1",
 							Name:      "search",
 							Arguments: json.RawMessage(`{"q":"weather"}`),

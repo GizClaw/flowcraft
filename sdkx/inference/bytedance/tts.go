@@ -9,7 +9,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
 )
@@ -74,9 +75,9 @@ func compileTTS(
 		}
 
 		var text []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
-				if value, ok := part.(inference.TextPart); ok {
+				if value, ok := part.(message.TextPart); ok {
 					text = append(text, value.Text)
 					continue
 				}
@@ -86,15 +87,15 @@ func compileTTS(
 				)
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"speech synthesis keeps user context only",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.text = strings.Join(text, "\n")
@@ -356,10 +357,10 @@ func decodeTTS(
 	}
 	format := raw.format
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.AudioPart{Source: source, Format: &format},
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.AudioPart{Source: source, Format: &format},
 			}},
 		},
 		FinishReason: inference.FinishCompleted,

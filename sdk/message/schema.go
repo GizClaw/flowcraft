@@ -1,16 +1,16 @@
-package tool
+package message
 
 import "encoding/json"
 
-// PropertyDef describes a single JSON Schema property.
-type PropertyDef struct {
+// ToolPropertyDef describes a single JSON Schema property.
+type ToolPropertyDef struct {
 	name   string
 	schema map[string]any
 }
 
-// Property creates a simple typed property definition.
-func Property(name, typ, description string) PropertyDef {
-	return PropertyDef{
+// ToolProperty creates a simple typed property definition.
+func ToolProperty(name, typ, description string) ToolPropertyDef {
+	return ToolPropertyDef{
 		name: name,
 		schema: map[string]any{
 			"type":        typ,
@@ -19,15 +19,15 @@ func Property(name, typ, description string) PropertyDef {
 	}
 }
 
-// Items is the schema for the elements of an ArrayProperty: the
+// Items is the schema for the elements of a ToolArrayProperty: the
 // common "array of plain-typed values" case without a raw map.
 func Items(typ string) map[string]any {
 	return map[string]any{"type": typ}
 }
 
-// ArrayProperty creates an array property with item schema.
-func ArrayProperty(name, description string, items map[string]any) PropertyDef {
-	return PropertyDef{
+// ToolArrayProperty creates an array property with item schema.
+func ToolArrayProperty(name, description string, items map[string]any) ToolPropertyDef {
+	return ToolPropertyDef{
 		name: name,
 		schema: map[string]any{
 			"type":        "array",
@@ -37,8 +37,8 @@ func ArrayProperty(name, description string, items map[string]any) PropertyDef {
 	}
 }
 
-// ObjectProperty creates an object property with nested properties schema.
-func ObjectProperty(name, description string, properties map[string]any) PropertyDef {
+// ToolObjectProperty creates an object property with nested properties schema.
+func ToolObjectProperty(name, description string, properties map[string]any) ToolPropertyDef {
 	schema := map[string]any{
 		"type":        "object",
 		"description": description,
@@ -46,12 +46,12 @@ func ObjectProperty(name, description string, properties map[string]any) Propert
 	if len(properties) > 0 {
 		schema["properties"] = properties
 	}
-	return PropertyDef{name: name, schema: schema}
+	return ToolPropertyDef{name: name, schema: schema}
 }
 
-// StringMapProperty creates an object property whose values must be strings.
-func StringMapProperty(name, description string) PropertyDef {
-	return PropertyDef{
+// ToolStringMapProperty creates an object property whose values must be strings.
+func ToolStringMapProperty(name, description string) ToolPropertyDef {
+	return ToolPropertyDef{
 		name: name,
 		schema: map[string]any{
 			"type":                 "object",
@@ -61,9 +61,9 @@ func StringMapProperty(name, description string) PropertyDef {
 	}
 }
 
-// PropertyWithDefault creates a typed property with a default value.
-func PropertyWithDefault(name, typ, description string, defaultVal any) PropertyDef {
-	return PropertyDef{
+// ToolPropertyWithDefault creates a typed property with a default value.
+func ToolPropertyWithDefault(name, typ, description string, defaultVal any) ToolPropertyDef {
+	return ToolPropertyDef{
 		name: name,
 		schema: map[string]any{
 			"type":        typ,
@@ -73,13 +73,13 @@ func PropertyWithDefault(name, typ, description string, defaultVal any) Property
 	}
 }
 
-// EnumProperty creates a property restricted to a set of string values.
-func EnumProperty(name, typ, description string, values ...string) PropertyDef {
+// ToolEnumProperty creates a property restricted to a set of string values.
+func ToolEnumProperty(name, typ, description string, values ...string) ToolPropertyDef {
 	enums := make([]any, len(values))
 	for i, v := range values {
 		enums[i] = v
 	}
-	return PropertyDef{
+	return ToolPropertyDef{
 		name: name,
 		schema: map[string]any{
 			"type":        typ,
@@ -99,7 +99,7 @@ type SchemaBuilder struct {
 }
 
 // DefineSchema starts building a Definition with the given properties.
-func DefineSchema(name, description string, props ...PropertyDef) *SchemaBuilder {
+func DefineSchema(name, description string, props ...ToolPropertyDef) *SchemaBuilder {
 	properties := make(map[string]any, len(props))
 	for _, p := range props {
 		properties[p.name] = p.schema

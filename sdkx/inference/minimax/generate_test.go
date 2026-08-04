@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Generate pipeline behavior tests, run end to end through the runtime
@@ -106,7 +107,7 @@ func TestSignedThinkingRoundTrip(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %d, want reasoning + text", len(parts))
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok {
 		t.Fatalf("parts[0] = %#v, want ReasoningPart", parts[0])
 	}
@@ -115,11 +116,11 @@ func TestSignedThinkingRoundTrip(t *testing.T) {
 	}
 
 	followUp := simpleTextRequest("next")
-	followUp.Context = []inference.Message{
-		{Role: inference.RoleUser, Content: inference.Content{
-			Parts: []inference.Part{inference.TextPart{Text: "hi"}},
+	followUp.Context = []message.Message{
+		{Role: message.RoleUser, Content: message.Content{
+			Parts: []message.Part{message.TextPart{Text: "hi"}},
 		}},
-		{Role: inference.RoleAssistant, Content: inference.Content{
+		{Role: message.RoleAssistant, Content: message.Content{
 			Parts: parts,
 		}},
 	}
@@ -146,9 +147,9 @@ func TestVisionGating(t *testing.T) {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ImagePart{Source: image},
-					inference.TextPart{Text: "what is this?"},
+				Content: message.Content{Parts: []message.Part{
+					message.ImagePart{Source: image},
+					message.TextPart{Text: "what is this?"},
 				}},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -246,11 +247,11 @@ func TestStreamDecodesThinking(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %d, want reasoning + text", len(parts))
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok || reasoning.Text != "let me think" || reasoning.Signature != "sig-stream" {
 		t.Fatalf("reasoning = %#v", parts[0])
 	}
-	text, ok := parts[1].(inference.TextPart)
+	text, ok := parts[1].(message.TextPart)
 	if !ok || text.Text != "done" {
 		t.Fatalf("text = %#v", parts[1])
 	}

@@ -10,7 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func intPointer(value int) *int       { return &value }
@@ -29,8 +30,8 @@ func floatArray(n int, value float64) string {
 func textEmbedRequest() inference.EmbedRequest {
 	return inference.EmbedRequest{
 		Items: []inference.EmbedItem{{
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "风急天高猿啸哀"},
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "风急天高猿啸哀"},
 			}},
 		}},
 	}
@@ -58,8 +59,8 @@ func TestTextEmbeddingOnWire(t *testing.T) {
 		qwenModel("text-embedding-v4"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "a"}}}},
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "b"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "a"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "b"}}}},
 			},
 			Dimensions: intPointer(512),
 			Extensions: inference.Extensions{EmbedOptions{
@@ -128,9 +129,9 @@ func TestMultimodalEmbeddingIndependent(t *testing.T) {
 		qwenModel("qwen3-vl-embedding"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "hi"}}}},
-				{Content: inference.Content{Parts: []inference.Part{inference.ImagePart{Source: image}}}},
-				{Content: inference.Content{Parts: []inference.Part{inference.VideoPart{Source: video}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}}},
+				{Content: message.Content{Parts: []message.Part{message.ImagePart{Source: image}}}},
+				{Content: message.Content{Parts: []message.Part{message.VideoPart{Source: video}}}},
 			},
 		},
 	)
@@ -181,13 +182,13 @@ func TestMultimodalEmbeddingFusionPerItem(t *testing.T) {
 		qwenModel("qwen3-vl-embedding"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "a sneaker"},
-					inference.ImagePart{Source: image},
+				{Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "a sneaker"},
+					message.ImagePart{Source: image},
 				}}},
-				{Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "a boot"},
-					inference.ImagePart{Source: image},
+				{Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "a boot"},
+					message.ImagePart{Source: image},
 				}}},
 			},
 			Dimensions: intPointer(1024),
@@ -252,8 +253,8 @@ func TestEmbedCompileRejections(t *testing.T) {
 					Request: func() inference.EmbedRequest {
 						return inference.EmbedRequest{
 							Items: []inference.EmbedItem{{
-								Content: inference.Content{Parts: []inference.Part{
-									inference.ImagePart{Source: image},
+								Content: message.Content{Parts: []message.Part{
+									message.ImagePart{Source: image},
 								}},
 							}},
 						}
@@ -266,9 +267,9 @@ func TestEmbedCompileRejections(t *testing.T) {
 					Request: func() inference.EmbedRequest {
 						return inference.EmbedRequest{
 							Items: []inference.EmbedItem{{
-								Content: inference.Content{Parts: []inference.Part{
-									inference.TextPart{Text: "a"},
-									inference.TextPart{Text: "b"},
+								Content: message.Content{Parts: []message.Part{
+									message.TextPart{Text: "a"},
+									message.TextPart{Text: "b"},
 								}},
 							}},
 						}
@@ -281,8 +282,8 @@ func TestEmbedCompileRejections(t *testing.T) {
 					Request: func() inference.EmbedRequest {
 						items := make([]inference.EmbedItem, maxTextEmbedRows+1)
 						for index := range items {
-							items[index] = inference.EmbedItem{Content: inference.Content{
-								Parts: []inference.Part{inference.TextPart{Text: "x"}},
+							items[index] = inference.EmbedItem{Content: message.Content{
+								Parts: []message.Part{message.TextPart{Text: "x"}},
 							}}
 						}
 						return inference.EmbedRequest{Items: items}
@@ -311,8 +312,8 @@ func TestEmbedCompileRejections(t *testing.T) {
 					Request: func() inference.EmbedRequest {
 						return inference.EmbedRequest{
 							Items: []inference.EmbedItem{{
-								Content: inference.Content{Parts: []inference.Part{
-									inference.VideoPart{Source: videoData},
+								Content: message.Content{Parts: []message.Part{
+									message.VideoPart{Source: videoData},
 								}},
 							}},
 						}
@@ -403,9 +404,9 @@ func TestEmbedFusionServerReturnsMultiple(t *testing.T) {
 		qwenModel("qwen3-vl-embedding"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "a"},
-					inference.ImagePart{Source: image},
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "a"},
+					message.ImagePart{Source: image},
 				}},
 			}},
 		},

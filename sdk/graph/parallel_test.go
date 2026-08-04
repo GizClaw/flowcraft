@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func TestForkController_CancelRunningPropagatesCause(t *testing.T) {
@@ -114,9 +114,9 @@ func TestExecuteParallelInterruptMergesAssistantDeltasOnlyInBranchOrder(t *testi
 		Handler: func(_ ExecutionContext, board *agent.Board, cfg branchConfig) error {
 			board.SetVar("branch-"+cfg.Text, true)
 			board.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, cfg.Text))
+				message.NewTextMessage(message.RoleAssistant, cfg.Text))
 			board.AppendChannelMessage("tools",
-				inference.NewTextMessage(inference.RoleTool, "tool-"+cfg.Text))
+				message.NewTextMessage(message.RoleTool, "tool-"+cfg.Text))
 			return agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput, Detail: cfg.Text})
 		},
 	}); err != nil {
@@ -137,7 +137,7 @@ func TestExecuteParallelInterruptMergesAssistantDeltasOnlyInBranchOrder(t *testi
 	}, reg, WithParallel(ParallelConfig{Enabled: true}))
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleUser, "input"))
+		message.NewTextMessage(message.RoleUser, "input"))
 
 	board, err := g.Execute(context.Background(), testRun(), agent.NoopHost{}, board)
 	if !errdefs.IsInterrupted(err) {
@@ -163,13 +163,13 @@ func TestExecuteParallelInterruptMergesAssistantDeltasOnlyInBranchOrder(t *testi
 func TestMergeInterruptedAssistantMessagesExcludesOrdinaryFailures(t *testing.T) {
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleUser, "input"))
+		message.NewTextMessage(message.RoleUser, "input"))
 	preFork := board.Snapshot()
 	snapshot := func(text string) *agent.BoardSnapshot {
 		branch := agent.NewBoard()
 		branch.RestoreFrom(preFork)
 		branch.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, text))
+			message.NewTextMessage(message.RoleAssistant, text))
 		return branch.Snapshot()
 	}
 

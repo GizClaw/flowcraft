@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func TestTranscriptionContractsSupportBatchAndDuplexSessions(t *testing.T) {

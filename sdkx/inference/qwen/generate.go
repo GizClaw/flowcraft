@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // generateWire is the compiled request: the provider-owned intermediate
@@ -208,24 +208,24 @@ func compileGenerate(
 
 // messages compiles context and input into DashScope's message array.
 func (c *compiler) messages(request inference.GenerateRequest) {
-	for _, message := range request.Context {
-		switch message.Role {
-		case inference.RoleSystem:
-			c.contextSystem(message.Content.Parts)
-		case inference.RoleUser:
+	for _, turn := range request.Context {
+		switch turn.Role {
+		case message.RoleSystem:
+			c.contextSystem(turn.Content.Parts)
+		case message.RoleUser:
 			c.wire.Messages = append(c.wire.Messages, c.userMessage(
-				message.Content.Parts, contextPartFields,
+				turn.Content.Parts, contextPartFields,
 			))
-		case inference.RoleAssistant:
+		case message.RoleAssistant:
 			c.wire.Messages = append(c.wire.Messages, c.assistantMessage(
-				message.Content.Parts, contextPartFields,
+				turn.Content.Parts, contextPartFields,
 			))
-		case inference.RoleTool:
-			c.toolMessages(message.Content.Parts, contextPartFields)
+		case message.RoleTool:
+			c.toolMessages(turn.Content.Parts, contextPartFields)
 		default:
 			c.ledger.reject(
 				inference.FieldGenerateContextRole,
-				fmt.Sprintf("role %q is not a DashScope message role", message.Role),
+				fmt.Sprintf("role %q is not a DashScope message role", turn.Role),
 			)
 		}
 	}
@@ -241,10 +241,10 @@ func (c *compiler) messages(request inference.GenerateRequest) {
 
 // contextSystem compiles system context. Only text parts carry; any other
 // part kind rejects.
-func (c *compiler) contextSystem(parts []inference.Part) {
+func (c *compiler) contextSystem(parts []message.Part) {
 	var texts []string
 	for _, part := range parts {
-		if text, ok := part.(inference.TextPart); ok {
+		if text, ok := part.(message.TextPart); ok {
 			texts = append(texts, text.Text)
 			continue
 		}
@@ -264,30 +264,30 @@ func (c *compiler) contextSystem(parts []inference.Part) {
 // userMessage compiles user-role parts: text plus, on multimodal entries,
 // image and video items.
 func (c *compiler) userMessage(
-	parts []inference.Part,
-	partFields map[inference.PartKind]inference.FieldID,
+	parts []message.Part,
+	partFields map[message.PartKind]inference.FieldID,
 ) wireMessage {
 	var texts []string
 	var items []wireContentItem
 	for _, part := range parts {
 		switch typed := part.(type) {
-		case inference.TextPart:
+		case message.TextPart:
 			texts = append(texts, typed.Text)
 			text := typed.Text
 			items = append(items, wireContentItem{Text: &text})
-		case inference.ImagePart:
+		case message.ImagePart:
 			if !c.entry.vision {
 				c.ledger.reject(
-					partFields[inference.PartImage],
+					partFields[message.PartImage],
 					fmt.Sprintf("model %s does not accept image input", c.model),
 				)
 				continue
 			}
 			items = append(items, wireContentItem{Image: imageValue(typed.Source)})
-		case inference.VideoPart:
+		case message.VideoPart:
 			if !c.entry.video {
 				c.ledger.reject(
-					partFields[inference.PartVideo],
+					partFields[message.PartVideo],
 					fmt.Sprintf("model %s does not accept video input", c.model),
 				)
 				continue
@@ -295,7 +295,7 @@ func (c *compiler) userMessage(
 			value, ok := videoValue(typed.Source)
 			if !ok {
 				c.ledger.reject(
-					partFields[inference.PartVideo],
+					partFields[message.PartVideo],
 					"video input must be a URL; inline bytes are unsupported",
 				)
 				continue
@@ -340,8 +340,8 @@ func videoValue(source media.VideoSource) (string, bool) {
 // and reasoning traces. Reasoning round-trip rides preserve_thinking and
 // only exists on entries that declare it; elsewhere the trace drops.
 func (c *compiler) assistantMessage(
-	parts []inference.Part,
-	partFields map[inference.PartKind]inference.FieldID,
+	parts []message.Part,
+	partFields map[message.PartKind]inference.FieldID,
 ) wireMessage {
 	var msg wireMessage
 	msg.Role = "assistant"
@@ -349,9 +349,9 @@ func (c *compiler) assistantMessage(
 	var reasoning []string
 	for _, part := range parts {
 		switch typed := part.(type) {
-		case inference.TextPart:
+		case message.TextPart:
 			texts = append(texts, typed.Text)
-		case inference.ToolCallPart:
+		case message.ToolCallPart:
 			msg.ToolCalls = append(msg.ToolCalls, wireToolCall{
 				ID:   typed.Call.ID,
 				Type: "function",
@@ -360,7 +360,7 @@ func (c *compiler) assistantMessage(
 					Arguments: string(typed.Call.Arguments),
 				},
 			})
-		case inference.ReasoningPart:
+		case message.ReasoningPart:
 			reasoning = append(reasoning, typed.Text)
 		default:
 			if _, known := partFields[part.Kind()]; !known {
@@ -378,7 +378,7 @@ func (c *compiler) assistantMessage(
 			msg.ReasoningContent = trace
 		} else {
 			c.ledger.drop(
-				partFields[inference.PartReasoning],
+				partFields[message.PartReasoning],
 				fmt.Sprintf("model %s cannot re-ingest reasoning history; dropping trace", c.model),
 			)
 		}
@@ -388,11 +388,11 @@ func (c *compiler) assistantMessage(
 
 // toolMessages compiles tool results into role=tool messages.
 func (c *compiler) toolMessages(
-	parts []inference.Part,
-	partFields map[inference.PartKind]inference.FieldID,
+	parts []message.Part,
+	partFields map[message.PartKind]inference.FieldID,
 ) {
 	for _, part := range parts {
-		result, ok := part.(inference.ToolResultPart)
+		result, ok := part.(message.ToolResultPart)
 		if !ok {
 			if _, known := partFields[part.Kind()]; !known {
 				continue
@@ -727,30 +727,30 @@ func decodeGenerate(
 		)
 	}
 	choice := raw.Output.Choices[0]
-	message := choice.Message
-	var parts []inference.Part
-	if message.ReasoningContent != "" {
-		parts = append(parts, inference.ReasoningPart{Text: message.ReasoningContent})
+	wireMsg := choice.Message
+	var parts []message.Part
+	if wireMsg.ReasoningContent != "" {
+		parts = append(parts, message.ReasoningPart{Text: wireMsg.ReasoningContent})
 	}
-	if text := messageContentText(message.Content); text != "" {
-		parts = append(parts, inference.TextPart{Text: text})
+	if text := messageContentText(wireMsg.Content); text != "" {
+		parts = append(parts, message.TextPart{Text: text})
 	}
-	for _, call := range message.ToolCalls {
+	for _, call := range wireMsg.ToolCalls {
 		arguments := call.Function.Arguments
 		if strings.TrimSpace(arguments) == "" {
 			// No-argument tools answer with an empty string; canonical
 			// tool calls require a JSON object.
 			arguments = "{}"
 		}
-		parts = append(parts, inference.ToolCallPart{Call: tool.Call{
+		parts = append(parts, message.ToolCallPart{Call: message.Call{
 			ID:        call.ID,
 			Name:      call.Function.Name,
 			Arguments: json.RawMessage(arguments),
 		}})
 	}
-	response.Message = inference.Message{
-		Role:    inference.RoleAssistant,
-		Content: inference.Content{Parts: parts},
+	response.Message = message.Message{
+		Role:    message.RoleAssistant,
+		Content: message.Content{Parts: parts},
 	}
 	response.FinishReason = finishReason(choice.FinishReason)
 	response.Usage = raw.usage().canonical()

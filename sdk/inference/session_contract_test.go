@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // This file extends the provider contract matrix to opened sessions: which

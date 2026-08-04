@@ -11,7 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func simpleTextRequest(text string) inference.GenerateRequest {
@@ -19,8 +19,8 @@ func simpleTextRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -48,7 +48,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("find something")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "lookup",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
@@ -63,7 +63,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 	if response.FinishReason != inference.FinishToolCalls {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
-	call, ok := response.Message.Content.Parts[0].(inference.ToolCallPart)
+	call, ok := response.Message.Content.Parts[0].(message.ToolCallPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -112,7 +112,7 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("hi")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "lookup",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
@@ -170,11 +170,11 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 		t.Fatalf("result finish = %q", result.FinishReason)
 	}
 	parts := result.Message.Content.Parts
-	text, ok := parts[0].(inference.TextPart)
+	text, ok := parts[0].(message.TextPart)
 	if !ok || text.Text != "hello" {
 		t.Fatalf("text part = %#v", parts[0])
 	}
-	call, ok := parts[1].(inference.ToolCallPart)
+	call, ok := parts[1].(message.ToolCallPart)
 	if !ok || call.Call.ID != "call_1" || call.Call.Name != "lookup" ||
 		string(call.Call.Arguments) != `{"q":"x"}` {
 		t.Fatalf("tool part = %#v", parts[1])
@@ -250,14 +250,14 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok ||
 		reasoning.Text != "first thought\n\nsecond thought" ||
 		reasoning.Signature != "" ||
 		reasoning.ID != "rs_1" {
 		t.Fatalf("reasoning part = %#v", parts[0])
 	}
-	if text, ok := parts[1].(inference.TextPart); !ok || text.Text != "answer" {
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "answer" {
 		t.Fatalf("text part = %#v", parts[1])
 	}
 }
@@ -331,14 +331,14 @@ func TestGenerateStreamReasoning(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok ||
 		reasoning.Text != "thinking aloud" ||
 		reasoning.Signature != "" ||
 		reasoning.ID != "rs_1" {
 		t.Fatalf("streamed reasoning = %#v", parts[0])
 	}
-	if text, ok := parts[1].(inference.TextPart); !ok || text.Text != "done" {
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "done" {
 		t.Fatalf("text part = %#v", parts[1])
 	}
 }
@@ -349,11 +349,11 @@ func TestCompileReasoningDispositions(t *testing.T) {
 
 	t.Run("context reasoning drops with reason", func(t *testing.T) {
 		request := simpleTextRequest("hi")
-		request.Context = []inference.Message{{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "trace", ID: "rs_1"},
-				inference.TextPart{Text: "answer"},
+		request.Context = []message.Message{{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "trace", ID: "rs_1"},
+				message.TextPart{Text: "answer"},
 			}},
 		}}
 		compiled, err := compile(

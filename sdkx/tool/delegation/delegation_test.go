@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	tooldelegation "github.com/GizClaw/flowcraft/sdkx/tool/delegation"
 )
@@ -215,7 +216,7 @@ func TestDelegationStatusRequiresHostAndStrictArguments(t *testing.T) {
 	}
 }
 
-func assertTargetEnum(t *testing.T, definition tool.Definition, want []string) {
+func assertTargetEnum(t *testing.T, definition message.Definition, want []string) {
 	t.Helper()
 	var schema struct {
 		Properties map[string]struct {

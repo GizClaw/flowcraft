@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // generateWire is the provider-owned intermediate representation for one
@@ -173,28 +174,28 @@ func (l *ledger) err() error {
 	return inference.NewError(inference.UnsupportedFeature, l.operation, field, fmt.Errorf("deepseek: %s", reason))
 }
 
-var contextPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateContextText,
-	inference.PartImage:      inference.FieldGenerateContextImage,
-	inference.PartAudio:      inference.FieldGenerateContextAudio,
-	inference.PartVideo:      inference.FieldGenerateContextVideo,
-	inference.PartFile:       inference.FieldGenerateContextFile,
-	inference.PartData:       inference.FieldGenerateContextData,
-	inference.PartToolCall:   inference.FieldGenerateContextToolCall,
-	inference.PartToolResult: inference.FieldGenerateContextToolResult,
-	inference.PartReasoning:  inference.FieldGenerateContextReasoning,
+var contextPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateContextText,
+	message.PartImage:      inference.FieldGenerateContextImage,
+	message.PartAudio:      inference.FieldGenerateContextAudio,
+	message.PartVideo:      inference.FieldGenerateContextVideo,
+	message.PartFile:       inference.FieldGenerateContextFile,
+	message.PartData:       inference.FieldGenerateContextData,
+	message.PartToolCall:   inference.FieldGenerateContextToolCall,
+	message.PartToolResult: inference.FieldGenerateContextToolResult,
+	message.PartReasoning:  inference.FieldGenerateContextReasoning,
 }
 
-var inputPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateInputText,
-	inference.PartImage:      inference.FieldGenerateInputImage,
-	inference.PartAudio:      inference.FieldGenerateInputAudio,
-	inference.PartVideo:      inference.FieldGenerateInputVideo,
-	inference.PartFile:       inference.FieldGenerateInputFile,
-	inference.PartData:       inference.FieldGenerateInputData,
-	inference.PartToolCall:   inference.FieldGenerateInputToolCall,
-	inference.PartToolResult: inference.FieldGenerateInputToolResult,
-	inference.PartReasoning:  inference.FieldGenerateInputReasoning,
+var inputPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateInputText,
+	message.PartImage:      inference.FieldGenerateInputImage,
+	message.PartAudio:      inference.FieldGenerateInputAudio,
+	message.PartVideo:      inference.FieldGenerateInputVideo,
+	message.PartFile:       inference.FieldGenerateInputFile,
+	message.PartData:       inference.FieldGenerateInputData,
+	message.PartToolCall:   inference.FieldGenerateInputToolCall,
+	message.PartToolResult: inference.FieldGenerateInputToolResult,
+	message.PartReasoning:  inference.FieldGenerateInputReasoning,
 }
 
 // compileGenerate compiles a canonical generate request into the chat
@@ -206,14 +207,14 @@ func compileGenerate(model string, entry catalogEntry) inference.GenerateCompile
 		ledger := newLedger(inference.OperationGenerate, request.ActiveFieldsFor(shape))
 		wire := generateWire{model: model, stream: shape == inference.GenerateExecutionStream}
 
-		for _, message := range request.Context {
-			switch message.Role {
-			case inference.RoleSystem:
-				compileSystemMessage(&wire, message.Content.Parts, ledger)
-			case inference.RoleTool:
-				compileToolResults(&wire, message.Content.Parts, contextPartFields, ledger)
+		for _, turn := range request.Context {
+			switch turn.Role {
+			case message.RoleSystem:
+				compileSystemMessage(&wire, turn.Content.Parts, ledger)
+			case message.RoleTool:
+				compileToolResults(&wire, turn.Content.Parts, contextPartFields, ledger)
 			default:
-				compileMessage(&wire, string(message.Role), message.Content.Parts, entry, contextPartFields, ledger)
+				compileMessage(&wire, string(turn.Role), turn.Content.Parts, entry, contextPartFields, ledger)
 			}
 		}
 		if request.Input.Role == inference.InputRoleTool {
@@ -233,11 +234,11 @@ func compileGenerate(model string, entry catalogEntry) inference.GenerateCompile
 	}
 }
 
-func compileSystemMessage(wire *generateWire, parts []inference.Part, ledger *ledger) {
+func compileSystemMessage(wire *generateWire, parts []message.Part, ledger *ledger) {
 	var text strings.Builder
 	for _, part := range parts {
 		switch value := part.(type) {
-		case inference.TextPart:
+		case message.TextPart:
 			text.WriteString(value.Text)
 		default:
 			ledger.reject(contextPartFields[part.Kind()], "system messages carry text only")
@@ -253,9 +254,9 @@ func compileSystemMessage(wire *generateWire, parts []inference.Part, ledger *le
 func compileMessage(
 	wire *generateWire,
 	role string,
-	parts []inference.Part,
+	parts []message.Part,
 	entry catalogEntry,
-	fields map[inference.PartKind]inference.FieldID,
+	fields map[message.PartKind]inference.FieldID,
 	ledger *ledger,
 ) {
 	var (
@@ -266,29 +267,29 @@ func compileMessage(
 	)
 	for _, part := range parts {
 		switch value := part.(type) {
-		case inference.TextPart:
+		case message.TextPart:
 			text.WriteString(value.Text)
-		case inference.ImagePart:
-			ledger.reject(fields[inference.PartImage], "deepseek models are text-only")
-		case inference.VideoPart:
-			ledger.reject(fields[inference.PartVideo], "deepseek models are text-only")
-		case inference.AudioPart:
-			ledger.reject(fields[inference.PartAudio], "deepseek models are text-only")
-		case inference.FilePart:
-			ledger.reject(fields[inference.PartFile], "file references are not supported")
-		case inference.DataPart:
-			ledger.reject(fields[inference.PartData], "opaque data parts have no native representation")
-		case inference.ToolCallPart:
+		case message.ImagePart:
+			ledger.reject(fields[message.PartImage], "deepseek models are text-only")
+		case message.VideoPart:
+			ledger.reject(fields[message.PartVideo], "deepseek models are text-only")
+		case message.AudioPart:
+			ledger.reject(fields[message.PartAudio], "deepseek models are text-only")
+		case message.FilePart:
+			ledger.reject(fields[message.PartFile], "file references are not supported")
+		case message.DataPart:
+			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+		case message.ToolCallPart:
 			toolCalls = append(toolCalls, wireToolCall{
 				id:   value.Call.ID,
 				name: value.Call.Name,
 				args: bytes.Clone(value.Call.Arguments),
 			})
-		case inference.ToolResultPart:
-			ledger.reject(fields[inference.PartToolResult], "tool results ride tool-role messages, not user or assistant turns")
-		case inference.ReasoningPart:
+		case message.ToolResultPart:
+			ledger.reject(fields[message.PartToolResult], "tool results ride tool-role messages, not user or assistant turns")
+		case message.ReasoningPart:
 			if role != "assistant" {
-				ledger.reject(fields[inference.PartReasoning], "reasoning parts belong to assistant context")
+				ledger.reject(fields[message.PartReasoning], "reasoning parts belong to assistant context")
 				continue
 			}
 			sawReasoning = true
@@ -296,27 +297,27 @@ func compileMessage(
 		}
 	}
 
-	message := wireMessage{role: role, text: text.String(), toolCalls: toolCalls}
+	wireMsg := wireMessage{role: role, text: text.String(), toolCalls: toolCalls}
 	if sawReasoning {
 		if len(toolCalls) > 0 {
-			message.reasoning = reasoning.String()
-			message.hasReasoning = true
+			wireMsg.reasoning = reasoning.String()
+			wireMsg.hasReasoning = true
 		} else {
-			ledger.drop(fields[inference.PartReasoning], "deepseek ignores reasoning on turns without tool calls")
+			ledger.drop(fields[message.PartReasoning], "deepseek ignores reasoning on turns without tool calls")
 		}
 	}
-	wire.messages = append(wire.messages, message)
+	wire.messages = append(wire.messages, wireMsg)
 }
 
 func compileToolResults(
 	wire *generateWire,
-	parts []inference.Part,
-	fields map[inference.PartKind]inference.FieldID,
+	parts []message.Part,
+	fields map[message.PartKind]inference.FieldID,
 	ledger *ledger,
 ) {
 	for _, part := range parts {
 		switch value := part.(type) {
-		case inference.ToolResultPart:
+		case message.ToolResultPart:
 			wire.messages = append(wire.messages, wireMessage{
 				role:   "tool",
 				text:   value.Result.Content,

@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 )
 
@@ -88,8 +88,8 @@ func simpleTextRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -238,24 +238,24 @@ func TestFactoryBuild(t *testing.T) {
 
 func TestWireToParamsMessages(t *testing.T) {
 	request := simpleTextRequest("current")
-	request.Context = []inference.Message{
+	request.Context = []message.Message{
 		{
-			Role: inference.RoleSystem,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "be terse"},
+			Role: message.RoleSystem,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "be terse"},
 			}},
 		},
 		{
-			Role: inference.RoleUser,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "prior"},
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "prior"},
 			}},
 		},
 		{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "answer"},
-				inference.ToolCallPart{Call: tool.Call{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "answer"},
+				message.ToolCallPart{Call: message.Call{
 					ID:        "toolu_1",
 					Name:      "lookup",
 					Arguments: json.RawMessage(`{"q":"x"}`),
@@ -263,9 +263,9 @@ func TestWireToParamsMessages(t *testing.T) {
 			}},
 		},
 		{
-			Role: inference.RoleTool,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ToolResultPart{Result: tool.Result{
+			Role: message.RoleTool,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolResultPart{Result: message.Result{
 					CallID:  "toolu_1",
 					Content: "found",
 				}},
@@ -330,7 +330,7 @@ func TestWireToParamsKnobs(t *testing.T) {
 		Temperature:     floatPointer(0.2),
 		TopP:            floatPointer(0.9),
 		ReasoningEffort: inference.ReasoningHigh,
-		Tools: []tool.Definition{{
+		Tools: []message.Definition{{
 			Name:        "lookup",
 			Description: "find things",
 			InputSchema: json.RawMessage(
@@ -428,13 +428,13 @@ var _ = strings.TrimSpace
 
 func TestWireToParamsThinkingBlocks(t *testing.T) {
 	request := simpleTextRequest("current")
-	request.Context = []inference.Message{{
-		Role: inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: "answer"},
-			inference.ReasoningPart{Text: "trace", Signature: "sig-1"},
-			inference.ReasoningPart{Signature: "redacted-1"},
-			inference.ToolCallPart{Call: tool.Call{
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "answer"},
+			message.ReasoningPart{Text: "trace", Signature: "sig-1"},
+			message.ReasoningPart{Signature: "redacted-1"},
+			message.ToolCallPart{Call: message.Call{
 				ID:        "toolu_1",
 				Name:      "lookup",
 				Arguments: json.RawMessage(`{"q":"x"}`),
@@ -510,11 +510,11 @@ func TestCompileReasoningDispositions(t *testing.T) {
 
 	t.Run("unsigned reasoning drops with reason", func(t *testing.T) {
 		request := simpleTextRequest("hi")
-		request.Context = []inference.Message{{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "unsigned"},
-				inference.TextPart{Text: "answer"},
+		request.Context = []message.Message{{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "unsigned"},
+				message.TextPart{Text: "answer"},
 			}},
 		}}
 		compiled, err := compile(
@@ -548,7 +548,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 		request := simpleTextRequest("hi")
 		request.Input.Content.Parts = append(
 			request.Input.Content.Parts,
-			inference.ReasoningPart{Text: "trace", Signature: "sig"},
+			message.ReasoningPart{Text: "trace", Signature: "sig"},
 		)
 		_, err := compile(
 			context.Background(), model, request, inference.GenerateExecutionUnary,
@@ -583,15 +583,15 @@ func TestGenerateUnaryThinkingBlocks(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	visible, ok := parts[0].(inference.ReasoningPart)
+	visible, ok := parts[0].(message.ReasoningPart)
 	if !ok || visible.Text != "let me think" || visible.Signature != "sig-1" {
 		t.Fatalf("thinking part = %#v", parts[0])
 	}
-	redacted, ok := parts[1].(inference.ReasoningPart)
+	redacted, ok := parts[1].(message.ReasoningPart)
 	if !ok || redacted.Text != "" || redacted.Signature != "opaque-9" {
 		t.Fatalf("redacted part = %#v", parts[1])
 	}
-	if text, ok := parts[2].(inference.TextPart); !ok || text.Text != "answer" {
+	if text, ok := parts[2].(message.TextPart); !ok || text.Text != "answer" {
 		t.Fatalf("text part = %#v", parts[2])
 	}
 }
@@ -680,15 +680,15 @@ func TestGenerateStreamThinkingBlocks(t *testing.T) {
 	if len(parts) != 3 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	visible, ok := parts[0].(inference.ReasoningPart)
+	visible, ok := parts[0].(message.ReasoningPart)
 	if !ok || visible.Text != "let me consider" || visible.Signature != "sig-abc" {
 		t.Fatalf("streamed thinking = %#v", parts[0])
 	}
-	redacted, ok := parts[1].(inference.ReasoningPart)
+	redacted, ok := parts[1].(message.ReasoningPart)
 	if !ok || redacted.Text != "" || redacted.Signature != "opaque-1" {
 		t.Fatalf("streamed redacted = %#v", parts[1])
 	}
-	if text, ok := parts[2].(inference.TextPart); !ok || text.Text != "done" {
+	if text, ok := parts[2].(message.TextPart); !ok || text.Text != "done" {
 		t.Fatalf("text part = %#v", parts[2])
 	}
 }

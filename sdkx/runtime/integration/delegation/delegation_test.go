@@ -9,6 +9,7 @@ import (
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	sdkxdelegation "github.com/GizClaw/flowcraft/sdkx/delegation"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
@@ -19,8 +20,8 @@ import (
 
 type namedTool struct{ name string }
 
-func (t namedTool) Definition() tool.Definition {
-	return tool.DefineSchema(t.name, "existing").Build()
+func (t namedTool) Definition() message.Definition {
+	return message.DefineSchema(t.name, "existing").Build()
 }
 
 func (namedTool) Execute(context.Context, string) (string, error) { return "", nil }

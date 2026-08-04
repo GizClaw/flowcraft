@@ -15,7 +15,7 @@
 // # Transcript records
 //
 // Append writes and Load reads []Record values, not
-// []inference.Message directly. Record wraps a Message with a
+// []message.Message directly. Record wraps a Message with a
 // runtime-assigned Seq and a caller-stable ID, which makes
 // (Seq, ID) last-write-wins, idempotent retry (via
 // AppendRequest.IdempotencyKey), and opaque cursor pagination
@@ -49,8 +49,8 @@
 //   - Archive → scheduler        (independent goroutine, no hook)
 //
 // memory is a leaf with respect to other sdk packages: it
-// depends on sdk/errdefs and reuses inference.Message,
-// inference.Part, and (via Record) inference's content union
+// depends on sdk/errdefs and reuses message.Message,
+// message.Part, and (via Record) inference's content union
 // from sdk/inference. Concrete storage backends, embedder
 // bindings, and lifecycle policies live in the adapter layer
 // (sdkx/memory) and are registered through the typed Impls the

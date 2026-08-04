@@ -6,7 +6,8 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Embedding endpoint paths under the API root.
@@ -141,7 +142,7 @@ func compileEmbedText(
 			continue
 		}
 		for _, part := range item.Content.Parts {
-			text, ok := part.(inference.TextPart)
+			text, ok := part.(message.TextPart)
 			if !ok {
 				ledger.reject(
 					embedPartFields[part.Kind()],
@@ -169,12 +170,12 @@ func compileEmbedMultimodal(
 		contents := make([]embedContent, 0, len(item.Content.Parts))
 		for _, part := range item.Content.Parts {
 			switch typed := part.(type) {
-			case inference.TextPart:
+			case message.TextPart:
 				text := typed.Text
 				contents = append(contents, embedContent{Text: &text})
-			case inference.ImagePart:
+			case message.ImagePart:
 				contents = append(contents, embedContent{Image: embedImageValue(typed.Source, ledger)})
-			case inference.VideoPart:
+			case message.VideoPart:
 				value, ok := videoValue(typed.Source)
 				if !ok {
 					ledger.reject(

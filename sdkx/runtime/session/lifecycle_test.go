@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func turnHostFactory(bus event.Bus) HostFactory {
@@ -54,7 +54,7 @@ func TestSessionConcurrentStartNeverExecutesTwoTurns(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			turn, err := session.Start(context.Background(), agent.Request{
-				Message: inference.NewTextMessage(inference.RoleUser, "next"),
+				Message: message.NewTextMessage(message.RoleUser, "next"),
 			})
 			if err != nil {
 				t.Errorf("Start error = %v", err)
@@ -87,7 +87,7 @@ func TestSessionStartContextCancellationClassifiesTurnCanceled(t *testing.T) {
 	})
 	_, session, _, _ := newTurnSession(t, engine, turnHostFactory)
 	ctx, cancel := context.WithCancel(context.Background())
-	turn, err := session.Start(ctx, agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+	turn, err := session.Start(ctx, agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestPromptTimeoutAndInterruptRejectLateReply(t *testing.T) {
 		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
 		defer sub.Close()
 		go capturePromptIDs(sub, promptIDs)
-		turn, err := session.Start(context.Background(), agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+		turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestPromptTimeoutAndInterruptRejectLateReply(t *testing.T) {
 		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
 		defer sub.Close()
 		go capturePromptIDs(sub, promptIDs)
-		turn, err := session.Start(context.Background(), agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+		turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -200,7 +200,7 @@ func TestSlowSinkDetachesWithoutStoppingFastSink(t *testing.T) {
 	_, session, _, _ := newTurnSession(t, engine, turnHostFactory)
 	turn, err := session.Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID:        "slow",
 			QueueSize: 1,
@@ -257,7 +257,7 @@ func TestTurnWaitDrainsSinkThroughRunEnd(t *testing.T) {
 	var canceledContexts atomic.Int64
 	turn, err := session.Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID:        "drain",
 			QueueSize: 8,
@@ -309,7 +309,7 @@ func TestTurnWaitDoesNotBlockForeverOnStuckSink(t *testing.T) {
 	var enteredOnce sync.Once
 	turn, err := session.Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID:              "blocked",
 			DeliveryTimeout: 30 * time.Millisecond,
@@ -356,7 +356,7 @@ func TestTurnWaitAllowsSlowSinkWithinDeliveryTimeout(t *testing.T) {
 	var calls atomic.Int64
 	turn, err := session.Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID:              "slow-within-budget",
 			DeliveryTimeout: 200 * time.Millisecond,
@@ -403,7 +403,7 @@ func TestManagerCloseInterruptsAndWaitsForActiveTurn(t *testing.T) {
 		}
 	})
 	manager, session, _, _ := newTurnSession(t, engine, turnHostFactory)
-	turn, err := session.Start(context.Background(), agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+	turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 	if err != nil {
 		t.Fatal(err)
 	}

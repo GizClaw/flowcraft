@@ -3,10 +3,12 @@ package tool
 import (
 	"context"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func stubTool(name string) Tool {
-	return FuncTool(Definition{Name: name, Description: name + " desc"}, func(_ context.Context, _ string) (string, error) {
+	return FuncTool(message.Definition{Name: name, Description: name + " desc"}, func(_ context.Context, _ string) (string, error) {
 		return "{}", nil
 	})
 }

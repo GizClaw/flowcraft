@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // realtimeConfig is the minimal valid duplex dialogue config.
@@ -45,7 +45,7 @@ func TestRealtimeCompileAcceptance(t *testing.T) {
 		Channels:     1,
 	}
 	config.Voice = &media.VoiceSpec{ID: "zh_female_cancan"}
-	config.Tools = []tool.Definition{{
+	config.Tools = []message.Definition{{
 		Name:        "lookup",
 		Description: "look things up",
 		InputSchema: json.RawMessage(`{
@@ -142,7 +142,7 @@ func TestRealtimeCompileRejections(t *testing.T) {
 		{
 			name: "schema keyword outside subset",
 			mutate: func(c *inference.RealtimeConfig) {
-				c.Tools = []tool.Definition{{
+				c.Tools = []message.Definition{{
 					Name:        "lookup",
 					InputSchema: json.RawMessage(`{"type":"object","patternProperties":{"^x":{}}}`),
 				}}
@@ -198,7 +198,7 @@ func TestRealtimeInputCompile(t *testing.T) {
 	compiled, err = compileRealtimeInput(
 		context.Background(),
 		generateModel("doubao-seeduplex-3-0"),
-		inference.RealtimeToolResultInput{Result: tool.Result{
+		inference.RealtimeToolResultInput{Result: message.Result{
 			CallID:  "call_1",
 			Content: "done",
 		}},

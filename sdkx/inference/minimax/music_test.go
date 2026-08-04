@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func musicTestRequest(prompt string) inference.GenerateRequest {
@@ -18,8 +19,8 @@ func musicTestRequest(prompt string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: prompt}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: prompt}},
 				},
 				Intent: inference.Intent{Audio: &inference.AudioIntent{
 					Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
@@ -88,7 +89,7 @@ func TestMusicUnary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.AudioPart)
+	part, ok := response.Message.Content.Parts[0].(message.AudioPart)
 	if !ok {
 		t.Fatalf("part type = %T", response.Message.Content.Parts[0])
 	}

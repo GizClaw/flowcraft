@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -83,7 +84,7 @@ func executeGraph(t *testing.T, g *graph.Graph, host agent.Host, board *agent.Bo
 func userBoard() *agent.Board {
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleUser, "hi"))
+		message.NewTextMessage(message.RoleUser, "hi"))
 	return board
 }
 
@@ -122,16 +123,16 @@ func TestInferenceNode_Unary_WritesMessageAndVars(t *testing.T) {
 	}
 
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 2 || msgs[1].Role != inference.RoleAssistant {
+	if len(msgs) != 2 || msgs[1].Role != message.RoleAssistant {
 		t.Fatalf("channel = %+v, want user + assistant", msgs)
 	}
-	if text, ok := msgs[1].Content.Parts[0].(inference.TextPart); !ok || text.Text != "ok" {
+	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
 		t.Fatalf("assistant message = %+v, want text %q", msgs[1].Content.Parts[0], "ok")
 	}
 	if v, ok := board.GetVar("answer"); !ok {
 		t.Fatal("output_key var missing")
-	} else if msg, ok := v.(inference.Message); !ok || msg.Role != inference.RoleAssistant {
-		t.Fatalf("output var = %T, want inference.Message", v)
+	} else if msg, ok := v.(message.Message); !ok || msg.Role != message.RoleAssistant {
+		t.Fatalf("output var = %T, want message.Message", v)
 	}
 	if pending, ok := board.GetVar("tool_pending"); !ok || pending != false {
 		t.Fatalf("tool_pending = %v, want false", pending)
@@ -146,7 +147,7 @@ func TestInferenceNode_Unary_WritesMessageAndVars(t *testing.T) {
 	if len(req.Context) != 0 || req.Input.Role != inference.InputRoleUser {
 		t.Fatalf("request = %+v, want one user input", req)
 	}
-	if text, ok := req.Input.Content.Parts[0].(inference.TextPart); !ok || text.Text != "hi" {
+	if text, ok := req.Input.Content.Parts[0].(message.TextPart); !ok || text.Text != "hi" {
 		t.Fatalf("input = %+v, want text %q", req.Input.Content.Parts[0], "hi")
 	}
 	if req.Input.Content.Intent.Text == nil {
@@ -165,10 +166,10 @@ func TestInferenceNode_SystemPromptPrepended(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	ctx := fake.LastRequest().Context
-	if len(ctx) != 1 || ctx[0].Role != inference.RoleSystem {
+	if len(ctx) != 1 || ctx[0].Role != message.RoleSystem {
 		t.Fatalf("context = %+v, want one system message", ctx)
 	}
-	if text, ok := ctx[0].Content.Parts[0].(inference.TextPart); !ok || text.Text != "be terse" {
+	if text, ok := ctx[0].Content.Parts[0].(message.TextPart); !ok || text.Text != "be terse" {
 		t.Fatalf("system prompt = %+v", ctx[0].Content.Parts[0])
 	}
 }
@@ -185,20 +186,20 @@ func TestInferenceNode_RejectsBadTail(t *testing.T) {
 	// Assistant tail — the loop must hand the turn to user or tool.
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, "hello"))
+		message.NewTextMessage(message.RoleAssistant, "hello"))
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("assistant tail error = %v, want validation-classified", err)
 	}
 }
 
 func TestInferenceNode_ToolPendingFlagAndCatalogTools(t *testing.T) {
-	call := tool.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)}
+	call := message.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)}
 	fake := &inferencetest.GenerateFake{
 		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
 			return inference.GenerateResponse{
-				Message: inference.Message{
-					Role:    inference.RoleAssistant,
-					Content: inference.Content{Parts: []inference.Part{inference.ToolCallPart{Call: call}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.ToolCallPart{Call: call}}},
 				},
 				FinishReason: inference.FinishToolCalls,
 			}
@@ -206,7 +207,7 @@ func TestInferenceNode_ToolPendingFlagAndCatalogTools(t *testing.T) {
 	}
 	catalog := tool.NewRegistry()
 	catalog.Register(tool.FuncTool(
-		tool.Definition{
+		message.Definition{
 			Name:        "search",
 			Description: "search the web",
 			InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -230,7 +231,7 @@ func TestInferenceNode_ToolPendingFlagAndCatalogTools(t *testing.T) {
 		t.Fatalf("tool_pending = %v, want true", pending)
 	}
 	msgs := board.Channel(agent.MainChannel)
-	part, ok := msgs[1].Content.Parts[0].(inference.ToolCallPart)
+	part, ok := msgs[1].Content.Parts[0].(message.ToolCallPart)
 	if !ok || part.Call.ID != "call_1" || part.Call.Name != "search" {
 		t.Fatalf("assistant part = %+v, want tool_call call_1/search", msgs[1].Content.Parts[0])
 	}
@@ -321,7 +322,7 @@ func TestInferenceNode_Stream_PublishesDeltasAppendsAssembled(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("channel len = %d, want user + one assistant", len(msgs))
 	}
-	if text, ok := msgs[1].Content.Parts[0].(inference.TextPart); !ok || text.Text != "hello" {
+	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "hello" {
 		t.Fatalf("assembled message = %+v, want text %q", msgs[1].Content.Parts[0], "hello")
 	}
 }
@@ -401,7 +402,7 @@ func TestInferenceNode_StreamMidFailureCommitsPartial(t *testing.T) {
 	if len(msgs) != 2 {
 		t.Fatalf("channel len = %d, want user + partial assistant", len(msgs))
 	}
-	if msgs[1].Role != inference.RoleAssistant || msgs[1].Content.Text() != "hello" {
+	if msgs[1].Role != message.RoleAssistant || msgs[1].Content.Text() != "hello" {
 		t.Fatalf("partial message = %+v, want assistant \"hello\"", msgs[1])
 	}
 }
@@ -440,7 +441,7 @@ func TestInferenceNode_StreamResultFailureCommitsPartialExactlyOnce(t *testing.T
 	if len(msgs) != 2 {
 		t.Fatalf("channel len = %d, want user + exactly one partial assistant", len(msgs))
 	}
-	if msgs[1].Role != inference.RoleAssistant || msgs[1].Content.Text() != "partial" {
+	if msgs[1].Role != message.RoleAssistant || msgs[1].Content.Text() != "partial" {
 		t.Fatalf("partial message = %+v", msgs[1])
 	}
 }

@@ -13,7 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	yamlv3 "gopkg.in/yaml.v3"
 )
@@ -32,7 +32,7 @@ func (f *fakeEngineFactory) New(_ context.Context, cfg agent.Config) (agent.Engi
 	f.newCalls++
 	f.gotCfg = cfg
 	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	}), nil
 }
@@ -874,7 +874,7 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 	}
 
 	execRes, err := r.Execute(context.Background(), agent.Request{
-		Message: inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
 	})
 	if err != nil {
 		t.Fatalf("instance Execute: %v", err)
@@ -891,7 +891,7 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 		t.Fatal("Instance(minimal) missing")
 	}
 	if _, err := minimal.Execute(context.Background(), agent.Request{
-		Message: inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
 	}); err != nil {
 		t.Fatalf("minimal Execute: %v", err)
 	}
@@ -1956,7 +1956,7 @@ func TestBuild_BuiltinDiscardOnInterrupt(t *testing.T) {
 	t.Cleanup(func() { _ = res.Close() })
 
 	intr := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "partial"))
 		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
 	})
 	inst, ok := res.Instance("researcher")
@@ -1966,7 +1966,7 @@ func TestBuild_BuiltinDiscardOnInterrupt(t *testing.T) {
 	inst.Engine = intr
 
 	execRes, err := inst.Execute(context.Background(), agent.Request{
-		Message: inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
 	})
 	if err != nil {
 		t.Fatalf("Execute: %v", err)

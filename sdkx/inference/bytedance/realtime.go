@@ -8,8 +8,8 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
 )
@@ -612,7 +612,7 @@ func decodeRealtimeEvent(
 		if !json.Valid(arguments) || len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		return inference.RealtimeToolCallEvent{Call: tool.Call{
+		return inference.RealtimeToolCallEvent{Call: message.Call{
 			ID:        raw.call.id,
 			Name:      raw.call.name,
 			Arguments: arguments,

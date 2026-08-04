@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func routeTarget(provider, name string, quality float64) route.Target {
@@ -167,10 +168,10 @@ func newGenerateFactory(t *testing.T) Factory {
 		func(context.Context, string) (string, error) { return "ok", nil },
 		func(context.Context, string) (inference.GenerateResponse, error) {
 			return inference.GenerateResponse{
-				Message: inference.Message{
-					Role: inference.RoleAssistant,
-					Content: inference.Content{
-						Parts: []inference.Part{inference.TextPart{Text: "ok"}},
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{
+						Parts: []message.Part{message.TextPart{Text: "ok"}},
 					},
 				},
 				FinishReason: inference.FinishCompleted,
@@ -247,8 +248,8 @@ func TestBuilderNewAssembly(t *testing.T) {
 				Input: inference.GenerateInput{
 					Role: inference.InputRoleUser,
 					Content: inference.InputContent{
-						Content: inference.Content{
-							Parts: []inference.Part{inference.TextPart{Text: "hi"}},
+						Content: message.Content{
+							Parts: []message.Part{message.TextPart{Text: "hi"}},
 						},
 						Intent: inference.Intent{Text: &inference.TextIntent{}},
 					},

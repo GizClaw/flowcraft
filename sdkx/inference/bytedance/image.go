@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -84,12 +85,12 @@ func compileImage(
 		}
 
 		var prompt []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
-				case inference.TextPart:
+				case message.TextPart:
 					prompt = append(prompt, value.Text)
-				case inference.ImagePart:
+				case message.ImagePart:
 					wire.references = append(wire.references, sourceURI(value.Source))
 				default:
 					ledger.reject(
@@ -99,15 +100,15 @@ func compileImage(
 				}
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
@@ -354,9 +355,9 @@ func decodeImage(
 	_ context.Context,
 	raw imageRaw,
 ) (inference.GenerateResponse, error) {
-	parts := make([]inference.Part, 0, len(raw.images))
+	parts := make([]message.Part, 0, len(raw.images))
 	for index, image := range raw.images {
-		var part inference.ImagePart
+		var part message.ImagePart
 		var err error
 		switch {
 		case image.url != "":
@@ -376,9 +377,9 @@ func decodeImage(
 	}
 	generated := int64(len(raw.images))
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: inference.FinishCompleted,
 		Usage: inference.Usage{
@@ -390,18 +391,18 @@ func decodeImage(
 	}, nil
 }
 
-func imagePartFromURL(url, mediaType string) (inference.ImagePart, error) {
+func imagePartFromURL(url, mediaType string) (message.ImagePart, error) {
 	source, err := media.NewImageURL(url, mediaType)
 	if err != nil {
-		return inference.ImagePart{}, fmt.Errorf("bytedance: image url: %w", err)
+		return message.ImagePart{}, fmt.Errorf("bytedance: image url: %w", err)
 	}
-	return inference.ImagePart{Source: source}, nil
+	return message.ImagePart{Source: source}, nil
 }
 
-func imagePartFromB64(b64 string) (inference.ImagePart, error) {
+func imagePartFromB64(b64 string) (message.ImagePart, error) {
 	data, err := base64.StdEncoding.DecodeString(b64)
 	if err != nil {
-		return inference.ImagePart{}, fmt.Errorf(
+		return message.ImagePart{}, fmt.Errorf(
 			"bytedance: decode image payload: %w",
 			err,
 		)
@@ -410,15 +411,15 @@ func imagePartFromB64(b64 string) (inference.ImagePart, error) {
 	// container so the canonical part carries a truthful type.
 	mediaType := sniffImageMediaType(data)
 	if mediaType == "" {
-		return inference.ImagePart{}, fmt.Errorf(
+		return message.ImagePart{}, fmt.Errorf(
 			"bytedance: unrecognized image payload",
 		)
 	}
 	source, err := media.NewImageBytes(data, mediaType)
 	if err != nil {
-		return inference.ImagePart{}, fmt.Errorf("bytedance: image data: %w", err)
+		return message.ImagePart{}, fmt.Errorf("bytedance: image data: %w", err)
 	}
-	return inference.ImagePart{Source: source}, nil
+	return message.ImagePart{Source: source}, nil
 }
 
 func derefString(value *string) string {

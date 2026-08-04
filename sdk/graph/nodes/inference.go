@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -152,9 +153,9 @@ func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfi
 	last := messages[len(messages)-1]
 	var inputRole inference.InputRole
 	switch last.Role {
-	case inference.RoleUser:
+	case message.RoleUser:
 		inputRole = inference.InputRoleUser
-	case inference.RoleTool:
+	case message.RoleTool:
 		inputRole = inference.InputRoleTool
 	default:
 		return req, errdefs.Validationf(
@@ -163,9 +164,9 @@ func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfi
 	}
 	contextMessages := messages[:len(messages)-1]
 	if cfg.SystemPrompt != "" &&
-		(len(contextMessages) == 0 || contextMessages[0].Role != inference.RoleSystem) {
+		(len(contextMessages) == 0 || contextMessages[0].Role != message.RoleSystem) {
 		contextMessages = append(
-			[]inference.Message{inference.NewTextMessage(inference.RoleSystem, cfg.SystemPrompt)},
+			[]message.Message{message.NewTextMessage(message.RoleSystem, cfg.SystemPrompt)},
 			contextMessages...,
 		)
 	}
@@ -204,15 +205,15 @@ func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfi
 	}, nil
 }
 
-func toolDefinitions(names []string, catalog tool.Catalog) ([]tool.Definition, error) {
+func toolDefinitions(names []string, catalog tool.Catalog) ([]message.Definition, error) {
 	if catalog == nil {
 		return nil, errdefs.Validationf("inference node: tools configured but no tool catalog wired")
 	}
-	available := make(map[string]tool.Definition)
+	available := make(map[string]message.Definition)
 	for _, def := range catalog.Definitions() {
 		available[def.Name] = def
 	}
-	definitions := make([]tool.Definition, len(names))
+	definitions := make([]message.Definition, len(names))
 	for i, name := range names {
 		def, ok := available[name]
 		if !ok {

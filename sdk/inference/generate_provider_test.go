@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func TestResponseSchemaCompilationRejectsExternalResourcesWithoutIO(t *testing.T) {
@@ -111,7 +112,7 @@ func TestBindGenerateOperationsSharesCompilerAndRejectsMutation(t *testing.T) {
 		shape GenerateExecutionShape,
 	) (Compiled[wire], error) {
 		compileCalls++
-		request.Input.Content.Parts[0] = TextPart{Text: "mutated"}
+		request.Input.Content.Parts[0] = message.TextPart{Text: "mutated"}
 		return nativeGenerateCompile(wire{Prompt: "native"})(
 			context.Background(),
 			ModelRef{ID: ModelID{Provider: "fake", Name: "generate"}},
@@ -154,7 +155,7 @@ func TestBindGenerateOperationsSharesCompilerAndRejectsMutation(t *testing.T) {
 	if compileCalls != 2 {
 		t.Fatalf("compiler calls = %d, want 2", compileCalls)
 	}
-	if got := request.Input.Content.Parts[0].(TextPart).Text; got != "hello" {
+	if got := request.Input.Content.Parts[0].(message.TextPart).Text; got != "hello" {
 		t.Fatalf("caller request mutated to %q", got)
 	}
 }
@@ -206,9 +207,9 @@ func TestGenerateCompilerCanAcceptUnaryAndRejectStreamBeforeTransport(t *testing
 		},
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: Content{Parts: []Part{TextPart{Text: "partial"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "partial"}}},
 				},
 				FinishReason: FinishMaxOutput,
 			}, nil
@@ -247,10 +248,10 @@ func TestGenerateCompilerCanAcceptUnaryAndRejectStreamBeforeTransport(t *testing
 }
 
 func TestProviderWireRejectsCanonicalGenerateValuesAndOpenInterfaces(t *testing.T) {
-	type containsContent struct{ Value Content }
+	type containsContent struct{ Value message.Content }
 	type containsInputContent struct{ Value InputContent }
 	type containsIntent struct{ Value Intent }
-	type containsPart struct{ Value Part }
+	type containsPart struct{ Value message.Part }
 	tests := []struct {
 		name string
 		bind func() error
@@ -363,14 +364,14 @@ func TestProviderWireRejectsEveryConcreteCanonicalPartThroughNesting(t *testing.
 		name string
 		bind func() error
 	}{
-		{"text", func() error { return bindLeakingGenerateWire[nested[TextPart]]() }},
-		{"image", func() error { return bindLeakingGenerateWire[nested[ImagePart]]() }},
-		{"audio", func() error { return bindLeakingGenerateWire[nested[AudioPart]]() }},
-		{"video", func() error { return bindLeakingGenerateWire[nested[VideoPart]]() }},
-		{"file", func() error { return bindLeakingGenerateWire[nested[FilePart]]() }},
-		{"data", func() error { return bindLeakingGenerateWire[nested[DataPart]]() }},
-		{"tool_call", func() error { return bindLeakingGenerateWire[nested[ToolCallPart]]() }},
-		{"tool_result", func() error { return bindLeakingGenerateWire[nested[ToolResultPart]]() }},
+		{"text", func() error { return bindLeakingGenerateWire[nested[message.TextPart]]() }},
+		{"image", func() error { return bindLeakingGenerateWire[nested[message.ImagePart]]() }},
+		{"audio", func() error { return bindLeakingGenerateWire[nested[message.AudioPart]]() }},
+		{"video", func() error { return bindLeakingGenerateWire[nested[message.VideoPart]]() }},
+		{"file", func() error { return bindLeakingGenerateWire[nested[message.FilePart]]() }},
+		{"data", func() error { return bindLeakingGenerateWire[nested[message.DataPart]]() }},
+		{"tool_call", func() error { return bindLeakingGenerateWire[nested[message.ToolCallPart]]() }},
+		{"tool_result", func() error { return bindLeakingGenerateWire[nested[message.ToolResultPart]]() }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -389,7 +390,7 @@ func TestProviderWireRejectsNestedCanonicalRequestDTOs(t *testing.T) {
 		name string
 		bind func() error
 	}{
-		{"message", func() error { return bindLeakingGenerateWire[nested[Message]]() }},
+		{"message", func() error { return bindLeakingGenerateWire[nested[message.Message]]() }},
 		{"generate_input", func() error { return bindLeakingGenerateWire[nested[GenerateInput]]() }},
 		{"text_intent", func() error { return bindLeakingGenerateWire[nested[TextIntent]]() }},
 		{"image_intent", func() error { return bindLeakingGenerateWire[nested[ImageIntent]]() }},

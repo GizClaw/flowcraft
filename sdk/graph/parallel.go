@@ -10,7 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // MergeStrategy selects the built-in [MergeFunc] used to fold parallel
@@ -167,7 +167,7 @@ func mergeBranchVars(board *agent.Board, preFork *agent.BoardSnapshot, res Branc
 func mergeAppendedMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
 	mergeChannelMessages(board, preFork, results,
 		func(res BranchResult) bool { return res.Err == nil },
-		func(inference.Message) bool { return true },
+		func(message.Message) bool { return true },
 	)
 }
 
@@ -176,7 +176,7 @@ func mergeChannelMessages(
 	preFork *agent.BoardSnapshot,
 	results []BranchResult,
 	includeResult func(BranchResult) bool,
-	includeMessage func(inference.Message) bool,
+	includeMessage func(message.Message) bool,
 ) {
 	for _, res := range results {
 		if !includeResult(res) || res.Snapshot == nil {
@@ -202,7 +202,7 @@ func mergeChannelMessages(
 func mergeInterruptedAssistantMessages(board *agent.Board, preFork *agent.BoardSnapshot, results []BranchResult) {
 	mergeChannelMessages(board, preFork, results,
 		func(res BranchResult) bool { return errdefs.IsInterrupted(res.Err) },
-		func(msg inference.Message) bool { return msg.Role == inference.RoleAssistant },
+		func(msg message.Message) bool { return msg.Role == message.RoleAssistant },
 	)
 }
 

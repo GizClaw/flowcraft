@@ -12,8 +12,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
@@ -146,8 +146,8 @@ func newInput(rt *memory.Runtime, settings *yamlv3.Node) deploy.HookInput {
 	return deploy.HookInput{Settings: settings, Deps: map[string]any{runtimeDepName: rt}}
 }
 
-func mustMessage(text string) inference.Message {
-	return inference.Message{Role: inference.RoleUser, Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: text}}}}
+func mustMessage(text string) message.Message {
+	return message.Message{Role: message.RoleUser, Content: message.Content{Parts: []message.Part{message.TextPart{Text: text}}}}
 }
 
 // ---------- Load ----------
@@ -412,8 +412,8 @@ func TestRecallPreparer_RejectsMissingRuntimeDep(t *testing.T) {
 func TestRecallPreparer_WritesHitsToBoardVar(t *testing.T) {
 	rt, impl := newRecordingRuntime(t, memory.Scope{RuntimeID: "prod", UserID: "u-1"})
 	impl.recallHits = []memory.Hit{
-		{ID: "h1", Parts: []inference.Part{inference.TextPart{Text: "needle"}}, Score: 0.9, Source: "transcript:c1/seq-3"},
-		{ID: "h2", Parts: []inference.Part{inference.TextPart{Text: "haystack"}}, Score: 0.4, Source: "chunk:doc.md#2"},
+		{ID: "h1", Parts: []message.Part{message.TextPart{Text: "needle"}}, Score: 0.9, Source: "transcript:c1/seq-3"},
+		{ID: "h2", Parts: []message.Part{message.TextPart{Text: "haystack"}}, Score: 0.4, Source: "chunk:doc.md#2"},
 	}
 	prep, err := NewRecallPreparerFactory()(context.Background(), newInput(rt, settingsNode(t, `
 into: hits
@@ -645,9 +645,9 @@ conversation: c-1
 	}
 	board := agent.NewBoard()
 	board.AppendChannelMessage("transcript", mustMessage("user hi"))
-	board.AppendChannelMessage("transcript", inference.Message{
-		Role:    inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "assistant hello"}}},
+	board.AppendChannelMessage("transcript", message.Message{
+		Role:    message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{message.TextPart{Text: "assistant hello"}}},
 	})
 	res := &agent.Result{LastBoard: board}
 	if err := cm.Commit(context.Background(), agent.Identity{RunID: "run-xyz"}, &agent.Request{ContextID: "c-1"}, res); err != nil {

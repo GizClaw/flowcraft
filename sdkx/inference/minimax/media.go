@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 )
 

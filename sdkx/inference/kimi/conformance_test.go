@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // The drivers bind this package's own compiler, transport, and decoders;
@@ -34,7 +35,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
@@ -68,7 +69,7 @@ func TestConformanceGenerateStream(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}

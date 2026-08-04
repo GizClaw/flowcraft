@@ -19,7 +19,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	"github.com/gorilla/websocket"
 )
@@ -176,7 +177,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
@@ -227,7 +228,7 @@ func TestConformanceGenerateStream(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
@@ -280,7 +281,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.DataPart{
+						message.DataPart{
 							MediaType: "application/vnd.example",
 							Value:     json.RawMessage(`{"k":1}`),
 						},
@@ -296,7 +297,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.ReasoningPart{Text: "trace"},
+						message.ReasoningPart{Text: "trace"},
 					)
 					return request
 				},
@@ -319,11 +320,11 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				Name: "ark does not consume reasoning input",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
-					request.Context = append(request.Context, inference.Message{
-						Role: inference.RoleAssistant,
-						Content: inference.Content{Parts: []inference.Part{
-							inference.ReasoningPart{Text: "trace", ID: "rs_1"},
-							inference.TextPart{Text: "answer"},
+					request.Context = append(request.Context, message.Message{
+						Role: message.RoleAssistant,
+						Content: message.Content{Parts: []message.Part{
+							message.ReasoningPart{Text: "trace", ID: "rs_1"},
+							message.TextPart{Text: "answer"},
 						}},
 					})
 					return request
@@ -374,7 +375,7 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.VideoPart{Source: video},
+						message.VideoPart{Source: video},
 					)
 					return request
 				},
@@ -429,7 +430,7 @@ func TestConformanceGenerateCompilerVideo(t *testing.T) {
 					request := videoRequest()
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.VideoPart{Source: video},
+						message.VideoPart{Source: video},
 					)
 					return request
 				},

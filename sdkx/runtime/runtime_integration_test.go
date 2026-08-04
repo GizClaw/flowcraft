@@ -12,7 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
@@ -60,7 +60,7 @@ func (f *integrationEngineFactory) New(context.Context, agent.Config) (agent.Eng
 
 		board.AppendChannelMessage(
 			agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "hello"),
+			message.NewTextMessage(message.RoleAssistant, "hello"),
 		)
 		if err := publishRunEvent(ctx, host, agent.SubjectRunEnd(run.RunID), run); err != nil {
 			return board, err
@@ -266,7 +266,7 @@ runtime:
 	turn, err := lease.Session().Start(ctx, agent.Request{
 		ContextID: "caller-context-must-be-replaced",
 		RunID:     "caller-run-must-be-replaced",
-		Message:   inference.NewTextMessage(inference.RoleUser, "hello"),
+		Message:   message.NewTextMessage(message.RoleUser, "hello"),
 	}, sinks...)
 	if err != nil {
 		t.Fatal(err)

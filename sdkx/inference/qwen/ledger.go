@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // ledger tracks one compile's active fields and the dispositions the
@@ -98,37 +99,37 @@ func (l *ledger) err() error {
 	)
 }
 
-var contextPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateContextText,
-	inference.PartImage:      inference.FieldGenerateContextImage,
-	inference.PartAudio:      inference.FieldGenerateContextAudio,
-	inference.PartVideo:      inference.FieldGenerateContextVideo,
-	inference.PartFile:       inference.FieldGenerateContextFile,
-	inference.PartData:       inference.FieldGenerateContextData,
-	inference.PartToolCall:   inference.FieldGenerateContextToolCall,
-	inference.PartToolResult: inference.FieldGenerateContextToolResult,
-	inference.PartReasoning:  inference.FieldGenerateContextReasoning,
+var contextPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateContextText,
+	message.PartImage:      inference.FieldGenerateContextImage,
+	message.PartAudio:      inference.FieldGenerateContextAudio,
+	message.PartVideo:      inference.FieldGenerateContextVideo,
+	message.PartFile:       inference.FieldGenerateContextFile,
+	message.PartData:       inference.FieldGenerateContextData,
+	message.PartToolCall:   inference.FieldGenerateContextToolCall,
+	message.PartToolResult: inference.FieldGenerateContextToolResult,
+	message.PartReasoning:  inference.FieldGenerateContextReasoning,
 }
 
-var inputPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateInputText,
-	inference.PartImage:      inference.FieldGenerateInputImage,
-	inference.PartAudio:      inference.FieldGenerateInputAudio,
-	inference.PartVideo:      inference.FieldGenerateInputVideo,
-	inference.PartFile:       inference.FieldGenerateInputFile,
-	inference.PartData:       inference.FieldGenerateInputData,
-	inference.PartToolCall:   inference.FieldGenerateInputToolCall,
-	inference.PartToolResult: inference.FieldGenerateInputToolResult,
-	inference.PartReasoning:  inference.FieldGenerateInputReasoning,
+var inputPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateInputText,
+	message.PartImage:      inference.FieldGenerateInputImage,
+	message.PartAudio:      inference.FieldGenerateInputAudio,
+	message.PartVideo:      inference.FieldGenerateInputVideo,
+	message.PartFile:       inference.FieldGenerateInputFile,
+	message.PartData:       inference.FieldGenerateInputData,
+	message.PartToolCall:   inference.FieldGenerateInputToolCall,
+	message.PartToolResult: inference.FieldGenerateInputToolResult,
+	message.PartReasoning:  inference.FieldGenerateInputReasoning,
 }
 
-var embedPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldEmbedItemText,
-	inference.PartImage:      inference.FieldEmbedItemImage,
-	inference.PartAudio:      inference.FieldEmbedItemAudio,
-	inference.PartVideo:      inference.FieldEmbedItemVideo,
-	inference.PartFile:       inference.FieldEmbedItemFile,
-	inference.PartData:       inference.FieldEmbedItemData,
-	inference.PartToolCall:   inference.FieldEmbedItemToolCall,
-	inference.PartToolResult: inference.FieldEmbedItemToolResult,
+var embedPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldEmbedItemText,
+	message.PartImage:      inference.FieldEmbedItemImage,
+	message.PartAudio:      inference.FieldEmbedItemAudio,
+	message.PartVideo:      inference.FieldEmbedItemVideo,
+	message.PartFile:       inference.FieldEmbedItemFile,
+	message.PartData:       inference.FieldEmbedItemData,
+	message.PartToolCall:   inference.FieldEmbedItemToolCall,
+	message.PartToolResult: inference.FieldEmbedItemToolResult,
 }

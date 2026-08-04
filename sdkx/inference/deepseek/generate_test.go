@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func simpleTextRequest(text string) inference.GenerateRequest {
@@ -17,8 +17,8 @@ func simpleTextRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -177,8 +177,8 @@ func toolCallDeltaChunk(index int, id, name, argsFragment string) map[string]any
 	}
 }
 
-func toolCallDefinition() tool.Definition {
-	return tool.Definition{
+func toolCallDefinition() message.Definition {
+	return message.Definition{
 		Name:        "lookup",
 		Description: "find things",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),

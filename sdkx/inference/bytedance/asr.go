@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
 )

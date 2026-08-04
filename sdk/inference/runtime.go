@@ -3,7 +3,6 @@ package inference
 import (
 	"context"
 	"fmt"
-	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -601,18 +600,4 @@ func cacheTypeError(operation Operation) error {
 		"",
 		fmt.Errorf("runtime driver cache contains the wrong type"),
 	)
-}
-
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

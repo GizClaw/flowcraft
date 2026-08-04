@@ -9,7 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
@@ -81,14 +82,14 @@ func compileVideo(
 
 		var prompt []string
 		var images []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
-				case inference.TextPart:
+				case message.TextPart:
 					prompt = append(prompt, value.Text)
-				case inference.ImagePart:
+				case message.ImagePart:
 					images = append(images, sourceURI(value.Source))
-				case inference.VideoPart:
+				case message.VideoPart:
 					ledger.reject(
 						fields[part.Kind()],
 						"video-reference input is not exposed by the pinned SDK",
@@ -101,15 +102,15 @@ func compileVideo(
 				}
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"video generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
@@ -325,9 +326,9 @@ func decodeVideo(
 	}
 	generated := int64(1)
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{inference.VideoPart{Source: source}}},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{message.VideoPart{Source: source}}},
 		},
 		FinishReason: inference.FinishCompleted,
 		Usage: inference.Usage{

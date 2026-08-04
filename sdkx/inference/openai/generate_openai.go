@@ -8,7 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
@@ -298,35 +298,35 @@ func decodeGenerate(
 	_ context.Context,
 	raw generateRaw,
 ) (inference.GenerateResponse, error) {
-	parts := make([]inference.Part, 0,
+	parts := make([]message.Part, 0,
 		len(raw.reasonings)+len(raw.texts)+len(raw.toolCalls))
 	// The API emits reasoning items before message and call items; the
 	// canonical message keeps that order so context round-trips stay valid.
 	for _, reasoning := range raw.reasonings {
-		parts = append(parts, inference.ReasoningPart{
+		parts = append(parts, message.ReasoningPart{
 			Text:      reasoning.text,
 			Signature: reasoning.signature,
 			ID:        reasoning.id,
 		})
 	}
 	for _, text := range raw.texts {
-		parts = append(parts, inference.TextPart{Text: text})
+		parts = append(parts, message.TextPart{Text: text})
 	}
 	for _, call := range raw.toolCalls {
 		arguments := json.RawMessage(call.args)
 		if !json.Valid(arguments) || len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		parts = append(parts, inference.ToolCallPart{Call: tool.Call{
+		parts = append(parts, message.ToolCallPart{Call: message.Call{
 			ID:        call.id,
 			Name:      call.name,
 			Arguments: arguments,
 		}})
 	}
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: raw.finish,
 		Usage:        rawUsageCanonical(raw.usage),

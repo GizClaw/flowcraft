@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // This file is the contract matrix for provider pipeline stages. It pins the
@@ -21,7 +22,7 @@ func contractEmbedModel() ModelRef {
 
 func contractEmbedRequest() EmbedRequest {
 	return EmbedRequest{Items: []EmbedItem{{
-		Content: Content{Parts: []Part{TextPart{Text: "hello"}}},
+		Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hello"}}},
 	}}}
 }
 

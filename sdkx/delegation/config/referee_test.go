@@ -8,8 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	delegationconfig "github.com/GizClaw/flowcraft/sdkx/delegation/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -47,7 +46,7 @@ func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
 		ID:    "billing",
 		Modes: []sdkdelegation.Mode{sdkdelegation.ModeHandoff},
 	}
-	result := &agent.Result{Messages: []inference.Message{
+	result := &agent.Result{Messages: []message.Message{
 		toolCall("first", "billing"),
 		successfulToolResult("first"),
 		toolCall("second", "billing"),
@@ -125,16 +124,16 @@ func (fakeEngineFactory) New(context.Context, agent.Config) (agent.Engine, error
 	}), nil
 }
 
-func toolCall(id, target string) inference.Message {
+func toolCall(id, target string) message.Message {
 	arguments, _ := json.Marshal(map[string]any{
 		"mode":   sdkdelegation.ModeHandoff,
 		"target": target,
 		"input":  "refund",
 	})
-	return inference.Message{
-		Role: inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.ToolCallPart{Call: tool.Call{
+	return message.Message{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolCallPart{Call: message.Call{
 				ID:        id,
 				Name:      sdkdelegation.ToolName,
 				Arguments: arguments,
@@ -143,11 +142,11 @@ func toolCall(id, target string) inference.Message {
 	}
 }
 
-func successfulToolResult(callID string) inference.Message {
-	return inference.Message{
-		Role: inference.RoleTool,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.ToolResultPart{Result: tool.Result{CallID: callID}},
+func successfulToolResult(callID string) message.Message {
+	return message.Message{
+		Role: message.RoleTool,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.Result{CallID: callID}},
 		}},
 	}
 }

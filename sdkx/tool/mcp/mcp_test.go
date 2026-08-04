@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/tool/mcp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -117,7 +118,7 @@ func TestAddServer_CoexistsWithBuiltins(t *testing.T) {
 
 	reg := sdktool.NewRegistry()
 	reg.Register(sdktool.FuncTool(
-		sdktool.DefineSchema("builtin_echo", "echo").Build(),
+		message.DefineSchema("builtin_echo", "echo").Build(),
 		func(_ context.Context, args string) (string, error) { return "echo:" + args, nil },
 	))
 
@@ -132,7 +133,7 @@ func TestAddServer_CoexistsWithBuiltins(t *testing.T) {
 		{"builtin_echo", "echo:{}"},
 		{"fs__read_file", "mcp-content"},
 	} {
-		res := executor.Execute(t.Context(), sdktool.Call{
+		res := executor.Execute(t.Context(), message.Call{
 			ID: "c1", Name: tc.name, Arguments: json.RawMessage(`{}`),
 		})
 		if res.IsError {
@@ -172,7 +173,7 @@ func TestAddServer_NamespacingAvoidsCollision(t *testing.T) {
 		"alpha__search": "from-a",
 		"beta__search":  "from-b",
 	} {
-		res := executor.Execute(t.Context(), sdktool.Call{
+		res := executor.Execute(t.Context(), message.Call{
 			ID: "c1", Name: name, Arguments: json.RawMessage(`{}`),
 		})
 		if res.Content != want {
@@ -261,7 +262,7 @@ func TestExecute_LostServerFailsOnlyItsOwnTools(t *testing.T) {
 
 	reg := sdktool.NewRegistry()
 	reg.Register(sdktool.FuncTool(
-		sdktool.DefineSchema("builtin_echo", "echo").Build(),
+		message.DefineSchema("builtin_echo", "echo").Build(),
 		func(_ context.Context, args string) (string, error) { return "echo", nil },
 	))
 
@@ -292,8 +293,8 @@ func TestExecute_LostServerFailsOnlyItsOwnTools(t *testing.T) {
 	}
 
 	executor := sdktool.NewExecutor(reg)
-	call := func(name string) sdktool.Result {
-		return executor.Execute(t.Context(), sdktool.Call{
+	call := func(name string) message.Result {
+		return executor.Execute(t.Context(), message.Call{
 			ID: "c1", Name: name, Arguments: json.RawMessage(`{}`),
 		})
 	}
@@ -352,7 +353,7 @@ func TestResult_RendersTextContent(t *testing.T) {
 	}
 
 	executor := sdktool.NewExecutor(reg)
-	res := executor.Execute(t.Context(), sdktool.Call{
+	res := executor.Execute(t.Context(), message.Call{
 		ID: "c1", Name: "fs__echo", Arguments: json.RawMessage(`{}`),
 	})
 	if res.IsError {
@@ -381,7 +382,7 @@ func TestResult_IsErrorReturnsNonNilError(t *testing.T) {
 	}
 
 	executor := sdktool.NewExecutor(reg)
-	res := executor.Execute(t.Context(), sdktool.Call{
+	res := executor.Execute(t.Context(), message.Call{
 		ID: "c1", Name: "fs__fail", Arguments: json.RawMessage(`{}`),
 	})
 	if !res.IsError {
@@ -412,7 +413,7 @@ func TestResult_MultiPartContent(t *testing.T) {
 	}
 
 	executor := sdktool.NewExecutor(reg)
-	res := executor.Execute(t.Context(), sdktool.Call{
+	res := executor.Execute(t.Context(), message.Call{
 		ID: "c1", Name: "fs__describe", Arguments: json.RawMessage(`{}`),
 	})
 	if res.IsError {

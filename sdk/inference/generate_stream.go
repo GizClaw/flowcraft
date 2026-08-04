@@ -9,13 +9,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // PartDelta is the sealed provider-neutral union accepted by GenerateStream.
 type PartDelta interface {
-	Kind() PartKind
+	Kind() message.PartKind
 	validateGenerateDelta() error
 	inferencePartDelta()
 }
@@ -46,7 +46,7 @@ type TextPartDelta struct {
 	Text string `json:"text"`
 }
 
-func (TextPartDelta) Kind() PartKind               { return PartText }
+func (TextPartDelta) Kind() message.PartKind       { return message.PartText }
 func (TextPartDelta) validateGenerateDelta() error { return nil }
 func (TextPartDelta) inferencePartDelta()          {}
 
@@ -58,7 +58,7 @@ type ToolCallDelta struct {
 	ArgumentsFragment string `json:"arguments_fragment,omitempty"`
 }
 
-func (ToolCallDelta) Kind() PartKind               { return PartToolCall }
+func (ToolCallDelta) Kind() message.PartKind       { return message.PartToolCall }
 func (ToolCallDelta) validateGenerateDelta() error { return nil }
 func (ToolCallDelta) inferencePartDelta()          {}
 
@@ -73,7 +73,7 @@ type ReasoningDelta struct {
 	ID        string `json:"id,omitempty"`
 }
 
-func (ReasoningDelta) Kind() PartKind { return PartReasoning }
+func (ReasoningDelta) Kind() message.PartKind { return message.PartReasoning }
 func (d ReasoningDelta) validateGenerateDelta() error {
 	if d.Text == "" && d.Signature == "" && d.ID == "" {
 		return fmt.Errorf("reasoning delta carries neither text, signature, nor id")
@@ -88,7 +88,7 @@ type AudioPartDelta struct {
 	DurationMillis *int64             `json:"duration_millis,omitempty"`
 }
 
-func (AudioPartDelta) Kind() PartKind { return PartAudio }
+func (AudioPartDelta) Kind() message.PartKind { return message.PartAudio }
 func (d AudioPartDelta) validateGenerateDelta() error {
 	if len(d.Data) == 0 {
 		return fmt.Errorf("audio delta data is required")
@@ -108,10 +108,10 @@ func (AudioPartDelta) inferencePartDelta() {}
 // ImagePartDelta carries one complete image. Images are not incrementally
 // assembled by the generic runtime.
 type ImagePartDelta struct {
-	Part ImagePart `json:"part"`
+	Part message.ImagePart `json:"part"`
 }
 
-func (ImagePartDelta) Kind() PartKind { return PartImage }
+func (ImagePartDelta) Kind() message.PartKind { return message.PartImage }
 func (d ImagePartDelta) validateGenerateDelta() error {
 	return d.Part.Validate()
 }
@@ -198,7 +198,7 @@ func (d *generateStreamDriver[Wire, RawEvent]) Stream(
 }
 
 type generatePartAccumulator struct {
-	kind PartKind
+	kind message.PartKind
 
 	text strings.Builder
 
@@ -209,7 +209,7 @@ type generatePartAccumulator struct {
 	audio         bytes.Buffer
 	audioFormat   *media.AudioFormat
 	audioDuration *int64
-	completeImage *ImagePart
+	completeImage *message.ImagePart
 
 	reasoningSignature string
 	reasoningID        string
@@ -404,7 +404,7 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 		indices = append(indices, index)
 	}
 	sort.Ints(indices)
-	parts := make([]Part, 0, len(indices))
+	parts := make([]message.Part, 0, len(indices))
 	for _, index := range indices {
 		part, err := s.parts[index].result()
 		if err != nil {
@@ -414,9 +414,9 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 		parts = append(parts, part)
 	}
 	response := GenerateResponse{
-		Message: Message{
-			Role:    RoleAssistant,
-			Content: Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: s.finish,
 		Usage:        s.usage,
@@ -430,17 +430,17 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	s.result = response
 }
 
-func (p *generatePartAccumulator) result() (Part, error) {
+func (p *generatePartAccumulator) result() (message.Part, error) {
 	switch p.kind {
-	case PartText:
-		return TextPart{Text: p.text.String()}, nil
-	case PartToolCall:
-		return ToolCallPart{Call: tool.Call{
+	case message.PartText:
+		return message.TextPart{Text: p.text.String()}, nil
+	case message.PartToolCall:
+		return message.ToolCallPart{Call: message.Call{
 			ID:        p.toolID,
 			Name:      p.toolName,
 			Arguments: json.RawMessage(p.toolArguments.String()),
 		}}, nil
-	case PartAudio:
+	case message.PartAudio:
 		if p.audioFormat == nil {
 			return nil, fmt.Errorf("streamed audio has no format")
 		}
@@ -451,18 +451,18 @@ func (p *generatePartAccumulator) result() (Part, error) {
 		if err != nil {
 			return nil, err
 		}
-		return AudioPart{
+		return message.AudioPart{
 			Source:         source,
 			Format:         clonePointer(p.audioFormat),
 			DurationMillis: clonePointer(p.audioDuration),
 		}, nil
-	case PartImage:
+	case message.PartImage:
 		if p.completeImage == nil {
 			return nil, fmt.Errorf("streamed image is incomplete")
 		}
 		return p.completeImage.Clone(), nil
-	case PartReasoning:
-		part := ReasoningPart{
+	case message.PartReasoning:
+		part := message.ReasoningPart{
 			Text:      p.text.String(),
 			Signature: p.reasoningSignature,
 			ID:        p.reasoningID,

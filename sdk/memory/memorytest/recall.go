@@ -3,8 +3,8 @@ package memorytest
 import (
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // RecallSuite drives the documented Recall contract: TopK
@@ -136,8 +136,8 @@ func RunRecall(t *testing.T, s RecallSuite) {
 		}
 		for i, h := range resp.Hits {
 			for j, p := range h.Parts {
-				if _, ok := p.(inference.Part); !ok {
-					t.Errorf("Hits[%d].Parts[%d] is %T, want inference.Part",
+				if _, ok := p.(message.Part); !ok {
+					t.Errorf("Hits[%d].Parts[%d] is %T, want message.Part",
 						i, j, p)
 				}
 			}

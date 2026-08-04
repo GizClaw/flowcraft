@@ -10,7 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Video generation pipeline tests, run end to end through the runtime
@@ -36,8 +37,8 @@ func videoGenerateRequest() inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "waves at dusk"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "waves at dusk"}},
 				},
 				Intent: inference.Intent{Video: &inference.VideoIntent{}},
 			},
@@ -98,7 +99,7 @@ func TestVideoUnaryCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.VideoPart)
+	part, ok := response.Message.Content.Parts[0].(message.VideoPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -152,7 +153,7 @@ func TestVideoFirstFrameOnWire(t *testing.T) {
 	}
 	request := videoGenerateRequest()
 	request.Input.Content.Parts = append(
-		request.Input.Content.Parts, inference.ImagePart{Source: frame},
+		request.Input.Content.Parts, message.ImagePart{Source: frame},
 	)
 	if _, err := runtime.Generate(
 		context.Background(),
@@ -200,7 +201,7 @@ func TestVideoRejections(t *testing.T) {
 			model: "MiniMax-Hailuo-2.3-Fast",
 			mutate: func(r *inference.GenerateRequest) {
 				r.Input.Content.Parts = append(
-					r.Input.Content.Parts, inference.ImagePart{Source: frame},
+					r.Input.Content.Parts, message.ImagePart{Source: frame},
 				)
 				r.Input.Content.Intent.Video.DurationMillis = &duration10s
 			},

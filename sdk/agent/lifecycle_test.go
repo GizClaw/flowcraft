@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // interruptingEngineWith returns an engine that stops with the given
@@ -13,7 +13,7 @@ import (
 func interruptingEngineWith(cause agent.Cause) agent.Engine {
 	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "partial..."))
+			message.NewTextMessage(message.RoleAssistant, "partial..."))
 		return b, agent.Interrupted(agent.Interrupt{Cause: cause})
 	})
 }
@@ -24,7 +24,7 @@ func TestDiscardOnInterruptCauses_FiresOnMatch(t *testing.T) {
 
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseUserInput),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		agent.WithReferee(dec),
 	)
 	if err != nil {
@@ -43,7 +43,7 @@ func TestDiscardOnInterruptCauses_SkipsForeignCause(t *testing.T) {
 
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseHostShutdown),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		agent.WithReferee(dec),
 	)
 	if err != nil {
@@ -60,13 +60,13 @@ func TestDiscardOnInterruptCauses_NotInterruptedDoesNotFire(t *testing.T) {
 	dec := agent.NewDiscardOnInterruptCauses("voice_barge", agent.CauseUserInput)
 
 	completed := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, completed,
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		agent.WithReferee(dec),
 	)
 	if err != nil {
@@ -87,7 +87,7 @@ func TestDiscardOnInterruptCauses_ZeroValueMatchesNothing(t *testing.T) {
 
 	res, err := agent.Execute(context.Background(),
 		agent.Agent{ID: "a"}, interruptingEngineWith(agent.CauseUserInput),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		agent.WithReferee(dec),
 	)
 	if err != nil {

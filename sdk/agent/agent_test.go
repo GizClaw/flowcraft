@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // TestAgentCard_JSONKeysMatchA2A pins the AgentCard JSON encoding to
@@ -88,7 +88,7 @@ func TestRequest_JSONKeysMatchA2A(t *testing.T) {
 		TaskID:    "t1",
 		ContextID: "c1",
 		RunID:     "r1",
-		Message:   inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message:   message.NewTextMessage(message.RoleUser, "hi"),
 		Config: &agent.RequestConfig{
 			AcceptedOutputModes: []string{"text/plain"},
 		},

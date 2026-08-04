@@ -33,7 +33,7 @@ type LoadSettings struct {
 	Limit int `yaml:"limit,omitempty"`
 	// Into is the board channel name the loaded records
 	// are written to. The factory converts each
-	// memory.Record to inference.Message and appends to
+	// memory.Record to message.Message and appends to
 	// the named channel; the engine then reads it as a
 	// normal channel.
 	Into string `yaml:"into"`

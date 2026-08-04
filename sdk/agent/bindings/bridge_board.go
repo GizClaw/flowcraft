@@ -16,7 +16,7 @@ import (
 //   - deleteVar(key)
 //
 // Channels (typed conversation history; multimodal-aware via the
-// inference.Message projection in project.go):
+// message.Message projection in project.go):
 //   - channel(name)              → []messageMap   (read; never returns null)
 //   - setChannel(name, msgs)     → throws on validation errors
 //   - appendChannel(name, msg)   → throws on validation errors

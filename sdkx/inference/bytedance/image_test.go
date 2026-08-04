@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 var pngHeader = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3}
@@ -50,8 +51,8 @@ func TestImageCapturedWire(t *testing.T) {
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{
-						Parts: []inference.Part{inference.TextPart{Text: "a small red boat"}},
+					Content: message.Content{
+						Parts: []message.Part{message.TextPart{Text: "a small red boat"}},
 					},
 					Intent: inference.Intent{
 						Image: &inference.ImageIntent{
@@ -78,7 +79,7 @@ func TestImageCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.ImagePart)
+	part, ok := response.Message.Content.Parts[0].(message.ImagePart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -132,8 +133,8 @@ func TestImageCountFanout(t *testing.T) {
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{
-						Parts: []inference.Part{inference.TextPart{Text: "three boats"}},
+					Content: message.Content{
+						Parts: []message.Part{message.TextPart{Text: "three boats"}},
 					},
 					Intent: inference.Intent{Image: &inference.ImageIntent{Count: &count}},
 				},
@@ -189,8 +190,8 @@ func TestImageRejections(t *testing.T) {
 				Input: inference.GenerateInput{
 					Role: inference.InputRoleUser,
 					Content: inference.InputContent{
-						Content: inference.Content{
-							Parts: []inference.Part{inference.TextPart{Text: "x"}},
+						Content: message.Content{
+							Parts: []message.Part{message.TextPart{Text: "x"}},
 						},
 						Intent: inference.Intent{Image: &tc.intent},
 					},

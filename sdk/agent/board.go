@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // MainChannel is the default message channel key.
@@ -45,7 +45,7 @@ type Cloneable interface {
 // Deps) belongs on [Run], not here.
 type Board struct {
 	mu       sync.RWMutex
-	channels map[string][]inference.Message
+	channels map[string][]message.Message
 	vars     map[string]any
 }
 
@@ -53,15 +53,15 @@ type Board struct {
 // for resume / checkpoint flows. It carries no live mutex and is safe
 // to JSON-encode.
 type BoardSnapshot struct {
-	Vars     map[string]any                 `json:"vars"`
-	Channels map[string][]inference.Message `json:"channels,omitempty"`
+	Vars     map[string]any               `json:"vars"`
+	Channels map[string][]message.Message `json:"channels,omitempty"`
 }
 
 // NewBoard creates an empty Board with an initialised main channel so
 // callers can [Board.AppendChannelMessage] without a nil-check.
 func NewBoard() *Board {
 	return &Board{
-		channels: map[string][]inference.Message{MainChannel: {}},
+		channels: map[string][]message.Message{MainChannel: {}},
 		vars:     make(map[string]any),
 	}
 }
@@ -77,9 +77,9 @@ func (b *Board) Clone() *Board {
 	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	channels := make(map[string][]inference.Message, len(b.channels))
+	channels := make(map[string][]message.Message, len(b.channels))
 	for name, msgs := range b.channels {
-		copied := make([]inference.Message, len(msgs))
+		copied := make([]message.Message, len(msgs))
 		copy(copied, msgs)
 		channels[name] = copied
 	}
@@ -194,34 +194,34 @@ func (b *Board) UpdateSliceVarItem(key string, match func(any) bool, update func
 // Channel returns a copy of messages for the given channel. An empty
 // or missing channel returns a nil slice (not a zero-length slice) so
 // callers can use len() == 0 uniformly.
-func (b *Board) Channel(name string) []inference.Message {
+func (b *Board) Channel(name string) []message.Message {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	msgs := b.channels[name]
 	if len(msgs) == 0 {
 		return nil
 	}
-	return inference.CloneMessages(msgs)
+	return message.CloneMessages(msgs)
 }
 
 // SetChannel replaces the entire message list for a channel. The input
 // slice is copied; later mutations by the caller do not affect the
 // Board.
-func (b *Board) SetChannel(name string, msgs []inference.Message) {
+func (b *Board) SetChannel(name string, msgs []message.Message) {
 	b.mu.Lock()
 	if b.channels == nil {
-		b.channels = map[string][]inference.Message{}
+		b.channels = map[string][]message.Message{}
 	}
-	b.channels[name] = inference.CloneMessages(msgs)
+	b.channels[name] = message.CloneMessages(msgs)
 	b.mu.Unlock()
 }
 
 // AppendChannelMessage appends a message to a channel, creating the
 // channel on demand.
-func (b *Board) AppendChannelMessage(name string, msg inference.Message) {
+func (b *Board) AppendChannelMessage(name string, msg message.Message) {
 	b.mu.Lock()
 	if b.channels == nil {
-		b.channels = map[string][]inference.Message{}
+		b.channels = map[string][]message.Message{}
 	}
 	b.channels[name] = append(b.channels[name], msg.Clone())
 	b.mu.Unlock()
@@ -230,12 +230,12 @@ func (b *Board) AppendChannelMessage(name string, msg inference.Message) {
 // ChannelsCopy returns a deep copy of all channel message lists. Used
 // by parallel branch execution to give each branch an independent
 // view that can later be merged.
-func (b *Board) ChannelsCopy() map[string][]inference.Message {
+func (b *Board) ChannelsCopy() map[string][]message.Message {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
-	out := make(map[string][]inference.Message, len(b.channels))
+	out := make(map[string][]message.Message, len(b.channels))
 	for k, msgs := range b.channels {
-		out[k] = inference.CloneMessages(msgs)
+		out[k] = message.CloneMessages(msgs)
 	}
 	return out
 }
@@ -250,9 +250,9 @@ func (b *Board) Snapshot() *BoardSnapshot {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	chCopy := make(map[string][]inference.Message, len(b.channels))
+	chCopy := make(map[string][]message.Message, len(b.channels))
 	for k, msgs := range b.channels {
-		chCopy[k] = inference.CloneMessages(msgs)
+		chCopy[k] = message.CloneMessages(msgs)
 	}
 	return &BoardSnapshot{
 		Vars:     deepCopyVars(b.vars),
@@ -268,15 +268,15 @@ func RestoreBoard(snap *BoardSnapshot) *Board {
 		return NewBoard()
 	}
 	b := &Board{
-		channels: make(map[string][]inference.Message),
+		channels: make(map[string][]message.Message),
 		vars:     deepCopyVars(snap.Vars),
 	}
 	if len(snap.Channels) > 0 {
 		for k, msgs := range snap.Channels {
-			b.channels[k] = inference.CloneMessages(msgs)
+			b.channels[k] = message.CloneMessages(msgs)
 		}
 	} else {
-		b.channels[MainChannel] = []inference.Message{}
+		b.channels[MainChannel] = []message.Message{}
 	}
 	return b
 }
@@ -292,15 +292,15 @@ func (b *Board) RestoreFrom(snap *BoardSnapshot) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.vars = deepCopyVars(snap.Vars)
-	b.channels = make(map[string][]inference.Message)
+	b.channels = make(map[string][]message.Message)
 	if len(snap.Channels) > 0 {
 		for k, msgs := range snap.Channels {
-			b.channels[k] = inference.CloneMessages(msgs)
+			b.channels[k] = message.CloneMessages(msgs)
 		}
 	} else {
 		// Mirror RestoreBoard / NewBoard: every Board must expose
 		// MainChannel even when the snapshot didn't carry channels.
-		b.channels[MainChannel] = []inference.Message{}
+		b.channels[MainChannel] = []message.Message{}
 	}
 }
 
@@ -326,8 +326,8 @@ func deepCopyValue(v any) any {
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64, bool:
 		return v
-	case []inference.Message:
-		return inference.CloneMessages(val)
+	case []message.Message:
+		return message.CloneMessages(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {

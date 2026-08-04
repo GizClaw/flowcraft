@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -47,7 +48,7 @@ func TimeoutWithCatalog(catalog tool.Catalog, defaultTimeout time.Duration, perT
 func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[string]time.Duration) tool.Middleware {
 	exempt := &selfTimeoutCache{catalog: catalog}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			limit := defaultTimeout
 			override, explicit := perTool[call.Name]
 			if explicit {
@@ -65,7 +66,7 @@ func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[str
 
 			res := next(execCtx, call)
 			if execCtx.Err() == context.DeadlineExceeded {
-				return tool.Result{
+				return message.Result{
 					CallID:  call.ID,
 					Content: fmt.Sprintf("tool %q timed out after %s", call.Name, limit),
 					IsError: true,

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -13,13 +14,13 @@ import (
 // not a stack trace). errdefs.PolicyDenied classifications are
 // preserved in the result content.
 type Approver interface {
-	Approve(ctx context.Context, call tool.Call) error
+	Approve(ctx context.Context, call message.Call) error
 }
 
 // ApproverFunc adapts a plain function to Approver.
-type ApproverFunc func(ctx context.Context, call tool.Call) error
+type ApproverFunc func(ctx context.Context, call message.Call) error
 
-func (f ApproverFunc) Approve(ctx context.Context, call tool.Call) error {
+func (f ApproverFunc) Approve(ctx context.Context, call message.Call) error {
 	return f(ctx, call)
 }
 
@@ -40,12 +41,12 @@ func Approval(approver Approver, tools ...string) tool.Middleware {
 		gated[name] = struct{}{}
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			if _, ok := gated[call.Name]; !ok {
 				return next(ctx, call)
 			}
 			if err := approver.Approve(ctx, call); err != nil {
-				return tool.Result{
+				return message.Result{
 					CallID:  call.ID,
 					Content: errdefs.PolicyDeniedf("tool %q call denied: %v", call.Name, err).Error(),
 					IsError: true,

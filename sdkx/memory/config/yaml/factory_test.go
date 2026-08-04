@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdkx/inference/config"
 	inferenceyaml "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
@@ -191,7 +192,7 @@ agents:
 	}
 	response, err := instance.Execute(context.Background(), agent.Request{
 		ContextID: "conversation-1",
-		Message:   inference.NewTextMessage(inference.RoleUser, "hello"),
+		Message:   message.NewTextMessage(message.RoleUser, "hello"),
 		Inputs:    map[string]any{"search_query": "from request board"},
 	})
 	if err != nil {
@@ -329,7 +330,7 @@ func (integrationEngineFactory) New(context.Context, agent.Config) (agent.Engine
 		_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board,
 	) (*agent.Board, error) {
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return board, nil
 	}), nil
 }

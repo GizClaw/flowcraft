@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config/env"
@@ -103,8 +104,8 @@ func TestConfigToBytedanceInstance(t *testing.T) {
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{
-						Parts: []inference.Part{inference.TextPart{Text: "hi"}},
+					Content: message.Content{
+						Parts: []message.Part{message.TextPart{Text: "hi"}},
 					},
 					Intent: inference.Intent{Text: &inference.TextIntent{}},
 				},

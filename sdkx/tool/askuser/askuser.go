@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -34,15 +34,15 @@ func New() tool.Tool { return askUserTool{} }
 // LLM's only hint for when to use it: keep it conservative —
 // "ask the human only when truly needed" — to discourage chatty
 // models from interrupting on every minor uncertainty.
-func (askUserTool) Definition() tool.Definition {
-	return tool.DefineSchema(
+func (askUserTool) Definition() message.Definition {
+	return message.DefineSchema(
 		Name,
 		"Ask the human user a clarifying question and "+
 			"wait for their reply. Use only when you genuinely "+
 			"cannot proceed without their input — most questions "+
 			"can be answered from context. Returns the user's reply "+
 			"as a string.",
-		tool.Property("prompt", "string", "The question to display to the user."),
+		message.ToolProperty("prompt", "string", "The question to display to the user."),
 	).Required("prompt").DisallowAdditionalProperties().Build()
 }
 
@@ -69,7 +69,7 @@ func (askUserTool) Execute(ctx context.Context, arguments string) (string, error
 		return "", errdefs.NotAvailablef("ask_user: no agent.Host on ctx; did the engine wire it via agent.ContextWithHost?")
 	}
 	prompt := agent.UserPrompt{
-		Parts:  []inference.Part{inference.TextPart{Text: a.Prompt}},
+		Parts:  []message.Part{message.TextPart{Text: a.Prompt}},
 		Source: Name,
 	}
 	reply, err := host.AskUser(ctx, prompt)
@@ -93,10 +93,10 @@ func replyText(r agent.UserReply) string {
 		if wrote {
 			b.WriteByte('\n')
 		}
-		// inference.Part is a sealed interface; switch on Kind().
+		// message.Part is a sealed interface; switch on Kind().
 		switch p.Kind() {
-		case inference.PartText:
-			if tp, ok := p.(inference.TextPart); ok {
+		case message.PartText:
+			if tp, ok := p.(message.TextPart); ok {
 				b.WriteString(tp.Text)
 			}
 		default:

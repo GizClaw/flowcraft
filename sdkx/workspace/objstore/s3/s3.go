@@ -13,8 +13,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/GizClaw/flowcraft/sdkx/workspace/objstore"
 	"io"
+
+	"github.com/GizClaw/flowcraft/sdkx/workspace/objstore"
 )
 
 // Client is the minimal S3 client interface. It is satisfied by the real

@@ -15,8 +15,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func TestGenerateUnaryToolCalls(t *testing.T) {
@@ -36,7 +36,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 		t.Fatalf("openGenerate: %v", err)
 	}
 	request := simpleTextRequest("find something")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "lookup",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
@@ -52,7 +52,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 	if response.FinishReason != inference.FinishToolCalls {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
-	call, ok := response.Message.Content.Parts[0].(inference.ToolCallPart)
+	call, ok := response.Message.Content.Parts[0].(message.ToolCallPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -97,8 +97,8 @@ func TestEmbedTransport(t *testing.T) {
 		openaiModel("text-embedding-3-large"),
 		inference.EmbedRequest{
 			Items: []inference.EmbedItem{
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "a"}}}},
-				{Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "b"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "a"}}}},
+				{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "b"}}}},
 			},
 			Dimensions: intPointer(512),
 		},
@@ -156,8 +156,8 @@ func TestImageTransport(t *testing.T) {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "a red circle"},
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "a red circle"},
 				}},
 				Intent: inference.Intent{Image: &inference.ImageIntent{
 					Size:         &media.ImageSize{Width: 1536, Height: 1024},
@@ -186,7 +186,7 @@ func TestImageTransport(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.ImagePart)
+	part, ok := response.Message.Content.Parts[0].(message.ImagePart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -215,8 +215,8 @@ func TestTTSTransport(t *testing.T) {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "say hi"},
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "say hi"},
 				}},
 				Intent: inference.Intent{Audio: &inference.AudioIntent{
 					Voice:  media.VoiceSpec{ID: "alloy"},
@@ -245,7 +245,7 @@ func TestTTSTransport(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.AudioPart)
+	part, ok := response.Message.Content.Parts[0].(message.AudioPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -269,8 +269,8 @@ func TestTTSStreamTransport(t *testing.T) {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "stream me"},
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "stream me"},
 				}},
 				Intent: inference.Intent{Audio: &inference.AudioIntent{
 					Voice:  media.VoiceSpec{ID: "alloy"},
@@ -429,14 +429,14 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok ||
 		reasoning.Text != "first thought\n\nsecond thought" ||
 		reasoning.Signature != "enc-1" ||
 		reasoning.ID != "rs_1" {
 		t.Fatalf("reasoning part = %#v", parts[0])
 	}
-	if text, ok := parts[1].(inference.TextPart); !ok || text.Text != "answer" {
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "answer" {
 		t.Fatalf("text part = %#v", parts[1])
 	}
 }
@@ -521,14 +521,14 @@ func TestGenerateStreamReasoning(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %+v", parts)
 	}
-	reasoning, ok := parts[0].(inference.ReasoningPart)
+	reasoning, ok := parts[0].(message.ReasoningPart)
 	if !ok ||
 		reasoning.Text != "thinking aloud" ||
 		reasoning.Signature != "enc-9" ||
 		reasoning.ID != "rs_1" {
 		t.Fatalf("streamed reasoning = %#v", parts[0])
 	}
-	if text, ok := parts[1].(inference.TextPart); !ok || text.Text != "done" {
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "done" {
 		t.Fatalf("text part = %#v", parts[1])
 	}
 }

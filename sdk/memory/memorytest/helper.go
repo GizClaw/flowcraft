@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // buildRuntime is a small wrapper that handles the common case of
@@ -24,14 +24,14 @@ func buildRuntime(t *testing.T, spec memory.Spec, impls memory.Impls) *memory.Ru
 	return rt
 }
 
-// mustTextMessage builds a minimal inference.Message that passes
+// mustTextMessage builds a minimal message.Message that passes
 // inference's own Validate. Useful when a suite needs a sample
 // message but does not care about role or content shape.
-func mustTextMessage(text string) inference.Message {
-	return inference.Message{
-		Role: inference.RoleUser,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: text},
+func mustTextMessage(text string) message.Message {
+	return message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: text},
 		}},
 	}
 }

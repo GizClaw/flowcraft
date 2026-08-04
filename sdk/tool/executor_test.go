@@ -9,10 +9,12 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func errTool(name string, err error) Tool {
-	return FuncTool(Definition{Name: name}, func(_ context.Context, _ string) (string, error) {
+	return FuncTool(message.Definition{Name: name}, func(_ context.Context, _ string) (string, error) {
 		return "", err
 	})
 }
@@ -29,14 +31,14 @@ func TestNewExecutor_NilCatalogPanics(t *testing.T) {
 func TestExecute_Success(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		Definition{Name: "echo"},
+		message.Definition{Name: "echo"},
 		func(_ context.Context, args string) (string, error) {
 			return "echoed:" + args, nil
 		},
 	))
 	exec := NewExecutor(r)
 
-	result := exec.Execute(context.Background(), Call{
+	result := exec.Execute(context.Background(), message.Call{
 		ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{"a":1}`),
 	})
 	if result.CallID != "call-1" {
@@ -52,7 +54,7 @@ func TestExecute_Success(t *testing.T) {
 
 func TestExecute_ToolNotFound(t *testing.T) {
 	exec := NewExecutor(NewRegistry())
-	result := exec.Execute(context.Background(), Call{
+	result := exec.Execute(context.Background(), message.Call{
 		ID: "call-1", Name: "missing", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
@@ -68,7 +70,7 @@ func TestExecute_ToolReturnsError(t *testing.T) {
 	r.Register(errTool("fail", errors.New("broken")))
 	exec := NewExecutor(r)
 
-	result := exec.Execute(context.Background(), Call{
+	result := exec.Execute(context.Background(), message.Call{
 		ID: "call-2", Name: "fail", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
@@ -87,7 +89,7 @@ func TestChain_OutermostFirst(t *testing.T) {
 	var mu sync.Mutex
 	track := func(label string) Middleware {
 		return func(next Dispatch) Dispatch {
-			return func(ctx context.Context, call Call) Result {
+			return func(ctx context.Context, call message.Call) message.Result {
 				mu.Lock()
 				order = append(order, label+":pre")
 				mu.Unlock()
@@ -101,7 +103,7 @@ func TestChain_OutermostFirst(t *testing.T) {
 	}
 	exec := NewExecutor(r, track("a"), track("b"))
 
-	res := exec.Execute(context.Background(), Call{ID: "1", Name: "foo"})
+	res := exec.Execute(context.Background(), message.Call{ID: "1", Name: "foo"})
 	if res.IsError {
 		t.Fatalf("unexpected error result: %+v", res)
 	}
@@ -117,7 +119,7 @@ func TestChain_NilMiddlewareSkipped(t *testing.T) {
 	r.Register(stubTool("foo"))
 	exec := NewExecutor(r, nil, nil)
 
-	res := exec.Execute(context.Background(), Call{ID: "1", Name: "foo"})
+	res := exec.Execute(context.Background(), message.Call{ID: "1", Name: "foo"})
 	if res.IsError {
 		t.Fatalf("unexpected error: %+v", res)
 	}
@@ -128,13 +130,13 @@ func TestChain_ShortCircuit(t *testing.T) {
 	r.Register(stubTool("foo"))
 
 	deny := func(_ Dispatch) Dispatch {
-		return func(_ context.Context, call Call) Result {
-			return Result{CallID: call.ID, Content: "denied", IsError: true}
+		return func(_ context.Context, call message.Call) message.Result {
+			return message.Result{CallID: call.ID, Content: "denied", IsError: true}
 		}
 	}
 	exec := NewExecutor(r, deny)
 
-	res := exec.Execute(context.Background(), Call{ID: "1", Name: "foo"})
+	res := exec.Execute(context.Background(), message.Call{ID: "1", Name: "foo"})
 	if !res.IsError || res.Content != "denied" {
 		t.Errorf("expected denied error, got %+v", res)
 	}
@@ -143,7 +145,7 @@ func TestChain_ShortCircuit(t *testing.T) {
 func TestChain_SeesNotFound(t *testing.T) {
 	var seen string
 	audit := func(next Dispatch) Dispatch {
-		return func(ctx context.Context, call Call) Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			res := next(ctx, call)
 			seen = res.Content
 			return res
@@ -151,7 +153,7 @@ func TestChain_SeesNotFound(t *testing.T) {
 	}
 	exec := NewExecutor(NewRegistry(), audit)
 
-	res := exec.Execute(context.Background(), Call{ID: "1", Name: "missing"})
+	res := exec.Execute(context.Background(), message.Call{ID: "1", Name: "missing"})
 	if !res.IsError {
 		t.Fatalf("expected error result, got %+v", res)
 	}
@@ -163,14 +165,14 @@ func TestChain_SeesNotFound(t *testing.T) {
 func TestExecuteAll_Success(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		Definition{Name: "add"},
+		message.Definition{Name: "add"},
 		func(_ context.Context, args string) (string, error) {
 			return "result:" + args, nil
 		},
 	))
 	exec := NewExecutor(r)
 
-	calls := []Call{
+	calls := []message.Call{
 		{ID: "c1", Name: "add", Arguments: json.RawMessage(`{"n":1}`)},
 		{ID: "c2", Name: "add", Arguments: json.RawMessage(`{"n":2}`)},
 		{ID: "c3", Name: "add", Arguments: json.RawMessage(`{"n":3}`)},
@@ -196,7 +198,7 @@ func TestExecuteAll_MixedSuccessAndFailure(t *testing.T) {
 	r.Register(errTool("bad", errors.New("fail")))
 	exec := NewExecutor(r)
 
-	calls := []Call{
+	calls := []message.Call{
 		{ID: "c1", Name: "good", Arguments: json.RawMessage("{}")},
 		{ID: "c2", Name: "bad", Arguments: json.RawMessage("{}")},
 		{ID: "c3", Name: "good", Arguments: json.RawMessage("{}")},
@@ -226,7 +228,7 @@ func TestExecuteAll_Empty(t *testing.T) {
 
 func TestExecuteAll_ToolNotFound(t *testing.T) {
 	exec := NewExecutor(NewRegistry())
-	results := exec.ExecuteAll(context.Background(), []Call{
+	results := exec.ExecuteAll(context.Background(), []message.Call{
 		{ID: "c1", Name: "nonexistent", Arguments: json.RawMessage("{}")},
 	})
 	if len(results) != 1 {
@@ -240,7 +242,7 @@ func TestExecuteAll_ToolNotFound(t *testing.T) {
 func TestExecute_ContextCancelled(t *testing.T) {
 	r := NewRegistry()
 	r.Register(FuncTool(
-		Definition{Name: "slow"},
+		message.Definition{Name: "slow"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -251,7 +253,7 @@ func TestExecute_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := exec.Execute(ctx, Call{
+	result := exec.Execute(ctx, message.Call{
 		ID: "call-3", Name: "slow", Arguments: json.RawMessage("{}"),
 	})
 	if !result.IsError {
@@ -268,7 +270,7 @@ func TestExecuteAll_ConcurrencyUnboundedByDefault(t *testing.T) {
 	release := make(chan struct{})
 	r := NewRegistry()
 	r.Register(FuncTool(
-		Definition{Name: "gated"},
+		message.Definition{Name: "gated"},
 		func(ctx context.Context, _ string) (string, error) {
 			entered <- struct{}{}
 			select {
@@ -281,13 +283,13 @@ func TestExecuteAll_ConcurrencyUnboundedByDefault(t *testing.T) {
 	))
 	exec := NewExecutor(r)
 
-	calls := make([]Call, n)
+	calls := make([]message.Call, n)
 	for i := range calls {
-		calls[i] = Call{ID: fmt.Sprintf("c%d", i), Name: "gated", Arguments: json.RawMessage("{}")}
+		calls[i] = message.Call{ID: fmt.Sprintf("c%d", i), Name: "gated", Arguments: json.RawMessage("{}")}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	done := make(chan []Result, 1)
+	done := make(chan []message.Result, 1)
 	go func() { done <- exec.ExecuteAll(ctx, calls) }()
 
 	for i := 0; i < n; i++ {

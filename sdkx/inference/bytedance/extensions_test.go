@@ -9,7 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // TestGenerateExtensionsCapturedWire lowers every GenerateOptions field and
@@ -443,8 +444,8 @@ func imageRequest(count int) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "a red boat"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "a red boat"}},
 				},
 				Intent: inference.Intent{Image: intent},
 			},

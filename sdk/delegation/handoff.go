@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -82,14 +83,14 @@ func HandoffTool(ctx context.Context, req *agent.Request, handoffs []Handoff) to
 		}
 	}
 
-	definition := tool.DefineSchema(
+	definition := message.DefineSchema(
 		ToolName,
 		descriptions.String(),
-		tool.EnumProperty("mode", "string", "Delegation mode.", string(ModeHandoff)),
-		tool.EnumProperty("target", "string", "Receiving target.", targetIDs...),
-		tool.Property("input", "string", "The task or user intent for the receiving target."),
-		tool.Property("note", "string", "Optional context for the receiving target."),
-		tool.StringMapProperty("metadata", "Optional string metadata."),
+		message.ToolEnumProperty("mode", "string", "Delegation mode.", string(ModeHandoff)),
+		message.ToolEnumProperty("target", "string", "Receiving target.", targetIDs...),
+		message.ToolProperty("input", "string", "The task or user intent for the receiving target."),
+		message.ToolProperty("note", "string", "Optional context for the receiving target."),
+		message.ToolStringMapProperty("metadata", "Optional string metadata."),
 	).Required("mode", "target", "input").DisallowAdditionalProperties().Build()
 
 	byTarget := handoffMap(eligible)

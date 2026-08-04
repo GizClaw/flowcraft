@@ -6,7 +6,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 type OpenedTranscriptionSession interface {

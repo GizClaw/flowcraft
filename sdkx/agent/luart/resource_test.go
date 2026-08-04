@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	yamlv3 "gopkg.in/yaml.v3"
 )
@@ -213,7 +213,7 @@ func (luaResourceEngineFactory) New(context.Context, agent.Config) (agent.Engine
 		*agent.Board,
 	) (*agent.Board, error) {
 		board := agent.NewBoard()
-		board.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return board, nil
 	}), nil
 }

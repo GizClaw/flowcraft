@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
 )
@@ -201,8 +202,8 @@ func TestGenerateEndToEnd(t *testing.T) {
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{Parts: []inference.Part{
-						inference.TextPart{Text: "hi"},
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: "hi"},
 					}},
 					Intent: inference.Intent{Text: &inference.TextIntent{}},
 				},
@@ -212,7 +213,7 @@ func TestGenerateEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+	text, ok := response.Message.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != "ok" {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}

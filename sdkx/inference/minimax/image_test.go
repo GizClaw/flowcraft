@@ -10,7 +10,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Image generation pipeline tests, run end to end through the runtime
@@ -25,8 +26,8 @@ func imageGenerateRequest(intent inference.ImageIntent) inference.GenerateReques
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "a small red boat"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "a small red boat"}},
 				},
 				Intent: inference.Intent{Image: &intent},
 			},
@@ -66,7 +67,7 @@ func TestImageUnaryCapturedWire(t *testing.T) {
 		Seed:  &seed,
 	})
 	request.Input.Content.Parts = append(
-		request.Input.Content.Parts, inference.ImagePart{Source: reference},
+		request.Input.Content.Parts, message.ImagePart{Source: reference},
 	)
 	response, err := runtime.Generate(context.Background(), minimaxModel("image-01"), request)
 	if err != nil {
@@ -79,7 +80,7 @@ func TestImageUnaryCapturedWire(t *testing.T) {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
 	for index, part := range response.Message.Content.Parts {
-		image, ok := part.(inference.ImagePart)
+		image, ok := part.(message.ImagePart)
 		if !ok {
 			t.Fatalf("parts[%d] = %#v", index, part)
 		}
@@ -88,7 +89,7 @@ func TestImageUnaryCapturedWire(t *testing.T) {
 			t.Fatalf("parts[%d] source = %+v", index, image.Source)
 		}
 	}
-	first := response.Message.Content.Parts[0].(inference.ImagePart)
+	first := response.Message.Content.Parts[0].(message.ImagePart)
 	if first.Source.URL() != "https://example.com/out-1.jpg" {
 		t.Fatalf("url = %q", first.Source.URL())
 	}
@@ -158,7 +159,7 @@ func TestImageInlineDelivery(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.ImagePart)
+	part, ok := response.Message.Content.Parts[0].(message.ImagePart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}

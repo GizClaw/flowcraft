@@ -4,14 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Dispatcher is the execution contract consumers depend on: run one
 // tool call, or several concurrently. *Executor is the canonical
 // implementation, but tests and adapters may substitute their own.
 type Dispatcher interface {
-	Execute(context.Context, Call) Result
-	ExecuteAll(context.Context, []Call) []Result
+	Execute(context.Context, message.Call) message.Result
+	ExecuteAll(context.Context, []message.Call) []message.Result
 }
 
 // Dispatch is the function form of "execute one tool call and return
@@ -21,7 +23,7 @@ type Dispatcher interface {
 // Implementations should treat the input call as immutable and must
 // always return a Result — errors are reported via
 // Result.IsError, never returned out-of-band.
-type Dispatch func(ctx context.Context, call Call) Result
+type Dispatch func(ctx context.Context, call message.Call) message.Result
 
 // Executor dispatches tool calls against a Catalog through a
 // middleware chain. The un-decorated core only looks the tool up and
@@ -55,19 +57,19 @@ func NewExecutor(catalog Catalog, mws ...Middleware) *Executor {
 // unknown tool, tool error — surface as Result with IsError=true,
 // never as a Go error, so results can feed straight back into an LLM
 // turn.
-func (e *Executor) Execute(ctx context.Context, call Call) Result {
+func (e *Executor) Execute(ctx context.Context, call message.Call) message.Result {
 	return e.dispatch(ctx, call)
 }
 
 // ExecuteAll runs every call concurrently through the chain and
 // returns results in input order. Concurrency is unbounded by
 // default; put a concurrency middleware in the chain to cap it.
-func (e *Executor) ExecuteAll(ctx context.Context, calls []Call) []Result {
-	results := make([]Result, len(calls))
+func (e *Executor) ExecuteAll(ctx context.Context, calls []message.Call) []message.Result {
+	results := make([]message.Result, len(calls))
 	var wg sync.WaitGroup
 	for i, call := range calls {
 		wg.Add(1)
-		go func(idx int, c Call) {
+		go func(idx int, c message.Call) {
 			defer wg.Done()
 			results[idx] = e.Execute(ctx, c)
 		}(i, call)
@@ -80,10 +82,10 @@ func (e *Executor) ExecuteAll(ctx context.Context, calls []Call) []Result {
 // the Tool.Execute call. Unknown tools and tool errors both become
 // IsError results; there is no out-of-band error channel.
 func coreDispatch(catalog Catalog) Dispatch {
-	return func(ctx context.Context, call Call) Result {
+	return func(ctx context.Context, call message.Call) message.Result {
 		t, ok := catalog.Get(call.Name)
 		if !ok {
-			return Result{
+			return message.Result{
 				CallID:  call.ID,
 				Content: fmt.Sprintf("tool %q not found", call.Name),
 				IsError: true,
@@ -91,12 +93,12 @@ func coreDispatch(catalog Catalog) Dispatch {
 		}
 		content, err := t.Execute(ctx, string(call.Arguments))
 		if err != nil {
-			return Result{
+			return message.Result{
 				CallID:  call.ID,
 				Content: err.Error(),
 				IsError: true,
 			}
 		}
-		return Result{CallID: call.ID, Content: content}
+		return message.Result{CallID: call.ID, Content: content}
 	}
 }

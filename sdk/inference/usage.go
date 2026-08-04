@@ -1,6 +1,8 @@
 package inference
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // Usage contains normalized effective token totals plus optional
 // provider-reported generation dimensions and breakdowns. Optional counters

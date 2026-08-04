@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/middleware"
 	"github.com/GizClaw/flowcraft/sdkx/tool/config"
@@ -17,14 +18,14 @@ import (
 )
 
 func echoTool(name string) tool.Tool {
-	return tool.FuncTool(tool.Definition{Name: name},
+	return tool.FuncTool(message.Definition{Name: name},
 		func(_ context.Context, args string) (string, error) {
 			return "echo:" + args, nil
 		})
 }
 
-func call(name string) tool.Call {
-	return tool.Call{ID: "c1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
+func call(name string) message.Call {
+	return message.Call{ID: "c1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
 }
 
 // ---------------------------------------------------------------------------
@@ -101,7 +102,7 @@ func TestBuild_GoldenChainExecutes(t *testing.T) {
 	registry.Register(echoTool("echo"))
 
 	sink := &spySink{}
-	approver := middleware.ApproverFunc(func(_ context.Context, _ tool.Call) error {
+	approver := middleware.ApproverFunc(func(_ context.Context, _ message.Call) error {
 		return errors.New("not today")
 	})
 	builder := config.NewBuilder(registry, config.Deps{Approver: approver, AuditSink: sink})
@@ -153,7 +154,7 @@ func TestBuild_ChainOrderIsDocumentOrder(t *testing.T) {
 	track := func(label string) config.MiddlewareFactory {
 		return func(_ context.Context, _ *yamlv3.Node) (tool.Middleware, error) {
 			return func(next tool.Dispatch) tool.Dispatch {
-				return func(ctx context.Context, c tool.Call) tool.Result {
+				return func(ctx context.Context, c message.Call) message.Result {
 					order = append(order, label)
 					return next(ctx, c)
 				}
@@ -248,7 +249,7 @@ func TestBuild_FailFast(t *testing.T) {
 				{Kind: "approval", Spec: yamlSpec(t, `tools: []`)},
 			}},
 			deps: config.Deps{Approver: middleware.ApproverFunc(
-				func(context.Context, tool.Call) error { return nil },
+				func(context.Context, message.Call) error { return nil },
 			)},
 			tools:   []string{"x"},
 			wantErr: "at least one",
@@ -282,7 +283,7 @@ func TestBuild_FailFast(t *testing.T) {
 
 func TestTimeoutSpec_DurationStrings(t *testing.T) {
 	registry := tool.NewRegistry()
-	registry.Register(tool.FuncTool(tool.Definition{Name: "hang"},
+	registry.Register(tool.FuncTool(message.Definition{Name: "hang"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()

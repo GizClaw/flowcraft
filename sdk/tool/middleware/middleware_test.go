@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -23,14 +24,14 @@ func catalogWith(tools ...tool.Tool) *tool.Registry {
 }
 
 func echoTool(name string) tool.Tool {
-	return tool.FuncTool(tool.Definition{Name: name},
+	return tool.FuncTool(message.Definition{Name: name},
 		func(_ context.Context, args string) (string, error) {
 			return "echo:" + args, nil
 		})
 }
 
-func call(name string) tool.Call {
-	return tool.Call{ID: "call-1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
+func call(name string) message.Call {
+	return message.Call{ID: "call-1", Name: name, Arguments: json.RawMessage(`{"x":1}`)}
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ func call(name string) tool.Call {
 // ---------------------------------------------------------------------------
 
 func TestRecover_PanicBecomesErrorResult(t *testing.T) {
-	reg := catalogWith(tool.FuncTool(tool.Definition{Name: "panicker"},
+	reg := catalogWith(tool.FuncTool(message.Definition{Name: "panicker"},
 		func(_ context.Context, _ string) (string, error) { panic("boom") }))
 	exec := tool.NewExecutor(reg, Recover())
 
@@ -53,13 +54,13 @@ func TestRecover_PanicBecomesErrorResult(t *testing.T) {
 
 func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 	reg := catalogWith(
-		tool.FuncTool(tool.Definition{Name: "panicker"},
+		tool.FuncTool(message.Definition{Name: "panicker"},
 			func(_ context.Context, _ string) (string, error) { panic("boom") }),
 		echoTool("fine"),
 	)
 	exec := tool.NewExecutor(reg, Recover())
 
-	results := exec.ExecuteAll(context.Background(), []tool.Call{
+	results := exec.ExecuteAll(context.Background(), []message.Call{
 		{ID: "c1", Name: "panicker", Arguments: json.RawMessage("{}")},
 		{ID: "c2", Name: "fine", Arguments: json.RawMessage("{}")},
 	})
@@ -77,7 +78,7 @@ func TestRecover_ExecuteAllSurvivesPanic(t *testing.T) {
 
 func TestConcurrency_CapsInFlight(t *testing.T) {
 	var inFlight, maxSeen atomic.Int32
-	reg := catalogWith(tool.FuncTool(tool.Definition{Name: "slow"},
+	reg := catalogWith(tool.FuncTool(message.Definition{Name: "slow"},
 		func(_ context.Context, _ string) (string, error) {
 			cur := inFlight.Add(1)
 			for {
@@ -92,9 +93,9 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 		}))
 	exec := tool.NewExecutor(reg, Concurrency(2))
 
-	calls := make([]tool.Call, 6)
+	calls := make([]message.Call, 6)
 	for i := range calls {
-		calls[i] = tool.Call{ID: fmt.Sprintf("c%d", i), Name: "slow", Arguments: json.RawMessage("{}")}
+		calls[i] = message.Call{ID: fmt.Sprintf("c%d", i), Name: "slow", Arguments: json.RawMessage("{}")}
 	}
 	exec.ExecuteAll(context.Background(), calls)
 	if got := maxSeen.Load(); got > 2 {
@@ -105,7 +106,7 @@ func TestConcurrency_CapsInFlight(t *testing.T) {
 func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
-	reg := catalogWith(tool.FuncTool(tool.Definition{Name: "holder"},
+	reg := catalogWith(tool.FuncTool(message.Definition{Name: "holder"},
 		func(ctx context.Context, _ string) (string, error) {
 			close(started)
 			select {
@@ -117,7 +118,7 @@ func TestConcurrency_ContextCancelWhileWaiting(t *testing.T) {
 		}))
 	exec := tool.NewExecutor(reg, Concurrency(1))
 
-	first := make(chan tool.Result, 1)
+	first := make(chan message.Result, 1)
 	go func() { first <- exec.Execute(context.Background(), call("holder")) }()
 	<-started // first call now holds the only slot
 
@@ -145,7 +146,7 @@ func TestConcurrency_InvalidLimitPanics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestTimeout_SlowToolTimesOut(t *testing.T) {
-	reg := catalogWith(tool.FuncTool(tool.Definition{Name: "hang"},
+	reg := catalogWith(tool.FuncTool(message.Definition{Name: "hang"},
 		func(ctx context.Context, _ string) (string, error) {
 			<-ctx.Done()
 			return "", ctx.Err()
@@ -163,7 +164,7 @@ func TestTimeout_SlowToolTimesOut(t *testing.T) {
 
 func TestTimeout_PerToolOverrideAndExemption(t *testing.T) {
 	reg := catalogWith(
-		tool.FuncTool(tool.Definition{Name: "slowish"},
+		tool.FuncTool(message.Definition{Name: "slowish"},
 			func(ctx context.Context, _ string) (string, error) {
 				select {
 				case <-time.After(80 * time.Millisecond):
@@ -192,18 +193,18 @@ func TestTimeout_PerToolOverrideAndExemption(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type ratedTool struct {
-	def  tool.Definition
+	def  message.Definition
 	rate float64
 }
 
-func (r ratedTool) Definition() tool.Definition { return r.def }
+func (r ratedTool) Definition() message.Definition { return r.def }
 func (r ratedTool) Execute(_ context.Context, _ string) (string, error) {
 	return "ok", nil
 }
 func (r ratedTool) Metadata() tool.ToolMeta { return tool.ToolMeta{RateLimit: r.rate} }
 
 func TestRateLimit_PacesCalls(t *testing.T) {
-	reg := catalogWith(ratedTool{def: tool.Definition{Name: "api"}, rate: 50})
+	reg := catalogWith(ratedTool{def: message.Definition{Name: "api"}, rate: 50})
 	exec := tool.NewExecutor(reg, RateLimit(reg))
 
 	start := time.Now()
@@ -239,12 +240,12 @@ func TestRateLimit_UndeclaredPassesThrough(t *testing.T) {
 
 func TestApproval_DeniedShortCircuits(t *testing.T) {
 	var executed atomic.Bool
-	reg := catalogWith(tool.FuncTool(tool.Definition{Name: "exec"},
+	reg := catalogWith(tool.FuncTool(message.Definition{Name: "exec"},
 		func(_ context.Context, _ string) (string, error) {
 			executed.Store(true)
 			return "ran", nil
 		}))
-	approver := ApproverFunc(func(_ context.Context, _ tool.Call) error {
+	approver := ApproverFunc(func(_ context.Context, _ message.Call) error {
 		return errors.New("user rejected")
 	})
 	exec := tool.NewExecutor(reg, Approval(approver, "exec"))
@@ -263,7 +264,7 @@ func TestApproval_DeniedShortCircuits(t *testing.T) {
 
 func TestApproval_ApprovedAndUngated(t *testing.T) {
 	reg := catalogWith(echoTool("exec"), echoTool("other"))
-	approver := ApproverFunc(func(_ context.Context, _ tool.Call) error { return nil })
+	approver := ApproverFunc(func(_ context.Context, _ message.Call) error { return nil })
 	exec := tool.NewExecutor(reg, Approval(approver, "exec"))
 
 	if res := exec.Execute(context.Background(), call("exec")); res.IsError {
@@ -316,8 +317,8 @@ type selfTimingTool struct {
 	sleep       time.Duration
 }
 
-func (s selfTimingTool) Definition() tool.Definition {
-	return tool.Definition{Name: s.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
+func (s selfTimingTool) Definition() message.Definition {
+	return message.Definition{Name: s.name, InputSchema: json.RawMessage(`{"type":"object"}`)}
 }
 
 func (s selfTimingTool) Metadata() tool.ToolMeta {

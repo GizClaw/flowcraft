@@ -5,7 +5,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // MessageStream accumulates a streaming assistant message for one
@@ -29,7 +29,7 @@ type MessageStream struct {
 	buf     strings.Builder
 
 	materialized bool
-	message      inference.Message
+	message      message.Message
 }
 
 // NewMessageStream starts a stream bound to channel. An empty channel
@@ -56,7 +56,7 @@ func (s *MessageStream) Emit(token string) error {
 // Close appends the accumulated text as one assistant message to the
 // bound channel and returns the message. Closing an empty stream is a
 // no-op returning an empty message and nil error.
-func (s *MessageStream) Close(board *agent.Board) (inference.Message, error) {
+func (s *MessageStream) Close(board *agent.Board) (message.Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.materialized {
@@ -65,9 +65,9 @@ func (s *MessageStream) Close(board *agent.Board) (inference.Message, error) {
 	s.materialized = true
 	text := s.buf.String()
 	if text == "" {
-		return inference.Message{}, nil
+		return message.Message{}, nil
 	}
-	msg := inference.NewTextMessage(inference.RoleAssistant, text)
+	msg := message.NewTextMessage(message.RoleAssistant, text)
 	board.AppendChannelMessage(s.channel, msg)
 	s.message = msg
 	return msg, nil

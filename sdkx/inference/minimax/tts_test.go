@@ -12,7 +12,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Speech synthesis pipeline tests, run end to end through the runtime
@@ -26,8 +27,8 @@ func ttsGenerateRequest(format media.AudioFormat) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "hello minimax"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "hello minimax"}},
 				},
 				Intent: inference.Intent{
 					Audio: &inference.AudioIntent{
@@ -95,7 +96,7 @@ func TestTTSUnaryCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.AudioPart)
+	part, ok := response.Message.Content.Parts[0].(message.AudioPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -180,10 +181,10 @@ func TestTTSRejections(t *testing.T) {
 		{
 			name: "assistant context role",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Context = []inference.Message{{
-					Role: inference.RoleAssistant,
-					Content: inference.Content{
-						Parts: []inference.Part{inference.TextPart{Text: "prior turn"}},
+				r.Context = []message.Message{{
+					Role: message.RoleAssistant,
+					Content: message.Content{
+						Parts: []message.Part{message.TextPart{Text: "prior turn"}},
 					},
 				}}
 			},
@@ -322,7 +323,7 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if len(result.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(result.Message.Content.Parts))
 	}
-	part, ok := result.Message.Content.Parts[0].(inference.AudioPart)
+	part, ok := result.Message.Content.Parts[0].(message.AudioPart)
 	if !ok {
 		t.Fatalf("part = %#v", result.Message.Content.Parts[0])
 	}

@@ -1,224 +1,151 @@
-// Package inference defines the provider-neutral contracts for typed
-// inference operations. It intentionally has no dependency on the legacy
-// model, llm, or embedding packages.
-package inference
+package message
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
+	"reflect"
+	"slices"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
-type PartKind string
+type Role string
 
 const (
-	PartText       PartKind = "text"
-	PartImage      PartKind = "image"
-	PartAudio      PartKind = "audio"
-	PartVideo      PartKind = "video"
-	PartFile       PartKind = "file"
-	PartData       PartKind = "data"
-	PartToolCall   PartKind = "tool_call"
-	PartToolResult PartKind = "tool_result"
-	PartReasoning  PartKind = "reasoning"
+	RoleSystem    Role = "system"
+	RoleUser      Role = "user"
+	RoleAssistant Role = "assistant"
+	RoleTool      Role = "tool"
 )
 
-// Part is the sealed canonical content union. Each operation validates which
-// kinds it accepts; for example, Embed currently accepts only text and image.
-type Part interface {
-	Kind() PartKind
-	Clone() Part
-	Validate() error
-	inferencePart()
+type Message struct {
+	Role    Role    `json:"role"`
+	Content Content `json:"content"`
 }
 
-// normalizePart collapses the pointer method set inherited from the canonical
-// value types. Both T and *T satisfy Part in Go; runtime boundaries therefore
-// accept either form and normalize pointers back to values.
-func normalizePart(part Part) (Part, error) {
-	if isNilValue(part) {
-		return nil, fmt.Errorf("content part is nil")
-	}
-	switch value := part.(type) {
-	case TextPart, ImagePart, AudioPart, VideoPart, FilePart, DataPart,
-		ToolCallPart, ToolResultPart, ReasoningPart:
-		return value, nil
-	case *TextPart:
-		return *value, nil
-	case *ImagePart:
-		return *value, nil
-	case *AudioPart:
-		return *value, nil
-	case *VideoPart:
-		return *value, nil
-	case *FilePart:
-		return *value, nil
-	case *DataPart:
-		return *value, nil
-	case *ToolCallPart:
-		return *value, nil
-	case *ToolResultPart:
-		return *value, nil
-	case *ReasoningPart:
-		return *value, nil
+func (m Message) Clone() Message {
+	m.Content = m.Content.Clone()
+	return m
+}
+
+func (m Message) Validate() error {
+	switch m.Role {
+	case RoleSystem, RoleUser, RoleAssistant, RoleTool:
 	default:
-		return nil, fmt.Errorf("unsupported content part type %T", part)
+		return fmt.Errorf("unknown message role %q", m.Role)
 	}
-}
-
-type TextPart struct {
-	Text string `json:"text"`
-}
-
-func (TextPart) Kind() PartKind  { return PartText }
-func (p TextPart) Clone() Part   { return p }
-func (TextPart) Validate() error { return nil }
-func (TextPart) inferencePart()  {}
-
-type ImagePart struct {
-	Source media.ImageSource `json:"source"`
-}
-
-func (ImagePart) Kind() PartKind    { return PartImage }
-func (p ImagePart) Clone() Part     { return p }
-func (p ImagePart) Validate() error { return p.Source.Validate() }
-func (ImagePart) inferencePart()    {}
-
-type AudioPart struct {
-	Source         media.AudioSource  `json:"source"`
-	Format         *media.AudioFormat `json:"format,omitempty"`
-	DurationMillis *int64             `json:"duration_millis,omitempty"`
-}
-
-func (AudioPart) Kind() PartKind { return PartAudio }
-func (p AudioPart) Clone() Part {
-	p.Format = clonePointer(p.Format)
-	p.DurationMillis = clonePointer(p.DurationMillis)
-	return p
-}
-func (p AudioPart) Validate() error {
-	if err := p.Source.Validate(); err != nil {
+	if len(m.Content.Parts) == 0 {
+		return fmt.Errorf("message content is required")
+	}
+	if err := m.Content.Validate(); err != nil {
 		return err
 	}
-	if p.Format != nil {
-		if err := p.Format.Validate(); err != nil {
+	hasToolResults := false
+	for _, part := range m.Content.Parts {
+		normalized, err := normalizePart(part)
+		if err != nil {
 			return err
 		}
-		if p.Source.MediaType() != "" &&
-			p.Source.BaseMediaType() != p.Format.Encoding.MediaType() {
-			return fmt.Errorf("audio source media type does not match its format")
+		switch normalized.(type) {
+		case ToolCallPart:
+			if m.Role != RoleAssistant {
+				return fmt.Errorf("tool call parts require assistant role")
+			}
+		case ToolResultPart:
+			hasToolResults = true
+			if m.Role != RoleTool {
+				return fmt.Errorf("tool result parts require tool role")
+			}
+		case ReasoningPart:
+			if m.Role != RoleAssistant {
+				return fmt.Errorf("reasoning parts require assistant role")
+			}
 		}
 	}
-	if p.DurationMillis != nil && *p.DurationMillis < 0 {
-		return fmt.Errorf("audio duration must not be negative")
+	if m.Role == RoleTool && !hasToolResults {
+		return fmt.Errorf("tool role requires a tool result part")
 	}
 	return nil
 }
-func (AudioPart) inferencePart() {}
 
-type VideoPart struct {
-	Source media.VideoSource `json:"source"`
-}
-
-func (VideoPart) Kind() PartKind    { return PartVideo }
-func (p VideoPart) Clone() Part     { return p }
-func (p VideoPart) Validate() error { return p.Source.Validate() }
-func (VideoPart) inferencePart()    {}
-
-type FilePart struct {
-	URI       string `json:"uri"`
-	MediaType string `json:"media_type,omitempty"`
-	Name      string `json:"name,omitempty"`
-}
-
-func (FilePart) Kind() PartKind { return PartFile }
-func (p FilePart) Clone() Part  { return p }
-func (p FilePart) Validate() error {
-	if p.URI == "" {
-		return fmt.Errorf("file URI is required")
+func (m Message) ToolCalls() []Call {
+	var calls []Call
+	for _, part := range m.Content.Parts {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if call, ok := normalized.(ToolCallPart); ok {
+			calls = append(calls, call.Call.Clone())
+		}
 	}
-	return nil
-}
-func (FilePart) inferencePart() {}
-
-type DataPart struct {
-	MediaType string          `json:"media_type,omitempty"`
-	Value     json.RawMessage `json:"value"`
+	return calls
 }
 
-func (DataPart) Kind() PartKind { return PartData }
-func (p DataPart) Clone() Part {
-	p.Value = json.RawMessage(bytes.Clone(p.Value))
-	return p
-}
-
-func (p DataPart) Validate() error {
-	value := bytes.TrimSpace(p.Value)
-	if len(value) == 0 || value[0] != '{' || !json.Valid(value) {
-		return fmt.Errorf("data part value must be a JSON object")
+func (m Message) ToolResults() []Result {
+	var results []Result
+	for _, part := range m.Content.Parts {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if result, ok := normalized.(ToolResultPart); ok {
+			results = append(results, result.Result)
+		}
 	}
-	return nil
-}
-func (DataPart) inferencePart() {}
-
-type ToolCallPart struct {
-	Call tool.Call `json:"call"`
+	return results
 }
 
-func (ToolCallPart) Kind() PartKind { return PartToolCall }
-func (p ToolCallPart) Clone() Part {
-	p.Call = p.Call.Clone()
-	return p
+func (m Message) HasToolCalls() bool {
+	for _, part := range m.Content.Parts {
+		normalized, err := normalizePart(part)
+		if err != nil {
+			continue
+		}
+		if _, ok := normalized.(ToolCallPart); ok {
+			return true
+		}
+	}
+	return false
 }
-func (p ToolCallPart) Validate() error { return p.Call.Validate() }
-func (ToolCallPart) inferencePart()    {}
 
-type ToolResultPart struct {
-	Result tool.Result `json:"result"`
+// CloneMessages returns a deep copy of msgs. Nil stays nil so callers
+// can preserve the usual JSON / len semantics.
+func CloneMessages(msgs []Message) []Message {
+	if msgs == nil {
+		return nil
+	}
+	out := make([]Message, len(msgs))
+	for i, msg := range msgs {
+		out[i] = msg.Clone()
+	}
+	return out
 }
 
-func (ToolResultPart) Kind() PartKind    { return PartToolResult }
-func (p ToolResultPart) Clone() Part     { return p }
-func (p ToolResultPart) Validate() error { return p.Result.Validate() }
-func (ToolResultPart) inferencePart()    {}
-
-// ReasoningPart is one provider reasoning trace: the thinking a model
-// produced while composing the answer. It is a trace, not a requested
-// artifact — reasoning-capable models emit it whether or not the request
-// set a reasoning intent, so responses may always carry it.
+// LastByRole returns the last message in msgs whose Role matches role.
+// The boolean is false when no such message exists. The returned Message
+// is the slice element itself (not a deep copy); callers that intend to
+// mutate it should call [Message.Clone] first.
 //
-// Text holds the visible reasoning; providers that hide the content
-// (Anthropic redacted_thinking, OpenAI encrypted reasoning without a
-// summary) deliver an empty Text. Signature is the provider-issued opaque
-// verification payload (Anthropic signature / redacted data, OpenAI
-// encrypted_content): providers that sign reasoning require it verbatim
-// when the part round-trips through conversation context, so consumers
-// building agent loops must preserve the whole part. The convention
-// Text=="" with Signature!="" therefore means "reasoning happened, content
-// withheld" — it is derived, never a separate flag. ID is the
-// provider-issued trace identifier (OpenAI reasoning item ids); providers
-// that address traces by id require it on round-trip, and providers
-// without item ids (Anthropic thinking blocks) leave it empty.
-type ReasoningPart struct {
-	Text      string `json:"text,omitempty"`
-	Signature string `json:"signature,omitempty"`
-	ID        string `json:"id,omitempty"`
+// Typical use is for graph nodes that need to read a single role-scoped
+// turn from a board channel — e.g. "the latest user message on
+// MainChannel" — without re-implementing the reverse scan everywhere.
+func LastByRole(msgs []Message, role Role) (Message, bool) {
+	for _, msg := range slices.Backward(msgs) {
+		if msg.Role == role {
+			return msg, true
+		}
+	}
+	return Message{}, false
 }
 
-func (ReasoningPart) Kind() PartKind { return PartReasoning }
-func (p ReasoningPart) Clone() Part  { return p }
-func (p ReasoningPart) Validate() error {
-	if p.Text == "" && p.Signature == "" {
-		return fmt.Errorf("reasoning part carries neither text nor signature")
-	}
-	return nil
+// NewTextMessage builds a message carrying a single text part.
+func NewTextMessage(role Role, text string) Message {
+	return Message{Role: role, Content: Content{Parts: []Part{TextPart{Text: text}}}}
 }
-func (ReasoningPart) inferencePart() {}
 
 // Content is an ordered collection of canonical parts. Intent deliberately
 // does not belong here; only InputContent may attach execution intent.
@@ -304,13 +231,13 @@ func (c Content) MarshalJSON() ([]byte, error) {
 			}{PartData, value.MediaType, value.Value}
 		case ToolCallPart:
 			wire[i] = struct {
-				Type PartKind  `json:"type"`
-				Call tool.Call `json:"call"`
+				Type PartKind `json:"type"`
+				Call Call     `json:"call"`
 			}{PartToolCall, value.Call}
 		case ToolResultPart:
 			wire[i] = struct {
-				Type   PartKind    `json:"type"`
-				Result tool.Result `json:"result"`
+				Type   PartKind `json:"type"`
+				Result Result   `json:"result"`
 			}{PartToolResult, value.Result}
 		case ReasoningPart:
 			wire[i] = struct {
@@ -413,8 +340,8 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 			decoded.Parts[i] = DataPart{MediaType: item.MediaType, Value: item.Value}
 		case PartToolCall:
 			var item struct {
-				Type PartKind  `json:"type"`
-				Call tool.Call `json:"call"`
+				Type PartKind `json:"type"`
+				Call Call     `json:"call"`
 			}
 			if err := decodeStrict(raw, &item); err != nil {
 				return fmt.Errorf("content part %d: %w", i, err)
@@ -422,8 +349,8 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 			decoded.Parts[i] = ToolCallPart{Call: item.Call}
 		case PartToolResult:
 			var item struct {
-				Type   PartKind    `json:"type"`
-				Result tool.Result `json:"result"`
+				Type   PartKind `json:"type"`
+				Result Result   `json:"result"`
 			}
 			if err := decodeStrict(raw, &item); err != nil {
 				return fmt.Errorf("content part %d: %w", i, err)
@@ -455,22 +382,6 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func decodeStrict(data []byte, dst any) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("unexpected trailing JSON value")
-		}
-		return err
-	}
-	return nil
-}
-
 // Text concatenates the message's text parts in order. Non-text parts
 // are skipped; it answers "what did the user/assistant say" without
 // imposing prose structure on multi-modal content.
@@ -486,4 +397,36 @@ func (c Content) Text() string {
 		}
 	}
 	return b.String()
+}
+
+// isNilValue reports whether value is a typed nil (e.g. (*Part)(nil))
+// sitting behind an any. reflection.Value.IsNil only works on
+// chan/func/interface/map/pointer/slice; this is the safe equivalent
+// for an any that may carry one.
+func isNilValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(value); v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	}
+	return false
+}
+
+func decodeStrict(data []byte, dst any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }

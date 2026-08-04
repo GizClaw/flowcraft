@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func TestRealtimeContractsOwnMutableInputsAndValidateModalities(t *testing.T) {
@@ -42,7 +42,7 @@ func TestRealtimeContractsOwnMutableInputsAndValidateModalities(t *testing.T) {
 	}
 	duplicateTools := RealtimeConfig{
 		Modalities: []Modality{ModalityText},
-		Tools: []tool.Definition{
+		Tools: []message.Definition{
 			{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 			{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
@@ -74,7 +74,7 @@ func TestRealtimeEventsCloneMutablePayloads(t *testing.T) {
 func TestRealtimeConfigClonePreservesAndOwnsTools(t *testing.T) {
 	config := RealtimeConfig{
 		Modalities: []Modality{ModalityText},
-		Tools: []tool.Definition{{
+		Tools: []message.Definition{{
 			Name:        "search",
 			InputSchema: json.RawMessage(`{"type":"object"}`),
 		}},

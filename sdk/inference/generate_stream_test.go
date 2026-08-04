@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func validGenerateTextRequest() GenerateRequest {
@@ -15,7 +15,7 @@ func validGenerateTextRequest() GenerateRequest {
 		Input: GenerateInput{
 			Role: InputRoleUser,
 			Content: InputContent{
-				Content: Content{Parts: []Part{TextPart{Text: "hello"}}},
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hello"}}},
 				Intent:  Intent{Text: &TextIntent{}},
 			},
 		},
@@ -93,7 +93,7 @@ func TestGenerateStreamAggregatesPartsAndFinishedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Result: %v", err)
 	}
-	if got := response.Message.Content.Parts[0].(TextPart).Text; got != "hello world" {
+	if got := response.Message.Content.Parts[0].(message.TextPart).Text; got != "hello world" {
 		t.Fatalf("text = %q", got)
 	}
 	if response.FinishReason != FinishCompleted ||
@@ -244,14 +244,14 @@ func TestGenerateStreamResultReturnsDeepClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first.Message.Content.Parts[0] = TextPart{Text: "mutated"}
+	first.Message.Content.Parts[0] = message.TextPart{Text: "mutated"}
 	first.Metadata.Decisions[0].Reason = "mutated"
 
 	second, err := stream.Result()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := second.Message.Content.Parts[0].(TextPart).Text; got != "original" {
+	if got := second.Message.Content.Parts[0].(message.TextPart).Text; got != "original" {
 		t.Fatalf("second Result text = %q, want original", got)
 	}
 	if second.Metadata.Decisions[0].Reason != "" {
@@ -291,7 +291,7 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 				{
 					PartIndex: 3,
 					Delta: ImagePartDelta{
-						Part: ImagePart{Source: imageSource},
+						Part: message.ImagePart{Source: imageSource},
 					},
 				},
 				{
@@ -321,7 +321,7 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 		Voice:  media.VoiceSpec{ID: "voice"},
 		Format: format,
 	}
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "lookup",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}}
@@ -349,15 +349,15 @@ func TestGenerateStreamAggregatesEveryPartDeltaKind(t *testing.T) {
 	if len(response.Message.Content.Parts) != 5 {
 		t.Fatalf("parts = %+v", response.Message.Content.Parts)
 	}
-	call := response.Message.Content.Parts[1].(ToolCallPart).Call
+	call := response.Message.Content.Parts[1].(message.ToolCallPart).Call
 	if string(call.Arguments) != `{"q":"flowcraft"}` {
 		t.Fatalf("tool arguments = %s", call.Arguments)
 	}
-	audio := response.Message.Content.Parts[2].(AudioPart)
+	audio := response.Message.Content.Parts[2].(message.AudioPart)
 	if got := string(audio.Source.Bytes()); got != "firstsecond" {
 		t.Fatalf("audio = %q", got)
 	}
-	reasoning := response.Message.Content.Parts[4].(ReasoningPart)
+	reasoning := response.Message.Content.Parts[4].(message.ReasoningPart)
 	if reasoning.Text != "first thought. second thought" ||
 		reasoning.Signature != "sig-terminal" {
 		t.Fatalf("reasoning = %#v", reasoning)

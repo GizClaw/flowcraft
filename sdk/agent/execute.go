@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Execute executes one turn of ag against eng with the given req.
@@ -360,17 +360,17 @@ func itoa(n int) string {
 // Trade-off: agents that interleave assistant + user turns inside one
 // run will see only the trailing assistant block here. If that ever
 // matters, callers can read finalBoard themselves via Result.LastBoard.
-func newAssistantMessages(b *Board) []inference.Message {
+func newAssistantMessages(b *Board) []message.Message {
 	main := b.Channel(MainChannel)
 	end := len(main)
 	start := end
-	for start > 0 && main[start-1].Role == inference.RoleAssistant {
+	for start > 0 && main[start-1].Role == message.RoleAssistant {
 		start--
 	}
 	if start == end {
 		return nil
 	}
-	out := make([]inference.Message, end-start)
+	out := make([]message.Message, end-start)
 	copy(out, main[start:end])
 	return out
 }
@@ -404,7 +404,7 @@ func collectArtifacts(b *Board, channels []string) []Artifact {
 		if len(msgs) == 0 {
 			continue
 		}
-		var parts []inference.Part
+		var parts []message.Part
 		for _, m := range msgs {
 			parts = append(parts, m.Content.Parts...)
 		}

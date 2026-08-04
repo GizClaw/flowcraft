@@ -13,7 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 
 	"github.com/openai/openai-go/responses"
@@ -93,8 +93,8 @@ func simpleTextRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -305,24 +305,24 @@ func compileTextWire(t *testing.T, request inference.GenerateRequest) generateWi
 
 func TestWireToParamsMessages(t *testing.T) {
 	request := simpleTextRequest("current")
-	request.Context = []inference.Message{
+	request.Context = []message.Message{
 		{
-			Role: inference.RoleSystem,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "be terse"},
+			Role: message.RoleSystem,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "be terse"},
 			}},
 		},
 		{
-			Role: inference.RoleUser,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "prior"},
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "prior"},
 			}},
 		},
 		{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "answer"},
-				inference.ToolCallPart{Call: tool.Call{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "answer"},
+				message.ToolCallPart{Call: message.Call{
 					ID:        "call_1",
 					Name:      "lookup",
 					Arguments: json.RawMessage(`{"q":"x"}`),
@@ -330,9 +330,9 @@ func TestWireToParamsMessages(t *testing.T) {
 			}},
 		},
 		{
-			Role: inference.RoleTool,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ToolResultPart{Result: tool.Result{
+			Role: message.RoleTool,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolResultPart{Result: message.Result{
 					CallID:  "call_1",
 					Content: "found",
 				}},
@@ -370,7 +370,7 @@ func TestWireToParamsKnobs(t *testing.T) {
 		Temperature:     floatPointer(0.2),
 		TopP:            floatPointer(0.9),
 		ReasoningEffort: inference.ReasoningHigh,
-		Tools: []tool.Definition{{
+		Tools: []message.Definition{{
 			Name:        "lookup",
 			Description: "find things",
 			InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -459,15 +459,15 @@ func TestClassifyError(t *testing.T) {
 
 func TestWireToParamsReasoningItem(t *testing.T) {
 	request := simpleTextRequest("current")
-	request.Context = []inference.Message{{
-		Role: inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.ReasoningPart{
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{
 				Text:      "joined summary",
 				Signature: "enc-1",
 				ID:        "rs_1",
 			},
-			inference.TextPart{Text: "answer"},
+			message.TextPart{Text: "answer"},
 		}},
 	}}
 	compiled, err := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
@@ -519,11 +519,11 @@ func TestCompileReasoningDispositions(t *testing.T) {
 
 	t.Run("reasoning without id drops with reason", func(t *testing.T) {
 		request := simpleTextRequest("hi")
-		request.Context = []inference.Message{{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "trace", Signature: "enc"},
-				inference.TextPart{Text: "answer"},
+		request.Context = []message.Message{{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "trace", Signature: "enc"},
+				message.TextPart{Text: "answer"},
 			}},
 		}}
 		compiled, err := compile(
@@ -563,10 +563,10 @@ func TestCompileReasoningDispositions(t *testing.T) {
 			t.Fatalf("mergedCatalog: %v", err)
 		}
 		request := simpleTextRequest("hi")
-		request.Context = []inference.Message{{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "trace", Signature: "enc", ID: "rs_1"},
+		request.Context = []message.Message{{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "trace", Signature: "enc", ID: "rs_1"},
 			}},
 		}}
 		compiled, err := compileGenerate("my-plain-model", models["my-plain-model"])(

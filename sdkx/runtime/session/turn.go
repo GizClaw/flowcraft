@@ -9,7 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
@@ -400,19 +400,19 @@ func (t *Turn) CommitView(_ context.Context, _ agent.Identity, _ *agent.Request,
 	}
 	board := res.LastBoard.Clone()
 	messages := board.Channel(agent.MainChannel)
-	for len(messages) > 0 && messages[len(messages)-1].Role == inference.RoleAssistant {
+	for len(messages) > 0 && messages[len(messages)-1].Role == message.RoleAssistant {
 		messages = messages[:len(messages)-1]
 	}
 	if prefix != "" {
-		messages = append(messages, inference.NewTextMessage(inference.RoleAssistant, prefix))
+		messages = append(messages, message.NewTextMessage(message.RoleAssistant, prefix))
 	}
 	board.SetChannel(agent.MainChannel, messages)
 	return agent.CommitView{LastBoard: board}, nil
 }
 
-func trailingAssistantText(messages []inference.Message) string {
+func trailingAssistantText(messages []message.Message) string {
 	start := len(messages)
-	for start > 0 && messages[start-1].Role == inference.RoleAssistant {
+	for start > 0 && messages[start-1].Role == message.RoleAssistant {
 		start--
 	}
 	var builder strings.Builder

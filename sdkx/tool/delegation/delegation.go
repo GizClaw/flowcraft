@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -63,7 +64,7 @@ func NewStatus() tool.Tool {
 	return statusTool{}
 }
 
-func (t delegateTool) Definition() tool.Definition {
+func (t delegateTool) Definition() message.Definition {
 	targets := t.targets()
 	description := "Delegate work to another available target. Supports synchronous results, interaction handoff, and asynchronous execution."
 	if len(targets) > 0 {
@@ -153,11 +154,11 @@ func (delegateTool) Execute(ctx context.Context, arguments string) (string, erro
 	return encodeResponse(result)
 }
 
-func (statusTool) Definition() tool.Definition {
-	return tool.DefineSchema(
+func (statusTool) Definition() message.Definition {
+	return message.DefineSchema(
 		StatusToolName,
 		"Get the latest backend-neutral status of an asynchronous delegation.",
-		tool.Property("delegation_id", "string", "The delegation identifier returned by delegate."),
+		message.ToolProperty("delegation_id", "string", "The delegation identifier returned by delegate."),
 	).Required("delegation_id").DisallowAdditionalProperties().Build()
 }
 
@@ -221,28 +222,28 @@ func decodeStrict(arguments string, out any) error {
 	return nil
 }
 
-func definition(name, description string, targets []sdkdelegation.Target) tool.Definition {
-	targetProperty := tool.Property("target", "string", "Receiving delegation target.")
+func definition(name, description string, targets []sdkdelegation.Target) message.Definition {
+	targetProperty := message.ToolProperty("target", "string", "Receiving delegation target.")
 	if len(targets) > 0 {
 		ids := make([]string, len(targets))
 		for i, target := range targets {
 			ids[i] = target.ID
 		}
-		targetProperty = tool.EnumProperty(
+		targetProperty = message.ToolEnumProperty(
 			"target", "string", "Receiving delegation target.", ids...)
 	}
-	return tool.DefineSchema(
+	return message.DefineSchema(
 		name,
 		description,
-		tool.EnumProperty(
+		message.ToolEnumProperty(
 			"mode", "string", "Delegation lifecycle mode.",
 			string(sdkdelegation.ModeSync),
 			string(sdkdelegation.ModeHandoff),
 			string(sdkdelegation.ModeAsync)),
 		targetProperty,
-		tool.Property("input", "string", "Task or user intent for the receiving target."),
-		tool.StringMapProperty("metadata", "Optional string metadata."),
-		tool.Property("note", "string", "Optional context preserved in delegation metadata."),
+		message.ToolProperty("input", "string", "Task or user intent for the receiving target."),
+		message.ToolStringMapProperty("metadata", "Optional string metadata."),
+		message.ToolProperty("note", "string", "Optional context preserved in delegation metadata."),
 	).Required("mode", "target", "input").DisallowAdditionalProperties().Build()
 }
 

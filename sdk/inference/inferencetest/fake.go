@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/route"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // DefaultFakeModel is GenerateFake's default model ref.
@@ -26,10 +27,10 @@ type GenerateFake struct {
 	// DefaultFakeModel.
 	Model inference.ModelRef
 	// Respond answers unary Generate calls. Default: a one-part "ok"
-	// text message with FinishCompleted.
+	// text message with inference.FinishCompleted.
 	Respond func(inference.GenerateRequest) inference.GenerateResponse
 	// Events plays back on GenerateStream. Default: a text delta "ok"
-	// followed by FinishCompleted.
+	// followed by inference.FinishCompleted.
 	Events []inference.GenerateStreamEvent
 	// StreamErr, when non-nil, makes GenerateStream's Next fail with
 	// it once StreamErrAt events have been played back — a mid-stream
@@ -54,9 +55,9 @@ func (f *GenerateFake) Runtime(t *testing.T) *inference.Runtime {
 	if respond == nil {
 		respond = func(inference.GenerateRequest) inference.GenerateResponse {
 			return inference.GenerateResponse{
-				Message: inference.Message{
-					Role:    inference.RoleAssistant,
-					Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "ok"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
 				},
 				FinishReason: inference.FinishCompleted,
 			}

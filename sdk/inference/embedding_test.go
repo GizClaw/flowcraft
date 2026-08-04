@@ -5,23 +5,23 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func TestEmbedActiveFieldsCoverEveryPartKindAndMultiPart(t *testing.T) {
 	image, _ := media.NewImageURL("https://example.com/cat.png", "image/png")
 	audio, _ := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
 	video, _ := media.NewVideoURL("https://example.com/video.mp4", "video/mp4")
-	call, _ := tool.NewCall("call-1", "search", map[string]any{"query": "cat"})
-	request := EmbedRequest{Items: []EmbedItem{{Content: Content{Parts: []Part{TextPart{Text: "hello"},
-		ImagePart{Source: image},
-		AudioPart{Source: audio},
-		VideoPart{Source: video},
-		FilePart{URI: "s3://bucket/document.pdf"},
-		DataPart{Value: json.RawMessage(`{"answer":42}`)},
-		ToolCallPart{Call: call},
-		ToolResultPart{Result: tool.Result{CallID: "call-1", Content: "found"}}},
+	call, _ := message.NewCall("call-1", "search", map[string]any{"query": "cat"})
+	request := EmbedRequest{Items: []EmbedItem{{Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hello"},
+		message.ImagePart{Source: image},
+		message.AudioPart{Source: audio},
+		message.VideoPart{Source: video},
+		message.FilePart{URI: "s3://bucket/document.pdf"},
+		message.DataPart{Value: json.RawMessage(`{"answer":42}`)},
+		message.ToolCallPart{Call: call},
+		message.ToolResultPart{Result: message.Result{CallID: "call-1", Content: "found"}}},
 	}}}}
 	if err := request.Validate(); err != nil {
 		t.Fatalf("EmbedRequest.Validate: %v", err)
@@ -59,8 +59,8 @@ func TestEmbedCompilerDecidesCanonicalPartSupport(t *testing.T) {
 	driver, err := BindEmbed(
 		func(_ context.Context, _ ModelRef, request EmbedRequest) (Compiled[wire], error) {
 			compileCalls++
-			if _, ok := request.Items[0].Content.Parts[0].(AudioPart); !ok {
-				t.Fatalf("compiler received part %T, want AudioPart", request.Items[0].Content.Parts[0])
+			if _, ok := request.Items[0].Content.Parts[0].(message.AudioPart); !ok {
+				t.Fatalf("compiler received part %T, want message.AudioPart", request.Items[0].Content.Parts[0])
 			}
 			return Compiled[wire]{Report: CompileReport{
 				Operation: OperationEmbed,
@@ -84,7 +84,7 @@ func TestEmbedCompilerDecidesCanonicalPartSupport(t *testing.T) {
 	explanation, err := driver.Explain(
 		context.Background(),
 		ModelRef{ID: ModelID{Provider: "fake", Name: "audio-embed"}},
-		EmbedRequest{Items: []EmbedItem{{Content: Content{Parts: []Part{AudioPart{Source: audio}}}}}},
+		EmbedRequest{Items: []EmbedItem{{Content: message.Content{Parts: []message.Part{message.AudioPart{Source: audio}}}}}},
 	)
 	if err != nil {
 		t.Fatalf("Explain: %v", err)

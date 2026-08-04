@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -12,8 +13,8 @@ import (
 // after every call that reaches this middleware — including
 // short-circuit results produced inside it.
 type AuditRecord struct {
-	Call     tool.Call
-	Result   tool.Result
+	Call     message.Call
+	Result   message.Result
 	Duration time.Duration
 }
 
@@ -39,7 +40,7 @@ func Audit(sink AuditSink) tool.Middleware {
 		panic("middleware.Audit: sink is nil")
 	}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			start := time.Now()
 			res := next(ctx, call)
 			sink.Record(ctx, AuditRecord{

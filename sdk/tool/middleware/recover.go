@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -13,10 +14,10 @@ import (
 // the fan-out goroutine and takes the process down.
 func Recover() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) (res tool.Result) {
+		return func(ctx context.Context, call message.Call) (res message.Result) {
 			defer func() {
 				if rv := recover(); rv != nil {
-					res = tool.Result{
+					res = message.Result{
 						CallID:  call.ID,
 						Content: fmt.Sprintf("tool %q panicked: %v", call.Name, rv),
 						IsError: true,

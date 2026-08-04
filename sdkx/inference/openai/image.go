@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
@@ -66,14 +67,14 @@ func compileImage(
 		}
 
 		var prompt []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
-				case inference.TextPart:
+				case message.TextPart:
 					prompt = append(prompt, value.Text)
-				case inference.ImagePart:
+				case message.ImagePart:
 					ledger.reject(
-						fields[inference.PartImage],
+						fields[message.PartImage],
 						"image edits have no channel on this driver; text prompts only",
 					)
 				default:
@@ -84,15 +85,15 @@ func compileImage(
 				}
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
@@ -221,7 +222,7 @@ func decodeImage(
 	_ context.Context,
 	raw imageRaw,
 ) (inference.GenerateResponse, error) {
-	parts := make([]inference.Part, 0, len(raw.images))
+	parts := make([]message.Part, 0, len(raw.images))
 	for index, data := range raw.images {
 		mediaType := raw.mediaType
 		if mediaType == "" {
@@ -244,13 +245,13 @@ func decodeImage(
 				err,
 			)
 		}
-		parts = append(parts, inference.ImagePart{Source: source})
+		parts = append(parts, message.ImagePart{Source: source})
 	}
 	generated := int64(len(raw.images))
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: inference.FinishCompleted,
 		Usage: inference.Usage{

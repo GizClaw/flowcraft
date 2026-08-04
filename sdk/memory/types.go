@@ -1,9 +1,11 @@
 package memory
 
-import "github.com/GizClaw/flowcraft/sdk/inference"
+import (
+	"github.com/GizClaw/flowcraft/sdk/message"
+)
 
 // Record is one entry in a transcript. It wraps the canonical
-// inference.Message with a runtime-assigned Seq and a caller-stable
+// message.Message with a runtime-assigned Seq and a caller-stable
 // ID so transcripts can implement (Seq, ID) last-write-wins, idempotent
 // retry, and opaque cursor pagination.
 //
@@ -28,7 +30,7 @@ type Record struct {
 	// Message is the canonical message content, reused from
 	// sdk/inference so the kernel does not own a second
 	// content union.
-	Message inference.Message
+	Message message.Message
 }
 
 // Hit is one result returned by Recall. The shape is intentionally
@@ -40,10 +42,10 @@ type Hit struct {
 	// Two recalls returning the same ID refer to the same
 	// physical entry.
 	ID string
-	// Parts is the content of the hit. Reuses inference.Part so
+	// Parts is the content of the hit. Reuses message.Part so
 	// callers can render hits through the same machinery they
 	// use for messages.
-	Parts []inference.Part
+	Parts []message.Part
 	// Score is the relevance score in the implementation's
 	// native range. Callers that want a normalized score use
 	// RecallRequest.MinScore to define a comparable bound.

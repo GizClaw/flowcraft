@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -18,9 +19,9 @@ func Concurrency(limit int) tool.Middleware {
 	}
 	sem := semaphore.NewWeighted(int64(limit))
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			if err := sem.Acquire(ctx, 1); err != nil {
-				return tool.Result{
+				return message.Result{
 					CallID:  call.ID,
 					Content: fmt.Sprintf("tool %q failed to acquire execution slot: %v", call.Name, err),
 					IsError: true,

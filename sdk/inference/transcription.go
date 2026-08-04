@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 type TranscriptLanguageSource string

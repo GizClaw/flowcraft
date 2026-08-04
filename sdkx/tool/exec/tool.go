@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
@@ -71,24 +72,24 @@ func MustNew(rn sandbox.Runner, opts ...Option) *Tool {
 // on purpose — the model should not treat exec as a free-form
 // scratchpad; explicit cwd / timeout knobs steer it toward
 // reproducible calls.
-func (t *Tool) Definition() tool.Definition {
-	return tool.DefineSchema(
+func (t *Tool) Definition() message.Definition {
+	return message.DefineSchema(
 		Name,
 		"Run a shell command inside the agent's sandbox. "+
 			"Returns exit_code, stdout, and stderr as JSON. A non-zero "+
 			"exit_code is reported in the result body, not as an error. "+
 			"Use this when you need to inspect files, run scripts, "+
 			"compile, or invoke CLIs the user expects you to drive.",
-		tool.Property("command", "string",
+		message.ToolProperty("command", "string",
 			"The program to run (required). Resolved against the sandbox's PATH policy."),
-		tool.ArrayProperty("args",
+		message.ToolArrayProperty("args",
 			"Arguments passed verbatim to the program.",
-			tool.Items("string")),
-		tool.Property("workdir", "string",
+			message.Items("string")),
+		message.ToolProperty("workdir", "string",
 			"Working directory, relative to the sandbox root. Empty means the sandbox root itself. Absolute paths or .. escapes are rejected."),
-		tool.Property("stdin", "string",
+		message.ToolProperty("stdin", "string",
 			"Bytes piped to the program's stdin. Omit when the program does not read stdin."),
-		tool.Property("timeout_seconds", "number",
+		message.ToolProperty("timeout_seconds", "number",
 			"Per-call timeout in seconds. Falls back to the tool's default when omitted. Zero or negative disables the tool-level timeout (the caller's ctx still applies)."),
 	).Required("command").DisallowAdditionalProperties().Build()
 }

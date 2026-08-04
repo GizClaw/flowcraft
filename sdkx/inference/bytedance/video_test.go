@@ -12,8 +12,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // newVideoTestRuntime builds a runtime whose task polls are paced at 1ms
@@ -63,8 +63,8 @@ func videoRequest() inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "waves at dusk"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "waves at dusk"}},
 				},
 				Intent: inference.Intent{Video: &inference.VideoIntent{}},
 			},
@@ -97,7 +97,7 @@ func TestVideoCapturedWire(t *testing.T) {
 	request := videoRequest()
 	request.Input.Content.Parts = append(
 		request.Input.Content.Parts,
-		inference.ImagePart{Source: first}, inference.ImagePart{Source: last},
+		message.ImagePart{Source: first}, message.ImagePart{Source: last},
 	)
 	request.Input.Content.Intent.Video = &inference.VideoIntent{
 		DurationMillis: &duration,
@@ -130,7 +130,7 @@ func TestVideoCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.VideoPart)
+	part, ok := response.Message.Content.Parts[0].(message.VideoPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -221,7 +221,7 @@ func TestVideoRejections(t *testing.T) {
 			name: "video reference input",
 			mutate: func(r *inference.GenerateRequest) {
 				r.Input.Content.Parts = append(
-					r.Input.Content.Parts, inference.VideoPart{Source: video},
+					r.Input.Content.Parts, message.VideoPart{Source: video},
 				)
 			},
 			field: inference.FieldGenerateInputVideo,
@@ -231,7 +231,7 @@ func TestVideoRejections(t *testing.T) {
 			mutate: func(r *inference.GenerateRequest) {
 				for range 3 {
 					r.Input.Content.Parts = append(
-						r.Input.Content.Parts, inference.ImagePart{Source: image},
+						r.Input.Content.Parts, message.ImagePart{Source: image},
 					)
 				}
 			},
@@ -258,7 +258,7 @@ func TestVideoRejections(t *testing.T) {
 			name: "tools intent",
 			mutate: func(r *inference.GenerateRequest) {
 				r.Input.Content.Intent.Text = &inference.TextIntent{
-					Tools: []tool.Definition{{
+					Tools: []message.Definition{{
 						Name:        "search",
 						InputSchema: json.RawMessage(`{"type":"object"}`),
 					}},

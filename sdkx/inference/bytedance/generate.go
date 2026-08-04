@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // ---------------------------------------------------------------------------
@@ -271,28 +272,28 @@ func (l *ledger) err() error {
 // Compiler
 // ---------------------------------------------------------------------------
 
-var contextPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateContextText,
-	inference.PartImage:      inference.FieldGenerateContextImage,
-	inference.PartAudio:      inference.FieldGenerateContextAudio,
-	inference.PartVideo:      inference.FieldGenerateContextVideo,
-	inference.PartFile:       inference.FieldGenerateContextFile,
-	inference.PartData:       inference.FieldGenerateContextData,
-	inference.PartToolCall:   inference.FieldGenerateContextToolCall,
-	inference.PartToolResult: inference.FieldGenerateContextToolResult,
-	inference.PartReasoning:  inference.FieldGenerateContextReasoning,
+var contextPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateContextText,
+	message.PartImage:      inference.FieldGenerateContextImage,
+	message.PartAudio:      inference.FieldGenerateContextAudio,
+	message.PartVideo:      inference.FieldGenerateContextVideo,
+	message.PartFile:       inference.FieldGenerateContextFile,
+	message.PartData:       inference.FieldGenerateContextData,
+	message.PartToolCall:   inference.FieldGenerateContextToolCall,
+	message.PartToolResult: inference.FieldGenerateContextToolResult,
+	message.PartReasoning:  inference.FieldGenerateContextReasoning,
 }
 
-var inputPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldGenerateInputText,
-	inference.PartImage:      inference.FieldGenerateInputImage,
-	inference.PartAudio:      inference.FieldGenerateInputAudio,
-	inference.PartVideo:      inference.FieldGenerateInputVideo,
-	inference.PartFile:       inference.FieldGenerateInputFile,
-	inference.PartData:       inference.FieldGenerateInputData,
-	inference.PartToolCall:   inference.FieldGenerateInputToolCall,
-	inference.PartToolResult: inference.FieldGenerateInputToolResult,
-	inference.PartReasoning:  inference.FieldGenerateInputReasoning,
+var inputPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldGenerateInputText,
+	message.PartImage:      inference.FieldGenerateInputImage,
+	message.PartAudio:      inference.FieldGenerateInputAudio,
+	message.PartVideo:      inference.FieldGenerateInputVideo,
+	message.PartFile:       inference.FieldGenerateInputFile,
+	message.PartData:       inference.FieldGenerateInputData,
+	message.PartToolCall:   inference.FieldGenerateInputToolCall,
+	message.PartToolResult: inference.FieldGenerateInputToolResult,
+	message.PartReasoning:  inference.FieldGenerateInputReasoning,
 }
 
 // compileGenerate lowers a canonical request into the provider wire. It never
@@ -320,11 +321,11 @@ func compileGenerate(
 		// Context messages → items. System text folds into the native
 		// instructions field; non-text system parts have no native home.
 		var system []string
-		for _, message := range request.Context {
-			switch message.Role {
-			case inference.RoleSystem:
-				for _, part := range message.Content.Parts {
-					text, ok := part.(inference.TextPart)
+		for _, turn := range request.Context {
+			switch turn.Role {
+			case message.RoleSystem:
+				for _, part := range turn.Content.Parts {
+					text, ok := part.(message.TextPart)
 					if !ok {
 						ledger.reject(
 							contextPartFields[part.Kind()],
@@ -334,10 +335,10 @@ func compileGenerate(
 					}
 					system = append(system, text.Text)
 				}
-			case inference.RoleTool:
-				compileToolResults(&wire, message.Content.Parts, contextPartFields, ledger)
+			case message.RoleTool:
+				compileToolResults(&wire, turn.Content.Parts, contextPartFields, ledger)
 			default: // user / assistant
-				compileMessage(&wire, string(message.Role), message.Content.Parts, entry, contextPartFields, ledger)
+				compileMessage(&wire, string(turn.Role), turn.Content.Parts, entry, contextPartFields, ledger)
 			}
 		}
 		wire.instructions = strings.Join(system, "\n\n")
@@ -415,9 +416,9 @@ func compileGenerateOptions(
 func compileMessage(
 	wire *generateWire,
 	role string,
-	parts []inference.Part,
+	parts []message.Part,
 	entry catalogEntry,
-	fields map[inference.PartKind]inference.FieldID,
+	fields map[message.PartKind]inference.FieldID,
 	ledger *ledger,
 ) {
 	var content []wireContent
@@ -434,33 +435,33 @@ func compileMessage(
 	}
 	for _, part := range parts {
 		switch value := part.(type) {
-		case inference.TextPart:
+		case message.TextPart:
 			content = append(content, wireContent{kind: wireContentText, text: value.Text})
-		case inference.ImagePart:
+		case message.ImagePart:
 			if !entry.vision {
-				ledger.reject(fields[inference.PartImage], "model does not accept image input")
+				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
 			content = append(content, wireContent{
 				kind: wireContentImage,
 				uri:  sourceURI(value.Source),
 			})
-		case inference.VideoPart:
+		case message.VideoPart:
 			if !entry.video {
-				ledger.reject(fields[inference.PartVideo], "model does not accept video input")
+				ledger.reject(fields[message.PartVideo], "model does not accept video input")
 				continue
 			}
 			content = append(content, wireContent{
 				kind: wireContentVideo,
 				uri:  videoSourceURI(value.Source),
 			})
-		case inference.AudioPart:
-			ledger.reject(fields[inference.PartAudio], "audio input is not supported by generate models")
-		case inference.FilePart:
-			ledger.reject(fields[inference.PartFile], "file references are not supported")
-		case inference.DataPart:
-			ledger.reject(fields[inference.PartData], "opaque data parts have no native representation")
-		case inference.ToolCallPart:
+		case message.AudioPart:
+			ledger.reject(fields[message.PartAudio], "audio input is not supported by generate models")
+		case message.FilePart:
+			ledger.reject(fields[message.PartFile], "file references are not supported")
+		case message.DataPart:
+			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+		case message.ToolCallPart:
 			flush()
 			wire.items = append(wire.items, wireItem{
 				kind:   wireItemToolCall,
@@ -468,16 +469,16 @@ func compileMessage(
 				name:   value.Call.Name,
 				args:   bytesClone(value.Call.Arguments),
 			})
-		case inference.ToolResultPart:
+		case message.ToolResultPart:
 			flush()
 			wire.items = append(wire.items, wireItem{
 				kind:   wireItemToolResult,
 				callID: value.Result.CallID,
 				output: value.Result.Content,
 			})
-		case inference.ReasoningPart:
+		case message.ReasoningPart:
 			flush()
-			field := fields[inference.PartReasoning]
+			field := fields[message.PartReasoning]
 			if role != "assistant" {
 				ledger.reject(field, "reasoning parts belong to assistant context")
 				continue
@@ -495,12 +496,12 @@ func compileMessage(
 // tool outputs; the result content is preserved verbatim.
 func compileToolResults(
 	wire *generateWire,
-	parts []inference.Part,
-	fields map[inference.PartKind]inference.FieldID,
+	parts []message.Part,
+	fields map[message.PartKind]inference.FieldID,
 	ledger *ledger,
 ) {
 	for _, part := range parts {
-		result, ok := part.(inference.ToolResultPart)
+		result, ok := part.(message.ToolResultPart)
 		if !ok {
 			ledger.reject(
 				fields[part.Kind()],

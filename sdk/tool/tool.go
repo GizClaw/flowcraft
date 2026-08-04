@@ -12,11 +12,13 @@ package tool
 
 import (
 	"context"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Tool is the interface that LLM-callable tools must implement.
 type Tool interface {
-	Definition() Definition
+	Definition() message.Definition
 	Execute(ctx context.Context, arguments string) (string, error)
 }
 
@@ -93,16 +95,16 @@ func MetadataOf(t Tool) ToolMeta {
 }
 
 // FuncTool wraps a plain function as a Tool.
-func FuncTool(def Definition, fn func(ctx context.Context, args string) (string, error)) Tool {
+func FuncTool(def message.Definition, fn func(ctx context.Context, args string) (string, error)) Tool {
 	return &funcTool{def: def, fn: fn}
 }
 
 type funcTool struct {
-	def Definition
+	def message.Definition
 	fn  func(ctx context.Context, args string) (string, error)
 }
 
-func (f *funcTool) Definition() Definition { return f.def }
+func (f *funcTool) Definition() message.Definition { return f.def }
 
 func (f *funcTool) Execute(ctx context.Context, arguments string) (string, error) {
 	return f.fn(ctx, arguments)

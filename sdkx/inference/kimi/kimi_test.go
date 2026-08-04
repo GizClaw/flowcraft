@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 )
 
@@ -20,8 +21,8 @@ func simpleTextRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},

@@ -3,19 +3,21 @@ package tool
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func TestProtocolTypesRoundTrip(t *testing.T) {
-	def := Definition{
+	def := message.Definition{
 		Name:        "search",
 		Description: "search documents",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}
-	call, err := NewCall("call-1", "search", map[string]string{"query": "flowcraft"})
+	call, err := message.NewCall("call-1", "search", map[string]string{"query": "flowcraft"})
 	if err != nil {
 		t.Fatalf("NewCall: %v", err)
 	}
-	result := Result{CallID: call.ID, Content: "found"}
+	result := message.Result{CallID: call.ID, Content: "found"}
 
 	if err := def.Validate(); err != nil {
 		t.Fatalf("Definition.Validate: %v", err)
@@ -36,10 +38,10 @@ func TestProtocolValidationRejectsInvalidValues(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"definition without name", (Definition{}).Validate()},
-		{"call without id", (Call{Name: "search", Arguments: json.RawMessage(`{}`)}).Validate()},
-		{"call with invalid arguments", (Call{ID: "1", Name: "search", Arguments: json.RawMessage(`[]`)}).Validate()},
-		{"result without call id", (Result{Content: "x"}).Validate()},
+		{"definition without name", (message.Definition{}).Validate()},
+		{"call without id", (message.Call{Name: "search", Arguments: json.RawMessage(`{}`)}).Validate()},
+		{"call with invalid arguments", (message.Call{ID: "1", Name: "search", Arguments: json.RawMessage(`[]`)}).Validate()},
+		{"result without call id", (message.Result{Content: "x"}).Validate()},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,11 +53,11 @@ func TestProtocolValidationRejectsInvalidValues(t *testing.T) {
 }
 
 func TestProtocolCloneCopiesRawJSON(t *testing.T) {
-	definition := Definition{
+	definition := message.Definition{
 		Name:        "search",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
 	}
-	call := Call{
+	call := message.Call{
 		ID:        "call-1",
 		Name:      "search",
 		Arguments: json.RawMessage(`{"query":"x"}`),

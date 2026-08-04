@@ -6,7 +6,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Music generation runs on the music_generation endpoint: the request's
@@ -63,9 +64,9 @@ func compileMusic(
 		}
 
 		var prompt []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
-				if value, ok := part.(inference.TextPart); ok {
+				if value, ok := part.(message.TextPart); ok {
 					prompt = append(prompt, value.Text)
 					continue
 				}
@@ -75,15 +76,15 @@ func compileMusic(
 				)
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"music generation keeps user context only",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
@@ -287,10 +288,10 @@ func decodeMusic(
 	}
 	format := raw.format
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.AudioPart{Source: source, Format: &format},
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.AudioPart{Source: source, Format: &format},
 			}},
 		},
 		FinishReason: inference.FinishCompleted,

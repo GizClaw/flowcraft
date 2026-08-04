@@ -13,8 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/delegation"
 	delegationconfig "github.com/GizClaw/flowcraft/sdkx/delegation/config"
 	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
@@ -38,20 +37,20 @@ func (integrationEngineFactory) New(_ context.Context, config agent.Config) (age
 				return nil, err
 			}
 			board.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, "completed locally"))
+				message.NewTextMessage(message.RoleAssistant, "completed locally"))
 			return board, nil
 		}), nil
 	case "handoff":
 		return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
-			board.AppendChannelMessage(agent.MainChannel, inference.Message{
-				Role: inference.RoleAssistant,
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ToolCallPart{Call: tool.Call{
+			board.AppendChannelMessage(agent.MainChannel, message.Message{
+				Role: message.RoleAssistant,
+				Content: message.Content{Parts: []message.Part{
+					message.ToolCallPart{Call: message.Call{
 						ID:        "handoff-call",
 						Name:      sdkdelegation.ToolName,
 						Arguments: []byte(`{"mode":"handoff","target":"worker","input":"take over"}`),
 					}},
-					inference.ToolResultPart{Result: tool.Result{
+					message.ToolResultPart{Result: message.Result{
 						CallID:  "handoff-call",
 						Content: "accepted",
 					}},
@@ -230,7 +229,7 @@ agents:
 			t.Fatal("dispatcher instance missing")
 		}
 		response, err := dispatcher.Execute(execCtx, agent.Request{
-			Message: inference.NewTextMessage(inference.RoleUser, "route me"),
+			Message: message.NewTextMessage(message.RoleUser, "route me"),
 		}, agent.WithHost(host))
 		if err != nil {
 			t.Fatalf("execute dispatcher: %v", err)

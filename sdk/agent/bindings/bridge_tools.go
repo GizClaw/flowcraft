@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/rs/xid"
 )
 
@@ -46,7 +47,7 @@ func WithAllowedToolNames(names ...string) ToolBridgeOption {
 //     back into an LLM turn, where the provider matches tool_results
 //     by call id; a fresh id is minted when absent
 //   - list() -> []string (names the script is allowed to call)
-//   - definitions() -> tool.Definition wire JSON for the same allowed
+//   - definitions() -> message.Definition wire JSON for the same allowed
 //     set, ready to splice into a generate request's
 //     input.content.intent.text.tools
 //
@@ -81,7 +82,7 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 		}
 		return nil, true
 	}
-	resultMap := func(name string, res tool.Result) map[string]any {
+	resultMap := func(name string, res message.Result) map[string]any {
 		return map[string]any{
 			"content":      res.Content,
 			"is_error":     res.IsError,
@@ -95,7 +96,7 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 				if denied, ok := allowed(name); !ok {
 					return denied, nil
 				}
-				call := tool.Call{
+				call := message.Call{
 					ID:        xid.New().String(),
 					Name:      name,
 					Arguments: json.RawMessage(argumentsJSON),
@@ -108,7 +109,7 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 					return nil, err
 				}
 				out := make([]map[string]any, len(items))
-				calls := make([]tool.Call, 0, len(items))
+				calls := make([]message.Call, 0, len(items))
 				slots := make([]int, 0, len(items))
 				for i, item := range items {
 					spec, err := parseCallSpec(item, i)
@@ -124,7 +125,7 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 					if id == "" {
 						id = xid.New().String()
 					}
-					calls = append(calls, tool.Call{
+					calls = append(calls, message.Call{
 						ID:        id,
 						Name:      spec.name,
 						Arguments: json.RawMessage(spec.arguments),
@@ -215,12 +216,12 @@ func parseCallSpec(raw any, idx int) (callSpec, error) {
 // per-entry instead of panicking.
 type nilDispatcher struct{}
 
-func (nilDispatcher) Execute(_ context.Context, call tool.Call) tool.Result {
-	return tool.Result{CallID: call.ID, Content: "tools: no dispatcher/catalog configured", IsError: true}
+func (nilDispatcher) Execute(_ context.Context, call message.Call) message.Result {
+	return message.Result{CallID: call.ID, Content: "tools: no dispatcher/catalog configured", IsError: true}
 }
 
-func (d nilDispatcher) ExecuteAll(_ context.Context, calls []tool.Call) []tool.Result {
-	out := make([]tool.Result, len(calls))
+func (d nilDispatcher) ExecuteAll(_ context.Context, calls []message.Call) []message.Result {
+	out := make([]message.Result, len(calls))
 	for i, c := range calls {
 		out[i] = d.Execute(context.Background(), c)
 	}

@@ -5,10 +5,10 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
-	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
+	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
 )
 
 func TestFSBridge_RoundTrip(t *testing.T) {

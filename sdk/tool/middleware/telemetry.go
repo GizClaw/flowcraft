@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
-	"github.com/GizClaw/flowcraft/sdk/tool"
 
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otellog "go.opentelemetry.io/otel/log"
@@ -30,7 +31,7 @@ var (
 // middleware, and unknown-tool lookups alike.
 func Telemetry() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			ctx, span := telemetry.Tracer().Start(ctx,
 				fmt.Sprintf("tool.%s.execute", call.Name),
 				trace.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name)))

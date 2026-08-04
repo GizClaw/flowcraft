@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
@@ -20,13 +21,13 @@ import (
 func completedEngine(reply string) agent.Engine {
 	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, reply))
+			message.NewTextMessage(message.RoleAssistant, reply))
 		return b, nil
 	})
 }
 
 func newReq(text string) agent.Request {
-	return agent.Request{Message: inference.NewTextMessage(inference.RoleUser, text)}
+	return agent.Request{Message: message.NewTextMessage(message.RoleUser, text)}
 }
 
 func TestRun_NilEngineRejected(t *testing.T) {
@@ -158,7 +159,7 @@ func TestRun_AttributesMapNotMutated(t *testing.T) {
 
 func TestRun_InterruptedDefaultsToDiscarded(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "partial"))
 		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput, Detail: "bargeIn"})
 	})
 
@@ -185,7 +186,7 @@ func TestRun_InterruptedDefaultsToDiscarded(t *testing.T) {
 
 func TestRun_AcceptedInterruptedOutputRunsCommitterWithLiveContext(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "partial"))
 		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
 	})
 	commits := 0
@@ -220,7 +221,7 @@ func TestRun_AcceptedInterruptedOutputRunsCommitterWithLiveContext(t *testing.T)
 
 func TestRun_DiscardWinsOverAcceptOutput(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "partial"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "partial"))
 		return b, agent.Interrupted(agent.Interrupt{Cause: agent.CauseUserInput})
 	})
 	accept := deciderFunc(func(context.Context, agent.Identity, *agent.Request, *agent.Result) (agent.Decision, error) {
@@ -379,9 +380,9 @@ func TestRun_FailedFallsThrough(t *testing.T) {
 func TestRun_NewMessagesIsTrailingAssistantBlock(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		// agent.Engine produces three assistant messages in a row.
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "step 1"))
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "step 2"))
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "step 3"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "step 1"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "step 2"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "step 3"))
 		return b, nil
 	})
 
@@ -389,7 +390,7 @@ func TestRun_NewMessagesIsTrailingAssistantBlock(t *testing.T) {
 	// counted as "new" (because it's part of the seeded transcript).
 	seeder := agent.PreparerFunc(func(_ context.Context, _ agent.Identity, req *agent.Request, _ *agent.Board) (*agent.Board, error) {
 		b := agent.NewBoard()
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "old answer"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "old answer"))
 		b.AppendChannelMessage(agent.MainChannel, req.Message)
 		return b, nil
 	})
@@ -1108,7 +1109,7 @@ func TestRun_WithResumeFrom_PropagatesCheckpointAndOverridesRunID(t *testing.T) 
 
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng,
 		// req.RunID intentionally different so the override path is exercised.
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi"), RunID: "fresh-id"},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi"), RunID: "fresh-id"},
 		agent.WithResumeFrom(cp),
 	)
 	if err != nil {
@@ -1132,7 +1133,7 @@ func TestRun_WithResumeFrom_NilIsNoop(t *testing.T) {
 		return b, nil
 	})
 	_, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng,
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi"), RunID: "fresh-id"},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi"), RunID: "fresh-id"},
 		agent.WithResumeFrom(nil),
 	)
 	if err != nil {
@@ -1212,7 +1213,7 @@ func TestRun_Revise_DefaultDisabled(t *testing.T) {
 	var commitCalls int
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		calls++
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 	d := &reviseDecider{reason: "needs better citations"}
@@ -1247,7 +1248,7 @@ func TestRun_Revise_HonoursMaxBudget(t *testing.T) {
 	var calls int
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		calls++
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 	d := &reviseDecider{} // always asks for revise
@@ -1273,7 +1274,7 @@ func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
 	var calls int
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		calls++
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 	d := &reviseDecider{stopAt: 2} // asks twice, then satisfied
@@ -1297,7 +1298,7 @@ func TestRun_Revise_StopsWhenDeciderSatisfied(t *testing.T) {
 // pre-replacement Result and the next attempt index.
 func TestRun_Revise_ObserverReceivesPrevResultAndNextAttempt(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "ok"))
+		b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 	d := &reviseDecider{}
@@ -1365,7 +1366,7 @@ func TestRun_PromotesAgentToolsIntoToolAllowList(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		observed = run.ToolAllowList
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1395,7 +1396,7 @@ func TestRun_ToolAllowListCallerSuppliedWins(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		observed = run.ToolAllowList
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1445,7 +1446,7 @@ func TestRun_WithParentRunID_PropagatesToEngineRun(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		observed = run.ParentRunID
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1471,7 +1472,7 @@ func TestRun_WithParentRunID_EmptyIsNoop(t *testing.T) {
 		sawHookCall = true
 		observed = run.ParentRunID
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1497,20 +1498,20 @@ func TestRun_WithArtifactChannels_HarvestsRegisteredChannels(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		// agent.Engine writes artifacts onto two dedicated channels.
 		b.AppendChannelMessage("summary",
-			inference.Message{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "tl;dr line 1"},
+			message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "tl;dr line 1"},
 			}}})
 		b.AppendChannelMessage("summary",
-			inference.Message{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "tl;dr line 2"},
+			message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "tl;dr line 2"},
 			}}})
 		b.AppendChannelMessage("audio",
-			inference.Message{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "<wav-blob>"},
+			message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "<wav-blob>"},
 			}}})
 		// agent.MainChannel reply still happens (Result.Messages path).
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1534,9 +1535,9 @@ func TestRun_WithArtifactChannels_HarvestsRegisteredChannels(t *testing.T) {
 			len(res.Artifacts[0].Parts))
 	}
 	textAt := func(i int) string {
-		tp, ok := res.Artifacts[0].Parts[i].(inference.TextPart)
+		tp, ok := res.Artifacts[0].Parts[i].(message.TextPart)
 		if !ok {
-			t.Fatalf("summary part %d is %T, want inference.TextPart", i, res.Artifacts[0].Parts[i])
+			t.Fatalf("summary part %d is %T, want message.TextPart", i, res.Artifacts[0].Parts[i])
 		}
 		return tp.Text
 	}
@@ -1554,9 +1555,9 @@ func TestRun_WithArtifactChannels_HarvestsRegisteredChannels(t *testing.T) {
 func TestRun_WithArtifactChannels_DefaultIsNilArtifacts(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		b.AppendChannelMessage("internal",
-			inference.NewTextMessage(inference.RoleAssistant, "noise"))
+			message.NewTextMessage(message.RoleAssistant, "noise"))
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 	res, err := agent.Execute(context.Background(),
@@ -1577,9 +1578,9 @@ func TestRun_WithArtifactChannels_DefaultIsNilArtifacts(t *testing.T) {
 func TestRun_WithArtifactChannels_EmptyChannelDropped(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		b.AppendChannelMessage("populated",
-			inference.NewTextMessage(inference.RoleAssistant, "hello"))
+			message.NewTextMessage(message.RoleAssistant, "hello"))
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 
@@ -1604,7 +1605,7 @@ func TestRun_WithArtifactChannels_EmptyChannelDropped(t *testing.T) {
 func TestRun_WithArtifactChannels_MainChannelSilentlySkipped(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "would-duplicate"))
+			message.NewTextMessage(message.RoleAssistant, "would-duplicate"))
 		return b, nil
 	})
 
@@ -1626,10 +1627,10 @@ func TestRun_WithArtifactChannels_MainChannelSilentlySkipped(t *testing.T) {
 // once and individual callers can extend the list.
 func TestRun_WithArtifactChannels_AccumulatesAndDedupes(t *testing.T) {
 	eng := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
-		b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleAssistant, "a-msg"))
-		b.AppendChannelMessage("b", inference.NewTextMessage(inference.RoleAssistant, "b-msg"))
+		b.AppendChannelMessage("a", message.NewTextMessage(message.RoleAssistant, "a-msg"))
+		b.AppendChannelMessage("b", message.NewTextMessage(message.RoleAssistant, "b-msg"))
 		b.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "ok"))
+			message.NewTextMessage(message.RoleAssistant, "ok"))
 		return b, nil
 	})
 

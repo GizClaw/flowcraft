@@ -2,6 +2,8 @@ package tool
 
 import (
 	"sync"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Tool scope constants control visibility in tool_list and /api/tools.
@@ -124,10 +126,10 @@ func (r *Registry) ScopeOf(name string) string {
 }
 
 // Definitions returns the Definition for every registered tool (all scopes).
-func (r *Registry) Definitions() []Definition {
+func (r *Registry) Definitions() []message.Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	defs := make([]Definition, 0, len(r.tools))
+	defs := make([]message.Definition, 0, len(r.tools))
 	for _, e := range r.tools {
 		defs = append(defs, e.tool.Definition())
 	}
@@ -135,10 +137,10 @@ func (r *Registry) Definitions() []Definition {
 }
 
 // DefinitionsByScope returns only the Definitions matching the given scope.
-func (r *Registry) DefinitionsByScope(scope string) []Definition {
+func (r *Registry) DefinitionsByScope(scope string) []message.Definition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var defs []Definition
+	var defs []message.Definition
 	for _, e := range r.tools {
 		if e.scope == scope {
 			defs = append(defs, e.tool.Definition())

@@ -15,7 +15,7 @@ import (
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
@@ -61,7 +61,7 @@ agents:
 func completedEngine(output string) agent.Engine {
 	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, output))
+			message.NewTextMessage(message.RoleAssistant, output))
 		return board, nil
 	})
 }
@@ -229,7 +229,7 @@ func TestServiceIdempotencySingleFlightConflictAndWaiterContext(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "done"))
+			message.NewTextMessage(message.RoleAssistant, "done"))
 		return board, nil
 	})
 	service, err := NewService(boundDirectory(t, engine), nil)
@@ -890,7 +890,7 @@ func TestServiceWorkerDefaultHostSupportsNestedDelegation(t *testing.T) {
 	) (*agent.Board, error) {
 		if calls.Add(1) != 1 {
 			board.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, "nested"))
+				message.NewTextMessage(message.RoleAssistant, "nested"))
 			return board, nil
 		}
 		service, ok := sdkdelegation.ServiceFromHost(host)

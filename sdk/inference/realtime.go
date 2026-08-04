@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 type RealtimeConfig struct {
-	Instructions      string             `json:"instructions,omitempty" ledger:"realtime.instructions"`
-	Modalities        []Modality         `json:"modalities" ledger:"realtime.modalities"`
-	InputAudioFormat  *media.AudioFormat `json:"input_audio_format,omitempty" ledger:"realtime.input_audio_format"`
-	OutputAudioFormat *media.AudioFormat `json:"output_audio_format,omitempty" ledger:"realtime.output_audio_format"`
-	Voice             *media.VoiceSpec   `json:"voice,omitempty" ledger:"realtime.voice"`
-	Tools             []tool.Definition  `json:"tools,omitempty" ledger:"realtime.tools"`
-	Extensions        Extensions         `json:"-" ledger:"extension"`
+	Instructions      string               `json:"instructions,omitempty" ledger:"realtime.instructions"`
+	Modalities        []Modality           `json:"modalities" ledger:"realtime.modalities"`
+	InputAudioFormat  *media.AudioFormat   `json:"input_audio_format,omitempty" ledger:"realtime.input_audio_format"`
+	OutputAudioFormat *media.AudioFormat   `json:"output_audio_format,omitempty" ledger:"realtime.output_audio_format"`
+	Voice             *media.VoiceSpec     `json:"voice,omitempty" ledger:"realtime.voice"`
+	Tools             []message.Definition `json:"tools,omitempty" ledger:"realtime.tools"`
+	Extensions        Extensions           `json:"-" ledger:"extension"`
 }
 
 func (c RealtimeConfig) Clone() RealtimeConfig {
@@ -23,7 +23,7 @@ func (c RealtimeConfig) Clone() RealtimeConfig {
 	c.InputAudioFormat = clonePointer(c.InputAudioFormat)
 	c.OutputAudioFormat = clonePointer(c.OutputAudioFormat)
 	c.Voice = clonePointer(c.Voice)
-	tools := make([]tool.Definition, len(c.Tools))
+	tools := make([]message.Definition, len(c.Tools))
 	for index, definition := range c.Tools {
 		tools[index] = definition.Clone()
 	}
@@ -154,7 +154,7 @@ func (i RealtimeVideoInput) Validate() error       { return i.Frame.Validate() }
 func (RealtimeVideoInput) inferenceRealtimeInput() {}
 
 type RealtimeToolResultInput struct {
-	Result tool.Result `json:"result" ledger:"realtime.input.tool_result"`
+	Result message.Result `json:"result" ledger:"realtime.input.tool_result"`
 }
 
 func (RealtimeToolResultInput) Kind() RealtimeInputKind { return RealtimeInputToolResult }
@@ -226,7 +226,7 @@ func (e RealtimeTranscriptDeltaEvent) Validate() error {
 func (RealtimeTranscriptDeltaEvent) inferenceRealtimeEvent() {}
 
 type RealtimeToolCallEvent struct {
-	Call tool.Call `json:"call"`
+	Call message.Call `json:"call"`
 }
 
 func (RealtimeToolCallEvent) Kind() RealtimeEventKind { return RealtimeEventToolCall }

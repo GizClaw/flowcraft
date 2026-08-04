@@ -10,7 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
@@ -210,7 +210,7 @@ func TestSessionStartOverridesIdentityAndAttachesBeforeExecute(t *testing.T) {
 	turn, err := lease.Session().Start(context.Background(), agent.Request{
 		ContextID: "caller-context",
 		RunID:     "caller-run",
-		Message:   inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message:   message.NewTextMessage(message.RoleUser, "hi"),
 	}, SinkSpec{
 		ID: "initial",
 		Sink: agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
@@ -270,7 +270,7 @@ func TestSessionStartCloseRaceDetachesPostAttachCoordinator(t *testing.T) {
 	go func() {
 		_, startErr := lease.Session().Start(
 			context.Background(),
-			agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+			agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 			SinkSpec{
 				ID: "sink",
 				Sink: agent.StreamSinkFunc(func(
@@ -321,7 +321,7 @@ func TestTurnWaitAndInterruptSemantics(t *testing.T) {
 			}, nil
 		})
 	})
-	turn, err := session.Start(context.Background(), agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+	turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -372,7 +372,7 @@ func TestAuthoritativeAckCommitsOnlyFrozenPrefix(t *testing.T) {
 		board *agent.Board,
 	) (*agent.Board, error) {
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "hello world"))
+			message.NewTextMessage(message.RoleAssistant, "hello world"))
 		if err := agent.EmitStreamToken(ctx, host, run.RunID, "agent-a", "hello"); err != nil {
 			return board, err
 		}
@@ -432,7 +432,7 @@ func TestAuthoritativeAckCommitsOnlyFrozenPrefix(t *testing.T) {
 	deliveries := make(chan DeliveryCursor, 2)
 	turn, err := lease.Session().Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID: "authority", Sink: agent.StreamSinkFunc(func(
 				_ context.Context,
@@ -495,7 +495,7 @@ func TestSessionAuthoritySurvivesReviseAttempts(t *testing.T) {
 			text = "second complete"
 		}
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, text))
+			message.NewTextMessage(message.RoleAssistant, text))
 		if err := agent.EmitStreamToken(ctx, host, run.RunID, "agent-a", text); err != nil {
 			return board, err
 		}
@@ -545,7 +545,7 @@ func TestSessionAuthoritySurvivesReviseAttempts(t *testing.T) {
 	)
 	turn, err := lease.Session().Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID: "authority",
 			Sink: agent.StreamSinkFunc(func(
@@ -600,14 +600,14 @@ func TestSessionInterruptedReviseCommitsOnlySecondAttemptPrefix(t *testing.T) {
 	) (*agent.Board, error) {
 		if calls.Add(1) == 1 {
 			board.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, "first-old"))
+				message.NewTextMessage(message.RoleAssistant, "first-old"))
 			if err := agent.EmitStreamToken(ctx, host, run.RunID, "agent-a", "first-old"); err != nil {
 				return board, err
 			}
 			return board, nil
 		}
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "second-prefix remainder"))
+			message.NewTextMessage(message.RoleAssistant, "second-prefix remainder"))
 		if err := agent.EmitStreamToken(ctx, host, run.RunID, "agent-a", "second-prefix"); err != nil {
 			return board, err
 		}
@@ -666,7 +666,7 @@ func TestSessionInterruptedReviseCommitsOnlySecondAttemptPrefix(t *testing.T) {
 	secondCursor := make(chan DeliveryCursor, 1)
 	turn, err := lease.Session().Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID: "authority",
 			Sink: agent.StreamSinkFunc(func(
@@ -765,7 +765,7 @@ func TestSessionRunEndPublishFailureDoesNotEmitLogicalSuccess(t *testing.T) {
 	detached := make(chan error, 1)
 	turn, err := lease.Session().Start(
 		context.Background(),
-		agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")},
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
 		SinkSpec{
 			ID: "raw",
 			Sink: agent.StreamSinkFunc(func(
@@ -844,7 +844,7 @@ func TestTurnConcurrentPromptsReplyOutOfOrder(t *testing.T) {
 		}
 	}()
 
-	turn, err := session.Start(context.Background(), agent.Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")})
+	turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 	if err != nil {
 		t.Fatal(err)
 	}

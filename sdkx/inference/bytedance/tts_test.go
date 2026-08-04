@@ -12,7 +12,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 	"github.com/GizClaw/flowcraft/sdkx/inference/config"
 )
 
@@ -78,8 +79,8 @@ func ttsGenerateRequest(format media.AudioFormat) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: "read this aloud"}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: "read this aloud"}},
 				},
 				Intent: inference.Intent{
 					Audio: &inference.AudioIntent{
@@ -129,7 +130,7 @@ func TestTTSCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	part, ok := response.Message.Content.Parts[0].(inference.AudioPart)
+	part, ok := response.Message.Content.Parts[0].(message.AudioPart)
 	if !ok {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -216,7 +217,7 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if !sawFinish {
 		t.Fatal("no finish event")
 	}
-	part := result.Message.Content.Parts[0].(inference.AudioPart)
+	part := result.Message.Content.Parts[0].(message.AudioPart)
 	if string(part.Source.Bytes()) != "chunk-1chunk-2" {
 		t.Fatalf("audio = %q", part.Source.Bytes())
 	}
@@ -259,7 +260,7 @@ func TestTTSRejections(t *testing.T) {
 			name: "non-image part in content",
 			mutate: func(r *inference.GenerateRequest) {
 				r.Input.Content.Parts = append(r.Input.Content.Parts,
-					inference.DataPart{MediaType: "application/vnd.x", Value: json.RawMessage(`{}`)})
+					message.DataPart{MediaType: "application/vnd.x", Value: json.RawMessage(`{}`)})
 			},
 			field: inference.FieldGenerateInputData,
 		},

@@ -7,19 +7,19 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // imageURLPart builds an ImagePart from a URL for tests that exercise
 // multi-part messages.
-func imageURLPart(t *testing.T, rawURL string) inference.ImagePart {
+func imageURLPart(t *testing.T, rawURL string) message.ImagePart {
 	t.Helper()
 	source, err := media.NewImageURL(rawURL, "image/png")
 	if err != nil {
 		t.Fatalf("NewImageURL(%q): %v", rawURL, err)
 	}
-	return inference.ImagePart{Source: source}
+	return message.ImagePart{Source: source}
 }
 
 func TestBoard_NewBoardHasEmptyMainChannel(t *testing.T) {
@@ -31,7 +31,7 @@ func TestBoard_NewBoardHasEmptyMainChannel(t *testing.T) {
 
 func TestBoard_AppendChannelMessage(t *testing.T) {
 	b := agent.NewBoard()
-	m := inference.NewTextMessage(inference.RoleUser, "hello")
+	m := message.NewTextMessage(message.RoleUser, "hello")
 	b.AppendChannelMessage(agent.MainChannel, m)
 
 	got := b.Channel(agent.MainChannel)
@@ -42,14 +42,14 @@ func TestBoard_AppendChannelMessage(t *testing.T) {
 
 func TestBoard_SetChannel_DefensiveCopy(t *testing.T) {
 	b := agent.NewBoard()
-	in := []inference.Message{
-		inference.NewTextMessage(inference.RoleUser, "a"),
-		inference.NewTextMessage(inference.RoleUser, "b"),
+	in := []message.Message{
+		message.NewTextMessage(message.RoleUser, "a"),
+		message.NewTextMessage(message.RoleUser, "b"),
 	}
 	b.SetChannel("alt", in)
 
 	// Mutate caller-owned slice; board copy must be unaffected.
-	in[0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
+	in[0] = message.NewTextMessage(message.RoleUser, "MUTATED")
 
 	got := b.Channel("alt")
 	if got[0].Content.Text() != "a" {
@@ -59,11 +59,11 @@ func TestBoard_SetChannel_DefensiveCopy(t *testing.T) {
 
 func TestBoard_SetChannel_DeepCopiesMessageParts(t *testing.T) {
 	b := agent.NewBoard()
-	in := []inference.Message{
+	in := []message.Message{
 		{
-			Role: inference.RoleUser,
-			Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "a"},
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "a"},
 				imageURLPart(t, "https://img.example.com/a.png"),
 			}},
 		},
@@ -72,24 +72,24 @@ func TestBoard_SetChannel_DeepCopiesMessageParts(t *testing.T) {
 
 	// Parts are interface values: caller-side mutation means swapping
 	// the slice element, which a defensive copy must not observe.
-	in[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	in[0].Content.Parts[0] = message.TextPart{Text: "MUTATED"}
 	in[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
 	got := b.Channel("alt")
-	if text := got[0].Content.Parts[0].(inference.TextPart).Text; text != "a" {
+	if text := got[0].Content.Parts[0].(message.TextPart).Text; text != "a" {
 		t.Errorf("SetChannel leaked caller part mutation: %q", text)
 	}
-	if url := got[0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
+	if url := got[0].Content.Parts[1].(message.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
 		t.Errorf("SetChannel leaked caller media mutation: %q", url)
 	}
 }
 
 func TestBoard_ChannelDefensiveCopyOnRead(t *testing.T) {
 	b := agent.NewBoard()
-	b.AppendChannelMessage("alt", inference.NewTextMessage(inference.RoleUser, "x"))
+	b.AppendChannelMessage("alt", message.NewTextMessage(message.RoleUser, "x"))
 
 	got := b.Channel("alt")
-	got[0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
+	got[0] = message.NewTextMessage(message.RoleUser, "MUTATED")
 
 	again := b.Channel("alt")
 	if again[0].Content.Text() != "x" {
@@ -99,23 +99,23 @@ func TestBoard_ChannelDefensiveCopyOnRead(t *testing.T) {
 
 func TestBoard_ChannelDeepCopiesMessagePartsOnRead(t *testing.T) {
 	b := agent.NewBoard()
-	b.AppendChannelMessage("alt", inference.Message{
-		Role: inference.RoleUser,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: "x"},
+	b.AppendChannelMessage("alt", message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "x"},
 			imageURLPart(t, "https://img.example.com/x.png"),
 		}},
 	})
 
 	got := b.Channel("alt")
-	got[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	got[0].Content.Parts[0] = message.TextPart{Text: "MUTATED"}
 	got[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
 	again := b.Channel("alt")
-	if text := again[0].Content.Parts[0].(inference.TextPart).Text; text != "x" {
+	if text := again[0].Content.Parts[0].(message.TextPart).Text; text != "x" {
 		t.Errorf("Channel leaked part mutation: %q", text)
 	}
-	if url := again[0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/x.png" {
+	if url := again[0].Content.Parts[1].(message.ImagePart).Source.URL(); url != "https://img.example.com/x.png" {
 		t.Errorf("Channel leaked media mutation: %q", url)
 	}
 }
@@ -218,11 +218,11 @@ func TestBoard_UpdateSliceVarItem_MissingKeyIsNoOp(t *testing.T) {
 
 func TestBoard_ChannelsCopy_DeepCopiesPerChannel(t *testing.T) {
 	b := agent.NewBoard()
-	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "alpha"))
-	b.AppendChannelMessage("b", inference.NewTextMessage(inference.RoleUser, "beta"))
+	b.AppendChannelMessage("a", message.NewTextMessage(message.RoleUser, "alpha"))
+	b.AppendChannelMessage("b", message.NewTextMessage(message.RoleUser, "beta"))
 
 	cp := b.ChannelsCopy()
-	cp["a"][0] = inference.NewTextMessage(inference.RoleUser, "MUTATED")
+	cp["a"][0] = message.NewTextMessage(message.RoleUser, "MUTATED")
 
 	if got := b.Channel("a")[0].Content.Text(); got != "alpha" {
 		t.Errorf("ChannelsCopy is not deep; live board mutated: %q", got)
@@ -235,12 +235,12 @@ func TestBoard_ChannelsCopy_DeepCopiesPerChannel(t *testing.T) {
 func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 	b := agent.NewBoard()
 	b.SetVar("k", "v")
-	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "alpha"))
+	b.AppendChannelMessage("a", message.NewTextMessage(message.RoleUser, "alpha"))
 
 	snap := b.Snapshot()
 
 	b.SetVar("k", "MUTATED")
-	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "leaked"))
+	b.AppendChannelMessage("a", message.NewTextMessage(message.RoleUser, "leaked"))
 
 	if v := snap.Vars["k"]; v != "v" {
 		t.Errorf("snapshot Vars leaked mutation: %v", v)
@@ -260,23 +260,23 @@ func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 
 func TestBoard_Snapshot_DeepCopiesChannelMessageParts(t *testing.T) {
 	b := agent.NewBoard()
-	b.AppendChannelMessage("a", inference.Message{
-		Role: inference.RoleUser,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: "alpha"},
+	b.AppendChannelMessage("a", message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "alpha"},
 			imageURLPart(t, "https://img.example.com/a.png"),
 		}},
 	})
 
 	snap := b.Snapshot()
 	got := b.Channel("a")
-	got[0].Content.Parts[0] = inference.TextPart{Text: "MUTATED"}
+	got[0].Content.Parts[0] = message.TextPart{Text: "MUTATED"}
 	got[0].Content.Parts[1] = imageURLPart(t, "https://img.example.com/MUTATED.png")
 
-	if text := snap.Channels["a"][0].Content.Parts[0].(inference.TextPart).Text; text != "alpha" {
+	if text := snap.Channels["a"][0].Content.Parts[0].(message.TextPart).Text; text != "alpha" {
 		t.Errorf("snapshot channel part leaked mutation: %q", text)
 	}
-	if url := snap.Channels["a"][0].Content.Parts[1].(inference.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
+	if url := snap.Channels["a"][0].Content.Parts[1].(message.ImagePart).Source.URL(); url != "https://img.example.com/a.png" {
 		t.Errorf("snapshot channel media leaked mutation: %q", url)
 	}
 }
@@ -293,7 +293,7 @@ func TestBoard_RestoreBoard_NilSnapshot(t *testing.T) {
 
 func TestBoard_RestoreFrom_EmptyChannelsRehydratesMain(t *testing.T) {
 	b := agent.NewBoard()
-	b.AppendChannelMessage("a", inference.NewTextMessage(inference.RoleUser, "x"))
+	b.AppendChannelMessage("a", message.NewTextMessage(message.RoleUser, "x"))
 
 	snap := &agent.BoardSnapshot{Vars: map[string]any{"k": "v"}}
 	b.RestoreFrom(snap)
@@ -460,7 +460,7 @@ func TestBoard_ConcurrentAccessRaceSmoke(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			b.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, "x"))
+				message.NewTextMessage(message.RoleAssistant, "x"))
 			atomic.AddInt64(&counter, 1)
 		}()
 		go func() {

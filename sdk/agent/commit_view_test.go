@@ -8,15 +8,15 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func commitViewBoard(text, artifact string) *agent.Board {
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, text))
+		message.NewTextMessage(message.RoleAssistant, text))
 	board.AppendChannelMessage("summary",
-		inference.NewTextMessage(inference.RoleAssistant, artifact))
+		message.NewTextMessage(message.RoleAssistant, artifact))
 	return board
 }
 
@@ -53,9 +53,9 @@ func TestRun_CommitViewVisibleOnlyToCommitter(t *testing.T) {
 
 	engine := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 		board.AppendChannelMessage(agent.MainChannel,
-			inference.NewTextMessage(inference.RoleAssistant, "original"))
+			message.NewTextMessage(message.RoleAssistant, "original"))
 		board.AppendChannelMessage("summary",
-			inference.NewTextMessage(inference.RoleAssistant, "original-artifact"))
+			message.NewTextMessage(message.RoleAssistant, "original-artifact"))
 		return board, nil
 	})
 	res, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, engine, newReq("hi"),
@@ -88,14 +88,14 @@ func TestRun_CommitViewVisibleOnlyToCommitter(t *testing.T) {
 		len(committedResult.Artifacts[0].Parts) != 1 {
 		t.Fatalf("Committer Artifacts = %+v, want materialized projected summary", committedResult.Artifacts)
 	}
-	if got := committedResult.Artifacts[0].Parts[0].(inference.TextPart).Text; got != "projected-artifact" {
+	if got := committedResult.Artifacts[0].Parts[0].(message.TextPart).Text; got != "projected-artifact" {
 		t.Fatalf("Committer artifact text = %q, want projected-artifact", got)
 	}
 	if got := res.Text(); got != "original" {
 		t.Fatalf("returned Result text = %q, want original", got)
 	}
 	if len(res.Artifacts) != 1 ||
-		res.Artifacts[0].Parts[0].(inference.TextPart).Text != "original-artifact" {
+		res.Artifacts[0].Parts[0].(message.TextPart).Text != "original-artifact" {
 		t.Fatalf("returned Artifacts = %+v, want original engine artifact", res.Artifacts)
 	}
 	if observedResult != res || observedResult.Text() != "original" {

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -24,10 +25,10 @@ func RateLimit(catalog tool.Catalog) tool.Middleware {
 	}
 	limiters := &toolPacers{byTool: make(map[string]*pacer), catalog: catalog}
 	return func(next tool.Dispatch) tool.Dispatch {
-		return func(ctx context.Context, call tool.Call) tool.Result {
+		return func(ctx context.Context, call message.Call) message.Result {
 			if p := limiters.forTool(call.Name); p != nil {
 				if err := p.wait(ctx); err != nil {
-					return tool.Result{
+					return message.Result{
 						CallID:  call.ID,
 						Content: fmt.Sprintf("tool %q rate-limit wait interrupted: %v", call.Name, err),
 						IsError: true,

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -23,7 +24,7 @@ var emptySchema = json.RawMessage(`{"type":"object"}`)
 // every LLM turn depends on.
 type adaptedTool struct {
 	server *server
-	def    sdktool.Definition
+	def    message.Definition
 	// remote is the tool's name on the server, which differs from
 	// def.Name whenever a prefix is applied. tools/call must carry the
 	// remote name.
@@ -42,7 +43,7 @@ func newAdaptedTool(srv *server, qualified string, mt *mcpsdk.Tool) *adaptedTool
 	return &adaptedTool{
 		server: srv,
 		remote: mt.Name,
-		def: sdktool.Definition{
+		def: message.Definition{
 			Name:        qualified,
 			Description: describe(mt),
 			InputSchema: normalizeSchema(mt.InputSchema),
@@ -51,7 +52,7 @@ func newAdaptedTool(srv *server, qualified string, mt *mcpsdk.Tool) *adaptedTool
 	}
 }
 
-func (a *adaptedTool) Definition() sdktool.Definition { return a.def }
+func (a *adaptedTool) Definition() message.Definition { return a.def }
 
 func (a *adaptedTool) Metadata() sdktool.ToolMeta { return a.meta }
 

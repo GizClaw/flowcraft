@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -91,9 +92,9 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 	runtime := newTelemetryRuntime(t, nil,
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
 				},
 				FinishReason: FinishCompleted,
 				Usage: Usage{
@@ -233,9 +234,9 @@ func TestRuntimeStampsUsageEnvelope(t *testing.T) {
 	runtime := newTelemetryRuntime(t, nil,
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
 				},
 				FinishReason: FinishCompleted,
 				Usage:        Usage{InputTokens: 2, OutputTokens: 2, TotalTokens: 4},
@@ -292,9 +293,9 @@ func TestRuntimeStampPreservesProviderEnvelope(t *testing.T) {
 	runtime := newTelemetryRuntime(t, nil,
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
 				},
 				FinishReason: FinishCompleted,
 				Usage: Usage{

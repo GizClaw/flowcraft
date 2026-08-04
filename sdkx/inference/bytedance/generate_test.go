@@ -11,7 +11,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // capturedArk serves the Responses API surface used by the generate drivers
@@ -126,18 +126,18 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 		context.Background(),
 		generateModel("doubao-seed-2-1-pro"),
 		inference.GenerateRequest{
-			Context: []inference.Message{
+			Context: []message.Message{
 				{
-					Role: inference.RoleSystem,
-					Content: inference.Content{Parts: []inference.Part{
-						inference.TextPart{Text: "be terse"},
+					Role: message.RoleSystem,
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: "be terse"},
 					}},
 				},
 				{
-					Role: inference.RoleAssistant,
-					Content: inference.Content{Parts: []inference.Part{
-						inference.TextPart{Text: "prior answer"},
-						inference.ToolCallPart{Call: tool.Call{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: "prior answer"},
+						message.ToolCallPart{Call: message.Call{
 							ID:        "call_1",
 							Name:      "lookup",
 							Arguments: json.RawMessage(`{"q":"x"}`),
@@ -145,9 +145,9 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 					}},
 				},
 				{
-					Role: inference.RoleTool,
-					Content: inference.Content{Parts: []inference.Part{
-						inference.ToolResultPart{Result: tool.Result{
+					Role: message.RoleTool,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolResultPart{Result: message.Result{
 							CallID:  "call_1",
 							Content: "result text",
 						}},
@@ -157,16 +157,16 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{
-						Parts: []inference.Part{
-							inference.TextPart{Text: "current question"},
+					Content: message.Content{
+						Parts: []message.Part{
+							message.TextPart{Text: "current question"},
 						},
 					},
 					Intent: inference.Intent{
 						Text: &inference.TextIntent{
 							Response:        &inference.ResponseFormat{Kind: inference.ResponseJSONObject},
 							MaxOutputTokens: &maxTokens,
-							Tools: []tool.Definition{{
+							Tools: []message.Definition{{
 								Name:        "lookup",
 								Description: "look things up",
 								InputSchema: json.RawMessage(`{"type":"object","properties":{"q":{"type":"string"}}}`),
@@ -191,7 +191,7 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
-	text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+	text, ok := response.Message.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != `{"answer":"ok"}` {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}

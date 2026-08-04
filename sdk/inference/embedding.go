@@ -3,10 +3,12 @@ package inference
 import (
 	"fmt"
 	"math"
+
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 type EmbedItem struct {
-	Content Content `json:"content"`
+	Content message.Content `json:"content"`
 }
 
 func (i EmbedItem) Clone() EmbedItem {
@@ -47,21 +49,21 @@ func (r EmbedRequest) ActiveFields() []FieldID {
 				continue
 			}
 			switch normalized.(type) {
-			case TextPart:
+			case message.TextPart:
 				hasText = true
-			case ImagePart:
+			case message.ImagePart:
 				hasImage = true
-			case AudioPart:
+			case message.AudioPart:
 				hasAudio = true
-			case VideoPart:
+			case message.VideoPart:
 				hasVideo = true
-			case FilePart:
+			case message.FilePart:
 				hasFile = true
-			case DataPart:
+			case message.DataPart:
 				hasData = true
-			case ToolCallPart:
+			case message.ToolCallPart:
 				hasToolCall = true
-			case ToolResultPart:
+			case message.ToolResultPart:
 				hasToolResult = true
 			}
 		}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // countingTransport wraps one pipeline transport stage with a probe.
@@ -68,7 +69,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
@@ -101,7 +102,7 @@ func TestConformanceGenerateStream(t *testing.T) {
 			if len(response.Message.Content.Parts) != 1 {
 				t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 			}
-			text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+			text, ok := response.Message.Content.Parts[0].(message.TextPart)
 			if !ok || text.Text != "ok" {
 				t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 			}
@@ -151,7 +152,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.DataPart{
+						message.DataPart{
 							MediaType: "application/vnd.example",
 							Value:     json.RawMessage(`{"k":1}`),
 						},
@@ -167,7 +168,7 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 					request := simpleTextRequest("hi")
 					request.Input.Content.Parts = append(
 						request.Input.Content.Parts,
-						inference.ReasoningPart{Text: "trace"},
+						message.ReasoningPart{Text: "trace"},
 					)
 					return request
 				},
@@ -198,17 +199,17 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 				Field: inference.FieldGenerateIntentTextResponseKind,
 				Kind:  inference.UnsupportedFeature,
 			},
-	},
+		},
 		Drops: []inferencetest.CompilerDrop[inference.GenerateRequest]{
 			{
 				Name: "reasoning without tool calls has no channel",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
-					request.Context = append(request.Context, inference.Message{
-						Role: inference.RoleAssistant,
-						Content: inference.Content{Parts: []inference.Part{
-							inference.ReasoningPart{Text: "trace"},
-							inference.TextPart{Text: "answer"},
+					request.Context = append(request.Context, message.Message{
+						Role: message.RoleAssistant,
+						Content: message.Content{Parts: []message.Part{
+							message.ReasoningPart{Text: "trace"},
+							message.TextPart{Text: "answer"},
 						}},
 					})
 					return request
@@ -249,13 +250,13 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-			Name: "reasoning on non-thinking model",
-			Request: func() inference.GenerateRequest {
-				request := simpleTextRequest("hi")
-				request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
-				return request
-			},
-			Field: inference.FieldGenerateIntentReasoningEffort,
+				Name: "reasoning on non-thinking model",
+				Request: func() inference.GenerateRequest {
+					request := simpleTextRequest("hi")
+					request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningLow
+					return request
+				},
+				Field: inference.FieldGenerateIntentReasoningEffort,
 				Kind:  inference.UnsupportedFeature,
 			},
 		},

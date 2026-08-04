@@ -11,8 +11,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func boolPointer(value bool) *bool        { return &value }
@@ -49,7 +49,7 @@ func TestUnaryTextOnWire(t *testing.T) {
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
-	text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+	text, ok := response.Message.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != "ok" {
 		t.Fatalf("parts = %#v", response.Message.Content.Parts)
 	}
@@ -77,10 +77,10 @@ func TestMultimodalContentParts(t *testing.T) {
 
 	runtime := newTestRuntime(t, server)
 	request := simpleTextRequest("describe these")
-	request.Input.Content.Parts = []inference.Part{
-		inference.ImagePart{Source: image},
-		inference.VideoPart{Source: videoData},
-		inference.TextPart{Text: "describe these"},
+	request.Input.Content.Parts = []message.Part{
+		message.ImagePart{Source: image},
+		message.VideoPart{Source: videoData},
+		message.TextPart{Text: "describe these"},
 	}
 	if _, err := runtime.Generate(context.Background(), kimiModel("kimi-k3"), request); err != nil {
 		t.Fatalf("generate: %v", err)
@@ -213,7 +213,7 @@ func TestToolsOnWire(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 	request := simpleTextRequest("北京今天天气怎么样？")
 	request.Input.Content.Intent.Text = &inference.TextIntent{
-		Tools: []tool.Definition{{
+		Tools: []message.Definition{{
 			Name:        "get_weather",
 			Description: "获取指定城市的天气",
 			InputSchema: []byte(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
@@ -235,7 +235,7 @@ func TestToolsOnWire(t *testing.T) {
 	if response.FinishReason != inference.FinishToolCalls {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
-	call, ok := response.Message.Content.Parts[0].(inference.ToolCallPart)
+	call, ok := response.Message.Content.Parts[0].(message.ToolCallPart)
 	if !ok || call.Call.Name != "get_weather" || call.Call.ID != "call_1" {
 		t.Fatalf("parts = %#v", response.Message.Content.Parts)
 	}
@@ -248,7 +248,7 @@ func TestNamedToolChoiceOnWire(t *testing.T) {
 		func() inference.GenerateRequest {
 			request := simpleTextRequest("hi")
 			request.Input.Content.Intent.Text = &inference.TextIntent{
-				Tools: []tool.Definition{{
+				Tools: []message.Definition{{
 					Name:        "get_weather",
 					InputSchema: []byte(`{"type":"object"}`),
 				}},
@@ -282,17 +282,17 @@ func TestToolResultRoundTrip(t *testing.T) {
 
 	runtime := newTestRuntime(t, server)
 	request := inference.GenerateRequest{
-		Context: []inference.Message{
+		Context: []message.Message{
 			{
-				Role: inference.RoleUser,
-				Content: inference.Content{Parts: []inference.Part{
-					inference.TextPart{Text: "北京天气？"},
+				Role: message.RoleUser,
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "北京天气？"},
 				}},
 			},
 			{
-				Role: inference.RoleAssistant,
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ToolCallPart{Call: tool.Call{
+				Role: message.RoleAssistant,
+				Content: message.Content{Parts: []message.Part{
+					message.ToolCallPart{Call: message.Call{
 						ID:        "call_1",
 						Name:      "get_weather",
 						Arguments: []byte(`{"city":"北京"}`),
@@ -300,16 +300,16 @@ func TestToolResultRoundTrip(t *testing.T) {
 				}},
 			},
 			{
-				Role: inference.RoleTool,
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ToolResultPart{Result: tool.Result{CallID: "call_1", Content: "晴，25°C"}},
+				Role: message.RoleTool,
+				Content: message.Content{Parts: []message.Part{
+					message.ToolResultPart{Result: message.Result{CallID: "call_1", Content: "晴，25°C"}},
 				}},
 			},
 		},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "谢谢"}}},
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "谢谢"}}},
 				Intent:  inference.Intent{Text: &inference.TextIntent{}},
 			},
 		},
@@ -406,22 +406,22 @@ func TestReasoningRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
-	reasoning, ok := response.Message.Content.Parts[0].(inference.ReasoningPart)
+	reasoning, ok := response.Message.Content.Parts[0].(message.ReasoningPart)
 	if !ok || reasoning.Text != "2+2" {
 		t.Fatalf("parts = %#v", response.Message.Content.Parts)
 	}
 
 	followUp := inference.GenerateRequest{
-		Context: []inference.Message{
-			{Role: inference.RoleUser, Content: inference.Content{Parts: []inference.Part{
-				inference.TextPart{Text: "2+2=?"},
+		Context: []message.Message{
+			{Role: message.RoleUser, Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "2+2=?"},
 			}}},
 			response.Message,
 		},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "and 3+3?"}}},
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "and 3+3?"}}},
 				Intent:  inference.Intent{Text: &inference.TextIntent{}},
 			},
 		},
@@ -445,16 +445,16 @@ func TestReasoningHistoryDropsOnK25(t *testing.T) {
 		context.Background(),
 		kimiModel("kimi-k2.5"),
 		inference.GenerateRequest{
-			Context: []inference.Message{
-				{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-					inference.ReasoningPart{Text: "trace"},
-					inference.TextPart{Text: "4"},
+			Context: []message.Message{
+				{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+					message.ReasoningPart{Text: "trace"},
+					message.TextPart{Text: "4"},
 				}}},
 			},
 			Input: inference.GenerateInput{
 				Role: inference.InputRoleUser,
 				Content: inference.InputContent{
-					Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "hi"}}},
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
 					Intent:  inference.Intent{Text: &inference.TextIntent{}},
 				},
 			},
@@ -471,16 +471,16 @@ func TestReasoningHistoryDropsOnK25(t *testing.T) {
 
 func TestPreserveThinkingOverride(t *testing.T) {
 	request := inference.GenerateRequest{
-		Context: []inference.Message{
-			{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-				inference.ReasoningPart{Text: "trace"},
-				inference.TextPart{Text: "4"},
+		Context: []message.Message{
+			{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+				message.ReasoningPart{Text: "trace"},
+				message.TextPart{Text: "4"},
 			}}},
 		},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{inference.TextPart{Text: "hi"}}},
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
 				Intent:  inference.Intent{Text: &inference.TextIntent{}},
 			},
 		},
@@ -560,7 +560,7 @@ func TestCompileRejections(t *testing.T) {
 			name:  "image on text model",
 			model: "moonshot-v1-8k",
 			mutate: func(request *inference.GenerateRequest) {
-				request.Input.Content.Parts = []inference.Part{inference.ImagePart{Source: image}}
+				request.Input.Content.Parts = []message.Part{message.ImagePart{Source: image}}
 			},
 			field: inference.FieldGenerateInputImage,
 		},
@@ -568,7 +568,7 @@ func TestCompileRejections(t *testing.T) {
 			name:  "video on vision-only model",
 			model: "kimi-k2.6",
 			mutate: func(request *inference.GenerateRequest) {
-				request.Input.Content.Parts = []inference.Part{inference.VideoPart{Source: video}}
+				request.Input.Content.Parts = []message.Part{message.VideoPart{Source: video}}
 			},
 			field: inference.FieldGenerateInputVideo,
 		},
@@ -675,7 +675,7 @@ func TestStreamReasoningAndToolCalls(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 	request := simpleTextRequest("hi")
 	request.Input.Content.Intent.Text = &inference.TextIntent{
-		Tools: []tool.Definition{{
+		Tools: []message.Definition{{
 			Name:        "get_weather",
 			Description: "获取指定城市的天气",
 			InputSchema: []byte(`{"type":"object","properties":{"city":{"type":"string"}}}`),

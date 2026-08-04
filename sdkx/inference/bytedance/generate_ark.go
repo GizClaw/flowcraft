@@ -8,7 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
@@ -437,34 +437,34 @@ func decodeGenerate(
 			raw.failedReason,
 		)
 	}
-	parts := make([]inference.Part, 0,
+	parts := make([]message.Part, 0,
 		len(raw.reasonings)+len(raw.texts)+len(raw.toolCalls))
 	// ark emits reasoning items before the answer; the canonical message
 	// keeps that order.
 	for _, reasoning := range raw.reasonings {
-		parts = append(parts, inference.ReasoningPart{
+		parts = append(parts, message.ReasoningPart{
 			Text: reasoning.text,
 			ID:   reasoning.id,
 		})
 	}
 	for _, text := range raw.texts {
-		parts = append(parts, inference.TextPart{Text: text})
+		parts = append(parts, message.TextPart{Text: text})
 	}
 	for _, call := range raw.toolCalls {
 		arguments := json.RawMessage(call.args)
 		if !json.Valid(arguments) || len(arguments) == 0 {
 			arguments = json.RawMessage(`{}`)
 		}
-		parts = append(parts, inference.ToolCallPart{Call: tool.Call{
+		parts = append(parts, message.ToolCallPart{Call: message.Call{
 			ID:        call.id,
 			Name:      call.name,
 			Arguments: arguments,
 		}})
 	}
 	response := inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: raw.finish,
 		Usage:        rawUsageCanonical(raw.usage),

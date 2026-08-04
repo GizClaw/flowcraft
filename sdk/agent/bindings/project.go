@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Generic projections between script-facing values (map[string]any,
@@ -23,14 +23,14 @@ import (
 // rejected) so script typos surface during development.
 
 // partsFromScript converts a script-supplied array into
-// []inference.Part by decoding it through inference.Content (the type
+// []message.Part by decoding it through message.Content (the type
 // that owns part JSON). field prefixes the error path.
-func partsFromScript(raw any, field string) ([]inference.Part, error) {
+func partsFromScript(raw any, field string) ([]message.Part, error) {
 	list, err := asAnyList(raw, field)
 	if err != nil {
 		return nil, err
 	}
-	var content inference.Content
+	var content message.Content
 	if err := decodeStrictJSON(map[string]any{"parts": list}, &content, field); err != nil {
 		return nil, err
 	}
@@ -42,11 +42,11 @@ func partsFromScript(raw any, field string) ([]inference.Part, error) {
 
 // partsToScript projects parts into script-facing objects. Nil stays
 // nil so scripts can distinguish "no parts" from "empty array".
-func partsToScript(parts []inference.Part) ([]any, error) {
+func partsToScript(parts []message.Part) ([]any, error) {
 	if parts == nil {
 		return nil, nil
 	}
-	buf, err := json.Marshal(inference.Content{Parts: parts})
+	buf, err := json.Marshal(message.Content{Parts: parts})
 	if err != nil {
 		return nil, errdefs.Internalf("parts are not JSON-encodable: %v", err)
 	}
@@ -60,9 +60,9 @@ func partsToScript(parts []inference.Part) ([]any, error) {
 }
 
 // messageFromScript converts one script-supplied message object into
-// an inference.Message. field prefixes the error path.
-func messageFromScript(raw any, field string) (inference.Message, error) {
-	var msg inference.Message
+// a [message.Message]. field prefixes the error path.
+func messageFromScript(raw any, field string) (message.Message, error) {
+	var msg message.Message
 	if raw == nil {
 		return msg, errdefs.Validationf("%s: message must be an object, got null", field)
 	}
@@ -76,13 +76,13 @@ func messageFromScript(raw any, field string) (inference.Message, error) {
 }
 
 // messagesFromScript converts a script-supplied array into
-// []inference.Message.
-func messagesFromScript(raw any, field string) ([]inference.Message, error) {
+// []message.Message.
+func messagesFromScript(raw any, field string) ([]message.Message, error) {
 	list, err := asAnyList(raw, field)
 	if err != nil {
 		return nil, err
 	}
-	msgs := make([]inference.Message, len(list))
+	msgs := make([]message.Message, len(list))
 	for i, item := range list {
 		m, err := messageFromScript(item, field+"["+itoa(i)+"]")
 		if err != nil {
@@ -95,7 +95,7 @@ func messagesFromScript(raw any, field string) ([]inference.Message, error) {
 
 // messagesToScript projects messages into script-facing objects. Nil
 // stays nil so scripts can distinguish "no messages" from "empty".
-func messagesToScript(msgs []inference.Message) ([]any, error) {
+func messagesToScript(msgs []message.Message) ([]any, error) {
 	if msgs == nil {
 		return nil, nil
 	}

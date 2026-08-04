@@ -8,7 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -27,7 +27,7 @@ func toolRegistry(t *testing.T, dispatcher tool.Dispatcher) *graph.Registry {
 func echoDispatcher() tool.Dispatcher {
 	reg := tool.NewRegistry()
 	reg.Register(tool.FuncTool(
-		tool.Definition{Name: "search", Description: "search the web"},
+		message.Definition{Name: "search", Description: "search the web"},
 		func(_ context.Context, args string) (string, error) {
 			return "results for " + args, nil
 		},
@@ -35,14 +35,14 @@ func echoDispatcher() tool.Dispatcher {
 	return tool.NewExecutor(reg)
 }
 
-func assistantWithCalls(calls ...tool.Call) inference.Message {
-	parts := make([]inference.Part, len(calls))
+func assistantWithCalls(calls ...message.Call) message.Message {
+	parts := make([]message.Part, len(calls))
 	for i, call := range calls {
-		parts[i] = inference.ToolCallPart{Call: call}
+		parts[i] = message.ToolCallPart{Call: call}
 	}
-	return inference.Message{
-		Role:    inference.RoleAssistant,
-		Content: inference.Content{Parts: parts},
+	return message.Message{
+		Role:    message.RoleAssistant,
+		Content: message.Content{Parts: parts},
 	}
 }
 
@@ -52,15 +52,15 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel, assistantWithCalls(
-		tool.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)},
-		tool.Call{ID: "call_2", Name: "search", Arguments: json.RawMessage(`{"q":"news"}`)},
+		message.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)},
+		message.Call{ID: "call_2", Name: "search", Arguments: json.RawMessage(`{"q":"news"}`)},
 	))
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 2 || msgs[1].Role != inference.RoleTool {
+	if len(msgs) != 2 || msgs[1].Role != message.RoleTool {
 		t.Fatalf("channel = %+v, want assistant + one role=tool message", msgs)
 	}
 	parts := msgs[1].Content.Parts
@@ -70,7 +70,7 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 	// Model-issued call ids are preserved so the provider can pair
 	// results on the next turn.
 	for i, wantID := range []string{"call_1", "call_2"} {
-		result, ok := parts[i].(inference.ToolResultPart)
+		result, ok := parts[i].(message.ToolResultPart)
 		if !ok {
 			t.Fatalf("part %d = %T, want ToolResultPart", i, parts[i])
 		}
@@ -83,9 +83,9 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 	if !ok {
 		t.Fatal("results_key var missing")
 	}
-	results, ok := v.([]tool.Result)
+	results, ok := v.([]message.Result)
 	if !ok || len(results) != 2 {
-		t.Fatalf("results var = %T, want []tool.Result len 2", v)
+		t.Fatalf("results var = %T, want []message.Result len 2", v)
 	}
 }
 
@@ -99,13 +99,13 @@ func TestToolNode_RejectsBadTail(t *testing.T) {
 	}
 	// Non-assistant tail.
 	user := agent.NewBoard()
-	user.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleUser, "hi"))
+	user.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "hi"))
 	if err := executeGraph(t, g, agent.NoopHost{}, user); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("user tail error = %v, want validation-classified", err)
 	}
 	// Assistant tail without tool calls.
 	plain := agent.NewBoard()
-	plain.AppendChannelMessage(agent.MainChannel, inference.NewTextMessage(inference.RoleAssistant, "done"))
+	plain.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "done"))
 	if err := executeGraph(t, g, agent.NoopHost{}, plain); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("no-tool-calls error = %v, want validation-classified", err)
 	}
@@ -116,7 +116,7 @@ func TestToolNode_NoDispatcher(t *testing.T) {
 	g := singleNodeGraph(t, reg, "tool", ToolConfig{})
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel, assistantWithCalls(
-		tool.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{}`)},
+		message.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{}`)},
 	))
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err == nil || !errdefs.IsNotAvailable(err) {
 		t.Fatalf("unwired dispatcher error = %v, want NotAvailable", err)

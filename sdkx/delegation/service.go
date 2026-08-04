@@ -14,7 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 const (
@@ -645,7 +645,7 @@ func (s *Service) runAt(ctx context.Context, req AsyncRequest, reuseSlot bool) (
 	}
 
 	agentRequest := agent.Request{
-		Message: inference.NewTextMessage(inference.RoleUser, req.Request.Input),
+		Message: message.NewTextMessage(message.RoleUser, req.Request.Input),
 	}
 	if len(req.Request.Metadata) > 0 {
 		agentRequest.Inputs = make(map[string]any, len(req.Request.Metadata))

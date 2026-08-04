@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -94,7 +95,7 @@ type ImportTool struct {
 	rt    *memory.Runtime
 	scope memory.Scope
 	cfg   ImportSettings
-	def   tool.Definition
+	def   message.Definition
 }
 
 // NewImportTool validates settings and returns a memory.import
@@ -124,7 +125,7 @@ func NewImportTool(rt *memory.Runtime, settings ImportSettings) (*ImportTool, er
 // Definition returns the tool's schema. The LLM sees this when
 // deciding whether to call the tool. The InputSchema is built
 // once at construction and cached.
-func (t *ImportTool) Definition() tool.Definition { return t.def }
+func (t *ImportTool) Definition() message.Definition { return t.def }
 
 // Execute performs an Import against the bound runtime. The
 // arguments JSON object may override any field of
@@ -229,7 +230,7 @@ func RegisterImportTool(reg *tool.Registry, rt *memory.Runtime, settings ImportS
 // tool's arguments. The schema is intentionally permissive:
 // all fields are optional because the tool's settings supply
 // defaults the LLM may override.
-func importDefinition() (tool.Definition, error) {
+func importDefinition() (message.Definition, error) {
 	schema := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
@@ -254,9 +255,9 @@ func importDefinition() (tool.Definition, error) {
 	}
 	raw, err := json.Marshal(schema)
 	if err != nil {
-		return tool.Definition{}, err
+		return message.Definition{}, err
 	}
-	return tool.Definition{
+	return message.Definition{
 		Name:        ImportToolKind,
 		Description: "Import a document into the memory knowledge store. Returns the new document id and chunk count.",
 		InputSchema: raw,

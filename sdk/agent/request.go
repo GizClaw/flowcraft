@@ -3,7 +3,7 @@ package agent
 import (
 	"slices"
 
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // Request is one agent turn submitted to [Run].
@@ -34,7 +34,7 @@ type Request struct {
 	RunID string `json:"runId,omitempty"`
 
 	// Message is the user's turn input (text, parts, attachments).
-	Message inference.Message `json:"message"`
+	Message message.Message `json:"message"`
 
 	// Inputs are arbitrary structured inputs the engine reads off
 	// the Board (form fields, parameters, …). They are written under
@@ -106,8 +106,8 @@ const (
 // store them in a board channel; agent collects channel contents into
 // Artifacts on the way out.
 type Artifact struct {
-	Name  string           `json:"name"`
-	Parts []inference.Part `json:"parts,omitempty"`
+	Name  string         `json:"name"`
+	Parts []message.Part `json:"parts,omitempty"`
 }
 
 // Result is what [Run] returns after one turn. The contract:
@@ -142,7 +142,7 @@ type Result struct {
 	// excluding the input request and any history loaded before the
 	// turn. Suitable for streaming to a UI or appending to the
 	// persistent transcript (which Run already did).
-	Messages []inference.Message `json:"messages,omitempty"`
+	Messages []message.Message `json:"messages,omitempty"`
 
 	// Artifacts collects named, multi-modal bundles the engine
 	// emitted via dedicated board channels.
@@ -205,7 +205,7 @@ func (r *Result) Text() string {
 		return ""
 	}
 	for _, v := range slices.Backward(r.Messages) {
-		if v.Role != inference.RoleAssistant {
+		if v.Role != message.RoleAssistant {
 			continue
 		}
 		t := v.Content.Text()

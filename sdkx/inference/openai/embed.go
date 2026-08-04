@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/packages/param"
@@ -25,15 +26,15 @@ type embedRaw struct {
 	inputTokens int64
 }
 
-var embedPartFields = map[inference.PartKind]inference.FieldID{
-	inference.PartText:       inference.FieldEmbedItemText,
-	inference.PartImage:      inference.FieldEmbedItemImage,
-	inference.PartAudio:      inference.FieldEmbedItemAudio,
-	inference.PartVideo:      inference.FieldEmbedItemVideo,
-	inference.PartFile:       inference.FieldEmbedItemFile,
-	inference.PartData:       inference.FieldEmbedItemData,
-	inference.PartToolCall:   inference.FieldEmbedItemToolCall,
-	inference.PartToolResult: inference.FieldEmbedItemToolResult,
+var embedPartFields = map[message.PartKind]inference.FieldID{
+	message.PartText:       inference.FieldEmbedItemText,
+	message.PartImage:      inference.FieldEmbedItemImage,
+	message.PartAudio:      inference.FieldEmbedItemAudio,
+	message.PartVideo:      inference.FieldEmbedItemVideo,
+	message.PartFile:       inference.FieldEmbedItemFile,
+	message.PartData:       inference.FieldEmbedItemData,
+	message.PartToolCall:   inference.FieldEmbedItemToolCall,
+	message.PartToolResult: inference.FieldEmbedItemToolResult,
 }
 
 func compileEmbed(
@@ -61,7 +62,7 @@ func compileEmbed(
 			parts := 0
 			for _, part := range item.Content.Parts {
 				switch value := part.(type) {
-				case inference.TextPart:
+				case message.TextPart:
 					text = value.Text
 					parts++
 				default:

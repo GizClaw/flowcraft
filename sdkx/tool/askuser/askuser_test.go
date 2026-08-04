@@ -11,8 +11,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/nodes"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	inference_media "github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	inference_media "github.com/GizClaw/flowcraft/sdk/message/media"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/tooltest"
 	"github.com/GizClaw/flowcraft/sdkx/tool/askuser"
@@ -50,7 +50,7 @@ func (h *captureHost) AskUser(_ context.Context, prompt agent.UserPrompt) (agent
 
 func TestAskUser_HappyPath(t *testing.T) {
 	host := &captureHost{
-		reply: agent.UserReply{Parts: []inference.Part{inference.TextPart{Text: "yes please"}}},
+		reply: agent.UserReply{Parts: []message.Part{message.TextPart{Text: "yes please"}}},
 	}
 	ctx := agent.ContextWithHost(context.Background(), host)
 	out, err := askuser.New().Execute(ctx, `{"prompt":"shall I proceed?"}`)
@@ -60,8 +60,8 @@ func TestAskUser_HappyPath(t *testing.T) {
 	if out != "yes please" {
 		t.Errorf("reply = %q, want %q", out, "yes please")
 	}
-	if tp, ok := host.gotPrompt.Parts[0].(inference.TextPart); !ok || tp.Text != "shall I proceed?" {
-		t.Errorf("forwarded prompt: parts[0] = %T, want inference.TextPart with text %q", host.gotPrompt.Parts[0], "shall I proceed?")
+	if tp, ok := host.gotPrompt.Parts[0].(message.TextPart); !ok || tp.Text != "shall I proceed?" {
+		t.Errorf("forwarded prompt: parts[0] = %T, want message.TextPart with text %q", host.gotPrompt.Parts[0], "shall I proceed?")
 	} else if got := tp.Text; got != "shall I proceed?" {
 		t.Errorf("forwarded prompt = %q, want original", got)
 	}
@@ -72,7 +72,7 @@ func TestAskUser_HappyPath(t *testing.T) {
 
 func TestAskUser_GraphToolNodeUsesExecutionHost(t *testing.T) {
 	host := &captureHost{
-		reply: agent.UserReply{Parts: []inference.Part{inference.TextPart{Text: "ship it"}}},
+		reply: agent.UserReply{Parts: []message.Part{message.TextPart{Text: "ship it"}}},
 	}
 	tools := tool.NewRegistry()
 	tools.Register(askuser.New())
@@ -89,9 +89,9 @@ func TestAskUser_GraphToolNodeUsesExecutionHost(t *testing.T) {
 		t.Fatalf("build graph: %v", err)
 	}
 	board := agent.NewBoard()
-	board.AppendChannelMessage(agent.MainChannel, inference.Message{
-		Role: inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{inference.ToolCallPart{Call: tool.Call{
+	board.AppendChannelMessage(agent.MainChannel, message.Message{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{message.ToolCallPart{Call: message.Call{
 			ID:        "call_ask",
 			Name:      askuser.Name,
 			Arguments: json.RawMessage(`{"prompt":"deploy now?"}`),
@@ -107,9 +107,9 @@ func TestAskUser_GraphToolNodeUsesExecutionHost(t *testing.T) {
 	if len(host.gotPrompt.Parts) != 1 {
 		t.Fatalf("Host.AskUser prompt parts = %d, want 1", len(host.gotPrompt.Parts))
 	}
-	part, ok := host.gotPrompt.Parts[0].(inference.TextPart)
+	part, ok := host.gotPrompt.Parts[0].(message.TextPart)
 	if !ok {
-		t.Fatalf("Host.AskUser prompt part = %T, want inference.TextPart", host.gotPrompt.Parts[0])
+		t.Fatalf("Host.AskUser prompt part = %T, want message.TextPart", host.gotPrompt.Parts[0])
 	}
 	if got := part.Text; got != "deploy now?" {
 		t.Fatalf("Host.AskUser prompt = %q, want deploy now?", got)
@@ -118,9 +118,9 @@ func TestAskUser_GraphToolNodeUsesExecutionHost(t *testing.T) {
 	if len(messages) != 2 || len(messages[1].Content.Parts) != 1 {
 		t.Fatalf("tool-node messages = %+v, want assistant call plus one tool result", messages)
 	}
-	resultPart, ok := messages[1].Content.Parts[0].(inference.ToolResultPart)
+	resultPart, ok := messages[1].Content.Parts[0].(message.ToolResultPart)
 	if !ok {
-		t.Fatalf("tool result part = %T, want inference.ToolResultPart", messages[1].Content.Parts[0])
+		t.Fatalf("tool result part = %T, want message.ToolResultPart", messages[1].Content.Parts[0])
 	}
 	got := resultPart.Result
 	if got.IsError || got.Content != "ship it" {
@@ -168,9 +168,9 @@ func TestAskUser_HostErrorPropagates(t *testing.T) {
 
 func TestAskUser_NonTextPartsRenderAsMarker(t *testing.T) {
 	host := &captureHost{
-		reply: agent.UserReply{Parts: []inference.Part{
-			inference.TextPart{Text: "see attached"},
-			inference.ImagePart{Source: mediaSource(t)},
+		reply: agent.UserReply{Parts: []message.Part{
+			message.TextPart{Text: "see attached"},
+			message.ImagePart{Source: mediaSource(t)},
 		}},
 	}
 	ctx := agent.ContextWithHost(context.Background(), host)

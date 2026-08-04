@@ -11,7 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 type memoryBusHost struct {
@@ -184,7 +184,7 @@ func TestExecuteNodeRetryRestoresBoard(t *testing.T) {
 		Meta: Meta{Desc: "appends, fails once, then succeeds"},
 		Handler: func(ec ExecutionContext, board *agent.Board, _ struct{}) error {
 			board.AppendChannelMessage(agent.MainChannel,
-				inference.NewTextMessage(inference.RoleAssistant, "partial"))
+				message.NewTextMessage(message.RoleAssistant, "partial"))
 			if calls.Add(1) == 1 {
 				return errors.New("transient boom")
 			}
@@ -307,7 +307,7 @@ func TestExecuteResume(t *testing.T) {
 		Steps:  []string{"a"},
 		Board: &agent.BoardSnapshot{
 			Vars:     map[string]any{"x": float64(1), "a_ran": true},
-			Channels: map[string][]inference.Message{agent.MainChannel: {}},
+			Channels: map[string][]message.Message{agent.MainChannel: {}},
 		},
 	}
 	run := testRun()

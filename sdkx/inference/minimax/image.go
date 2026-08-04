@@ -7,7 +7,8 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Image generation runs on the image_generation endpoint (image-01 family):
@@ -67,12 +68,12 @@ func compileImage(
 		}
 
 		var prompt []string
-		collect := func(parts []inference.Part, fields map[inference.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
-				case inference.TextPart:
+				case message.TextPart:
 					prompt = append(prompt, value.Text)
-				case inference.ImagePart:
+				case message.ImagePart:
 					wire.references = append(wire.references, imageSourceValue(value.Source))
 				default:
 					ledger.reject(
@@ -82,15 +83,15 @@ func compileImage(
 				}
 			}
 		}
-		for _, message := range request.Context {
-			if message.Role != inference.RoleUser {
+		for _, turn := range request.Context {
+			if turn.Role != message.RoleUser {
 				ledger.reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(message.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartFields)
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
@@ -253,13 +254,13 @@ func decodeImage(
 	_ context.Context,
 	raw imageRaw,
 ) (inference.GenerateResponse, error) {
-	parts := make([]inference.Part, 0, len(raw.urls)+len(raw.b64))
+	parts := make([]message.Part, 0, len(raw.urls)+len(raw.b64))
 	for _, url := range raw.urls {
 		source, err := media.NewImageURL(url, raw.mediaType)
 		if err != nil {
 			return inference.GenerateResponse{}, fmt.Errorf("minimax: image url: %w", err)
 		}
-		parts = append(parts, inference.ImagePart{Source: source})
+		parts = append(parts, message.ImagePart{Source: source})
 	}
 	for _, encoded := range raw.b64 {
 		data, err := base64.StdEncoding.DecodeString(encoded)
@@ -272,7 +273,7 @@ func decodeImage(
 		if err != nil {
 			return inference.GenerateResponse{}, fmt.Errorf("minimax: image payload: %w", err)
 		}
-		parts = append(parts, inference.ImagePart{Source: source})
+		parts = append(parts, message.ImagePart{Source: source})
 	}
 	if len(parts) == 0 {
 		return inference.GenerateResponse{}, fmt.Errorf(
@@ -281,9 +282,9 @@ func decodeImage(
 	}
 	generated := int64(len(parts))
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: inference.FinishCompleted,
 		Usage: inference.Usage{

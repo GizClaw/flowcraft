@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // allActiveScope is the scope every test uses as a starting
@@ -25,13 +25,13 @@ func allActiveScope() Scope {
 	}
 }
 
-// oneMessage builds a minimal inference.Message that passes
+// oneMessage builds a minimal message.Message that passes
 // inference's own Validate.
-func oneMessage(text string) inference.Message {
-	return inference.Message{
-		Role: inference.RoleUser,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: text},
+func oneMessage(text string) message.Message {
+	return message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: text},
 		}},
 	}
 }

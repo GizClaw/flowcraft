@@ -10,8 +10,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 // Generate pipeline behavior tests, run end to end through the runtime
@@ -39,7 +39,7 @@ func TestUnaryTextOnWire(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("parts = %d", len(parts))
 	}
-	if text, ok := parts[0].(inference.TextPart); !ok || text.Text != "ok" {
+	if text, ok := parts[0].(message.TextPart); !ok || text.Text != "ok" {
 		t.Fatalf("part = %#v", parts[0])
 	}
 	if response.Usage.TotalTokens != 19 {
@@ -93,9 +93,9 @@ func TestMultimodalEndpointSelection(t *testing.T) {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{Parts: []inference.Part{
-					inference.ImagePart{Source: image},
-					inference.TextPart{Text: "what is this?"},
+				Content: message.Content{Parts: []message.Part{
+					message.ImagePart{Source: image},
+					message.TextPart{Text: "what is this?"},
 				}},
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
@@ -105,7 +105,7 @@ func TestMultimodalEndpointSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
-	text, ok := response.Message.Content.Parts[0].(inference.TextPart)
+	text, ok := response.Message.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != "a dog and a girl" {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
 	}
@@ -186,7 +186,7 @@ func TestToolsOnWire(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("weather?")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "get_weather",
 		Description: "weather lookup",
 		InputSchema: []byte(`{"type":"object","properties":{"city":{"type":"string"}}}`),
@@ -206,7 +206,7 @@ func TestToolsOnWire(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("parts = %#v", parts)
 	}
-	call, ok := parts[0].(inference.ToolCallPart)
+	call, ok := parts[0].(message.ToolCallPart)
 	if !ok {
 		t.Fatalf("part = %#v", parts[0])
 	}
@@ -238,19 +238,19 @@ func TestToolResultRoundTrip(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("and tomorrow?")
-	request.Context = []inference.Message{
-		{Role: inference.RoleUser, Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: "weather?"},
+	request.Context = []message.Message{
+		{Role: message.RoleUser, Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "weather?"},
 		}}},
-		{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-			inference.ToolCallPart{Call: tool.Call{
+		{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+			message.ToolCallPart{Call: message.Call{
 				ID:        "call_1",
 				Name:      "get_weather",
 				Arguments: []byte(`{}`),
 			}},
 		}}},
-		{Role: inference.RoleTool, Content: inference.Content{Parts: []inference.Part{
-			inference.ToolResultPart{Result: tool.Result{
+		{Role: message.RoleTool, Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.Result{
 				CallID:  "call_1",
 				Content: "sunny",
 			}},
@@ -323,10 +323,10 @@ func TestThinkingStreamOnly(t *testing.T) {
 	if len(parts) != 2 {
 		t.Fatalf("parts = %#v", parts)
 	}
-	if reasoning, ok := parts[0].(inference.ReasoningPart); !ok || reasoning.Text != "thinking" {
+	if reasoning, ok := parts[0].(message.ReasoningPart); !ok || reasoning.Text != "thinking" {
 		t.Fatalf("reasoning = %#v", parts[0])
 	}
-	if text, ok := parts[1].(inference.TextPart); !ok || text.Text != "answer" {
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "answer" {
 		t.Fatalf("text = %#v", parts[1])
 	}
 
@@ -399,9 +399,9 @@ func TestReasoningEffortDialect(t *testing.T) {
 func TestReasoningRoundTrip(t *testing.T) {
 	request := func() inference.GenerateRequest {
 		r := simpleTextRequest("next")
-		r.Context = []inference.Message{{Role: inference.RoleAssistant, Content: inference.Content{Parts: []inference.Part{
-			inference.ReasoningPart{Text: "earlier thinking"},
-			inference.TextPart{Text: "earlier answer"},
+		r.Context = []message.Message{{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{Text: "earlier thinking"},
+			message.TextPart{Text: "earlier answer"},
 		}}}}
 		return r
 	}
@@ -555,14 +555,14 @@ func TestCompileRejections(t *testing.T) {
 			name:  "image on text model",
 			model: "qwen-plus",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Input.Content.Parts = append(r.Input.Content.Parts, inference.ImagePart{Source: image})
+				r.Input.Content.Parts = append(r.Input.Content.Parts, message.ImagePart{Source: image})
 			},
 		},
 		{
 			name:  "video on vision-only model",
 			model: "qwen-plus",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Input.Content.Parts = append(r.Input.Content.Parts, inference.VideoPart{Source: video})
+				r.Input.Content.Parts = append(r.Input.Content.Parts, message.VideoPart{Source: video})
 			},
 		},
 		{
@@ -585,7 +585,7 @@ func TestCompileRejections(t *testing.T) {
 			name:  "required tool choice",
 			model: "qwen-plus",
 			mutate: func(r *inference.GenerateRequest) {
-				r.Input.Content.Intent.Text.Tools = []tool.Definition{{
+				r.Input.Content.Intent.Text.Tools = []message.Definition{{
 					Name:        "get_weather",
 					Description: "weather lookup",
 					InputSchema: []byte(`{"type":"object"}`),
@@ -670,7 +670,7 @@ func TestStreamToolCalls(t *testing.T) {
 	runtime := newTestRuntime(t, server)
 
 	request := simpleTextRequest("weather?")
-	request.Input.Content.Intent.Text.Tools = []tool.Definition{{
+	request.Input.Content.Intent.Text.Tools = []message.Definition{{
 		Name:        "get_weather",
 		Description: "weather lookup",
 		InputSchema: []byte(`{"type":"object"}`),
@@ -704,7 +704,7 @@ func TestStreamToolCalls(t *testing.T) {
 	if len(parts) != 1 {
 		t.Fatalf("parts = %#v", parts)
 	}
-	call, ok := parts[0].(inference.ToolCallPart)
+	call, ok := parts[0].(message.ToolCallPart)
 	if !ok {
 		t.Fatalf("part = %#v", parts[0])
 	}

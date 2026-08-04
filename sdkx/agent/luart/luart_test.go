@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 func TestRuntime_ExecSimpleScript(t *testing.T) {

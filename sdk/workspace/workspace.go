@@ -37,6 +37,7 @@ type Workspace interface {
 	Exists(ctx context.Context, path string) (bool, error)
 	Stat(ctx context.Context, path string) (fs.FileInfo, error)
 }
+
 // ViolationRecord captures a rejected operation for audit logging.
 type ViolationRecord struct {
 	Time      time.Time `json:"time"`

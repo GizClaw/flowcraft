@@ -7,7 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 func newRuntimeGenerateOperations(
@@ -23,9 +24,9 @@ func newRuntimeGenerateOperations(
 		},
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{
-				Message: Message{
-					Role:    RoleAssistant,
-					Content: Content{Parts: []Part{TextPart{Text: "ok"}}},
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
 				},
 				FinishReason: FinishCompleted,
 			}, nil
@@ -261,10 +262,10 @@ func TestGenerateDriversDeriveDeterministicMediaUsage(t *testing.T) {
 		Format: media.AudioFormat{Encoding: media.AudioEncodingMP3},
 	}
 	response := GenerateResponse{
-		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
-			TextPart{Text: "ok"},
-			ImagePart{Source: image},
-			AudioPart{
+		Message: message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "ok"},
+			message.ImagePart{Source: image},
+			message.AudioPart{
 				Source: audio, Format: &media.AudioFormat{Encoding: media.AudioEncodingMP3},
 				DurationMillis: &duration,
 			},
@@ -302,7 +303,7 @@ func TestGenerateDriversDeriveDeterministicMediaUsage(t *testing.T) {
 			return &generateEventStream{events: []GenerateStreamEvent{
 				{Usage: &Usage{GeneratedImages: &report, AudioDurationMillis: &report}},
 				{PartIndex: 0, Delta: TextPartDelta{Text: "ok"}},
-				{PartIndex: 1, Delta: ImagePartDelta{Part: ImagePart{Source: image}}},
+				{PartIndex: 1, Delta: ImagePartDelta{Part: message.ImagePart{Source: image}}},
 				{PartIndex: 2, Delta: AudioPartDelta{
 					Data: []byte("audio"), Format: &media.AudioFormat{Encoding: media.AudioEncodingMP3},
 					DurationMillis: &duration,
@@ -349,9 +350,9 @@ func TestGenerateMediaUsageClearsUnknownOrAbsentDerivedValues(t *testing.T) {
 	request := validGenerateTextRequest()
 	request.Input.Content.Intent.Image = &ImageIntent{}
 	response := GenerateResponse{
-		Message: Message{Role: RoleAssistant, Content: Content{Parts: []Part{
-			TextPart{Text: "ok"},
-			AudioPart{Source: audio},
+		Message: message.Message{Role: message.RoleAssistant, Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "ok"},
+			message.AudioPart{Source: audio},
 		}}},
 		FinishReason: FinishMaxOutput,
 		Usage: Usage{

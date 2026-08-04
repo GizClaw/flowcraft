@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // recordingHost is a hand-built Host stub that captures every call so
@@ -223,7 +224,7 @@ func TestHostBridge_CheckInterrupt_LatchesFirstSignal(t *testing.T) {
 func TestHostBridge_AskUser_RoundTripsPartsAndMetadata(t *testing.T) {
 	host := newRecordingHost()
 	host.askReply = agent.UserReply{
-		Parts:    []inference.Part{inference.TextPart{Text: "ok"}},
+		Parts:    []message.Part{message.TextPart{Text: "ok"}},
 		Metadata: map[string]string{"source": "voice"},
 	}
 
@@ -249,7 +250,7 @@ func TestHostBridge_AskUser_RoundTripsPartsAndMetadata(t *testing.T) {
 	if len(prompt.Parts) != 1 {
 		t.Fatalf("parts = %+v", prompt.Parts)
 	}
-	tp, ok := prompt.Parts[0].(inference.TextPart)
+	tp, ok := prompt.Parts[0].(message.TextPart)
 	if !ok || tp.Text != "Approve?" {
 		t.Fatalf("part = %+v, want TextPart{Approve?}", prompt.Parts[0])
 	}

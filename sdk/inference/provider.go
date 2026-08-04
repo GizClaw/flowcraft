@@ -7,8 +7,8 @@ import (
 	"reflect"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference/media"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/message/media"
 )
 
 type Compiled[Wire any] struct {
@@ -632,8 +632,8 @@ func invalidProviderWire(wire reflect.Type) bool {
 	for _, canonical := range []reflect.Type{
 		reflect.TypeFor[GenerateRequest](),
 		reflect.TypeFor[GenerateInput](),
-		reflect.TypeFor[Message](),
-		reflect.TypeFor[Content](),
+		reflect.TypeFor[message.Message](),
+		reflect.TypeFor[message.Content](),
 		reflect.TypeFor[InputContent](),
 		reflect.TypeFor[Intent](),
 		reflect.TypeFor[TextIntent](),
@@ -641,15 +641,15 @@ func invalidProviderWire(wire reflect.Type) bool {
 		reflect.TypeFor[AudioIntent](),
 		reflect.TypeFor[ResponseFormat](),
 		reflect.TypeFor[ToolChoice](),
-		reflect.TypeFor[Part](),
-		reflect.TypeFor[TextPart](),
-		reflect.TypeFor[ImagePart](),
-		reflect.TypeFor[AudioPart](),
-		reflect.TypeFor[VideoPart](),
-		reflect.TypeFor[FilePart](),
-		reflect.TypeFor[DataPart](),
-		reflect.TypeFor[ToolCallPart](),
-		reflect.TypeFor[ToolResultPart](),
+		reflect.TypeFor[message.Part](),
+		reflect.TypeFor[message.TextPart](),
+		reflect.TypeFor[message.ImagePart](),
+		reflect.TypeFor[message.AudioPart](),
+		reflect.TypeFor[message.VideoPart](),
+		reflect.TypeFor[message.FilePart](),
+		reflect.TypeFor[message.DataPart](),
+		reflect.TypeFor[message.ToolCallPart](),
+		reflect.TypeFor[message.ToolResultPart](),
 		reflect.TypeFor[EmbedRequest](),
 		reflect.TypeFor[EmbedItem](),
 		reflect.TypeFor[TranscriptionRequest](),
@@ -665,9 +665,9 @@ func invalidProviderWire(wire reflect.Type) bool {
 		reflect.TypeFor[media.VoiceSpec](),
 		reflect.TypeFor[media.AudioChunk](),
 		reflect.TypeFor[media.VideoFrame](),
-		reflect.TypeFor[tool.Definition](),
-		reflect.TypeFor[tool.Call](),
-		reflect.TypeFor[tool.Result](),
+		reflect.TypeFor[message.Definition](),
+		reflect.TypeFor[message.Call](),
+		reflect.TypeFor[message.Result](),
 	} {
 		if typeContains(wire, canonical, make(map[reflect.Type]bool)) {
 			return true

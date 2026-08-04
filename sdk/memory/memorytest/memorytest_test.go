@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/memory/memorytest"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // memImpl is a minimal in-memory impl that satisfies the full
@@ -30,14 +30,14 @@ type memKey struct {
 type memRecord struct {
 	id    string
 	seq   uint64
-	msg   inference.Message
+	msg   message.Message
 	idKey string
 }
 
 type memHit struct {
 	id, source, query string
 	score             float64
-	parts             []inference.Part
+	parts             []message.Part
 }
 
 type memDoc struct {
@@ -225,7 +225,7 @@ func (m *memImpl) ExecuteRecall(_ context.Context, req memory.RecallRequest) (me
 
 // seedHit is a test-only helper that puts a hit into the store
 // keyed by query, so a Recall call can find it.
-func (m *memImpl) seedHit(scope memory.Scope, conv, query, id, source string, score float64, parts []inference.Part) {
+func (m *memImpl) seedHit(scope memory.Scope, conv, query, id, source string, score float64, parts []message.Part) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	k := keyOf(scope, conv)
@@ -357,11 +357,11 @@ func TestMemImplPassesContract(t *testing.T) {
 
 		// Seed long-term memory once for the Recall suite.
 		impl.seedHit(scope, "", "seed", "h-1", "transcript:c/seq-1", 0.9,
-			[]inference.Part{inference.TextPart{Text: "alpha body"}})
+			[]message.Part{message.TextPart{Text: "alpha body"}})
 		impl.seedHit(scope, "", "seed", "h-2", "transcript:c/seq-2", 0.7,
-			[]inference.Part{inference.TextPart{Text: "alpha more"}})
+			[]message.Part{message.TextPart{Text: "alpha more"}})
 		impl.seedHit(scope, "", "seed", "h-3", "transcript:c/seq-3", 0.3,
-			[]inference.Part{inference.TextPart{Text: "alpha weak"}})
+			[]message.Part{message.TextPart{Text: "alpha weak"}})
 
 		return rt
 	}

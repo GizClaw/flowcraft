@@ -9,15 +9,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/delegation"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
-func assistantToolCall(id, name, args string) inference.Message {
-	return inference.Message{
-		Role: inference.RoleAssistant,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.ToolCallPart{Call: tool.Call{
+func assistantToolCall(id, name, args string) message.Message {
+	return message.Message{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolCallPart{Call: message.Call{
 				ID:        id,
 				Name:      name,
 				Arguments: json.RawMessage(args),
@@ -26,11 +25,11 @@ func assistantToolCall(id, name, args string) inference.Message {
 	}
 }
 
-func toolResult(callID string, isError bool) inference.Message {
-	return inference.Message{
-		Role: inference.RoleTool,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.ToolResultPart{Result: tool.Result{
+func toolResult(callID string, isError bool) message.Message {
+	return message.Message{
+		Role: message.RoleTool,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.Result{
 				CallID:  callID,
 				Content: "result",
 				IsError: isError,
@@ -179,7 +178,7 @@ func TestHandoffRefereeDetectsFirstMatchingCall(t *testing.T) {
 		{Target: delegation.Target{ID: "billing"}},
 		{Target: delegation.Target{ID: "tech"}},
 	})
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("ignore-tool", "search", `{"query":"refund"}`),
 		assistantToolCall("ignore-mode", delegation.ToolName, `{"mode":"sync","target":"billing","input":"refund"}`),
 		assistantToolCall("first", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
@@ -209,7 +208,7 @@ func TestHandoffRefereeIgnoresMalformedAndUnknownTargets(t *testing.T) {
 	ref := delegation.HandoffReferee([]delegation.Handoff{
 		{Target: delegation.Target{ID: "billing"}},
 	})
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("bad-json", delegation.ToolName, `{`),
 		assistantToolCall("unknown", delegation.ToolName, `{"mode":"handoff","target":"tech","input":"bug"}`),
 		toolResult("bad-json", false),
@@ -236,7 +235,7 @@ func TestDirectoryHandoffRefereeResolvesTargetsAtDecisionTime(t *testing.T) {
 			Modes: []delegation.Mode{delegation.ModeHandoff},
 		},
 	}
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("unknown", delegation.ToolName, `{"mode":"handoff","target":"tech","input":"bug"}`),
 		assistantToolCall("first", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
 		assistantToolCall("second", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"duplicate"}`),
@@ -264,7 +263,7 @@ func TestDirectoryHandoffRefereeRequiresStrictValidHandoff(t *testing.T) {
 		"billing":   {ID: "billing", Modes: []delegation.Mode{delegation.ModeHandoff}},
 	}}
 	ref := delegation.DirectoryHandoffReferee(directory)
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("extra", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund","extra":true}`),
 		assistantToolCall("empty", delegation.ToolName, `{"mode":"handoff","target":"billing","input":""}`),
 		assistantToolCall("unsupported", delegation.ToolName, `{"mode":"handoff","target":"sync-only","input":"refund"}`),
@@ -286,7 +285,7 @@ func TestHandoffRefereeRequiresSuccessfulMatchingToolResult(t *testing.T) {
 	ref := delegation.HandoffReferee([]delegation.Handoff{
 		{Target: delegation.Target{ID: "billing"}},
 	})
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("failed", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
 		toolResult("failed", true),
 		assistantToolCall("missing", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
@@ -310,7 +309,7 @@ func TestHandoffRefereeRecomputesStaticFilterForRequest(t *testing.T) {
 		},
 	}})
 	newResult := func() *agent.Result {
-		return &agent.Result{Messages: []inference.Message{
+		return &agent.Result{Messages: []message.Message{
 			assistantToolCall("call", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
 			toolResult("call", false),
 		}}
@@ -340,7 +339,7 @@ func TestHandoffRefereeStaticBranchRequiresStrictValidSupportedHandoff(t *testin
 		{Target: delegation.Target{ID: "sync-only", Modes: []delegation.Mode{delegation.ModeSync}}},
 		{Target: delegation.Target{ID: "billing", Modes: []delegation.Mode{delegation.ModeHandoff}}},
 	})
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("extra", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund","extra":true}`),
 		assistantToolCall("empty", delegation.ToolName, `{"mode":"handoff","target":"billing","input":""}`),
 		assistantToolCall("unsupported", delegation.ToolName, `{"mode":"handoff","target":"sync-only","input":"refund"}`),
@@ -380,7 +379,7 @@ func TestHandoffRefereeIgnoresToolExecutionFailures(t *testing.T) {
 	}
 
 	ref := delegation.HandoffReferee([]delegation.Handoff{handoff})
-	res := &agent.Result{Messages: []inference.Message{
+	res := &agent.Result{Messages: []message.Message{
 		assistantToolCall("invoke-error", delegation.ToolName, raw),
 		toolResult("invoke-error", true),
 		assistantToolCall("parse-error", delegation.ToolName, raw+` {}`),

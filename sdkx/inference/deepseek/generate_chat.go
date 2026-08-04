@@ -6,7 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdk/message"
 
 	openaigo "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -220,19 +220,19 @@ func usageToRaw(usage openaigo.CompletionUsage) rawUsage {
 // (it is the model's process, ahead of its answer), then text, then tool
 // calls.
 func decodeGenerate(_ context.Context, raw generateRaw) (inference.GenerateResponse, error) {
-	var parts []inference.Part
+	var parts []message.Part
 	if raw.reasoning != "" {
-		parts = append(parts, inference.ReasoningPart{Text: raw.reasoning})
+		parts = append(parts, message.ReasoningPart{Text: raw.reasoning})
 	}
 	if raw.text != "" {
-		parts = append(parts, inference.TextPart{Text: raw.text})
+		parts = append(parts, message.TextPart{Text: raw.text})
 	}
 	for _, call := range raw.toolCalls {
 		arguments := json.RawMessage(call.args)
 		if len(arguments) == 0 || !json.Valid(arguments) {
 			arguments = json.RawMessage(`{}`)
 		}
-		parts = append(parts, inference.ToolCallPart{Call: tool.Call{
+		parts = append(parts, message.ToolCallPart{Call: message.Call{
 			ID:        call.id,
 			Name:      call.name,
 			Arguments: arguments,
@@ -240,9 +240,9 @@ func decodeGenerate(_ context.Context, raw generateRaw) (inference.GenerateRespo
 	}
 
 	response := inference.GenerateResponse{
-		Message: inference.Message{
-			Role:    inference.RoleAssistant,
-			Content: inference.Content{Parts: parts},
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: parts},
 		},
 		FinishReason: raw.finish,
 	}

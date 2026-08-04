@@ -4,7 +4,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -16,7 +16,7 @@ type ToolConfig struct {
 	// which is again a valid tail for the inference node.
 	MessagesChannel string `json:"messages_channel,omitempty"`
 
-	// ResultsKey, when set, receives the raw []tool.Result for
+	// ResultsKey, when set, receives the raw []message.Result for
 	// inspection by downstream nodes or conditions.
 	ResultsKey string `json:"results_key,omitempty"`
 }
@@ -52,15 +52,15 @@ func Tool(dispatcher tool.Dispatcher) graph.NodeType[ToolConfig] {
 				return errdefs.Validationf("tool node: messages channel %q is empty", channel)
 			}
 			last := messages[len(messages)-1]
-			if last.Role != inference.RoleAssistant {
+			if last.Role != message.RoleAssistant {
 				return errdefs.Validationf(
 					"tool node: last message on channel %q must have role assistant, got %q",
 					channel, last.Role)
 			}
 
-			var calls []tool.Call
+			var calls []message.Call
 			for _, part := range last.Content.Parts {
-				if call, ok := part.(inference.ToolCallPart); ok {
+				if call, ok := part.(message.ToolCallPart); ok {
 					calls = append(calls, call.Call)
 				}
 			}
@@ -69,13 +69,13 @@ func Tool(dispatcher tool.Dispatcher) graph.NodeType[ToolConfig] {
 			}
 
 			results := dispatcher.ExecuteAll(ec.Context, calls)
-			parts := make([]inference.Part, len(results))
+			parts := make([]message.Part, len(results))
 			for i, result := range results {
-				parts[i] = inference.ToolResultPart{Result: result}
+				parts[i] = message.ToolResultPart{Result: result}
 			}
-			board.AppendChannelMessage(channel, inference.Message{
-				Role:    inference.RoleTool,
-				Content: inference.Content{Parts: parts},
+			board.AppendChannelMessage(channel, message.Message{
+				Role:    message.RoleTool,
+				Content: message.Content{Parts: parts},
 			})
 			if cfg.ResultsKey != "" {
 				board.SetVar(cfg.ResultsKey, results)

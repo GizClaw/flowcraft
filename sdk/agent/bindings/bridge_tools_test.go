@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -81,7 +82,7 @@ func newEchoTools(t *testing.T, names ...string) (tool.Dispatcher, tool.Catalog)
 	for _, n := range names {
 		name := n
 		reg.Register(tool.FuncTool(
-			tool.Definition{Name: name, Description: name},
+			message.Definition{Name: name, Description: name},
 			func(_ context.Context, args string) (string, error) {
 				return "got:" + name + ":" + args, nil
 			},

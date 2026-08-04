@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 type generateSelectorFunc func(context.Context, inference.GenerateRequest) (Decision, error)
@@ -45,7 +46,7 @@ func TestGenerateSelectorAndFallbackReceiveImmutableSnapshots(t *testing.T) {
 			_ context.Context,
 			request inference.GenerateRequest,
 		) (Decision, error) {
-			request.Input.Content.Parts[0] = inference.TextPart{Text: "selector mutation"}
+			request.Input.Content.Parts[0] = message.TextPart{Text: "selector mutation"}
 			return generateDecision(first), nil
 		}),
 		GenerateFallback: generateFallbackFunc(func(
@@ -54,7 +55,7 @@ func TestGenerateSelectorAndFallbackReceiveImmutableSnapshots(t *testing.T) {
 			attempt Attempt,
 		) (inference.ModelRef, bool, error) {
 			fallbackCalls++
-			request.Input.Content.Parts[0] = inference.TextPart{Text: "fallback mutation"}
+			request.Input.Content.Parts[0] = message.TextPart{Text: "fallback mutation"}
 			if attempt.Target != first || attempt.ErrorKind != inference.UnsupportedFeature {
 				t.Fatalf("fallback attempt = %+v", attempt)
 			}
@@ -75,7 +76,7 @@ func TestGenerateSelectorAndFallbackReceiveImmutableSnapshots(t *testing.T) {
 	if trace.Executed != second {
 		t.Fatalf("trace executed = %+v, want %+v", trace.Executed, second)
 	}
-	if got := request.Input.Content.Parts[0].(inference.TextPart).Text; got != "original" {
+	if got := request.Input.Content.Parts[0].(message.TextPart).Text; got != "original" {
 		t.Fatalf("caller request mutated to %q", got)
 	}
 	if len(trace.Attempts) != 3 ||
@@ -586,8 +587,8 @@ func generateRequest(text string) inference.GenerateRequest {
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: inference.Content{
-					Parts: []inference.Part{inference.TextPart{Text: text}},
+				Content: message.Content{
+					Parts: []message.Part{message.TextPart{Text: text}},
 				},
 				Intent: inference.Intent{
 					Text: &inference.TextIntent{},
@@ -599,10 +600,10 @@ func generateRequest(text string) inference.GenerateRequest {
 
 func validGenerateResponse() inference.GenerateResponse {
 	return inference.GenerateResponse{
-		Message: inference.Message{
-			Role: inference.RoleAssistant,
-			Content: inference.Content{
-				Parts: []inference.Part{inference.TextPart{Text: "ok"}},
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{
+				Parts: []message.Part{message.TextPart{Text: "ok"}},
 			},
 		},
 		FinishReason: inference.FinishCompleted,

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // ---------- Observer internals ----------
@@ -130,7 +130,7 @@ func (panicAll) OnRunEnd(context.Context, Identity, *Result)         { panic("bo
 // the public API via "agent_test" — that boundary is intentional.
 
 func TestSeedBoard_AppendsRequestMessage(t *testing.T) {
-	req := &Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")}
+	req := &Request{Message: message.NewTextMessage(message.RoleUser, "hi")}
 
 	b, err := seedBoard(context.Background(), Identity{}, req, nil)
 	if err != nil {
@@ -144,7 +144,7 @@ func TestSeedBoard_AppendsRequestMessage(t *testing.T) {
 
 func TestSeedBoard_CopiesInputsToVars(t *testing.T) {
 	req := &Request{
-		Message: inference.NewTextMessage(inference.RoleUser, "hi"),
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
 		Inputs:  map[string]any{"a": 1, "b": "two"},
 	}
 
@@ -161,7 +161,7 @@ func TestSeedBoard_CopiesInputsToVars(t *testing.T) {
 }
 
 func TestSeedBoard_FreshBoardEachCall(t *testing.T) {
-	req := &Request{Message: inference.NewTextMessage(inference.RoleUser, "hi")}
+	req := &Request{Message: message.NewTextMessage(message.RoleUser, "hi")}
 
 	b1, _ := seedBoard(context.Background(), Identity{}, req, nil)
 	b2, _ := seedBoard(context.Background(), Identity{}, req, nil)
@@ -189,7 +189,7 @@ func TestPreparerFunc_Adapts(t *testing.T) {
 
 	_, err := f.Before(context.Background(),
 		Identity{RunID: "r-1"},
-		&Request{Message: inference.NewTextMessage(inference.RoleUser, "hello")},
+		&Request{Message: message.NewTextMessage(message.RoleUser, "hello")},
 		NewBoard(),
 	)
 	if err != nil {

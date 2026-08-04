@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/memory/config"
 )
 
@@ -726,12 +727,12 @@ func inferenceDeps(t *testing.T) map[string]any {
 	return map[string]any{"inference": newInferenceRuntime(t)}
 }
 
-// msg builds a minimal inference.Message for tests.
-func msg(text string) inference.Message {
-	return inference.Message{
-		Role: inference.RoleUser,
-		Content: inference.Content{Parts: []inference.Part{
-			inference.TextPart{Text: text},
+// msg builds a minimal message.Message for tests.
+func msg(text string) message.Message {
+	return message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: text},
 		}},
 	}
 }

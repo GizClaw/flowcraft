@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 type capturedDelivery struct {
@@ -302,11 +302,11 @@ func TestTurnAckFreezeAndCommitView(t *testing.T) {
 
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, "hello world"))
+		message.NewTextMessage(message.RoleAssistant, "hello world"))
 	result := &agent.Result{
 		Status: agent.StatusInterrupted, LastBoard: board,
-		Messages: []inference.Message{
-			inference.NewTextMessage(inference.RoleAssistant, "hello world"),
+		Messages: []message.Message{
+			message.NewTextMessage(message.RoleAssistant, "hello world"),
 		},
 	}
 	decision, err := turn.After(context.Background(), agent.Identity{}, nil, result)
@@ -420,11 +420,11 @@ func TestTurnCommitViewCompletedAndEmptyInterruptedPrefix(t *testing.T) {
 	turn := newTurn(nil, "run-view", context.Background())
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, "unacknowledged"))
+		message.NewTextMessage(message.RoleAssistant, "unacknowledged"))
 	completed := &agent.Result{
 		Status: agent.StatusCompleted, LastBoard: board,
-		Messages: []inference.Message{
-			inference.NewTextMessage(inference.RoleAssistant, "unacknowledged"),
+		Messages: []message.Message{
+			message.NewTextMessage(message.RoleAssistant, "unacknowledged"),
 		},
 	}
 	view, err := turn.CommitView(context.Background(), agent.Identity{}, nil, completed)
@@ -456,14 +456,14 @@ func TestTurnCommitViewValidatesAllTrailingAssistantMessages(t *testing.T) {
 	}
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, "hello "))
+		message.NewTextMessage(message.RoleAssistant, "hello "))
 	board.AppendChannelMessage(agent.MainChannel,
-		inference.NewTextMessage(inference.RoleAssistant, "world!"))
+		message.NewTextMessage(message.RoleAssistant, "world!"))
 	result := &agent.Result{
 		Status: agent.StatusInterrupted, LastBoard: board,
-		Messages: []inference.Message{
-			inference.NewTextMessage(inference.RoleAssistant, "hello "),
-			inference.NewTextMessage(inference.RoleAssistant, "world!"),
+		Messages: []message.Message{
+			message.NewTextMessage(message.RoleAssistant, "hello "),
+			message.NewTextMessage(message.RoleAssistant, "world!"),
 		},
 	}
 	view, err := turn.CommitView(context.Background(), agent.Identity{}, nil, result)

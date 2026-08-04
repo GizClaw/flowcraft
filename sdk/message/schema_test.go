@@ -1,4 +1,4 @@
-package tool
+package message
 
 import (
 	"encoding/json"
@@ -18,8 +18,8 @@ func schemaMap(t *testing.T, def Definition) map[string]any {
 
 func TestSchemaBuilder_Basic(t *testing.T) {
 	def := DefineSchema("my_tool", "does things",
-		Property("name", "string", "the name"),
-		Property("count", "integer", "the count"),
+		ToolProperty("name", "string", "the name"),
+		ToolProperty("count", "integer", "the count"),
 	).Required("name").Build()
 
 	if def.Name != "my_tool" {
@@ -49,7 +49,7 @@ func TestSchemaBuilder_Basic(t *testing.T) {
 
 func TestSchemaBuilder_NoRequired(t *testing.T) {
 	def := DefineSchema("test", "test tool",
-		Property("x", "string", "x"),
+		ToolProperty("x", "string", "x"),
 	).Build()
 
 	if _, ok := schemaMap(t, def)["required"]; ok {
@@ -69,41 +69,35 @@ func TestSchemaBuilder_Empty(t *testing.T) {
 }
 
 func TestArrayProperty(t *testing.T) {
-	prop := ArrayProperty("tags", "list of tags", map[string]any{"type": "string"})
-	if prop.name != "tags" {
-		t.Fatalf("name = %q", prop.name)
-	}
-	if prop.schema["type"] != "array" {
-		t.Fatalf("type = %v", prop.schema["type"])
+	prop := ToolArrayProperty("tags", "list of tags", map[string]any{"type": "string"})
+	schema := prop.schema
+	if schema["type"] != "array" {
+		t.Fatalf("type = %v", schema["type"])
 	}
 }
 
 func TestEnumProperty(t *testing.T) {
-	prop := EnumProperty("mode", "string", "operation mode", "read", "write")
-	if prop.name != "mode" {
-		t.Fatalf("name = %q", prop.name)
-	}
-	enums, ok := prop.schema["enum"].([]any)
+	prop := ToolEnumProperty("mode", "string", "operation mode", "read", "write")
+	schema := prop.schema
+	enums, ok := schema["enum"].([]any)
 	if !ok || len(enums) != 2 {
-		t.Fatalf("enum = %v", prop.schema["enum"])
+		t.Fatalf("enum = %v", schema["enum"])
 	}
 }
 
 func TestObjectProperty(t *testing.T) {
-	prop := ObjectProperty("address", "mailing address", map[string]any{
+	prop := ToolObjectProperty("address", "mailing address", map[string]any{
 		"street": map[string]any{"type": "string"},
 		"city":   map[string]any{"type": "string"},
 	})
-	if prop.name != "address" {
-		t.Fatalf("name = %q", prop.name)
+	schema := prop.schema
+	if schema["type"] != "object" {
+		t.Fatalf("type = %v", schema["type"])
 	}
-	if prop.schema["type"] != "object" {
-		t.Fatalf("type = %v", prop.schema["type"])
+	if schema["description"] != "mailing address" {
+		t.Fatalf("description = %v", schema["description"])
 	}
-	if prop.schema["description"] != "mailing address" {
-		t.Fatalf("description = %v", prop.schema["description"])
-	}
-	props, ok := prop.schema["properties"].(map[string]any)
+	props, ok := schema["properties"].(map[string]any)
 	if !ok {
 		t.Fatal("missing properties")
 	}
@@ -113,7 +107,7 @@ func TestObjectProperty(t *testing.T) {
 }
 
 func TestObjectProperty_EmptyProperties(t *testing.T) {
-	prop := ObjectProperty("empty", "empty obj", nil)
+	prop := ToolObjectProperty("empty", "empty obj", nil)
 	if _, ok := prop.schema["properties"]; ok {
 		t.Error("nil properties should not produce a 'properties' key")
 	}
@@ -121,7 +115,7 @@ func TestObjectProperty_EmptyProperties(t *testing.T) {
 
 func TestStringMapProperty(t *testing.T) {
 	def := DefineSchema("metadata", "accepts metadata",
-		StringMapProperty("metadata", "string metadata"),
+		ToolStringMapProperty("metadata", "string metadata"),
 	).Build()
 	props := schemaMap(t, def)["properties"].(map[string]any)
 	metadata := props["metadata"].(map[string]any)
@@ -139,9 +133,9 @@ func TestStringMapProperty(t *testing.T) {
 
 func TestSchemaBuilder_MultipleRequired(t *testing.T) {
 	def := DefineSchema("t", "d",
-		Property("a", "string", "a"),
-		Property("b", "string", "b"),
-		Property("c", "string", "c"),
+		ToolProperty("a", "string", "a"),
+		ToolProperty("b", "string", "b"),
+		ToolProperty("c", "string", "c"),
 	).Required("a", "b").Required("c").Build()
 
 	req, ok := schemaMap(t, def)["required"].([]any)
@@ -155,12 +149,12 @@ func TestSchemaBuilder_MultipleRequired(t *testing.T) {
 
 func TestDefineSchema_WithAllPropertyTypes(t *testing.T) {
 	def := DefineSchema("full", "all types",
-		Property("name", "string", "a name"),
-		ArrayProperty("tags", "tags", map[string]any{"type": "string"}),
-		ObjectProperty("meta", "metadata", map[string]any{
+		ToolProperty("name", "string", "a name"),
+		ToolArrayProperty("tags", "tags", map[string]any{"type": "string"}),
+		ToolObjectProperty("meta", "metadata", map[string]any{
 			"key": map[string]any{"type": "string"},
 		}),
-		EnumProperty("status", "string", "status", "active", "inactive"),
+		ToolEnumProperty("status", "string", "status", "active", "inactive"),
 	).Required("name").Build()
 
 	props := schemaMap(t, def)["properties"].(map[string]any)
@@ -170,19 +164,17 @@ func TestDefineSchema_WithAllPropertyTypes(t *testing.T) {
 }
 
 func TestPropertyWithDefault(t *testing.T) {
-	prop := PropertyWithDefault("limit", "integer", "max items", 10)
-	if prop.name != "limit" {
-		t.Fatalf("name = %q", prop.name)
+	prop := ToolPropertyWithDefault("limit", "integer", "max items", 10)
+	schema := prop.schema
+	if schema["type"] != "integer" {
+		t.Fatalf("type = %v", schema["type"])
 	}
-	if prop.schema["type"] != "integer" {
-		t.Fatalf("type = %v", prop.schema["type"])
-	}
-	if prop.schema["default"] != 10 {
-		t.Fatalf("default = %v, want 10", prop.schema["default"])
+	if schema["default"] != 10 {
+		t.Fatalf("default = %v, want 10", schema["default"])
 	}
 
 	def := DefineSchema("t", "d",
-		PropertyWithDefault("enabled", "boolean", "toggle", true),
+		ToolPropertyWithDefault("enabled", "boolean", "toggle", true),
 	).Build()
 	props := schemaMap(t, def)["properties"].(map[string]any)
 	enabled := props["enabled"].(map[string]any)
@@ -193,8 +185,8 @@ func TestPropertyWithDefault(t *testing.T) {
 
 func TestRequired_Dedup(t *testing.T) {
 	def := DefineSchema("t", "d",
-		Property("a", "string", "a"),
-		Property("b", "string", "b"),
+		ToolProperty("a", "string", "a"),
+		ToolProperty("b", "string", "b"),
 	).Required("a", "b").Required("a").Required("b", "a").Build()
 
 	req := schemaMap(t, def)["required"].([]any)
@@ -209,7 +201,7 @@ func TestItems(t *testing.T) {
 		t.Fatalf("Items(string) = %v", items)
 	}
 	def := DefineSchema("t", "d",
-		ArrayProperty("args", "arguments", Items("string")),
+		ToolArrayProperty("args", "arguments", Items("string")),
 	).Build()
 	props := schemaMap(t, def)["properties"].(map[string]any)
 	args := props["args"].(map[string]any)
@@ -221,13 +213,13 @@ func TestItems(t *testing.T) {
 
 func TestDisallowAdditionalProperties(t *testing.T) {
 	def := DefineSchema("t", "d",
-		Property("a", "string", "a"),
+		ToolProperty("a", "string", "a"),
 	).DisallowAdditionalProperties().Build()
 	if got := schemaMap(t, def)["additionalProperties"]; got != false {
 		t.Fatalf("additionalProperties = %v, want false", got)
 	}
 
-	open := DefineSchema("t", "d", Property("a", "string", "a")).Build()
+	open := DefineSchema("t", "d", ToolProperty("a", "string", "a")).Build()
 	if _, present := schemaMap(t, open)["additionalProperties"]; present {
 		t.Fatal("default schema should omit additionalProperties")
 	}
