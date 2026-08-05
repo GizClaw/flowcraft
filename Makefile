@@ -5,21 +5,19 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-# sdk + sdkx + voice are the tightly-coupled core that needs atomic
-# in-tree edits (sdkx imports sdk, and voice depends on the same sdk source).
-MODULES_WORK := sdk memory sdkx voice cmd/claw
+# sdk + sdkx are the tightly-coupled core that needs atomic in-tree edits
+# (sdkx imports sdk).
+MODULES_WORK := sdk memory sdkx cmd/claw
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
 #
-#  - examples/voice-pipeline: pinned to sdk v0.1.12 + sdkx v0.1.14 so
-#    external consumers see a real reproducible example
 #  - tests/conformance: manual provider conformance suites; pinned to
 #    released sdk/sdkx so we test the exact bytes consumers can pull.
 #    Tests self-skip without credentials so `make test` runs them as a
 #    compile check; `make conformance` is the documented entry point
 #    when a .env is in place.
-MODULES_OFFWORK := examples/voice-pipeline tests/conformance
+MODULES_OFFWORK := tests/conformance
 
 ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
 

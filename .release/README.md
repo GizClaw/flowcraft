@@ -19,7 +19,7 @@ the intent.
 - `summary` must be a non-empty single line and must not contain the reserved
   releasegate marker.
 - `releases` must contain at least one entry.
-- `module` must be `sdk`, `memory`, `sdkx`, or `voice`.
+- `module` must be `sdk`, `memory`, or `sdkx`.
 - `bump` must be `patch` or `minor`.
 - A changeset cannot declare the same module more than once.
 - Multiple pending changesets for one module use the highest bump (`minor`

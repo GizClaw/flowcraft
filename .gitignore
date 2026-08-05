@@ -22,16 +22,12 @@
 !cmd/**
 !eval/
 !eval/**
-!examples/
-!examples/**
 !memory/
 !memory/**
 !sdk/
 !sdk/**
 !sdkx/
 !sdkx/**
-!voice/
-!voice/**
 !tests/
 !tests/**
 !tools/

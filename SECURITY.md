@@ -10,7 +10,6 @@ Security fixes are issued against the latest release of each module.
 | `sdk`      | latest `sdk/v0.x`    |
 | `memory`   | latest `memory/v0.x` |
 | `sdkx`     | latest `sdkx/v0.x`   |
-| `voice`    | latest `voice/v0.x`  |
 
 Older minor versions are not patched; please upgrade before reporting issues
 that only reproduce on outdated tags.
@@ -46,8 +45,7 @@ Please include:
 
 In scope:
 
-- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `voice/`,
-  `cmd/claw/`, `examples/`, `tests/`).
+- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `cmd/claw/`, `tests/`).
 
 Out of scope:
 

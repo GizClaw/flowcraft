@@ -5,5 +5,4 @@ use (
 	./memory
 	./sdk
 	./sdkx
-	./voice
 )

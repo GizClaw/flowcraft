@@ -199,7 +199,6 @@ jobs:
           case "$MODULE" in
             memory) dependencies="sdk" ;;
             sdkx) dependencies="sdk memory" ;;
-            voice) dependencies="sdk" ;;
             *) dependencies="" ;;
           esac
 

@@ -20,8 +20,8 @@ use Conventional Commits such as `feat:`, `fix:`, `docs:`, `refactor:`,
 
 ## Declaring a module release
 
-The independently versioned library modules are `sdk`, `memory`, `sdkx`, and
-`voice`. `cmd/claw` is built and tested from source but is not currently
+The independently versioned library modules are `sdk`, `memory`, and `sdkx`.
+`cmd/claw` is built and tested from source but is not currently
 published as a versioned binary.
 
 A pull request may merge without a release intent. When its changes should
@@ -47,7 +47,7 @@ correct release intent.
 
 When dependent modules release together, update their `go.mod` requirements to
 the versions being planned in the same batch. The dependency order is
-`sdk -> memory -> sdkx`, with `voice` after `sdk`. Check the exact versions with:
+`sdk -> memory -> sdkx`. Check the exact versions with:
 
 ```sh
 make release-plan

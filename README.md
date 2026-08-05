@@ -2,7 +2,7 @@
 
 # FlowCraft
 
-**A modular Go toolkit for extensible AI applications, long-term memory, provider integrations, voice, and local interactive workflows.**
+**A modular Go toolkit for extensible AI applications, long-term memory, provider integrations, and local interactive workflows.**
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/sdk.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk)
@@ -28,8 +28,6 @@ start with Claw for a runnable local workspace.
   processing, and persistence backends.
 - **`sdkx`** — Provider adapters and optional implementations for LLMs,
   embeddings, reranking, checkpointing, sandboxing, and Claw.
-- **`voice`** — Real-time STT → LLM → TTS pipelines with VAD, barge-in, and
-  WebRTC.
 
 The library layers are independently versioned Go modules. Applications can
 adopt only the layers they need.
@@ -45,8 +43,6 @@ adopt only the layers they need.
 | Long-term memory                   | Hybrid recall, histories, knowledge stores, retrieval indexes, and SQLite/Postgres backends                        |
 | Provider portability               | OpenAI, Anthropic, DeepSeek, MiniMax, and Volcengine adapters behind shared SDK interfaces                         |
 | Multi-agent composition            | Kanban agent-as-tool delegation that can run over graph or custom engines                                          |
-| Real-time voice                    | VAD, endpointing, barge-in, STT/TTS contracts, and WebRTC integration                                              |
-
 ---
 
 ## Quickstart
@@ -84,51 +80,45 @@ history, knowledge, persistence, or provider adapters. Applications execute any
 implementation, alongside scripted, remote, or application-defined engines.
 
 - [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
-- [`examples/voice-pipeline/setup.go`](examples/voice-pipeline/setup.go) — a real graph-runner build wiring an LLM provider + script node
-
-### Voice — STT → LLM → TTS
-
-```go
-p := voice.NewPipeline(
-    sttProvider,                 // any voice/stt backend (e.g. bytedance, …)
-    ttsProvider,                 // any voice/tts backend (e.g. minimax, …)
-    eng,                         // engine.Engine driving each turn
-    agent.Agent{ID: "voice"},
-    voice.WithSTTOptions(stt.WithLanguage("zh"), stt.WithTargetSampleRate(16000)),
-    voice.WithTTSOptions(tts.WithCodec(audio.CodecMP3)),
-)
-```
-
-End-to-end: [`examples/voice-pipeline/`](examples/voice-pipeline/) — a runnable WebRTC voice agent.
-
 ---
 
 ## Architecture
 
-The SDK defines the execution contracts. Memory, provider adapters, voice, and
-Claw compose those contracts without becoming dependencies of the core.
+The SDK defines the execution contracts. Memory, provider adapters, and Claw
+compose those contracts without becoming dependencies of the core.
 
 ```
-                    ┌──────────────────────┐
-                    │   Your application   │
-                    └──────────┬───────────┘
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         │                     │                     │
-  ┌──────▼──────┐       ┌──────▼──────┐       ┌──────▼──────┐
-  │  cmd/claw   │       │   voice/    │       │    sdkx/    │
-  │ CLI · TUI · │       │ STT · TTS · │       │ providers · │
-  │ debug · test│       │ VAD · WebRTC│       │ persistence │
-  └──────┬──────┘       └──────┬──────┘       └──────┬──────┘
-         │                     │                     │
-         └──────────────┬──────┴──────────────┬──────┘
-                        │                     │
-                 ┌──────▼──────┐       ┌──────▼───────┐
-                 │   memory/   │──────►│    sdk/      │
-                 │ recall ·    │       │ agent · graph│
-                 │ history ·   │       │ engine · tool│
-                 │ knowledge   │       │ event · model│
-                 └─────────────┘       └──────────────┘
+                ┌──────────────────────┐
+                │   Your application   │
+                └──────────┬───────────┘
+                           │
+                ┌──────────┴──────────┐
+                │                     │
+          ┌──────▼──────┐      ┌──────▼───────┐
+          │  cmd/claw   │      │    sdkx/     │
+          │ CLI · TUI · │      │ providers ·  │
+          │ debug · test│      │ persistence  │
+          └──────┬──────┘      └──────┬───────┘
+                 │                    │
+                 └──────────┬──────────┘
+                            │
+                 ┌──────────┴──────────┐
+                 │                     │
+                 └──────────┬──────────┘
+                            │
+                 ┌──────────▼──────────┐
+                 │       memory/       │
+                 │      recall ·       │
+                 │      history ·      │
+                 │      knowledge      │
+                 └──────────┬──────────┘
+                            │
+                 ┌──────────▼──────────┐
+                 │        sdk/         │
+                 │    agent · graph    │
+                 │    engine · tool    │
+                 │    event · model    │
+                 └─────────────────────┘
 ```
 
 **Layering rule:** `sdk/engine` is a leaf package. It does not import agent,
@@ -146,9 +136,7 @@ in its own module and depends on SDK contracts, never the reverse.
 | [`sdk`](sdk/)                             | Agent execution contracts, graph runtime, tools, models, events, and telemetry | Versioned Go module  |
 | [`memory`](memory/)                       | Recall, history, knowledge, retrieval, text processing, and stores             | Versioned Go module  |
 | [`sdkx`](sdkx/)                           | Provider, persistence, sandbox, and application adapters                       | Versioned Go module  |
-| [`voice`](voice/)                         | Real-time STT, TTS, VAD, audio, and WebRTC pipeline                            | Versioned Go module  |
 | [`eval`](eval/)                           | Offline and synthetic quality-evaluation harnesses                             | Workspace module     |
-| [`examples`](examples/)                   | Runnable recall-chatbot and voice-pipeline integrations                        | Examples             |
 | [`tests/conformance`](tests/conformance/) | Provider conformance suites                                                    | Tests                |
 
 ---
@@ -174,12 +162,6 @@ in its own module and depends on SDK contracts, never the reverse.
 - `Checkpoint` / `CheckpointStore` contract — pause and resume an agent across restarts.
 - `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
 
-### Voice without the duct tape (`voice`)
-
-- VAD with hysteresis, endpointing, barge-in.
-- WebRTC ingress / egress.
-- Provider-agnostic: any `sdkx` STT/TTS backend works.
-
 ---
 
 ## Documentation
@@ -190,15 +172,12 @@ The canonical reference is the per-package `doc.go` files, browsable on pkg.go.d
 - [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core primitives (agent, engine, graph, llm, tool, telemetry, …)
 - [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — recall, history, knowledge, retrieval, and text packages
 - [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — provider implementations
-- [pkg.go.dev/github.com/GizClaw/flowcraft/voice](https://pkg.go.dev/github.com/GizClaw/flowcraft/voice) — voice pipeline
-
-Worked examples live under [`examples/`](examples/) — each one is runnable end-to-end with a single command.
 
 ---
 
 ## Status
 
-The active project surface is `sdk`, `memory`, `sdkx`, `voice`, and Claw.
+The active project surface is `sdk`, `memory`, `sdkx`, and Claw.
 Library modules are released independently and remain pre-1.0. Claw currently
 ships from source as the local interactive runner.
 
@@ -225,8 +204,8 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `sdk`, `memory`, `sdkx`,
-`voice`, `cmd/claw`, and `eval`. Some examples and test harnesses intentionally
-run with `GOWORK=off` against pinned released modules.
+`cmd/claw`, and `eval`. Some test harnesses intentionally run with `GOWORK=off`
+against pinned released modules.
 
 ---
 
@@ -240,7 +219,7 @@ Issues and pull requests are welcome. Before opening a PR:
 4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`
-changesets for `sdk`, `memory`, `sdkx`, and `voice`; a changeset is optional for
+changesets for `sdk`, `memory`, and `sdkx`; a changeset is optional for
 ordinary PRs. After merge, automation aggregates pending summaries into a
 Release PR that updates `CHANGELOG.md`. Merging that PR runs isolated tidy,
 build, vet, and race-test gates before all planned tags are pushed atomically.
