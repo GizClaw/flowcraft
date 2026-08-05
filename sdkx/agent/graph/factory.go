@@ -340,7 +340,114 @@ func (f *Factory) definition(ctx context.Context, source *graphSource) (*coregra
 	if err := decodeStrictJSON(data, &definition); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("graph agent: decode definition: %w", err))
 	}
+	if err := f.materializeConfigFileRefs(ctx, &definition); err != nil {
+		return nil, err
+	}
 	return &definition, nil
+}
+
+// configFileFields returns the node-config field names that may carry
+// a structured {"file": ...} reference for a node type. The factory
+// materializes those references into inline values before the graph
+// kernel builds, mirroring how the graph source itself splits
+// file/inline forms. The kernel stays filesystem-free and only ever
+// sees fully materialized node configs.
+func configFileFields(nodeType string) []string {
+	switch nodeType {
+	case "script":
+		return []string{"source"}
+	case "inference":
+		return []string{"system_prompt"}
+	default:
+		return nil
+	}
+}
+
+// materializeConfigFileRefs resolves structured file references in
+// node configs (e.g. "source": {"file": "scripts/run.js"}) into inline
+// values using the factory's loader and base directory. Plain string
+// values are left untouched; malformed reference objects are rejected
+// so typos surface at build time.
+func (f *Factory) materializeConfigFileRefs(ctx context.Context, definition *coregraph.GraphDefinition) error {
+	for index := range definition.Nodes {
+		node := &definition.Nodes[index]
+		if len(node.Config) == 0 {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(node.Config, &fields); err != nil {
+			return errdefs.Validationf(
+				"graph agent: node %q config: %v", node.ID, err)
+		}
+		changed := false
+		for _, field := range configFileFields(node.Type) {
+			raw, ok := fields[field]
+			if !ok || len(raw) == 0 || raw[0] != '{' {
+				continue
+			}
+			var object map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &object); err != nil {
+				return errdefs.Validationf(
+					"graph agent: node %q config.%s: %v", node.ID, field, err)
+			}
+			if len(object) != 1 || object["file"] == nil {
+				return errdefs.Validationf(
+					"graph agent: node %q config.%s: expected a string or {\"file\": \"...\"}, got %s",
+					node.ID, field, raw)
+			}
+			var ref struct {
+				File string `json:"file"`
+			}
+			if err := json.Unmarshal(raw, &ref); err != nil {
+				return errdefs.Validationf(
+					"graph agent: node %q config.%s: %v", node.ID, field, err)
+			}
+			ref.File = strings.TrimSpace(ref.File)
+			if ref.File == "" {
+				return errdefs.Validationf(
+					"graph agent: node %q config.%s.file must be non-empty", node.ID, field)
+			}
+			path, err := f.resolvePath(ref.File)
+			if err != nil {
+				return err
+			}
+			loader := f.loader
+			if loader == nil {
+				loader = loadOSFile
+			}
+			data, err := loader(ctx, path)
+			if err != nil {
+				switch {
+				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+					return errdefs.FromContext(err)
+				case errdefs.HasClassification(err):
+					return err
+				case errors.Is(err, fs.ErrNotExist):
+					return errdefs.NotFound(fmt.Errorf(
+						"graph agent: node %q config.%s file %q: %w", node.ID, field, ref.File, err))
+				default:
+					return errdefs.Internal(fmt.Errorf(
+						"graph agent: node %q config.%s file %q: %w", node.ID, field, ref.File, err))
+				}
+			}
+			content, err := json.Marshal(string(data))
+			if err != nil {
+				return errdefs.Internalf(
+					"graph agent: node %q config.%s: %v", node.ID, field, err)
+			}
+			fields[field] = content
+			changed = true
+		}
+		if changed {
+			merged, err := json.Marshal(fields)
+			if err != nil {
+				return errdefs.Internalf(
+					"graph agent: node %q config: %v", node.ID, err)
+			}
+			node.Config = merged
+		}
+	}
+	return nil
 }
 
 func (f *Factory) resolvePath(name string) (string, error) {

@@ -23,10 +23,15 @@ import (
 
 type recordingRuntime struct {
 	calls atomic.Int32
+	mu    sync.Mutex
+	src   string
 }
 
-func (r *recordingRuntime) Exec(context.Context, string, string, *agent.ScriptEnv) (*agent.ScriptSignal, error) {
+func (r *recordingRuntime) Exec(_ context.Context, _ string, source string, _ *agent.ScriptEnv) (*agent.ScriptSignal, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.calls.Add(1)
+	r.src = source
 	return &agent.ScriptSignal{Type: "done"}, nil
 }
 
@@ -152,6 +157,138 @@ func TestFactoryFileBuildFromFS(t *testing.T) {
 	})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("oversized fs.FS error = %v, want Validation", err)
+	}
+}
+
+func TestFactoryMaterializesConfigFileRefs(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "scripts", "run.js")
+	promptPath := filepath.Join(dir, "prompts", "formatter.txt")
+	for _, path := range []string{scriptPath, promptPath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(scriptPath, []byte("signal.done()\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(promptPath, []byte("You are a strict formatter.\nOutput patterns only.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	graphPath := filepath.Join(dir, "graphs", "mixed.json")
+	if err := os.MkdirAll(filepath.Dir(graphPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	definition := map[string]any{
+		"name": "mixed", "entry": "script",
+		"nodes": []any{
+			map[string]any{
+				"id": "script", "type": "script",
+				"config": map[string]any{
+					"runtime": "js",
+					"source":  map[string]any{"file": "scripts/run.js"},
+				},
+			},
+			map[string]any{
+				"id": "infer", "type": "inference",
+				"config": map[string]any{
+					"model": map[string]any{
+						"id": map[string]any{"provider": "fake", "name": "model"},
+					},
+					"system_prompt": map[string]any{"file": "prompts/formatter.txt"},
+				},
+			},
+		},
+		"edges": []any{},
+	}
+	raw, err := json.Marshal(definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(graphPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	rt := &recordingRuntime{}
+	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		Deps: map[string]any{
+			DepScriptRuntime: agent.ScriptRuntime(rt),
+			DepInference:     &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
+		},
+		Settings: map[string]any{"graph": map[string]any{"file": "graphs/mixed.json"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	g, ok := engine.(*coregraph.Graph)
+	if !ok {
+		t.Fatalf("engine = %T, want *graph.Graph", engine)
+	}
+	board := agent.NewBoard()
+	if _, err := g.Execute(context.Background(), agent.Run{
+		Identity: agent.Identity{RunID: "run-1"},
+	}, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	rt.mu.Lock()
+	source := rt.src
+	rt.mu.Unlock()
+	if source != "signal.done()\n" {
+		t.Fatalf("script source = %q, want materialized file content", source)
+	}
+}
+
+func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
+	tests := map[string]map[string]any{
+		"extra key": {
+			"source": map[string]any{"file": "scripts/run.js", "extra": true},
+		},
+		"empty file": {
+			"source": map[string]any{"file": "  "},
+		},
+		"wrong object": {
+			"source": map[string]any{"bogus": "x"},
+		},
+	}
+	for name, config := range tests {
+		t.Run(name, func(t *testing.T) {
+			settings := map[string]any{
+				"name": "simple", "entry": "node",
+				"nodes": []any{map[string]any{
+					"id": "node", "type": "script",
+					"config": map[string]any{"runtime": "js", "source": config["source"]},
+				}},
+				"edges": []any{},
+			}
+			_, err := NewFactory().New(context.Background(), agent.Config{
+				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+				Settings: inlineSettings(settings),
+			})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("error = %v, want Validation", err)
+			}
+		})
+	}
+}
+
+func TestFactoryConfigFileRefsMissingFile(t *testing.T) {
+	_, err := NewFactory().New(context.Background(), agent.Config{
+		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
+		Settings: inlineSettings(map[string]any{
+			"name": "simple", "entry": "node",
+			"nodes": []any{map[string]any{
+				"id": "node", "type": "script",
+				"config": map[string]any{
+					"runtime": "js",
+					"source":  map[string]any{"file": "scripts/missing.js"},
+				},
+			}},
+			"edges": []any{},
+		}),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("error = %v, want NotFound", err)
 	}
 }
 
