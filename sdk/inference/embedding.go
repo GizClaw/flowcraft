@@ -44,7 +44,7 @@ func (r EmbedRequest) ActiveFields() []FieldID {
 	for _, item := range r.Items {
 		hasMultiPart = hasMultiPart || len(item.Content.Parts) > 1
 		for _, part := range item.Content.Parts {
-			normalized, err := normalizePart(part)
+			normalized, err := message.NormalizePart(part)
 			if err != nil {
 				continue
 			}

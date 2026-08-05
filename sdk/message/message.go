@@ -45,7 +45,7 @@ func (m Message) Validate() error {
 	}
 	hasToolResults := false
 	for _, part := range m.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			return err
 		}
@@ -74,7 +74,7 @@ func (m Message) Validate() error {
 func (m Message) ToolCalls() []Call {
 	var calls []Call
 	for _, part := range m.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			continue
 		}
@@ -88,7 +88,7 @@ func (m Message) ToolCalls() []Call {
 func (m Message) ToolResults() []Result {
 	var results []Result
 	for _, part := range m.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			continue
 		}
@@ -101,7 +101,7 @@ func (m Message) ToolResults() []Result {
 
 func (m Message) HasToolCalls() bool {
 	for _, part := range m.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			continue
 		}
@@ -160,7 +160,7 @@ func (c Content) Clone() Content {
 	cloned := Content{Parts: make([]Part, len(c.Parts))}
 	for i, part := range c.Parts {
 		if !isNilValue(part) {
-			normalized, _ := normalizePart(part)
+			normalized, _ := NormalizePart(part)
 			cloned.Parts[i] = normalized.Clone()
 		}
 	}
@@ -172,7 +172,7 @@ func (c Content) Validate() error {
 		return fmt.Errorf("content must contain at least one part")
 	}
 	for i, part := range c.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			return fmt.Errorf("content part %d: %w", i, err)
 		}
@@ -189,7 +189,7 @@ func (c Content) MarshalJSON() ([]byte, error) {
 	}
 	wire := make([]any, len(c.Parts))
 	for i, part := range c.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			return nil, fmt.Errorf("content part %d: %w", i, err)
 		}
@@ -388,7 +388,7 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 func (c Content) Text() string {
 	var b strings.Builder
 	for _, part := range c.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := NormalizePart(part)
 		if err != nil {
 			continue
 		}

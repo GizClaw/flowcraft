@@ -31,10 +31,15 @@ type Part interface {
 	messagePart()
 }
 
-// normalizePart collapses the pointer method set inherited from the canonical
-// value types. Both T and *T satisfy Part in Go; runtime boundaries therefore
-// accept either form and normalize pointers back to values.
-func normalizePart(part Part) (Part, error) {
+// NormalizePart returns part in its canonical value form. Both T and *T
+// satisfy Part, so values may cross runtime boundaries as either form;
+// NormalizePart collapses pointers back to values and leaves value parts
+// untouched. This lets callers switch on the canonical part types without
+// handling pointer duplicates.
+//
+// It returns an error if part is nil (including a typed nil pointer) or is not
+// one of the canonical part types.
+func NormalizePart(part Part) (Part, error) {
 	if isNilValue(part) {
 		return nil, fmt.Errorf("content part is nil")
 	}
@@ -95,6 +100,7 @@ func (p AudioPart) Clone() Part {
 	p.DurationMillis = clonePointer(p.DurationMillis)
 	return p
 }
+
 func (p AudioPart) Validate() error {
 	if err := p.Source.Validate(); err != nil {
 		return err

@@ -637,7 +637,7 @@ func (r GenerateResponse) Validate() error {
 		return fmt.Errorf("tool-call finish reason does not match response tool calls")
 	}
 	for _, part := range r.Message.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := message.NormalizePart(part)
 		if err != nil {
 			return err
 		}
@@ -664,7 +664,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	var videos []message.VideoPart
 	var toolCalls []message.ToolCallPart
 	for _, part := range r.Message.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := message.NormalizePart(part)
 		if err != nil {
 			return err
 		}
@@ -795,7 +795,7 @@ func deriveGenerateUsage(request GenerateRequest, response *GenerateResponse) {
 	videoCount := int64(0)
 	hasVideo := false
 	for _, part := range response.Message.Content.Parts {
-		normalized, err := normalizePart(part)
+		normalized, err := message.NormalizePart(part)
 		if err != nil {
 			continue
 		}

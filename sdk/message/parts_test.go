@@ -2,6 +2,7 @@ package message_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -314,4 +315,91 @@ func TestNormalizePartRejectsUnknown(t *testing.T) {
 	if !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("error %q should mention unsupported", err)
 	}
+}
+
+func TestNormalizePart(t *testing.T) {
+	image, err := media.NewImageURL("https://example.com/cat.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	audio, err := media.NewAudioBytes([]byte("audio"), "audio/mpeg")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	video, err := media.NewVideoURL("https://example.com/video.mp4", "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoURL: %v", err)
+	}
+	call, err := message.NewCall("call-1", "search", map[string]any{"query": "cat"})
+	if err != nil {
+		t.Fatalf("NewCall: %v", err)
+	}
+
+	pairs := []struct {
+		name  string
+		value message.Part
+		ptr   message.Part
+	}{
+		{"text", message.TextPart{Text: "hello"}, &message.TextPart{Text: "hello"}},
+		{"image", message.ImagePart{Source: image}, &message.ImagePart{Source: image}},
+		{"audio", message.AudioPart{Source: audio}, &message.AudioPart{Source: audio}},
+		{"video", message.VideoPart{Source: video}, &message.VideoPart{Source: video}},
+		{"file", message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
+			&message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"}},
+		{"data", message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)},
+			&message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)}},
+		{"tool_call", message.ToolCallPart{Call: call}, &message.ToolCallPart{Call: call}},
+		{"tool_result", message.ToolResultPart{Result: message.Result{CallID: "call-1", Content: "ok"}},
+			&message.ToolResultPart{Result: message.Result{CallID: "call-1", Content: "ok"}}},
+		{"reasoning", message.ReasoningPart{Text: "thinking"}, &message.ReasoningPart{Text: "thinking"}},
+	}
+
+	for _, pair := range pairs {
+		t.Run(pair.name+"/value", func(t *testing.T) {
+			got, err := message.NormalizePart(pair.value)
+			if err != nil {
+				t.Fatalf("NormalizePart(%T): %v", pair.value, err)
+			}
+			if !reflect.DeepEqual(got, pair.value) {
+				t.Fatalf("NormalizePart(%T) = %#v, want %#v", pair.value, got, pair.value)
+			}
+		})
+		t.Run(pair.name+"/pointer", func(t *testing.T) {
+			got, err := message.NormalizePart(pair.ptr)
+			if err != nil {
+				t.Fatalf("NormalizePart(%T): %v", pair.ptr, err)
+			}
+			if !reflect.DeepEqual(got, pair.value) {
+				t.Fatalf("NormalizePart(%T) = %#v, want %#v", pair.ptr, got, pair.value)
+			}
+			if reflect.TypeOf(got).Kind() == reflect.Pointer {
+				t.Fatalf("NormalizePart(%T) returned pointer %T", pair.ptr, got)
+			}
+			again, err := message.NormalizePart(got)
+			if err != nil {
+				t.Fatalf("NormalizePart(normalized): %v", err)
+			}
+			if !reflect.DeepEqual(again, got) {
+				t.Fatalf("NormalizePart is not idempotent: %#v vs %#v", got, again)
+			}
+		})
+	}
+
+	t.Run("nil", func(t *testing.T) {
+		if _, err := message.NormalizePart(nil); err == nil {
+			t.Fatal("NormalizePart(nil) must error")
+		}
+	})
+	t.Run("typed-nil-pointer", func(t *testing.T) {
+		var part *message.TextPart
+		if _, err := message.NormalizePart(part); err == nil {
+			t.Fatal("NormalizePart(typed nil pointer) must error")
+		}
+	})
+	t.Run("unknown", func(t *testing.T) {
+		type bogusPart struct{ message.TextPart }
+		if _, err := message.NormalizePart(bogusPart{}); err == nil {
+			t.Fatal("NormalizePart(unknown type) must error")
+		}
+	})
 }

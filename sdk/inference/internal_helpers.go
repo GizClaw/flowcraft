@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"io"
 	"reflect"
-
-	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // isNilValue reports whether value is a typed nil (e.g. (*message.Part)(nil))
@@ -24,45 +22,6 @@ func isNilValue(value any) bool {
 		return v.IsNil()
 	}
 	return false
-}
-
-// normalizePart collapses the pointer method set inherited from the canonical
-// value types. Both T and *T satisfy message.Part in Go; runtime boundaries therefore
-// accept either form and normalize pointers back to values. This is the
-// inference-side mirror of the helper inside the message package; it exists
-// here because inference owns its own validation paths (ActiveFields, part
-// role checks) and does not want to leak normalizePart through the public
-// message API.
-func normalizePart(part message.Part) (message.Part, error) {
-	if isNilValue(part) {
-		return nil, fmt.Errorf("content part is nil")
-	}
-	switch value := part.(type) {
-	case message.TextPart, message.ImagePart, message.AudioPart, message.VideoPart,
-		message.FilePart, message.DataPart, message.ToolCallPart,
-		message.ToolResultPart, message.ReasoningPart:
-		return value, nil
-	case *message.TextPart:
-		return *value, nil
-	case *message.ImagePart:
-		return *value, nil
-	case *message.AudioPart:
-		return *value, nil
-	case *message.VideoPart:
-		return *value, nil
-	case *message.FilePart:
-		return *value, nil
-	case *message.DataPart:
-		return *value, nil
-	case *message.ToolCallPart:
-		return *value, nil
-	case *message.ToolResultPart:
-		return *value, nil
-	case *message.ReasoningPart:
-		return *value, nil
-	default:
-		return nil, fmt.Errorf("unsupported content part type %T", part)
-	}
 }
 
 // decodeStrict decodes a JSON object/value with strict-mode settings: it
