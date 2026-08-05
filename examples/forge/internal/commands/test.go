@@ -13,6 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
+	"github.com/GizClaw/flowcraft/sdk/agent"
 )
 
 type testFile struct {
@@ -149,17 +150,36 @@ func runOneTestTurn(
 	defer cancel()
 	toolsBefore := a.ToolCalls()
 	collector := &textCollectorSink{}
-	_, err := a.RunTurn(turnCtx, input, collector.spec())
+	result, err := a.RunTurn(turnCtx, input, collector.spec())
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
 	metric.TokenEvents = collector.tokens
 	metric.ToolCalls = int(a.ToolCalls() - toolsBefore)
 	metric.OutputChars = collector.builder.Len()
-	if err != nil {
+	if err := resultFailure(result, err); err != nil {
 		metric.Error = err.Error()
 		return metric, "", err
 	}
 	return metric, collector.builder.String(), nil
+}
+
+// resultFailure turns a turn's outcome into an error. agent.Execute
+// reports domain failures (including engine errors) as a Result with
+// Status != completed and Err set, returning (result, nil); only
+// infrastructure failures return a Go error. Callers that ignore the
+// Result would silently treat a failed graph as a successful turn, so
+// both signals are checked here.
+func resultFailure(result *agent.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	if result != nil && result.Status != agent.StatusCompleted {
+		if result.Err != nil {
+			return result.Err
+		}
+		return fmt.Errorf("turn ended with status %q", result.Status)
+	}
+	return nil
 }
 
 func finishTestMetrics(metrics testMetrics) testMetrics {

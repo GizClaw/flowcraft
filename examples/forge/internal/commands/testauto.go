@@ -13,9 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
 )
 
-// personaOpening is handed to the persona to start the dialogue,
-// mirroring the retired claw test-auto behaviour: the persona is a full
-// second agent that generates the user-side lines.
+// personaOpening is handed to the persona to start the dialogue: the
+// persona is a full second agent that generates the user-side lines.
 const personaOpening = "你正在进入一个互动故事副本，对话会像语音聊天一样一来一回。请以你的角色用一句自然中文开场，只输出会被直接朗读出来的话，不要写占位符、舞台说明或内心想法。"
 
 func testAutoCmd(args []string) error {
@@ -116,7 +115,7 @@ func runAutoTurn(
 	defer cancel()
 	toolsBefore := a.ToolCalls()
 	collector := &textCollectorSink{}
-	_, err := a.RunTurn(turnCtx, input, collector.spec())
+	result, err := a.RunTurn(turnCtx, input, collector.spec())
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
 	metric.FirstTokenAt = collector.first
@@ -126,7 +125,7 @@ func runAutoTurn(
 	metric.TokenEvents = collector.tokens
 	metric.ToolCalls = int(a.ToolCalls() - toolsBefore)
 	metric.OutputChars = collector.builder.Len()
-	if err != nil {
+	if err := resultFailure(result, err); err != nil {
 		metric.Error = err.Error()
 		return "", metric, err
 	}

@@ -62,6 +62,22 @@ func Register(registry *tool.Registry, counter *atomic.Int64) {
 			}`),
 		},
 	})
+	registry.Register(&simulatedTool{
+		count: counter,
+		definition: message.Definition{
+			Name:        "werewolf_game_event",
+			Description: "Emit a lifecycle event when Werewolf game state changes.",
+			InputSchema: json.RawMessage(`{
+				"type": "object",
+				"properties": {
+					"event_type": {"type": "string", "description": "setup, night_resolve, game_over, or continue."},
+					"phase": {"type": "string", "description": "Current phase after the event."},
+					"detail": {"type": "string", "description": "Internal lifecycle detail. Do not use it for public narration."}
+				},
+				"required": ["event_type", "phase", "detail"]
+			}`),
+		},
+	})
 }
 
 type simulatedTool struct {

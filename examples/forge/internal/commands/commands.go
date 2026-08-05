@@ -1,6 +1,6 @@
 // Package commands implements the forge CLI surface. Commands only
-// parse arguments and delegate to scenario (files), app (runtime), tui,
-// and debugapi — they never assemble the runtime themselves.
+// parse arguments and delegate to scenario (files), app (runtime), and
+// tui — they never assemble the runtime themselves.
 package commands
 
 import (
@@ -26,8 +26,6 @@ func Execute(args []string) error {
 		return configCmd(args[1:])
 	case "tui":
 		return tuiCmd(args[1:])
-	case "serve":
-		return serveCmd(args[1:])
 	case "test":
 		return testCmd(args[1:])
 	case "test-auto":
@@ -68,7 +66,6 @@ Usage:
   forge config test list
   forge tui new
   forge tui resume
-  forge serve --workspace <dir> [--addr 127.0.0.1:8787]
   forge test -test <name|path> [--timeout 2m]
   forge test-auto --raid <name|path> --persona <name|path> [--timeout 5m]
 `, "\n")

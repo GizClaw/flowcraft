@@ -1013,8 +1013,8 @@ warms up its catalog on first use).
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
 - Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Referee`,
   `Committer`, `Observer`).
-- A focused, on-disk example: `examples/voice-pipeline` (cloned via
-  `cmd/claw` configs) and the inference guide's
+- A focused, on-disk example: `examples/forge` (native scenario workspaces
+  driven by `sdkx/deploy` documents) and the inference guide's
   [deployment section](inference.md#deployment-configuration).
 - Memory stack and the four integration surfaces
   (Preparer / Committer / Tool / Scheduler):

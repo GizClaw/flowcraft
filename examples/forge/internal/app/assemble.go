@@ -69,6 +69,9 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	if err := runtimeBuilder.RegisterIntegration(&debugIntegrationFactory{app: a}); err != nil {
 		return nil, err
 	}
+	if err := runtimeBuilder.WithHostFactory(usageHostDecorator(a)); err != nil {
+		return nil, err
+	}
 	rt, err := runtimeBuilder.Build(ctx, doc)
 	if err != nil {
 		return nil, fmt.Errorf("build runtime: %w", err)

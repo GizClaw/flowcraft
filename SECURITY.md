@@ -19,8 +19,6 @@ The repository also contains:
 - `examples/forge` — the runnable local workspace demo. It is built from the
   workspace and not versioned; fixes ship with the next `sdk`/`sdkx`/`memory`
   release that the workspace tracks.
-- `cmd/claw` — a retired legacy CLI kept for reference only. It is not built,
-  tested, or supported; do not report issues against it.
 
 Because `memory` depends on `sdk` and `sdkx`, coordinated fixes to the memory
 module may require a same-batch release of all three modules.
@@ -62,7 +60,6 @@ In scope:
 
 Out of scope:
 
-- The retired `cmd/claw` CLI (reference only; not built or supported).
 - Third-party LLM, STT, or TTS providers — please report those upstream.
 - Vulnerabilities that require an attacker to already control the host
   running the application or the operator's developer machine.

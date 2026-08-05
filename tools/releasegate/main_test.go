@@ -18,7 +18,7 @@ func TestLoadChangesetsRejectsInvalidContracts(t *testing.T) {
 		want string
 	}{
 		{"empty summary", `{"summary":" ","releases":[{"module":"sdk","bump":"patch"}]}`, "summary"},
-		{"invalid module", `{"summary":"x","releases":[{"module":"claw","bump":"patch"}]}`, "module"},
+		{"invalid module", `{"summary":"x","releases":[{"module":"unknown","bump":"patch"}]}`, "module"},
 		{"invalid bump", `{"summary":"x","releases":[{"module":"sdk","bump":"major"}]}`, "bump"},
 		{"duplicate module", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"},{"module":"sdk","bump":"minor"}]}`, "duplicate"},
 		{"unknown field", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"}],"extra":true}`, "unknown field"},

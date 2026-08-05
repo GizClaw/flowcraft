@@ -331,7 +331,7 @@ Board snapshots. Stateful applications must explicitly load and save domain
 state through workspace-capable graph nodes or another declared persistence
 integration.
 
-The first runtime release intentionally defers `cmd/claw` migration and HTTP,
-SSE, WebSocket, WebRTC signaling, and WebRTC DataChannel adapters. Those
-transports may adapt `Runtime`, `Session`, `Turn`, events, prompts, and sinks
-without changing their semantics.
+The first runtime release intentionally defers HTTP, SSE, WebSocket, WebRTC
+signaling, and WebRTC DataChannel adapters. Those transports may adapt
+`Runtime`, `Session`, `Turn`, events, prompts, and sinks without changing
+their semantics.

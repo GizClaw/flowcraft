@@ -38,9 +38,6 @@ sdk -> sdkx -> memory
   both `sdk` and `sdkx` (its worker runtime integration implements
   `sdkx/runtime` interfaces).
 
-The retired `cmd/claw` CLI remains in the repository for reference only; it is
-not part of the workspace, build, or CI.
-
 ## Declaring a module release
 
 A pull request may merge without a release intent. When its changes should

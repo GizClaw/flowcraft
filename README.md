@@ -31,8 +31,8 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   runtime assembly, tool and workspace configuration, scheduler, and the
   memory assembly, hooks, and renderer.
 - **`examples/forge`** — A runnable local workspace demo built on the current
-  stack: native deploy/inference/memory scenario configs, chat REPL, TUI,
-  debug HTTP, scripted tests, and raid × persona simulation.
+  stack: native deploy/inference/memory scenario configs, an interactive TUI,
+  scripted tests, and raid × persona simulation.
 - **`tests/conformance`** — Provider conformance suites (credentialed lanes
   self-skip without a repo-root `.env`).
 - **`tools/releasegate`** — Release automation: changeset validation, release
@@ -62,9 +62,8 @@ its own parameters.
 
 ### Run the forge workspace demo
 
-The forge demo is the fastest way to explore the stack. It creates workspaces
-from native scenario configs, opens an interactive TUI, exposes debug
-endpoints, and runs scripted tests.
+The fastest way to explore the stack is the runnable demo in
+[`examples/forge`](examples/forge/):
 
 ```bash
 cd examples/forge
@@ -75,21 +74,11 @@ go run . workspace create --config func_chat --workspace ./workspace
 go run . test -test func_chat/music_direct
 ```
 
-Build a reusable local binary:
-
-```bash
-cd examples/forge
-go build -o forge .
-./forge help
-```
-
-Scenarios are native deployment documents: each `scenarios/raids/<name>/` is a
-complete workspace template (`deploy.yaml`, `inference.yaml`, `memory.yaml`,
-`workspace.yaml`, `tools.yaml`, and a graph definition with its scripts and
-prompts). They are plain files under `examples/forge/scenarios/`, resolved in
-priority order from `--scenarios` / `FORGE_SCENARIOS`, the executable's
-directory, the working directory, and the user config directory. Credentials
-come from a repo-root `.env`; see `examples/forge` for details.
+The demo builds workspaces from native deploy/inference/memory scenario
+documents, opens an interactive TUI, and runs scripted tests and raid × persona
+simulations. Command reference, scenario layout, and credentials live in
+[`examples/forge/README.md`](examples/forge/README.md) (中文版:
+[`examples/forge/README_zh.md`](examples/forge/README_zh.md)).
 
 ### Embed FlowCraft in a Go service
 
@@ -165,9 +154,6 @@ adapters (`sdkx/`) stay outside the core.
 | [`tests/conformance`](tests/conformance/)   | Provider conformance suites                                                       | Tests               |
 | [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
 
-The retired `cmd/claw` CLI remains in the repository for reference but is not
-part of the workspace, build, or CI; the forge demo replaces it.
-
 ## Highlights
 
 ### Hybrid memory that actually recalls (`memory/`)
@@ -197,10 +183,9 @@ part of the workspace, build, or CI; the forge demo replaces it.
 
 ### Runnable local workspace demo (`examples/forge`)
 
-- Workspaces built from native deploy/inference/memory scenario documents.
-- Three-panel TUI and debug HTTP endpoints backed by the session runtime and
-  memory hooks.
-- Scripted tests with per-turn metrics and raid × persona simulation.
+A runnable demo on the current stack: native scenario documents, an interactive
+TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
+[`examples/forge/README.md`](examples/forge/README.md) for details.
 
 ## Documentation
 

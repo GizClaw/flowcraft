@@ -7,5 +7,5 @@ for (var i = routeMsgs.length - 1; i >= 0; i--) {
   if (m.role === "assistant") { lastAssistant = m; break; }
 }
 if (lastAssistant) {
-  board.appendChannel(board.MAIN_"function_route_channel", lastAssistant);
+  board.appendChannel(board.MAIN_CHANNEL, lastAssistant);
 }

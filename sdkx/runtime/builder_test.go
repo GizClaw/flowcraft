@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
@@ -995,6 +996,94 @@ func TestDecoratorOrderBaseHostAndRealSession(t *testing.T) {
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("Runtime.Close: %v", err)
+	}
+}
+
+func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
+	var mu sync.Mutex
+	var log []string
+	bus := &trackedBus{MemoryBus: event.NewMemoryBus(), log: &log, mu: &mu}
+	registry := agent.NewRegistry()
+	registry.MustRegister(testEngineFactory{engine: agent.EngineFunc(
+		func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+			if err := host.ReportUsage(ctx, inference.Usage{
+				InputTokens:  10,
+				OutputTokens: 7,
+				TotalTokens:  17,
+			}); err != nil {
+				return nil, err
+			}
+			return board, nil
+		},
+	)})
+	deployBuilder := deploy.NewBuilder(registry)
+	if err := deployBuilder.RegisterResource(testResourceFactory{
+		spec:  deploy.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
+		value: bus,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := deployBuilder.RegisterResource(testResourceFactory{
+		spec:  deploy.ResourceSpec{Kind: "test.Store", Impl: "test"},
+		value: &struct{}{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	builder := NewBuilder(deployBuilder)
+	var usage []inference.Usage
+	if err := builder.WithHostFactory(func(base session.HostFactory) (session.HostFactory, error) {
+		if base == nil {
+			t.Fatal("decorator received nil base host factory")
+		}
+		return session.HostFactoryFunc(func(ctx context.Context, request session.HostRequest) (agent.Host, error) {
+			host, err := base.NewHost(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return agent.HostFuncs{
+				Inner: host,
+				ReportUsageFn: func(_ context.Context, u inference.Usage) error {
+					mu.Lock()
+					usage = append(usage, u)
+					mu.Unlock()
+					return host.ReportUsage(ctx, u)
+				},
+			}, nil
+		}), nil
+	}); err != nil {
+		t.Fatalf("WithHostFactory: %v", err)
+	}
+
+	runtime, err := builder.Build(context.Background(), runtimeDoc(t, ""))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = runtime.Close() }()
+
+	lease, err := runtime.Sessions().Open(context.Background(), session.Key{
+		AgentID: "bot", ContextID: "conversation",
+	})
+	if err != nil {
+		t.Fatalf("Sessions.Open: %v", err)
+	}
+	defer func() { _ = lease.Close() }()
+	turn, err := lease.Session().Start(context.Background(), agent.Request{})
+	if err != nil {
+		t.Fatalf("Session.Start: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Turn.Wait: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(usage) != 1 {
+		t.Fatalf("usage reports = %d, want 1", len(usage))
+	}
+	want := inference.Usage{InputTokens: 10, OutputTokens: 7, TotalTokens: 17}
+	if !reflect.DeepEqual(usage[0], want) {
+		t.Fatalf("usage = %+v, want %+v", usage[0], want)
 	}
 }
 

@@ -26,16 +26,23 @@ import (
 // forge.debug integration (the Runtime API does not expose the
 // deployment result).
 type App struct {
-	info      Info
-	dir       string
-	rt        *runtimecore.Runtime
-	tools     *tool.Registry
-	memory    sdkmemory.ContextProvider
-	toolCalls atomic.Int64
+	info            Info
+	dir             string
+	rt              *runtimecore.Runtime
+	tools           *tool.Registry
+	memory          sdkmemory.ContextProvider
+	toolCalls       atomic.Int64
+	usageIn         atomic.Int64
+	usageOut        atomic.Int64
+	usageTot        atomic.Int64
+	usageReason     atomic.Int64
+	usageCacheRead  atomic.Int64
+	usageCacheWrite atomic.Int64
+	usageCalls      atomic.Int64
 }
 
 // Info is the small metadata read out of the native documents for
-// inspection, TUI, and debug endpoints.
+// inspection and TUI display.
 type Info struct {
 	AgentID       string
 	AgentName     string
@@ -115,6 +122,25 @@ func (a *App) ToolCalls() int64 {
 		return 0
 	}
 	return a.toolCalls.Load()
+}
+
+// Usage returns the cumulative token usage reported by LLM calls since
+// the app opened. Callers snapshot before and after a turn to derive
+// per-turn totals; the runtime host owns aggregation, and the app only
+// mirrors it for UI surfaces.
+func (a *App) Usage() UsageSnapshot {
+	if a == nil {
+		return UsageSnapshot{}
+	}
+	return UsageSnapshot{
+		InputTokens:      a.usageIn.Load(),
+		OutputTokens:     a.usageOut.Load(),
+		TotalTokens:      a.usageTot.Load(),
+		ReasoningTokens:  a.usageReason.Load(),
+		CacheReadTokens:  a.usageCacheRead.Load(),
+		CacheWriteTokens: a.usageCacheWrite.Load(),
+		Calls:            a.usageCalls.Load(),
+	}
 }
 
 // Inspect reads workspace metadata without building the runtime.

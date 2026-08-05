@@ -24,13 +24,22 @@ type registeredIntegration struct {
 	factory IntegrationFactory
 }
 
+// HostFactoryDecorator wraps the runtime's built-in base host factory.
+// The decorator receives the base factory (event publishing, interrupts,
+// ask-user, checkpointing, usage reporting) and MUST delegate anything it
+// does not override back to it — the canonical shape is
+// agent.HostFuncs{Inner: base, ...} — so a decorated host can only
+// enhance, never drop, core session behaviour.
+type HostFactoryDecorator func(session.HostFactory) (session.HostFactory, error)
+
 // Builder transactionally assembles one Runtime. It is single-use.
 type Builder struct {
 	deploy *deploy.Builder
 
-	mu        sync.Mutex
-	used      bool
-	factories map[string]registeredIntegration
+	mu            sync.Mutex
+	used          bool
+	factories     map[string]registeredIntegration
+	hostDecorator HostFactoryDecorator
 }
 
 // NewBuilder creates a Runtime builder over a deployment builder.
@@ -39,6 +48,30 @@ func NewBuilder(deployBuilder *deploy.Builder) *Builder {
 		deploy:    deployBuilder,
 		factories: make(map[string]registeredIntegration),
 	}
+}
+
+// WithHostFactory installs a decorator over the runtime's base host
+// factory. The decorator runs after the base factory is constructed and
+// before runtime integrations decorate the chain, so integrations always
+// wrap the decorated factory. It is rejected when nil or after Build
+// starts. Without it the runtime uses the built-in base factory unchanged.
+func (b *Builder) WithHostFactory(decorator HostFactoryDecorator) error {
+	if b == nil {
+		return errdefs.Validationf("runtime Builder is nil")
+	}
+	if decorator == nil {
+		return errdefs.Validationf("runtime host factory decorator is nil")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used {
+		return ErrBuilderUsed
+	}
+	if b.hostDecorator != nil {
+		return errdefs.Validationf("runtime host factory decorator is already set")
+	}
+	b.hostDecorator = decorator
+	return nil
 }
 
 // RegisterIntegration registers one factory kind. Registration is rejected
@@ -152,6 +185,17 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	if err != nil {
 		return nil, fail(err)
 	}
+	hostFactory := baseHostFactory
+	if b.hostDecorator != nil {
+		hostFactory, err = b.hostDecorator(baseHostFactory)
+		if err != nil {
+			return nil, fail(fmt.Errorf("runtime decorate base host factory: %w", err))
+		}
+		if isNil(hostFactory) {
+			return nil, fail(errdefs.Internalf(
+				"runtime host factory decorator returned nil"))
+		}
+	}
 	for i, item := range cfg.Integrations {
 		dependencies, depErr := resolveDependencies(
 			doc, result, item, resolved[i].spec, cfg.Scheduler)
@@ -169,7 +213,6 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		}
 	}
 
-	hostFactory := baseHostFactory
 	// Wrapping in reverse configuration order makes integrations[0] the
 	// outermost decorator while preserving each decorator's ordinary semantics.
 	for i := len(owned.integrations) - 1; i >= 0; i-- {

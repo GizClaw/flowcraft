@@ -153,6 +153,8 @@ type Model struct {
 	height        int
 	chatInput     textinput.Model
 	recallInput   textinput.Model
+	usageBefore   app.UsageSnapshot
+	usage         app.UsageSnapshot
 }
 
 // NewModel builds a TUI model over an open app.
@@ -206,6 +208,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.done {
 			m.running = false
 			m.status = "ready"
+			m.usage = m.app.Usage().Since(m.usageBefore)
 			if msg.err != nil {
 				m.err = msg.err.Error()
 				m.status = "error"
@@ -216,6 +219,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.running = false
 			m.err = msg.err.Error()
 			m.status = "error"
+			m.usage = m.app.Usage().Since(m.usageBefore)
 			return m, nil
 		}
 		if msg.delta != nil {
@@ -279,8 +283,14 @@ func (m Model) View() string {
 
 func (m Model) topLine() string {
 	info := m.app.Info()
-	return fmt.Sprintf("Forge TUI  agent=%s  context=%s  status=%s",
+	line := fmt.Sprintf("Forge TUI  agent=%s  context=%s  status=%s",
 		info.AgentName, info.ContextID, m.status)
+	if m.usage.Calls > 0 {
+		line += fmt.Sprintf("  tokens in %d out %d total %d reason %d cache_r %d cache_w %d",
+			m.usage.InputTokens, m.usage.OutputTokens, m.usage.TotalTokens,
+			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens)
+	}
+	return line
 }
 
 func (m Model) recallView(width, height int) string {
@@ -339,6 +349,13 @@ func (m Model) debugView(width, height int) string {
 		panelTitleStyle.Render("Memory"),
 		fmt.Sprintf("enabled: %t", info.MemoryEnabled),
 		"top_k: " + fmt.Sprint(info.MemoryTopK),
+		"",
+		panelTitleStyle.Render("Usage"),
+		fmt.Sprintf("calls: %d", m.usage.Calls),
+		fmt.Sprintf("in: %d  out: %d", m.usage.InputTokens, m.usage.OutputTokens),
+		fmt.Sprintf("reason: %d  cache_r: %d  cache_w: %d",
+			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens),
+		fmt.Sprintf("total: %d", m.usage.TotalTokens),
 	}
 	return strings.Join(trimLines(wrapLines(lines, width-4), height), "\n")
 }
@@ -370,6 +387,7 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, chatMessage{Role: "assistant"})
 	m.running = true
 	m.status = "running"
+	m.usageBefore = m.app.Usage()
 	ch := make(chan eventMsg, 256)
 	m.eventCh = ch
 	return m, tea.Batch(startRoundCmd(m.app, text, ch), pollCmd(ch))

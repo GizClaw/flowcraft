@@ -11,8 +11,8 @@ import (
 )
 
 // debugIntegrationFactory captures the deployed memory System into the
-// application so the TUI and debug HTTP endpoints can query it. The
-// value is borrowed; the deployment owns its lifecycle.
+// application so the TUI recall panel can query it. The value is
+// borrowed; the deployment owns its lifecycle.
 type debugIntegrationFactory struct {
 	app *App
 }

@@ -201,7 +201,7 @@
       "id": "function_play_music",
       "type": "inference",
       "config": {
-        "max_output_tokens": 192,
+        "max_output_tokens": 512,
         "messages_channel": "function_route_channel",
         "model": {
           "id": {
@@ -245,7 +245,7 @@
       "id": "function_adjust_device_volume",
       "type": "inference",
       "config": {
-        "max_output_tokens": 128,
+        "max_output_tokens": 512,
         "messages_channel": "function_route_channel",
         "model": {
           "id": {
@@ -269,7 +269,7 @@
       "id": "function_stop",
       "type": "inference",
       "config": {
-        "max_output_tokens": 128,
+        "max_output_tokens": 512,
         "messages_channel": "function_route_channel",
         "model": {
           "id": {

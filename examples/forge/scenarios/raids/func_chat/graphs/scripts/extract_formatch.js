@@ -1,4 +1,17 @@
-const raw = String(board.getVar("formatch_text") || "").trim();
+function msgText(v) {
+  if (typeof v === "string") return v;
+  if (!v || typeof v !== "object") return "";
+  const content = v.Content || v.content;
+  if (content && typeof content.Text === "function") {
+    const t = content.Text();
+    if (typeof t === "string" && t !== "") return t;
+  }
+  const parts = Array.isArray(content && content.Parts) ? content.Parts : (content && Array.isArray(content.parts) ? content.parts : []);
+  return parts.map(function(p) {
+    return p && (p.type === "text" || p.Type === "text") && typeof (p.text || p.Text) === "string" ? (p.text || p.Text) : "";
+  }).join("");
+}
+const raw = msgText(board.getVar("formatch_text")).trim();
 const lines = raw.split(/\r?\n/).map(function(line) {
   return line.trim();
 }).filter(Boolean);
