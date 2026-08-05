@@ -1,3 +1,4 @@
+// Package yaml exposes the memory Assembly as a deploy resource.
 package yaml
 
 import (
@@ -5,87 +6,62 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	"github.com/GizClaw/flowcraft/sdkx/memory/config"
+	memoryconfig "github.com/GizClaw/flowcraft/sdkx/memory/config"
 )
 
-// ResourceKind is the deploy resource kind this package builds.
-// The returned value is a *config.Assembly.
 const ResourceKind = "memory.Assembly"
 
-// ResourceSettings is the impl-owned settings subtree of a
-// memory resource. The documented shape is:
-//
-//	deps:
-//	  inference: infer/runtime
-//	settings: { file: ./memory.yaml }
-//
-// Deps is declared by the deploy framework, not by this
-// package. Settings carries the memory.yaml path.
-type ResourceSettings struct {
-	File string `yaml:"file"`
-}
+type deployFactory struct{}
 
-// deployFactory is the [deploy.ResourceFactory] implementation.
-type deployFactory struct {
-	builder *config.Builder
-}
+func NewDeployFactory() deploy.ResourceFactory { return &deployFactory{} }
 
-// NewDeployFactory returns the deploy factory for memory
-// assemblies. The host supplies the [config.Builder] that owns
-// the StoreFactory catalog: deployments reference WHICH stores
-// they want, the host decides which driver code exists.
-//
-//	b.RegisterResource(yaml.NewDeployFactory(builder))
-func NewDeployFactory(builder *config.Builder) deploy.ResourceFactory {
-	return &deployFactory{builder: builder}
-}
-
-// Spec declares the resource kind + impl + deps the deploy
-// framework needs to validate the document and the host
-// needs to build a working memory.Assembly.
-//
-//   - Kind / Impl pair identifies the resource kind this
-//     package claims.
-//   - Deps["inference"] is optional for memory documents without embedding
-//     and must resolve to an inference runtime when embedding is enabled.
 func (*deployFactory) Spec() deploy.ResourceSpec {
 	return deploy.ResourceSpec{
-		Kind:     ResourceKind,
-		Impl:     "yaml",
-		ItemType: "memory.Runtime",
+		Kind: ResourceKind, Impl: "memory", ItemType: "memory.System",
 		Deps: []deploy.ResourceDepSpec{
-			{
-				Name:     "inference",
-				Type:     "inference.Runtime",
-				Required: false,
-			},
+			{Name: "workspace", Type: "workspace.Workspace", Required: true},
+			{Name: "inference", Type: "inference.Runtime", Required: true},
 		},
 	}
 }
 
-// New decodes the settings (a single `file:` path), reads the
-// memory.yaml at that path, decodes it into a Document, and
-// hands the Document + the resolved deps to the Builder. The
-// returned value is a *config.Assembly; the deploy framework
-// closes it in reverse construction order.
-func (f *deployFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
-	settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
+func (*deployFactory) New(ctx context.Context, input deploy.ResourceInput) (any, error) {
+	settings, err := deploy.DecodeSettings[memoryconfig.Settings](input.Settings)
 	if err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"memory config: decode resource settings: %w", err))
+		return nil, errdefs.Validation(fmt.Errorf("memory resource: decode settings: %w", err))
 	}
-	if settings.File == "" {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"memory config: resource settings.file is required"))
+	rawWorkspace, ok := input.Dep("workspace")
+	if !ok {
+		return nil, errdefs.NotFoundf("memory resource: required dependency %q is not bound", "workspace")
 	}
-	doc, err := config.DecodeYAMLFile(settings.File)
+	ws, ok := rawWorkspace.(workspace.Workspace)
+	if !ok || ws == nil {
+		return nil, errdefs.Validationf(
+			"memory resource: dependency %q has Go type %T, want workspace.Workspace",
+			"workspace", rawWorkspace,
+		)
+	}
+	rawInference, ok := input.Dep("inference")
+	if !ok {
+		return nil, errdefs.NotFoundf("memory resource: required dependency %q is not bound", "inference")
+	}
+	runtime, ok := rawInference.(*inference.Runtime)
+	if !ok || runtime == nil {
+		return nil, errdefs.Validationf(
+			"memory resource: dependency %q has Go type %T, want *inference.Runtime",
+			"inference", rawInference,
+		)
+	}
+	builder, err := memoryconfig.NewBuilder(ws, runtime)
 	if err != nil {
 		return nil, errdefs.Validation(err)
 	}
-	assembly, err := f.builder.NewAssembly(ctx, doc, in.Deps)
+	assembly, err := builder.NewAssembly(ctx, settings)
 	if err != nil {
-		return nil, err
+		return nil, errdefs.Validation(err)
 	}
 	return assembly, nil
 }

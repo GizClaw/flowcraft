@@ -7,7 +7,7 @@ SHELL := /bin/bash
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
 # sdk + sdkx + voice are the tightly-coupled core that needs atomic
 # in-tree edits (sdkx imports sdk, and voice depends on the same sdk source).
-MODULES_WORK := sdk sdkx voice cmd/claw eval
+MODULES_WORK := sdk memory sdkx voice cmd/claw
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.
@@ -51,18 +51,12 @@ help:
 	@echo "  make test-conformance  Provider conformance suites (tests/conformance)."
 	@echo "                         Needs a repo-root .env with provider credentials;"
 	@echo "                         no env => suites self-skip and pass."
-	@echo "  make eval              AI-quality eval suites (eval/, all sub-packages)."
-	@echo "                         Hermetic synthetic lanes only; LLM-backed lanes"
-	@echo "                         self-skip without credentials."
-	@echo "  make eval-smoke        End-to-end smoke: run the LoCoMo eval CLI on the"
-	@echo "                         bundled synthetic dataset and write a report."
+	@echo "  make eval              Hermetic memory retrieval eval (memory/eval)."
+	@echo "  make eval-smoke        Compatibility alias for the hermetic memory eval."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
 	@echo "                         the pre-eval/ migration entry point."
 	@echo ""
-	@echo "Eval suites under eval/ run vet+test in CI; the long-running"
-	@echo "unified CLI lives at eval/cmd/eval (run as 'go run ./cmd/eval'"
-	@echo "from inside eval/) and is a main package, not invoked by"
-	@echo "'go test ./...'."
+	@echo "The memory eval uses fixed fixtures and requires no network or credentials."
 
 .PHONY: vet
 vet:
@@ -112,28 +106,15 @@ release-changelog:
 test-conformance:
 	@cd tests/conformance && GOWORK=off go test -count=1 ./...
 
-# AI-quality evaluation suites under eval/. The default lane is hermetic
-# (no credentials, synthetic LoCoMo fixture, BM25-only knowledge corpus);
-# integration lanes self-skip without credentials.
+# Credential-free retrieval quality evaluation over real memory components.
 .PHONY: eval
 eval:
-	@cd eval && go test ./... -count=1
+	@cd memory && go test ./eval -count=1 -v
 
-# eval-smoke is the end-to-end "does the unified CLI still link?"
-# check. It runs `eval locomo run` against the bundled synthetic
-# dataset with no LLM wired up, so a clean environment can run it as
-# part of CI / pre-push.
+# Compatibility target retained after removal of the old top-level eval module.
 .PHONY: eval-smoke
-eval-smoke:
-	@cd eval && go run ./cmd/eval locomo run --dataset synthetic --out /tmp/eval-locomo-synthetic.json
-	@echo "wrote /tmp/eval-locomo-synthetic.json"
+eval-smoke: eval
 
-# Backwards-compat alias for the pre-eval/ migration entry point. The old
-# target only ran the //go:build integration lane of tests/quality/knowledge;
-# the post-migration `make eval` covers more (LoCoMo, history, knowledge),
-# but the integration lane still requires KNOWLEDGE_EVAL_EMBEDDER (e.g.
-# `qwen:text-embedding-v4`) plus the matching FLOWCRAFT_<ALIAS> JSON to
-# actually do work.
+# Backwards-compat alias for the former quality target.
 .PHONY: test-quality
-test-quality:
-	@cd eval/knowledge && GOWORK=off go test -tags=integration -count=1 ./...
+test-quality: eval
