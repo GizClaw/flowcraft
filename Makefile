@@ -7,7 +7,7 @@ SHELL := /bin/bash
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
 # sdk + sdkx are the tightly-coupled core that needs atomic in-tree edits
 # (sdkx imports sdk).
-MODULES_WORK := sdk memory sdkx cmd/claw
+MODULES_WORK := sdk memory sdkx examples/forge
 
 # Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
 # require directives and run with GOWORK=off so the pin is honoured.

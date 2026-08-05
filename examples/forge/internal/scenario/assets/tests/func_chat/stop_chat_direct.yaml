@@ -1,0 +1,5 @@
+name: func_chat_stop_chat_direct
+description: Stop-chat should route to function_stop without calling playback tools.
+raid: func_chat
+turns:
+  - 不聊了

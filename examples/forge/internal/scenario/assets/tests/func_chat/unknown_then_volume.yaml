@@ -1,0 +1,5 @@
+name: func_chat_unknown_then_volume
+description: Unsupported command plus supported function should route the supported function and discard chat.
+raid: func_chat
+turns:
+  - 帮我订机票，然后大声点

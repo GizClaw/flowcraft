@@ -1,0 +1,5 @@
+name: func_chat_music_direct
+description: Direct music request should cancel chat and emit play_music.
+raid: func_chat
+turns:
+  - 我想听卡农

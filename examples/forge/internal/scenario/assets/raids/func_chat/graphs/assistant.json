@@ -1,0 +1,307 @@
+{
+  "edges": [
+    {
+      "from": "state_route",
+      "to": "chat_buffer"
+    },
+    {
+      "from": "state_route",
+      "to": "prepare_function_context",
+      "condition": "needs_format == false"
+    },
+    {
+      "from": "state_route",
+      "to": "format_intent",
+      "condition": "needs_format == true"
+    },
+    {
+      "from": "chat_buffer",
+      "to": "__end__"
+    },
+    {
+      "from": "format_intent",
+      "to": "extract_formatch"
+    },
+    {
+      "from": "extract_formatch",
+      "to": "prepare_function_context",
+      "condition": "has_function_intent == true"
+    },
+    {
+      "from": "extract_formatch",
+      "to": "__end__",
+      "condition": "has_function_intent == false"
+    },
+    {
+      "from": "prepare_function_context",
+      "to": "function_play_music",
+      "condition": "function_route == \"play_music\""
+    },
+    {
+      "from": "prepare_function_context",
+      "to": "function_read_story",
+      "condition": "function_route == \"read_story\""
+    },
+    {
+      "from": "prepare_function_context",
+      "to": "function_adjust_device_volume",
+      "condition": "function_route == \"adjust_device_volume\""
+    },
+    {
+      "from": "prepare_function_context",
+      "to": "function_stop",
+      "condition": "function_route == \"stop\""
+    },
+    {
+      "from": "function_play_music",
+      "to": "function_play_music_exec",
+      "condition": "function_play_music_pending == true"
+    },
+    {
+      "from": "function_play_music",
+      "to": "clear_completed_route",
+      "condition": "function_play_music_pending != true"
+    },
+    {
+      "from": "function_play_music_exec",
+      "to": "function_play_music"
+    },
+    {
+      "from": "function_read_story",
+      "to": "clear_completed_route"
+    },
+    {
+      "from": "function_adjust_device_volume",
+      "to": "function_adjust_device_volume_exec",
+      "condition": "function_adjust_device_volume_pending == true"
+    },
+    {
+      "from": "function_adjust_device_volume",
+      "to": "clear_completed_route",
+      "condition": "function_adjust_device_volume_pending != true"
+    },
+    {
+      "from": "function_adjust_device_volume_exec",
+      "to": "function_adjust_device_volume"
+    },
+    {
+      "from": "function_stop",
+      "to": "function_stop_exec",
+      "condition": "function_stop_pending == true"
+    },
+    {
+      "from": "function_stop",
+      "to": "clear_completed_route",
+      "condition": "function_stop_pending != true"
+    },
+    {
+      "from": "function_stop_exec",
+      "to": "function_stop"
+    },
+    {
+      "from": "clear_completed_route",
+      "to": "prepare_function_context",
+      "condition": "has_next_route == true"
+    },
+    {
+      "from": "clear_completed_route",
+      "to": "__end__"
+    }
+  ],
+  "entry": "state_route",
+  "name": "forge-func-chat",
+  "nodes": [
+    {
+      "id": "chat_buffer",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 192,
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "chat_result",
+        "reasoning_enabled": false,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/chat_buffer.txt"
+        }
+      }
+    },
+    {
+      "id": "state_route",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/state_route.js"
+        }
+      }
+    },
+    {
+      "id": "format_intent",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 256,
+        "messages_channel": "route_format_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "formatch_text",
+        "reasoning_enabled": false,
+        "stream": false,
+        "system_prompt": {
+          "file": "graphs/prompts/format_intent.txt"
+        }
+      }
+    },
+    {
+      "id": "extract_formatch",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/extract_formatch.js"
+        }
+      }
+    },
+    {
+      "id": "prepare_function_context",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/prepare_function_context.js"
+        }
+      }
+    },
+    {
+      "id": "function_play_music",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 192,
+        "messages_channel": "function_route_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "function_result",
+        "reasoning_enabled": false,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/function_play_music.txt"
+        },
+        "tool_pending_key": "function_play_music_pending",
+        "tools": [
+          "play_music"
+        ]
+      }
+    },
+    {
+      "id": "function_read_story",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 256,
+        "messages_channel": "function_route_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "function_result",
+        "reasoning_enabled": false,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/function_read_story.txt"
+        }
+      }
+    },
+    {
+      "id": "function_adjust_device_volume",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 128,
+        "messages_channel": "function_route_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "function_result",
+        "reasoning_enabled": false,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/function_adjust_device_volume.txt"
+        },
+        "tool_pending_key": "function_adjust_device_volume_pending",
+        "tools": [
+          "set_device_volume"
+        ]
+      }
+    },
+    {
+      "id": "function_stop",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 128,
+        "messages_channel": "function_route_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "function_result",
+        "reasoning_enabled": false,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/function_stop.txt"
+        },
+        "tool_pending_key": "function_stop_pending",
+        "tools": [
+          "stop_playback"
+        ]
+      }
+    },
+    {
+      "id": "clear_completed_route",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/clear_completed_route.js"
+        }
+      }
+    },
+    {
+      "id": "function_play_music_exec",
+      "type": "tool",
+      "config": {
+        "messages_channel": "function_route_channel"
+      }
+    },
+    {
+      "id": "function_adjust_device_volume_exec",
+      "type": "tool",
+      "config": {
+        "messages_channel": "function_route_channel"
+      }
+    },
+    {
+      "id": "function_stop_exec",
+      "type": "tool",
+      "config": {
+        "messages_channel": "function_route_channel"
+      }
+    }
+  ]
+}

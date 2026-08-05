@@ -1,0 +1,6 @@
+name: func_chat_music_missing_volume_stop
+description: Missing music title should pause play_music, then continue volume and stop after the user gives the title.
+raid: func_chat
+turns:
+  - 我要听歌，然后把音量调到30%，最后停止播放
+  - 卡农

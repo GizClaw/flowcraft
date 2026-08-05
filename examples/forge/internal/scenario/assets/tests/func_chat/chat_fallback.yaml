@@ -1,0 +1,5 @@
+name: func_chat_chat_fallback
+description: Non-function request should accept buffered chat output.
+raid: func_chat
+turns:
+  - 今天天气不错，你觉得适合做什么？

@@ -1,0 +1,6 @@
+name: func_chat_chat_then_music_volume
+description: A normal chat turn should not leave route state; the next turn should route music and volume.
+raid: func_chat
+turns:
+  - 今天天气不错，你觉得适合做什么？
+  - 我想听周杰伦的晴天，然后大声点
