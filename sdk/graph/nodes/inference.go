@@ -123,6 +123,23 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 		return err
 	}
 
+	for _, part := range resp.Message.Content.Parts {
+		normalized, err := message.NormalizePart(part)
+		if err != nil {
+			return err
+		}
+		if call, ok := normalized.(message.ToolCallPart); ok {
+			if err := ec.EmitStreamDelta(agent.StreamDeltaPayload{
+				Type:      agent.StreamDeltaToolCall,
+				ID:        call.Call.ID,
+				Name:      call.Call.Name,
+				Arguments: string(call.Call.Arguments),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+
 	board.AppendChannelMessage(channel, resp.Message)
 	if cfg.OutputKey != "" {
 		board.SetVar(cfg.OutputKey, resp.Message)

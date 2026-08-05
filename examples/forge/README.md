@@ -65,6 +65,8 @@ Each `scenarios/raids/<name>/` is a complete workspace template:
 - `graphs/assistant.json` — the graph definition, with `scripts/` and
   `prompts/` beside it (script sources and system prompts are referenced as
   `{"file": ...}`).
+- `speakers.yaml` — optional user-facing labels per graph node; the TUI and
+  test logs render each node's output under its label (e.g. `[主持人]`).
 
 A scenario may additionally deploy `memory.yaml` and wire the
 `memory.context` / `memory.turn` hooks to enable long-term memory.
@@ -112,6 +114,10 @@ top bar and the Usage panel show that turn's token accounting: input / output /
 total tokens, reasoning tokens, and cache read / write tokens. Usage is
 mirrored from the runtime host through `sdkx/runtime`'s `WithHostFactory`
 decorator; the runtime remains the owner of usage aggregation.
+
+Chat output is split per speaker: every graph node's streamed text appears as
+its own labelled block, and tool invocations appear as separate
+`[工具调用]` / `[工具结果]` blocks instead of being narrated inline.
 
 ## How it wires into the stack
 

@@ -327,16 +327,12 @@
     },
     {
       "from": "call_game_event_exec",
-      "to": "call_game_event"
+      "to": "write_game_audit"
     },
     {
       "from": "call_game_event",
-      "to": "call_game_event_publish",
+      "to": "write_game_audit",
       "condition": "call_game_event_pending != true"
-    },
-    {
-      "from": "call_game_event_publish",
-      "to": "write_game_audit"
     },
     {
       "from": "call_game_over_event",
@@ -345,16 +341,12 @@
     },
     {
       "from": "call_game_over_event_exec",
-      "to": "call_game_over_event"
+      "to": "write_game_audit"
     },
     {
       "from": "call_game_over_event",
-      "to": "call_game_over_event_publish",
+      "to": "write_game_audit",
       "condition": "call_game_over_event_pending != true"
-    },
-    {
-      "from": "call_game_over_event_publish",
-      "to": "write_game_audit"
     },
     {
       "from": "write_game_audit",
@@ -941,26 +933,6 @@
         "runtime": "js",
         "source": {
           "file": "graphs/scripts/seat_8_suhe_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "call_game_event_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/call_game_event_publish.js"
-        }
-      }
-    },
-    {
-      "id": "call_game_over_event_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/call_game_over_event_publish.js"
         }
       }
     },

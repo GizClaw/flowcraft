@@ -16,6 +16,12 @@ import (
 // building anything.
 func inspectDocument(workspaceDir string, doc deploy.Document) (Info, error) {
 	info := Info{ContextID: "__default__"}
+	if rawSpeakers, err := os.ReadFile(filepath.Join(workspaceDir, "speakers.yaml")); err == nil {
+		var speakers map[string]string
+		if err := yaml.Unmarshal(rawSpeakers, &speakers); err == nil {
+			info.Speakers = speakers
+		}
+	}
 	for id, entry := range doc.Agents {
 		info.AgentID = id
 		info.AgentName = entry.Card.Name

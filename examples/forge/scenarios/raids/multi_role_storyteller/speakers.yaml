@@ -1,0 +1,7 @@
+# User-facing speaker labels per graph node. TUI and test logs render
+# each node's output under its label.
+narrator: 旁白
+role_wukong: 悟空
+role_tangseng: 唐僧
+role_bajie: 八戒
+role_monster: 妖怪

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
 )
@@ -123,8 +124,10 @@ var (
 )
 
 type chatMessage struct {
-	Role string
-	Text string
+	Role   string
+	NodeID string
+	Kind   string // "", "tool_call", "tool_result"
+	Text   string
 }
 
 type recallResult struct {
@@ -133,9 +136,10 @@ type recallResult struct {
 }
 
 type eventMsg struct {
-	delta *agent.StreamDeltaPayload
-	err   error
-	done  bool
+	delta  *agent.StreamDeltaPayload
+	nodeID string
+	err    error
+	done   bool
 }
 
 // Model is the three-panel TUI.
@@ -155,6 +159,7 @@ type Model struct {
 	recallInput   textinput.Model
 	usageBefore   app.UsageSnapshot
 	usage         app.UsageSnapshot
+	curNodeID     string
 }
 
 // NewModel builds a TUI model over an open app.
@@ -225,9 +230,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.delta != nil {
 			switch msg.delta.Type {
 			case agent.StreamDeltaToken:
-				m.appendAssistant(msg.delta.Content)
+				m.appendAssistant(msg.delta.Content, msg.nodeID)
 			case agent.StreamDeltaToolCall:
-				m.status = "tool: " + msg.delta.Name
+				m.appendTool("tool_call", msg.delta.Name, fmt.Sprint(msg.delta.Arguments))
+			case agent.StreamDeltaToolResult:
+				m.appendTool("tool_result", msg.delta.Name, msg.delta.Content)
 			}
 		}
 		return m, pollCmd(m.eventCh)
@@ -263,7 +270,7 @@ func (m Model) View() string {
 	if height <= 0 {
 		height = 32
 	}
-	top := topStyle.Width(width - 2).Render(m.topLine())
+	top := topStyle.Width(width - 2).MaxWidth(width - 2).Render(m.topLine())
 	bodyHeight := height - 4
 	if bodyHeight < 12 {
 		bodyHeight = 12
@@ -324,7 +331,20 @@ func (m Model) chatView(width, height int) string {
 		if text == "" && msg.Role == "assistant" && m.running {
 			text = "..."
 		}
-		lines = append(lines, wrapLine(msg.Role+": "+text, width-4)...)
+		prefix := msg.Role + ": "
+		switch msg.Kind {
+		case "tool_call":
+			prefix = "[工具调用] "
+		case "tool_result":
+			prefix = "[工具结果] "
+		default:
+			if msg.Role == "assistant" {
+				if label := m.app.SpeakerLabel(msg.NodeID); label != "" {
+					prefix = "[" + label + "] "
+				}
+			}
+		}
+		lines = append(lines, wrapLine(prefix+text, width-4)...)
 		lines = append(lines, "")
 	}
 	if len(lines) > msgHeight {
@@ -360,12 +380,34 @@ func (m Model) debugView(width, height int) string {
 	return strings.Join(trimLines(wrapLines(lines, width-4), height), "\n")
 }
 
-func (m *Model) appendAssistant(text string) {
-	if len(m.messages) == 0 || m.messages[len(m.messages)-1].Role != "assistant" || !m.running {
-		m.messages = append(m.messages, chatMessage{Role: "assistant"})
+func (m *Model) appendAssistant(text, nodeID string) {
+	if len(m.messages) == 0 ||
+		m.messages[len(m.messages)-1].Role != "assistant" ||
+		!m.running ||
+		(nodeID != "" && nodeID != m.curNodeID) {
+		m.messages = append(m.messages, chatMessage{
+			Role:   "assistant",
+			NodeID: nodeID,
+		})
+	}
+	if nodeID != "" {
+		m.curNodeID = nodeID
 	}
 	last := &m.messages[len(m.messages)-1]
 	last.Text += text
+}
+
+// appendTool records one tool-use block in the chat.
+func (m *Model) appendTool(kind, name, detail string) {
+	text := name
+	if detail != "" {
+		if kind == "tool_result" {
+			text += ": " + detail
+		} else {
+			text += " " + detail
+		}
+	}
+	m.messages = append(m.messages, chatMessage{Role: "tool", Kind: kind, Text: text})
 }
 
 func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
@@ -384,10 +426,10 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	}
 	m.chatInput.SetValue("")
 	m.messages = append(m.messages, chatMessage{Role: "user", Text: text})
-	m.messages = append(m.messages, chatMessage{Role: "assistant"})
 	m.running = true
 	m.status = "running"
 	m.usageBefore = m.app.Usage()
+	m.curNodeID = ""
 	ch := make(chan eventMsg, 256)
 	m.eventCh = ch
 	return m, tea.Batch(startRoundCmd(m.app, text, ch), pollCmd(ch))
@@ -397,9 +439,9 @@ func startRoundCmd(a *app.App, text string, ch chan<- eventMsg) tea.Cmd {
 	return func() tea.Msg {
 		sink := session.SinkSpec{
 			ID: "tui",
-			Sink: agent.StreamSinkFunc(func(_ context.Context, _ event.Envelope, delta agent.StreamDeltaPayload) error {
+			Sink: agent.StreamSinkFunc(func(_ context.Context, env event.Envelope, delta agent.StreamDeltaPayload) error {
 				d := delta
-				ch <- eventMsg{delta: &d}
+				ch <- eventMsg{delta: &d, nodeID: env.NodeID()}
 				return nil
 			}),
 		}
@@ -472,11 +514,27 @@ func wrapLine(text string, width int) []string {
 		return []string{text}
 	}
 	var out []string
-	for len(text) > width {
-		out = append(out, text[:width])
-		text = text[width:]
+	var cur strings.Builder
+	curW := 0
+	for _, r := range text {
+		w := runewidth.RuneWidth(r)
+		if w < 0 {
+			w = 0
+		}
+		if curW > 0 && curW+w > width {
+			out = append(out, cur.String())
+			cur.Reset()
+			curW = 0
+		}
+		cur.WriteRune(r)
+		curW += w
 	}
-	out = append(out, text)
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	if len(out) == 0 {
+		out = append(out, "")
+	}
 	return out
 }
 

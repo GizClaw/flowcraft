@@ -119,7 +119,7 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 	fmt.Fprintf(logFile, "# workspace: %s\n\n", workspacePath)
 
 	for i, input := range inputs {
-		turnMetric, text, err := runOneTestTurn(ctx, a, i+1, input, timeout)
+		turnMetric, text, rendered, err := runOneTestTurn(ctx, a, i+1, input, timeout)
 		metrics.Turns = append(metrics.Turns, turnMetric)
 		if err != nil {
 			return finishTestMetrics(metrics), err
@@ -127,7 +127,10 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 		var turn strings.Builder
 		fmt.Fprintf(&turn, "=== Turn %d ===\n", i+1)
 		fmt.Fprintf(&turn, "user: %s\n", input)
-		fmt.Fprintf(&turn, "assistant: %s\n\n", text)
+		if rendered == "" {
+			rendered = text
+		}
+		fmt.Fprintf(&turn, "assistant:\n%s\n\n", rendered)
 		if _, err := logFile.WriteString(turn.String()); err != nil {
 			return finishTestMetrics(metrics), err
 		}
@@ -144,12 +147,12 @@ func runOneTestTurn(
 	turn int,
 	input string,
 	timeout time.Duration,
-) (testTurnMetric, string, error) {
+) (testTurnMetric, string, string, error) {
 	metric := testTurnMetric{Turn: turn, Input: input, StartedAt: time.Now()}
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	toolsBefore := a.ToolCalls()
-	collector := &textCollectorSink{}
+	collector := &textCollectorSink{labels: a.SpeakerLabel}
 	result, err := a.RunTurn(turnCtx, input, collector.spec())
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
@@ -158,9 +161,9 @@ func runOneTestTurn(
 	metric.OutputChars = collector.builder.Len()
 	if err := resultFailure(result, err); err != nil {
 		metric.Error = err.Error()
-		return metric, "", err
+		return metric, "", "", err
 	}
-	return metric, collector.builder.String(), nil
+	return metric, collector.builder.String(), collector.rendered(), nil
 }
 
 // resultFailure turns a turn's outcome into an error. agent.Execute

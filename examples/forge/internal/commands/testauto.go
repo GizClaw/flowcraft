@@ -77,18 +77,24 @@ func testAutoCmd(args []string) error {
 	var transcript strings.Builder
 	nextPersonaInput := personaOpening
 	for round := 1; round <= *turns; round++ {
-		personaText, personaMetric, err := runAutoTurn(ctx, persona, nextPersonaInput, "persona", round, *timeout)
+		personaText, personaRendered, personaMetric, err := runAutoTurn(ctx, persona, nextPersonaInput, "persona", round, *timeout)
 		metrics.Turns = append(metrics.Turns, personaMetric)
 		if err != nil {
 			return fmt.Errorf("persona round %d: %w", round, err)
 		}
-		raidText, raidMetric, err := runAutoTurn(ctx, raid, personaText, "raid", round, *timeout)
+		raidText, raidRendered, raidMetric, err := runAutoTurn(ctx, raid, personaText, "raid", round, *timeout)
 		metrics.Turns = append(metrics.Turns, raidMetric)
 		if err != nil {
 			return fmt.Errorf("raid round %d: %w", round, err)
 		}
-		fmt.Printf("--- round %d ---\npersona: %s\nraid: %s\n\n", round, personaText, raidText)
-		fmt.Fprintf(&transcript, "=== Round %d ===\npersona: %s\nraid: %s\n\n", round, personaText, raidText)
+		if personaRendered == "" {
+			personaRendered = personaText
+		}
+		if raidRendered == "" {
+			raidRendered = raidText
+		}
+		fmt.Printf("--- round %d ---\npersona:\n%s\nraid:\n%s\n\n", round, personaRendered, raidRendered)
+		fmt.Fprintf(&transcript, "=== Round %d ===\npersona:\n%s\nraid:\n%s\n\n", round, personaRendered, raidRendered)
 		nextPersonaInput = raidText
 	}
 	metrics.FinishedAt = time.Now()
@@ -109,12 +115,12 @@ func runAutoTurn(
 	input, actor string,
 	round int,
 	timeout time.Duration,
-) (string, autoTurnMetric, error) {
+) (string, string, autoTurnMetric, error) {
 	metric := autoTurnMetric{Actor: actor, Round: round, Input: input, StartedAt: time.Now()}
 	turnCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	toolsBefore := a.ToolCalls()
-	collector := &textCollectorSink{}
+	collector := &textCollectorSink{labels: a.SpeakerLabel}
 	result, err := a.RunTurn(turnCtx, input, collector.spec())
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
@@ -127,9 +133,9 @@ func runAutoTurn(
 	metric.OutputChars = collector.builder.Len()
 	if err := resultFailure(result, err); err != nil {
 		metric.Error = err.Error()
-		return "", metric, err
+		return "", "", metric, err
 	}
-	return collector.builder.String(), metric, nil
+	return collector.builder.String(), collector.rendered(), metric, nil
 }
 
 type autoTurnMetric struct {

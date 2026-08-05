@@ -1,0 +1,27 @@
+# User-facing speaker labels per graph node. TUI and test logs render
+# each node's output under its label.
+host_opening: 主持人
+host_night_begin: 主持人
+host_werewolf_action: 主持人
+host_seer_action: 主持人
+host_witch_action: 主持人
+host_day_announce: 主持人
+host_vote_prompt: 主持人
+host_vote_result: 主持人
+user_speech_prompt: 主持人
+user_speech_retry: 主持人
+seat_1_lin_zhi_speak: 1号林知
+seat_2_ache_speak: 2号阿澈
+seat_4_xiaoman_speak: 4号小满
+seat_5_zhoulan_speak: 5号周岚
+seat_6_chen_doctor_speak: 6号陈医生
+seat_7_laozhao_speak: 7号老赵
+seat_8_suhe_speak: 8号苏禾
+post_game_seat_1_free_chat: 1号林知
+post_game_seat_2_free_chat: 2号阿澈
+post_game_seat_4_free_chat: 4号小满
+post_game_seat_5_free_chat: 5号周岚
+post_game_seat_6_free_chat: 6号陈医生
+post_game_seat_7_free_chat: 7号老赵
+post_game_seat_8_free_chat: 8号苏禾
+post_game_host_wrap: 主持人

@@ -51,6 +51,7 @@ go run . workspace inspect --workspace ./workspace
 - `workspace.yaml` — workspace registry 的根目录与布局。
 - `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
 - `graphs/assistant.json` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
+- `speakers.yaml` — 可选的每个 graph 节点的用户可见标签;TUI 和测试日志会以 `[主持人]` 这样的标签渲染每个节点的输出。
 
 场景还可以部署 `memory.yaml` 并在 agent 上挂 `memory.context` / `memory.turn`
 hook 来启用长期记忆。
@@ -94,6 +95,9 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 面板会显示该轮的 token 统计:输入 / 输出 / 总 token、reasoning token、缓存
 读 / 写 token。用量通过 `sdkx/runtime` 的 `WithHostFactory` 装饰器从
 runtime host 镜像到应用侧;聚合责任仍在 runtime。
+
+聊天输出按发言人分块:每个 graph 节点的流式文本显示为独立的带标签段落,
+工具调用显示为独立的 `[工具调用]` / `[工具结果]` 块,不再混进发言里。
 
 ## 与技术栈的接线方式
 

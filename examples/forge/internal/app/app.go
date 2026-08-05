@@ -51,6 +51,7 @@ type Info struct {
 	MemoryEnabled bool
 	MemoryScope   Scope
 	MemoryTopK    int
+	Speakers      map[string]string
 }
 
 // Scope mirrors the memory scope seed in memory.yaml.
@@ -114,6 +115,16 @@ func (a *App) Memory() sdkmemory.ContextProvider {
 		return nil
 	}
 	return a.memory
+}
+
+// SpeakerLabel returns the user-facing label for a graph node id from
+// the scenario's speakers.yaml, or "" when the scenario does not
+// declare one.
+func (a *App) SpeakerLabel(nodeID string) string {
+	if a == nil || a.info.Speakers == nil {
+		return ""
+	}
+	return a.info.Speakers[nodeID]
 }
 
 // ToolCalls returns the simulated tool execution counter.

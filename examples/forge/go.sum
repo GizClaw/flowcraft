@@ -4,6 +4,8 @@ github.com/GizClaw/flowcraft/sdkx v0.4.9/go.mod h1:1a2Rw1uxXqTCypP+j0zHfszwtOhls
 github.com/charmbracelet/bubbles v1.0.0/go.mod h1:9d/Zd5GdnauMI5ivUIVisuEm3ave1XwXtD1ckyV6r3E=
 github.com/charmbracelet/bubbletea v1.3.10/go.mod h1:ORQfo0fk8U+po9VaNvnV95UPWA1BitP1E0N6xJPlHr4=
 github.com/charmbracelet/lipgloss v1.1.0/go.mod h1:/6Q8FR2o+kj8rz4Dq0zQc3vYf7X+B0binUUBwA0aL30=
+github.com/mattn/go-runewidth v0.0.19 h1:v++JhqYnZuu5jSKrk9RbgF5v4CGUjqRfBm05byFGLdw=
+github.com/mattn/go-runewidth v0.0.19/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhgLpndooCuJAs=
 google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d h1:33JLrUF0lFT31667SAtJzZAjLewV0ew5Mizks4caz0A=
 google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d/go.mod h1:I7vGRdTamb7ukERkgP9I+0e4p21O4ak3cM7ICA3krg8=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=

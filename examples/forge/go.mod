@@ -12,4 +12,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d // indirect
+require (
+	github.com/mattn/go-runewidth v0.0.19 // indirect
+	google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d // indirect
+)

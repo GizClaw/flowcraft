@@ -72,6 +72,19 @@ func Tool(dispatcher tool.Dispatcher) graph.NodeType[ToolConfig] {
 			parts := make([]message.Part, len(results))
 			for i, result := range results {
 				parts[i] = message.ToolResultPart{Result: result}
+				name := ""
+				if i < len(calls) {
+					name = calls[i].Name
+				}
+				if err := ec.EmitStreamDelta(agent.StreamDeltaPayload{
+					Type:       agent.StreamDeltaToolResult,
+					ToolCallID: result.CallID,
+					Name:       name,
+					Content:    result.Content,
+					IsError:    result.IsError,
+				}); err != nil {
+					return err
+				}
 			}
 			board.AppendChannelMessage(channel, message.Message{
 				Role:    message.RoleTool,
