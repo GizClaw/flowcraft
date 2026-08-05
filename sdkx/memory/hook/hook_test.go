@@ -5,17 +5,11 @@ import (
 	"strings"
 	"testing"
 
-	rootmemory "github.com/GizClaw/flowcraft/memory"
-	"github.com/GizClaw/flowcraft/memory/sources"
-	docsource "github.com/GizClaw/flowcraft/memory/sources/document"
-	msgsource "github.com/GizClaw/flowcraft/memory/sources/message"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	memoryconfig "github.com/GizClaw/flowcraft/sdkx/memory/config"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -37,8 +31,39 @@ func (p *contextProvider) Context(_ context.Context, request sdkmemory.ContextRe
 	}}}, nil
 }
 
+type turnSink struct {
+	turns []sdkmemory.Turn
+}
+
+func (s *turnSink) CommitTurn(_ context.Context, turn sdkmemory.Turn) error {
+	s.turns = append(s.turns, turn)
+	return nil
+}
+
+type fakeAssembly struct {
+	provider *contextProvider
+	sink     *turnSink
+}
+
+func (a *fakeAssembly) Context(ctx context.Context, request sdkmemory.ContextRequest) (sdkmemory.ContextResult, error) {
+	return a.provider.Context(ctx, request)
+}
+
+func (a *fakeAssembly) CommitTurn(ctx context.Context, turn sdkmemory.Turn) error {
+	return a.sink.CommitTurn(ctx, turn)
+}
+
+func (*fakeAssembly) PutDocument(context.Context, sdkmemory.Document) error { return nil }
+
+func newFakeAssembly(t *testing.T) (sdkmemory.Assembly, *contextProvider, *turnSink) {
+	t.Helper()
+	provider := &contextProvider{}
+	sink := &turnSink{}
+	return &fakeAssembly{provider: provider, sink: sink}, provider, sink
+}
+
 func TestContextPreparerClonesBoardAndUsesRequest(t *testing.T) {
-	system, _, provider := testSystem(t)
+	assembly, provider, _ := newFakeAssembly(t)
 	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 query:
@@ -53,7 +78,7 @@ budget:
 min_score: 0.2
 output: recalled
 `),
-		Deps: map[string]any{depName: &memoryconfig.Assembly{System: system}},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +110,7 @@ output: recalled
 }
 
 func TestContextPreparerRendersDefaultGoTemplateToContent(t *testing.T) {
-	system, _, _ := testSystem(t)
+	assembly, _, _ := newFakeAssembly(t)
 	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 query:
@@ -97,7 +122,7 @@ render:
   output: memory_content
   gotmpl: {}
 `),
-		Deps: map[string]any{depName: system},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -124,7 +149,7 @@ render:
 }
 
 func TestContextPreparerRendersCustomGoTemplate(t *testing.T) {
-	system, _, _ := testSystem(t)
+	assembly, _, _ := newFakeAssembly(t)
 	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 query:
@@ -137,7 +162,7 @@ render:
   gotmpl:
     template: '{{ range .Items }}{{ contentText .Content }}:{{ score .Score }}{{ end }}'
 `),
-		Deps: map[string]any{depName: system},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +209,7 @@ func TestCloneItemsOwnsMutableData(t *testing.T) {
 }
 
 func TestContextPreparerSupportsRecentOnly(t *testing.T) {
-	system, _, provider := testSystem(t)
+	assembly, provider, _ := newFakeAssembly(t)
 	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 query:
@@ -196,7 +221,7 @@ budget:
   max_chars: 50
 output: recalled
 `),
-		Deps: map[string]any{depName: system},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -211,51 +236,15 @@ output: recalled
 	}
 }
 
-func TestContextPreparerRejectsInvalidProviderKinds(t *testing.T) {
-	system, _, provider := testSystem(t)
-	provider.result = sdkmemory.ContextResult{Items: []sdkmemory.ContextItem{{
-		ID: "fact-1", Kind: sdkmemory.ContextItemKind("unknown"), Score: 0.8,
-		Content:     message.Content{Parts: []message.Part{message.TextPart{Text: "remembered"}}},
-		Sources:     []sdkmemory.SourceRef{{Kind: sdkmemory.SourceMessage, ID: "conversation/message"}},
-		SourceClass: sdkmemory.ContextSourceLongTerm,
-	}}}
-	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
-		Settings: settingsNode(t, `
-query:
-  literal: alpha
-scope:
-  runtime_id: memory
-output: recalled
-`),
-		Deps: map[string]any{depName: system},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	_, err = preparer.Before(
-		context.Background(),
-		agent.Identity{RunID: "run"},
-		&agent.Request{},
-		agent.NewBoard(),
-	)
-	if err == nil {
-		t.Fatal("ContextPreparer accepted an unknown context item kind")
-	}
-	if !sdkmemory.IsKind(err, sdkmemory.KindInternal) {
-		t.Fatalf("ContextPreparer error = %v, want provider contract failure", err)
-	}
-}
-
-func TestTurnCommitterUsesRunIDAndIsIdempotent(t *testing.T) {
-	system, messages, _ := testSystem(t)
+func TestTurnCommitterUsesRunIDAndChannel(t *testing.T) {
+	assembly, _, sink := newFakeAssembly(t)
 	committer, err := TurnCommitterFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 scope:
   runtime_id: memory
   user_id: tenant
 `),
-		Deps: map[string]any{depName: system},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -272,22 +261,24 @@ scope:
 	if err := committer.Commit(context.Background(), id, req, result); err != nil {
 		t.Fatal(err)
 	}
-	commits, err := messages.ListCommits(
-		context.Background(),
-		sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"},
-		"conversation",
-		msgsource.ListCommitOptions{},
-	)
-	if err != nil {
-		t.Fatal(err)
+	if len(sink.turns) != 2 {
+		t.Fatalf("commits = %d, want 2", len(sink.turns))
 	}
-	if len(commits) != 1 || len(commits[0].Records) != 2 {
-		t.Fatalf("commits = %+v", commits)
+	turn := sink.turns[0]
+	if turn.ConversationID != "conversation" ||
+		turn.IdempotencyKey != "run-42" ||
+		turn.Scope.UserID != "tenant" {
+		t.Fatalf("turn = %+v", turn)
+	}
+	if len(turn.Messages) != 2 ||
+		turn.Messages[0].Content.Text() != "hello" ||
+		turn.Messages[1].Content.Text() != "world" {
+		t.Fatalf("turn messages = %+v", turn.Messages)
 	}
 }
 
 func TestHookValidationRejectsAmbiguousQuery(t *testing.T) {
-	system, _, _ := testSystem(t)
+	assembly, _, _ := newFakeAssembly(t)
 	_, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
 		Settings: settingsNode(t, `
 query:
@@ -297,7 +288,7 @@ scope:
   runtime_id: memory
 output: recalled
 `),
-		Deps: map[string]any{depName: system},
+		Deps: map[string]any{depName: assembly},
 	})
 	if err == nil {
 		t.Fatal("accepted ambiguous query")
@@ -305,7 +296,7 @@ output: recalled
 }
 
 func TestContextPreparerRejectsInvalidRenderSettings(t *testing.T) {
-	system, _, _ := testSystem(t)
+	assembly, _, _ := newFakeAssembly(t)
 	for name, source := range map[string]string{
 		"missing renderer": `
 query: {literal: alpha}
@@ -336,36 +327,13 @@ render: {output: memory_content, arbitrary: {}}
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
-				Settings: settingsNode(t, source), Deps: map[string]any{depName: system},
+				Settings: settingsNode(t, source), Deps: map[string]any{depName: assembly},
 			})
 			if err == nil || !errdefs.IsValidation(err) {
 				t.Fatalf("error = %v, want validation", err)
 			}
 		})
 	}
-}
-
-func testSystem(t *testing.T) (*rootmemory.System, *msgsource.WorkspaceStore, *contextProvider) {
-	t.Helper()
-	ws := workspace.NewMemWorkspace()
-	messages, err := msgsource.NewWorkspaceStore(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	documents, err := docsource.NewWorkspaceStore(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	provider := &contextProvider{}
-	catalog, err := sources.NewWorkspaceScopeCatalog(ws)
-	if err != nil {
-		t.Fatal(err)
-	}
-	system, err := rootmemory.NewSystem(messages, documents, catalog, provider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return system, messages, provider
 }
 
 func settingsNode(t *testing.T, source string) *yamlv3.Node {

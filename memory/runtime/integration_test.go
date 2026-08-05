@@ -1,4 +1,4 @@
-package memory
+package runtime
 
 import (
 	"context"
@@ -6,27 +6,26 @@ import (
 	"testing"
 	"time"
 
-	rootmemory "github.com/GizClaw/flowcraft/memory"
+	"github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/memory/sources"
 	"github.com/GizClaw/flowcraft/memory/worker"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
-	memoryconfig "github.com/GizClaw/flowcraft/sdkx/memory/config"
 )
 
-func TestFactorySpecRequiresOnlyAssembly(t *testing.T) {
+func TestFactorySpecRequiresFlowcraftAssembly(t *testing.T) {
 	spec := NewFactory().Spec()
 	if spec.Kind != Kind || len(spec.Deps) != 1 {
 		t.Fatalf("Spec = %+v", spec)
 	}
 	dep := spec.Deps[0]
 	if dep.Name != "memory" || dep.Kind != "memory.Assembly" || !dep.Required ||
-		dep.Type != reflect.TypeFor[*memoryconfig.Assembly]() {
+		dep.Type != reflect.TypeFor[*config.Assembly]() {
 		t.Fatalf("dependency = %+v", dep)
 	}
 }
 
-func TestStartCloseIdempotentDoesNotCloseAssembly(t *testing.T) {
+func TestStartCloseIdempotent(t *testing.T) {
 	catalog, err := sources.NewWorkspaceScopeCatalog(workspace.NewMemWorkspace())
 	if err != nil {
 		t.Fatal(err)
@@ -40,9 +39,8 @@ func TestStartCloseIdempotentDoesNotCloseAssembly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	system := &rootmemory.System{}
-	assembly := &memoryconfig.Assembly{System: system, Runner: runner}
-	integration := &integration{name: "memory", runner: runner, bound: true}
+	assembly := &config.Assembly{Runner: runner}
+	integration := &integration{name: "memory", assembly: assembly, bound: true}
 	if err := integration.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -54,12 +52,6 @@ func TestStartCloseIdempotentDoesNotCloseAssembly(t *testing.T) {
 	}
 	if err := integration.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
-	}
-	if assembly.System != system {
-		t.Fatal("integration mutated or closed the borrowed Assembly")
-	}
-	if err := assembly.Close(); err != nil {
-		t.Fatalf("owner Close after integration Close: %v", err)
 	}
 }
 

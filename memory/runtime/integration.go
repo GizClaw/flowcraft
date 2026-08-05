@@ -1,18 +1,18 @@
-// Package memory starts the worker runner owned by a deployed memory Assembly.
-package memory
+// Package runtime integrates the flowcraft memory worker into
+// sdkx/runtime application lifecycles. Background processing is an
+// implementation concern, so the integration lives here instead of in
+// the generic adapter layer.
+package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"sync"
 
-	"github.com/GizClaw/flowcraft/memory/lifecycle"
-	"github.com/GizClaw/flowcraft/memory/worker"
+	"github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	memoryconfig "github.com/GizClaw/flowcraft/sdkx/memory/config"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
@@ -22,8 +22,10 @@ const (
 	memoryDependencyKind = "memory.Assembly"
 )
 
+// Factory builds the flowcraft memory worker integration.
 type Factory struct{}
 
+// NewFactory returns the flowcraft memory worker integration factory.
 func NewFactory() *Factory { return &Factory{} }
 
 func (*Factory) Spec() runtimecore.IntegrationSpec {
@@ -31,7 +33,7 @@ func (*Factory) Spec() runtimecore.IntegrationSpec {
 		Kind: Kind,
 		Deps: []runtimecore.DependencySpec{{
 			Name: "memory", Kind: memoryDependencyKind,
-			Type: reflect.TypeFor[*memoryconfig.Assembly](), Required: true,
+			Type: reflect.TypeFor[*config.Assembly](), Required: true,
 		}},
 	}
 }
@@ -50,17 +52,16 @@ func (*Factory) Prepare(_ context.Context, input runtimecore.PrepareInput) (runt
 type integration struct {
 	name string
 
-	mu              sync.Mutex
-	runner          *worker.Runner
-	lifecycleRunner *lifecycle.DreamingRunner
-	bound           bool
-	closed          bool
-
+	mu        sync.Mutex
+	assembly  *config.Assembly
+	bound     bool
+	closed    bool
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// Bind borrows an Assembly. Ownership remains with the deploy Result.
+// Bind borrows the flowcraft Assembly. Ownership remains with the
+// deploy Result.
 func (i *integration) Bind(_ context.Context, input runtimecore.BindInput) error {
 	if i == nil {
 		return errdefs.Validationf("memory runtime integration: nil integration")
@@ -73,15 +74,14 @@ func (i *integration) Bind(_ context.Context, input runtimecore.BindInput) error
 	if i.bound {
 		return errdefs.Conflictf("memory runtime integration %q: already bound", i.name)
 	}
-	assembly, err := runtimecore.DependencyAs[*memoryconfig.Assembly](input.Dependencies, "memory")
+	assembly, err := runtimecore.DependencyAs[*config.Assembly](input.Dependencies, "memory")
 	if err != nil {
 		return err
 	}
-	if assembly.System == nil || assembly.Runner == nil {
-		return errdefs.Validationf("memory runtime integration %q: assembly is incomplete", i.name)
+	if assembly.Runner == nil && assembly.LifecycleRunner == nil {
+		return errdefs.Validationf("memory runtime integration %q: assembly has no runner", i.name)
 	}
-	i.runner = assembly.Runner
-	i.lifecycleRunner = assembly.LifecycleRunner
+	i.assembly = assembly
 	i.bound = true
 	return nil
 }
@@ -102,26 +102,27 @@ func (i *integration) Start(ctx context.Context) error {
 		i.mu.Unlock()
 		return errdefs.NotAvailablef("memory runtime integration %q: integration is closed", i.name)
 	}
-	if !i.bound || i.runner == nil {
+	if !i.bound || i.assembly == nil {
 		i.mu.Unlock()
-		return errdefs.NotAvailablef("memory runtime integration %q: runner is not bound", i.name)
+		return errdefs.NotAvailablef("memory runtime integration %q: assembly is not bound", i.name)
 	}
-	runner := i.runner
-	lifecycleRunner := i.lifecycleRunner
+	assembly := i.assembly
 	i.mu.Unlock()
-	if err := runner.Start(ctx); err != nil {
-		return fmt.Errorf("memory runtime integration %q: start runner: %w", i.name, err)
+	if assembly.Runner != nil {
+		if err := assembly.Runner.Start(ctx); err != nil {
+			return fmt.Errorf("memory runtime integration %q: start runner: %w", i.name, err)
+		}
 	}
-	if lifecycleRunner != nil {
-		if err := lifecycleRunner.Start(ctx); err != nil {
-			_ = runner.Close()
+	if assembly.LifecycleRunner != nil {
+		if err := assembly.LifecycleRunner.Start(ctx); err != nil {
+			_ = assembly.Close()
 			return fmt.Errorf("memory runtime integration %q: start lifecycle runner: %w", i.name, err)
 		}
 	}
 	return nil
 }
 
-// Close stops the borrowed runner but never calls Assembly.Close.
+// Close stops the borrowed runner but never closes the deploy result.
 func (i *integration) Close() error {
 	if i == nil {
 		return nil
@@ -129,14 +130,10 @@ func (i *integration) Close() error {
 	i.closeOnce.Do(func() {
 		i.mu.Lock()
 		i.closed = true
-		runner := i.runner
-		lifecycleRunner := i.lifecycleRunner
+		assembly := i.assembly
 		i.mu.Unlock()
-		if runner != nil {
-			i.closeErr = runner.Close()
-		}
-		if lifecycleRunner != nil {
-			i.closeErr = errors.Join(i.closeErr, lifecycleRunner.Close())
+		if assembly != nil {
+			i.closeErr = assembly.Close()
 		}
 	})
 	return i.closeErr

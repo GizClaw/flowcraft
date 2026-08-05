@@ -21,7 +21,6 @@ jobs:
       sdk: ${{ steps.filter.outputs.sdk }}
       memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
-      claw: ${{ steps.filter.outputs.claw }}
       eval: ${{ steps.filter.outputs.eval }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
@@ -40,8 +39,6 @@ jobs:
               - 'memory/**'
             sdkx:
               - 'sdkx/**'
-            claw:
-              - 'cmd/claw/**'
             eval:
               - 'eval/**'
             ci:
@@ -91,7 +88,7 @@ jobs:
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,13 +99,13 @@ jobs:
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx cmd/claw eval; do
+          for m in sdk memory sdkx eval; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx cmd/claw eval)
+          diff=$(gofmt -l sdk memory sdkx eval)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -209,24 +206,6 @@ jobs:
         run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
         working-directory: sdkx
 
-  test-claw:
-    name: Test claw (Go ${{ matrix.go-version }})
-    needs: detect
-    # claw composes sdk, memory, and sdkx; rerun when any dependency changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: cmd/claw
-
   test-eval:
     name: Test eval (Go ${{ matrix.go-version }})
     needs: detect
@@ -252,7 +231,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-claw, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-eval]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -268,7 +247,6 @@ jobs:
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
-            "${{ needs.test-claw.result }}" \
             "${{ needs.test-eval.result }}" \
           )
           for r in "${results[@]}"; do

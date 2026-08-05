@@ -5,15 +5,14 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"reflect"
 	"strings"
 
-	rootmemory "github.com/GizClaw/flowcraft/memory"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	memoryconfig "github.com/GizClaw/flowcraft/sdkx/memory/config"
 	memoryrender "github.com/GizClaw/flowcraft/sdkx/memory/render"
 )
 
@@ -88,7 +87,7 @@ func ContextPreparerFactory(_ context.Context, input deploy.HookInput) (agent.Pr
 	if err != nil {
 		return nil, errdefs.Validation(err)
 	}
-	system, err := resolveSystem(input)
+	provider, err := resolveContext(input)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +108,7 @@ func ContextPreparerFactory(_ context.Context, input deploy.HookInput) (agent.Pr
 		if strings.TrimSpace(query) == "" && strings.TrimSpace(conversationID) == "" {
 			return nil, errdefs.Validationf("%s: resolved query and conversation ID are empty", ContextType)
 		}
-		result, err := system.Context(ctx, sdkmemory.ContextRequest{
+		result, err := provider.Context(ctx, sdkmemory.ContextRequest{
 			Scope: settings.Scope.scope(), ConversationID: conversationID,
 			DatasetIDs: append([]string(nil), settings.DatasetIDs...), Query: query,
 			Budget: settings.Budget.budget(), MinScore: settings.MinScore,
@@ -149,7 +148,7 @@ func TurnCommitterFactory(_ context.Context, input deploy.HookInput) (agent.Comm
 	if err := settings.validate(); err != nil {
 		return nil, errdefs.Validation(err)
 	}
-	system, err := resolveSystem(input)
+	sink, err := resolveTurn(input)
 	if err != nil {
 		return nil, err
 	}
@@ -168,32 +167,50 @@ func TurnCommitterFactory(_ context.Context, input deploy.HookInput) (agent.Comm
 		if conversationID == "" {
 			conversationID = req.ContextID
 		}
-		return system.CommitTurn(ctx, sdkmemory.Turn{
+		return sink.CommitTurn(ctx, sdkmemory.Turn{
 			Scope: settings.Scope.scope(), ConversationID: conversationID,
 			IdempotencyKey: identity.RunID, Messages: messages,
 		})
 	}), nil
 }
 
-func resolveSystem(input deploy.HookInput) (*rootmemory.System, error) {
+func resolveAssembly(input deploy.HookInput) (sdkmemory.Assembly, error) {
 	raw, ok := input.Dep(depName)
 	if !ok {
 		return nil, errdefs.NotFoundf("memory hook: dependency %q is not bound", depName)
 	}
-	switch value := raw.(type) {
-	case *rootmemory.System:
-		if value != nil {
-			return value, nil
-		}
-	case *memoryconfig.Assembly:
-		if value != nil && value.System != nil {
-			return value.System, nil
-		}
+	assembly, ok := raw.(sdkmemory.Assembly)
+	if !ok || isNilAssembly(assembly) {
+		return nil, errdefs.Validationf(
+			"memory hook: dependency %q has Go type %T, want memory.Assembly",
+			depName, raw,
+		)
 	}
-	return nil, errdefs.Validationf(
-		"memory hook: dependency %q has Go type %T, want *memory.System or *config.Assembly",
-		depName, raw,
-	)
+	return assembly, nil
+}
+
+func resolveContext(input deploy.HookInput) (sdkmemory.ContextProvider, error) {
+	assembly, err := resolveAssembly(input)
+	if err != nil {
+		return nil, err
+	}
+	return assembly, nil
+}
+
+func resolveTurn(input deploy.HookInput) (sdkmemory.TurnSink, error) {
+	assembly, err := resolveAssembly(input)
+	if err != nil {
+		return nil, err
+	}
+	return assembly, nil
+}
+
+func isNilAssembly(assembly sdkmemory.Assembly) bool {
+	if assembly == nil {
+		return true
+	}
+	value := reflect.ValueOf(assembly)
+	return value.Kind() == reflect.Ptr && value.IsNil()
 }
 
 func (s ContextSettings) validate() error {

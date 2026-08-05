@@ -22,6 +22,8 @@
 !cmd/**
 !eval/
 !eval/**
+!examples/
+!examples/**
 !memory/
 !memory/**
 !sdk/

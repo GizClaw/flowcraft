@@ -2,19 +2,16 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.26.0
 
-require (
-	github.com/GizClaw/flowcraft/memory v0.1.7
-	github.com/GizClaw/flowcraft/sdk v0.4.8
-)
+require github.com/GizClaw/flowcraft/sdk v0.4.8
 
 require (
 	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb
 	github.com/anthropics/anthropic-sdk-go v1.61.0
-	github.com/yuin/gopher-lua v1.1.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/openai/openai-go v1.12.0
 	github.com/volcengine/volcengine-go-sdk v1.2.14
+	github.com/yuin/gopher-lua v1.1.1
 	go.opentelemetry.io/otel v1.40.0
 	go.opentelemetry.io/otel/log v0.16.0
 	go.opentelemetry.io/otel/sdk/log v0.16.0

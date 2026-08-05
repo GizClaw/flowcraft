@@ -6,7 +6,6 @@
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/sdk.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk)
-[![Go Report Card](https://goreportcard.com/badge/github.com/GizClaw/flowcraft/sdk)](https://goreportcard.com/report/github.com/GizClaw/flowcraft/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/dl/)
 
@@ -16,181 +15,211 @@
 
 FlowCraft is a Go workspace for building and evaluating AI applications without
 tying application code to one model provider or execution model. Graphs are one
-built-in option, not a required architecture. Use the SDK packages directly, or
-start with Claw for a runnable local workspace.
+built-in option, not a required architecture: use the SDK packages directly, or
+start with the forge demo in `examples/forge` for a runnable local workspace.
 
-- **`cmd/claw`** — Local CLI and TUI for creating agent workspaces, running
-  conversations, inspecting memory, serving debug APIs, and executing scripted
-  tests.
-- **`sdk`** — Agent, graph, engine, model, tool, event, telemetry, and workspace
-  contracts.
-- **`memory`** — Recall, conversation history, knowledge retrieval, text
-  processing, and persistence backends.
-- **`sdkx`** — Provider adapters and optional implementations for LLMs,
-  embeddings, reranking, checkpointing, sandboxing, and Claw.
+## Modules
 
-The library layers are independently versioned Go modules. Applications can
-adopt only the layers they need.
+- **`sdk`** — Core contracts: agent execution, graph, engine, tool, model,
+  message, inference, memory capabilities, event bus, telemetry, workspace,
+  sandbox, scheduler, and delegation.
+- **`memory`** — The flowcraft memory implementation: recall, history,
+  knowledge, retrieval indexes, projections, lifecycle maintenance, and the
+  background worker.
+- **`sdkx`** — Provider adapters and generic assembly layers: inference
+  providers (OpenAI, DeepSeek, Qwen, ByteDance, MiniMax, Azure), deploy +
+  runtime assembly, tool and workspace configuration, scheduler, and the
+  memory assembly, hooks, and renderer.
+- **`examples/forge`** — A runnable local workspace demo built on the current
+  stack: native deploy/inference/memory scenario configs, chat REPL, TUI,
+  debug HTTP, scripted tests, and raid × persona simulation.
+- **`tests/conformance`** — Provider conformance suites (credentialed lanes
+  self-skip without a repo-root `.env`).
+- **`tools/releasegate`** — Release automation: changeset validation, release
+  planning, and changelog aggregation.
 
----
+Library layers are independently versioned Go modules; applications adopt only
+the layers they need.
 
-## Why FlowCraft
+## Memory architecture
 
-| You need…                          | FlowCraft provides…                                                                                                |
-| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| A runnable local agent environment | Claw workspaces, TUI sessions, debug HTTP endpoints, and scripted tests                                            |
-| Explicit execution contracts       | A small `engine.Engine` / `engine.Host` boundary that supports graph, scripted, remote, or custom execution models |
-| Long-term memory                   | Hybrid recall, histories, knowledge stores, retrieval indexes, and SQLite/Postgres backends                        |
-| Provider portability               | OpenAI, Anthropic, DeepSeek, MiniMax, and Volcengine adapters behind shared SDK interfaces                         |
-| Multi-agent composition            | Kanban agent-as-tool delegation that can run over graph or custom engines                                          |
----
+`sdk/memory` defines the memory capability contracts — `ContextProvider`,
+`TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope`, and `Turn`. The
+`memory/` module is **one implementation** of those contracts: it owns its own
+settings schema, its own assembly factory, and its own background worker
+runtime integration. `sdkx/memory` provides only the generic glue: a
+`memory.Assembly` deploy resource that dispatches to implementations by
+`impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
+the GoTemplate context renderer.
+
+This mirrors the inference pattern: `sdkx/inference/config` is generic, and
+each provider (`openai`, `deepseek`, …) is a registered factory. Memory
+implementations plug in the same way — `impl: flowcraft` selects the bundled
+implementation, and another implementation registers under its own name with
+its own parameters.
 
 ## Quickstart
 
-### Run a local agent with Claw
+### Run the forge workspace demo
 
-Claw is the fastest way to explore the stack. It creates persistent local
-workspaces, opens an interactive TUI, exposes debug endpoints, and runs scripted
-agent tests.
+The forge demo is the fastest way to explore the stack. It creates workspaces
+from native scenario configs, opens an interactive TUI, exposes debug
+endpoints, and runs scripted tests.
 
 ```bash
-cd cmd/claw
+cd examples/forge
 go run . help
 
-# Open the interactive TUI and select an embedded raid config.
-go run . tui new
+# Create a workspace from the func_chat scenario and open the chat REPL.
+go run . workspace create --config func_chat --workspace ./workspace
+go run . chat --workspace ./workspace
 ```
 
 Build a reusable local binary:
 
 ```bash
-cd cmd/claw
-go build -o claw .
-./claw help
+cd examples/forge
+go build -o forge .
+./forge help
 ```
 
-See [`cmd/claw/README.md`](cmd/claw/README.md) for workspace, TUI, debug API,
-configuration, and test commands.
+Scenarios are native deployment documents: each `assets/raids/<name>/` is a
+complete workspace template (`deploy.yaml`, `inference.yaml`, `memory.yaml`,
+`workspace.yaml`, `tools.yaml`, and a graph definition with its scripts and
+prompts). Credentials come from a repo-root `.env`; see `examples/forge` for
+details.
 
 ### Embed FlowCraft in a Go service
 
-Use `sdk` directly and add `memory` or `sdkx` when the application needs recall,
-history, knowledge, persistence, or provider adapters. Applications execute any
-`engine.Engine` through `agent.Run`; the bundled graph runner is one available
-implementation, alongside scripted, remote, or application-defined engines.
+Use `sdk` directly and add `memory` or `sdkx` when the application needs
+recall, history, knowledge, persistence, or provider adapters. Assemble a
+deployment from `deploy.yaml` with `sdkx/deploy`, run it with `sdkx/runtime`,
+and drive turns through `sdkx/runtime/session`:
 
-- [`sdk/agent/run_test.go`](sdk/agent/run_test.go) — minimal `agent.Run` patterns
----
+```go
+document, _ := deploy.Parse(deployYAML)
+app, _ := runtimeBuilder.Build(ctx, document)
+defer app.Close()
+
+lease, _ := app.Sessions().Open(ctx, session.Key{
+    AgentID:   "assistant",
+    ContextID: "conversation-1",
+})
+turn, _ := lease.Session().Start(ctx, agent.Request{
+    Message: message.NewTextMessage(message.RoleUser, "hello"),
+}, session.SinkSpec{ID: "console", Sink: streamSink})
+result, _ := turn.Wait(ctx)
+```
+
+See [`docs/guides/deploy.md`](docs/guides/deploy.md) and
+[`docs/guides/runtime.md`](docs/guides/runtime.md) for the full assembly and
+session contracts.
 
 ## Architecture
 
-The SDK defines the execution contracts. Memory, provider adapters, and Claw
-compose those contracts without becoming dependencies of the core.
+The SDK defines the execution contracts. Memory and provider adapters compose
+those contracts without becoming dependencies of the core.
 
 ```
                 ┌──────────────────────┐
                 │   Your application   │
                 └──────────┬───────────┘
                            │
-                ┌──────────┴──────────┐
-                │                     │
-          ┌──────▼──────┐      ┌──────▼───────┐
-          │  cmd/claw   │      │    sdkx/     │
-          │ CLI · TUI · │      │ providers ·  │
-          │ debug · test│      │ persistence  │
-          └──────┬──────┘      └──────┬───────┘
-                 │                    │
-                 └──────────┬──────────┘
-                            │
-                 ┌──────────┴──────────┐
-                 │                     │
-                 └──────────┬──────────┘
-                            │
-                 ┌──────────▼──────────┐
-                 │       memory/       │
-                 │      recall ·       │
-                 │      history ·      │
-                 │      knowledge      │
-                 └──────────┬──────────┘
-                            │
-                 ┌──────────▼──────────┐
-                 │        sdk/         │
-                 │    agent · graph    │
-                 │    engine · tool    │
-                 │    event · model    │
-                 └─────────────────────┘
+                ┌──────────▼──────────┐
+                │        sdkx/        │
+                │     providers ·     │
+                │     persistence     │
+                └──────────┬──────────┘
+                           │
+                ┌──────────▼──────────┐
+                │       memory/       │
+                │      recall ·       │
+                │      history ·      │
+                │      knowledge      │
+                └──────────┬──────────┘
+                           │
+                ┌──────────▼──────────┐
+                │        sdk/         │
+                │    agent · graph    │
+                │    engine · tool    │
+                │    event · model    │
+                └─────────────────────┘
 ```
 
 **Layering rule:** `sdk/engine` is a leaf package. It does not import agent,
 graph, LLM, or tool packages. Execution implementations satisfy
-`engine.Engine`; hosts provide capabilities through `engine.Host`. Memory lives
-in its own module and depends on SDK contracts, never the reverse.
-
----
+`engine.Engine`; hosts provide capabilities through `engine.Host`. Memory
+contracts live in the SDK, while implementations (the `memory/` module) and
+adapters (`sdkx/`) stay outside the core.
 
 ## Module map
 
-| Path                                      | Role                                                                           | Distribution         |
-| ----------------------------------------- | ------------------------------------------------------------------------------ | -------------------- |
-| [`cmd/claw`](cmd/claw/)                   | Local workspace runner, TUI, debug API, and scripted-test CLI                  | Source-built command |
-| [`sdk`](sdk/)                             | Agent execution contracts, graph runtime, tools, models, events, and telemetry | Versioned Go module  |
-| [`memory`](memory/)                       | Recall, history, knowledge, retrieval, text processing, and stores             | Versioned Go module  |
-| [`sdkx`](sdkx/)                           | Provider, persistence, sandbox, and application adapters                       | Versioned Go module  |
-| [`eval`](eval/)                           | Offline and synthetic quality-evaluation harnesses                             | Workspace module     |
-| [`tests/conformance`](tests/conformance/) | Provider conformance suites                                                    | Tests                |
+| Path                                        | Role                                                                             | Distribution         |
+| ------------------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
+| [`sdk`](sdk/)                               | Agent, graph, engine, tool, model, message, inference, memory, event, telemetry  | Versioned Go module  |
+| [`memory`](memory/)                         | Recall, history, knowledge, retrieval, projections, lifecycle, worker            | Versioned Go module  |
+| [`sdkx`](sdkx/)                             | Provider adapters + generic assembly (deploy, runtime, tool, memory, scheduler)  | Versioned Go module  |
+| [`examples/forge`](examples/forge/)         | Runnable local workspace demo                                                     | Examples            |
+| [`tests/conformance`](tests/conformance/)   | Provider conformance suites                                                       | Tests               |
+| [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
 
----
+The retired `cmd/claw` CLI remains in the repository for reference but is not
+part of the workspace, build, or CI; the forge demo replaces it.
 
 ## Highlights
 
-### Local workflows with Claw (`cmd/claw`, `sdkx/claw`)
+### Hybrid memory that actually recalls (`memory/`)
 
-- Persistent workspaces with config, history, memory, and graph state.
-- Interactive TUI plus an embeddable Go runtime.
-- Debug HTTP endpoints for workspace, history, memory, and recall inspection.
-- Scripted and simulation-style tests with captured workspace artifacts.
-
-### Hybrid memory that actually recalls (`memory/recall`)
-
-- Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay, and time decay.
-- Predicate alias normalisation so "favourite color" and "favorite colour" hit the same memory.
-- Pluggable `retrieval.Index` backend — `memory/retrieval/memory` (in-memory), `memory/retrieval/sqlite` (SQLite), and `memory/retrieval/postgres` (Postgres + pgvector) ship in-tree; bring your own by implementing `retrieval.Index`.
+- Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank
+  Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay,
+  and time decay.
+- Canonical source → derived view → rebuildable projection → hydrated context,
+  with deterministic packing and durable outbox commits.
+- Memory as a pluggable implementation: `memory/` is one factory behind the
+  `sdk/memory` contracts, and its background worker integrates through its own
+  runtime integration.
 
 ### Streaming, durable, resumable (`sdk/engine`)
 
 - `Subject`-routed event bus — every step emits structured envelopes.
-- `Checkpoint` / `CheckpointStore` contract — pause and resume an agent across restarts.
+- `Checkpoint` / `CheckpointStore` contracts — pause and resume an agent
+  across restarts.
 - `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
 
----
+### Unified inference runtime (`sdk/inference` + `sdkx/inference`)
+
+- One runtime for Generate / Embed / Transcription / Realtime, with exact
+  `ModelRef` addressing and compile-time capability checks.
+- Providers registered as factories: OpenAI, DeepSeek, Qwen, ByteDance,
+  MiniMax, and Azure.
+
+### Runnable local workspace demo (`examples/forge`)
+
+- Workspaces built from native deploy/inference/memory scenario documents.
+- Chat REPL, three-panel TUI, and debug HTTP endpoints backed by the session
+  runtime and memory hooks.
+- Scripted tests with per-turn metrics and raid × persona simulation.
 
 ## Documentation
 
-The canonical reference is the per-package `doc.go` files, browsable on pkg.go.dev:
+The canonical reference is the per-package `doc.go` files, browsable on
+pkg.go.dev:
 
-- [`cmd/claw/README.md`](cmd/claw/README.md) — CLI, TUI, workspace, debug API, and scripted-test guide
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core primitives (agent, engine, graph, llm, tool, telemetry, …)
-- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — recall, history, knowledge, retrieval, and text packages
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — provider implementations
-
----
+- [`docs/`](docs/index.md) — guides for graph, tool, event, workspace, sandbox,
+  inference, deploy, runtime, and memory.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core contracts
+- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — memory implementation
+- [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — adapters and assembly
 
 ## Status
 
-The active project surface is `sdk`, `memory`, `sdkx`, and Claw.
-Library modules are released independently and remain pre-1.0. Claw currently
-ships from source as the local interactive runner.
+The active project surface is `sdk`, `memory`, `sdkx`, and the forge demo.
+Library modules are released independently and remain pre-1.0. Durable
+execution contracts, Postgres and SQLite checkpoint stores, OTel
+instrumentation, and retrieval end-to-end coverage are maintained in-tree.
 
-Durable execution contracts, Postgres and SQLite checkpoint stores, OTel
-instrumentation, quality-evaluation harnesses, and retrieval end-to-end coverage
-are maintained in-tree.
-
-The next milestone is the assertion-graph memory model: first-class observations, assertions, and links with provenance, so recall can retrieve linked evidence packets instead of isolated facts.
-
-API surface is governed by SemVer per module. Breaking changes may ship as minor
-bumps until a module reaches `v1.0.0`.
-
----
+API surface is governed by SemVer per module. Breaking changes may ship as
+minor bumps until a module reaches `v1.0.0`.
 
 ## Building from source
 
@@ -203,11 +232,9 @@ make ci            # vet + test for all in-tree modules
 make release-check # validate changesets and the pending release plan
 ```
 
-This repository is a Go workspace. Active members are `sdk`, `memory`, `sdkx`,
-`cmd/claw`, and `eval`. Some test harnesses intentionally run with `GOWORK=off`
-against pinned released modules.
-
----
+This repository is a Go workspace. Active members are `sdk`, `memory`,
+`sdkx`, and `examples/forge`. Some test harnesses intentionally run with
+`GOWORK=off` against pinned released modules.
 
 ## Contributing
 
@@ -216,18 +243,18 @@ Issues and pull requests are welcome. Before opening a PR:
 1. `make ci` should be green.
 2. `gofmt -l .` should print nothing.
 3. Tests for new features. New behaviour without a test won't merge.
-4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`).
+4. Commit messages follow Conventional Commits (`feat:`, `fix:`, `docs:`,
+   `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`
 changesets for `sdk`, `memory`, and `sdkx`; a changeset is optional for
 ordinary PRs. After merge, automation aggregates pending summaries into a
 Release PR that updates `CHANGELOG.md`. Merging that PR runs isolated tidy,
 build, vet, and race-test gates before all planned tags are pushed atomically.
-Claw remains source-only and does not receive module tags. See
-[`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated dependency
-rules.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated
+dependency rules.
 
-For larger work, please open a discussion or draft RFC issue first — it's much faster than reviewing a 5k-line PR cold.
+For larger work, please open a discussion or draft RFC issue first.
 
 ---
 

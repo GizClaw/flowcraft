@@ -243,6 +243,30 @@ func (a *Assembly) ResolveItem(ref string) (any, bool) {
 	return a.System, true
 }
 
+// Context implements sdkmemory.ContextProvider.
+func (a *Assembly) Context(ctx context.Context, request sdkmemory.ContextRequest) (sdkmemory.ContextResult, error) {
+	if a == nil || a.System == nil {
+		return sdkmemory.ContextResult{}, errors.New("memory config: assembly has no system")
+	}
+	return a.System.Context(ctx, request)
+}
+
+// CommitTurn implements sdkmemory.TurnSink.
+func (a *Assembly) CommitTurn(ctx context.Context, turn sdkmemory.Turn) error {
+	if a == nil || a.System == nil {
+		return errors.New("memory config: assembly has no system")
+	}
+	return a.System.CommitTurn(ctx, turn)
+}
+
+// PutDocument implements sdkmemory.DocumentSink.
+func (a *Assembly) PutDocument(ctx context.Context, document sdkmemory.Document) error {
+	if a == nil || a.System == nil {
+		return errors.New("memory config: assembly has no system")
+	}
+	return a.System.PutDocument(ctx, document)
+}
+
 // NewAssembly validates settings and wires canonical stores, write-side DAGs,
 // exactly three projections, retrieval, the System, Processor, and Runner.
 // It performs no background work; callers explicitly start Runner.
