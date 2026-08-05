@@ -1,6 +1,10 @@
 {
   "edges": [
     {
+      "from": "chat_buffer",
+      "to": "__end__"
+    },
+    {
       "from": "state_route",
       "to": "chat_buffer"
     },
@@ -13,10 +17,6 @@
       "from": "state_route",
       "to": "format_intent",
       "condition": "needs_format == true"
-    },
-    {
-      "from": "chat_buffer",
-      "to": "__end__"
     },
     {
       "from": "format_intent",
@@ -58,16 +58,24 @@
       "condition": "function_play_music_pending == true"
     },
     {
-      "from": "function_play_music",
-      "to": "clear_completed_route",
-      "condition": "function_play_music_pending != true"
-    },
-    {
       "from": "function_play_music_exec",
       "to": "function_play_music"
     },
     {
+      "from": "function_play_music",
+      "to": "function_play_music_publish",
+      "condition": "function_play_music_pending != true"
+    },
+    {
+      "from": "function_play_music_publish",
+      "to": "clear_completed_route"
+    },
+    {
       "from": "function_read_story",
+      "to": "function_read_story_publish"
+    },
+    {
+      "from": "function_read_story_publish",
       "to": "clear_completed_route"
     },
     {
@@ -76,13 +84,17 @@
       "condition": "function_adjust_device_volume_pending == true"
     },
     {
+      "from": "function_adjust_device_volume_exec",
+      "to": "function_adjust_device_volume"
+    },
+    {
       "from": "function_adjust_device_volume",
-      "to": "clear_completed_route",
+      "to": "function_adjust_device_volume_publish",
       "condition": "function_adjust_device_volume_pending != true"
     },
     {
-      "from": "function_adjust_device_volume_exec",
-      "to": "function_adjust_device_volume"
+      "from": "function_adjust_device_volume_publish",
+      "to": "clear_completed_route"
     },
     {
       "from": "function_stop",
@@ -90,13 +102,17 @@
       "condition": "function_stop_pending == true"
     },
     {
+      "from": "function_stop_exec",
+      "to": "function_stop"
+    },
+    {
       "from": "function_stop",
-      "to": "clear_completed_route",
+      "to": "function_stop_publish",
       "condition": "function_stop_pending != true"
     },
     {
-      "from": "function_stop_exec",
-      "to": "function_stop"
+      "from": "function_stop_publish",
+      "to": "clear_completed_route"
     },
     {
       "from": "clear_completed_route",
@@ -116,6 +132,7 @@
       "type": "inference",
       "config": {
         "max_output_tokens": 192,
+        "messages_channel": "",
         "model": {
           "id": {
             "name": "deepseek-v4-flash",
@@ -301,6 +318,46 @@
       "type": "tool",
       "config": {
         "messages_channel": "function_route_channel"
+      }
+    },
+    {
+      "id": "function_play_music_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/function_play_music_publish.js"
+        }
+      }
+    },
+    {
+      "id": "function_read_story_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/function_read_story_publish.js"
+        }
+      }
+    },
+    {
+      "id": "function_adjust_device_volume_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/function_adjust_device_volume_publish.js"
+        }
+      }
+    },
+    {
+      "id": "function_stop_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/function_stop_publish.js"
+        }
       }
     }
   ]

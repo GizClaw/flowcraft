@@ -14,9 +14,7 @@ import (
 
 // Execute runs one forge command.
 func Execute(args []string) error {
-	if err := scenario.SyncUserConfigs(); err != nil {
-		return fmt.Errorf("sync configs: %w", err)
-	}
+	args = parseGlobalFlags(args)
 	if len(args) < 1 {
 		printHelp()
 		return nil
@@ -26,8 +24,6 @@ func Execute(args []string) error {
 		return workspaceCmd(args[1:])
 	case "config":
 		return configCmd(args[1:])
-	case "chat":
-		return chatCmd(args[1:])
 	case "tui":
 		return tuiCmd(args[1:])
 	case "serve":
@@ -43,6 +39,20 @@ func Execute(args []string) error {
 	}
 }
 
+// parseGlobalFlags extracts forge-wide flags that may precede the
+// subcommand, such as --scenarios <dir>.
+func parseGlobalFlags(args []string) []string {
+	if len(args) >= 2 && args[0] == "--scenarios" {
+		scenario.SetOverride(args[1])
+		return args[2:]
+	}
+	if len(args) >= 1 && strings.HasPrefix(args[0], "--scenarios=") {
+		scenario.SetOverride(strings.TrimPrefix(args[0], "--scenarios="))
+		return args[1:]
+	}
+	return args
+}
+
 func printHelp() {
 	fmt.Print(usage())
 }
@@ -50,12 +60,12 @@ func printHelp() {
 func usage() string {
 	return strings.TrimLeft(`
 Usage:
+  forge --scenarios <dir> <command> [flags]
   forge workspace create --config <raid-scenario> --workspace <dir>
   forge workspace inspect --workspace <dir>
   forge config raid list
   forge config persona list
   forge config test list
-  forge chat --workspace <dir> [--context <id>]
   forge tui new
   forge tui resume
   forge serve --workspace <dir> [--addr 127.0.0.1:8787]

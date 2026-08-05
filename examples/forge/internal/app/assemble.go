@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"path/filepath"
 
+	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
+	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
 	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
@@ -20,8 +22,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/inference/minimax"
 	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
 	"github.com/GizClaw/flowcraft/sdkx/inference/qwen"
-	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
-	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	sdkxmemory "github.com/GizClaw/flowcraft/sdkx/memory/config"
 	memoryhook "github.com/GizClaw/flowcraft/sdkx/memory/hook"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"

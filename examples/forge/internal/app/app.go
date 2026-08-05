@@ -14,8 +14,8 @@ import (
 	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/message"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"

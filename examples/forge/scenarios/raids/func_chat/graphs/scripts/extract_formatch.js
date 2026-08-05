@@ -1,34 +1,11 @@
-var raw = "";
-var formatMsgs = board.channel("route_format_channel") || [];
-for (var i = formatMsgs.length - 1; i >= 0; i--) {
-  var fm = formatMsgs[i] || {};
-  if (fm.role !== "assistant") continue;
-  var partsArr =
-    fm.content && Array.isArray(fm.content.parts) ? fm.content.parts : [];
-  for (var j = partsArr.length - 1; j >= 0; j--) {
-    var fpart = partsArr[j] || {};
-    if (
-      fpart.type === "text" &&
-      typeof fpart.text === "string" &&
-      fpart.text.trim()
-    ) {
-      raw = fpart.text.trim();
-      break;
-    }
-  }
-  if (raw) break;
-}
-raw = String(raw || "").trim();
-const lines = raw
-  .split(/\r?\n/)
-  .map(function (line) {
-    return line.trim();
-  })
-  .filter(Boolean);
+const raw = String(board.getVar("formatch_text") || "").trim();
+const lines = raw.split(/\r?\n/).map(function(line) {
+  return line.trim();
+}).filter(Boolean);
 
 function parseArgs(text) {
   const args = {};
-  text.split(",").forEach(function (part) {
+  text.split(",").forEach(function(part) {
     const idx = part.indexOf("=");
     if (idx < 0) return;
     const key = part.slice(0, idx).trim();
@@ -51,8 +28,7 @@ const allowed = {
 function routeFromIntent(intent) {
   let functionRoute = intent;
   if (intent === "play_song" || intent === "sing") functionRoute = "play_music";
-  if (intent === "stop_playing" || intent === "stop_chat")
-    functionRoute = "stop";
+  if (intent === "stop_playing" || intent === "stop_chat") functionRoute = "stop";
   return functionRoute;
 }
 

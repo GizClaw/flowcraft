@@ -4,14 +4,9 @@ function latestUserText() {
     const msg = msgs[i] || {};
     if (msg.role !== "user") continue;
     const parts = Array.isArray(msg.content.parts) ? msg.content.parts : [];
-    const text = parts
-      .map(function (part) {
-        return part && part.type === "text" && typeof part.text === "string"
-          ? part.text
-          : "";
-      })
-      .join("")
-      .trim();
+    const text = parts.map(function(part) {
+      return part && part.type === "text" && typeof part.text === "string" ? part.text : "";
+    }).join("").trim();
     if (text) return text;
   }
   return "";
@@ -25,22 +20,10 @@ const pendingRoutes = board.getVar("pending_routes") || ws.pending_routes || [];
 if (activeRoute) {
   const args = Object.assign({}, activeArgs || {});
   const latest = latestUserText();
-  if (
-    (activeRoute === "play_music" ||
-      activeRoute === "play_song" ||
-      activeRoute === "sing") &&
-    !args.title &&
-    latest
-  ) {
+  if ((activeRoute === "play_music" || activeRoute === "play_song" || activeRoute === "sing") && !args.title && latest) {
     args.title = latest;
   }
-  if (
-    activeRoute === "read_story" &&
-    !args.title &&
-    !args.series &&
-    !args.subject &&
-    latest
-  ) {
+  if (activeRoute === "read_story" && !args.title && !args.series && !args.subject && latest) {
     args.subject = latest;
   }
   board.setVar("route_source", "state");
@@ -48,14 +31,8 @@ if (activeRoute) {
   board.setVar("matched_args", args);
   board.setVar("matched_args_json", JSON.stringify(args || {}));
   board.setVar("function_route", activeRoute);
-  board.setVar(
-    "pending_routes",
-    Array.isArray(pendingRoutes) ? pendingRoutes : [],
-  );
-  board.setVar(
-    "pending_routes_json",
-    JSON.stringify(Array.isArray(pendingRoutes) ? pendingRoutes : []),
-  );
+  board.setVar("pending_routes", Array.isArray(pendingRoutes) ? pendingRoutes : []);
+  board.setVar("pending_routes_json", JSON.stringify(Array.isArray(pendingRoutes) ? pendingRoutes : []));
   board.setVar("has_next_route", false);
   board.setVar("has_function_intent", true);
   board.setVar("needs_format", false);
@@ -70,14 +47,9 @@ if (activeRoute) {
   board.setVar("has_next_route", false);
   board.setVar("has_function_intent", false);
   board.setVar("needs_format", true);
-  board.setVar(
-    "tmp_main_channel_before_format",
-    board.channel(board.MAIN_CHANNEL),
-  );
-  board.setChannel("route_format_channel", [
-    {
-      role: "user",
-      content: { parts: [{ type: "text", text: latestUserText() }] },
-    },
-  ]);
+  board.setVar("tmp_main_channel_before_format", board.channel(board.MAIN_CHANNEL));
+  board.setChannel("route_format_channel", [{
+    role: "user",
+    content: { parts: [{ type: "text", text: latestUserText() }] },
+  }]);
 }

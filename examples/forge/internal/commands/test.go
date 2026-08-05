@@ -149,7 +149,7 @@ func runOneTestTurn(
 	defer cancel()
 	toolsBefore := a.ToolCalls()
 	collector := &textCollectorSink{}
-	result, err := a.RunTurn(turnCtx, input, collector.spec())
+	_, err := a.RunTurn(turnCtx, input, collector.spec())
 	metric.FinishedAt = time.Now()
 	metric.Elapsed = metric.FinishedAt.Sub(metric.StartedAt)
 	metric.TokenEvents = collector.tokens
@@ -158,9 +158,6 @@ func runOneTestTurn(
 	if err != nil {
 		metric.Error = err.Error()
 		return metric, "", err
-	}
-	if metric.OutputChars == 0 && result != nil && len(result.Messages) > 0 {
-		metric.OutputChars = len(result.Messages[len(result.Messages)-1].Content.Text())
 	}
 	return metric, collector.builder.String(), nil
 }

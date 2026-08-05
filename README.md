@@ -70,9 +70,9 @@ endpoints, and runs scripted tests.
 cd examples/forge
 go run . help
 
-# Create a workspace from the func_chat scenario and open the chat REPL.
+# Create a workspace from the func_chat scenario and run a scripted test.
 go run . workspace create --config func_chat --workspace ./workspace
-go run . chat --workspace ./workspace
+go run . test -test func_chat/music_direct
 ```
 
 Build a reusable local binary:
@@ -83,11 +83,13 @@ go build -o forge .
 ./forge help
 ```
 
-Scenarios are native deployment documents: each `assets/raids/<name>/` is a
+Scenarios are native deployment documents: each `scenarios/raids/<name>/` is a
 complete workspace template (`deploy.yaml`, `inference.yaml`, `memory.yaml`,
 `workspace.yaml`, `tools.yaml`, and a graph definition with its scripts and
-prompts). Credentials come from a repo-root `.env`; see `examples/forge` for
-details.
+prompts). They are plain files under `examples/forge/scenarios/`, resolved in
+priority order from `--scenarios` / `FORGE_SCENARIOS`, the executable's
+directory, the working directory, and the user config directory. Credentials
+come from a repo-root `.env`; see `examples/forge` for details.
 
 ### Embed FlowCraft in a Go service
 
@@ -196,8 +198,8 @@ part of the workspace, build, or CI; the forge demo replaces it.
 ### Runnable local workspace demo (`examples/forge`)
 
 - Workspaces built from native deploy/inference/memory scenario documents.
-- Chat REPL, three-panel TUI, and debug HTTP endpoints backed by the session
-  runtime and memory hooks.
+- Three-panel TUI and debug HTTP endpoints backed by the session runtime and
+  memory hooks.
 - Scripted tests with per-turn metrics and raid × persona simulation.
 
 ## Documentation

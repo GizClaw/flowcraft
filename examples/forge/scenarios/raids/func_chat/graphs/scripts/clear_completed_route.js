@@ -1,14 +1,8 @@
 const intent = board.getVar("matched_intent") || "";
 const route = board.getVar("function_route") || intent;
 const args = board.getVar("matched_args") || {};
-const pending = Array.isArray(board.getVar("pending_routes"))
-  ? board.getVar("pending_routes")
-  : [];
-const missingTitle =
-  (route === "play_music" || route === "read_story") &&
-  !args.title &&
-  !args.series &&
-  !args.subject;
+const pending = Array.isArray(board.getVar("pending_routes")) ? board.getVar("pending_routes") : [];
+const missingTitle = (route === "play_music" || route === "read_story") && !args.title && !args.series && !args.subject;
 
 if (missingTitle) {
   board.setVar("active_route", route);
@@ -41,19 +35,4 @@ if (missingTitle) {
   board.setVar("pending_routes_json", "[]");
   board.setVar("has_function_intent", false);
   board.setVar("has_next_route", false);
-}
-
-// Publish the function branch output to the main channel (the
-// legacy graph did this with publish: true on the llm node).
-var routeMsgs = board.channel("function_route_channel") || [];
-var lastAssistant = null;
-for (var i = routeMsgs.length - 1; i >= 0; i--) {
-  var m = routeMsgs[i] || {};
-  if (m.role === "assistant") {
-    lastAssistant = m;
-    break;
-  }
-}
-if (lastAssistant) {
-  board.appendChannel(board.MAIN_CHANNEL, lastAssistant);
 }
