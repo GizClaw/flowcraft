@@ -197,6 +197,14 @@ jobs:
           git clone --depth 1 https://github.com/google/nsjail.git /tmp/nsjail
           make -C /tmp/nsjail -j"$(nproc)"
           sudo install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail
+          sudo mv /usr/local/bin/nsjail /usr/local/bin/nsjail-real
+          sudo tee /usr/local/bin/nsjail >/dev/null <<'EOF'
+          #!/bin/sh
+          # GitHub-hosted runners deny unprivileged mount-namespace setup, so
+          # run the real binary through passwordless sudo in this CI lane.
+          exec sudo -n /usr/local/bin/nsjail-real "$@"
+          EOF
+          sudo chmod 0755 /usr/local/bin/nsjail
           nsjail --help 2>&1 | head -3 || true
           which nsjail
       - name: Test
