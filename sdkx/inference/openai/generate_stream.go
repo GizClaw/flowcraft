@@ -27,12 +27,13 @@ type responsesStream struct {
 }
 
 type streamPart struct {
-	index        int
-	tool         bool
-	reasoning    bool
-	id           string // reasoning item id from output_item.added
-	sawArgsDelta bool
-	sawSummary   bool
+	index           int
+	tool            bool
+	reasoning       bool
+	id              string // reasoning item id from output_item.added
+	sawArgsDelta    bool
+	sawArgsSnapshot bool
+	sawSummary      bool
 }
 
 func transportGenerateStream(
@@ -146,8 +147,12 @@ func (s *responsesStream) apply(
 		// item.done carries the complete arguments; emit them only when no
 		// incremental deltas streamed for this part, otherwise the runtime
 		// accumulator would append the snapshot a second time.
-		if event.Type == "response.output_item.done" && !part.sawArgsDelta {
+		if event.Type == "response.output_item.done" &&
+			!part.sawArgsDelta && !part.sawArgsSnapshot {
 			raw.tool.argsFragment = event.Item.Arguments
+			if event.Item.Arguments != "" {
+				part.sawArgsSnapshot = true
+			}
 		}
 		return raw, true, nil
 	case "response.reasoning_summary_text.delta":
@@ -185,9 +190,10 @@ func (s *responsesStream) apply(
 		}, true, nil
 	case "response.function_call_arguments.done":
 		part := s.registerPart(event.OutputIndex, true)
-		if part.sawArgsDelta || event.Arguments == "" {
+		if part.sawArgsDelta || part.sawArgsSnapshot || event.Arguments == "" {
 			return streamRaw{}, false, nil
 		}
+		part.sawArgsSnapshot = true
 		return streamRaw{
 			kind: streamRawToolFragment,
 			part: part.index,

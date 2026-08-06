@@ -60,9 +60,16 @@ func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
 	if decision.Reason != sdkdelegation.HandoffFinalizeReason+"billing" {
 		t.Fatalf("decision = %+v", decision)
 	}
-	event, ok := sdkdelegation.HandoffFromResult(result)
+	raw, ok := decision.State[sdkdelegation.HandoffStateKey]
+	if !ok {
+		t.Fatal("decision.State missing handoff event")
+	}
+	event, ok := raw.(sdkdelegation.HandoffEvent)
 	if !ok || event.ToolCallID != "first" {
 		t.Fatalf("event = %+v, found = %v", event, ok)
+	}
+	if result.State != nil {
+		t.Fatalf("After mutated Result.State: %+v", result.State)
 	}
 }
 

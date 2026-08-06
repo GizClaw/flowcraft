@@ -5,7 +5,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/tool"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // ToolConfig is the config of the "tool" node type.
@@ -83,7 +86,13 @@ func Tool(dispatcher tool.Dispatcher) graph.NodeType[ToolConfig] {
 					Content:    result.Content,
 					IsError:    result.IsError,
 				}); err != nil {
-					return err
+					// Stream deltas are observability, not control flow:
+					// the tool call has already executed, so a publish
+					// failure must not fail the node (which could cause a
+					// graph retry to re-run side effects).
+					telemetry.WarnErr(ec.Context, "tool node: stream delta publish failed", err,
+						otellog.String("node.type", "tool"),
+						otellog.String("tool.call_id", result.CallID))
 				}
 			}
 			board.AppendChannelMessage(channel, message.Message{

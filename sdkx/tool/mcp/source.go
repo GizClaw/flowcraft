@@ -46,6 +46,13 @@ type Source struct {
 	mu      sync.Mutex
 	servers map[string]*server
 	closed  bool
+
+	// ownerMu guards qualified-name ownership. A qualified tool name may
+	// belong to exactly one server; without this, two servers configured
+	// with the same prefix could overwrite each other's registry entries
+	// and one server's removal would delete the other's tool.
+	ownerMu sync.Mutex
+	owners  map[string]string
 }
 
 // NewSource returns a Source that registers discovered tools into
@@ -58,6 +65,7 @@ func NewSource(registry *sdktool.Registry) *Source {
 	return &Source{
 		registry: registry,
 		servers:  make(map[string]*server),
+		owners:   make(map[string]string),
 	}
 }
 
@@ -283,21 +291,63 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 	defer srv.mu.Unlock()
 
 	fresh := make(map[string]struct{}, len(res.Tools))
+	var claimedNew []string
+	for _, mt := range res.Tools {
+		if mt == nil || mt.Name == "" {
+			continue
+		}
+		qualified := srv.qualify(mt.Name)
+		if _, already := srv.registered[qualified]; already {
+			continue
+		}
+		if !s.claimOwnership(srv.name, qualified) {
+			for _, name := range claimedNew {
+				s.releaseOwnership(name)
+			}
+			return errdefs.Conflictf(
+				"mcp: tool %q is already owned by another attached server",
+				qualified)
+		}
+		claimedNew = append(claimedNew, qualified)
+	}
+
 	for _, mt := range res.Tools {
 		if mt == nil || mt.Name == "" {
 			continue
 		}
 		qualified := srv.qualify(mt.Name)
 		fresh[qualified] = struct{}{}
+		if _, already := srv.registered[qualified]; already {
+			continue
+		}
 		s.registry.RegisterWithScope(newAdaptedTool(srv, qualified, mt), srv.scope)
 	}
 	for previous := range srv.registered {
 		if _, still := fresh[previous]; !still {
 			s.registry.Unregister(previous)
+			s.releaseOwnership(previous)
 		}
 	}
 	srv.registered = fresh
 	return nil
+}
+
+// claimOwnership records that qualified belongs to serverName. It reports
+// false when another server already owns the name.
+func (s *Source) claimOwnership(serverName, qualified string) bool {
+	s.ownerMu.Lock()
+	defer s.ownerMu.Unlock()
+	if owner, ok := s.owners[qualified]; ok && owner != serverName {
+		return false
+	}
+	s.owners[qualified] = serverName
+	return true
+}
+
+func (s *Source) releaseOwnership(qualified string) {
+	s.ownerMu.Lock()
+	delete(s.owners, qualified)
+	s.ownerMu.Unlock()
 }
 
 // Refresh re-lists every attached server and reconciles the registry.
@@ -407,6 +457,7 @@ func (s *Source) unregisterAll(srv *server) {
 	defer srv.mu.Unlock()
 	for name := range srv.registered {
 		s.registry.Unregister(name)
+		s.releaseOwnership(name)
 	}
 	srv.registered = make(map[string]struct{})
 }

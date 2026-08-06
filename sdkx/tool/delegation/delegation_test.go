@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
@@ -56,6 +57,32 @@ func TestDelegateDefinitionFallsBackWhenDirectoryUnavailable(t *testing.T) {
 				t.Fatalf("fallback target schema contains enum: %s", schema.Properties["target"])
 			}
 		})
+	}
+}
+
+type blockingDirectory struct {
+	*fakeDirectory
+}
+
+func (b *blockingDirectory) List(ctx context.Context) ([]sdkdelegation.Target, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestDelegateDefinitionBoundsDirectoryLookup(t *testing.T) {
+	directory := &blockingDirectory{fakeDirectory: &fakeDirectory{
+		targets: []sdkdelegation.Target{{ID: "billing"}},
+	}}
+	delegate := tooldelegation.NewDelegate(directory)
+
+	start := time.Now()
+	definition := delegate.Definition()
+	elapsed := time.Since(start)
+	if elapsed > 5*time.Second {
+		t.Fatalf("Definition blocked for %v, want bounded lookup", elapsed)
+	}
+	if definition.Name != sdkdelegation.ToolName {
+		t.Fatalf("definition = %q", definition.Name)
 	}
 }
 

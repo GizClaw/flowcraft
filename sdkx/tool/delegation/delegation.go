@@ -7,6 +7,7 @@ import (
 	"io"
 	"maps"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
@@ -25,6 +26,8 @@ const (
 type delegateTool struct {
 	directory sdkdelegation.Directory
 }
+
+const delegateTargetListTimeout = 2 * time.Second
 
 type statusTool struct{}
 
@@ -90,7 +93,9 @@ func (t delegateTool) targets() []sdkdelegation.Target {
 	if t.directory == nil {
 		return nil
 	}
-	targets, err := t.directory.List(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), delegateTargetListTimeout)
+	defer cancel()
+	targets, err := t.directory.List(ctx)
 	if err != nil || len(targets) == 0 {
 		return nil
 	}

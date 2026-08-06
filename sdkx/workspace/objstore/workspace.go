@@ -2,6 +2,7 @@ package objstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"path/filepath"
@@ -99,6 +100,9 @@ func (w *objectWorkspace) Append(ctx context.Context, path string, data []byte) 
 	// Fallback: read-modify-write (not atomic).
 	existing, getErr := w.store.Get(ctx, key)
 	if getErr != nil {
+		if !errors.Is(getErr, ErrKeyNotFound) {
+			return fmt.Errorf("objstore: append %s: read existing object: %w", path, getErr)
+		}
 		existing = nil
 	}
 	return w.store.Put(ctx, key, append(existing, data...))
@@ -260,7 +264,9 @@ func (w *objectWorkspace) resolveDir(dir string) (string, error) {
 }
 
 func mapErr(path string, err error) error {
-	if strings.Contains(err.Error(), "not found") {
+	if errors.Is(err, ErrKeyNotFound) ||
+		strings.Contains(strings.ToLower(err.Error()), "not found") ||
+		strings.Contains(strings.ToLower(err.Error()), "nosuchkey") {
 		return fmt.Errorf("%w: %s", workspace.ErrNotFound, path)
 	}
 	return err

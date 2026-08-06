@@ -111,7 +111,7 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	}()
 	if old != nil {
 		_ = old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput})
-		_, _ = old.Wait(context.Background())
+		_, _ = old.Wait(ctx)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, errdefs.FromContext(err)

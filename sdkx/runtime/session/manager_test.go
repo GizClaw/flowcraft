@@ -111,6 +111,8 @@ func TestContractsValidateTypedNil(t *testing.T) {
 		{ID: "confirmed-observer-explicit", Sink: validSink, Visibility: VisibilityConfirmed, AckMode: AckExplicit},
 		{ID: "raw-max-unacked", Sink: validSink, MaxUnacked: 1},
 		{ID: "confirmed-observer-max-unacked", Sink: validSink, Visibility: VisibilityConfirmed, MaxUnacked: 1},
+		{ID: "confirmed-authority-max-unacked-ondelivery", Sink: validSink,
+			Visibility: VisibilityConfirmed, Authority: AuthorityAuthoritative, MaxUnacked: 1},
 	} {
 		if err := spec.Validate(); !errdefs.IsValidation(err) {
 			t.Fatalf("invalid acknowledgement spec %+v error = %v, want validation", spec, err)

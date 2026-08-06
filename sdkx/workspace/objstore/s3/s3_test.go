@@ -3,9 +3,11 @@ package s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -190,6 +192,115 @@ func TestS3Store_DelPrefix(t *testing.T) {
 	data, _ := store.Get(ctx, "keep.txt")
 	if string(data) != "k" {
 		t.Fatal("keep.txt should remain")
+	}
+}
+
+// flakyClient returns configured non-not-found errors from Get/Head.
+type flakyClient struct {
+	*mockClient
+	getErr  error
+	headErr error
+}
+
+func (f *flakyClient) GetObject(context.Context, *GetObjectInput) (*GetObjectOutput, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.mockClient.GetObject(context.Background(), &GetObjectInput{})
+}
+
+func (f *flakyClient) HeadObject(context.Context, *HeadObjectInput) (*HeadObjectOutput, error) {
+	if f.headErr != nil {
+		return nil, f.headErr
+	}
+	return f.mockClient.HeadObject(context.Background(), &HeadObjectInput{})
+}
+
+func TestS3Store_Get_NonNotFoundErrorNotMapped(t *testing.T) {
+	client := &flakyClient{mockClient: newMockClient(), getErr: errors.New("connection refused")}
+	store := New(client, "test-bucket")
+
+	_, err := store.Get(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if errors.Is(err, objstore.ErrKeyNotFound) {
+		t.Fatalf("transport error was mapped to ErrKeyNotFound: %v", err)
+	}
+}
+
+func TestS3Store_Head_NonNotFoundErrorNotMapped(t *testing.T) {
+	client := &flakyClient{mockClient: newMockClient(), headErr: errors.New("access denied")}
+	store := New(client, "test-bucket")
+
+	_, err := store.Head(context.Background(), "key")
+	if err == nil {
+		t.Fatal("expected auth error")
+	}
+	if errors.Is(err, objstore.ErrKeyNotFound) {
+		t.Fatalf("auth error was mapped to ErrKeyNotFound: %v", err)
+	}
+}
+
+// pagingClient returns at most pageSize keys per ListObjectsV2 page.
+type pagingClient struct {
+	*mockClient
+	pageSize int
+}
+
+func (p *pagingClient) ListObjectsV2(_ context.Context, in *ListObjectsV2Input) (*ListObjectsV2Output, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	keys := make([]string, 0, len(p.data))
+	for k := range p.data {
+		if strings.HasPrefix(k, in.Prefix) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+
+	start := 0
+	if in.ContinuationToken != nil && *in.ContinuationToken != "" {
+		if n, err := strconv.Atoi(*in.ContinuationToken); err == nil {
+			start = n
+		}
+	}
+	end := start + p.pageSize
+	if end > len(keys) {
+		end = len(keys)
+	}
+	out := &ListObjectsV2Output{}
+	for _, k := range keys[start:end] {
+		out.Contents = append(out.Contents, objstore.ObjectInfo{Key: k})
+	}
+	if end < len(keys) {
+		next := strconv.Itoa(end)
+		out.NextContinuationToken = &next
+	}
+	return out, nil
+}
+
+func TestS3Store_DelPrefix_Paginates(t *testing.T) {
+	client := &pagingClient{mockClient: newMockClient(), pageSize: 2}
+	ctx := context.Background()
+	for _, key := range []string{"a/1", "a/2", "a/3", "a/4", "b/1"} {
+		if err := client.PutObject(ctx, &PutObjectInput{Key: key, Body: strings.NewReader("x")}); err != nil {
+			t.Fatalf("put %s: %v", key, err)
+		}
+	}
+
+	store := New(client, "test-bucket")
+	if err := store.DelPrefix(ctx, "a/"); err != nil {
+		t.Fatalf("DelPrefix: %v", err)
+	}
+
+	client.mu.RLock()
+	defer client.mu.RUnlock()
+	if len(client.data) != 1 {
+		t.Fatalf("remaining objects = %d, want only b/1", len(client.data))
+	}
+	if _, ok := client.data["b/1"]; !ok {
+		t.Fatal("b/1 must survive DelPrefix(\"a/\")")
 	}
 }
 

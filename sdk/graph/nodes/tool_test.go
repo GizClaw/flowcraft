@@ -3,10 +3,12 @@ package nodes
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
@@ -120,5 +122,34 @@ func TestToolNode_NoDispatcher(t *testing.T) {
 	))
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err == nil || !errdefs.IsNotAvailable(err) {
 		t.Fatalf("unwired dispatcher error = %v, want NotAvailable", err)
+	}
+}
+
+type failingPublishHost struct {
+	agent.NoopHost
+}
+
+func (failingPublishHost) Publish(context.Context, event.Envelope) error {
+	return errors.New("bus down")
+}
+
+func TestToolNode_PublishFailureDoesNotFailExecution(t *testing.T) {
+	reg := toolRegistry(t, echoDispatcher())
+	g := singleNodeGraph(t, reg, "tool", ToolConfig{})
+
+	board := agent.NewBoard()
+	board.AppendChannelMessage(agent.MainChannel, assistantWithCalls(
+		message.Call{ID: "call_1", Name: "search", Arguments: json.RawMessage(`{"q":"weather"}`)},
+	))
+	if err := executeGraph(t, g, failingPublishHost{}, board); err != nil {
+		var runEndErr *agent.RunEndPublishError
+		if !errors.As(err, &runEndErr) {
+			t.Fatalf("Execute failed with non-run-end error (node must not fail on stream publish): %v", err)
+		}
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 || msgs[1].Role != message.RoleTool {
+		t.Fatalf("channel = %+v, want assistant + tool message", msgs)
 	}
 }

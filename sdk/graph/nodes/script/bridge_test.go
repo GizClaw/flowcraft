@@ -132,7 +132,7 @@ func TestStreamBridge_SubscribeReceivesNodeEvents(t *testing.T) {
 		current := it["current"].(func() map[string]any)
 
 		// Publish a stream delta from this node after subscribing.
-		env2, err := event.NewEnvelope(ctx, agent.SubjectStreamDelta("run-1", "graph_node_n"),
+		env2, err := event.NewEnvelope(ctx, agent.SubjectStreamDelta("run-1", "test-agent.node.n"),
 			agent.StreamDeltaPayload{Type: agent.StreamDeltaToken, Content: "tok"})
 		if err != nil {
 			t.Errorf("NewEnvelope: %v", err)

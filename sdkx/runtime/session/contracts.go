@@ -130,7 +130,11 @@ func (s SinkSpec) Validate() error {
 	if s.Authority == AuthorityAuthoritative && s.Visibility != VisibilityConfirmed {
 		return errdefs.Validationf("runtime session: authoritative sink must be confirmed")
 	}
-	if (s.AckMode == AckExplicit || s.MaxUnacked > 0) &&
+	if s.MaxUnacked > 0 && s.AckMode != AckExplicit {
+		return errdefs.Validationf(
+			"runtime session: MaxUnacked requires AckExplicit (AckOnDelivery has no unacknowledged window)")
+	}
+	if s.AckMode == AckExplicit &&
 		(s.Visibility != VisibilityConfirmed || s.Authority != AuthorityAuthoritative) {
 		return errdefs.Validationf(
 			"runtime session: explicit acknowledgements and MaxUnacked require a confirmed authoritative sink")

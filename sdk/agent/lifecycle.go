@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"maps"
+)
 
 // ---------- Observer (read-only lifecycle) ----------
 
@@ -472,6 +475,19 @@ type Decision struct {
 	// Referees later in the chain should only set Reason if they
 	// have something more specific to add.
 	Reason string
+
+	// State carries optional structured metadata the referee wants
+	// attached to [Result.State] (e.g. a handoff event). Referees MUST
+	// NOT mutate res directly; this is the only channel for adding
+	// result metadata. Entries are merged after the referee chain, with
+	// later referees winning on key conflicts.
+	State map[string]any
+}
+
+// IsZero reports whether no referee expressed any opinion.
+func (d Decision) IsZero() bool {
+	return !d.AcceptOutput && !d.DiscardOutput && !d.Revise &&
+		d.Reason == "" && len(d.State) == 0
 }
 
 // BaseReferee provides no-op default implementations of every Referee
@@ -513,6 +529,12 @@ func composeReferees(ctx context.Context, id Identity, req *Request, res *Result
 		}
 		if merged.Reason == "" && d.Reason != "" {
 			merged.Reason = d.Reason
+		}
+		if d.State != nil {
+			if merged.State == nil {
+				merged.State = make(map[string]any, len(d.State))
+			}
+			maps.Copy(merged.State, d.State)
 		}
 	}
 	return merged, nil

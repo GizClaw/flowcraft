@@ -7,13 +7,17 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 )
 
-// stepActorFor maps a node id to its step actor — the middle segment
-// of the step and stream-delta subjects built by the agent package
-// (agent.SubjectStepStart, agent.SubjectStreamDelta, …). The
-// "graph_node_" prefix keeps graph actors visually distinct from other
-// engine kinds in subject filters.
-func stepActorFor(nodeID string) string {
-	return "graph_node_" + agent.SanitiseID(nodeID)
+// stepActorFor maps an agent and node id to its step actor — the middle
+// segment of the step and stream-delta subjects built by the agent
+// package (agent.SubjectStepStart, agent.SubjectStreamDelta, …).
+//
+// The actor MUST start with the executing agent id per the sdk/agent
+// subject contract, with ".node.<nodeID>" appended for the graph
+// runner's private suffix. The subject builders sanitise the whole
+// actor, so the dotted form is collapsed on the wire; consumers that
+// need agent-level filtering use the envelope's agent_id header.
+func stepActorFor(agentID, nodeID string) string {
+	return agentID + ".node." + nodeID
 }
 
 // RunEventPayload describes the graph execution bracket.
@@ -66,12 +70,12 @@ type StepEventPayload struct {
 // the step lifecycle events bracketing a node invocation. Emission is
 // best-effort: a publishing failure never fails the node.
 func publishStepStarted(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, nodeID string) {
-	publishStep(ctx, host, agent.SubjectStepStart(info.RunID, stepActorFor(nodeID)),
+	publishStep(ctx, host, agent.SubjectStepStart(info.RunID, stepActorFor(info.AgentID, nodeID)),
 		info, StepEventPayload{NodeID: nodeID, Graph: g.name})
 }
 
 func publishStepCompleted(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, nodeID string) {
-	publishStep(ctx, host, agent.SubjectStepComplete(info.RunID, stepActorFor(nodeID)),
+	publishStep(ctx, host, agent.SubjectStepComplete(info.RunID, stepActorFor(info.AgentID, nodeID)),
 		info, StepEventPayload{NodeID: nodeID, Graph: g.name})
 }
 
@@ -79,12 +83,12 @@ func publishStepCompleted(ctx context.Context, host agent.Host, g *Graph, info a
 // step-complete envelope with Skipped=true. The node did not run, but
 // observers still see the full traversal.
 func publishStepSkipped(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, nodeID string) {
-	publishStep(ctx, host, agent.SubjectStepComplete(info.RunID, stepActorFor(nodeID)),
+	publishStep(ctx, host, agent.SubjectStepComplete(info.RunID, stepActorFor(info.AgentID, nodeID)),
 		info, StepEventPayload{NodeID: nodeID, Graph: g.name, Skipped: true})
 }
 
 func publishStepError(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, nodeID string, stepErr error) {
-	publishStep(ctx, host, agent.SubjectStepError(info.RunID, stepActorFor(nodeID)),
+	publishStep(ctx, host, agent.SubjectStepError(info.RunID, stepActorFor(info.AgentID, nodeID)),
 		info, StepEventPayload{NodeID: nodeID, Graph: g.name, Error: stepErr.Error()})
 }
 
@@ -159,7 +163,7 @@ func publishStreamDelta(ctx context.Context, host agent.Host, info agent.RunInfo
 		return nil
 	}
 	env, err := event.NewEnvelope(ctx,
-		agent.SubjectStreamDelta(info.RunID, stepActorFor(nodeID)), delta)
+		agent.SubjectStreamDelta(info.RunID, stepActorFor(info.AgentID, nodeID)), delta)
 	if err != nil {
 		return err
 	}

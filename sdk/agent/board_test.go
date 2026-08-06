@@ -232,6 +232,33 @@ func TestBoard_ChannelsCopy_DeepCopiesPerChannel(t *testing.T) {
 	}
 }
 
+func TestBoard_Clone_DeepCopiesMessageParts(t *testing.T) {
+	b := agent.NewBoard()
+	b.AppendChannelMessage(agent.MainChannel, message.Message{
+		Role:    message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{message.TextPart{Text: "original"}}},
+	})
+
+	cloned := b.Clone()
+	if cloned == nil || cloned == b {
+		t.Fatal("Clone returned nil or the same board")
+	}
+
+	// Mutating the original message part must not leak into the clone.
+	original := b.Channel(agent.MainChannel)
+	original[0].Content.Parts[0] = message.TextPart{Text: "mutated"}
+	b.SetChannel(agent.MainChannel, original)
+
+	got := cloned.Channel(agent.MainChannel)
+	if len(got) != 1 {
+		t.Fatalf("clone channel length = %d, want 1", len(got))
+	}
+	text, ok := got[0].Content.Parts[0].(message.TextPart)
+	if !ok || text.Text != "original" {
+		t.Fatalf("clone part = %#v, want original text", got[0].Content.Parts[0])
+	}
+}
+
 func TestBoard_SnapshotRestoreRoundTrip(t *testing.T) {
 	b := agent.NewBoard()
 	b.SetVar("k", "v")

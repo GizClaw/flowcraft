@@ -133,6 +133,7 @@ func Execute(
 		res         *Result
 		execDecided bool // set when a non-recoverable Referee error short-circuited
 		decErr      error
+		seedLen     int
 	)
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Re-seed board on every attempt so revise restarts see a
@@ -147,6 +148,9 @@ func Execute(
 		if board == nil {
 			return nil, errdefs.Validationf("agent: Preparer chain returned nil board")
 		}
+		// Messages at or before this index are seed/context, never output
+		// of this attempt. The engine's appended messages start after it.
+		seedLen = len(board.Channel(MainChannel))
 
 		// Run is rebuilt each attempt: ResumeFrom is honoured
 		// for attempt 1 only (revise is not "resume", it is a fresh
@@ -186,7 +190,7 @@ func Execute(
 			State:    map[string]any{"run_id": runID},
 			Attempts: attempt,
 		}
-		materializeResult(res, finalBoard, rc.artifactChannels)
+		materializeResult(res, finalBoard, rc.artifactChannels, seedLen)
 
 		switch {
 		case execErr == nil:
@@ -243,6 +247,9 @@ func Execute(
 			if decision.Reason != "" {
 				res.State["finalize_reason"] = decision.Reason
 			}
+			if len(decision.State) > 0 {
+				maps.Copy(res.State, decision.State)
+			}
 		}
 
 		// Revise gate: only fires for completed attempts that have
@@ -294,7 +301,10 @@ func Execute(
 				return res, errdefs.Validationf("agent: CommitViewProvider returned nil board")
 			}
 			projected := *res
-			materializeResult(&projected, view.LastBoard, rc.artifactChannels)
+			// The commit projection is a self-contained board produced by
+			// the provider: there is no seed boundary to exclude, so start
+			// from the beginning of its MainChannel.
+			materializeResult(&projected, view.LastBoard, rc.artifactChannels, 0)
 			commitRes = &projected
 		}
 		if err := commitResult(ctx, id, &req, commitRes, rc.committers); err != nil {
@@ -317,9 +327,9 @@ func Execute(
 // materializeResult derives every board-backed Result field from board.
 // Keeping this in one helper ensures engine results and Committer-only
 // projections follow exactly the same message and artifact rules.
-func materializeResult(res *Result, board *Board, artifactChannels []string) {
+func materializeResult(res *Result, board *Board, artifactChannels []string, seedLen int) {
 	res.LastBoard = board
-	res.Messages = newAssistantMessages(board)
+	res.Messages = newAssistantMessages(board, seedLen)
 	res.Artifacts = collectArtifacts(board, artifactChannels)
 }
 
@@ -351,7 +361,8 @@ func itoa(n int) string {
 
 // newAssistantMessages returns the assistant messages produced during
 // the run by walking MainChannel from the end and collecting the
-// trailing assistant block. Stops as soon as it hits a non-assistant
+// trailing assistant block, considering only messages appended after
+// start (the seed boundary). Stops as soon as it hits a non-assistant
 // message — earlier assistant messages are part of the seeded
 // transcript, not output of this turn.
 //
@@ -360,18 +371,23 @@ func itoa(n int) string {
 // Trade-off: agents that interleave assistant + user turns inside one
 // run will see only the trailing assistant block here. If that ever
 // matters, callers can read finalBoard themselves via Result.LastBoard.
-func newAssistantMessages(b *Board) []message.Message {
+func newAssistantMessages(b *Board, start int) []message.Message {
 	main := b.Channel(MainChannel)
-	end := len(main)
-	start := end
-	for start > 0 && main[start-1].Role == message.RoleAssistant {
-		start--
+	if start < 0 {
+		start = 0
 	}
-	if start == end {
+	if start > len(main) {
+		start = len(main)
+	}
+	end := len(main)
+	for end > start && main[end-1].Role == message.RoleAssistant {
+		end--
+	}
+	if end == len(main) {
 		return nil
 	}
-	out := make([]message.Message, end-start)
-	copy(out, main[start:end])
+	out := make([]message.Message, len(main)-end)
+	copy(out, main[end:])
 	return out
 }
 

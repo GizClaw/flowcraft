@@ -79,9 +79,7 @@ func (b *Board) Clone() *Board {
 	defer b.mu.RUnlock()
 	channels := make(map[string][]message.Message, len(b.channels))
 	for name, msgs := range b.channels {
-		copied := make([]message.Message, len(msgs))
-		copy(copied, msgs)
-		channels[name] = copied
+		channels[name] = message.CloneMessages(msgs)
 	}
 	vars := make(map[string]any, len(b.vars))
 	maps.Copy(vars, b.vars)

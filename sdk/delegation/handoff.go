@@ -186,15 +186,15 @@ func (r *handoffReferee) After(
 			if !ok {
 				continue
 			}
-			if result.State == nil {
-				result.State = make(map[string]any)
-			}
-			result.State[HandoffStateKey] = HandoffEvent{
+			event := HandoffEvent{
 				Target:     args.Target,
 				ToolCallID: call.ID,
 				Args:       args,
 			}
-			return agent.Decision{Reason: HandoffFinalizeReason + args.Target}, nil
+			return agent.Decision{
+				Reason: HandoffFinalizeReason + args.Target,
+				State:  map[string]any{HandoffStateKey: event},
+			}, nil
 		}
 	}
 	return agent.Decision{}, nil

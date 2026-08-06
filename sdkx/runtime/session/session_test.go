@@ -234,6 +234,51 @@ func TestSessionStartOverridesIdentityAndAttachesBeforeExecute(t *testing.T) {
 	}
 }
 
+func TestSessionStartHonorsCancelledContextWhileWaitingForOldTurn(t *testing.T) {
+	release := make(chan struct{})
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return board, nil
+	})
+	makeFactory := func(bus event.Bus) HostFactory {
+		return HostFactoryFunc(func(_ context.Context, _ HostRequest) (agent.Host, error) {
+			return testHost{bus: bus}, nil
+		})
+	}
+	_, session, _, _ := newTurnSession(t, engine, makeFactory)
+
+	req := agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")}
+	if _, err := session.Start(context.Background(), req); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := make(chan error, 1)
+	go func() {
+		_, err := session.Start(canceled, req)
+		started <- err
+	}()
+
+	select {
+	case err := <-started:
+		if err == nil {
+			t.Fatal("second Start succeeded with canceled context")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Start blocked on old turn despite canceled context")
+	}
+	close(release)
+}
+
 func TestSessionStartCloseRaceDetachesPostAttachCoordinator(t *testing.T) {
 	memoryBus := event.NewMemoryBus()
 	bus := &trackingBus{Bus: memoryBus}

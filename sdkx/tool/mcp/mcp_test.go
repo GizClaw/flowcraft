@@ -183,6 +183,37 @@ func TestAddServer_NamespacingAvoidsCollision(t *testing.T) {
 	}
 }
 
+func TestAddServer_RejectsExplicitPrefixCollision(t *testing.T) {
+	first := newTestServer(t, "a")
+	first.addTool("read", "Read A", objectSchema(), nil, textResult("from-a"))
+	first.serve(t)
+
+	second := newTestServer(t, "b")
+	second.addTool("read", "Read B", objectSchema(), nil, textResult("from-b"))
+	second.serve(t)
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(t.Context(), "alpha", first.transport,
+		mcp.WithPrefix("shared__")); err != nil {
+		t.Fatalf("AddServer alpha: %v", err)
+	}
+	err := src.AddServer(t.Context(), "beta", second.transport,
+		mcp.WithPrefix("shared__"))
+	if err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("AddServer beta = %v, want Conflict-classified error", err)
+	}
+
+	if _, ok := reg.Get("shared__read"); !ok {
+		t.Fatal("first server's tool was lost")
+	}
+	if got := src.Servers(); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("attached servers = %v, want only alpha", got)
+	}
+}
+
 func TestAddServer_WithPrefixAndScope(t *testing.T) {
 	ts := newTestServer(t, "fs")
 	ts.addTool("read_file", "Read", objectSchema(), nil, textResult("x"))

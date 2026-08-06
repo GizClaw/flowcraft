@@ -38,6 +38,15 @@ func toolResult(callID string, isError bool) message.Message {
 	}
 }
 
+func handoffEventFromDecision(decision agent.Decision) (delegation.HandoffEvent, bool) {
+	raw, ok := decision.State[delegation.HandoffStateKey]
+	if !ok {
+		return delegation.HandoffEvent{}, false
+	}
+	event, ok := raw.(delegation.HandoffEvent)
+	return event, ok
+}
+
 func TestHandoffToolUsesUnifiedDelegateShape(t *testing.T) {
 	handoffs := []delegation.Handoff{
 		{Target: delegation.Target{ID: "billing", Description: "Refunds and invoices"}},
@@ -195,12 +204,15 @@ func TestHandoffRefereeDetectsFirstMatchingCall(t *testing.T) {
 	if decision.Reason != delegation.HandoffFinalizeReason+"billing" {
 		t.Fatalf("reason = %q", decision.Reason)
 	}
-	event, ok := delegation.HandoffFromResult(res)
+	event, ok := handoffEventFromDecision(decision)
 	if !ok {
 		t.Fatal("handoff event not found")
 	}
 	if event.Target != "billing" || event.ToolCallID != "first" || event.Args.Input != "refund" {
 		t.Fatalf("event = %+v", event)
+	}
+	if res.State != nil {
+		t.Fatalf("After mutated Result.State: %+v", res.State)
 	}
 }
 
@@ -218,10 +230,10 @@ func TestHandoffRefereeIgnoresMalformedAndUnknownTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("After: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("decision = %+v, want zero", decision)
 	}
-	if _, ok := delegation.HandoffFromResult(res); ok {
+	if _, ok := handoffEventFromDecision(decision); ok {
 		t.Fatal("unexpected handoff event")
 	}
 }
@@ -251,9 +263,34 @@ func TestDirectoryHandoffRefereeResolvesTargetsAtDecisionTime(t *testing.T) {
 	if decision.Reason != delegation.HandoffFinalizeReason+"billing" {
 		t.Fatalf("reason = %q", decision.Reason)
 	}
-	event, ok := delegation.HandoffFromResult(res)
+	event, ok := handoffEventFromDecision(decision)
 	if !ok || event.ToolCallID != "first" {
 		t.Fatalf("event = %+v, found = %v", event, ok)
+	}
+}
+
+func TestHandoffRefereeReturnsStateWithoutMutatingResult(t *testing.T) {
+	ref := delegation.HandoffReferee([]delegation.Handoff{
+		{Target: delegation.Target{ID: "billing"}},
+	})
+	res := &agent.Result{Messages: []message.Message{
+		assistantToolCall("call-1", delegation.ToolName, `{"mode":"handoff","target":"billing","input":"refund"}`),
+		toolResult("call-1", false),
+	}}
+
+	decision, err := ref.After(context.Background(), agent.Identity{}, &agent.Request{}, res)
+	if err != nil {
+		t.Fatalf("After: %v", err)
+	}
+	if res.State != nil {
+		t.Fatalf("After mutated Result.State: %+v", res.State)
+	}
+	event, ok := handoffEventFromDecision(decision)
+	if !ok {
+		t.Fatal("decision.State missing handoff event")
+	}
+	if event.Target != "billing" || event.ToolCallID != "call-1" {
+		t.Fatalf("event = %+v", event)
 	}
 }
 
@@ -276,7 +313,7 @@ func TestDirectoryHandoffRefereeRequiresStrictValidHandoff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("After: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("decision = %+v, want zero", decision)
 	}
 }
@@ -296,7 +333,7 @@ func TestHandoffRefereeRequiresSuccessfulMatchingToolResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("After: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("decision = %+v, want zero", decision)
 	}
 }
@@ -320,7 +357,7 @@ func TestHandoffRefereeRecomputesStaticFilterForRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("After nil: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("nil decision = %+v, want zero", decision)
 	}
 
@@ -351,7 +388,7 @@ func TestHandoffRefereeStaticBranchRequiresStrictValidSupportedHandoff(t *testin
 	if err != nil {
 		t.Fatalf("After: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("decision = %+v, want zero", decision)
 	}
 }
@@ -389,7 +426,7 @@ func TestHandoffRefereeIgnoresToolExecutionFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("After: %v", err)
 	}
-	if decision != (agent.Decision{}) {
+	if !decision.IsZero() {
 		t.Fatalf("decision = %+v, want zero", decision)
 	}
 }

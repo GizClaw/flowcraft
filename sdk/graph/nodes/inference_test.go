@@ -303,7 +303,7 @@ func TestInferenceNode_Stream_PublishesDeltasAppendsAssembled(t *testing.T) {
 	}
 
 	// Subscribers saw one token event per text delta, in order.
-	deltas := host.published(agent.SubjectStreamDelta("run-1", "graph_node_n"))
+	deltas := host.published(agent.SubjectStreamDelta("run-1", "test-agent.node.n"))
 	if len(deltas) != 2 {
 		t.Fatalf("stream-delta envelopes = %d, want 2", len(deltas))
 	}

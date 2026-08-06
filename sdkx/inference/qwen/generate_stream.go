@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
@@ -96,10 +98,12 @@ func decodeStreamFragment(
 // scans "data:" chunks, decodes each into the shared envelope, and queues
 // the extracted fragments for pull consumption.
 type sseStream struct {
-	body    io.ReadCloser
-	scanner *bufio.Scanner
-	queue   []streamFragment
-	done    bool
+	body      io.ReadCloser
+	scanner   *bufio.Scanner
+	queue     []streamFragment
+	mu        sync.Mutex
+	done      bool
+	closeOnce sync.Once
 }
 
 func transportGenerateStream(
@@ -120,14 +124,38 @@ func transportGenerateStream(
 	}
 }
 
-func (s *sseStream) Next(_ context.Context) (streamFragment, error) {
+func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
+	if err := ctx.Err(); err != nil {
+		return streamFragment{}, errdefs.FromContext(err)
+	}
+	// scanner.Scan blocks until data or EOF. A canceled caller context must
+	// not leave Next parked indefinitely, so close the body from a watcher
+	// goroutine; that unblocks Scan and we surface the context error.
+	stopWatch := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			s.closeBody()
+		case <-stopWatch:
+		}
+	}()
+	defer close(stopWatch)
+
 	for len(s.queue) == 0 {
-		if s.done {
+		s.mu.Lock()
+		done := s.done
+		s.mu.Unlock()
+		if done {
 			return streamFragment{}, io.EOF
 		}
 		if !s.scanner.Scan() {
+			s.mu.Lock()
 			s.done = true
+			s.mu.Unlock()
 			if err := s.scanner.Err(); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return streamFragment{}, errdefs.FromContext(ctxErr)
+				}
 				return streamFragment{}, fmt.Errorf(
 					"qwen: read event stream: %w", err,
 				)
@@ -144,7 +172,12 @@ func (s *sseStream) Next(_ context.Context) (streamFragment, error) {
 		}
 		fragments, err := splitChunk([]byte(payload))
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return streamFragment{}, errdefs.FromContext(ctxErr)
+			}
+			s.mu.Lock()
 			s.done = true
+			s.mu.Unlock()
 			return streamFragment{}, err
 		}
 		s.queue = fragments
@@ -155,8 +188,16 @@ func (s *sseStream) Next(_ context.Context) (streamFragment, error) {
 }
 
 func (s *sseStream) Close() error {
+	s.mu.Lock()
 	s.done = true
-	return s.body.Close()
+	s.mu.Unlock()
+	return s.closeBody()
+}
+
+func (s *sseStream) closeBody() error {
+	var closeErr error
+	s.closeOnce.Do(func() { closeErr = s.body.Close() })
+	return closeErr
 }
 
 // splitChunk decodes one SSE chunk into its fragments. DashScope streams

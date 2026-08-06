@@ -316,7 +316,7 @@ func TestBaseReferee_ZeroValueDecision(t *testing.T) {
 	if err != nil {
 		t.Errorf("BaseReferee returned error: %v", err)
 	}
-	if (dec != Decision{}) {
+	if !dec.IsZero() {
 		t.Errorf("BaseReferee returned non-zero decision: %+v", dec)
 	}
 }
