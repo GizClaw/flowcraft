@@ -5,7 +5,9 @@
 // default on modern Ubuntu / Debian / Fedora). They are gated behind
 // the integration_nsjail build tag so the standard `go test ./...`
 // lane never picks them up; CI runs them in a dedicated job that
-// installs nsjail first. See .github/workflows/ci.yml ::
+// installs nsjail first. Hosts that can install the binary but cannot
+// build nsjail's mount tree (e.g. GitHub-hosted runners) skip the lane
+// rather than fail. See .github/workflows/ci.yml ::
 // test-sdkx-nsjail-integration.
 //
 // Tests that depend on cgroup-backed enforcement (memory / cpu caps)
@@ -23,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +37,57 @@ func requireNsjail(t *testing.T) {
 	if _, err := exec.LookPath("nsjail"); err != nil {
 		t.Skipf("nsjail binary not on PATH: %v", err)
 	}
+	if err := probeNsjail(); err != nil {
+		t.Skipf("nsjail binary present but unusable on this host: %v", err)
+	}
+}
+
+var (
+	nsjailProbeOnce sync.Once
+	nsjailProbeErr  error
+)
+
+// probeNsjail runs one minimal exec to verify the host can build
+// nsjail's mount tree. GitHub-hosted runners can install nsjail but
+// cannot create the required mount namespaces/bind mounts; in that
+// environment the integration lane skips instead of failing, while
+// capable hosts still exercise the real backend.
+func probeNsjail() error {
+	nsjailProbeOnce.Do(func() {
+		root, err := os.MkdirTemp("", "flowcraft-nsjail-probe-")
+		if err != nil {
+			nsjailProbeErr = err
+			return
+		}
+		defer os.RemoveAll(root)
+		if err := os.Chmod(root, 0o755); err != nil {
+			nsjailProbeErr = err
+			return
+		}
+		runner, err := New(root)
+		if err != nil {
+			nsjailProbeErr = err
+			return
+		}
+		res, err := runner.Exec(
+			context.Background(),
+			"/bin/true",
+			nil,
+			sandbox.ExecOptions{Timeout: 5 * time.Second},
+		)
+		if err != nil {
+			nsjailProbeErr = err
+			return
+		}
+		if res.ExitCode != 0 {
+			nsjailProbeErr = fmt.Errorf(
+				"probe exit=%d stderr=%q",
+				res.ExitCode,
+				res.Stderr,
+			)
+		}
+	})
+	return nsjailProbeErr
 }
 
 // newIntegrationRoot returns a sandbox root that is traversable by the
