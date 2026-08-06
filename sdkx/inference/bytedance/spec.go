@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // Secret names owned by this provider. Profile secrets outside this set are

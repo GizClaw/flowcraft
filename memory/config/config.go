@@ -48,94 +48,94 @@ const (
 )
 
 type ChunkSettings struct {
-	MaxRunes     int                      `yaml:"max_runes,omitempty"`
-	OverlapRunes int                      `yaml:"overlap_runes,omitempty"`
-	Summary      KnowledgeSummarySettings `yaml:"summary,omitempty"`
+	MaxRunes     int                      `json:"max_runes,omitempty"`
+	OverlapRunes int                      `json:"overlap_runes,omitempty"`
+	Summary      KnowledgeSummarySettings `json:"summary,omitempty"`
 }
 
 // KnowledgeSummarySettings explicitly enables deterministic hierarchy
 // summaries; disabled fields produce no summary records.
 type KnowledgeSummarySettings struct {
-	Document bool `yaml:"document,omitempty"`
-	Sections bool `yaml:"sections,omitempty"`
-	MaxRunes int  `yaml:"max_runes,omitempty"`
+	Document bool `json:"document,omitempty"`
+	Sections bool `json:"sections,omitempty"`
+	MaxRunes int  `json:"max_runes,omitempty"`
 }
 
 // RecentSettings bounds canonical conversation reads before final packing.
 type RecentSettings struct {
-	MaxItems  int `yaml:"max_items,omitempty"`
-	MaxTokens int `yaml:"max_tokens,omitempty"`
+	MaxItems  int `json:"max_items,omitempty"`
+	MaxTokens int `json:"max_tokens,omitempty"`
 }
 
 // SummarySettings enables the durable summary branch by default. Disabled is
 // the typed opt-out; zero algorithm fields select compactor defaults.
 type SummarySettings struct {
-	Disabled          bool `yaml:"disabled,omitempty"`
-	ChunkSize         int  `yaml:"chunk_size,omitempty"`
-	CondenseThreshold int  `yaml:"condense_threshold,omitempty"`
-	GroupSize         int  `yaml:"group_size,omitempty"`
-	MaxDepth          int  `yaml:"max_depth,omitempty"`
+	Disabled          bool `json:"disabled,omitempty"`
+	ChunkSize         int  `json:"chunk_size,omitempty"`
+	CondenseThreshold int  `json:"condense_threshold,omitempty"`
+	GroupSize         int  `json:"group_size,omitempty"`
+	MaxDepth          int  `json:"max_depth,omitempty"`
 }
 
 // FactSettings selects extraction detail and explicit resource caps.
 type FactSettings struct {
-	Strategy               chat.FactStrategy `yaml:"strategy,omitempty"`
-	TailMaxChars           int               `yaml:"tail_max_chars,omitempty"`
-	MaxFacts               int               `yaml:"max_facts,omitempty"`
-	MaxFactChars           int               `yaml:"max_fact_chars,omitempty"`
-	MaxQueryChars          int               `yaml:"max_query_chars,omitempty"`
-	MaxEmbeddingInputChars int               `yaml:"max_embedding_input_chars,omitempty"`
+	Strategy               chat.FactStrategy `json:"strategy,omitempty"`
+	TailMaxChars           int               `json:"tail_max_chars,omitempty"`
+	MaxFacts               int               `json:"max_facts,omitempty"`
+	MaxFactChars           int               `json:"max_fact_chars,omitempty"`
+	MaxQueryChars          int               `json:"max_query_chars,omitempty"`
+	MaxEmbeddingInputChars int               `json:"max_embedding_input_chars,omitempty"`
 }
 
 // CalibrationSettings selects one supported score calibration.
 type CalibrationSettings struct {
-	Kind          string  `yaml:"kind,omitempty"`
-	Version       string  `yaml:"version,omitempty"`
-	Slope         float64 `yaml:"slope,omitempty"`
-	Midpoint      float64 `yaml:"midpoint,omitempty"`
-	Scale         float64 `yaml:"scale,omitempty"`
-	SemanticFloor float64 `yaml:"semantic_floor,omitempty"`
-	DisableFloor  bool    `yaml:"disable_floor,omitempty"`
+	Kind          string  `json:"kind,omitempty"`
+	Version       string  `json:"version,omitempty"`
+	Slope         float64 `json:"slope,omitempty"`
+	Midpoint      float64 `json:"midpoint,omitempty"`
+	Scale         float64 `json:"scale,omitempty"`
+	SemanticFloor float64 `json:"semantic_floor,omitempty"`
+	DisableFloor  bool    `json:"disable_floor,omitempty"`
 }
 
 type LaneSettings struct {
-	Weight      float64             `yaml:"weight,omitempty"`
-	Calibration CalibrationSettings `yaml:"calibration,omitempty"`
+	Weight      float64             `json:"weight,omitempty"`
+	Calibration CalibrationSettings `json:"calibration,omitempty"`
 }
 
 // LanesSettings deliberately has exactly three fields. The architecture has
 // exactly three lanes; it is not an extensible YAML list.
 type LanesSettings struct {
-	Vector LaneSettings `yaml:"vector,omitempty"`
-	BM25   LaneSettings `yaml:"bm25,omitempty"`
-	Entity LaneSettings `yaml:"entity,omitempty"`
+	Vector LaneSettings `json:"vector,omitempty"`
+	BM25   LaneSettings `json:"bm25,omitempty"`
+	Entity LaneSettings `json:"entity,omitempty"`
 }
 
 type BM25Settings struct {
-	Version string  `yaml:"version,omitempty"`
-	K1      float64 `yaml:"k1,omitempty"`
-	B       float64 `yaml:"b,omitempty"`
+	Version string  `json:"version,omitempty"`
+	K1      float64 `json:"k1,omitempty"`
+	B       float64 `json:"b,omitempty"`
 }
 
 type ProjectionStorageSettings struct {
-	AlgorithmVersion string `json:"algorithm_version" yaml:"algorithm_version,omitempty"`
-	MaxSegments      int    `json:"max_segments" yaml:"max_segments,omitempty"`
-	MaxDeltaBytes    int64  `json:"max_delta_bytes" yaml:"max_delta_bytes,omitempty"`
+	AlgorithmVersion string `json:"algorithm_version"`
+	MaxSegments      int    `json:"max_segments"`
+	MaxDeltaBytes    int64  `json:"max_delta_bytes"`
 }
 
 // RerankerSettings enables an optional programmatic post-fusion reranker.
 // Version is required when enabled and participates in policy identity.
 type RerankerSettings struct {
-	Enabled bool               `yaml:"enabled,omitempty"`
-	Version string             `yaml:"version,omitempty"`
-	Value   component.Reranker `yaml:"-"`
+	Enabled bool               `json:"enabled,omitempty"`
+	Version string             `json:"version,omitempty"`
+	Value   component.Reranker `json:"-"`
 }
 
 // Algorithm identifies one semantic implementation version. Catalog order is
 // irrelevant; names must be unique.
 type Algorithm struct {
-	Name    string `json:"name" yaml:"name"`
-	Version string `json:"version" yaml:"version"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 // AlgorithmCatalog contributes custom algorithm versions to policy identity.
@@ -151,14 +151,14 @@ func NewFactoryCatalog() *FactoryCatalog { return component.NewRegistry() }
 // ChatNodeSettings is a closed YAML union plus an opaque programmatic custom
 // typed factory selection. Exactly one algorithm must be selected.
 type ChatNodeSettings struct {
-	ID        string        `yaml:"id"`
-	DependsOn []string      `yaml:"depends_on,omitempty"`
-	Fact      *FactSettings `yaml:"fact,omitempty"`
+	ID        string        `json:"id"`
+	DependsOn []string      `json:"depends_on,omitempty"`
+	Fact      *FactSettings `json:"fact,omitempty"`
 	custom    *component.DeriverSpec
 }
 
 type ChatDAGSettings struct {
-	Nodes []ChatNodeSettings `yaml:"nodes,omitempty"`
+	Nodes []ChatNodeSettings `json:"nodes,omitempty"`
 }
 
 // CustomChatNode binds a typed custom factory selection to a chat node.
@@ -167,14 +167,14 @@ func CustomChatNode(id string, spec component.DeriverSpec, dependsOn ...string) 
 }
 
 type KnowledgeNodeSettings struct {
-	ID        string         `yaml:"id"`
-	DependsOn []string       `yaml:"depends_on,omitempty"`
-	Chunk     *ChunkSettings `yaml:"chunk,omitempty"`
+	ID        string         `json:"id"`
+	DependsOn []string       `json:"depends_on,omitempty"`
+	Chunk     *ChunkSettings `json:"chunk,omitempty"`
 	custom    *component.DeriverSpec
 }
 
 type KnowledgeDAGSettings struct {
-	Nodes []KnowledgeNodeSettings `yaml:"nodes,omitempty"`
+	Nodes []KnowledgeNodeSettings `json:"nodes,omitempty"`
 }
 
 // CustomKnowledgeNode binds a typed custom factory selection to a knowledge node.
@@ -184,28 +184,28 @@ func CustomKnowledgeNode(id string, spec component.DeriverSpec, dependsOn ...str
 
 // Settings is the complete programmatic and deploy resource configuration.
 type Settings struct {
-	Generate                ModelSettings             `yaml:"generate"`
-	Embed                   ModelSettings             `yaml:"embed"`
-	Scopes                  []ScopeSettings           `yaml:"scopes"`
-	Interval                time.Duration             `yaml:"interval,omitempty"`
-	Projection              string                    `yaml:"projection,omitempty"`
-	Fact                    FactSettings              `yaml:"fact,omitempty"`
-	Chunk                   ChunkSettings             `yaml:"chunk,omitempty"`
-	Recent                  RecentSettings            `yaml:"recent,omitempty"`
-	Summary                 SummarySettings           `yaml:"summary,omitempty"`
-	BM25                    BM25Settings              `yaml:"bm25,omitempty"`
-	ProjectionStorage       ProjectionStorageSettings `yaml:"projection_storage,omitempty"`
-	Reranker                RerankerSettings          `yaml:"reranker,omitempty"`
-	Lanes                   LanesSettings             `yaml:"lanes,omitempty"`
-	ChatDAG                 ChatDAGSettings           `yaml:"chat_dag,omitempty"`
-	KnowledgeDAG            KnowledgeDAGSettings      `yaml:"knowledge_dag,omitempty"`
-	LifecycleDAG            LifecycleDAGSettings      `yaml:"lifecycle_dag,omitempty"`
-	Lifecycle               LifecycleSettings         `yaml:"lifecycle,omitempty"`
-	AlgorithmCatalog        AlgorithmCatalog          `yaml:"algorithm_catalog,omitempty"`
-	FactoryCatalog          *FactoryCatalog           `yaml:"-"`
-	LifecycleFactoryCatalog *lifecycle.Catalog        `yaml:"-"`
-	LifecycleEffects        lifecycle.EffectSink      `yaml:"-"`
-	PolicyNamespace         string                    `yaml:"policy_namespace,omitempty"`
+	Generate                ModelSettings             `json:"generate"`
+	Embed                   ModelSettings             `json:"embed"`
+	Scopes                  []ScopeSettings           `json:"scopes"`
+	Interval                Duration                  `json:"interval,omitempty"`
+	Projection              string                    `json:"projection,omitempty"`
+	Fact                    FactSettings              `json:"fact,omitempty"`
+	Chunk                   ChunkSettings             `json:"chunk,omitempty"`
+	Recent                  RecentSettings            `json:"recent,omitempty"`
+	Summary                 SummarySettings           `json:"summary,omitempty"`
+	BM25                    BM25Settings              `json:"bm25,omitempty"`
+	ProjectionStorage       ProjectionStorageSettings `json:"projection_storage,omitempty"`
+	Reranker                RerankerSettings          `json:"reranker,omitempty"`
+	Lanes                   LanesSettings             `json:"lanes,omitempty"`
+	ChatDAG                 ChatDAGSettings           `json:"chat_dag,omitempty"`
+	KnowledgeDAG            KnowledgeDAGSettings      `json:"knowledge_dag,omitempty"`
+	LifecycleDAG            LifecycleDAGSettings      `json:"lifecycle_dag,omitempty"`
+	Lifecycle               LifecycleSettings         `json:"lifecycle,omitempty"`
+	AlgorithmCatalog        AlgorithmCatalog          `json:"algorithm_catalog,omitempty"`
+	FactoryCatalog          *FactoryCatalog           `json:"-"`
+	LifecycleFactoryCatalog *lifecycle.Catalog        `json:"-"`
+	LifecycleEffects        lifecycle.EffectSink      `json:"-"`
+	PolicyNamespace         string                    `json:"policy_namespace,omitempty"`
 }
 
 // Assembly owns the worker runner and exposes the capability System.
@@ -512,7 +512,8 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 		scopes[i] = scope.scope()
 	}
 	runner, err := worker.NewRunner(worker.RunnerConfig{
-		Processor: processor, Catalog: catalog, Scopes: scopes, Interval: settings.Interval,
+		Processor: processor, Catalog: catalog, Scopes: scopes,
+		Interval: time.Duration(settings.Interval),
 	})
 	if err != nil {
 		return nil, err
@@ -672,7 +673,8 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 		}
 		lifecycleRunner, serviceErr = lifecycle.NewDreamingRunner(lifecycle.DreamingRunnerConfig{
 			Outbox: outbox, Service: lifecycleService, Catalog: catalog, Scopes: scopes, Owner: settings.Lifecycle.Owner,
-			LeaseTTL: settings.Lifecycle.LeaseTTL, Interval: settings.Lifecycle.Interval,
+			LeaseTTL: time.Duration(settings.Lifecycle.LeaseTTL),
+			Interval: time.Duration(settings.Lifecycle.Interval),
 			Periodic: settings.Lifecycle.Periodic, PolicyDigest: digest, Branch: "integrate",
 		})
 		if serviceErr != nil {
@@ -697,7 +699,7 @@ func projectionRepairEvidence(
 
 func (s Settings) withDefaults() Settings {
 	if s.Interval == 0 {
-		s.Interval = defaultInterval
+		s.Interval = Duration(defaultInterval)
 	}
 	if s.Projection == "" {
 		s.Projection = defaultProjection
@@ -725,10 +727,10 @@ func (s Settings) withDefaults() Settings {
 		s.ProjectionStorage.MaxDeltaBytes = storageDefaults.MaxDeltaBytes
 	}
 	if s.Lifecycle.Interval == 0 {
-		s.Lifecycle.Interval = time.Hour
+		s.Lifecycle.Interval = Duration(time.Hour)
 	}
 	if s.Lifecycle.LeaseTTL == 0 {
-		s.Lifecycle.LeaseTTL = 5 * time.Minute
+		s.Lifecycle.LeaseTTL = Duration(5 * time.Minute)
 	}
 	if s.Lifecycle.Owner == "" {
 		s.Lifecycle.Owner = "sdkx-memory-dreaming"

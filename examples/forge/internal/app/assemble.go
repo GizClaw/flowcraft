@@ -8,27 +8,27 @@ import (
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
+	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
+	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
+	memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
+	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
+	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
+	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
 	graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
 	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
 	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
 	"github.com/GizClaw/flowcraft/sdkx/inference/azure"
 	"github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
-	inferenceconfig "github.com/GizClaw/flowcraft/sdkx/inference/config"
-	envresolver "github.com/GizClaw/flowcraft/sdkx/inference/config/env"
-	inferenceyaml "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
 	"github.com/GizClaw/flowcraft/sdkx/inference/deepseek"
 	"github.com/GizClaw/flowcraft/sdkx/inference/minimax"
 	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
 	"github.com/GizClaw/flowcraft/sdkx/inference/qwen"
-	sdkxmemory "github.com/GizClaw/flowcraft/sdkx/memory/config"
 	memoryhook "github.com/GizClaw/flowcraft/sdkx/memory/hook"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	delegationruntime "github.com/GizClaw/flowcraft/sdkx/runtime/integration/delegation"
-	schedulerconfig "github.com/GizClaw/flowcraft/sdkx/scheduler/config"
-	toolconfig "github.com/GizClaw/flowcraft/sdkx/tool/config"
-	workspaceconfig "github.com/GizClaw/flowcraft/sdkx/workspace/config"
+	sdkscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
 	"gopkg.in/yaml.v3"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
@@ -41,17 +41,30 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 
 	deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(a.dir))
 	deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
-	deployBuilder.MustRegisterResource(schedulerconfig.NewLocalDeployFactory())
+
+	schedulerBuilder := schedulerconfig.NewBuilder()
+	if err := sdkscheduler.Register(schedulerBuilder); err != nil {
+		return nil, err
+	}
+	deployBuilder.MustRegisterResource(schedulerconfig.NewDeployFactory("local", schedulerBuilder))
 	deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
-	deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory())
+
+	workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: a.dir})
+	deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
 	deployBuilder.MustRegisterResource(jsrt.NewDeployFactory())
-	toolBuilder := toolconfig.NewBuilder(a.tools, toolconfig.Deps{})
+
+	toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
+	for _, name := range a.tools.Names() {
+		if t, ok := a.tools.Get(name); ok {
+			toolBuilder.RegisterBuiltin(t)
+		}
+	}
 	deployBuilder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
 
 	factories := providerFactories()
 	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
-	deployBuilder.MustRegisterResource(inferenceyaml.NewDeployFactory(factories, resolvers))
-	deployBuilder.MustRegisterResource(sdkxmemory.NewDeployFactory("flowcraft", flowcraftmemory.Factory()))
+	deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(factories, resolvers))
+	deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory("flowcraft", flowcraftmemory.Factory()))
 	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparerFactory)
 	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitterFactory)
 
@@ -90,10 +103,11 @@ func providerFactories() map[string]inferenceconfig.Factory {
 	}
 }
 
-// absolutizeDeployment rewrites resource sub-document paths (and the
-// workspace registry base dir) to absolute paths rooted at dir. The
-// deployment schema itself is untouched; this is application-side file
-// resolution, which the docs leave to the consumer.
+// absolutizeDeployment rewrites resource sub-document paths to
+// absolute paths rooted at dir. The deployment schema itself is
+// untouched; this is application-side file resolution, which the docs
+// leave to the consumer. Workspace roots resolve against the host
+// builder's BaseDir instead of a document field.
 func absolutizeDeployment(raw []byte, dir string) ([]byte, error) {
 	var document map[string]any
 	if err := yaml.Unmarshal(raw, &document); err != nil {
@@ -111,9 +125,6 @@ func absolutizeDeployment(raw []byte, dir string) ([]byte, error) {
 		}
 		if file, ok := settings["file"].(string); ok && file != "" && !filepath.IsAbs(file) {
 			settings["file"] = filepath.Join(dir, file)
-		}
-		if kind, _ := resource["kind"].(string); kind == "workspace.Registry" {
-			settings["base_dir"] = dir
 		}
 	}
 	return yaml.Marshal(document)

@@ -139,8 +139,11 @@ resources:
     impl: yaml
     settings:
       file: ./workspaces.yaml
-      base_dir: .
 ```
+
+Relative local-driver roots inside `workspaces.yaml` resolve against
+the host workspace config builder's `Deps.BaseDir`, not a document
+field.
 
 ```yaml
 # workspaces.yaml
@@ -204,6 +207,6 @@ and assert on the exact errors for denied paths
   `sdk/workspace/capabilities.go`, per-backend files
   (`local.go`, `mem.go`, `scoped.go`, `sub.go`).
 - Object-store backends: `sdkx/workspace/objstore/doc.go`.
-- Assembly: `sdkx/workspace/config/doc.go`, the `workspace.Registry`
+- Assembly: `sdk/workspace/config/doc.go`, the `workspace.Registry`
   resource in [deploy.md](deploy.md#first-party-impls).
 - Sibling guide: [sandbox.md](sandbox.md) (state vs policy).

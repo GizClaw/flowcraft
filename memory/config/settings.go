@@ -5,11 +5,11 @@ import (
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 )
 
-// ModelSettings is the YAML-friendly exact inference model reference.
+// ModelSettings is the JSON-friendly exact inference model reference.
 type ModelSettings struct {
-	Provider string `yaml:"provider"`
-	Name     string `yaml:"name"`
-	Profile  string `yaml:"profile,omitempty"`
+	Provider string `json:"provider"`
+	Name     string `json:"name"`
+	Profile  string `json:"profile,omitempty"`
 }
 
 func (m ModelSettings) ref() inference.ModelRef {
@@ -18,9 +18,9 @@ func (m ModelSettings) ref() inference.ModelRef {
 
 // ScopeSettings is one optional hard-scope seed registered before worker scans.
 type ScopeSettings struct {
-	RuntimeID string `yaml:"runtime_id"`
-	UserID    string `yaml:"user_id,omitempty"`
-	AgentID   string `yaml:"agent_id,omitempty"`
+	RuntimeID string `json:"runtime_id"`
+	UserID    string `json:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
 }
 
 func (s ScopeSettings) scope() sdkmemory.Scope {

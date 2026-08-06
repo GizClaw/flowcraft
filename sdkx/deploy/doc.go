@@ -5,17 +5,18 @@
 // It is the mechanism layer and imports no module config package.
 // inference, tool, workspace and sandbox each plug in as one
 // registered impl, so a deployment links only the integrations it
-// actually names — the same opt-in rule sdkx/tool/config applies to
+// actually names — the same opt-in rule sdk/tool/config applies to
 // MCP. Values YAML cannot express arrive through registered
 // factories and sources supplied by the application. Resource
 // factories publish a [ResourceSpec] before construction, allowing
 // Build to validate dependency names, required bindings, whole-resource
 // kinds, and item types before calling [ResourceFactory.New].
 //
-// The document is PURE YAML end to end — every settings block is
-// decoded by yaml.v3 into native Go values or yamlv3.Node; no JSON
-// intermediate ever appears. Unknown fields are rejected at parse
-// time so typos surface immediately.
+// The document is JSON at the protocol level — YAML is accepted as
+// authoring sugar and converted by sdk/config/utils before strict
+// decoding. Every settings block is carried as an opaque JSON subtree
+// and decoded by its owning factory. Unknown fields are rejected at
+// parse time so typos surface immediately.
 //
 // # Document shape
 //

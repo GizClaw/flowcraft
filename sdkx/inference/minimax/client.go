@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"

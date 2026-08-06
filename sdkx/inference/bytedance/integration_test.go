@@ -14,14 +14,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config/env"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config/env"
 )
 
 // TestConfigToBytedanceInstance assembles a Runtime+Router from a Document
@@ -62,9 +61,9 @@ func TestConfigToBytedanceInstance(t *testing.T) {
 			}]
 		}
 	}`, server.URL)
-	document, err := config.DecodeJSON(strings.NewReader(documentJSON))
+	document, err := config.Parse([]byte(documentJSON))
 	if err != nil {
-		t.Fatalf("DecodeJSON: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
 
 	// Registration is explicit: driver name → factory, resolver name →

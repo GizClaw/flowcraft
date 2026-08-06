@@ -2,15 +2,16 @@ package hook
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type contextProvider struct {
@@ -64,7 +65,7 @@ func newFakeAssembly(t *testing.T) (sdkmemory.Assembly, *contextProvider, *turnS
 
 func TestContextPreparerClonesBoardAndUsesRequest(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   current_message: true
@@ -111,7 +112,7 @@ output: recalled
 
 func TestContextPreparerRendersDefaultGoTemplateToContent(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -150,7 +151,7 @@ render:
 
 func TestContextPreparerRendersCustomGoTemplate(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -210,7 +211,7 @@ func TestCloneItemsOwnsMutableData(t *testing.T) {
 
 func TestContextPreparerSupportsRecentOnly(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   recent_only: true
@@ -238,7 +239,7 @@ output: recalled
 
 func TestTurnCommitterUsesRunIDAndChannel(t *testing.T) {
 	assembly, _, sink := newFakeAssembly(t)
-	committer, err := TurnCommitterFactory(context.Background(), deploy.HookInput{
+	committer, err := TurnCommitterFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 scope:
   runtime_id: memory
@@ -279,7 +280,7 @@ scope:
 
 func TestHookValidationRejectsAmbiguousQuery(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	_, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+	_, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -326,7 +327,7 @@ render: {output: memory_content, arbitrary: {}}
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ContextPreparerFactory(context.Background(), deploy.HookInput{
+			_, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
 				Settings: settingsNode(t, source), Deps: map[string]any{depName: assembly},
 			})
 			if err == nil || !errdefs.IsValidation(err) {
@@ -336,13 +337,17 @@ render: {output: memory_content, arbitrary: {}}
 	}
 }
 
-func settingsNode(t *testing.T, source string) *yamlv3.Node {
+func settingsNode(t *testing.T, source string) *sdkconfig.Opaque {
 	t.Helper()
-	var document yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(source), &document); err != nil {
+	jsonData, err := utils.ToJSON([]byte(source))
+	if err != nil {
 		t.Fatal(err)
 	}
-	return document.Content[0]
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+		t.Fatal(err)
+	}
+	return &opaque
 }
 
 func boardValue(board *agent.Board, key string) any {

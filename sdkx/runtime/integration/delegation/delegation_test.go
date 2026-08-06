@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
@@ -26,7 +27,7 @@ func (t namedTool) Definition() message.Definition {
 
 func (namedTool) Execute(context.Context, string) (string, error) { return "", nil }
 
-func integrationSettings(t *testing.T, yaml string) *deploy.Opaque {
+func integrationSettings(t *testing.T, yaml string) *sdkconfig.Opaque {
 	t.Helper()
 	doc, err := deploy.Parse([]byte(`
 version: v1

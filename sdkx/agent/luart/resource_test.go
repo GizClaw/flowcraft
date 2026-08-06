@@ -2,19 +2,17 @@ package luart
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	yamlv3 "gopkg.in/yaml.v3"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 )
 
 func TestDeployFactorySpec(t *testing.T) {
-	want := deploy.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
+	want := sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
 	if got := NewDeployFactory().Spec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
 	}
@@ -29,17 +27,17 @@ func TestDeployFactoryBuildsDefaultAndConfiguredRuntime(t *testing.T) {
 		{name: "default"},
 		{
 			name: "configured",
-			settings: `
-pool_size: 1
-max_exec_time: 50ms
-`,
+			settings: `{
+				"pool_size": 1,
+				"max_exec_time": "50ms"
+			}`,
 			configured: true,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			value, err := NewDeployFactory().New(context.Background(), deploy.ResourceInput{
-				Settings: luaSettingsNode(t, tt.settings),
+			value, err := NewDeployFactory().New(context.Background(), sdkconfig.Input{
+				Settings: settingsJSON(t, tt.settings),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -49,7 +47,6 @@ max_exec_time: 50ms
 				t.Fatalf("New returned %T, want *luart.Runtime", value)
 			}
 			defer func() { _ = rt.Close() }()
-			var _ agent.ScriptRuntime = rt
 			if tt.configured {
 				if rt.poolSize != 1 || rt.maxExecTime != 50*time.Millisecond {
 					t.Fatalf("runtime settings = pool %d, duration %s",
@@ -68,16 +65,16 @@ max_exec_time: 50ms
 
 func TestDeployFactoryRejectsInvalidSettings(t *testing.T) {
 	tests := []string{
-		"unknown: true\n",
-		"pool_size: 0\n",
-		"pool_size: -1\n",
-		"max_exec_time: nonsense\n",
-		"max_exec_time: -1s\n",
+		`{"unknown":true}`,
+		`{"pool_size":0}`,
+		`{"pool_size":-1}`,
+		`{"max_exec_time":"nonsense"}`,
+		`{"max_exec_time":"-1s"}`,
 	}
 	for _, settings := range tests {
 		t.Run(settings, func(t *testing.T) {
-			if _, err := NewDeployFactory().New(context.Background(), deploy.ResourceInput{
-				Settings: luaSettingsNode(t, settings),
+			if _, err := NewDeployFactory().New(context.Background(), sdkconfig.Input{
+				Settings: settingsJSON(t, settings),
 			}); err == nil {
 				t.Fatal("New accepted invalid settings")
 			}
@@ -86,56 +83,13 @@ func TestDeployFactoryRejectsInvalidSettings(t *testing.T) {
 }
 
 func TestDeployFactoryAcceptsZeroExecTime(t *testing.T) {
-	value, err := NewDeployFactory().New(context.Background(), deploy.ResourceInput{
-		Settings: luaSettingsNode(t, "max_exec_time: 0s\n"),
+	value, err := NewDeployFactory().New(context.Background(), sdkconfig.Input{
+		Settings: settingsJSON(t, `{"max_exec_time":"0s"}`),
 	})
 	if err != nil {
 		t.Fatalf("New rejected zero max_exec_time: %v", err)
 	}
 	_ = value.(*Runtime).Close()
-}
-
-func TestLuaRuntimeLifecycleOwnedByDeployResult(t *testing.T) {
-	registry := agent.NewRegistry()
-	registry.MustRegister(luaResourceEngineFactory{})
-	builder := deploy.NewBuilder(registry)
-	builder.MustRegisterResource(NewDeployFactory())
-	doc, err := deploy.Parse([]byte(`
-version: v1
-resources:
-  scripts:
-    kind: agent.ScriptRuntime
-    impl: lua
-    settings: {pool_size: 1}
-agents:
-  test:
-    engine: {kind: lua-resource-test}
-    deps: {runtime: scripts}
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := builder.Build(context.Background(), doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, err := deploy.ResourceAs[agent.ScriptRuntime](result, "scripts")
-	if err != nil {
-		t.Fatalf("ResourceAs[agent.ScriptRuntime]: %v", err)
-	}
-	luaRuntime, ok := rt.(*Runtime)
-	if !ok {
-		t.Fatalf("resource = %T, want *luart.Runtime", rt)
-	}
-	if err := result.Close(); err != nil {
-		t.Fatalf("first Result.Close: %v", err)
-	}
-	if err := result.Close(); err != nil {
-		t.Fatalf("second Result.Close: %v", err)
-	}
-	if _, err := luaRuntime.Exec(context.Background(), "closed", `return nil`, nil); !errors.Is(err, ErrRuntimeClosed) {
-		t.Fatalf("Exec after Result.Close error = %v, want ErrRuntimeClosed", err)
-	}
 }
 
 func TestRuntimeCloseWithCheckedOutVM(t *testing.T) {
@@ -196,36 +150,14 @@ func TestRuntimeCloseCancelsActiveExec(t *testing.T) {
 	}
 }
 
-type luaResourceEngineFactory struct{}
-
-func (luaResourceEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{
-		Kind: "lua-resource-test",
-		Deps: []agent.DepSpec{{Name: "runtime", Type: ResourceKind, Required: true}},
-	}
-}
-
-func (luaResourceEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
-	return agent.EngineFunc(func(
-		context.Context,
-		agent.Run,
-		agent.Host,
-		*agent.Board,
-	) (*agent.Board, error) {
-		board := agent.NewBoard()
-		board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "ok"))
-		return board, nil
-	}), nil
-}
-
-func luaSettingsNode(t *testing.T, input string) *yamlv3.Node {
+func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
 	t.Helper()
-	if input == "" {
+	if raw == "" {
 		return nil
 	}
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(input), &node); err != nil {
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return node.Content[0]
+	return &opaque
 }

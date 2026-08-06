@@ -13,12 +13,12 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/delegation"
 	delegationconfig "github.com/GizClaw/flowcraft/sdkx/delegation/config"
 	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
 	tooldelegation "github.com/GizClaw/flowcraft/sdkx/tool/delegation"
 )
 

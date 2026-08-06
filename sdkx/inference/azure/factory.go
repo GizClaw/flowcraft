@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
 )
 

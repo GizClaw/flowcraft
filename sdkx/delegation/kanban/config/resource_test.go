@@ -2,29 +2,28 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	sdkeventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	"github.com/GizClaw/flowcraft/sdkx/delegation"
 	"github.com/GizClaw/flowcraft/sdkx/delegation/kanban"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestMemoryDeployFactorySpec(t *testing.T) {
-	want := deploy.ResourceSpec{
+	want := sdkconfig.ResourceSpec{
 		Kind: ResourceKind,
 		Impl: "kanban-memory",
-		Deps: []deploy.ResourceDepSpec{{
+		Deps: []sdkconfig.ResourceDepSpec{{
 			Name: EventBusDep,
-			Type: eventconfig.ResourceKind,
+			Type: sdkeventconfig.ResourceKind,
 		}},
 	}
 	if got := NewMemoryDeployFactory().Spec(); !reflect.DeepEqual(got, want) {
@@ -34,20 +33,20 @@ func TestMemoryDeployFactorySpec(t *testing.T) {
 
 func TestMemoryDeployFactoryRejectsInvalidSettings(t *testing.T) {
 	tests := map[string]string{
-		"unknown field":      "unknown: true\n",
-		"empty scope":        "scope_id: \"\"\n",
-		"blank scope":        "scope_id: \"  \"\n",
-		"negative pending":   "max_pending: -1\n",
-		"negative cards":     "max_cards: -1\n",
-		"empty card ttl":     "card_ttl: \"\"\n",
-		"negative card ttl":  "card_ttl: -1s\n",
-		"malformed card ttl": "card_ttl: eventually\n",
+		"unknown field":      `{"unknown":true}`,
+		"empty scope":        `{"scope_id":""}`,
+		"blank scope":        `{"scope_id":"  "}`,
+		"negative pending":   `{"max_pending":-1}`,
+		"negative cards":     `{"max_cards":-1}`,
+		"empty card ttl":     `{"card_ttl":""}`,
+		"negative card ttl":  `{"card_ttl":"-1s"}`,
+		"malformed card ttl": `{"card_ttl":"eventually"}`,
 	}
 	factory := NewMemoryDeployFactory()
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, err := factory.New(context.Background(), deploy.ResourceInput{
-				Settings: settingsNode(t, input),
+			_, err := factory.New(context.Background(), sdkconfig.Input{
+				Settings: settingsJSON(t, input),
 			})
 			if err == nil || !errdefs.IsValidation(err) {
 				t.Fatalf("New() error = %v, want validation error", err)
@@ -57,13 +56,13 @@ func TestMemoryDeployFactoryRejectsInvalidSettings(t *testing.T) {
 }
 
 func TestMemoryDeployFactoryAppliesSettings(t *testing.T) {
-	value, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{
-		Settings: settingsNode(t, `
-scope_id: jobs
-max_pending: 1
-max_cards: 10
-card_ttl: 1ns
-`),
+	value, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{
+		Settings: settingsJSON(t, `{
+			"scope_id": "jobs",
+			"max_pending": 1,
+			"max_cards": 10,
+			"card_ttl": "1ns"
+		}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -102,8 +101,8 @@ card_ttl: 1ns
 }
 
 func TestMemoryDeployFactoryAppliesMaxCards(t *testing.T) {
-	value, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{
-		Settings: settingsNode(t, "max_cards: 1\n"),
+	value, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{
+		Settings: settingsJSON(t, `{"max_cards":1}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -140,11 +139,11 @@ func TestMemoryDeployFactoryAppliesMaxCards(t *testing.T) {
 func TestMemoryDeployFactoryAcceptsOmittedAndZeroSettings(t *testing.T) {
 	for name, input := range map[string]string{
 		"omitted": "",
-		"zero":    "max_pending: 0\nmax_cards: 0\ncard_ttl: 0s\n",
+		"zero":    `{"max_pending":0,"max_cards":0,"card_ttl":"0s"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			value, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{
-				Settings: settingsNode(t, input),
+			value, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{
+				Settings: settingsJSON(t, input),
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -158,7 +157,7 @@ func TestMemoryDeployFactoryAcceptsOmittedAndZeroSettings(t *testing.T) {
 
 func TestMemoryDeployFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	t.Run("owned bus", func(t *testing.T) {
-		value, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{})
+		value, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{})
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -177,7 +176,7 @@ func TestMemoryDeployFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	t.Run("shared bus", func(t *testing.T) {
 		bus := event.NewMemoryBus()
 		t.Cleanup(func() { _ = bus.Close() })
-		value, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{
+		value, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{
 			Deps: map[string]any{EventBusDep: bus},
 		})
 		if err != nil {
@@ -193,100 +192,13 @@ func TestMemoryDeployFactoryBusOwnershipAndTypeMismatch(t *testing.T) {
 	})
 
 	t.Run("type mismatch", func(t *testing.T) {
-		_, err := NewMemoryDeployFactory().New(context.Background(), deploy.ResourceInput{
+		_, err := NewMemoryDeployFactory().New(context.Background(), sdkconfig.Input{
 			Deps: map[string]any{EventBusDep: "not a bus"},
 		})
 		if err == nil || !errdefs.IsValidation(err) {
 			t.Fatalf("New() error = %v, want validation error", err)
 		}
 	})
-}
-
-func TestMemoryDeployResourceExportsAndClosesInDependencyOrder(t *testing.T) {
-	var board *kanban.Board
-	bus := &checkingBus{
-		Bus: event.NewMemoryBus(),
-		onClose: func() {
-			select {
-			case <-board.Context().Done():
-			default:
-				t.Error("event bus closed before dependent kanban backend")
-			}
-		},
-	}
-	builder := deploy.NewBuilder(agent.NewRegistry())
-	builder.MustRegisterResource(staticBusFactory{bus: bus})
-	builder.MustRegisterResource(NewMemoryDeployFactory())
-
-	doc, err := deploy.Parse([]byte(`
-version: v1
-resources:
-  events:
-    kind: event.Bus
-    impl: checking
-  delegations:
-    kind: delegation.AsyncBackend
-    impl: kanban-memory
-    export: true
-    deps:
-      event_bus: events
-    settings:
-      scope_id: jobs
-agents: {}
-`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := builder.Build(context.Background(), doc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	backend, err := deploy.ResourceAs[delegation.AsyncBackend](result, "delegations")
-	if err != nil {
-		t.Fatalf("ResourceAs[delegation.AsyncBackend]: %v", err)
-	}
-	board, err = deploy.ResourceAs[*kanban.Board](result, "delegations")
-	if err != nil {
-		t.Fatalf("ResourceAs[*kanban.Board]: %v", err)
-	}
-	if backend != board {
-		t.Fatal("interface and concrete exports refer to different backends")
-	}
-	if _, err := deploy.ResourceAs[event.Bus](result, "delegations"); !errdefs.IsValidation(err) {
-		t.Fatalf("ResourceAs[event.Bus] error = %v, want validation error", err)
-	}
-
-	if err := result.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	if err := result.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-	if err := bus.Publish(context.Background(), event.Envelope{}); !errors.Is(err, event.ErrBusClosed) {
-		t.Fatalf("dependency bus Publish after Result.Close = %v, want ErrBusClosed", err)
-	}
-}
-
-type checkingBus struct {
-	event.Bus
-	onClose func()
-}
-
-func (b *checkingBus) Close() error {
-	b.onClose()
-	return b.Bus.Close()
-}
-
-type staticBusFactory struct {
-	bus event.Bus
-}
-
-func (staticBusFactory) Spec() deploy.ResourceSpec {
-	return deploy.ResourceSpec{Kind: eventconfig.ResourceKind, Impl: "checking"}
-}
-
-func (f staticBusFactory) New(context.Context, deploy.ResourceInput) (any, error) {
-	return f.bus, nil
 }
 
 func asyncRequest(input string) delegation.AsyncRequest {
@@ -299,14 +211,14 @@ func asyncRequest(input string) delegation.AsyncRequest {
 	}
 }
 
-func settingsNode(t *testing.T, input string) *yamlv3.Node {
+func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
 	t.Helper()
-	if input == "" {
+	if raw == "" {
 		return nil
 	}
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(input), &node); err != nil {
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return node.Content[0]
+	return &opaque
 }

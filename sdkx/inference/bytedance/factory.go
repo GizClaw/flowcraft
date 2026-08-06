@@ -6,7 +6,7 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // Factory builds the ByteDance provider definition from one deployment

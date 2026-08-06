@@ -250,6 +250,6 @@ suites are in `sdkx/sandbox/<backend>/`.
   `sdk/sandbox/enforcement.go`.
 - Backends: `sdkx/sandbox/seatbelt/doc.go`,
   `sdkx/sandbox/nsjail/doc.go`.
-- Assembly: `sdkx/sandbox/config/doc.go`, the `sandbox.Registry`
+- Assembly: `sdk/sandbox/config/doc.go`, the `sandbox.Registry`
   resource in [deploy.md](deploy.md#first-party-impls).
 - Sibling guide: [workspace.md](workspace.md) (policy vs state).

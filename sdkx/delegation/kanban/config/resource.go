@@ -1,4 +1,5 @@
-// Package config adapts kanban delegation backends to sdkx/deploy resources.
+// Package config adapts kanban delegation backends to deployment
+// resources.
 package config
 
 import (
@@ -9,66 +10,67 @@ import (
 	"strings"
 	"time"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	sdkeventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	"github.com/GizClaw/flowcraft/sdkx/delegation/kanban"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
 )
 
 const (
-	// ResourceKind is the deploy resource kind implemented by asynchronous
-	// delegation backends.
+	// ResourceKind is the deployment resource kind implemented by
+	// asynchronous delegation backends.
 	ResourceKind = "delegation.AsyncBackend"
 
 	// EventBusDep is the optional shared event bus dependency.
 	EventBusDep = "event_bus"
 )
 
-// MemorySettings is the settings subtree for an in-memory kanban backend.
+// MemorySettings is the settings subtree for an in-memory kanban
+// backend.
 type MemorySettings struct {
-	// ScopeID identifies this backend in emitted events. Omission keeps the
-	// backend's empty default; an explicitly empty value is invalid.
-	ScopeID *string `yaml:"scope_id,omitempty"`
+	// ScopeID identifies this backend in emitted events. Omission keeps
+	// the backend's empty default; an explicitly empty value is invalid.
+	ScopeID *string `json:"scope_id,omitempty"`
 	// MaxPending caps work waiting to be claimed. Zero means unlimited.
-	MaxPending *int `yaml:"max_pending,omitempty"`
-	// MaxCards caps retained cards by evicting terminal cards. Zero means
-	// unlimited.
-	MaxCards *int `yaml:"max_cards,omitempty"`
+	MaxPending *int `json:"max_pending,omitempty"`
+	// MaxCards caps retained cards by evicting terminal cards. Zero
+	// means unlimited.
+	MaxCards *int `json:"max_cards,omitempty"`
 	// CardTTL is a Go duration string. Zero disables age-based eviction.
-	CardTTL *string `yaml:"card_ttl,omitempty"`
+	CardTTL *string `json:"card_ttl,omitempty"`
 }
 
 type memoryDeployFactory struct {
 	options []kanban.Option
 }
 
-// NewMemoryDeployFactory returns a deploy factory for in-memory kanban
-// delegation backends.
+// NewMemoryDeployFactory returns a deployment factory for in-memory
+// kanban delegation backends.
 //
-// Options inject application-owned behavior that YAML cannot represent, such
-// as a validator. Declarative settings and the optional event_bus dependency
-// are applied after these options.
-func NewMemoryDeployFactory(options ...kanban.Option) deploy.ResourceFactory {
+// Options inject application-owned behavior that the document cannot
+// represent, such as a validator. Declarative settings and the optional
+// event_bus dependency are applied after these options.
+func NewMemoryDeployFactory(options ...kanban.Option) sdkconfig.ResourceFactory {
 	return memoryDeployFactory{
 		options: slices.Clone(options),
 	}
 }
 
-func (memoryDeployFactory) Spec() deploy.ResourceSpec {
-	return deploy.ResourceSpec{
+func (memoryDeployFactory) Spec() sdkconfig.ResourceSpec {
+	return sdkconfig.ResourceSpec{
 		Kind: ResourceKind,
 		Impl: "kanban-memory",
-		Deps: []deploy.ResourceDepSpec{{
+		Deps: []sdkconfig.ResourceDepSpec{{
 			Name: EventBusDep,
-			Type: eventconfig.ResourceKind,
+			Type: sdkeventconfig.ResourceKind,
 		}},
 	}
 }
 
-func (f memoryDeployFactory) New(_ context.Context, in deploy.ResourceInput) (any, error) {
-	settings, err := deploy.DecodeSettings[MemorySettings](in.Settings)
-	if err != nil {
+func (f memoryDeployFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
+	var settings MemorySettings
+	if err := in.Settings.Decode(&settings); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"delegation kanban config: decode memory resource settings: %w", err))
 	}
@@ -135,4 +137,4 @@ func isNilBus(bus event.Bus) bool {
 	}
 }
 
-var _ deploy.ResourceFactory = memoryDeployFactory{}
+var _ sdkconfig.ResourceFactory = memoryDeployFactory{}

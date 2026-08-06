@@ -87,7 +87,7 @@ rejection.
 Deployments are described by a versioned `config.Document`. Documents
 contain **secret references only** — never plaintext credentials — and
 the envelope validator rejects credential-looking keys anywhere in
-`spec`. YAML is the on-disk format (`sdkx/inference/config/yaml`);
+`spec`. YAML is the on-disk format (`sdk/inference/config`);
 `config.DecodeJSON` reads the same envelope as JSON.
 
 ```yaml
@@ -137,9 +137,9 @@ secret names.
 
 ```go
 import (
-    "github.com/GizClaw/flowcraft/sdkx/inference/config"
-    "github.com/GizClaw/flowcraft/sdkx/inference/config/env"
-    "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
+    "github.com/GizClaw/flowcraft/sdk/inference/config"
+    "github.com/GizClaw/flowcraft/sdk/inference/config/env"
+    "github.com/GizClaw/flowcraft/sdk/inference/config"
     "github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
     "github.com/GizClaw/flowcraft/sdkx/inference/openai"
     "github.com/GizClaw/flowcraft/sdkx/inference/qwen"
@@ -496,7 +496,7 @@ unary/stream, compile parity, rejection accounting, realtime sessions).
 ## Further reading
 
 - Package contracts: `sdk/inference/doc.go`,
-  `sdkx/inference/config/doc.go`, `sdk/inference/route/doc.go`
+  `sdk/inference/config/doc.go`, `sdk/inference/route/doc.go`
 - Per-provider guides: `sdkx/inference/<provider>/doc.go`
 - Design rationale and acceptance criteria:
   [Unified Inference Runtime PRD](../prds/unified-inference-runtime.md)

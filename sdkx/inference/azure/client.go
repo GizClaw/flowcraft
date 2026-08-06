@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
 	openaigo "github.com/openai/openai-go"
 	"github.com/openai/openai-go/azure"

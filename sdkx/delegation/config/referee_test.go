@@ -6,27 +6,28 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	delegationconfig "github.com/GizClaw/flowcraft/sdkx/delegation/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func TestHandoffRefereeFactorySettings(t *testing.T) {
 	factory := delegationconfig.NewHandoffRefereeFactory(&mutableDirectory{})
-	for name, settings := range map[string]*yamlv3.Node{
+	for name, settings := range map[string]*sdkconfig.Opaque{
 		"omitted": nil,
 		"empty":   settingsNode(t, "{}"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := factory(context.Background(), deploy.HookInput{Settings: settings}); err != nil {
+			if _, err := factory(context.Background(), sdkconfig.Input{Settings: settings}); err != nil {
 				t.Fatalf("factory: %v", err)
 			}
 		})
 	}
-	if _, err := factory(context.Background(), deploy.HookInput{
+	if _, err := factory(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, "target: billing"),
 	}); !errdefs.IsValidation(err) {
 		t.Fatalf("unknown setting error = %v, want Validation", err)
@@ -37,7 +38,7 @@ func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
 	directory := &mutableDirectory{}
 	referee, err := delegationconfig.NewHandoffRefereeFactory(directory)(
 		context.Background(),
-		deploy.HookInput{},
+		sdkconfig.Input{},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -151,11 +152,15 @@ func successfulToolResult(callID string) message.Message {
 	}
 }
 
-func settingsNode(t *testing.T, input string) *yamlv3.Node {
+func settingsNode(t *testing.T, input string) *sdkconfig.Opaque {
 	t.Helper()
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(input), &node); err != nil {
+	jsonData, err := utils.ToJSON([]byte(input))
+	if err != nil {
 		t.Fatal(err)
 	}
-	return node.Content[0]
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+		t.Fatal(err)
+	}
+	return &opaque
 }

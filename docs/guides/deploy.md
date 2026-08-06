@@ -248,7 +248,7 @@ import (
     "github.com/GizClaw/flowcraft/sdk/agent"
     "github.com/GizClaw/flowcraft/sdkx/deploy"
     graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
-    "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
+    "github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 func main() {
@@ -309,15 +309,15 @@ explicit external consumer is dead configuration and fails the build.
 
 | Kind                      | Impl            | Result                          | Lives in                        |
 | ------------------------- | --------------- | ------------------------------- | ------------------------------- |
-| `workspace.Registry`      | `yaml`          | workspace container             | `sdkx/workspace/config`         |
-| `sandbox.Registry`        | `yaml`          | sandbox container               | `sdkx/sandbox/config`           |
-| `inference.Assembly`      | `yaml`          | runtime (+ optional router)     | `sdkx/inference/config/yaml`    |
-| `tool.Assembly`           | `yaml`          | catalog + executor              | `sdkx/tool/config`              |
+| `workspace.Registry`      | `yaml`          | workspace container             | `sdk/workspace/config`         |
+| `sandbox.Registry`        | `yaml`          | sandbox container               | `sdk/sandbox/config`            |
+| `inference.Assembly`      | `yaml`          | runtime (+ optional router)     | `sdk/inference/config`    |
+| `tool.Assembly`           | `yaml`          | catalog + executor              | `sdk/tool/config`              |
 | `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/jsrt`               |
 | `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
-| `event.Bus`               | `memory`        | in-process bus                  | `sdkx/event/config`             |
+| `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
-| `memory.Assembly`         | `yaml`          | runtime container                | `sdkx/memory/config/yaml`       |
+| `memory.Assembly`         | `yaml`          | runtime container                | `sdk/memory/config`       |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
@@ -1004,10 +1004,10 @@ warms up its catalog on first use).
   [runtime.md](runtime.md).
 - Package contracts: `sdkx/deploy/doc.go`, `sdkx/deploy/document.go`,
   `sdkx/deploy/builder.go`.
-- Per-resource config schemas: `sdkx/workspace/config/doc.go`,
-  `sdkx/sandbox/config/doc.go`, `sdkx/inference/config/doc.go`,
-  `sdkx/tool/config/doc.go`, `sdkx/event/config/doc.go`,
-  `sdkx/memory/config/doc.go`.
+- Per-resource config schemas: `sdk/workspace/config/doc.go`,
+  `sdk/sandbox/config/doc.go`, `sdk/inference/config/doc.go`,
+  `sdk/tool/config/doc.go`, `sdk/event/config/doc.go`,
+  `sdk/memory/config/doc.go`.
 - Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.

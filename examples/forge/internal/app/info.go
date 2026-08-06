@@ -51,13 +51,11 @@ func inspectDocument(workspaceDir string, doc deploy.Document) (Info, error) {
 			}
 			var settings struct {
 				Budget struct {
-					MaxItems int `yaml:"max_items"`
-				} `yaml:"budget"`
+					MaxItems int `json:"max_items"`
+				} `json:"budget"`
 			}
 			if preparer.Settings != nil {
-				if node := preparer.Settings.Node(); node != nil {
-					_ = node.Decode(&settings)
-				}
+				_ = preparer.Settings.Decode(&settings)
 			}
 			info.MemoryTopK = settings.Budget.MaxItems
 			break

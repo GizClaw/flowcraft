@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 )
 

@@ -2,6 +2,7 @@ package deploy_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,10 +13,10 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ---------- fakes ----------
@@ -78,23 +79,23 @@ func (f *fakeJSRuntime) Close() error {
 type fakeStore struct{ workspace string }
 
 type fakeResourceFactory struct {
-	spec deploy.ResourceSpec
-	new  func(context.Context, deploy.ResourceInput) (any, error)
+	spec sdkconfig.ResourceSpec
+	new  func(context.Context, sdkconfig.Input) (any, error)
 }
 
-func (f *fakeResourceFactory) Spec() deploy.ResourceSpec { return f.spec }
+func (f *fakeResourceFactory) Spec() sdkconfig.ResourceSpec { return f.spec }
 
-func (f *fakeResourceFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
+func (f *fakeResourceFactory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
 	return f.new(ctx, in)
 }
 
 func resourceFactory(
 	kind, impl, itemType string,
-	deps []deploy.ResourceDepSpec,
-	newFn func(context.Context, deploy.ResourceInput) (any, error),
-) deploy.ResourceFactory {
+	deps []sdkconfig.ResourceDepSpec,
+	newFn func(context.Context, sdkconfig.Input) (any, error),
+) sdkconfig.ResourceFactory {
 	return &fakeResourceFactory{
-		spec: deploy.ResourceSpec{
+		spec: sdkconfig.ResourceSpec{
 			Kind: kind, Impl: impl, Deps: deps, ItemType: itemType,
 		},
 		new: newFn,
@@ -176,10 +177,10 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		return "catalog:" + ref, nil
 	})
 
-	registryFactory := func(kind string) func(context.Context, deploy.ResourceInput) (any, error) {
-		return func(_ context.Context, in deploy.ResourceInput) (any, error) {
+	registryFactory := func(kind string) func(context.Context, sdkconfig.Input) (any, error) {
+		return func(_ context.Context, in sdkconfig.Input) (any, error) {
 			type s struct {
-				Names []string `yaml:"names"`
+				Names []string `json:"names"`
 			}
 			dec, err := deploy.DecodeSettings[s](in.Settings)
 			if err != nil {
@@ -197,8 +198,8 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		"workspace.Registry", "fake", "workspace.Workspace", nil, registryFactory("fs")))
 	b.MustRegisterResource(resourceFactory(
 		"sandbox.Registry", "fake", "sandbox.Runner",
-		[]deploy.ResourceDepSpec{{Name: "workspaces", Type: "workspace.Registry", Required: true}},
-		func(_ context.Context, in deploy.ResourceInput) (any, error) {
+		[]sdkconfig.ResourceDepSpec{{Name: "workspaces", Type: "workspace.Registry", Required: true}},
+		func(_ context.Context, in sdkconfig.Input) (any, error) {
 			// A resource binding another resource: the workspace registry
 			// must already exist by the time this runs.
 			dep, ok := in.Dep("workspaces")
@@ -212,9 +213,9 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		}))
 	b.MustRegisterResource(resourceFactory(
 		"script.runtime", "fakejs", "", nil,
-		func(_ context.Context, in deploy.ResourceInput) (any, error) {
+		func(_ context.Context, in sdkconfig.Input) (any, error) {
 			type s struct {
-				PoolSize int `yaml:"pool_size"`
+				PoolSize int `json:"pool_size"`
 			}
 			dec, err := deploy.DecodeSettings[s](in.Settings)
 			if err != nil {
@@ -224,9 +225,9 @@ func newTestBuilder(t *testing.T) *testBuilder {
 			return &fakeJSRuntime{pool: dec.PoolSize, journal: jr}, nil
 		}))
 	b.MustRegisterResource(resourceFactory(
-		"fake.Store", "fake", "", []deploy.ResourceDepSpec{
+		"fake.Store", "fake", "", []sdkconfig.ResourceDepSpec{
 			{Name: "workspace", Type: "workspace.Workspace", Required: true},
-		}, func(_ context.Context, in deploy.ResourceInput) (any, error) {
+		}, func(_ context.Context, in sdkconfig.Input) (any, error) {
 			ws, ok := in.Dep("workspace")
 			if !ok {
 				return nil, errString("fake.Store: workspace dep is required")
@@ -235,9 +236,9 @@ func newTestBuilder(t *testing.T) *testBuilder {
 			return &fakeStore{workspace: ws.(string)}, nil
 		}))
 
-	b.RegisterObserver("fake_hook", func(_ context.Context, in deploy.HookInput) (agent.Observer, error) {
+	b.RegisterObserver("fake_hook", func(_ context.Context, in sdkconfig.Input) (agent.Observer, error) {
 		type s struct {
-			Store string `yaml:"store"`
+			Store string `json:"store"`
 		}
 		if _, err := deploy.DecodeSettings[s](in.Settings); err != nil {
 			return nil, err
@@ -249,9 +250,9 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		captured.hook = h
 		return h, nil
 	})
-	b.RegisterPreparer("fake_before", func(_ context.Context, in deploy.HookInput) (agent.Preparer, error) {
+	b.RegisterPreparer("fake_before", func(_ context.Context, in sdkconfig.Input) (agent.Preparer, error) {
 		type s struct {
-			Window int `yaml:"window"`
+			Window int `json:"window"`
 		}
 		dec, err := deploy.DecodeSettings[s](in.Settings)
 		if err != nil {
@@ -264,7 +265,7 @@ func newTestBuilder(t *testing.T) *testBuilder {
 		captured.before = &out
 		return out, nil
 	})
-	b.RegisterCommitter("fake_commit", func(_ context.Context, in deploy.HookInput) (agent.Committer, error) {
+	b.RegisterCommitter("fake_commit", func(_ context.Context, in sdkconfig.Input) (agent.Committer, error) {
 		committer := &recordingCommitter{}
 		if dep, ok := in.Dep("store"); ok {
 			committer.store, _ = dep.(*fakeStore)
@@ -314,18 +315,18 @@ func buildDependencyResult(t *testing.T, values map[string]any, deps map[string]
 	resources := make(map[string]deploy.ResourceEntry, len(values))
 	for name, value := range values {
 		kind := name + ".Kind"
-		specDeps := make([]deploy.ResourceDepSpec, 0, len(deps[name]))
+		specDeps := make([]sdkconfig.ResourceDepSpec, 0, len(deps[name]))
 		entryDeps := make(map[string]deploy.DepRef, len(deps[name]))
 		for i, dependency := range deps[name] {
 			depName := fmt.Sprintf("dep%d", i)
-			specDeps = append(specDeps, deploy.ResourceDepSpec{
+			specDeps = append(specDeps, sdkconfig.ResourceDepSpec{
 				Name: depName, Type: dependency + ".Kind", Required: true,
 			})
 			entryDeps[depName] = deploy.DepRef{Resource: dependency}
 		}
 		b.MustRegisterResource(resourceFactory(
 			kind, "fake", "", specDeps,
-			func(context.Context, deploy.ResourceInput) (any, error) { return value, nil },
+			func(context.Context, sdkconfig.Input) (any, error) { return value, nil },
 		))
 		resources[name] = deploy.ResourceEntry{
 			Kind: kind, Impl: "fake", Export: true, Deps: entryDeps,
@@ -405,24 +406,24 @@ func agentFileBuilder(t *testing.T, opts ...deploy.BuilderOption) *deploy.Builde
 
 func TestRegisterResource_ValidatesAndSortsSpecs(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
-	for _, spec := range []deploy.ResourceSpec{
+	for _, spec := range []sdkconfig.ResourceSpec{
 		{Kind: "z.Kind", Impl: "a"},
 		{Kind: "a.Kind", Impl: "z"},
-		{Kind: "a.Kind", Impl: "a", Deps: []deploy.ResourceDepSpec{
+		{Kind: "a.Kind", Impl: "a", Deps: []sdkconfig.ResourceDepSpec{
 			{Name: "dep", Type: "dep.Kind"},
 		}},
 	} {
 		if err := b.RegisterResource(resourceFactory(
 			spec.Kind, spec.Impl, spec.ItemType, spec.Deps,
-			func(context.Context, deploy.ResourceInput) (any, error) { return struct{}{}, nil },
+			func(context.Context, sdkconfig.Input) (any, error) { return struct{}{}, nil },
 		)); err != nil {
 			t.Fatalf("RegisterResource(%+v): %v", spec, err)
 		}
 	}
 
 	got := b.ResourceSpecs()
-	want := []deploy.ResourceSpec{
-		{Kind: "a.Kind", Impl: "a", Deps: []deploy.ResourceDepSpec{
+	want := []sdkconfig.ResourceSpec{
+		{Kind: "a.Kind", Impl: "a", Deps: []sdkconfig.ResourceDepSpec{
 			{Name: "dep", Type: "dep.Kind"},
 		}},
 		{Kind: "a.Kind", Impl: "z"},
@@ -439,7 +440,7 @@ func TestRegisterResource_ValidatesAndSortsSpecs(t *testing.T) {
 
 	err := b.RegisterResource(resourceFactory(
 		"a.Kind", "a", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return struct{}{}, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return struct{}{}, nil },
 	))
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("duplicate registration error = %v, want validation", err)
@@ -453,12 +454,12 @@ func TestRegisterResource_RejectsInvalidSpecsAndTypedNilFactory(t *testing.T) {
 		t.Fatalf("typed nil factory error = %v, want validation", err)
 	}
 
-	tests := []deploy.ResourceSpec{
+	tests := []sdkconfig.ResourceSpec{
 		{Impl: "x"},
 		{Kind: "x"},
-		{Kind: "x", Impl: "y", Deps: []deploy.ResourceDepSpec{{Name: "", Type: "T"}}},
-		{Kind: "x", Impl: "y", Deps: []deploy.ResourceDepSpec{{Name: "d"}}},
-		{Kind: "x", Impl: "y", Deps: []deploy.ResourceDepSpec{
+		{Kind: "x", Impl: "y", Deps: []sdkconfig.ResourceDepSpec{{Name: "", Type: "T"}}},
+		{Kind: "x", Impl: "y", Deps: []sdkconfig.ResourceDepSpec{{Name: "d"}}},
+		{Kind: "x", Impl: "y", Deps: []sdkconfig.ResourceDepSpec{
 			{Name: "d", Type: "T"}, {Name: "d", Type: "T"},
 		}},
 	}
@@ -466,7 +467,7 @@ func TestRegisterResource_RejectsInvalidSpecsAndTypedNilFactory(t *testing.T) {
 		calls := 0
 		err := b.RegisterResource(&fakeResourceFactory{
 			spec: spec,
-			new: func(context.Context, deploy.ResourceInput) (any, error) {
+			new: func(context.Context, sdkconfig.Input) (any, error) {
 				calls++
 				return struct{}{}, nil
 			},
@@ -483,12 +484,12 @@ func TestRegisterResource_RejectsInvalidSpecsAndTypedNilFactory(t *testing.T) {
 func TestResourceSpecsSnapshotsFactorySpec(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
 	factory := &fakeResourceFactory{
-		spec: deploy.ResourceSpec{
+		spec: sdkconfig.ResourceSpec{
 			Kind: "snapshot.Kind",
 			Impl: "fake",
-			Deps: []deploy.ResourceDepSpec{{Name: "dep", Type: "dep.Kind"}},
+			Deps: []sdkconfig.ResourceDepSpec{{Name: "dep", Type: "dep.Kind"}},
 		},
-		new: func(context.Context, deploy.ResourceInput) (any, error) {
+		new: func(context.Context, sdkconfig.Input) (any, error) {
 			return struct{}{}, nil
 		},
 	}
@@ -498,10 +499,10 @@ func TestResourceSpecsSnapshotsFactorySpec(t *testing.T) {
 	factory.spec.Kind = "mutated.Kind"
 	factory.spec.Deps[0].Name = "mutated"
 
-	want := []deploy.ResourceSpec{{
+	want := []sdkconfig.ResourceSpec{{
 		Kind: "snapshot.Kind",
 		Impl: "fake",
-		Deps: []deploy.ResourceDepSpec{{Name: "dep", Type: "dep.Kind"}},
+		Deps: []sdkconfig.ResourceDepSpec{{Name: "dep", Type: "dep.Kind"}},
 	}}
 	if got := b.ResourceSpecs(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ResourceSpecs = %+v, want registration snapshot %+v", got, want)
@@ -539,7 +540,7 @@ func TestParse_HappyPath(t *testing.T) {
 	}
 
 	r := doc.Agents["researcher"]
-	if r.Engine.Kind != "graph" || r.Engine.Settings["max_steps"] != 8 {
+	if r.Engine.Kind != "graph" || r.Engine.Settings["max_steps"] != float64(8) {
 		t.Errorf("Engine = %+v", r.Engine)
 	}
 	if len(r.Prepare) == 0 || r.Prepare[0].Type != "fake_before" ||
@@ -902,7 +903,7 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 
 func TestBuild_RejectsTypedNilCommitter(t *testing.T) {
 	b := agentFileBuilder(t)
-	b.RegisterCommitter("nil_commit", func(context.Context, deploy.HookInput) (agent.Committer, error) {
+	b.RegisterCommitter("nil_commit", func(context.Context, sdkconfig.Input) (agent.Committer, error) {
 		var committer *recordingCommitter
 		return committer, nil
 	})
@@ -1007,11 +1008,11 @@ func TestResultAccessorsAndCloseAreTypedStableAndIdempotent(t *testing.T) {
 	b := deploy.NewBuilder(reg)
 	b.MustRegisterResource(resourceFactory(
 		"first.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return first, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return first, nil },
 	))
 	b.MustRegisterResource(resourceFactory(
 		"second.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return second, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return second, nil },
 	))
 	doc := parse(t, `
 version: v1
@@ -1300,7 +1301,7 @@ func TestResultCloseBorrowsSourcesAndClosesOnlyContainer(t *testing.T) {
 	b := deploy.NewBuilder(reg)
 	b.MustRegisterResource(resourceFactory(
 		"container.Kind", "fake", "item.Kind", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return container, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return container, nil },
 	))
 	b.RegisterSource("host.source", func(context.Context, string) (any, error) {
 		return source, nil
@@ -1347,17 +1348,17 @@ func TestBuild_FailureJoinsCleanupErrors(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
 	b.MustRegisterResource(resourceFactory(
 		"first.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return first, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return first, nil },
 	))
 	b.MustRegisterResource(resourceFactory(
 		"second.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return second, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return second, nil },
 	))
 	b.MustRegisterResource(resourceFactory(
-		"failure.Kind", "fake", "", []deploy.ResourceDepSpec{
+		"failure.Kind", "fake", "", []sdkconfig.ResourceDepSpec{
 			{Name: "first", Type: "first.Kind", Required: true},
 			{Name: "second", Type: "second.Kind", Required: true},
-		}, func(context.Context, deploy.ResourceInput) (any, error) {
+		}, func(context.Context, sdkconfig.Input) (any, error) {
 			return nil, buildErr
 		},
 	))
@@ -1549,7 +1550,7 @@ func TestBuild_UnknownExternalResourceConsumerFailsBeforeConstruction(t *testing
 	b := deploy.NewBuilder(agent.NewRegistry())
 	b.MustRegisterResource(resourceFactory(
 		"runtime.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) {
+		func(context.Context, sdkconfig.Input) (any, error) {
 			calls++
 			return struct{}{}, nil
 		},
@@ -1761,13 +1762,13 @@ func TestBuild_ResourceDepSpecRejectsUnknownAndMissingDepsBeforeNew(t *testing.T
 			b := deploy.NewBuilder(agent.NewRegistry())
 			b.MustRegisterResource(resourceFactory(
 				"whole.Kind", "fake", "", nil,
-				func(context.Context, deploy.ResourceInput) (any, error) { return struct{}{}, nil },
+				func(context.Context, sdkconfig.Input) (any, error) { return struct{}{}, nil },
 			))
 			calls := 0
 			b.MustRegisterResource(resourceFactory(
-				"consumer.Kind", "fake", "", []deploy.ResourceDepSpec{
+				"consumer.Kind", "fake", "", []sdkconfig.ResourceDepSpec{
 					{Name: "required", Type: "whole.Kind", Required: true},
-				}, func(context.Context, deploy.ResourceInput) (any, error) {
+				}, func(context.Context, sdkconfig.Input) (any, error) {
 					calls++
 					return struct{}{}, nil
 				},
@@ -1794,13 +1795,13 @@ func TestBuild_ResourceDepChecksWholeKind(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
 	b.MustRegisterResource(resourceFactory(
 		"actual.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return struct{}{}, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return struct{}{}, nil },
 	))
 	calls := 0
 	b.MustRegisterResource(resourceFactory(
-		"consumer.Kind", "fake", "", []deploy.ResourceDepSpec{
+		"consumer.Kind", "fake", "", []sdkconfig.ResourceDepSpec{
 			{Name: "dep", Type: "expected.Kind", Required: true},
-		}, func(context.Context, deploy.ResourceInput) (any, error) {
+		}, func(context.Context, sdkconfig.Input) (any, error) {
 			calls++
 			return struct{}{}, nil
 		},
@@ -1825,12 +1826,12 @@ func TestBuild_ItemTypeMismatchDoesNotCallResolver(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
 	b.MustRegisterResource(resourceFactory(
 		"container.Kind", "fake", "actual.Item", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return resolver, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return resolver, nil },
 	))
 	b.MustRegisterResource(resourceFactory(
-		"consumer.Kind", "fake", "", []deploy.ResourceDepSpec{
+		"consumer.Kind", "fake", "", []sdkconfig.ResourceDepSpec{
 			{Name: "dep", Type: "expected.Item", Required: true},
-		}, func(context.Context, deploy.ResourceInput) (any, error) {
+		}, func(context.Context, sdkconfig.Input) (any, error) {
 			return struct{}{}, nil
 		},
 	))
@@ -1854,7 +1855,7 @@ func TestBuild_HookItemRefRequiresDeclaredItemType(t *testing.T) {
 	resolver := &countingResolver{item: &fakeStore{}}
 	tb.MustRegisterResource(resourceFactory(
 		"undeclared.Container", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return resolver, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return resolver, nil },
 	))
 	doc := parse(t, `
 version: v1
@@ -1878,7 +1879,7 @@ func TestBuild_DeclaredItemTypeRequiresItemResolver(t *testing.T) {
 	tb := newTestBuilder(t)
 	tb.MustRegisterResource(resourceFactory(
 		"broken.Container", "fake", "workspace.Workspace", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return struct{}{}, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return struct{}{}, nil },
 	))
 	doc := parse(t, `
 version: v1
@@ -1900,7 +1901,7 @@ func TestBuild_RejectsTypedNilItem(t *testing.T) {
 	resolver := &countingResolver{item: item}
 	tb.MustRegisterResource(resourceFactory(
 		"nilitem.Container", "fake", "workspace.Workspace", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) { return resolver, nil },
+		func(context.Context, sdkconfig.Input) (any, error) { return resolver, nil },
 	))
 	doc := parse(t, `
 version: v1
@@ -1923,7 +1924,7 @@ func TestBuild_RejectsTypedNilResource(t *testing.T) {
 	b := deploy.NewBuilder(agent.NewRegistry())
 	b.MustRegisterResource(resourceFactory(
 		"nil.Kind", "fake", "", nil,
-		func(context.Context, deploy.ResourceInput) (any, error) {
+		func(context.Context, sdkconfig.Input) (any, error) {
 			var resource *closeRecorder
 			return resource, nil
 		},
@@ -1981,25 +1982,25 @@ func TestBuild_BuiltinDiscardOnInterrupt(t *testing.T) {
 
 func TestDecodeSettings_StrictAndNilSafe(t *testing.T) {
 	type s struct {
-		Window int `yaml:"window"`
+		Window int `json:"window"`
 	}
 	if v, err := deploy.DecodeSettings[s](nil); err != nil || v.Window != 0 {
 		t.Fatalf("nil node: (%v, %v)", v, err)
 	}
 
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte("window: 3\n"), &node); err != nil {
+	var settings sdkconfig.Opaque
+	if err := json.Unmarshal([]byte(`{"window":3}`), &settings); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	v, err := deploy.DecodeSettings[s](&node)
+	v, err := deploy.DecodeSettings[s](&settings)
 	if err != nil || v.Window != 3 {
 		t.Fatalf("known field: (%v, %v)", v, err)
 	}
 
-	if err := yamlv3.Unmarshal([]byte("windo: 3\n"), &node); err != nil {
+	if err := json.Unmarshal([]byte(`{"windo":3}`), &settings); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if _, err := deploy.DecodeSettings[s](&node); err == nil {
+	if _, err := deploy.DecodeSettings[s](&settings); err == nil {
 		t.Fatal("typo key must fail strict decode")
 	}
 }

@@ -12,9 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
+	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
-	schedulerconfig "github.com/GizClaw/flowcraft/sdkx/scheduler/config"
 )
 
 const eventBusResourceKind = "event.Bus"

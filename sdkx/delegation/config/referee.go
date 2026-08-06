@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
 const (
@@ -19,9 +19,10 @@ const (
 // NewHandoffRefereeFactory returns a deploy referee factory that captures
 // directory without reading it. The directory may therefore be bound after
 // deployment assembly and before the referee's After method runs.
-func NewHandoffRefereeFactory(directory sdkdelegation.Directory) deploy.RefereeFactory {
-	return func(_ context.Context, in deploy.HookInput) (agent.Referee, error) {
-		if _, err := deploy.DecodeSettings[struct{}](in.Settings); err != nil {
+func NewHandoffRefereeFactory(directory sdkdelegation.Directory) sdkconfig.RefereeFactory {
+	return func(_ context.Context, in sdkconfig.Input) (agent.Referee, error) {
+		var settings struct{}
+		if err := in.Settings.Decode(&settings); err != nil {
 			return nil, errdefs.Validation(fmt.Errorf(
 				"delegation config: decode %s referee settings: %w",
 				RefereeType, err))

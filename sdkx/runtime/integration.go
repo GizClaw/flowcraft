@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
@@ -54,7 +55,7 @@ type BuildRollbacker interface {
 type PrepareInput struct {
 	Name     string
 	Kind     string
-	Settings *deploy.Opaque
+	Settings *sdkconfig.Opaque
 
 	// Deploy is the borrowed deployment builder that will assemble the
 	// application after Prepare returns. Integrations may register the

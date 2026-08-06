@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
@@ -39,28 +40,28 @@ type IntegrationConfig struct {
 	Name     string
 	Kind     string
 	Deps     map[string]string
-	Settings *deploy.Opaque
+	Settings *sdkconfig.Opaque
 }
 
 type configWire struct {
-	EventBus  string                  `yaml:"event_bus"`
-	Scheduler string                  `yaml:"scheduler,omitempty"`
-	Sessions  sessionConfigWire       `yaml:"sessions,omitempty"`
-	Items     []integrationConfigWire `yaml:"integrations,omitempty"`
+	EventBus  string                  `json:"event_bus"`
+	Scheduler string                  `json:"scheduler,omitempty"`
+	Sessions  sessionConfigWire       `json:"sessions,omitempty"`
+	Items     []integrationConfigWire `json:"integrations,omitempty"`
 }
 
 type sessionConfigWire struct {
-	IdleTimeout             *string `yaml:"idle_timeout,omitempty"`
-	SinkBuffer              *int    `yaml:"sink_buffer,omitempty"`
-	SpeculativeBufferEvents *int    `yaml:"speculative_buffer_events,omitempty"`
-	SpeculativeBufferBytes  *int    `yaml:"speculative_buffer_bytes,omitempty"`
+	IdleTimeout             *string `json:"idle_timeout,omitempty"`
+	SinkBuffer              *int    `json:"sink_buffer,omitempty"`
+	SpeculativeBufferEvents *int    `json:"speculative_buffer_events,omitempty"`
+	SpeculativeBufferBytes  *int    `json:"speculative_buffer_bytes,omitempty"`
 }
 
 type integrationConfigWire struct {
-	Name     string            `yaml:"name"`
-	Kind     string            `yaml:"kind"`
-	Deps     map[string]string `yaml:"deps,omitempty"`
-	Settings *deploy.Opaque    `yaml:"settings,omitempty"`
+	Name     string            `json:"name"`
+	Kind     string            `json:"kind"`
+	Deps     map[string]string `json:"deps,omitempty"`
+	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
 }
 
 // DecodeConfig strictly decodes and validates the runtime subtree.
@@ -68,8 +69,8 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 	if doc.Runtime == nil {
 		return Config{}, errdefs.Validationf("runtime config: runtime section is required")
 	}
-	wire, err := deploy.DecodeSettings[configWire](doc.Runtime.Node())
-	if err != nil {
+	var wire configWire
+	if err := doc.Runtime.Decode(&wire); err != nil {
 		return Config{}, errdefs.Validation(fmt.Errorf("runtime config: decode: %w", err))
 	}
 	cfg := Config{

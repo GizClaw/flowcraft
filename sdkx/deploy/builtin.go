@@ -5,9 +5,10 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 )
 
-// Builtin after-factory kinds.
+// Builtin referee factory kinds.
 const (
 	// AfterDiscardOnInterrupt builds agent.DiscardOnInterruptCauses:
 	// the canonical disposition for voice / streaming UX that marks
@@ -20,13 +21,13 @@ func (b *Builder) registerBuiltins() {
 }
 
 type discardSettings struct {
-	Reason string   `yaml:"reason"`
-	Causes []string `yaml:"causes"`
+	Reason string   `json:"reason"`
+	Causes []string `json:"causes"`
 }
 
-func buildDiscardOnInterrupt(_ context.Context, in HookInput) (agent.Referee, error) {
-	s, err := DecodeSettings[discardSettings](in.Settings)
-	if err != nil {
+func buildDiscardOnInterrupt(_ context.Context, in sdkconfig.Input) (agent.Referee, error) {
+	var s discardSettings
+	if err := in.Settings.Decode(&s); err != nil {
 		return nil, fmt.Errorf("decode %s settings: %w", AfterDiscardOnInterrupt, err)
 	}
 	if len(s.Causes) == 0 {

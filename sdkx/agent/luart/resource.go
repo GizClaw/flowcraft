@@ -5,38 +5,40 @@ import (
 	"fmt"
 	"time"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
-// ResourceKind is the deploy resource kind implemented by script runtimes.
+// ResourceKind is the deployment resource kind implemented by script
+// runtimes.
 const ResourceKind = "agent.ScriptRuntime"
 
 // ResourceSettings is the settings subtree for a Lua runtime resource.
 type ResourceSettings struct {
 	// PoolSize is the number of pooled Lua states. It must be positive.
-	PoolSize *int `yaml:"pool_size,omitempty"`
-	// MaxExecTime is a Go duration string. Zero disables the additional cap.
-	MaxExecTime *string `yaml:"max_exec_time,omitempty"`
+	PoolSize *int `json:"pool_size,omitempty"`
+	// MaxExecTime is a Go duration string. Zero disables the additional
+	// cap.
+	MaxExecTime *string `json:"max_exec_time,omitempty"`
 }
 
 type deployFactory struct{}
 
-// NewDeployFactory returns a deploy factory for Lua script runtimes.
+// NewDeployFactory returns a deployment factory for Lua script runtimes.
 //
-// The returned runtime implements io.Closer, so deploy.Result owns and closes
-// its VM pool.
-func NewDeployFactory() deploy.ResourceFactory {
+// The returned runtime implements io.Closer, so an assembly result owns
+// and closes its VM pool.
+func NewDeployFactory() sdkconfig.ResourceFactory {
 	return deployFactory{}
 }
 
-func (deployFactory) Spec() deploy.ResourceSpec {
-	return deploy.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
+func (deployFactory) Spec() sdkconfig.ResourceSpec {
+	return sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
 }
 
-func (deployFactory) New(_ context.Context, in deploy.ResourceInput) (any, error) {
-	settings, err := deploy.DecodeSettings[ResourceSettings](in.Settings)
-	if err != nil {
+func (deployFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
+	var settings ResourceSettings
+	if err := in.Settings.Decode(&settings); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"luart: decode resource settings: %w", err))
 	}

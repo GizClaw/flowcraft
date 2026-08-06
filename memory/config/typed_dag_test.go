@@ -25,7 +25,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	settings := Settings{
 		Generate: modelSettings(generate),
 		Embed:    modelSettings(embed),
-		Interval: time.Second,
+		Interval: Duration(time.Second),
 	}
 	first, err := builder.NewAssembly(context.Background(), settings)
 	if err != nil {
@@ -50,7 +50,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if first.PolicyDigest != second.PolicyDigest {
 		t.Fatalf("same normalized settings changed digest: %q != %q", first.PolicyDigest, second.PolicyDigest)
 	}
-	settings.Interval = 10 * time.Second
+	settings.Interval = Duration(10 * time.Second)
 	third, err := builder.NewAssembly(context.Background(), settings)
 	if err != nil {
 		t.Fatal(err)

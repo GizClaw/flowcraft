@@ -5,7 +5,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // defaultBaseURL is the Alibaba Model Studio (DashScope) Beijing endpoint.

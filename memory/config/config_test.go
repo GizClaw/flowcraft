@@ -25,7 +25,7 @@ func TestAssemblyRunOnceDerivesAndRetrieves(t *testing.T) {
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
 		Generate: modelSettings(generate), Embed: modelSettings(embed),
 		Scopes:   []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
-		Interval: time.Hour,
+		Interval: Duration(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,7 +201,7 @@ func TestSummaryTypedDisable(t *testing.T) {
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
 		Generate: modelSettings(generate), Embed: modelSettings(embed),
 		Scopes:  []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
-		Summary: SummarySettings{Disabled: true}, Interval: time.Hour,
+		Summary: SummarySettings{Disabled: true}, Interval: Duration(time.Hour),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -254,7 +254,7 @@ func TestFactSettingsDefaultSimpleNoneAndCaps(t *testing.T) {
 	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
 		Fact:  FactSettings{Strategy: chat.StrategyNone},
-		Embed: modelSettings(embed), Interval: time.Hour,
+		Embed: modelSettings(embed), Interval: Duration(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("none requires generation unexpectedly: %v", err)
@@ -264,7 +264,7 @@ func TestFactSettingsDefaultSimpleNoneAndCaps(t *testing.T) {
 	_, generate, _ := testRuntime(t)
 	_, err = builder.NewAssembly(context.Background(), Settings{
 		Generate: modelSettings(generate), Embed: modelSettings(embed),
-		Fact: FactSettings{MaxFacts: -1}, Interval: time.Hour,
+		Fact: FactSettings{MaxFacts: -1}, Interval: Duration(time.Hour),
 	})
 	if err == nil {
 		t.Fatal("negative fact cap accepted")

@@ -6,12 +6,13 @@ import (
 	"strings"
 	"testing"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/tool/mcp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -611,18 +612,19 @@ func TestClose_Idempotent(t *testing.T) {
 // config bridge
 // ---------------------------------------------------------------------------
 
-// specNode parses a spec body into the opaque YAML node a config
+// specNode parses a spec body into the opaque settings subtree a config
 // document would hand a source factory.
-func specNode(t *testing.T, body string) *yamlv3.Node {
+func specNode(t *testing.T, body string) *sdkconfig.Opaque {
 	t.Helper()
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal([]byte(body), &node); err != nil {
+	jsonData, err := utils.ToJSON([]byte(body))
+	if err != nil {
 		t.Fatalf("specNode(%q): %v", body, err)
 	}
-	if node.Kind == yamlv3.DocumentNode && len(node.Content) == 1 {
-		return node.Content[0]
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+		t.Fatalf("specNode(%q): %v", body, err)
 	}
-	return &node
+	return &opaque
 }
 
 // TestConfig_ParseSpecAcceptsBothTransports pins the declarative shape
@@ -669,10 +671,12 @@ servers:
 // subprocess, which is also what proves the transport wiring works
 // outside the in-memory harness.
 func TestConfig_SourceFactoryRejectsBadSpec(t *testing.T) {
-	if _, err := mcp.SourceFactory(t.Context(), specNode(t, `servers: []`)); err == nil {
+	if _, err := mcp.SourceFactory(t.Context(), sdkconfig.Input{
+		Settings: specNode(t, `servers: []`),
+	}); err == nil {
 		t.Error("SourceFactory with no servers succeeded, want error")
 	}
-	if _, err := mcp.SourceFactory(t.Context(), nil); err == nil {
+	if _, err := mcp.SourceFactory(t.Context(), sdkconfig.Input{}); err == nil {
 		t.Error("SourceFactory with nil spec succeeded, want error")
 	}
 }

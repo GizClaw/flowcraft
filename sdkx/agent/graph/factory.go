@@ -20,10 +20,10 @@ import (
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/nodes"
 	scriptnode "github.com/GizClaw/flowcraft/sdk/graph/nodes/script"
+	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
+	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
-	inferenceconfig "github.com/GizClaw/flowcraft/sdkx/inference/config"
-	toolconfig "github.com/GizClaw/flowcraft/sdkx/tool/config"
 )
 
 const (

@@ -1,8 +1,8 @@
 package deploy
 
 import (
-	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -15,105 +15,10 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	yamlv3 "gopkg.in/yaml.v3"
 )
-
-// SourceFunc resolves one dep reference into a value the HOST owns —
-// a closure over an instance built outside this document. Resolution
-// happens once, at Build time, and the returned value is never
-// closed by [Result.Close]: a source is borrowed, not owned.
-type SourceFunc func(ctx context.Context, ref string) (any, error)
-
-// ResourceDepSpec declares one named dependency accepted by a resource
-// factory.
-type ResourceDepSpec struct {
-	Name     string `json:"name" yaml:"name"`
-	Type     string `json:"type" yaml:"type"`
-	Required bool   `json:"required,omitempty" yaml:"required,omitempty"`
-}
-
-// ResourceSpec is the static declaration for one resource factory.
-// Kind and Impl form its registry key. ItemType is non-empty when the
-// resource is a container whose named items can be resolved.
-type ResourceSpec struct {
-	Kind     string            `json:"kind" yaml:"kind"`
-	Impl     string            `json:"impl" yaml:"impl"`
-	Deps     []ResourceDepSpec `json:"deps,omitempty" yaml:"deps,omitempty"`
-	ItemType string            `json:"item_type,omitempty" yaml:"item_type,omitempty"`
-}
-
-// ResourceInput is what a resource factory receives: its own opaque
-// settings subtree plus the already-built values declared by its Spec.
-type ResourceInput struct {
-	// Settings is the impl-owned subtree. Decode it with
-	// [DecodeSettings] so unknown keys fail the build.
-	Settings *yamlv3.Node
-
-	// Deps holds resolved dependencies keyed by the names used in the
-	// document. The factory type-asserts concrete Go values itself.
-	Deps map[string]any
-}
-
-// Dep returns the named dependency.
-func (in ResourceInput) Dep(name string) (any, bool) {
-	v, ok := in.Deps[name]
-	return v, ok
-}
-
-// ResourceFactory declares and builds one shared resource.
-//
-// A returned value implementing io.Closer is closed by
-// [Result.Close] in reverse construction order. A constructor that
-// returns something it does NOT want closed should wrap it.
-type ResourceFactory interface {
-	Spec() ResourceSpec
-	New(ctx context.Context, in ResourceInput) (any, error)
-}
-
-// ItemResolver is implemented by container resources that hold named
-// items — a workspace registry's workspaces, a sandbox registry's
-// runners. The scalar dep form "resource/item" resolves through it.
-//
-// A resource may bind whole and also expose deliberately typed items. For
-// example, inference.Assembly binds whole to graph engines and exposes its
-// exact inference.Runtime as "runtime". An undeclared item name is a build
-// error.
-type ItemResolver interface {
-	ResolveItem(ref string) (any, bool)
-}
-
-// HookInput is what a hook / before / after factory receives.
-type HookInput struct {
-	// Settings is the factory-owned subtree; decode with
-	// [DecodeSettings].
-	Settings *yamlv3.Node
-
-	// Deps holds resolved dependencies keyed by the names used in the
-	// document, so a hook can reach a store or a memory instance the
-	// resource area built.
-	Deps map[string]any
-}
-
-// Dep returns the named dependency.
-func (in HookInput) Dep(name string) (any, bool) {
-	v, ok := in.Deps[name]
-	return v, ok
-}
-
-// ObserverFactory builds one lifecycle hook. Factories MUST decode
-// settings strictly (see [DecodeSettings]) so a typo in YAML fails
-// the build rather than silently dropping policy.
-type ObserverFactory func(ctx context.Context, in HookInput) (agent.Observer, error)
-
-// PreparerFactory builds the [agent.Preparer] seed hook.
-type PreparerFactory func(ctx context.Context, in HookInput) (agent.Preparer, error)
-
-// RefereeFactory builds one [agent.Referee] decision hook.
-type RefereeFactory func(ctx context.Context, in HookInput) (agent.Referee, error)
-
-// CommitterFactory builds one [agent.Committer] durable finalizer.
-type CommitterFactory func(ctx context.Context, in HookInput) (agent.Committer, error)
 
 // Instance is one assembled, runnable agent: identity + engine + the
 // per-call options the document declared. Execute appends the
@@ -139,7 +44,7 @@ func (i *Instance) Execute(ctx context.Context, req agent.Request, opts ...agent
 // builtResource is the internal build-time view of one shared
 // resource: the constructed value plus its complete static spec.
 type builtResource struct {
-	spec  ResourceSpec
+	spec  sdkconfig.ResourceSpec
 	value any
 }
 
@@ -223,16 +128,16 @@ func (r *Result) Close() error {
 	return r.closeErr
 }
 
-// CloseResource releases one named resource owned by this Result when it
-// implements io.Closer. Closing is concurrency-safe and idempotent across
-// CloseResource and [Result.Close]; every caller receives the resource's
-// cached close error. A resource that is not an io.Closer is a successful
-// no-op. Missing names are errdefs.NotFound. If an unclosed direct or
-// transitive resource still depends on name, CloseResource returns
-// errdefs.Conflict without closing it.
+// CloseResource releases one named resource owned by this Result when
+// it implements io.Closer. Closing is concurrency-safe and idempotent
+// across CloseResource and [Result.Close]; every caller receives the
+// resource's cached close error. A resource that is not an io.Closer
+// is a successful no-op. Missing names are errdefs.NotFound. If an
+// unclosed direct or transitive resource still depends on name,
+// CloseResource returns errdefs.Conflict without closing it.
 //
-// Values bound through a source are borrowed and cannot be closed through
-// Result because they are not entries in its resource area.
+// Values bound through a source are borrowed and cannot be closed
+// through Result because they are not entries in its resource area.
 func (r *Result) CloseResource(name string) error {
 	if r == nil {
 		return errdefs.NotFoundf("deploy result: resource %q is not found", name)
@@ -274,10 +179,10 @@ func (r *Result) CloseResource(name string) error {
 	return err
 }
 
-// activeDependents returns every direct or transitive dependent that has not
-// completed closing. r.lifecycleMu must be held. Non-closers remain active for
-// the Result's lifetime and therefore always block individual dependency
-// closure; Result.Close bypasses this check.
+// activeDependents returns every direct or transitive dependent that
+// has not completed closing. r.lifecycleMu must be held. Non-closers
+// remain active for the Result's lifetime and therefore always block
+// individual dependency closure; Result.Close bypasses this check.
 func (r *Result) activeDependents(name string) []string {
 	var active []string
 	visited := make(map[string]bool)
@@ -412,7 +317,7 @@ func (r *Result) fail(err error) error {
 //   - named resource (kind, impl) factories — how a resources
 //     entry becomes a shared instance;
 //   - named dep SOURCES — how a host-owned instance enters;
-//   - named hook / before / after factories.
+//   - named hook factories.
 //
 // No global registration: two Builders in one process stay
 // independent. The Builder imports no module config package; each
@@ -421,12 +326,12 @@ func (r *Result) fail(err error) error {
 type Builder struct {
 	engines    *agent.Registry
 	baseDir    string
-	sources    map[string]SourceFunc
+	sources    map[string]sdkconfig.SourceFunc
 	resources  map[resourceKey]registeredResource
-	preparers  map[string]PreparerFactory
-	observers  map[string]ObserverFactory
-	referees   map[string]RefereeFactory
-	committers map[string]CommitterFactory
+	preparers  map[string]sdkconfig.PreparerFactory
+	observers  map[string]sdkconfig.ObserverFactory
+	referees   map[string]sdkconfig.RefereeFactory
+	committers map[string]sdkconfig.CommitterFactory
 }
 
 // BuilderOption configures a Builder.
@@ -446,12 +351,12 @@ type resourceKey struct {
 }
 
 type registeredResource struct {
-	spec    ResourceSpec
-	factory ResourceFactory
+	spec    sdkconfig.ResourceSpec
+	factory sdkconfig.ResourceFactory
 }
 
 // NewBuilder returns a Builder over the given engine registry with
-// the built-in after factories registered. Options may configure
+// the built-in referee factories registered. Options may configure
 // loading behavior such as [WithBaseDir]. A nil registry panics — a
 // Builder without engine kinds cannot assemble anything.
 func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
@@ -460,12 +365,12 @@ func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
 	}
 	b := &Builder{
 		engines:    engines,
-		sources:    make(map[string]SourceFunc),
+		sources:    make(map[string]sdkconfig.SourceFunc),
 		resources:  make(map[resourceKey]registeredResource),
-		preparers:  make(map[string]PreparerFactory),
-		observers:  make(map[string]ObserverFactory),
-		referees:   make(map[string]RefereeFactory),
-		committers: make(map[string]CommitterFactory),
+		preparers:  make(map[string]sdkconfig.PreparerFactory),
+		observers:  make(map[string]sdkconfig.ObserverFactory),
+		referees:   make(map[string]sdkconfig.RefereeFactory),
+		committers: make(map[string]sdkconfig.CommitterFactory),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -477,12 +382,12 @@ func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
 }
 
 // RegisterResource registers factory by its (kind, impl) pair.
-func (b *Builder) RegisterResource(factory ResourceFactory) error {
+func (b *Builder) RegisterResource(factory sdkconfig.ResourceFactory) error {
 	if isNil(factory) {
 		return errdefs.Validationf("deploy.Builder: nil resource factory")
 	}
-	spec := cloneResourceSpec(factory.Spec())
-	if err := validateResourceSpec(spec); err != nil {
+	spec := factory.Spec().Clone()
+	if err := spec.Validate(); err != nil {
 		return err
 	}
 	key := resourceKey{spec.Kind, spec.Impl}
@@ -496,7 +401,7 @@ func (b *Builder) RegisterResource(factory ResourceFactory) error {
 }
 
 // MustRegisterResource is RegisterResource that panics on error.
-func (b *Builder) MustRegisterResource(factory ResourceFactory) {
+func (b *Builder) MustRegisterResource(factory sdkconfig.ResourceFactory) {
 	if err := b.RegisterResource(factory); err != nil {
 		panic(err)
 	}
@@ -504,10 +409,10 @@ func (b *Builder) MustRegisterResource(factory ResourceFactory) {
 
 // ResourceSpecs returns defensive copies of all registered resource
 // specs in stable kind-then-impl order.
-func (b *Builder) ResourceSpecs() []ResourceSpec {
-	out := make([]ResourceSpec, 0, len(b.resources))
+func (b *Builder) ResourceSpecs() []sdkconfig.ResourceSpec {
+	out := make([]sdkconfig.ResourceSpec, 0, len(b.resources))
 	for _, registered := range b.resources {
-		out = append(out, cloneResourceSpec(registered.spec))
+		out = append(out, registered.spec.Clone())
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Kind == out[j].Kind {
@@ -520,7 +425,7 @@ func (b *Builder) ResourceSpecs() []ResourceSpec {
 
 // RegisterSource adds (or replaces) the resolver for a dep source
 // name. Empty names and nil funcs are programming bugs.
-func (b *Builder) RegisterSource(name string, fn SourceFunc) {
+func (b *Builder) RegisterSource(name string, fn sdkconfig.SourceFunc) {
 	if name == "" {
 		panic("deploy.RegisterSource: name is empty")
 	}
@@ -531,40 +436,40 @@ func (b *Builder) RegisterSource(name string, fn SourceFunc) {
 }
 
 // RegisterObserver adds (or replaces) a lifecycle hook factory.
-func (b *Builder) RegisterObserver(typ string, fn ObserverFactory) {
+func (b *Builder) RegisterObserver(typ string, fn sdkconfig.ObserverFactory) {
 	if typ == "" {
-		panic("deploy.RegisterHook: type is empty")
+		panic("deploy.RegisterObserver: type is empty")
 	}
 	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterHook: factory for type %q is nil", typ))
+		panic(fmt.Sprintf("deploy.RegisterObserver: factory for type %q is nil", typ))
 	}
 	b.observers[typ] = fn
 }
 
-// RegisterPreparer adds (or replaces) a BeforeExecute factory.
-func (b *Builder) RegisterPreparer(typ string, fn PreparerFactory) {
+// RegisterPreparer adds (or replaces) a seed hook factory.
+func (b *Builder) RegisterPreparer(typ string, fn sdkconfig.PreparerFactory) {
 	if typ == "" {
-		panic("deploy.RegisterBefore: type is empty")
+		panic("deploy.RegisterPreparer: type is empty")
 	}
 	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterBefore: factory for type %q is nil", typ))
+		panic(fmt.Sprintf("deploy.RegisterPreparer: factory for type %q is nil", typ))
 	}
 	b.preparers[typ] = fn
 }
 
-// RegisterReferee adds (or replaces) an AfterExecute factory.
-func (b *Builder) RegisterReferee(typ string, fn RefereeFactory) {
+// RegisterReferee adds (or replaces) a decision hook factory.
+func (b *Builder) RegisterReferee(typ string, fn sdkconfig.RefereeFactory) {
 	if typ == "" {
-		panic("deploy.RegisterAfter: type is empty")
+		panic("deploy.RegisterReferee: type is empty")
 	}
 	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterAfter: factory for type %q is nil", typ))
+		panic(fmt.Sprintf("deploy.RegisterReferee: factory for type %q is nil", typ))
 	}
 	b.referees[typ] = fn
 }
 
 // RegisterCommitter adds (or replaces) a durable finalizer factory.
-func (b *Builder) RegisterCommitter(typ string, fn CommitterFactory) {
+func (b *Builder) RegisterCommitter(typ string, fn sdkconfig.CommitterFactory) {
 	if typ == "" {
 		panic("deploy.RegisterCommitter: type is empty")
 	}
@@ -649,7 +554,10 @@ func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) 
 		if err != nil {
 			return nil, res.fail(err)
 		}
-		v, err := registered.factory.New(ctx, ResourceInput{Settings: entry.Settings.Node(), Deps: deps})
+		v, err := registered.factory.New(ctx, sdkconfig.Input{
+			Settings: entry.Settings,
+			Deps:     deps,
+		})
 		if err != nil {
 			return nil, res.fail(fmt.Errorf(
 				"deploy config resources[%q] (%s/%s): %w",
@@ -723,61 +631,37 @@ func (b *Builder) loadAgents(entries map[string]AgentEntry) (map[string]AgentEnt
 }
 
 func parseAgentFile(data []byte) (AgentEntry, error) {
-	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
-	var document yamlv3.Node
-	if err := decoder.Decode(&document); err != nil {
-		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
+	var probe map[string]json.RawMessage
+	var err error
+	probe, err = utils.Decode[map[string]json.RawMessage](data)
+	if err != nil {
+		return AgentEntry{}, fmt.Errorf("decode agent document: %w", err)
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple YAML documents")
-		}
-		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
-	}
-	if len(document.Content) != 1 || document.Content[0].Kind != yamlv3.MappingNode {
-		return AgentEntry{}, fmt.Errorf("decode agent YAML: document must be a mapping")
-	}
-
-	root := document.Content[0]
-	entryNode := &yamlv3.Node{
-		Kind: yamlv3.MappingNode,
-		Tag:  "!!map",
+	versionRaw, ok := probe["version"]
+	if !ok {
+		return AgentEntry{}, fmt.Errorf("agent config version is required")
 	}
 	var version string
-	hasVersion := false
-	seen := make(map[string]struct{}, len(root.Content)/2)
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		key := root.Content[i]
-		value := root.Content[i+1]
-		if _, duplicate := seen[key.Value]; duplicate {
-			return AgentEntry{}, fmt.Errorf(
-				"decode agent YAML: field %q is duplicated", key.Value)
-		}
-		seen[key.Value] = struct{}{}
-		if key.Value == "version" {
-			hasVersion = true
-			if err := value.Decode(&version); err != nil {
-				return AgentEntry{}, fmt.Errorf(
-					"decode agent YAML: version: %w", err)
-			}
-			continue
-		}
-		if key.Value == "file" {
-			return AgentEntry{}, fmt.Errorf(
-				"decode agent YAML: field file is not allowed in an agent file")
-		}
-		entryNode.Content = append(entryNode.Content, key, value)
+	if err := json.Unmarshal(versionRaw, &version); err != nil {
+		return AgentEntry{}, fmt.Errorf("decode agent document version: %w", err)
 	}
-	if !hasVersion || version != VersionV1 {
+	if version != VersionV1 {
 		return AgentEntry{}, fmt.Errorf(
 			"agent config version %q is not supported (want %q)",
 			version, VersionV1)
 	}
-
-	wire, err := DecodeSettings[agentEntryWire](entryNode)
+	if _, ok := probe["file"]; ok {
+		return AgentEntry{}, fmt.Errorf(
+			"decode agent document: field file is not allowed in an agent file")
+	}
+	delete(probe, "version")
+	body, err := json.Marshal(probe)
 	if err != nil {
-		return AgentEntry{}, fmt.Errorf("decode agent YAML: %w", err)
+		return AgentEntry{}, fmt.Errorf("re-encode agent document: %w", err)
+	}
+	wire, err := sdkconfig.DecodeSettings[agentEntryWire](body)
+	if err != nil {
+		return AgentEntry{}, fmt.Errorf("decode agent document: %w", err)
 	}
 	entry := AgentEntry(wire)
 	entry.source = agentEntrySourceInline
@@ -946,13 +830,13 @@ func (b *Builder) resolveDeps(ctx context.Context, id string, spec agent.EngineS
 // spec and resolves each declared binding.
 func (b *Builder) resolveResourceDeps(
 	ctx context.Context,
-	spec ResourceSpec,
+	spec sdkconfig.ResourceSpec,
 	refs map[string]DepRef,
 	resources map[string]builtResource,
 	used map[string]bool,
 	where string,
 ) (map[string]any, error) {
-	declared := make(map[string]ResourceDepSpec, len(spec.Deps))
+	declared := make(map[string]sdkconfig.ResourceDepSpec, len(spec.Deps))
 	for _, ds := range spec.Deps {
 		declared[ds.Name] = ds
 	}
@@ -1051,7 +935,7 @@ func resolveResourceRef(name string, ref DepRef, wantType string, resources map[
 			"%s.deps[%q]: resource %q has item type %q, dep expects %q",
 			where, name, ref.Resource, br.spec.ItemType, wantType))
 	}
-	container, ok := br.value.(ItemResolver)
+	container, ok := br.value.(sdkconfig.ItemResolver)
 	if !ok {
 		return nil, errdefs.Internalf(
 			"%s.deps[%q]: resource %q factory %s/%s declares item type %q but returned %T without ItemResolver",
@@ -1157,12 +1041,12 @@ func (b *Builder) buildCommitter(ctx context.Context, id string, idx int, h Comm
 	return committer, nil
 }
 
-func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources map[string]builtResource, used map[string]bool, where string) (HookInput, error) {
+func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources map[string]builtResource, used map[string]bool, where string) (sdkconfig.Input, error) {
 	deps, err := b.resolveRefs(ctx, h.Deps, resources, used, where)
 	if err != nil {
-		return HookInput{}, err
+		return sdkconfig.Input{}, err
 	}
-	return HookInput{Settings: h.Settings.Node(), Deps: deps}, nil
+	return sdkconfig.Input{Settings: h.Settings, Deps: deps}, nil
 }
 
 func depNames(specs []agent.DepSpec) []string {
@@ -1173,47 +1057,12 @@ func depNames(specs []agent.DepSpec) []string {
 	return out
 }
 
-func resourceDepNames(specs []ResourceDepSpec) []string {
+func resourceDepNames(specs []sdkconfig.ResourceDepSpec) []string {
 	out := make([]string, len(specs))
 	for i, ds := range specs {
 		out[i] = ds.Name
 	}
 	return out
-}
-
-func cloneResourceSpec(spec ResourceSpec) ResourceSpec {
-	spec.Deps = append([]ResourceDepSpec(nil), spec.Deps...)
-	return spec
-}
-
-func validateResourceSpec(spec ResourceSpec) error {
-	if spec.Kind == "" {
-		return errdefs.Validationf("deploy resource factory: kind is empty")
-	}
-	if spec.Impl == "" {
-		return errdefs.Validationf(
-			"deploy resource factory %q: impl is empty", spec.Kind)
-	}
-	seen := make(map[string]struct{}, len(spec.Deps))
-	for i, dep := range spec.Deps {
-		if dep.Name == "" {
-			return errdefs.Validationf(
-				"deploy resource factory %s/%s: deps[%d].name is empty",
-				spec.Kind, spec.Impl, i)
-		}
-		if dep.Type == "" {
-			return errdefs.Validationf(
-				"deploy resource factory %s/%s: dep %q type is empty",
-				spec.Kind, spec.Impl, dep.Name)
-		}
-		if _, dup := seen[dep.Name]; dup {
-			return errdefs.Validationf(
-				"deploy resource factory %s/%s: duplicate dep %q",
-				spec.Kind, spec.Impl, dep.Name)
-		}
-		seen[dep.Name] = struct{}{}
-	}
-	return nil
 }
 
 func isNil(v any) bool {

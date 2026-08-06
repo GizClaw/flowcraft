@@ -12,7 +12,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
@@ -41,7 +40,8 @@ func (*Factory) Spec() runtimecore.IntegrationSpec {
 type emptySettings struct{}
 
 func (*Factory) Prepare(_ context.Context, input runtimecore.PrepareInput) (runtimecore.PreparedIntegration, error) {
-	if _, err := deploy.DecodeSettings[emptySettings](input.Settings.Node()); err != nil {
+	var settings emptySettings
+	if err := input.Settings.Decode(&settings); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"memory runtime integration %q: settings must be empty: %w", input.Name, err,
 		))

@@ -273,7 +273,7 @@ scopes: { exec: platform }
 
 Built-in middleware kinds map 1:1 to the constructors in
 `sdk/tool/middleware`. Custom kinds register on the `Builder` via
-`RegisterFactory` (the same hook surface `sdkx/inference/config`
+`RegisterFactory` (the same hook surface `sdk/inference/config`
 uses for provider drivers).
 
 A graph engine binds a `tool.Assembly` through its `tools` dep and
@@ -308,5 +308,5 @@ the same shape as the [deploy guide's testing section](deploy.md#testing-your-de
   semantics), `sdk/tool/tooltest` (shared test contracts).
 - Built-in tools: `sdkx/tool/doc.go` (the curation rule),
   `sdkx/tool/{exec,askuser,delegation,mcp}/doc.go`.
-- Assembly: `sdkx/tool/config/doc.go`, the `tool.Assembly` resource
+- Assembly: `sdk/tool/config/doc.go`, the `tool.Assembly` resource
   in [deploy.md](deploy.md#first-party-impls).

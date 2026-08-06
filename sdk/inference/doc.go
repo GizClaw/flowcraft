@@ -16,10 +16,10 @@
 // Profiles scope credentials to operations: a provider may expose several
 // API keys as named profiles, each restricted to the operations its backing
 // credentials can execute. Selectors and deployment routing live in the
-// route subpackage; versioned deployment configuration, secret resolution,
-// and hot reload live in the separate sdkx/inference/config module. This
-// package deliberately contains no I/O beyond provider transport, no global
-// registries, and no deployment policy of its own.
+// route subpackage; versioned deployment configuration and secret
+// resolution live in sdk/inference/config. This package deliberately
+// contains no I/O beyond provider transport, no global registries, and no
+// deployment policy of its own.
 //
 // Provider-specific settings ride on requests as typed extensions addressed
 // by ProviderID. A request may carry several providers' extensions at once:

@@ -9,10 +9,10 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	memoryrender "github.com/GizClaw/flowcraft/sdkx/memory/render"
 )
 
@@ -23,9 +23,9 @@ const (
 )
 
 type ScopeSettings struct {
-	RuntimeID string `yaml:"runtime_id"`
-	UserID    string `yaml:"user_id,omitempty"`
-	AgentID   string `yaml:"agent_id,omitempty"`
+	RuntimeID string `json:"runtime_id"`
+	UserID    string `json:"user_id,omitempty"`
+	AgentID   string `json:"agent_id,omitempty"`
 }
 
 func (s ScopeSettings) scope() sdkmemory.Scope {
@@ -33,16 +33,16 @@ func (s ScopeSettings) scope() sdkmemory.Scope {
 }
 
 type QuerySettings struct {
-	Literal        string `yaml:"literal,omitempty"`
-	Board          string `yaml:"board,omitempty"`
-	CurrentMessage bool   `yaml:"current_message,omitempty"`
-	RecentOnly     bool   `yaml:"recent_only,omitempty"`
+	Literal        string `json:"literal,omitempty"`
+	Board          string `json:"board,omitempty"`
+	CurrentMessage bool   `json:"current_message,omitempty"`
+	RecentOnly     bool   `json:"recent_only,omitempty"`
 }
 
 type BudgetSettings struct {
-	MaxTokens int `yaml:"max_tokens,omitempty"`
-	MaxItems  int `yaml:"max_items,omitempty"`
-	MaxChars  int `yaml:"max_chars,omitempty"`
+	MaxTokens int `json:"max_tokens,omitempty"`
+	MaxItems  int `json:"max_items,omitempty"`
+	MaxChars  int `json:"max_chars,omitempty"`
 }
 
 func (b BudgetSettings) budget() sdkmemory.Budget {
@@ -50,34 +50,34 @@ func (b BudgetSettings) budget() sdkmemory.Budget {
 }
 
 type ContextSettings struct {
-	Query          QuerySettings   `yaml:"query"`
-	Scope          ScopeSettings   `yaml:"scope"`
-	ConversationID string          `yaml:"conversation_id,omitempty"`
-	DatasetIDs     []string        `yaml:"dataset_ids,omitempty"`
-	Budget         BudgetSettings  `yaml:"budget,omitempty"`
-	MinScore       float64         `yaml:"min_score,omitempty"`
-	Output         string          `yaml:"output"`
-	Render         *RenderSettings `yaml:"render,omitempty"`
+	Query          QuerySettings   `json:"query"`
+	Scope          ScopeSettings   `json:"scope"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	DatasetIDs     []string        `json:"dataset_ids,omitempty"`
+	Budget         BudgetSettings  `json:"budget,omitempty"`
+	MinScore       float64         `json:"min_score,omitempty"`
+	Output         string          `json:"output"`
+	Render         *RenderSettings `json:"render,omitempty"`
 }
 
 // RenderSettings selects exactly one configured ContextRenderer. GoTemplate
 // is currently the only YAML renderer; the union remains explicit so adding a
 // structured renderer later does not change existing configuration semantics.
 type RenderSettings struct {
-	Output     string                           `yaml:"output"`
-	GoTemplate *memoryrender.GoTemplateSettings `yaml:"gotmpl,omitempty"`
+	Output     string                           `json:"output"`
+	GoTemplate *memoryrender.GoTemplateSettings `json:"gotmpl,omitempty"`
 }
 
 type TurnSettings struct {
-	Scope          ScopeSettings `yaml:"scope"`
-	ConversationID string        `yaml:"conversation_id,omitempty"`
-	Channel        string        `yaml:"channel,omitempty"`
+	Scope          ScopeSettings `json:"scope"`
+	ConversationID string        `json:"conversation_id,omitempty"`
+	Channel        string        `json:"channel,omitempty"`
 }
 
 // ContextPreparerFactory constructs memory.context.
-func ContextPreparerFactory(_ context.Context, input deploy.HookInput) (agent.Preparer, error) {
-	settings, err := deploy.DecodeSettings[ContextSettings](input.Settings)
-	if err != nil {
+func ContextPreparerFactory(_ context.Context, input sdkconfig.Input) (agent.Preparer, error) {
+	var settings ContextSettings
+	if err := input.Settings.Decode(&settings); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", ContextType, err))
 	}
 	if err := settings.validate(); err != nil {
@@ -137,9 +137,9 @@ func ContextPreparerFactory(_ context.Context, input deploy.HookInput) (agent.Pr
 }
 
 // TurnCommitterFactory constructs memory.turn.
-func TurnCommitterFactory(_ context.Context, input deploy.HookInput) (agent.Committer, error) {
-	settings, err := deploy.DecodeSettings[TurnSettings](input.Settings)
-	if err != nil {
+func TurnCommitterFactory(_ context.Context, input sdkconfig.Input) (agent.Committer, error) {
+	var settings TurnSettings
+	if err := input.Settings.Decode(&settings); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", TurnType, err))
 	}
 	if settings.Channel == "" {
@@ -174,7 +174,7 @@ func TurnCommitterFactory(_ context.Context, input deploy.HookInput) (agent.Comm
 	}), nil
 }
 
-func resolveAssembly(input deploy.HookInput) (sdkmemory.Assembly, error) {
+func resolveAssembly(input sdkconfig.Input) (sdkmemory.Assembly, error) {
 	raw, ok := input.Dep(depName)
 	if !ok {
 		return nil, errdefs.NotFoundf("memory hook: dependency %q is not bound", depName)
@@ -189,7 +189,7 @@ func resolveAssembly(input deploy.HookInput) (sdkmemory.Assembly, error) {
 	return assembly, nil
 }
 
-func resolveContext(input deploy.HookInput) (sdkmemory.ContextProvider, error) {
+func resolveContext(input sdkconfig.Input) (sdkmemory.ContextProvider, error) {
 	assembly, err := resolveAssembly(input)
 	if err != nil {
 		return nil, err
@@ -197,7 +197,7 @@ func resolveContext(input deploy.HookInput) (sdkmemory.ContextProvider, error) {
 	return assembly, nil
 }
 
-func resolveTurn(input deploy.HookInput) (sdkmemory.TurnSink, error) {
+func resolveTurn(input sdkconfig.Input) (sdkmemory.TurnSink, error) {
 	assembly, err := resolveAssembly(input)
 	if err != nil {
 		return nil, err

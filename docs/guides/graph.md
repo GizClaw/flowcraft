@@ -75,7 +75,7 @@ import (
     "github.com/GizClaw/flowcraft/sdk/graph"
     "github.com/GizClaw/flowcraft/sdk/graph/nodes"
     "github.com/GizClaw/flowcraft/sdkx/agent/graph"
-    "github.com/GizClaw/flowcraft/sdkx/inference/config/yaml"
+    "github.com/GizClaw/flowcraft/sdk/inference/config"
     // ...
 )
 

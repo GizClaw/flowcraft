@@ -13,7 +13,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/delegation"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 	tooldelegation "github.com/GizClaw/flowcraft/sdkx/tool/delegation"
@@ -51,9 +50,9 @@ func (*Factory) Spec() runtimecore.IntegrationSpec {
 }
 
 type settings struct {
-	MaxConcurrency *int    `yaml:"max_concurrency,omitempty"`
-	MaxDepth       *int    `yaml:"max_depth,omitempty"`
-	Timeout        *string `yaml:"timeout,omitempty"`
+	MaxConcurrency *int    `json:"max_concurrency,omitempty"`
+	MaxDepth       *int    `json:"max_depth,omitempty"`
+	Timeout        *string `json:"timeout,omitempty"`
 }
 
 // Prepare strictly decodes settings and registers delegation tools early
@@ -62,8 +61,8 @@ func (f *Factory) Prepare(_ context.Context, input runtimecore.PrepareInput) (ru
 	if f == nil || f.tools == nil {
 		return nil, errdefs.Validationf("delegation runtime integration: tool registry is required")
 	}
-	wire, err := deploy.DecodeSettings[settings](input.Settings.Node())
-	if err != nil {
+	var wire settings
+	if err := input.Settings.Decode(&wire); err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"delegation runtime integration %q: decode settings: %w", input.Name, err))
 	}

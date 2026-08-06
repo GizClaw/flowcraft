@@ -6,7 +6,7 @@ import (
 	"sort"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // Factory builds the Qwen (DashScope) provider definition from the

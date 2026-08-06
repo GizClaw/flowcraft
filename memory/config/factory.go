@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"gopkg.in/yaml.v3"
 )
 
+func decodeSettings(data []byte) (Settings, error) {
+	return utils.Decode[Settings](data)
+}
+
 // Factory returns the flowcraft memory implementation factory. It is
-// registered by applications into the generic sdkx memory assembly,
+// registered by applications into the generic sdk/memory assembly,
 // mirroring how inference provider factories are registered.
 func Factory() sdkmemory.Factory {
 	return sdkmemory.FactoryFunc(func(ctx context.Context, input sdkmemory.Input) (sdkmemory.Assembly, error) {
@@ -19,8 +23,8 @@ func Factory() sdkmemory.Factory {
 		if input.Inference == nil {
 			return nil, errors.New("memory config: inference runtime is required")
 		}
-		var settings Settings
-		if err := yaml.Unmarshal(input.Settings, &settings); err != nil {
+		settings, err := decodeSettings(input.Settings)
+		if err != nil {
 			return nil, err
 		}
 		builder, err := NewBuilder(input.Workspace, input.Inference)

@@ -211,6 +211,6 @@ shared `Bus` contract.
   `sdk/event/observer.go`, `sdk/event/trace.go`.
 - Host capability that reaches it: `sdk/agent/host.go`
   (`Host.EventBus`).
-- Assembly: `sdkx/event/config/doc.go`, the `event.Bus` resource
+- Assembly: `sdk/event/config/doc.go`, the `event.Bus` resource
   in [deploy.md](deploy.md#first-party-impls).
 - Remote bridges: per-package `doc.go` (NATS / SSE / …).

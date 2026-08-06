@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // SecretAPIKey is the provider-owned secret name for the MiniMax API key.

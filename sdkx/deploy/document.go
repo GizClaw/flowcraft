@@ -1,13 +1,13 @@
 package deploy
 
 import (
-	"bytes"
+	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // VersionV1 is the only supported document version.
@@ -20,11 +20,12 @@ const VersionV1 = "v1"
 const RefSeparator = "/"
 
 // Document is the deployment file, decoded and self-validated. The Go
-// types ARE the v1 wire format — yaml tags are the single source of
-// truth. Kind/type/source existence is NOT checked here; that
-// requires the Builder's registries.
+// types ARE the v1 wire format — json tags are the single source of
+// truth; YAML is authoring sugar converted before decoding by
+// sdk/config/utils. Kind/type/source existence is NOT checked here;
+// that requires the Builder's registries.
 type Document struct {
-	Version string `yaml:"version"`
+	Version string `json:"version"`
 
 	// Resources is the resource area: named, shared, long-lived
 	// objects built once per Build and handed to whatever binds them.
@@ -35,14 +36,14 @@ type Document struct {
 	//
 	// Resources may depend on each other through [ResourceEntry.Deps];
 	// Build orders construction topologically.
-	Resources map[string]ResourceEntry `yaml:"resources,omitempty"`
+	Resources map[string]ResourceEntry `json:"resources,omitempty"`
 
-	Agents map[string]AgentEntry `yaml:"agents"`
+	Agents map[string]AgentEntry `json:"agents"`
 
 	// Runtime is an application-runtime-owned configuration subtree.
 	// Parse preserves it verbatim so the runtime layer can decode it
 	// strictly without weakening strictness for the deployment schema.
-	Runtime *Opaque `yaml:"runtime,omitempty"`
+	Runtime *sdkconfig.Opaque `json:"runtime,omitempty"`
 }
 
 // ResourceEntry is one shared resource definition: a category kind
@@ -51,20 +52,20 @@ type Document struct {
 // resources, and its opaque settings subtree (strictly decoded by the
 // registered ResourceFactory).
 type ResourceEntry struct {
-	Kind string `yaml:"kind"`
-	Impl string `yaml:"impl"`
+	Kind string `json:"kind"`
+	Impl string `json:"impl"`
 
 	// Export keeps a resource as an application-facing root even when no
 	// agent, hook, or other resource binds it. The application retrieves
 	// the value through ResourceAs and owns it through Result.Close.
-	Export bool `yaml:"export,omitempty"`
+	Export bool `json:"export,omitempty"`
 
 	// Deps binds factory-declared dependency names to other resources
 	// (or host sources). Build validates these names and required
 	// bindings against ResourceSpec.Deps before calling the factory.
-	Deps map[string]DepRef `yaml:"deps,omitempty"`
+	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *Opaque `yaml:"settings,omitempty"`
+	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
 }
 
 // AgentEntry is one agent's declarative assembly recipe. The map key
@@ -72,43 +73,43 @@ type ResourceEntry struct {
 // to load the recipe during [Builder.Build]; File and the inline fields
 // are mutually exclusive.
 type AgentEntry struct {
-	File string `yaml:"file,omitempty"`
+	File string `json:"file,omitempty"`
 
 	// Card is the declarative subset of agent.AgentCard.
 	Card struct {
-		Name        string `yaml:"name,omitempty"`
-		Description string `yaml:"description,omitempty"`
-	} `yaml:"card,omitempty"`
+		Name        string `json:"name,omitempty"`
+		Description string `json:"description,omitempty"`
+	} `json:"card,omitempty"`
 
 	// Tools is the agent-level tool allow-list (policy gate,
 	// promoted to Run.ToolAllowList by the harness).
-	Tools []string `yaml:"tools,omitempty"`
+	Tools []string `json:"tools,omitempty"`
 
 	// Engine selects an engine kind from the agent.Registry.
-	Engine EngineEntry `yaml:"engine"`
+	Engine EngineEntry `json:"engine"`
 
 	// Deps binds EngineSpec-declared dep names to resources or
 	// sources.
-	Deps map[string]DepRef `yaml:"deps,omitempty"`
+	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	// Before is the optional seed hook (singular).
-	Prepare []PreparerEntry `yaml:"prepare,omitempty"`
+	// Prepare is the optional seed hook chain.
+	Prepare []PreparerEntry `json:"prepare,omitempty"`
 
-	// Hooks are lifecycle observers, fired in document order.
-	Observe []ObserverEntry `yaml:"observe,omitempty"`
+	// Observe are lifecycle observers, fired in document order.
+	Observe []ObserverEntry `json:"observe,omitempty"`
 
-	// After are decision hooks, merged in document order.
-	Referees []RefereeEntry `yaml:"referees,omitempty"`
+	// Referees are decision hooks, merged in document order.
+	Referees []RefereeEntry `json:"referees,omitempty"`
 
 	// Commit contains durable finalizers, run in document order after
 	// Referees accept the final result and before Observers finish it.
-	Commit []CommitterEntry `yaml:"commit,omitempty"`
+	Commit []CommitterEntry `json:"commit,omitempty"`
 
 	// Policy is the per-call harness policy.
 	Policy struct {
-		MaxRevise        int      `yaml:"max_revise,omitempty"`
-		ArtifactChannels []string `yaml:"artifact_channels,omitempty"`
-	} `yaml:"policy,omitempty"`
+		MaxRevise        int      `json:"max_revise,omitempty"`
+		ArtifactChannels []string `json:"artifact_channels,omitempty"`
+	} `json:"policy,omitempty"`
 
 	source         agentEntrySource
 	inlineDeclared bool
@@ -124,25 +125,31 @@ const (
 
 type agentEntryWire AgentEntry
 
-// UnmarshalYAML records whether the mapping selected a file or inline
+// UnmarshalJSON records whether the mapping selected a file or inline
 // source while retaining strict decoding for the complete AgentEntry
 // schema. Presence is recorded separately from values so file plus an
 // empty-but-declared inline field is still rejected.
-func (a *AgentEntry) UnmarshalYAML(node *yamlv3.Node) error {
+func (a *AgentEntry) UnmarshalJSON(data []byte) error {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
 	hasFile := false
+	if raw, ok := probe["file"]; ok && string(raw) != "null" {
+		hasFile = true
+	}
 	hasInline := false
-	if node.Kind == yamlv3.MappingNode {
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			switch node.Content[i].Value {
-			case "file":
-				hasFile = true
-			case "card", "tools", "engine", "deps", "prepare", "observe", "referees", "commit", "policy":
-				hasInline = true
-			}
+	for _, key := range []string{
+		"card", "tools", "engine", "deps", "prepare",
+		"observe", "referees", "commit", "policy",
+	} {
+		if raw, ok := probe[key]; ok && string(raw) != "null" {
+			hasInline = true
+			break
 		}
 	}
 
-	wire, err := DecodeSettings[agentEntryWire](node)
+	wire, err := sdkconfig.DecodeSettings[agentEntryWire](data)
 	if err != nil {
 		return err
 	}
@@ -158,11 +165,11 @@ func (a *AgentEntry) UnmarshalYAML(node *yamlv3.Node) error {
 }
 
 // EngineEntry selects an engine kind and carries its kind-specific
-// settings as pure YAML-decoded data, opaque to the loader — the
-// engine factory decodes and strictly validates it inside New.
+// settings as JSON-decoded data, opaque to the loader — the engine
+// factory decodes and strictly validates it inside New.
 type EngineEntry struct {
-	Kind     string         `yaml:"kind"`
-	Settings map[string]any `yaml:"settings,omitempty"`
+	Kind     string         `json:"kind"`
+	Settings map[string]any `json:"settings,omitempty"`
 }
 
 // DepRef binds one named dependency to a value. Exactly one of
@@ -186,20 +193,17 @@ type EngineEntry struct {
 // is merely borrowed. Binding a host singleton as a resource would
 // hand its lifetime to a document that does not own it.
 type DepRef struct {
-	Source   string `yaml:"source,omitempty"`
-	Resource string `yaml:"resource,omitempty"`
-	Ref      string `yaml:"ref,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Resource string `json:"resource,omitempty"`
+	Ref      string `json:"ref,omitempty"`
 }
 
-// UnmarshalYAML accepts either the scalar shorthand ("infer",
+// UnmarshalJSON accepts either the scalar shorthand ("infer",
 // "fs/project") or the explicit mapping. A scalar always means a
 // resource: sources are rare and deliberately verbose.
-func (d *DepRef) UnmarshalYAML(node *yamlv3.Node) error {
-	if node.Kind == yamlv3.ScalarNode {
-		var text string
-		if err := node.Decode(&text); err != nil {
-			return err
-		}
+func (d *DepRef) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err == nil {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return fmt.Errorf("dep reference is empty")
@@ -219,11 +223,10 @@ func (d *DepRef) UnmarshalYAML(node *yamlv3.Node) error {
 	}
 
 	// Mapping form: decode through a twin type so this method is not
-	// re-entered. Node.Decode ignores unknown keys, so route through
-	// DecodeSettings to keep a misspelled "resouce:" a build error
-	// rather than a silently unbound dep.
+	// re-entered, and keep strictness so a misspelled "resouce:" is a
+	// build error rather than a silently unbound dep.
 	type depRefWire DepRef
-	wire, err := DecodeSettings[depRefWire](node)
+	wire, err := sdkconfig.DecodeSettings[depRefWire](data)
 	if err != nil {
 		return err
 	}
@@ -237,14 +240,14 @@ func (d *DepRef) UnmarshalYAML(node *yamlv3.Node) error {
 // the same data shape; the distinct names exist so the type system
 // catches a factory registered against the wrong stage.
 type PreparerEntry struct {
-	Type string `yaml:"type"`
+	Type string `json:"type"`
 
 	// Deps binds factory-defined dependency names to resources or
 	// sources, so a Preparer can reach a store the resource area
 	// built.
-	Deps map[string]DepRef `yaml:"deps,omitempty"`
+	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *Opaque `yaml:"settings,omitempty"`
+	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
 }
 
 // ObserverEntry is one read-only lifecycle observer.
@@ -255,27 +258,6 @@ type RefereeEntry = PreparerEntry
 
 // CommitterEntry is one durable finalizer.
 type CommitterEntry = PreparerEntry
-
-// Opaque captures a YAML subtree without decoding it. Implementing
-// UnmarshalYAML stops the document's KnownFields(true) strictness
-// from recursing into factory-owned payloads, while every other
-// field in the document stays strictly checked.
-type Opaque yamlv3.Node
-
-// UnmarshalYAML stores the subtree verbatim.
-func (o *Opaque) UnmarshalYAML(node *yamlv3.Node) error {
-	*o = Opaque(*node)
-	return nil
-}
-
-// Node returns the captured subtree as a yamlv3.Node for
-// [DecodeSettings].
-func (o *Opaque) Node() *yamlv3.Node {
-	if o == nil {
-		return nil
-	}
-	return (*yamlv3.Node)(o)
-}
 
 // Validate checks the document's own invariants.
 func (d Document) Validate() error {
@@ -419,23 +401,14 @@ func validateDeps(deps map[string]DepRef) error {
 	return nil
 }
 
-// Parse decodes strict YAML into a validated Document: unknown
-// fields, trailing documents, and invalid values are all errors.
+// Parse decodes strict YAML or JSON into a validated Document:
+// unknown fields, trailing documents, and invalid values are all
+// errors. YAML is accepted as authoring sugar.
 func Parse(data []byte) (Document, error) {
-	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var doc Document
-	if err := decoder.Decode(&doc); err != nil {
+	doc, err := utils.Decode[Document](data)
+	if err != nil {
 		return Document{}, errdefs.Validation(fmt.Errorf(
-			"decode deploy config YAML: %w", err))
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			err = fmt.Errorf("multiple YAML documents")
-		}
-		return Document{}, errdefs.Validation(fmt.Errorf(
-			"decode deploy config YAML: %w", err))
+			"decode deploy config: %w", err))
 	}
 	if err := doc.Validate(); err != nil {
 		return Document{}, err
@@ -443,25 +416,11 @@ func Parse(data []byte) (Document, error) {
 	return doc, nil
 }
 
-// DecodeSettings decodes an opaque settings subtree into T with
-// KnownFields strictness: unknown keys are errors, so a YAML typo
-// fails the build instead of silently dropping policy. Every
-// resource / hook / before / after factory SHOULD decode through this
-// helper.
-//
-// A nil node decodes as the zero value of T.
-func DecodeSettings[T any](node *yamlv3.Node) (T, error) {
+// DecodeSettings strictly decodes an opaque settings subtree into T:
+// unknown keys are errors. A nil subtree produces the zero value of T.
+func DecodeSettings[T any](settings *sdkconfig.Opaque) (T, error) {
 	var out T
-	if node == nil {
-		return out, nil
-	}
-	raw, err := yamlv3.Marshal(node)
-	if err != nil {
-		return out, fmt.Errorf("re-encode settings node: %w", err)
-	}
-	decoder := yamlv3.NewDecoder(bytes.NewReader(raw))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&out); err != nil {
+	if err := settings.Decode(&out); err != nil {
 		return out, err
 	}
 	return out, nil

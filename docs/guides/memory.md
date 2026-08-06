@@ -8,14 +8,14 @@ title: Memory Stack
 operations, a hard-partition `Scope`, a compile-enforced ledger, and
 two wire shapes (`Record` for transcripts, `Hit` for retrieval). The
 kernel knows nothing about agents or hooks — every deployment
-decision is layered on top by `sdkx/memory/*` and `sdkx/tool/memory`.
+decision is layered on top by `sdkx/memory/*`.
 
 The stack is intentionally split:
 
 | Layer                | Owns                                                                | Lives in                                |
 | -------------------- | ------------------------------------------------------------------- | --------------------------------------- |
 | Kernel               | six ops, scope, record, ledger, error taxonomy                      | `sdk/memory`                            |
-| Config / assembly    | `memory.yaml` schema, `Builder`, slot routing, inference wiring     | `sdkx/memory/config`                    |
+| Config / assembly    | `memory.yaml` schema, `Builder`, slot routing, inference wiring     | `memory/config`                    |
 | Lifecycle hooks      | `Load` / `Recall` as Preparer, `Append` as Committer                | `sdkx/memory/hook`                      |
 | Tool                 | `Import` as `*tool.Tool` (host-registered)                           | `sdkx/tool/memory`                      |
 | Background tasks     | cron-driven `Compact` / `Archive` through the generic scheduler     | `sdkx/scheduler/memory`                 |
@@ -178,8 +178,8 @@ the classified wrapper.
 The kernel is wire-shape only; the deploy-side `memory.yaml` is
 where you set scope defaults, lifecycle intervals, embedding
 config, and which `StoreFactory` backs each slot. The shape
-lives in `sdkx/memory/config/spec.go`; the YAML deploy factory
-that wires it into a `Builder` is `sdkx/memory/config/yaml`.
+lives in `memory/config/settings.go`; the YAML deploy factory
+that wires it into a `Builder` is `sdk/memory/config`.
 
 Minimal example:
 
@@ -202,7 +202,7 @@ Two logical slots, two roles:
 | ------------- | ------------------------- | ---------------------------- |
 | `messages`    | `Append` / `Load` / `Recall` | transcript persistence    |
 | `documents`   | `Import` / `Compact` / `Archive` | knowledge ingestion   |
-The deploy factory in `sdkx/memory/config/yaml` exposes
+The deploy factory in `sdk/memory/config` exposes
 `memory.Assembly` as a single `ResourceFactory` (`kind:
 memory.Assembly`, `impl: yaml`); the host reads the per-slot
 implementation name (`noop` in the example above) and dispatches
@@ -583,8 +583,8 @@ of the active-field set and the ledger declares it `Native`.
 - Package contracts: `sdk/memory/doc.go`, `sdk/memory/runtime.go`,
   `sdk/memory/types.go`, `sdk/memory/error.go`.
 - Test suites: `sdk/memory/memorytest/doc.go`.
-- Deploy-side wiring: `sdkx/memory/config/doc.go`,
-  `sdkx/memory/config/yaml/doc.go`.
+- Deploy-side wiring: `memory/config/doc.go`,
+  `sdk/memory/config/doc.go`.
 - Lifecycle hooks: `sdkx/memory/hook/doc.go`.
 - Tool integration: `sdkx/tool/memory/doc.go`.
 - Background tasks: `sdkx/scheduler/memory/scheduler.go`.

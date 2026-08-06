@@ -17,8 +17,8 @@ import (
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/tool"
-	inferenceconfig "github.com/GizClaw/flowcraft/sdkx/inference/config"
-	toolconfig "github.com/GizClaw/flowcraft/sdkx/tool/config"
+	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
+	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 )
 
 type recordingRuntime struct {

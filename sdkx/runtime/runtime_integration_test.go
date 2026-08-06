@@ -11,10 +11,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/event"
+	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	eventconfig "github.com/GizClaw/flowcraft/sdkx/event/config"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
@@ -100,11 +101,11 @@ type integrationResourceFactory struct {
 	log *lifecycleLog
 }
 
-func (f integrationResourceFactory) Spec() deploy.ResourceSpec {
-	return deploy.ResourceSpec{Kind: integrationResourceKind, Impl: "tracked"}
+func (f integrationResourceFactory) Spec() sdkconfig.ResourceSpec {
+	return sdkconfig.ResourceSpec{Kind: integrationResourceKind, Impl: "tracked"}
 }
 
-func (f integrationResourceFactory) New(context.Context, deploy.ResourceInput) (any, error) {
+func (f integrationResourceFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	f.log.add("resource.new")
 	return &integrationResource{log: f.log}, nil
 }

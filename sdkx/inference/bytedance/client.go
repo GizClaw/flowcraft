@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdkx/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"

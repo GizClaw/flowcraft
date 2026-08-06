@@ -11,14 +11,15 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
+	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 	"github.com/GizClaw/flowcraft/sdkx/scheduler"
-	schedulerconfig "github.com/GizClaw/flowcraft/sdkx/scheduler/config"
 )
 
 type testEngineFactory struct {
@@ -34,14 +35,14 @@ func (f testEngineFactory) New(context.Context, agent.Config) (agent.Engine, err
 }
 
 type testResourceFactory struct {
-	spec  deploy.ResourceSpec
+	spec  sdkconfig.ResourceSpec
 	value any
 	err   error
 	calls *int
 }
 
-func (f testResourceFactory) Spec() deploy.ResourceSpec { return f.spec }
-func (f testResourceFactory) New(context.Context, deploy.ResourceInput) (any, error) {
+func (f testResourceFactory) Spec() sdkconfig.ResourceSpec { return f.spec }
+func (f testResourceFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	if f.calls != nil {
 		*f.calls++
 	}
@@ -262,14 +263,14 @@ func newDeployBuilder(t *testing.T, bus any, store any, busErr error) *deploy.Bu
 	)})
 	builder := deploy.NewBuilder(registry)
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  deploy.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
+		spec:  sdkconfig.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
 		value: bus,
 		err:   busErr,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  deploy.ResourceSpec{Kind: "test.Store", Impl: "test"},
+		spec:  sdkconfig.ResourceSpec{Kind: "test.Store", Impl: "test"},
 		value: store,
 	}); err != nil {
 		t.Fatal(err)
@@ -280,7 +281,7 @@ func newDeployBuilder(t *testing.T, bus any, store any, busErr error) *deploy.Bu
 func registerSchedulerResource(t *testing.T, builder *deploy.Builder, value any) {
 	t.Helper()
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  deploy.ResourceSpec{Kind: schedulerconfig.ResourceKind, Impl: "test"},
+		spec:  sdkconfig.ResourceSpec{Kind: schedulerconfig.ResourceKind, Impl: "test"},
 		value: value,
 	}); err != nil {
 		t.Fatal(err)
@@ -661,7 +662,7 @@ func TestBuildRejectsDeployResourceDependingOnRuntimeSchedulerBeforeBuild(t *tes
 	)
 	schedulerCalls := 0
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: deploy.ResourceSpec{
+		spec: sdkconfig.ResourceSpec{
 			Kind: schedulerconfig.ResourceKind,
 			Impl: "test",
 		},
@@ -672,10 +673,10 @@ func TestBuildRejectsDeployResourceDependingOnRuntimeSchedulerBeforeBuild(t *tes
 	}
 	consumerCalls := 0
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: deploy.ResourceSpec{
+		spec: sdkconfig.ResourceSpec{
 			Kind: "test.Consumer",
 			Impl: "test",
-			Deps: []deploy.ResourceDepSpec{{
+			Deps: []sdkconfig.ResourceDepSpec{{
 				Name: "scheduler", Type: schedulerconfig.ResourceKind, Required: true,
 			}},
 		},
@@ -719,10 +720,10 @@ func TestRuntimeSchedulerMayDependOnOtherDeployResource(t *testing.T) {
 		nil,
 	)
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: deploy.ResourceSpec{
+		spec: sdkconfig.ResourceSpec{
 			Kind: schedulerconfig.ResourceKind,
 			Impl: "test",
-			Deps: []deploy.ResourceDepSpec{{
+			Deps: []sdkconfig.ResourceDepSpec{{
 				Name: "store", Type: "test.Store", Required: true,
 			}},
 		},
@@ -1018,13 +1019,13 @@ func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
 	)})
 	deployBuilder := deploy.NewBuilder(registry)
 	if err := deployBuilder.RegisterResource(testResourceFactory{
-		spec:  deploy.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
+		spec:  sdkconfig.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
 		value: bus,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := deployBuilder.RegisterResource(testResourceFactory{
-		spec:  deploy.ResourceSpec{Kind: "test.Store", Impl: "test"},
+		spec:  sdkconfig.ResourceSpec{Kind: "test.Store", Impl: "test"},
 		value: &struct{}{},
 	}); err != nil {
 		t.Fatal(err)
