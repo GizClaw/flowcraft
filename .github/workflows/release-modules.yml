@@ -169,7 +169,7 @@ jobs:
       fail-fast: false
       matrix:
         release: ${{ fromJSON(needs.plan.outputs.modules) }}
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,7 +199,6 @@ jobs:
           case "$MODULE" in
             memory) dependencies="sdk" ;;
             sdkx) dependencies="sdk memory" ;;
-            voice) dependencies="sdk" ;;
             *) dependencies="" ;;
           esac
 
@@ -261,7 +260,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Test
         run: make eval
 

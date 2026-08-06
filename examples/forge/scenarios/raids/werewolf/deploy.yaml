@@ -1,0 +1,72 @@
+version: v1
+
+resources:
+  events:
+    kind: event.Bus
+    impl: memory
+  schedules:
+    kind: scheduler.Server
+    impl: local
+  delegations:
+    kind: delegation.AsyncBackend
+    impl: kanban-memory
+    deps:
+      event_bus: events
+    settings:
+      scope_id: local
+      max_pending: 100
+      max_cards: 1000
+      card_ttl: 24h
+  ws:
+    kind: workspace.Registry
+    impl: yaml
+    settings:
+      file: ./workspace.yaml
+  infer:
+    kind: inference.Assembly
+    impl: yaml
+    settings:
+      file: ./inference.yaml
+  tools:
+    kind: tool.Assembly
+    impl: yaml
+    settings:
+      file: ./tools.yaml
+  js:
+    kind: agent.ScriptRuntime
+    impl: js
+    settings:
+      pool_size: 4
+
+agents:
+  assistant:
+    card:
+      name: Werewolf Host
+      description: A Chinese Werewolf host with a per-seat state graph and a simulated game-event tool.
+    engine:
+      kind: graph
+      settings:
+        graph: ./graphs/assistant.json
+        build:
+          max_iterations: 120
+    deps:
+      inference: infer
+      tools: tools
+      workspace: ws/main
+      script_runtime: js
+
+runtime:
+  event_bus: events
+  scheduler: schedules
+  sessions:
+    idle_timeout: 10m
+    sink_buffer: 256
+  integrations:
+    - name: delegation
+      kind: delegation.local
+      deps:
+        backend: delegations
+      settings:
+        max_concurrency: 4
+        max_depth: 8
+        timeout: 30s

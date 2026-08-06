@@ -12,9 +12,12 @@ package s3
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
-	"github.com/GizClaw/flowcraft/sdkx/workspace/objstore"
 	"io"
+	"strings"
+
+	"github.com/GizClaw/flowcraft/sdkx/workspace/objstore"
 )
 
 // Client is the minimal S3 client interface. It is satisfied by the real
@@ -64,14 +67,18 @@ type HeadObjectOutput struct {
 }
 
 type ListObjectsV2Input struct {
-	Bucket    string
-	Prefix    string
-	Delimiter string
+	Bucket            string
+	Prefix            string
+	Delimiter         string
+	ContinuationToken *string
 }
 
 type ListObjectsV2Output struct {
 	Contents       []objstore.ObjectInfo
 	CommonPrefixes []string
+	// NextContinuationToken is set when more keys are available. A nil or
+	// empty value means the listing is complete.
+	NextContinuationToken *string
 }
 
 type DeleteObjectsInput struct {
@@ -96,7 +103,10 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		Key:    key,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", objstore.ErrKeyNotFound, key)
+		if isNotFoundError(err) {
+			return nil, fmt.Errorf("%w: %s", objstore.ErrKeyNotFound, key)
+		}
+		return nil, fmt.Errorf("s3: get %q: %w", key, err)
 	}
 	defer out.Body.Close()
 	return io.ReadAll(out.Body)
@@ -123,7 +133,10 @@ func (s *Store) Head(ctx context.Context, key string) (objstore.ObjectInfo, erro
 		Key:    key,
 	})
 	if err != nil {
-		return objstore.ObjectInfo{}, fmt.Errorf("%w: %s", objstore.ErrKeyNotFound, key)
+		if isNotFoundError(err) {
+			return objstore.ObjectInfo{}, fmt.Errorf("%w: %s", objstore.ErrKeyNotFound, key)
+		}
+		return objstore.ObjectInfo{}, fmt.Errorf("s3: head %q: %w", key, err)
 	}
 	return out.ObjectInfo, nil
 }
@@ -144,37 +157,60 @@ func (s *Store) ListPrefix(ctx context.Context, prefix, delimiter string) (*objs
 }
 
 func (s *Store) DelPrefix(ctx context.Context, prefix string) error {
-	// Collect all keys with this prefix, then batch delete.
-	out, err := s.client.ListObjectsV2(ctx, &ListObjectsV2Input{
-		Bucket: s.bucket,
-		Prefix: prefix,
-	})
-	if err != nil {
-		return fmt.Errorf("s3: list for delete %q: %w", prefix, err)
+	// Collect all keys with this prefix across every page, then batch
+	// delete. S3 caps a single listing page at 1000 keys, so a prefix with
+	// more objects would silently retain the tail without pagination.
+	var token *string
+	var allKeys []string
+	for {
+		out, err := s.client.ListObjectsV2(ctx, &ListObjectsV2Input{
+			Bucket:            s.bucket,
+			Prefix:            prefix,
+			ContinuationToken: token,
+		})
+		if err != nil {
+			return fmt.Errorf("s3: list for delete %q: %w", prefix, err)
+		}
+		for _, obj := range out.Contents {
+			allKeys = append(allKeys, obj.Key)
+		}
+		if out.NextContinuationToken == nil || *out.NextContinuationToken == "" {
+			break
+		}
+		token = out.NextContinuationToken
 	}
-	if len(out.Contents) == 0 {
+	if len(allKeys) == 0 {
 		return nil
 	}
 
-	keys := make([]string, 0, len(out.Contents))
-	for _, obj := range out.Contents {
-		keys = append(keys, obj.Key)
-	}
-
 	// S3 DeleteObjects supports up to 1000 keys per request.
-	for i := 0; i < len(keys); i += 1000 {
+	for i := 0; i < len(allKeys); i += 1000 {
 		end := i + 1000
-		if end > len(keys) {
-			end = len(keys)
+		if end > len(allKeys) {
+			end = len(allKeys)
 		}
 		if err := s.client.DeleteObjects(ctx, &DeleteObjectsInput{
 			Bucket: s.bucket,
-			Keys:   keys[i:end],
+			Keys:   allKeys[i:end],
 		}); err != nil {
 			return fmt.Errorf("s3: batch delete: %w", err)
 		}
 	}
 	return nil
+}
+
+// isNotFoundError reports whether an S3 client error means the key does
+// not exist. Only these shapes map to objstore.ErrKeyNotFound; transient
+// transport, auth, and permission failures must surface as themselves so
+// callers do not mistake an outage for a missing object.
+func isNotFoundError(err error) bool {
+	if errors.Is(err, objstore.ErrKeyNotFound) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nosuchkey") ||
+		strings.Contains(msg, "notfound") ||
+		strings.Contains(msg, "no such key")
 }
 
 var _ objstore.ObjectStore = (*Store)(nil)

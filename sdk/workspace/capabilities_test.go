@@ -30,8 +30,11 @@ func TestLocalWorkspace_Capabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := ws.Capabilities()
-	if !c.AtomicRename || !c.ReadAfterWrite || !c.DurableOnWrite {
+	if !c.AtomicRename || !c.ReadAfterWrite {
 		t.Errorf("LocalWorkspace unexpectedly missing caps: %+v", c)
+	}
+	if c.DurableOnWrite {
+		t.Error("LocalWorkspace must not claim DurableOnWrite: writes are not fsync'd")
 	}
 	if c.Distributed {
 		t.Error("LocalWorkspace must not claim Distributed")

@@ -32,12 +32,10 @@ Release PR before their tags are published.
   and knowledge tool adapters tied to those SDK contracts, along with the
   retrieval compatibility adapters, namespace migration utility, and legacy
   retrieval E2E module.
-
-### Changed
-
-- Renamed `sdkx/tool/memory` to `sdkx/tool/anthropicmemory` to distinguish
-  Anthropic's file-based Memory Tool protocol from the standalone `memory`
-  domain module.
+- Removed `sdkx/tool/memory`, the built-in file-tree Memory Tool adapter over
+  `sdk/workspace`. Model-driven file memory is an application concern: build it
+  on `sdk/workspace` in application-owned code, or attach a filesystem MCP
+  server through `sdkx/tool/mcp`.
 
 <!-- releasegate:releases -->
 

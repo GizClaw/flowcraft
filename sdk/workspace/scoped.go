@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -51,14 +52,20 @@ func NewScopedWorkspace(inner Workspace, opts ...ScopedOption) *ScopedWorkspace 
 	return sw
 }
 
+// Unwrap returns the wrapped Workspace. It lets callers recover
+// implementation-specific extras (e.g. *LocalWorkspace.Root) that
+// the scoped wrapper does not forward — at the caller's own risk,
+// since operations on the unwrapped workspace bypass this scope's
+// permission policy.
+func (s *ScopedWorkspace) Unwrap() Workspace {
+	return s.inner
+}
+
 // Capabilities forwards to the wrapped Workspace, since scoping
 // is a security boundary that does not change durability /
 // atomicity / consistency / distribution semantics. A wrapped
 // Workspace that does not implement [CapabilityReporter] yields a
 // zero-value (all-false) [Capabilities] via [CapabilitiesOf].
-//
-// ScopedGitWorkspace embeds ScopedWorkspace and therefore inherits
-// this method.
 func (s *ScopedWorkspace) Capabilities() Capabilities {
 	return CapabilitiesOf(s.inner)
 }
@@ -129,41 +136,6 @@ func (s *ScopedWorkspace) Stat(ctx context.Context, path string) (fs.FileInfo, e
 	return s.inner.Stat(ctx, path)
 }
 
-type ScopedGitWorkspace struct {
-	*ScopedWorkspace
-	git GitWorkspace
-}
-
-func NewScopedGitWorkspace(inner GitWorkspace, opts ...ScopedOption) *ScopedGitWorkspace {
-	return &ScopedGitWorkspace{
-		ScopedWorkspace: NewScopedWorkspace(inner, opts...),
-		git:             inner,
-	}
-}
-
-func (s *ScopedGitWorkspace) GitClone(ctx context.Context, url, dest string) error {
-	if err := s.checkWrite(ctx, dest); err != nil {
-		return err
-	}
-	return s.git.GitClone(ctx, url, dest)
-}
-
-func (s *ScopedGitWorkspace) GitPull(ctx context.Context, dir string) error {
-	if err := s.checkWrite(ctx, dir); err != nil {
-		return err
-	}
-	return s.git.GitPull(ctx, dir)
-}
-
-func (s *ScopedGitWorkspace) GitHead(ctx context.Context, dir string) (string, error) {
-	if err := s.checkRead(ctx, dir); err != nil {
-		return "", err
-	}
-	return s.git.GitHead(ctx, dir)
-}
-
-var _ GitWorkspace = (*ScopedGitWorkspace)(nil)
-
 func (s *ScopedWorkspace) checkRead(ctx context.Context, path string) error {
 	cleaned := filepath.Clean(path)
 	if matchesAny(cleaned, s.mandatoryDeny) {
@@ -211,7 +183,9 @@ func (s *ScopedWorkspace) logViolation(ctx context.Context, op, path, reason str
 //
 // To match a file extension at any depth, use the explicit "**/*.ext" form.
 func matchesAny(path string, patterns []string) bool {
+	path = filepath.ToSlash(path)
 	for _, p := range patterns {
+		p = filepath.ToSlash(p)
 		if strings.HasSuffix(p, "/**") {
 			prefix := strings.TrimSuffix(p, "/**")
 			if strings.HasPrefix(prefix, "**/") {
@@ -232,14 +206,14 @@ func matchesAny(path string, patterns []string) bool {
 			if path == suffix || strings.HasSuffix(path, "/"+suffix) {
 				return true
 			}
-			if strings.Contains(suffix, "*") || strings.Contains(suffix, "?") {
-				if matched, _ := filepath.Match(suffix, filepath.Base(path)); matched {
+			if strings.ContainsAny(suffix, "*?") {
+				if matched, _ := pathpkg.Match(suffix, pathpkg.Base(path)); matched {
 					return true
 				}
 			}
 			continue
 		}
-		if matched, _ := filepath.Match(p, path); matched {
+		if matched, _ := pathpkg.Match(p, path); matched {
 			return true
 		}
 	}

@@ -1,20 +1,25 @@
 package graph
 
-// Board variable keys owned by the graph layer.
-//
-// Only engine-produced keys live here — names written by the executor
-// itself as a side effect of running a graph. Node-type-specific keys
-// (e.g. summarisation index, previous-message count, the LLM
-// transcript channel name) belong in the owning node sub-package.
+// Well-known board variable names written by the graph kernel itself.
+// They follow the "__" reservation rule documented on
+// agent.MainChannel: user-domain code must not introduce keys with
+// that prefix.
 const (
-	// VarInterruptedNode records the ID of the node that returned an
-	// engine.Interrupted error, written by the executor before propagating
-	// the interrupt to the caller. Used by resume flows to know where to
-	// restart.
+	// VarInterruptedNode records the node id that was about to run
+	// when a cooperative interrupt fired, so hosts can surface
+	// "paused at X" in UIs.
 	VarInterruptedNode = "__interrupted_node"
 
-	// VarToolCalls is the engine-managed slice that mirrors tool_call /
-	// tool_result stream events into board state, so resume / inspection
-	// flows can see the in-flight tool loop without replaying the stream.
+	// VarToolCalls accumulates the tool calls executed during the
+	// run, appended by tool-calling node types (e.g. the LLM node)
+	// for observability and resume-time auditing.
 	VarToolCalls = "__tool_calls"
+
+	// VarIterations is the kernel-injected condition environment name
+	// holding the number of node invocations executed so far (the same
+	// counter WithMaxIterations budgets against; continuous across
+	// resume). A loop back-edge can soft-exit with "__iterations < 10".
+	// It lives in the reserved "__" namespace (see vars.go); the kernel
+	// value shadows any same-named board var as a second line of defense.
+	VarIterations = "__iterations"
 )

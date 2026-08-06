@@ -1,10 +1,11 @@
 // Package nsjail implements sdk/sandbox.Runner on top of the
 // nsjail (https://github.com/google/nsjail) binary — a Linux
 // process isolator that wraps namespace / cgroups / seccomp / rlimits
-// into a single CLI tool. It is the first isolation backend that
-// actually enforces the Net and Resources policy fields of
-// sandbox.ExecOptions; LocalRunner returns errdefs.NotAvailable for
-// both.
+// into a single CLI tool. It enforces network posture and resource
+// policy with Linux kernel primitives. LocalRunner now offers portable
+// process-group resource caps via a watcher, but still cannot enforce
+// network isolation; nsjail adds that boundary with namespaces and
+// cgroups.
 //
 // # Why sdkx
 //
@@ -44,16 +45,15 @@
 //	Resources.DiskBytes         errdefs.NotAvailable (would require tmpfs quota)
 //	Resources.MaxOutputBytes    enforced in-process, mirroring LocalRunner
 //
-// # Filesystem isolation (NOT enabled in this version)
+// # Filesystem isolation
 //
-// This version does NOT clone the mount namespace; the child process
-// sees the host filesystem. WorkDir confinement still applies via
-// the same path-traversal checks LocalRunner uses on its rootDir.
-// Full chroot / bind-mount support is deferred to a later version
-// because it interacts with sdk/workspace's ScopedWorkspace contract
-// in ways that need their own RFC. The net / cgroup / seccomp
-// boundaries this backend already enforces are the principal gap
-// between LocalRunner and "real" isolation, so we ship those first.
+// The child gets a private mount namespace. The host root stays visible
+// read-only so local agents can reach the real toolchain, rootDir is
+// bind-mounted read-write at the same absolute path, and /tmp is a
+// private writable tmpfs. Additional existing paths may be opened for
+// writing with [WithWritablePaths]. Mount-affecting [WithExtraFlags]
+// values are rejected so callers cannot silently disable the boundary
+// reported by sandbox.Enforcement.FilesystemBounds.
 //
 // # Cgroup prerequisites
 //

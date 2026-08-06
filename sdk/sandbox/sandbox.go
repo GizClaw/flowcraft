@@ -31,8 +31,9 @@ type Runner interface {
 //   - Env: see EnvPolicy. Replaces the historical "inherit everything"
 //     behaviour while staying back-compat when EnvPolicy.Allow is nil.
 //   - Net: see NetPolicy. LocalRunner only accepts NetDefault.
-//   - Resources: see ResourceLimits. LocalRunner only enforces
-//     MaxOutputBytes.
+//   - Resources: see ResourceLimits. LocalRunner enforces MemoryBytes,
+//     CPUMillicores (with Timeout), and MaxOutputBytes; DiskBytes is
+//     still errdefs.NotAvailable.
 type ExecOptions struct {
 	WorkDir   string
 	Stdin     []byte
@@ -99,9 +100,19 @@ type NetPolicy struct {
 
 // ResourceLimits caps how much the child process may consume.
 //
-// CPUMillicores / MemoryBytes / DiskBytes are *hard* limits that need
-// kernel-level enforcement (cgroups, rlimits, VM caps). LocalRunner
-// returns errdefs.NotAvailable when any of them is non-zero.
+// MemoryBytes caps aggregate resident memory used by the child process
+// group. LocalRunner enforces it with its unix group watcher;
+// sandboxed backends may use cgroups or VM caps instead.
+//
+// CPUMillicores expresses a cpu-time budget in thousandths of a core:
+// backends derive a hard cap from it (LocalRunner: aggregate group
+// cpu-time = Timeout x millicores/1000 via its sampling watcher).
+// Because the budget is derived from the wall-clock timeout,
+// LocalRunner requires Timeout > 0 when CPUMillicores is set and
+// returns errdefs.NotAvailable otherwise.
+//
+// DiskBytes needs a quota mechanism no local backend has today; any
+// non-zero value is rejected with errdefs.NotAvailable everywhere.
 //
 // MaxOutputBytes caps the bytes captured into ExecResult.Stdout and
 // ExecResult.Stderr independently; excess output is dropped silently

@@ -19,7 +19,6 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrRunStatus, "run.status"},
 		{AttrGraphName, "graph.name"},
 		{AttrNodeID, "node.id"},
-		{AttrActorID, "actor.id"},
 		{AttrToolName, "tool.name"},
 		{AttrToolCallID, "tool.call_id"},
 		{AttrLLMProvider, "llm.provider"},
@@ -33,10 +32,6 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrConversationID, "conversation.id"},
 		{AttrDatasetID, "dataset.id"},
 		{AttrErrorMessage, "error.message"},
-		{AttrKanbanCardID, "kanban.card.id"},
-		{AttrKanbanCardKind, "kanban.card.kind"},
-		{AttrKanbanProducerID, "kanban.producer.id"},
-		{AttrKanbanTargetAgentID, "kanban.target.agent.id"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {
@@ -52,13 +47,11 @@ func TestAttrConstants_Unique(t *testing.T) {
 	all := []string{
 		AttrPodID, AttrAgentID, AttrTenantID,
 		AttrRunID, AttrParentRunID, AttrEngineKind, AttrRunStatus,
-		AttrGraphName, AttrNodeID, AttrActorID,
+		AttrGraphName, AttrNodeID,
 		AttrToolName, AttrToolCallID,
 		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
 		AttrConversationID, AttrDatasetID, AttrErrorMessage,
-		AttrKanbanCardID, AttrKanbanCardKind, AttrKanbanProducerID,
-		AttrKanbanTargetAgentID,
 	}
 	seen := make(map[string]struct{}, len(all))
 	for _, k := range all {

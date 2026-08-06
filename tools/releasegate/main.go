@@ -17,12 +17,11 @@ import (
 
 const changelogMarker = "<!-- releasegate:releases -->"
 
-var moduleOrder = []string{"sdk", "memory", "sdkx", "voice"}
+var moduleOrder = []string{"sdk", "memory", "sdkx"}
 
 var moduleDependencies = map[string][]string{
 	"memory": {"sdk"},
 	"sdkx":   {"sdk", "memory"},
-	"voice":  {"sdk"},
 }
 
 type Changeset struct {

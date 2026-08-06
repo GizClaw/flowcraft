@@ -18,7 +18,7 @@ func TestLoadChangesetsRejectsInvalidContracts(t *testing.T) {
 		want string
 	}{
 		{"empty summary", `{"summary":" ","releases":[{"module":"sdk","bump":"patch"}]}`, "summary"},
-		{"invalid module", `{"summary":"x","releases":[{"module":"claw","bump":"patch"}]}`, "module"},
+		{"invalid module", `{"summary":"x","releases":[{"module":"unknown","bump":"patch"}]}`, "module"},
 		{"invalid bump", `{"summary":"x","releases":[{"module":"sdk","bump":"major"}]}`, "bump"},
 		{"duplicate module", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"},{"module":"sdk","bump":"minor"}]}`, "duplicate"},
 		{"unknown field", `{"summary":"x","releases":[{"module":"sdk","bump":"patch"}],"extra":true}`, "unknown field"},
@@ -144,19 +144,17 @@ func TestPlanUsesDependencyOrder(t *testing.T) {
 	seedModule(t, repo, "sdk", "")
 	seedModule(t, repo, "memory", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
 	seedModule(t, repo, "sdkx", "require (\n github.com/GizClaw/flowcraft/sdk v1.0.0\n github.com/GizClaw/flowcraft/memory v1.0.0\n)\n")
-	seedModule(t, repo, "voice", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
 	commitAll(t, repo, "seed")
-	for _, module := range []string{"sdk", "memory", "sdkx", "voice"} {
+	for _, module := range []string{"sdk", "memory", "sdkx"} {
 		gitRun(t, repo, "tag", module+"/v1.0.0")
 	}
 
-	for _, module := range []string{"sdk", "memory", "sdkx", "voice"} {
+	for _, module := range []string{"sdk", "memory", "sdkx"} {
 		writeFile(t, repo, module+"/change.go", "package "+module+"\n")
 	}
 	writeFile(t, repo, "memory/go.mod", moduleFile("memory", "require github.com/GizClaw/flowcraft/sdk v1.0.1\n"))
 	writeFile(t, repo, "sdkx/go.mod", moduleFile("sdkx", "require (\n github.com/GizClaw/flowcraft/sdk v1.0.1\n github.com/GizClaw/flowcraft/memory v1.0.1\n)\n"))
-	writeFile(t, repo, "voice/go.mod", moduleFile("voice", "require github.com/GizClaw/flowcraft/sdk v1.0.1\n"))
-	writeFile(t, repo, ".release/all.json", `{"summary":"all","releases":[{"module":"sdkx","bump":"patch"},{"module":"voice","bump":"patch"},{"module":"memory","bump":"patch"},{"module":"sdk","bump":"patch"}]}`)
+	writeFile(t, repo, ".release/all.json", `{"summary":"all","releases":[{"module":"sdkx","bump":"patch"},{"module":"memory","bump":"patch"},{"module":"sdk","bump":"patch"}]}`)
 
 	got, err := buildPlan(repo)
 	if err != nil {
@@ -166,7 +164,7 @@ func TestPlanUsesDependencyOrder(t *testing.T) {
 	for _, item := range got.Modules {
 		modules = append(modules, item.Module)
 	}
-	if strings.Join(modules, ",") != "sdk,memory,sdkx,voice" {
+	if strings.Join(modules, ",") != "sdk,memory,sdkx" {
 		t.Fatalf("module order = %v", modules)
 	}
 }
@@ -227,19 +225,19 @@ func TestChangelogSingleModuleUsesPlanTagAndUpdatesState(t *testing.T) {
 
 func TestChangelogAssignsMultiModuleSummariesAndDeduplicates(t *testing.T) {
 	repo := changelogRepo(t, "sdk", "1.0.0")
-	seedModule(t, repo, "voice", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
-	commitAll(t, repo, "seed voice")
-	gitRun(t, repo, "tag", "voice/v2.0.0")
+	seedModule(t, repo, "memory", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
+	commitAll(t, repo, "seed memory")
+	gitRun(t, repo, "tag", "memory/v2.0.0")
 	changelogPath := filepath.Join(repo, "CHANGELOG.md")
 	changelog, err := os.ReadFile(changelogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	writeFile(t, repo, "CHANGELOG.md", strings.Replace(string(changelog), "| `vessel`", "| `voice` | `voice/v2.0.0` | Active. |\n| `vessel`", 1))
+	writeFile(t, repo, "CHANGELOG.md", strings.Replace(string(changelog), "| `vessel`", "| `memory` | `memory/v2.0.0` | Active. |\n| `vessel`", 1))
 	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
-	writeFile(t, repo, "voice/change.go", "package voice\n\nconst Changed = true\n")
-	writeFile(t, repo, "voice/go.mod", moduleFile("voice", "require github.com/GizClaw/flowcraft/sdk v1.0.1\n"))
-	writeFile(t, repo, ".release/a.json", `{"summary":"shared","releases":[{"module":"sdk","bump":"patch"},{"module":"voice","bump":"patch"}]}`)
+	writeFile(t, repo, "memory/change.go", "package memory\n\nconst Changed = true\n")
+	writeFile(t, repo, "memory/go.mod", moduleFile("memory", "require github.com/GizClaw/flowcraft/sdk v1.0.1\n"))
+	writeFile(t, repo, ".release/a.json", `{"summary":"shared","releases":[{"module":"sdk","bump":"patch"},{"module":"memory","bump":"patch"}]}`)
 	writeFile(t, repo, ".release/b.json", validChangeset("sdk only", "sdk", "patch"))
 	writeFile(t, repo, ".release/c.json", validChangeset("shared", "sdk", "patch"))
 	commitAllAt(t, repo, "changes", "2026-07-24T12:00:00Z")
@@ -250,12 +248,12 @@ func TestChangelogAssignsMultiModuleSummariesAndDeduplicates(t *testing.T) {
 	}
 	text := string(got)
 	sdk := changelogSection(t, text, "sdk/v1.0.1")
-	voice := changelogSection(t, text, "voice/v2.0.1")
+	memory := changelogSection(t, text, "memory/v2.0.1")
 	if strings.Count(sdk, "- shared\n") != 1 || !strings.Contains(sdk, "- sdk only\n") {
 		t.Fatalf("sdk section = %q", sdk)
 	}
-	if strings.Count(voice, "- shared\n") != 1 || strings.Contains(voice, "sdk only") {
-		t.Fatalf("voice section = %q", voice)
+	if strings.Count(memory, "- shared\n") != 1 || strings.Contains(memory, "sdk only") {
+		t.Fatalf("memory section = %q", memory)
 	}
 }
 

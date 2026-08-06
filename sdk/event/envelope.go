@@ -49,27 +49,8 @@ const (
 	// by "which agent did this" subscribe on this dimension.
 	HeaderAgentID = "agent_id"
 
-	// HeaderActorID is the legacy spelling of HeaderAgentID. It
-	// exists for back-compat with envelopes produced by pre-v0.4
-	// SDK consumers; SetAgentID dual-writes both header keys until
-	// v0.5.0 so existing observers keep working without a coordinated
-	// flag day.
-	//
-	// Deprecated: use HeaderAgentID. This constant and the matching
-	// SetActorID / ActorID accessors are removed in v0.5.0.
-	HeaderActorID = "actor_id"
-
 	HeaderGraphID = "graph_id"
 	HeaderTenant  = "tenant"
-
-	// HeaderKanbanScopeID identifies the sdk/kanban Board scope
-	// (Board.ScopeID) that produced an envelope. Distinct from
-	// HeaderRunID — kanban events do not happen inside an engine run
-	// — so consumers that want to fan-in by board need a dedicated
-	// dimension. Stored as a typed header (mirroring HeaderRunID /
-	// HeaderGraphID) rather than crammed into Envelope.Source so it
-	// composes with the existing well-known-header convention.
-	HeaderKanbanScopeID = "kanban_scope_id"
 )
 
 // NewEnvelope constructs an Envelope with ID and Time populated.
@@ -178,41 +159,17 @@ func (e Envelope) NodeID() string { return e.Header(HeaderNodeID) }
 // SetAgentID stamps the agent identifier (sdk/agent.Agent.ID) of the
 // producer onto the envelope.
 //
-// The call is dual-write: it sets both HeaderAgentID (the canonical
-// post-v0.4 key) AND HeaderActorID (the legacy spelling) so observers
-// that have not yet migrated keep working unchanged. The legacy
-// header is removed in v0.5.0; producers should call SetAgentID and
-// stop relying on SetActorID.
+// The producer identity is the agent id — engine.SubjectStep*'s
+// per-step "actor" segment (agent.id + node id) is a separate
+// dimension, see sdk/engine/subjects.go.
 func (e *Envelope) SetAgentID(id string) {
 	e.SetHeader(HeaderAgentID, id)
-	e.SetHeader(HeaderActorID, id) // legacy mirror; removed in v0.5.0
 }
 
-// AgentID returns the producer's agent identifier. It prefers
-// HeaderAgentID (the post-v0.4 canonical key) and falls back to the
-// legacy HeaderActorID so envelopes produced by older SDK versions
-// still resolve correctly. After v0.5.0 only HeaderAgentID is read.
+// AgentID returns the producer's agent identifier.
 func (e Envelope) AgentID() string {
-	if v := e.Header(HeaderAgentID); v != "" {
-		return v
-	}
-	return e.Header(HeaderActorID)
+	return e.Header(HeaderAgentID)
 }
-
-// SetActorID is the legacy spelling of SetAgentID.
-//
-// Deprecated: use [Envelope.SetAgentID]. The "actor" terminology
-// pre-dates the agent / step-actor distinction settled in v0.4
-// (envelope header "actor_id" is the producer agent identity;
-// the per-step "actor" segment in engine.SubjectStep* subjects is
-// a separate dimension, see sdk/engine/subjects.go). Removed in
-// v0.5.0.
-func (e *Envelope) SetActorID(id string) { e.SetAgentID(id) }
-
-// ActorID is the legacy spelling of [Envelope.AgentID].
-//
-// Deprecated: use [Envelope.AgentID]. Removed in v0.5.0.
-func (e Envelope) ActorID() string { return e.AgentID() }
 
 // SetGraphID is a typed shorthand for SetHeader(HeaderGraphID, id).
 func (e *Envelope) SetGraphID(id string) { e.SetHeader(HeaderGraphID, id) }
@@ -225,10 +182,3 @@ func (e *Envelope) SetTenant(id string) { e.SetHeader(HeaderTenant, id) }
 
 // Tenant returns the value of the well-known tenant header.
 func (e Envelope) Tenant() string { return e.Header(HeaderTenant) }
-
-// SetKanbanScopeID is a typed shorthand for
-// SetHeader(HeaderKanbanScopeID, id).
-func (e *Envelope) SetKanbanScopeID(id string) { e.SetHeader(HeaderKanbanScopeID, id) }
-
-// KanbanScopeID returns the value of the well-known kanban_scope_id header.
-func (e Envelope) KanbanScopeID() string { return e.Header(HeaderKanbanScopeID) }

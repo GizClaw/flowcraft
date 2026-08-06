@@ -2,12 +2,42 @@
 layout: default
 title: FlowCraft Documentation
 ---
-
 # FlowCraft
 
 Go SDK for building AI agents with long-term memory, knowledge
 retrieval, runtime orchestration, and voice. Source on
 [github.com/GizClaw/flowcraft](https://github.com/GizClaw/flowcraft).
+
+## Guides
+
+### Runtime
+
+- [Graph Runtime](guides/graph.md) — `sdk/graph`: declarative DAG
+  engine, node I/O roles, parallel branches, custom node types.
+- [Tool System](guides/tool.md) — `sdk/tool`: LLM function-calling
+  contract, Registry / Catalog / Executor split, middleware chain,
+  built-in tool adapters and the MCP bridge.
+- [Event Bus](guides/event.md) — `sdk/event`: subject-routed
+  publish/subscribe, in-process `MemoryBus`, host capability
+  wiring, backpressure policies.
+
+### State and execution boundary
+
+- [Workspace](guides/workspace.md) — `sdk/workspace`: per-run
+  filesystem abstraction, backends, capabilities, the
+  `state vs policy` split vs Sandbox.
+- [Sandbox](guides/sandbox.md) — `sdk/sandbox`: agent execution
+  boundary, env / net / resources policy, runners (local /
+  seatbelt / nsjail), decorators and approval.
+
+### Assembly
+
+- [Inference Runtime](guides/inference.md) — unified Generate / Embed /
+  Transcription / Realtime: deployment config, routing, extensions,
+  streaming, media intents, hot reload.
+- [Deployment Assembly](guides/deploy.md) — `sdkx/deploy`: one YAML
+  document + one `Build` call to wire shared resources, named agents,
+  engines, and lifecycle hooks.
 
 ## Migrations
 
@@ -20,24 +50,25 @@ retrieval, runtime orchestration, and voice. Source on
 
 The repository is organised as independently released Go modules:
 
-| Layer | Package | Responsibility |
-| --- | --- | --- |
-| Primitives | `sdk/engine` | Board / Run / Host / Interrupt / Checkpoint contracts |
-| DAG executor | `sdk/graph` | Declarative graph runtime (`runner.Runner` implements `engine.Engine`) |
-| Orchestration | `sdk/agent` | Agents, observers, deciders, board seeders, handoff DSL |
-| Memory services | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing |
-| Adapters | `sdkx/...` | Concrete provider / protocol bindings layered on the SDK and memory contracts |
+| Layer                | Package                                            | Responsibility                                                                                 |
+| -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Execution contracts | `sdk/agent`                                        | `Engine` / Board / Run / Host / Interrupt / Checkpoint contracts                               |
+| DAG executor         | `sdk/graph`                                        | Declarative graph runtime (`*Graph` implements `agent.Engine`)                                 |
+| Agent runtime        | `sdk/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
+| Delegation contracts | `sdk/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
+| Async delegation     | `sdkx/delegation/kanban`                           | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
+| Scheduling contracts | `sdk/scheduler`                                    | Backend-neutral control plane, leased delivery, typed Client/Worker, and task registration     |
+| Local scheduling     | `sdkx/scheduler`                                   | In-process cron, timer, execution queue, lease, memory, and delegation adapters                 |
+| Memory services      | `memory/{component,derive,projection,retrieval,lifecycle,worker,sources,views}` | Component graph, derive/projection pipelines, retrieval indexes, lifecycle maintenance, sources and views |
+| Adapters             | `sdkx/...`                                         | Concrete provider / protocol bindings layered on the SDK and memory contracts                  |
 
 ## Repository layout
 
 ```
 sdk/         Core SDK (interfaces + primitives)
-memory/      Recall, history, knowledge, retrieval, text
+memory/      Component, derive, projection, retrieval, lifecycle, worker, sources, views
 sdkx/        Provider and protocol adapters
-voice/       Voice pipeline: STT → LLM → TTS
-eval/        Quality-evaluation harnesses
 examples/    Reference assemblies
-tests/       Conformance / quality / e2e suites
 ```
 
 ## Getting started
@@ -48,5 +79,5 @@ go get github.com/GizClaw/flowcraft/memory@latest
 ```
 
 See the package-level `doc.go` files for runnable usage snippets:
-`sdk/agent/doc.go`, `sdk/engine/doc.go`, `sdk/graph/doc.go`, and
+`sdk/agent/doc.go`, `sdk/graph/doc.go`, and
 the focused packages under `memory/`.

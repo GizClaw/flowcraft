@@ -17,10 +17,11 @@ package tooltest_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/tooltest"
 )
@@ -33,14 +34,11 @@ import (
 // real tools too.
 type goodTool struct{}
 
-func (goodTool) Definition() model.ToolDefinition {
-	return model.ToolDefinition{
+func (goodTool) Definition() message.Definition {
+	return message.Definition{
 		Name:        "good",
 		Description: "the contract-compliant baseline",
-		InputSchema: map[string]any{
-			"type":       "object",
-			"properties": map[string]any{},
-		},
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}
 }
 

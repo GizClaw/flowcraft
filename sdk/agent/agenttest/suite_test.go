@@ -5,14 +5,13 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/agent/agenttest"
-	"github.com/GizClaw/flowcraft/sdk/engine"
 )
 
 // TestDeciderSuite_PassesBaseDecider asserts the no-op
-// [agent.BaseDecider] satisfies every contract probe — embedding
-// BaseDecider must remain a safe way to scaffold custom deciders.
+// [agent.BaseReferee] satisfies every contract probe — embedding
+// BaseReferee must remain a safe way to scaffold custom deciders.
 func TestDeciderSuite_PassesBaseDecider(t *testing.T) {
-	agenttest.DeciderSuite(t, func() agent.Decider { return agent.BaseDecider{} })
+	agenttest.RefereeSuite(t, func() agent.Referee { return agent.BaseReferee{} })
 }
 
 // TestDeciderSuite_PassesDiscardOnInterruptCauses asserts the
@@ -20,9 +19,9 @@ func TestDeciderSuite_PassesBaseDecider(t *testing.T) {
 // remains contract-compliant: stateless, mutation-free,
 // concurrency-safe, panic-free across every Status.
 func TestDeciderSuite_PassesDiscardOnInterruptCauses(t *testing.T) {
-	agenttest.DeciderSuite(t, func() agent.Decider {
+	agenttest.RefereeSuite(t, func() agent.Referee {
 		return agent.NewDiscardOnInterruptCauses("barge-in",
-			engine.CauseUserInput, engine.CauseUserCancel)
+			agent.CauseUserInput, agent.CauseUserCancel)
 	})
 }
 

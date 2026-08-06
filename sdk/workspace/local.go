@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // LocalWorkspace implements Workspace backed by a local directory.
@@ -70,15 +72,16 @@ func (w *LocalWorkspace) Sub(prefix string) (*LocalWorkspace, error) {
 
 // Capabilities reports LocalWorkspace's storage characteristics:
 // backed by the host filesystem, so Rename is atomic on the same
-// device, writes are read-after-write consistent, and durability
-// matches the underlying filesystem's default flush behaviour.
-// Distributed is false because LocalWorkspace assumes exclusive
-// access to its directory tree.
+// device and writes are read-after-write consistent. DurableOnWrite
+// is false because writes are not fsync'd before returning — a
+// successful Write only reaches the OS page cache. Distributed is
+// false because LocalWorkspace assumes exclusive access to its
+// directory tree.
 func (w *LocalWorkspace) Capabilities() Capabilities {
 	return Capabilities{
 		AtomicRename:   true,
 		ReadAfterWrite: true,
-		DurableOnWrite: true,
+		DurableOnWrite: false,
 		Distributed:    false,
 	}
 }
@@ -106,10 +109,13 @@ func (w *LocalWorkspace) Write(_ context.Context, path string, data []byte) erro
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("workspace: mkdir for %s: %w", path, err)
 	}
-	return os.WriteFile(full, data, 0o644)
+	if err := os.WriteFile(full, data, 0o644); err != nil {
+		return fmt.Errorf("workspace: write %s: %w", path, err)
+	}
+	return nil
 }
 
-func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) error {
+func (w *LocalWorkspace) Append(ctx context.Context, path string, data []byte) error {
 	full, err := w.resolve(path)
 	if err != nil {
 		return err
@@ -121,9 +127,17 @@ func (w *LocalWorkspace) Append(_ context.Context, path string, data []byte) err
 	if err != nil {
 		return fmt.Errorf("workspace: append %s: %w", path, err)
 	}
-	defer func() { _ = f.Close() }()
-	_, err = f.Write(data)
-	return err
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "workspace: close after append", cerr,
+				otellog.String("op", "append"),
+				otellog.String("path", path))
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return fmt.Errorf("workspace: append %s: %w", path, err)
+	}
+	return nil
 }
 
 func (w *LocalWorkspace) Rename(_ context.Context, src, dst string) error {
@@ -264,64 +278,3 @@ func evalExistingPrefix(path string) (string, error) {
 	}
 	return filepath.Join(realParent, filepath.Base(path)), nil
 }
-
-func (w *LocalWorkspace) GitClone(ctx context.Context, url, dest string) error {
-	if err := validateGitURL(url); err != nil {
-		return err
-	}
-	full, err := w.resolve(dest)
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-		return fmt.Errorf("workspace: mkdir for clone dest: %w", err)
-	}
-
-	cmd := exec.CommandContext(ctx, "git", "clone", "--", url, full)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		safe := redactURL(url)
-		if safe == "" && strings.TrimSpace(url) != "" {
-			safe = "<url redacted>"
-		}
-		return fmt.Errorf("workspace: git clone %s to %s: %w\n%s", safe, dest, err, string(output))
-	}
-	return nil
-}
-
-func validateGitURL(url string) error {
-	trimmed := strings.TrimSpace(url)
-	if trimmed == "" {
-		return errdefs.Validationf("workspace: git url is empty")
-	}
-	if strings.HasPrefix(trimmed, "-") {
-		return errdefs.Validationf("workspace: git url must not start with '-'")
-	}
-	return nil
-}
-
-func (w *LocalWorkspace) GitPull(ctx context.Context, dir string) error {
-	full, err := w.resolve(dir)
-	if err != nil {
-		return err
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", full, "pull", "--ff-only")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("workspace: git pull in %s: %w\n%s", dir, err, string(output))
-	}
-	return nil
-}
-
-func (w *LocalWorkspace) GitHead(ctx context.Context, dir string) (string, error) {
-	full, err := w.resolve(dir)
-	if err != nil {
-		return "", err
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", full, "rev-parse", "--short", "HEAD")
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("workspace: git rev-parse in %s: %w", dir, err)
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-var _ GitWorkspace = (*LocalWorkspace)(nil)

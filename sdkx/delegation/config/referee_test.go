@@ -1,0 +1,173 @@
+package config_test
+
+import (
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
+	sdkdelegation "github.com/GizClaw/flowcraft/sdk/delegation"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
+	delegationconfig "github.com/GizClaw/flowcraft/sdkx/delegation/config"
+	"github.com/GizClaw/flowcraft/sdkx/deploy"
+)
+
+func TestHandoffRefereeFactorySettings(t *testing.T) {
+	factory := delegationconfig.NewHandoffRefereeFactory(&mutableDirectory{})
+	for name, settings := range map[string]*sdkconfig.Opaque{
+		"omitted": nil,
+		"empty":   settingsNode(t, "{}"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := factory(context.Background(), sdkconfig.Input{Settings: settings}); err != nil {
+				t.Fatalf("factory: %v", err)
+			}
+		})
+	}
+	if _, err := factory(context.Background(), sdkconfig.Input{
+		Settings: settingsNode(t, "target: billing"),
+	}); !errdefs.IsValidation(err) {
+		t.Fatalf("unknown setting error = %v, want Validation", err)
+	}
+}
+
+func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
+	directory := &mutableDirectory{}
+	referee, err := delegationconfig.NewHandoffRefereeFactory(directory)(
+		context.Background(),
+		sdkconfig.Input{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory.target = sdkdelegation.Target{
+		ID:    "billing",
+		Modes: []sdkdelegation.Mode{sdkdelegation.ModeHandoff},
+	}
+	result := &agent.Result{Messages: []message.Message{
+		toolCall("first", "billing"),
+		successfulToolResult("first"),
+		toolCall("second", "billing"),
+		successfulToolResult("second"),
+	}}
+	decision, err := referee.After(context.Background(), agent.Identity{}, &agent.Request{}, result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Reason != sdkdelegation.HandoffFinalizeReason+"billing" {
+		t.Fatalf("decision = %+v", decision)
+	}
+	raw, ok := decision.State[sdkdelegation.HandoffStateKey]
+	if !ok {
+		t.Fatal("decision.State missing handoff event")
+	}
+	event, ok := raw.(sdkdelegation.HandoffEvent)
+	if !ok || event.ToolCallID != "first" {
+		t.Fatalf("event = %+v, found = %v", event, ok)
+	}
+	if result.State != nil {
+		t.Fatalf("After mutated Result.State: %+v", result.State)
+	}
+}
+
+func TestHandoffRefereeCanBeEnabledFromAgentYAML(t *testing.T) {
+	registry := agent.NewRegistry()
+	if err := registry.Register(fakeEngineFactory{}); err != nil {
+		t.Fatal(err)
+	}
+	builder := deploy.NewBuilder(registry)
+	builder.RegisterReferee(
+		delegationconfig.RefereeType,
+		delegationconfig.NewHandoffRefereeFactory(&mutableDirectory{}),
+	)
+	document, err := deploy.Parse([]byte(`
+version: v1
+agents:
+  coordinator:
+    engine:
+      kind: fake
+    referees:
+      - type: delegation_handoff
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := builder.Build(context.Background(), document)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = result.Close() })
+	if _, ok := result.Instance("coordinator"); !ok {
+		t.Fatal("coordinator instance missing")
+	}
+}
+
+type mutableDirectory struct {
+	target sdkdelegation.Target
+}
+
+func (*mutableDirectory) List(context.Context) ([]sdkdelegation.Target, error) {
+	return nil, errdefs.NotAvailablef("not bound")
+}
+
+func (d *mutableDirectory) Get(_ context.Context, id string) (sdkdelegation.Target, error) {
+	if d.target.ID != id {
+		return sdkdelegation.Target{}, sdkdelegation.TargetNotFound(id)
+	}
+	return d.target, nil
+}
+
+type fakeEngineFactory struct{}
+
+func (fakeEngineFactory) Spec() agent.EngineSpec {
+	return agent.EngineSpec{Kind: "fake"}
+}
+
+func (fakeEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
+		return board, nil
+	}), nil
+}
+
+func toolCall(id, target string) message.Message {
+	arguments, _ := json.Marshal(map[string]any{
+		"mode":   sdkdelegation.ModeHandoff,
+		"target": target,
+		"input":  "refund",
+	})
+	return message.Message{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolCallPart{Call: message.Call{
+				ID:        id,
+				Name:      sdkdelegation.ToolName,
+				Arguments: arguments,
+			}},
+		}},
+	}
+}
+
+func successfulToolResult(callID string) message.Message {
+	return message.Message{
+		Role: message.RoleTool,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.Result{CallID: callID}},
+		}},
+	}
+}
+
+func settingsNode(t *testing.T, input string) *sdkconfig.Opaque {
+	t.Helper()
+	jsonData, err := utils.ToJSON([]byte(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+		t.Fatal(err)
+	}
+	return &opaque
+}

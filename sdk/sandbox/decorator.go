@@ -2,8 +2,9 @@ package sandbox
 
 import (
 	"context"
-	"fmt"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // AllowCommands returns a Runner that delegates to inner only when the
@@ -28,9 +29,17 @@ type allowCommandsRunner struct {
 
 func (r *allowCommandsRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
 	if !r.whitelist[cmd] {
-		return nil, fmt.Errorf("sandbox: command %q is not in the whitelist", cmd)
+		return nil, errdefs.PolicyDeniedf("sandbox: command %q is not in the whitelist", cmd)
 	}
 	return r.inner.Exec(ctx, cmd, args, opts)
+}
+
+// Enforcement forwards the inner runner's report: gating command names
+// narrows what may run but adds no enforcement capability, so the
+// decorator claims exactly what its inner runner enforces — the
+// intersection rule for decorators that contribute nothing of their own.
+func (r *allowCommandsRunner) Enforcement() Enforcement {
+	return EnforcementOf(r.inner)
 }
 
 // WithDefaults returns a Runner that merges defaults into every Exec
@@ -104,6 +113,12 @@ func (r *defaultsRunner) Exec(ctx context.Context, cmd string, args []string, op
 	return r.inner.Exec(ctx, cmd, args, r.merge(opts))
 }
 
+// Enforcement forwards the inner runner's report: fixing policy
+// defaults onto calls does not change what the backend can enforce.
+func (r *defaultsRunner) Enforcement() Enforcement {
+	return EnforcementOf(r.inner)
+}
+
 // merge applies the rules documented on [WithDefaults]. Kept on a
 // pointer receiver so the defaults map is not copied on every call.
 func (r *defaultsRunner) merge(caller ExecOptions) ExecOptions {
@@ -172,3 +187,7 @@ type NoopRunner struct{}
 func (NoopRunner) Exec(_ context.Context, _ string, _ []string, _ ExecOptions) (*ExecResult, error) {
 	return &ExecResult{}, nil
 }
+
+// Enforcement reports the conservative zero value: a runner that runs
+// nothing enforces nothing.
+func (NoopRunner) Enforcement() Enforcement { return Enforcement{} }

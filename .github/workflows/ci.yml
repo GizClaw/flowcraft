@@ -21,9 +21,6 @@ jobs:
       sdk: ${{ steps.filter.outputs.sdk }}
       memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
-      voice: ${{ steps.filter.outputs.voice }}
-      claw: ${{ steps.filter.outputs.claw }}
-      eval: ${{ steps.filter.outputs.eval }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -41,12 +38,6 @@ jobs:
               - 'memory/**'
             sdkx:
               - 'sdkx/**'
-            voice:
-              - 'voice/**'
-            claw:
-              - 'cmd/claw/**'
-            eval:
-              - 'eval/**'
             ci:
               - '.github/workflows/**'
               - '.release/**'
@@ -94,24 +85,24 @@ jobs:
   lint:
     name: Lint
     needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: go vet
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx voice cmd/claw eval; do
+          for m in sdk memory sdkx; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx voice cmd/claw eval)
+          diff=$(gofmt -l sdk memory sdkx)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -125,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -142,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -160,7 +151,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -184,7 +175,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Install nsjail
         # Ubuntu 24.04 (noble) dropped the nsjail package from
         # universe, so we build from source. The compile takes ~30s
@@ -206,74 +197,30 @@ jobs:
           git clone --depth 1 https://github.com/google/nsjail.git /tmp/nsjail
           make -C /tmp/nsjail -j"$(nproc)"
           sudo install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail
+          sudo mv /usr/local/bin/nsjail /usr/local/bin/nsjail-real
+          sudo tee /usr/local/bin/nsjail >/dev/null <<'EOF'
+          #!/bin/sh
+          # GitHub-hosted runners deny unprivileged mount-namespace setup, so
+          # run the real binary through passwordless sudo in this CI lane.
+          exec sudo -n /usr/local/bin/nsjail-real "$@"
+          EOF
+          sudo chmod 0755 /usr/local/bin/nsjail
           nsjail --help 2>&1 | head -3 || true
           which nsjail
       - name: Test
+        env:
+          # Keep sandbox roots out of /tmp: nsjail's private tmpfs
+          # conflicts with bind-mounting sources that live under /tmp.
+          TMPDIR: ${{ runner.temp }}
         run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
         working-directory: sdkx
-
-  test-voice:
-    name: Test voice (Go ${{ matrix.go-version }})
-    needs: detect
-    # voice depends on sdk, so run when either changes
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.voice == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: voice
-
-  test-claw:
-    name: Test claw (Go ${{ matrix.go-version }})
-    needs: detect
-    # claw composes sdk, memory, and sdkx; rerun when any dependency changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.claw == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: cmd/claw
-
-  test-eval:
-    name: Test eval (Go ${{ matrix.go-version }})
-    needs: detect
-    # eval is a workspace member (see go.work) — sdk/sdkx resolve to
-    # monorepo HEAD via the workspace overlay, so rerun whenever sdk,
-    # memory, sdkx, or eval source changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: eval
 
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-voice, test-claw, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -289,9 +236,6 @@ jobs:
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
-            "${{ needs.test-voice.result }}" \
-            "${{ needs.test-claw.result }}" \
-            "${{ needs.test-eval.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

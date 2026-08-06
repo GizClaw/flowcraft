@@ -1,19 +1,27 @@
 # Security Policy
 
-## Supported Versions
+FlowCraft is a multi-module Go workspace in pre-1.0 development. Security
+fixes are issued against the latest release of each versioned module.
 
-FlowCraft is a multi-module monorepo and is currently in pre-1.0 development.
-Security fixes are issued against the latest release of each module.
+## Supported Versions
 
 | Module     | Supported tag stream |
 | ---------- | -------------------- |
 | `sdk`      | latest `sdk/v0.x`    |
 | `memory`   | latest `memory/v0.x` |
 | `sdkx`     | latest `sdkx/v0.x`   |
-| `voice`    | latest `voice/v0.x`  |
 
 Older minor versions are not patched; please upgrade before reporting issues
 that only reproduce on outdated tags.
+
+The repository also contains:
+
+- `examples/forge` — the runnable local workspace demo. It is built from the
+  workspace and not versioned; fixes ship with the next `sdk`/`sdkx`/`memory`
+  release that the workspace tracks.
+
+Because `memory` depends on `sdk` and `sdkx`, coordinated fixes to the memory
+module may require a same-batch release of all three modules.
 
 ## Reporting a Vulnerability
 
@@ -46,8 +54,9 @@ Please include:
 
 In scope:
 
-- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `voice/`,
-  `cmd/claw/`, `examples/`, `tests/`).
+- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `examples/forge/`,
+  `tools/`).
+- Supply-chain and dependency issues affecting published modules.
 
 Out of scope:
 

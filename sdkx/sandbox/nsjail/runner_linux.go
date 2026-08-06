@@ -24,7 +24,19 @@ type Runner struct {
 	rootDir          string
 	binary           string
 	extraFlags       []string
+	writablePaths    []string
 	defaultMaxOutput int64
+}
+
+// Enforcement reports the dimensions nsjail enforces in this backend.
+func (r *Runner) Enforcement() sandbox.Enforcement {
+	return sandbox.Enforcement{
+		EnvAllowList:     true,
+		NetModes:         []sandbox.NetMode{sandbox.NetDenyAll},
+		MemoryCap:        true,
+		CPUCap:           true,
+		FilesystemBounds: true,
+	}
 }
 
 // New returns a Runner that confines child processes with nsjail.
@@ -41,6 +53,9 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 	cfg := &runnerConfig{}
 	for _, o := range opts {
 		o(cfg)
+	}
+	if err := validateExtraFlags(cfg.extra); err != nil {
+		return nil, err
 	}
 
 	binary := cfg.binFrom
@@ -66,10 +81,24 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		abs = resolved
 	}
 
+	writable := make([]string, 0, len(cfg.writable))
+	seenWritable := map[string]bool{abs: true}
+	for _, path := range cfg.writable {
+		resolved, err := resolveConfiguredPath(path)
+		if err != nil {
+			return nil, err
+		}
+		if !seenWritable[resolved] {
+			seenWritable[resolved] = true
+			writable = append(writable, resolved)
+		}
+	}
+
 	return &Runner{
 		rootDir:          abs,
 		binary:           binary,
 		extraFlags:       append([]string(nil), cfg.extra...),
+		writablePaths:    writable,
 		defaultMaxOutput: defaultMaxOutputBytes,
 	}, nil
 }
@@ -95,6 +124,7 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if err != nil {
 		return nil, err
 	}
+	flags = append(flags, filesystemFlags(r.rootDir, r.writablePaths)...)
 	flags = append(flags, r.extraFlags...)
 
 	// nsjail also enforces opts.Timeout via --time_limit, but we keep
@@ -149,6 +179,48 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		return result, fmt.Errorf("nsjail: exec %s: %w", cmd, runErr)
 	}
 	return result, nil
+}
+
+func resolveConfiguredPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", errdefs.Validationf("nsjail: resolve writable path %q: %v", path, err)
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", errdefs.Validationf(
+			"nsjail: writable path %q must exist: %v", path, err)
+	}
+	return real, nil
+}
+
+// validateExtraFlags prevents the generic escape hatch from disabling
+// the mount boundary that Enforcement.FilesystemBounds promises.
+func validateExtraFlags(flags []string) error {
+	for _, raw := range flags {
+		name := raw
+		if index := strings.IndexByte(name, '='); index >= 0 {
+			name = name[:index]
+		}
+		for _, prefix := range []string{"-B", "-R", "-T", "-m", "-c", "-C"} {
+			if strings.HasPrefix(name, prefix) {
+				return errdefs.Validationf(
+					"nsjail: extra flag %q can weaken filesystem enforcement; use WithWritablePaths for write exceptions",
+					raw,
+				)
+			}
+		}
+		switch name {
+		case "--disable_clone_newns", "--rw", "--chroot",
+			"--bindmount", "--bindmount_ro",
+			"--tmpfsmount", "--mount", "--config":
+			return errdefs.Validationf(
+				"nsjail: extra flag %q can weaken filesystem enforcement; use WithWritablePaths for write exceptions",
+				raw,
+			)
+		}
+	}
+	return nil
 }
 
 // resolveWorkDir applies the same root-confinement rules LocalRunner

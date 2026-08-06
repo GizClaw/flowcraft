@@ -2,6 +2,7 @@ package objstore
 
 import (
 	"context"
+	"errors"
 	"testing"
 )
 
@@ -45,6 +46,40 @@ func TestWorkspace_Overwrite(t *testing.T) {
 	data, _ := ws.Read(ctx, "f.txt")
 	if string(data) != "v2" {
 		t.Fatalf("got %q, want 'v2'", data)
+	}
+}
+
+// failingGetStore returns a non-not-found error from Get while delegating
+// every other operation to an in-memory store.
+type failingGetStore struct {
+	ObjectStore
+	getErr error
+}
+
+func (f *failingGetStore) Get(context.Context, string) ([]byte, error) {
+	return nil, f.getErr
+}
+
+func TestWorkspace_Append_GetErrorDoesNotOverwrite(t *testing.T) {
+	base := NewMemObjectStore()
+	store := &failingGetStore{ObjectStore: base, getErr: errors.New("network down")}
+	ws := NewWorkspace(store)
+	ctx := context.Background()
+
+	if err := ws.Write(ctx, "f.txt", []byte("original")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	if err := ws.Append(ctx, "f.txt", []byte("tail")); err == nil {
+		t.Fatal("Append succeeded despite a non-not-found Get error")
+	}
+
+	got, err := base.Get(ctx, "f.txt")
+	if err != nil {
+		t.Fatalf("read after failed append: %v", err)
+	}
+	if string(got) != "original" {
+		t.Fatalf("object content = %q, want original (append must not overwrite)", got)
 	}
 }
 

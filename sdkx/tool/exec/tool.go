@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/model"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
@@ -48,7 +48,8 @@ func WithDefaultTimeout(d time.Duration) Option {
 func New(rn sandbox.Runner, opts ...Option) (*Tool, error) {
 	if rn == nil {
 		return nil, errdefs.Validationf(
-			"exec: sandbox.Runner is required (deny-by-default); pass sandbox.NoopRunner{} explicitly if you really want a no-op")
+			"exec: sandbox.Runner is required (deny-by-default); pass sandbox.NoopRunner{} explicitly if you really want a no-op",
+		)
 	}
 	t := &Tool{rn: rn}
 	for _, o := range opts {
@@ -71,43 +72,26 @@ func MustNew(rn sandbox.Runner, opts ...Option) *Tool {
 // on purpose — the model should not treat exec as a free-form
 // scratchpad; explicit cwd / timeout knobs steer it toward
 // reproducible calls.
-func (t *Tool) Definition() model.ToolDefinition {
-	return model.ToolDefinition{
-		Name: Name,
-		Description: "Run a shell command inside the agent's sandbox. " +
-			"Returns exit_code, stdout, and stderr as JSON. A non-zero " +
-			"exit_code is reported in the result body, not as an error. " +
-			"Use this when you need to inspect files, run scripts, " +
+func (t *Tool) Definition() message.Definition {
+	return message.DefineSchema(
+		Name,
+		"Run a shell command inside the agent's sandbox. "+
+			"Returns exit_code, stdout, and stderr as JSON. A non-zero "+
+			"exit_code is reported in the result body, not as an error. "+
+			"Use this when you need to inspect files, run scripts, "+
 			"compile, or invoke CLIs the user expects you to drive.",
-		InputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"command": map[string]any{
-					"type":        "string",
-					"description": "The program to run (required). Resolved against the sandbox's PATH policy.",
-				},
-				"args": map[string]any{
-					"type":        "array",
-					"items":       map[string]any{"type": "string"},
-					"description": "Arguments passed verbatim to the program.",
-				},
-				"workdir": map[string]any{
-					"type":        "string",
-					"description": "Working directory, relative to the sandbox root. Empty means the sandbox root itself. Absolute paths or .. escapes are rejected.",
-				},
-				"stdin": map[string]any{
-					"type":        "string",
-					"description": "Bytes piped to the program's stdin. Omit when the program does not read stdin.",
-				},
-				"timeout_seconds": map[string]any{
-					"type":        "number",
-					"description": "Per-call timeout in seconds. Falls back to the tool's default when omitted. Zero or negative disables the tool-level timeout (the caller's ctx still applies).",
-				},
-			},
-			"required":             []string{"command"},
-			"additionalProperties": false,
-		},
-	}
+		message.ToolProperty("command", "string",
+			"The program to run (required). Resolved against the sandbox's PATH policy."),
+		message.ToolArrayProperty("args",
+			"Arguments passed verbatim to the program.",
+			message.Items("string")),
+		message.ToolProperty("workdir", "string",
+			"Working directory, relative to the sandbox root. Empty means the sandbox root itself. Absolute paths or .. escapes are rejected."),
+		message.ToolProperty("stdin", "string",
+			"Bytes piped to the program's stdin. Omit when the program does not read stdin."),
+		message.ToolProperty("timeout_seconds", "number",
+			"Per-call timeout in seconds. Falls back to the tool's default when omitted. Zero or negative disables the tool-level timeout (the caller's ctx still applies)."),
+	).Required("command").DisallowAdditionalProperties().Build()
 }
 
 // Metadata implements [tool.ToolMetadata]. The tool can mutate any

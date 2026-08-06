@@ -1,0 +1,367 @@
+{
+  "edges": [
+    {
+      "from": "start",
+      "to": "select_story_step"
+    },
+    {
+      "from": "select_story_step",
+      "to": "select_speaker"
+    },
+    {
+      "from": "select_speaker",
+      "to": "shape_story_turn"
+    },
+    {
+      "from": "shape_story_turn",
+      "to": "route_speaker"
+    },
+    {
+      "from": "route_speaker",
+      "to": "narrator",
+      "condition": "next_speaker == \"narrator\""
+    },
+    {
+      "from": "route_speaker",
+      "to": "role_wukong",
+      "condition": "next_speaker == \"wukong\""
+    },
+    {
+      "from": "route_speaker",
+      "to": "role_tangseng",
+      "condition": "next_speaker == \"tangseng\""
+    },
+    {
+      "from": "route_speaker",
+      "to": "role_bajie",
+      "condition": "next_speaker == \"bajie\""
+    },
+    {
+      "from": "route_speaker",
+      "to": "role_monster",
+      "condition": "next_speaker == \"monster\""
+    },
+    {
+      "from": "narrator",
+      "to": "narrator_publish"
+    },
+    {
+      "from": "narrator_publish",
+      "to": "update_state"
+    },
+    {
+      "from": "role_wukong",
+      "to": "role_wukong_publish"
+    },
+    {
+      "from": "role_wukong_publish",
+      "to": "update_state"
+    },
+    {
+      "from": "role_tangseng",
+      "to": "role_tangseng_publish"
+    },
+    {
+      "from": "role_tangseng_publish",
+      "to": "update_state"
+    },
+    {
+      "from": "role_bajie",
+      "to": "role_bajie_publish"
+    },
+    {
+      "from": "role_bajie_publish",
+      "to": "update_state"
+    },
+    {
+      "from": "role_monster",
+      "to": "role_monster_publish"
+    },
+    {
+      "from": "role_monster_publish",
+      "to": "update_state"
+    },
+    {
+      "from": "update_state",
+      "to": "continue_check"
+    },
+    {
+      "from": "continue_check",
+      "to": "select_story_step",
+      "condition": "continue_story == true"
+    },
+    {
+      "from": "continue_check",
+      "to": "save_story_state",
+      "condition": "continue_story == false"
+    },
+    {
+      "from": "load_story_state_file",
+      "to": "start"
+    },
+    {
+      "from": "save_story_state",
+      "to": "__end__"
+    }
+  ],
+  "entry": "load_story_state_file",
+  "name": "forge-multi-role-storyteller",
+  "nodes": [
+    {
+      "id": "load_story_state_file",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/load_story_state_file.js"
+        }
+      }
+    },
+    {
+      "id": "start",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/start.js"
+        }
+      }
+    },
+    {
+      "id": "select_story_step",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/select_story_step.js"
+        }
+      }
+    },
+    {
+      "id": "select_speaker",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speaker_select_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "speaker_select_text",
+        "reasoning_enabled": true,
+        "stream": false,
+        "system_prompt": {
+          "file": "graphs/prompts/select_speaker.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "shape_story_turn",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/shape_story_turn.js"
+        }
+      }
+    },
+    {
+      "id": "route_speaker",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/route_speaker.js"
+        }
+      }
+    },
+    {
+      "id": "narrator",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speech_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "tmp_speech_text",
+        "reasoning_enabled": true,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/narrator.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "role_wukong",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speech_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "tmp_speech_text",
+        "reasoning_enabled": true,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/role_wukong.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "role_tangseng",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speech_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "tmp_speech_text",
+        "reasoning_enabled": true,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/role_tangseng.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "role_bajie",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speech_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "tmp_speech_text",
+        "reasoning_enabled": true,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/role_bajie.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "role_monster",
+      "type": "inference",
+      "config": {
+        "max_output_tokens": 1024,
+        "messages_channel": "speech_channel",
+        "model": {
+          "id": {
+            "name": "deepseek-v4-flash",
+            "provider": "deepseek"
+          }
+        },
+        "output_key": "tmp_speech_text",
+        "reasoning_enabled": true,
+        "stream": true,
+        "system_prompt": {
+          "file": "graphs/prompts/role_monster.txt"
+        },
+        "reasoning_effort": "high"
+      }
+    },
+    {
+      "id": "update_state",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/update_state.js"
+        }
+      }
+    },
+    {
+      "id": "continue_check",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/continue_check.js"
+        }
+      }
+    },
+    {
+      "id": "role_wukong_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/role_wukong_publish.js"
+        }
+      }
+    },
+    {
+      "id": "role_tangseng_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/role_tangseng_publish.js"
+        }
+      }
+    },
+    {
+      "id": "role_bajie_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/role_bajie_publish.js"
+        }
+      }
+    },
+    {
+      "id": "role_monster_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/role_monster_publish.js"
+        }
+      }
+    },
+    {
+      "id": "narrator_publish",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/narrator_publish.js"
+        }
+      }
+    },
+    {
+      "id": "save_story_state",
+      "type": "script",
+      "config": {
+        "runtime": "js",
+        "source": {
+          "file": "graphs/scripts/save_story_state.js"
+        }
+      }
+    }
+  ]
+}

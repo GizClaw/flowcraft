@@ -1,0 +1,37 @@
+# User-facing speaker labels per graph node. TUI and test logs render
+# each node's output under its label.
+command_reply: 主持人
+host_opening: 主持人
+host_router: 主持人
+night_wolf_rule: 主持人
+night_witch_rule: 主持人
+night_seer_rule: 主持人
+dawn_resolve: 主持人
+hunter_rule: 主持人
+day_speech_rule: 主持人
+vote_rule: 主持人
+vote_tally: 主持人
+pk_rule: 主持人
+exile_resolve: 主持人
+post_game_rule: 主持人
+wolf_discuss: 狼人(私密)
+wolf_decide: 狼人(私密)
+witch_decide: 女巫(私密)
+seer_decide: 预言家(私密)
+hunter_decide: 猎人(私密)
+seat_1_speak: 1号林知
+seat_2_speak: 2号阿澈
+seat_3_speak: 3号你
+seat_4_speak: 4号小满
+seat_5_speak: 5号周岚
+seat_6_speak: 6号陈医生
+seat_7_speak: 7号老赵
+seat_8_speak: 8号苏禾
+seat_1_vote: 1号林知(投票)
+seat_2_vote: 2号阿澈(投票)
+seat_3_vote: 3号你(投票)
+seat_4_vote: 4号小满(投票)
+seat_5_vote: 5号周岚(投票)
+seat_6_vote: 6号陈医生(投票)
+seat_7_vote: 7号老赵(投票)
+seat_8_vote: 8号苏禾(投票)

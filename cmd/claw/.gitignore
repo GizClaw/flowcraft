@@ -1,6 +1,0 @@
-/workspace/
-/.out/
-/runs/
-/.env
-run.pid
-**/run.pid

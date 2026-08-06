@@ -1,42 +1,52 @@
 package graph
 
 import (
-	"fmt"
-
 	"github.com/expr-lang/expr"
 	"github.com/expr-lang/expr/vm"
 
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// CompiledCondition holds a pre-compiled expr-lang program for edge/skip conditions.
+// CompiledCondition is a pre-compiled expr-lang boolean program over
+// board vars. Conditions are compiled once at [Build] time (edge
+// conditions, skip conditions) and evaluated per wave with zero parse
+// cost.
+//
+// The evaluation environment is Board.Vars() plus kernel-injected
+// names (VarIterations): expressions reference board variables by
+// name, e.g. `retrieved_docs != nil and len(retrieved_docs) > 0`.
 type CompiledCondition struct {
-	Raw     string
+	// Raw is the source expression, kept for diagnostics and
+	// checkpoint inspection.
+	Raw string
+
 	program *vm.Program
 }
 
-// CompileCondition compiles a raw expression string into a reusable program.
-func CompileCondition(raw string) (*CompiledCondition, error) {
+// compileCondition parses raw into a reusable boolean program.
+func compileCondition(raw string) (*CompiledCondition, error) {
 	program, err := expr.Compile(raw, expr.AsBool())
 	if err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"invalid condition expression: %s: %w", raw, err))
+		return nil, errdefs.Validationf("invalid condition expression %q: %v", raw, err)
 	}
 	return &CompiledCondition{Raw: raw, program: program}, nil
 }
 
-// Evaluate runs the compiled condition against the given Board variables.
-func (c *CompiledCondition) Evaluate(board *Board) (bool, error) {
-	env := board.Vars()
-	result, err := expr.Run(c.program, env)
+// Evaluate runs the condition against the board's current vars.
+func (c *CompiledCondition) Evaluate(board *agent.Board) (bool, error) {
+	return c.evaluate(board.Vars())
+}
+
+// evaluate runs the condition against a pre-assembled environment.
+func (c *CompiledCondition) evaluate(env map[string]any) (bool, error) {
+	out, err := expr.Run(c.program, env)
 	if err != nil {
-		return false, fmt.Errorf(
-			"condition eval failed: %s: %w", c.Raw, err)
+		return false, errdefs.Validationf("condition %q evaluation failed: %v", c.Raw, err)
 	}
-	b, ok := result.(bool)
+	result, ok := out.(bool)
 	if !ok {
-		return false, fmt.Errorf(
-			"condition %q returned %T, expected bool", c.Raw, result)
+		return false, errdefs.Validationf("condition %q did not evaluate to a boolean", c.Raw)
 	}
-	return b, nil
+	return result, nil
 }
