@@ -90,7 +90,7 @@ Both fill dependency slots, but they have different ownership:
 deps:
   inference: infer # whole resource
   workspace: ws/project # one item inside a container resource
-  store: { source: host.memory, ref: default } # borrowed from the host
+  store: { source: host.shared, ref: default } # borrowed from the host
 ```
 
 ### Container vs whole resources
@@ -246,9 +246,10 @@ import (
     "os"
 
     "github.com/GizClaw/flowcraft/sdk/agent"
+    "github.com/GizClaw/flowcraft/sdk/message"
     "github.com/GizClaw/flowcraft/sdkx/deploy"
     graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
-    "github.com/GizClaw/flowcraft/sdk/inference/config"
+    inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 func main() {
@@ -258,7 +259,9 @@ func main() {
     engines.MustRegister(graphagent.NewFactory())
 
     builder := deploy.NewBuilder(engines)
-    builder.MustRegisterResource(yaml.NewDeployFactory(nil, nil))
+    // Register the inference resource; pass your provider factory and
+    // secret resolver maps here instead of nil.
+    builder.MustRegisterResource(inferenceconfig.NewDeployFactory(nil, nil))
 
     data, _ := os.ReadFile("deployment.yaml")
     doc, err := deploy.Parse(data)
@@ -269,7 +272,9 @@ func main() {
     defer result.Close()
 
     inst, _ := result.Instance("greeter")
-    out, err := inst.Execute(ctx, agent.Request{Message: "hello"})
+    out, err := inst.Execute(ctx, agent.Request{
+        Message: message.NewTextMessage(message.RoleUser, "hello"),
+    })
     if err != nil { panic(err) }
     fmt.Println(out.Committed)
 }
@@ -317,7 +322,8 @@ explicit external consumer is dead configuration and fails the build.
 | `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
 | `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
-| `memory.Assembly`         | `yaml`          | runtime container                | `sdk/memory/config`       |
+| `scheduler.Server`        | `local`         | shared scheduler server         | `sdk/scheduler/config`         |
+| `memory.Assembly`         | app-registered (e.g. `flowcraft`) | memory assembly (`context` / `turn` / `document`) | `sdk/memory/config` + implementation module |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
@@ -325,8 +331,8 @@ distinct `impl` values.
 
 ### Sub-documents: file vs inline
 
-The `workspace`, `sandbox`, `inference`, and `tool` resources wrap
-their modules' own versioned YAML. Their `settings` accept **exactly
+The `workspace`, `sandbox`, `inference`, `tool`, and `memory` resources wrap
+their modules' own settings documents. Their `settings` accept **exactly
 one** source:
 
 ```yaml
@@ -350,8 +356,9 @@ settings:
 silently fell back to an empty inline document would surface much
 later as a missing ref — that's why exactly-one is enforced.
 The nested document is parsed by the owning module and retains its
-own version field and strictness rules; there is no second schema to
-keep in sync.
+own version field (where the module declares one — the flowcraft
+`memory.yaml` schema deliberately has none) and strictness rules; there is
+no second schema to keep in sync.
 
 ### Custom resources
 
@@ -359,18 +366,19 @@ A `ResourceFactory` is one Go type. Register it once on the `Builder`,
 and it plugs into the document as a `(kind, impl)` pair:
 
 ```go
+// sdkconfig is github.com/GizClaw/flowcraft/sdk/config.
 type myFactory struct{ /* config, client, etc. */ }
 
-func (f *myFactory) Spec() deploy.ResourceSpec {
-    return deploy.ResourceSpec{
+func (f *myFactory) Spec() sdkconfig.ResourceSpec {
+    return sdkconfig.ResourceSpec{
         Kind: "my.Kind", Impl: "default",
-        Deps: []deploy.ResourceDepSpec{
+        Deps: []sdkconfig.ResourceDepSpec{
             {Name: "inference", Type: "inference.Assembly", Required: true},
         },
     }
 }
 
-func (f *myFactory) New(ctx context.Context, in deploy.ResourceInput) (any, error) {
+func (f *myFactory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
     settings, err := deploy.DecodeSettings[mySettings](in.Settings)
     if err != nil { return nil, err }
     infer, _ := in.Dep("inference")
@@ -469,7 +477,8 @@ A hook is a small Go factory. Register it once, then reference it by
 `type` in the document:
 
 ```go
-builder.RegisterPreparer("recall", func(ctx context.Context, in deploy.HookInput) (agent.Preparer, error) {
+// sdkconfig is github.com/GizClaw/flowcraft/sdk/config.
+builder.RegisterPreparer("recall", func(ctx context.Context, in sdkconfig.Input) (agent.Preparer, error) {
     settings, err := deploy.DecodeSettings[recallSettings](in.Settings)
     if err != nil { return nil, err }
     store, _ := in.Dep("store")
@@ -484,7 +493,7 @@ agents:
       - type: recall
         deps:
           store:
-            source: host.memory
+            source: host.shared
             ref: default
         settings:
           max_hits: 8
@@ -492,7 +501,7 @@ agents:
       - type: transcript
         deps:
           store:
-            source: host.memory
+            source: host.shared
             ref: default
         settings:
           channel: main
@@ -505,49 +514,34 @@ agents:
 
 Hooks can bind the same kinds of dep references as resources — they
 read the resource area through the same `DepRef` resolution path,
-which is how a recall preparer reaches a memory store the deployment
-built.
+which is how a hook reaches a deployment-built resource (or a host-owned
+value through a `source`).
 
-A `memory.Assembly` exposes its runtime item as `memory/runtime`.
-Memory lifecycle hooks therefore bind it directly:
+A `memory.Assembly` is bound **whole** as the hooks' `memory` dependency
+(hooks consume the `memory.Assembly` interface, not an item). Applications
+that need the raw stores can address the implementation's exposed item — with
+the flowcraft implementation it is `system`, i.e. `memories/system`.
 
-```yaml
-prepare:
-  - type: memory.load
-    deps: {runtime: memory/runtime}
-    settings: {into: transcript, limit: 50}
-  - type: memory.recall
-    deps: {runtime: memory/runtime}
-    settings:
-      into: hits
-      query: {board: query}
-      top_k: 8
-commit:
-  - type: memory.append
-    deps: {runtime: memory/runtime}
-    settings: {channel: __main_channel}
-```
-
-`memory.recall.settings.query` accepts exactly one of `literal` or `board`.
-`board` reads the Board passed by the previous preparer. The default seeder
-copies `Request.Inputs` into Board vars first, so it supports both request
-inputs and values produced by earlier preparers without template expansion.
-
-An embedding-enabled memory resource depends on the runtime item exported by
-the inference assembly:
+The memory resource requires a workspace and the inference runtime item
+exported by the inference assembly:
 
 ```yaml
 # deploy.yaml
 version: v1
 resources:
+  ws:
+    kind: workspace.Registry
+    impl: yaml
+    settings: {file: ./workspace.yaml}
   infer:
     kind: inference.Assembly
     impl: yaml
     settings: {file: ./inference.yaml}
-  memory:
+  memories:
     kind: memory.Assembly
-    impl: yaml
+    impl: flowcraft
     deps:
+      workspace: ws/project
       inference: infer/runtime
     settings: {file: ./memory.yaml}
 agents:
@@ -555,13 +549,19 @@ agents:
     engine: {kind: graph, settings: {graph: ./graphs/researcher.json}}
     deps: {inference: infer}
     prepare:
-      - type: memory.recall
-        deps: {runtime: memory/runtime}
-        settings: {into: hits, query: {board: query}, top_k: 8}
+      - type: memory.context
+        deps: {memory: memories}
+        settings:
+          query: {board: query}
+          scope: {runtime_id: prod, user_id: u1}
+          budget: {max_items: 8, max_tokens: 1000}
+          output: memory_items
     commit:
-      - type: memory.append
-        deps: {runtime: memory/runtime}
-        settings: {channel: __main_channel}
+      - type: memory.turn
+        deps: {memory: memories}
+        settings:
+          scope: {runtime_id: prod, user_id: u1}
+          channel: __main_channel
 ```
 
 ```yaml
@@ -579,45 +579,28 @@ providers:
 
 ```yaml
 # memory.yaml
-version: v1
-runtime:
-  hard_partition: [runtime_id, user_id]
-  default_scope: {runtime_id: prod}
-  clock: {impl: system}
-stores:
-  messages: {impl: sqlite, settings: {file: ./memory/messages.db}}
-  documents: {impl: sqlite, settings: {file: ./memory/documents.db}}
-embedding:
-  model:
-    id: {provider: openai, name: text-embedding-3-small}
-    profile: default
-  dimensions: 1536
-  batch_size: 32
-  timeout: 30s
+generate:
+  provider: deepseek
+  name: deepseek-v4-flash
+embed:
+  provider: openai
+  name: text-embedding-3-small
+scopes:
+  - runtime_id: prod
+    user_id: u1
+interval: 1m
 ```
 
 Credentials and provider catalogs stay in `inference.yaml`; `memory.yaml`
-contains only the typed model reference and memory-side embedding policy.
+contains only exact model references, scopes, and derivation/maintenance
+policy (see the [memory guide](memory.md#config-memoryyaml) for the full
+schema; note the implementation settings document has no `version` field).
 
-The assembly also retains the scheduler lifecycle configuration:
-
-```yaml
-lifecycle:
-  compact: {cron: "@hourly", older_than: 168h, keep: 50}
-  archive:
-    cron: "0 3 * * *"
-    older_than: 2160h
-    destination: s3://bucket/archive
-```
-
-The application registers `assembly.Runtime` and `assembly.Lifecycle` against a
-shared `scheduler.Server` through `sdkx/scheduler/memory`. The backend-neutral
-control, delivery, and lease contracts live in `sdk/scheduler`; the local cron
-and queue implementation lives in `sdkx/scheduler`. In an application Runtime,
-declare the Server as a deployment resource and reference it through
-`runtime.scheduler`; Runtime starts a local Server after integrations register
-their rules and workers. Plain `sdkx/deploy` still does not start background
-maintenance itself.
+Background work is not a cron schema anymore. The flowcraft implementation
+owns a worker and lifecycle runner; in an application Runtime, register the
+`memory.worker` integration (`github.com/GizClaw/flowcraft/memory/runtime`)
+with `deps: {memory: memories}` and empty settings, and Runtime starts it for
+you. Plain `sdkx/deploy` still does not start background maintenance itself.
 
 `discard_on_interrupt` is the only built-in referee. It maps
 `agent.DiscardOnInterruptCauses` to the run's `Committed` flag and is
@@ -636,11 +619,8 @@ Register the complete assembly in Go:
 ```go
 directory := delegation.NewDirectory()
 
-toolRegistry := tool.NewRegistry()
-for _, delegationTool := range tooldelegation.New(directory) {
-    toolRegistry.Register(delegationTool)
-}
-toolBuilder := toolconfig.NewBuilder(toolRegistry, toolconfig.Deps{})
+toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
+toolBuilder.RegisterBuiltins(tooldelegation.New(directory)...)
 
 engines := agent.NewRegistry()
 engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
@@ -853,21 +833,22 @@ engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
 builder := deploy.NewBuilder(engines)
 
 // Resources the document references.
-builder.MustRegisterResource(workspaceconfig.NewDeployFactory())
+workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
+builder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
 builder.MustRegisterResource(sandboxconfig.NewDeployFactory())
-builder.MustRegisterResource(inferenceyaml.NewDeployFactory(providerFactories, secretResolvers))
+builder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
 builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
 builder.MustRegisterResource(jsrt.NewDeployFactory())
 builder.MustRegisterResource(luart.NewDeployFactory())
 builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 // Host-owned values the document can borrow.
-builder.RegisterSource("host.memory", func(ctx context.Context, ref string) (any, error) {
-    store, ok := memoryStores[ref]
+builder.RegisterSource("host.shared", func(ctx context.Context, ref string) (any, error) {
+    client, ok := sharedClients[ref]
     if !ok {
-        return nil, errdefs.NotFoundf("memory store %q is not registered", ref)
+        return nil, errdefs.NotFoundf("host client %q is not registered", ref)
     }
-    return store, nil
+    return client, nil
 })
 
 data, err := os.ReadFile("deployment.yaml")
@@ -935,8 +916,8 @@ b.RegisterObserver("audit", auditFactory)
 ```
 
 Lifecycles are easy to test in isolation: each factory receives a
-`HookInput` with the decoded settings and resolved deps, so unit tests
-can hand a fixture `HookInput` and assert on the produced hook.
+`sdkconfig.Input` with the decoded settings and resolved deps, so unit tests
+can hand a fixture `sdkconfig.Input` and assert on the produced hook.
 
 ## Validation rules
 
@@ -988,7 +969,7 @@ if err != nil { t.Fatal(err) }
 ```
 
 For lifecycle hooks, exercise the factory directly with a hand-built
-`HookInput` — the surrounding deploy machinery is irrelevant once the
+`sdkconfig.Input` — the surrounding deploy machinery is irrelevant once the
 factory is registered.
 
 For full turn-level tests (the engine, the host, the hook chain),
@@ -1006,7 +987,7 @@ warms up its catalog on first use).
   `sdkx/deploy/builder.go`.
 - Per-resource config schemas: `sdk/workspace/config/doc.go`,
   `sdk/sandbox/config/doc.go`, `sdk/inference/config/doc.go`,
-  `sdk/tool/config/doc.go`, `sdk/event/config/doc.go`,
+  `sdk/tool/config/doc.go`, `sdk/event/config/resource.go`,
   `sdk/memory/config/doc.go`.
 - Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
@@ -1016,9 +997,8 @@ warms up its catalog on first use).
 - A focused, on-disk example: `examples/forge` (native scenario workspaces
   driven by `sdkx/deploy` documents) and the inference guide's
   [deployment section](inference.md#deployment-configuration).
-- Memory stack and the four integration surfaces
-  (Preparer / Committer / Tool / Scheduler):
-  [memory.md](memory.md).
+- Memory stack (`ContextProvider` / `TurnSink` / `DocumentSink`, hooks, and
+  the `memory.worker` runtime integration): [memory.md](memory.md).
 
 `sdkx/deploy` remains an assembly layer, not a session runtime. It constructs
 and owns resources and agent instances. When an application uses

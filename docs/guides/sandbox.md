@@ -59,7 +59,7 @@ agent harness.
 only accepts `NetDefault`; non-default modes require a sandboxing
 backend (namespace-based, container-based, or microVM-based) that
 can actually enforce the policy at the kernel level. Trying to set
-`Net: NetDeny` on a `LocalRunner` returns `errdefs.NotAvailable` at
+`Net: NetDenyAll` on a `LocalRunner` returns `errdefs.NotAvailable` at
 `Exec` time, not a silent downgrade.
 
 `ResourceLimits` covers `MemoryBytes`, `CPUMillicores`,
@@ -76,7 +76,7 @@ under request. Inspect the honest policy surface before execution:
 
 ```go
 e := sandbox.EnforcementOf(r)
-if !e.Net {
+if !slices.Contains(e.NetModes, sandbox.NetDenyAll) {
     return errors.New("sandbox cannot enforce net policy on this backend")
 }
 ```
@@ -88,9 +88,7 @@ misconfiguration, not to assert safety.
 ## First sandbox
 
 ```go
-runner, err := sandbox.NewLocalRunner(sandbox.WithRoot("/var/agent/root"))
-if err != nil { panic(err) }
-defer runner.Close()
+runner := sandbox.NewLocalRunner("/var/agent/root")
 
 result, err := runner.Exec(ctx, "go", []string{"test", "./..."}, sandbox.ExecOptions{
     WorkDir: "./project",
@@ -147,12 +145,15 @@ runner := sandbox.AllowCommands(
 
 `WithApproval` injects a predicate chain in front of every call:
 if any predicate matches, the host asks the approver; the
-approver returns `Allow`, `Deny`, or `Ask`. `AllowCommands` is
+approver returns `Allow` or `Deny` (approver errors are fail-closed).
+`AllowCommands` is
 the canonical predicate — only listed commands pass.
 
-`WithDefaults` merges a fixed `ExecOptions` into every call, with
-the caller-provided values winning on conflict (per the rest of
-the harness's "caller-supplied-wins" rule).
+`WithDefaults` merges a fixed `ExecOptions` into every call, and the merge is
+security-biased: policy fields (`Env.Allow`, `Net`, `Resources`) belong to
+the defaults and always win; `WorkDir` / `Stdin` fall back to defaults when
+unset; `Timeout` takes the smaller of the two; `Env.Inject` is a union with
+the caller winning on key collision.
 
 ## Workspace vs Sandbox
 
@@ -190,21 +191,23 @@ resources:
 version: v1
 sandboxes:
   coding:
-    backend: seatbelt
+    backend: local
     workspace: project # → bind to workspaces/<name>
-    settings:
-      writable_paths: [".cache"]
     defaults:
       timeout: 2m
       env:
         allow: [PATH, HOME, GOCACHE]
         inject: { CI: "1" }
-      net: { mode: deny }
+      net: { mode: deny_all }
       resources:
         memory_bytes: 2147483648
         cpu_millicores: 2000
         max_output_bytes: 10485760
 ```
+
+`local` is the only backend registered by default. Platform backends
+(`seatbelt` on macOS, `nsjail` on Linux) register themselves from their own
+packages; a document naming one without registering it fails the build.
 
 Graph binding:
 
@@ -229,7 +232,7 @@ approver's decision flow through? do the defaults apply when
 caller doesn't override?
 
 ```go
-runner := sandbox.NewLocalRunnerForTest(t)
+runner := sandbox.NewLocalRunner(t.TempDir())
 out, err := runner.Exec(ctx, "sh", []string{"-c", "echo hi"}, sandbox.ExecOptions{})
 if err != nil { t.Fatal(err) }
 if out.ExitCode != 0 || !strings.Contains(string(out.Stdout), "hi") {

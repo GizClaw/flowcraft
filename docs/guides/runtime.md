@@ -45,6 +45,18 @@ resources:
     kind: scheduler.Server
     impl: local
 
+  ws:
+    kind: workspace.Registry
+    impl: yaml
+    settings:
+      file: ./workspace.yaml
+
+  infer:
+    kind: inference.Assembly
+    impl: yaml
+    settings:
+      file: ./inference.yaml
+
   # Optional. Remove this resource and delegation's backend dep when only
   # synchronous local delegation is needed.
   delegations:
@@ -60,7 +72,10 @@ resources:
 
   memories:
     kind: memory.Assembly
-    impl: yaml
+    impl: flowcraft
+    deps:
+      workspace: ws/project
+      inference: infer/runtime
     settings:
       file: ./memory.yaml
 
@@ -92,7 +107,7 @@ runtime:
         max_depth: 8
         timeout: "30s"
     - name: memory
-      kind: memory.maintenance
+      kind: memory.worker
       deps:
         memory: memories
       settings: {}
@@ -105,11 +120,12 @@ external consumers during deployment assembly, so `events`, `schedules`,
 
 `delegation.local` accepts `max_concurrency`, `max_depth`, and a Go-duration
 `timeout` string. Its `backend` dependency is optional. The
-`memory.maintenance` integration requires a `memory.Assembly`. Runtime
+`memory.worker` integration requires a `memory.Assembly`. Runtime
 automatically injects the shared `scheduler.Server` named by
 `runtime.scheduler` into integrations that declare that dependency, so it is
 not repeated in each integration's `deps`. Its settings must be empty because
-maintenance policy comes from the assembly's `lifecycle` configuration.
+maintenance policy comes from the assembly's `memory.yaml` configuration
+(derivation interval, scopes, and lifecycle settings).
 Runtime starts the local server only after every integration has registered its
 rules and started its leased worker. During shutdown, integrations stop their
 workers before Runtime closes the server. A remote implementation can expose
@@ -121,7 +137,18 @@ depend on lower-level resources of its own.
 ## Register, build, and run
 
 Register every implementation named by the document before building. The
-application supplies the memory store catalog and the shared tool registry:
+application supplies the memory implementation factory and the shared tool
+registry:
+
+Aliases used below: `sdkscheduler` =
+`github.com/GizClaw/flowcraft/sdkx/scheduler`, `schedulerconfig` =
+`github.com/GizClaw/flowcraft/sdk/scheduler/config`, `workspaceconfig` =
+`github.com/GizClaw/flowcraft/sdk/workspace/config`, `inferenceconfig` =
+`github.com/GizClaw/flowcraft/sdk/inference/config`, `memoryconfig` =
+`github.com/GizClaw/flowcraft/sdk/memory/config`, `flowcraftmemory` =
+`github.com/GizClaw/flowcraft/memory/config`, `flowcraftruntime` =
+`github.com/GizClaw/flowcraft/memory/runtime`, and `message` =
+`github.com/GizClaw/flowcraft/sdk/message`.
 
 ```go
 engines := agent.NewRegistry()
@@ -129,9 +156,19 @@ engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
 
 deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
 deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
-deployBuilder.MustRegisterResource(schedulerconfig.NewLocalDeployFactory())
+
+schedulerBuilder := schedulerconfig.NewBuilder()
+if err := sdkscheduler.Register(schedulerBuilder); err != nil {
+    return err
+}
+deployBuilder.MustRegisterResource(schedulerconfig.NewDeployFactory("local", schedulerBuilder))
+
 deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
-deployBuilder.MustRegisterResource(memoryyaml.NewDeployFactory(memoryBuilder))
+
+workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
+deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
+deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
+deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory("flowcraft", flowcraftmemory.Factory()))
 
 tools := tool.NewRegistry()
 delegationFactory, err := delegationruntime.NewFactory(tools)
@@ -143,7 +180,7 @@ runtimeBuilder := runtime.NewBuilder(deployBuilder)
 if err := runtimeBuilder.RegisterIntegration(delegationFactory); err != nil {
     return err
 }
-if err := runtimeBuilder.RegisterIntegration(memoryruntime.NewFactory()); err != nil {
+if err := runtimeBuilder.RegisterIntegration(flowcraftruntime.NewFactory()); err != nil {
     return err
 }
 
@@ -176,7 +213,7 @@ if err != nil {
 defer lease.Close()
 
 turn, err := lease.Session().Start(ctx, agent.Request{
-    Message: inference.NewTextMessage(inference.RoleUser, text),
+    Message: message.NewTextMessage(message.RoleUser, text),
 }, session.SinkSpec{
     ID:   connectionID,
     Sink: streamSink,
@@ -203,7 +240,7 @@ Prompt requests arrive through the same event stream as
 
 ```go
 if err := turn.Reply(ctx, prompt.PromptID, agent.UserReply{
-    Parts: []inference.Part{inference.TextPart{Text: answer}},
+    Parts: []message.Part{message.TextPart{Text: answer}},
 }); err != nil {
     return err
 }

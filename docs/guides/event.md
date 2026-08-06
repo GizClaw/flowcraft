@@ -37,10 +37,10 @@ subject-to-subscriber route cache (memoised match per subject,
 invalidated on subscribe / unsubscribe / close), and is the
 implementation most SDK code targets.
 
-`NoopBus` discards every `Publish` and returns an error from
-`Subscribe`. Use it in tests, hot paths that don't need to be
-observable, or as a placeholder when the host is constructed
-before the bus is.
+`NoopBus` discards every `Publish` and returns a subscription whose channel
+is already closed (a nil error from `Subscribe`). Use it in tests, hot paths
+that don't need to be observable, or as a placeholder when the host is
+constructed before the bus is.
 
 Remote buses (NATS, server-side SSE, durable queues) implement the
 same `Bus` interface. `Envelope` is JSON-shaped, with the payload
@@ -54,6 +54,7 @@ package main
 
 import (
     "context"
+    "encoding/json"
     "fmt"
 
     "github.com/GizClaw/flowcraft/sdk/event"
@@ -63,24 +64,25 @@ func main() {
     bus := event.NewMemoryBus()
     defer bus.Close()
 
-    sub, err := bus.Subscribe(context.Background(), "graph.run.*.complete", event.BufferSize(64))
+    sub, err := bus.Subscribe(context.Background(), "graph.run.*.complete", event.WithBufferSize(64))
     if err != nil { panic(err) }
     defer sub.Close()
 
     go func() {
-        for env := range sub.Events() {
+        for env := range sub.C() {
             fmt.Println(string(env.Payload))
         }
     }()
 
-    _ = bus.Publish(context.Background(), event.MustEnvelope(event.Envelope{
-        Subject: "graph.run.r1.node.n1.complete",
-        Payload: json.RawMessage(`{"ok":true}`),
-    }))
+    _ = bus.Publish(context.Background(), event.MustEnvelope(
+        context.Background(),
+        "graph.run.r1.node.n1.complete",
+        json.RawMessage(`{"ok":true}`),
+    ))
 }
 ```
 
-`Subscribe` returns a `Subscription` whose `Events()` channel is
+`Subscribe` returns a `Subscription` whose `C()` channel is
 the deliver path. Closing the subscription (or the bus) closes the
 channel. The bus stops accepting publishes after `Close`.
 
@@ -89,26 +91,26 @@ channel. The bus stops accepting publishes after `Close`.
 ```go
 type Envelope struct {
     ID        string            // xid by default; server-stable
-    Subject   string            // routing key
+    Subject   Subject           // routing key
     Time      time.Time         // producer-side timestamp
+    Source    string            // optional producer locator
     Headers   map[string]string // well-known keys (see below)
     Payload   json.RawMessage   // opaque to the bus
     TraceID   string            // OTel trace ID (hex)
     SpanID    string            // OTel span ID (hex)
-    Causation string            // ID of the event that caused this one
-    ReplyTo   string            // optional request/reply subject
 }
 ```
 
-Construction goes through `event.NewEnvelope` (idempotent, allocates
-a fresh xid) or `event.MustEnvelope` (panics on error, for static
-literals). Decoding the payload uses `Decode[T](env)` to unmarshal
-into a typed Go value — the bus never decodes it for you.
+Construction goes through `event.NewEnvelope(ctx, subject, payload)` (allocates
+a fresh xid, stamps `Time`, and fills OTel trace/span IDs from `ctx`) or
+`event.MustEnvelope` (panics on error, for static literals). Decoding uses the
+`Envelope.Decode(&out)` method to unmarshal into a typed Go value — the bus
+never decodes it for you.
 
 The well-known header keys are constants in the package
-(`event.HeaderContentType`, `event.HeaderContentEncoding`,
-`event.HeaderSchema`); tooling should treat unknown headers as
-opaque.
+(`event.HeaderRunID`, `event.HeaderNodeID`, `event.HeaderAgentID`,
+`event.HeaderGraphID`, `event.HeaderTenant`); tooling should treat unknown
+headers as opaque.
 
 ## Subject and Pattern
 
@@ -211,6 +213,6 @@ shared `Bus` contract.
   `sdk/event/observer.go`, `sdk/event/trace.go`.
 - Host capability that reaches it: `sdk/agent/host.go`
   (`Host.EventBus`).
-- Assembly: `sdk/event/config/doc.go`, the `event.Bus` resource
+- Assembly: `sdk/event/config/resource.go`, the `event.Bus` resource
   in [deploy.md](deploy.md#first-party-impls).
 - Remote bridges: per-package `doc.go` (NATS / SSE / …).

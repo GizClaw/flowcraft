@@ -88,7 +88,8 @@ Deployments are described by a versioned `config.Document`. Documents
 contain **secret references only** — never plaintext credentials — and
 the envelope validator rejects credential-looking keys anywhere in
 `spec`. YAML is the on-disk format (`sdk/inference/config`);
-`config.DecodeJSON` reads the same envelope as JSON.
+`config.Parse` reads both YAML and JSON through the shared
+`sdk/config` protocol.
 
 ```yaml
 # inference.yaml
@@ -137,17 +138,18 @@ secret names.
 
 ```go
 import (
+    "os"
+
     "github.com/GizClaw/flowcraft/sdk/inference/config"
     "github.com/GizClaw/flowcraft/sdk/inference/config/env"
-    "github.com/GizClaw/flowcraft/sdk/inference/config"
     "github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
     "github.com/GizClaw/flowcraft/sdkx/inference/openai"
     "github.com/GizClaw/flowcraft/sdkx/inference/qwen"
 )
 
-store, err := yaml.New("inference.yaml")
+data, err := os.ReadFile("inference.yaml")
 if err != nil { /* ... */ }
-snapshot, err := store.Load(ctx)
+document, err := config.Parse(data)
 if err != nil { /* ... */ }
 
 builder, err := config.NewBuilder(
@@ -162,7 +164,7 @@ builder, err := config.NewBuilder(
 )
 if err != nil { /* ... */ }
 
-assembly, err := builder.NewAssembly(ctx, snapshot.Document)
+assembly, err := builder.NewAssembly(ctx, document)
 if err != nil { /* ... */ }
 
 runtime := assembly.Runtime // *inference.Runtime
@@ -177,21 +179,25 @@ output or route targets pointing at unknown models.
 
 ### Unary
 
+In the snippets below, `message` is
+`github.com/GizClaw/flowcraft/sdk/message` — request history and content
+use the shared message DTOs, not inference-specific types.
+
 ```go
 model := inference.ModelRef{ID: inference.ModelID{Provider: "openai", Name: "gpt-5.4"}}
 
 resp, err := runtime.Generate(ctx, model, inference.GenerateRequest{
-    Context: []inference.Message{{
-        Role: inference.RoleSystem,
-        Content: inference.Content{Parts: []inference.Part{
-            inference.TextPart{Text: "Answer concisely."},
+    Context: []message.Message{{
+        Role: message.RoleSystem,
+        Content: message.Content{Parts: []message.Part{
+            message.TextPart{Text: "Answer concisely."},
         }},
     }},
     Input: inference.GenerateInput{
         Role: inference.InputRoleUser,
         Content: inference.InputContent{
-            Content: inference.Content{Parts: []inference.Part{
-                inference.TextPart{Text: "Give me three names for a Go linter."},
+            Content: message.Content{Parts: []message.Part{
+                message.TextPart{Text: "Give me three names for a Go linter."},
             }},
             Intent: inference.Intent{Text: &inference.TextIntent{
                 MaxOutputTokens: intPtr(256),
@@ -254,8 +260,8 @@ next := inference.GenerateRequest{
     Input: inference.GenerateInput{
         Role: inference.InputRoleTool,
         Content: inference.InputContent{
-            Content: inference.Content{Parts: []inference.Part{
-                inference.ToolResultPart{Result: tool.Result{
+            Content: message.Content{Parts: []message.Part{
+                message.ToolResultPart{Result: message.Result{
                     CallID:  call.ID,
                     Content: `{"temperature": "21C"}`,
                 }},
@@ -301,11 +307,11 @@ of silently approximating.
 ```go
 resp, err := runtime.Embed(ctx, embedModel, inference.EmbedRequest{
     Items: []inference.EmbedItem{
-        {Content: inference.Content{Parts: []inference.Part{
-            inference.TextPart{Text: "first document"},
+        {Content: message.Content{Parts: []message.Part{
+            message.TextPart{Text: "first document"},
         }}},
-        {Content: inference.Content{Parts: []inference.Part{
-            inference.TextPart{Text: "second document"},
+        {Content: message.Content{Parts: []message.Part{
+            message.TextPart{Text: "second document"},
         }}},
     },
     Dimensions: intPtr(1024), // rejected unless the model supports it
@@ -365,24 +371,11 @@ selectors)` directly.
 
 ## Hot reload
 
-`config.Reloader` keeps a serving last-good runtime across reloads:
-
-```go
-reloader, err := config.NewReloader(ctx, builder, store)
-if err != nil { /* ... */ }
-
-go reloader.Run(ctx, 30*time.Second, func(err error) {
-    log.Printf("inference reload failed (last-good still serving): %v", err)
-})
-
-// anywhere in the app:
-runtime := reloader.Runtime() // current snapshot's runtime
-router  := reloader.Router()  // nil when the document has no route section
-```
-
-Stores implementing `config.Notifier` can push change signals for
-immediate reload via `reloader.Watch`; polling is the fallback. A failed
-reload never interrupts the previous runtime.
+There is no built-in `config.Reloader` in the current stack. `Builder` and
+`Assembly` are immutable, so hot reload means building a fresh `Assembly`
+from a new `Document` and swapping it atomically in application code while
+the old runtime finishes its in-flight calls. A failed parse or build never
+affects the previously serving runtime.
 
 ## Debugging: Explain
 
@@ -498,5 +491,5 @@ unary/stream, compile parity, rejection accounting, realtime sessions).
 - Package contracts: `sdk/inference/doc.go`,
   `sdk/inference/config/doc.go`, `sdk/inference/route/doc.go`
 - Per-provider guides: `sdkx/inference/<provider>/doc.go`
-- Design rationale and acceptance criteria:
-  [Unified Inference Runtime PRD](../prds/unified-inference-runtime.md)
+- Provider inventory and config schema:
+  `sdk/inference/config/doc.go`, each `sdkx/inference/<provider>/spec.go`.

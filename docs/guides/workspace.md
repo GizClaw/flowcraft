@@ -29,11 +29,8 @@ type Workspace interface {
     Delete  (ctx context.Context, path string) error
     RemoveAll(ctx context.Context, path string) error
     List    (ctx context.Context, dir string) ([]fs.DirEntry, error)
-    Stat    (ctx context.Context, path string) (fs.FileInfo, error)
     Exists  (ctx context.Context, path string) (bool, error)
-    Mkdir   (ctx context.Context, dir string) error
-
-    Capabilities() Capabilities
+    Stat    (ctx context.Context, path string) (fs.FileInfo, error)
 }
 ```
 
@@ -44,22 +41,22 @@ a workspace is a chroot, not a global filesystem.
 `Rename` is the canonical "publish a finalized payload" operation:
 write to a tmp path, then `Rename` to the live path so readers
 never observe a half-written file. Whether the implementation can
-do this atomically is reported via `Capabilities().AtomicRename`.
+do this atomically is reported via `CapabilitiesOf(ws).AtomicRename`.
 
 ### Capabilities
 
 Adapters that need accurate semantics (e.g. an LSM-style retrieval
 index that relies on atomic rename) read `Capabilities` via
-`CapabilityReporter` rather than hard-coding per-implementation
-assumptions. All fields default to false — the conservative
+`CapabilityReporter` (or the `CapabilitiesOf(ws)` helper) rather than
+hard-coding per-implementation assumptions. All fields default to false — the conservative
 "no guarantees" interpretation.
 
 | Field              | Meaning                                                                                                    |
 | ------------------ | ---------------------------------------------------------------------------------------------------------- |
 | `AtomicRename`     | `Rename` is single-observer-atomically POSIX-clean                                                         |
 | `ReadAfterWrite`   | a successful `Write`/`Append` is immediately visible to `Read`/`List`/`Exists`/`Stat` from the same client |
-| `MultiProcessSafe` | multiple processes may share the workspace safely (relevant for distributed coordination)                  |
-| `Watchable`        | change events can be observed (filesystem watchers, FUSE, etc.)                                            |
+| `DurableOnWrite`   | a successful write hits stable storage before returning                                                    |
+| `Distributed`      | more than one process or host can open the same workspace concurrently                                      |
 
 Adding a new field is additive — adapters that don't know about it
 keep working with the conservative default.
@@ -69,7 +66,6 @@ keep working with the conservative default.
 ```go
 ws, err := workspace.NewLocalWorkspace("./state/project")
 if err != nil { panic(err) }
-defer ws.Close()
 
 if err := ws.Write(ctx, "notes/today.md", []byte("# today\n")); err != nil { return err }
 
@@ -82,8 +78,8 @@ if err := ws.Rename(ctx, "drafts/v1.md", "published/v1.md"); err != nil { return
 
 `NewLocalWorkspace` resolves the root through `filepath.Abs` and
 `EvalSymlinks` so a symlink swap at the root does not become a
-path-traversal hole. The `Root()` method returns the resolved root
-for diagnostics.
+path-traversal hole. `LocalWorkspace` exposes a `Root()` method for
+diagnostics; it is not part of the `Workspace` interface.
 
 ## Backends
 
@@ -92,7 +88,7 @@ for diagnostics.
 | `LocalWorkspace`          | local directory                                 | yes (POSIX rename(2)) | production per-host state, durable across restarts                      |
 | `MemWorkspace`            | in-memory map                                   | yes (in-process)      | tests, ephemeral runs, scratch space                                    |
 | `ScopedWorkspace`         | wraps another `Workspace` with deny/allow rules | inherits inner        | least-privilege isolation: deny-by-default read, allow-by-default write |
-| `SubWorkspace`            | virtual subtree of another `Workspace`          | inherits inner        | composability: a subsystem sees its own prefix as root                  |
+| `Sub(ws, prefix)`         | virtual subtree of another `Workspace`          | inherits inner        | composability: a subsystem sees its own prefix as root                  |
 | `sdkx/workspace/objstore` | S3 / GCS / Azure Blob                           | backend-dependent     | cross-host shared state                                                 |
 
 `Sub` is the composability primitive: wrap a workspace with a
@@ -177,10 +173,11 @@ agents:
 
 The graph factory's `workspace` dep contract is "optional, used by
 scripts that need filesystem access." See
-[deploy.md#the-graph-factorys-dep-contract](deploy.md#engines).
+[deploy.md#engines](deploy.md#engines).
 
-Built-in drivers (`local`, `mem`, `scoped`, `sub`) are part of the
-deploy factory; object-store drivers live in `sdkx/workspace/objstore`
+Built-in drivers are `local` and `memory`; `scope` is a per-entry policy
+applied on top of either driver, and `Sub()` is a programmatic composability
+API, not a driver. Object-store drivers live in `sdkx/workspace/objstore`
 and register as additional `(kind, impl)` pairs.
 
 ## Testing
@@ -199,14 +196,15 @@ if string(data) != "hello" { t.Fatal("read mismatch") }
 
 For permission tests, build a `ScopedWorkspace` over a `MemWorkspace`
 and assert on the exact errors for denied paths
-(`errdefs.ErrPathViolation`).
+(`workspace.ErrAccessDenied`).
 
 ## Further reading
 
 - Package contract: `sdk/workspace/workspace.go`,
   `sdk/workspace/capabilities.go`, per-backend files
   (`local.go`, `mem.go`, `scoped.go`, `sub.go`).
-- Object-store backends: `sdkx/workspace/objstore/doc.go`.
+- Object-store backends: `sdkx/workspace/objstore/workspace.go`,
+  `sdkx/workspace/objstore/s3/register.go`.
 - Assembly: `sdk/workspace/config/doc.go`, the `workspace.Registry`
   resource in [deploy.md](deploy.md#first-party-impls).
 - Sibling guide: [sandbox.md](sandbox.md) (state vs policy).
