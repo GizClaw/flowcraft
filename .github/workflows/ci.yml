@@ -208,6 +208,10 @@ jobs:
           nsjail --help 2>&1 | head -3 || true
           which nsjail
       - name: Test
+        env:
+          # Keep sandbox roots out of /tmp: nsjail's private tmpfs
+          # conflicts with bind-mounting sources that live under /tmp.
+          TMPDIR: ${{ runner.temp }}
         run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
         working-directory: sdkx
 
