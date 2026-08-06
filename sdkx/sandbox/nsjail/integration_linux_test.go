@@ -36,9 +36,22 @@ func requireNsjail(t *testing.T) {
 	}
 }
 
+// newIntegrationRoot returns a sandbox root that is traversable by the
+// nsjail child. t.TempDir creates 0700 directories, which trips
+// nsjail's bind-mount step when the runner is invoked through sudo
+// (the child lacks the privileges needed to walk the source path).
+func newIntegrationRoot(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o755); err != nil {
+		t.Fatalf("chmod sandbox root: %v", err)
+	}
+	return root
+}
+
 func newIntegrationRunner(t *testing.T) *Runner {
 	requireNsjail(t)
-	r, err := New(t.TempDir())
+	r, err := New(newIntegrationRoot(t))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -224,7 +237,7 @@ func TestIntegration_WorkDirEscapeRejected(t *testing.T) {
 
 func TestIntegration_FilesystemBounds(t *testing.T) {
 	requireNsjail(t)
-	root := t.TempDir()
+	root := newIntegrationRoot(t)
 	runner, err := New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +311,7 @@ func TestIntegration_PrivateTmpDoesNotReachHost(t *testing.T) {
 
 func TestIntegration_SymlinkCannotEscapeWritableRoot(t *testing.T) {
 	requireNsjail(t)
-	root := t.TempDir()
+	root := newIntegrationRoot(t)
 	home, err := os.UserHomeDir()
 	if err != nil {
 		t.Fatal(err)
