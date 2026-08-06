@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 
 	otellog "go.opentelemetry.io/otel/log"

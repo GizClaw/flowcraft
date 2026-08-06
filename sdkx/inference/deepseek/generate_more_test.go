@@ -11,8 +11,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 func buildProvider(t *testing.T, spec map[string]any) inference.ProviderDefinition {

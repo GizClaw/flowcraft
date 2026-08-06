@@ -16,8 +16,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/tool"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 )
 
