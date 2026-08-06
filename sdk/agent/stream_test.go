@@ -103,14 +103,21 @@ func TestStreamRouter_AutoTeardownOnRunEnd(t *testing.T) {
 		t.Fatalf("publish end: %v", err)
 	}
 
-	// After the end event is observed the router tears the fanout
-	// down. The next Attach must spawn a fresh subscription
-	// successfully (i.e. the runID is no longer tracked).
+	// Wait until the end envelope has been delivered. The run loop
+	// tears down default attachments immediately after delivery, so a
+	// token published from here on cannot reach the old attachment.
+	waitFor(t, time.Second, func() bool {
+		return len(sink.snapshot()) == 1
+	})
+
+	// Probe with a separate sink: using the captured sink here would
+	// double-count the end event when the probe lands before cleanup.
+	probe := &captureSink{}
 	waitFor(t, time.Second, func() bool {
 		// Indirect probe: detach removes the runID; if we can
 		// re-attach without error we know the router has not
 		// gone permanently broken.
-		if stop, err := router.Attach("run-2", "s2", sink); err == nil {
+		if stop, err := router.Attach("run-2", "s2", probe); err == nil {
 			stop()
 			return true
 		}
