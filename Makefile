@@ -9,17 +9,7 @@ SHELL := /bin/bash
 # (sdkx imports sdk).
 MODULES_WORK := sdk memory sdkx examples/forge
 
-# Modules intentionally outside go.work — they pin sdk/sdkx via go.mod
-# require directives and run with GOWORK=off so the pin is honoured.
-#
-#  - tests/conformance: manual provider conformance suites; pinned to
-#    released sdk/sdkx so we test the exact bytes consumers can pull.
-#    Tests self-skip without credentials so `make test` runs them as a
-#    compile check; `make conformance` is the documented entry point
-#    when a .env is in place.
-MODULES_OFFWORK := tests/conformance
-
-ALL_MODULES := $(MODULES_WORK) $(MODULES_OFFWORK)
+ALL_MODULES := $(MODULES_WORK)
 
 # `set -e` inside the for-loop body so a failure in any submodule stops the
 # loop. The previous form (` ( cd $$m && ... ) `) silently swallowed errors
@@ -42,13 +32,6 @@ help:
 	@echo "  make release-plan   Print the pending module release plan as JSON."
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 	@echo ""
-	@echo "Test suites under tests/ (default 'make test' already runs them"
-	@echo "in compile-check / no-credential mode; the targets below are the"
-	@echo "documented entry points for the credentialed / build-tagged lanes):"
-	@echo ""
-	@echo "  make test-conformance  Provider conformance suites (tests/conformance)."
-	@echo "                         Needs a repo-root .env with provider credentials;"
-	@echo "                         no env => suites self-skip and pass."
 	@echo "  make eval              Hermetic memory retrieval eval (memory/eval)."
 	@echo "  make eval-smoke        Compatibility alias for the hermetic memory eval."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
@@ -59,12 +42,10 @@ help:
 .PHONY: vet
 vet:
 	@$(call GO_FOREACH,$(MODULES_WORK),vet,go vet ./...)
-	@$(call GO_FOREACH,$(MODULES_OFFWORK),vet (GOWORK=off),GOWORK=off go vet ./...)
 
 .PHONY: test
 test:
 	@$(call GO_FOREACH,$(MODULES_WORK),test,go test ./... -count=1)
-	@$(call GO_FOREACH,$(MODULES_OFFWORK),test (GOWORK=off),GOWORK=off go test ./... -count=1)
 
 .PHONY: fmt
 fmt:
@@ -73,7 +54,6 @@ fmt:
 .PHONY: tidy
 tidy:
 	@$(call GO_FOREACH,$(MODULES_WORK),tidy,go mod tidy)
-	@$(call GO_FOREACH,$(MODULES_OFFWORK),tidy (GOWORK=off),GOWORK=off go mod tidy)
 
 .PHONY: ci
 ci: vet test
@@ -95,14 +75,6 @@ release-plan:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
-
-# Provider conformance: runs every suite under tests/conformance against
-# the pinned sdk/sdkx release. Without credentials the individual tests
-# Skip cleanly, so this also doubles as a "do the suites still compile
-# against the released API?" check.
-.PHONY: test-conformance
-test-conformance:
-	@cd tests/conformance && GOWORK=off go test -count=1 ./...
 
 # Credential-free retrieval quality evaluation over real memory components.
 .PHONY: eval

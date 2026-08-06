@@ -18,6 +18,7 @@ Rules:
 - Do not repeat last_speaker unless latest_user_text directly addresses that speaker or no other allowed speaker fits.
 - When phase_spoken is not empty and any allowed speaker has not spoken in this phase, choose an unused allowed speaker.
 - Do not choose narrator twice in the same phase unless narrator is the only allowed speaker or this is the handoff speaker.
+- When narrator is chosen, guidance must be a camera/action-only cue. Never ask narrator to voice, quote, or summarize any character's line; if the beat needs dialogue, select that character instead.
 - When phase_spoken length plus this next speaker reaches handoff_after, choose narrator if narrator is allowed and set await_user=true.
 - await_user=true means narrator will naturally pause for the user. Do not create an ask_user node.
 - If phase is resolution, guide the speaker toward a concrete ending beat, not another escalation.

@@ -23,8 +23,8 @@ Keep changes within module boundaries.
 
 The independently versioned library modules are `sdk`, `memory`, and `sdkx`.
 The Go workspace also includes `examples/forge` (the runnable local demo, not
-released), while `tests/conformance` and `tools/releasegate` build with
-`GOWORK=off` against pinned releases.
+released), while `tools/releasegate` builds with `GOWORK=off` against pinned
+releases.
 
 Module dependency order:
 
@@ -92,7 +92,7 @@ the next push to `main` or a manual workflow dispatch.
 ## Working in the workspace
 
 - `make ci` runs `vet` + `test` across `sdk`, `memory`, `sdkx`, and
-  `examples/forge`, then the `GOWORK=off` conformance suites.
+  `examples/forge`.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
 - Changes to `sdk` or `sdkx` contracts may break `examples/forge` or `memory`;
   `make ci` covers them in-tree.

@@ -52,26 +52,23 @@ The repository is organised as independently released Go modules:
 
 | Layer                | Package                                            | Responsibility                                                                                 |
 | -------------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Primitives           | `sdk/engine`                                       | Board / Run / Host / Interrupt / Checkpoint contracts                                          |
-| DAG executor         | `sdk/graph`                                        | Declarative graph runtime (`runner.Runner` implements `engine.Engine`)                         |
+| Execution contracts | `sdk/agent`                                        | `Engine` / Board / Run / Host / Interrupt / Checkpoint contracts                               |
+| DAG executor         | `sdk/graph`                                        | Declarative graph runtime (`*Graph` implements `agent.Engine`)                                 |
 | Agent runtime        | `sdk/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
 | Delegation contracts | `sdk/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
 | Async delegation     | `sdkx/delegation/kanban`                           | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
 | Scheduling contracts | `sdk/scheduler`                                    | Backend-neutral control plane, leased delivery, typed Client/Worker, and task registration     |
 | Local scheduling     | `sdkx/scheduler`                                   | In-process cron, timer, execution queue, lease, memory, and delegation adapters                 |
-| Memory services      | `memory/{recall,history,knowledge,retrieval,text}` | Long-term recall, transcripts, knowledge base, retrieval indexes, text processing              |
+| Memory services      | `memory/{component,derive,projection,retrieval,lifecycle,worker,sources,views}` | Component graph, derive/projection pipelines, retrieval indexes, lifecycle maintenance, sources and views |
 | Adapters             | `sdkx/...`                                         | Concrete provider / protocol bindings layered on the SDK and memory contracts                  |
 
 ## Repository layout
 
 ```
 sdk/         Core SDK (interfaces + primitives)
-memory/      Recall, history, knowledge, retrieval, text
+memory/      Component, derive, projection, retrieval, lifecycle, worker, sources, views
 sdkx/        Provider and protocol adapters
-voice/       Voice pipeline: STT → LLM → TTS
-eval/        Quality-evaluation harnesses
 examples/    Reference assemblies
-tests/       Conformance / quality / e2e suites
 ```
 
 ## Getting started
@@ -82,5 +79,5 @@ go get github.com/GizClaw/flowcraft/memory@latest
 ```
 
 See the package-level `doc.go` files for runnable usage snippets:
-`sdk/agent/doc.go`, `sdk/engine/doc.go`, `sdk/graph/doc.go`, and
+`sdk/agent/doc.go`, `sdk/graph/doc.go`, and
 the focused packages under `memory/`.

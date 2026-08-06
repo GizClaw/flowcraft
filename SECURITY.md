@@ -55,7 +55,7 @@ Please include:
 In scope:
 
 - Code in this repository (`sdk/`, `memory/`, `sdkx/`, `examples/forge/`,
-  `tests/`, `tools/`).
+  `tools/`).
 - Supply-chain and dependency issues affecting published modules.
 
 Out of scope:

@@ -992,8 +992,8 @@ For lifecycle hooks, exercise the factory directly with a hand-built
 factory is registered.
 
 For full turn-level tests (the engine, the host, the hook chain),
-see `sdkx/delegation/integration_test.go`, `tests/conformance`, and the
-engine-specific packages (`sdkx/agent/graph`). The deploy layer itself is
+see `sdkx/delegation/integration_test.go` and the engine-specific packages
+(`sdkx/agent/graph`). The deploy layer itself is
 hermetic: a `Build` over a parsed document does not perform network
 I/O unless a resource factory does (e.g. an inference provider that
 warms up its catalog on first use).

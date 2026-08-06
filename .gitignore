@@ -30,8 +30,6 @@
 !sdk/**
 !sdkx/
 !sdkx/**
-!tests/
-!tests/**
 !tools/
 !tools/**
 !.release/

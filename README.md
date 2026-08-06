@@ -7,7 +7,7 @@
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/sdk.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.25%2B-00ADD8.svg)](https://go.dev/dl/)
+[![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg)](https://go.dev/dl/)
 
 </div>
 
@@ -20,21 +20,19 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
 
 ## Modules
 
-- **`sdk`** — Core contracts: agent execution, graph, engine, tool, model,
+- **`sdk`** — Core contracts: agent execution, graph, tool, model,
   message, inference, memory capabilities, event bus, telemetry, workspace,
   sandbox, scheduler, and delegation.
-- **`memory`** — The flowcraft memory implementation: recall, history,
-  knowledge, retrieval indexes, projections, lifecycle maintenance, and the
-  background worker.
+- **`memory`** — The flowcraft memory implementation: component, derive, and
+  projection pipelines, retrieval, lifecycle maintenance, sources and views,
+  and the background worker.
 - **`sdkx`** — Provider adapters and generic assembly layers: inference
-  providers (OpenAI, DeepSeek, Qwen, ByteDance, MiniMax, Azure), deploy +
-  runtime assembly, tool and workspace configuration, scheduler, and the
-  memory assembly, hooks, and renderer.
+  providers (Anthropic, Azure, ByteDance, DeepSeek, Kimi, MiniMax, OpenAI,
+  Qwen), deploy + runtime assembly, tool and workspace configuration,
+  scheduler, and the memory assembly, hooks, and renderer.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
-- **`tests/conformance`** — Provider conformance suites (credentialed lanes
-  self-skip without a repo-root `.env`).
 - **`tools/releasegate`** — Release automation: changeset validation, release
   planning, and changelog aggregation.
 
@@ -83,7 +81,7 @@ simulations. Command reference, scenario layout, and credentials live in
 ### Embed FlowCraft in a Go service
 
 Use `sdk` directly and add `memory` or `sdkx` when the application needs
-recall, history, knowledge, persistence, or provider adapters. Assemble a
+long-term memory, persistence, or provider adapters. Assemble a
 deployment from `deploy.yaml` with `sdkx/deploy`, run it with `sdkx/runtime`,
 and drive turns through `sdkx/runtime/session`:
 
@@ -108,50 +106,51 @@ session contracts.
 
 ## Architecture
 
-The SDK defines the execution contracts. Memory and provider adapters compose
-those contracts without becoming dependencies of the core.
+The SDK defines the execution contracts: `sdk/agent` owns the execution
+primitives (`Engine`, `Host`, `Board`, `Run`, `Interrupt`, `Checkpoint`),
+while `sdk/graph` compiles declarative graphs into `agent.Engine`
+implementations. Memory and provider adapters compose those contracts
+without becoming dependencies of the core.
 
 ```
                 ┌──────────────────────┐
                 │   Your application   │
                 └──────────┬───────────┘
                            │
-                ┌──────────▼──────────┐
-                │        sdkx/        │
-                │     providers ·     │
-                │     persistence     │
-                └──────────┬──────────┘
-                           │
-                ┌──────────▼──────────┐
-                │       memory/       │
-                │      recall ·       │
-                │      history ·      │
-                │      knowledge      │
-                └──────────┬──────────┘
-                           │
-                ┌──────────▼──────────┐
-                │        sdk/         │
-                │    agent · graph    │
-                │    engine · tool    │
-                │    event · model    │
-                └─────────────────────┘
+             ┌─────────────┬─────────────┐
+             ▼                           ▼
+      ┌─────────────┐             ┌─────────────┐
+      │    sdkx/    │             │   memory/   │
+      │  deploy ·   │             │ component · │
+      │  runtime ·  │             │  derive ·   │
+      │ inference · │             │ projection  │
+      │   tool ·    │             │ retrieval · │
+      └──────┬──────┘             └──────┬──────┘
+             └─────────────┬─────────────┘
+                           ▼
+                ┌──────────────────────┐
+                │          sdk/        │
+                │   agent · graph ·    │
+                │   tool · event ·     │
+                │  message · inference │
+                └──────────────────────┘
 ```
 
-**Layering rule:** `sdk/engine` is a leaf package. It does not import agent,
-graph, LLM, or tool packages. Execution implementations satisfy
-`engine.Engine`; hosts provide capabilities through `engine.Host`. Memory
-contracts live in the SDK, while implementations (the `memory/` module) and
-adapters (`sdkx/`) stay outside the core.
+**Layering rule:** execution contracts live in `sdk/agent` (`agent.Engine`,
+`agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
+import graph or tool packages. `sdk/graph` builds on those contracts and
+returns an `agent.Engine`. Memory contracts live in the SDK, while
+implementations (the `memory/` module) and adapters (`sdkx/`) stay outside
+the core and depend on it, never the reverse.
 
 ## Module map
 
 | Path                                        | Role                                                                             | Distribution         |
 | ------------------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
-| [`sdk`](sdk/)                               | Agent, graph, engine, tool, model, message, inference, memory, event, telemetry  | Versioned Go module  |
-| [`memory`](memory/)                         | Recall, history, knowledge, retrieval, projections, lifecycle, worker            | Versioned Go module  |
+| [`sdk`](sdk/)                               | Agent, graph, tool, model, message, inference, memory, event, telemetry          | Versioned Go module  |
+| [`memory`](memory/)                         | Component, derive, projection, retrieval, lifecycle, worker, sources, views      | Versioned Go module  |
 | [`sdkx`](sdkx/)                             | Provider adapters + generic assembly (deploy, runtime, tool, memory, scheduler)  | Versioned Go module  |
 | [`examples/forge`](examples/forge/)         | Runnable local workspace demo                                                     | Examples            |
-| [`tests/conformance`](tests/conformance/)   | Provider conformance suites                                                       | Tests               |
 | [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
 
 ## Highlights
@@ -167,7 +166,7 @@ adapters (`sdkx/`) stay outside the core.
   `sdk/memory` contracts, and its background worker integrates through its own
   runtime integration.
 
-### Streaming, durable, resumable (`sdk/engine`)
+### Streaming, durable, resumable (`sdk/agent`)
 
 - `Subject`-routed event bus — every step emits structured envelopes.
 - `Checkpoint` / `CheckpointStore` contracts — pause and resume an agent
@@ -178,8 +177,8 @@ adapters (`sdkx/`) stay outside the core.
 
 - One runtime for Generate / Embed / Transcription / Realtime, with exact
   `ModelRef` addressing and compile-time capability checks.
-- Providers registered as factories: OpenAI, DeepSeek, Qwen, ByteDance,
-  MiniMax, and Azure.
+- Providers registered as factories: Anthropic, Azure, ByteDance, DeepSeek,
+  Kimi, MiniMax, OpenAI, and Qwen.
 
 ### Runnable local workspace demo (`examples/forge`)
 
@@ -202,8 +201,10 @@ pkg.go.dev:
 
 The active project surface is `sdk`, `memory`, `sdkx`, and the forge demo.
 Library modules are released independently and remain pre-1.0. Durable
-execution contracts, Postgres and SQLite checkpoint stores, OTel
-instrumentation, and retrieval end-to-end coverage are maintained in-tree.
+execution contracts (checkpoints, interrupt/resume, scheduling), OTel
+instrumentation, and retrieval end-to-end coverage are maintained in-tree;
+checkpoint persistence is host-provided through the `CheckpointStore`
+contract.
 
 API surface is governed by SemVer per module. Breaking changes may ship as
 minor bumps until a module reaches `v1.0.0`.
@@ -220,8 +221,8 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `sdk`, `memory`,
-`sdkx`, and `examples/forge`. Some test harnesses intentionally run with
-`GOWORK=off` against pinned released modules.
+`sdkx`, and `examples/forge`; release tooling in `tools/releasegate` builds
+standalone with `GOWORK=off`.
 
 ## Contributing
 

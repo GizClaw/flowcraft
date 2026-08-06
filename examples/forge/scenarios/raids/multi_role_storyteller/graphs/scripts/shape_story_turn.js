@@ -43,7 +43,7 @@ if (handoffAfter > 0 && spoken.length + 1 >= handoffAfter && allowed.indexOf("na
   speaker = "narrator";
   awaitUser = true;
   if (requestedSpeaker !== "narrator") {
-    guidance = "旁白承接刚才的角色动作，推进镜头并自然停在用户可以插话的位置。";
+    guidance = "旁白承接刚才的角色动作，把镜头停在即将开口的角色身上，不要替任何角色说出台词。";
   }
 }
 guidance = guidance.replace(/[。.!！?？]+$/, "");
