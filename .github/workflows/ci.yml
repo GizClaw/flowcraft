@@ -21,7 +21,6 @@ jobs:
       sdk: ${{ steps.filter.outputs.sdk }}
       memory: ${{ steps.filter.outputs.memory }}
       sdkx: ${{ steps.filter.outputs.sdkx }}
-      eval: ${{ steps.filter.outputs.eval }}
       ci: ${{ steps.filter.outputs.ci }}
     steps:
       - uses: actions/checkout@v4
@@ -39,8 +38,6 @@ jobs:
               - 'memory/**'
             sdkx:
               - 'sdkx/**'
-            eval:
-              - 'eval/**'
             ci:
               - '.github/workflows/**'
               - '.release/**'
@@ -94,18 +91,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: go vet
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx eval; do
+          for m in sdk memory sdkx; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx eval)
+          diff=$(gofmt -l sdk memory sdkx)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -119,7 +116,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -136,7 +133,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -154,7 +151,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.25", "1.26"]
+        go-version: ["1.26"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -178,7 +175,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
       - name: Install nsjail
         # Ubuntu 24.04 (noble) dropped the nsjail package from
         # universe, so we build from source. The compile takes ~30s
@@ -206,32 +203,12 @@ jobs:
         run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
         working-directory: sdkx
 
-  test-eval:
-    name: Test eval (Go ${{ matrix.go-version }})
-    needs: detect
-    # eval is a workspace member (see go.work) — sdk/sdkx resolve to
-    # monorepo HEAD via the workspace overlay, so rerun whenever sdk,
-    # memory, sdkx, or eval source changes.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.eval == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.25", "1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: eval
-
   # Gate job: single required status check for branch protection.
   # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration, test-eval]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -247,7 +224,6 @@ jobs:
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
-            "${{ needs.test-eval.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
