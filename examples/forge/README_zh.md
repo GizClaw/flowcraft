@@ -92,7 +92,8 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 - **Workspace** — 工作区元信息和 token 用量。
 
 `Tab` 切换焦点,`Enter` 提交,`Esc` 清空当前输入,连续按两次 `Ctrl+C`
-退出。每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
+退出。空输入不会提交;输入 `/start` 开启新故事,`/next` 让故事继续推进。
+每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
 输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
 `sdkx/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
 聚合责任仍在 runtime。

@@ -141,16 +141,3 @@ func decodeSpec(raw []byte) (Spec, error) {
 	}
 	return spec, nil
 }
-
-func decodeProfileSpec(raw []byte) (ProfileSpec, error) {
-	var spec ProfileSpec
-	if len(raw) == 0 || string(raw) == "null" {
-		return spec, nil
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&spec); err != nil {
-		return ProfileSpec{}, fmt.Errorf("azure: profile spec: %w", err)
-	}
-	return spec, nil
-}

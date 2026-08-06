@@ -341,7 +341,7 @@ func compileIntent(wire *generateWire, intent inference.Intent, entry catalogEnt
 			}
 		}
 		if text.MaxOutputTokens != nil {
-			wire.maxTokens = ptrInt64(int64(*text.MaxOutputTokens))
+			wire.maxTokens = new(int64(*text.MaxOutputTokens))
 		}
 	}
 	if intent.Image != nil {
@@ -396,8 +396,6 @@ func compileIntent(wire *generateWire, intent inference.Intent, entry catalogEnt
 		}
 	}
 }
-
-func ptrInt64(value int64) *int64 { return &value }
 
 // jsonMap decodes a raw JSON object for the SDK's function parameters map.
 func jsonMap(raw []byte) map[string]any {

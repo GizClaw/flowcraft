@@ -259,10 +259,10 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 		TotalTokens:  raw.total,
 	}
 	if raw.cached > 0 {
-		usage.Input.CacheReadTokens = ptrInt64(raw.cached)
+		usage.Input.CacheReadTokens = new(raw.cached)
 	}
 	if raw.reasoning > 0 {
-		usage.Output.ReasoningTokens = ptrInt64(raw.reasoning)
+		usage.Output.ReasoningTokens = new(raw.reasoning)
 		usage.Output.ReasoningAccounting = inference.ReasoningIncludedInOutput
 	}
 	return usage

@@ -110,7 +110,9 @@ with a clear message.
 - **Workspace** — workspace metadata and token usage.
 
 `Tab` switches focus, `Enter` submits, `Esc` clears the focused input, and
-`Ctrl+C` twice quits. After each turn the Chat panel shows that turn's token
+`Ctrl+C` twice quits. Empty input is a no-op; type `/start` to open a fresh
+story or `/next` to keep the story moving. After each turn the Chat panel
+shows that turn's token
 accounting under the input box: input / output / total tokens, reasoning
 tokens, cache read / write tokens, and call count. Usage is mirrored from the
 runtime host through `sdkx/runtime`'s `WithHostFactory` decorator; the runtime

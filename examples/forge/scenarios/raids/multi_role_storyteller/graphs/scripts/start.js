@@ -52,7 +52,12 @@ const ending = board.getVar("ending_state") || {
   closure: "",
   epilogue_policy: "主冲突结束后只复盘本折因果或轻轻引下一折，不再给本折新增敌人。",
 };
-const latest = latestUserText();
+let latest = latestUserText();
+// Explicit UI/test commands mean "the user wants the story to proceed".
+// Normalize them so role prompts never see the literal command text.
+if (latest === "/start" || latest === "/next") {
+  latest = "（用户示意开始/继续）";
+}
 if (latest) user.last_input = latest;
 board.setVar("story_state", story);
 board.setVar("blueprint_state", blueprintState);
