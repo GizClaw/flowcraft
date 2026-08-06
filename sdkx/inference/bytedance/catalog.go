@@ -1,9 +1,6 @@
 package bytedance
 
-import (
-	"fmt"
-	"maps"
-)
+import "maps"
 
 // modelKind groups models by the service family that serves them. The kind,
 // not the model name, selects the compiler and transport.
@@ -136,11 +133,4 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		}
 	}
 	return merged, nil
-}
-
-func (e catalogEntry) validate(kind modelKind) error {
-	if e.kind != kind {
-		return fmt.Errorf("model kind %s does not support %s", e.kind, kind)
-	}
-	return nil
 }

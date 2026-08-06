@@ -29,13 +29,11 @@ type queuedSink struct {
 	stop      chan struct{}
 	done      chan struct{}
 
-	mu           sync.Mutex
-	detached     bool
-	routerDetach func()
+	mu       sync.Mutex
+	detached bool
 }
 
 type sinkDetach struct {
-	router   func()
 	callback func(error)
 }
 
@@ -123,17 +121,6 @@ func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 	}
 }
 
-func (s *queuedSink) setRouterDetach(detach func()) {
-	s.mu.Lock()
-	if s.detached {
-		s.mu.Unlock()
-		detach()
-		return
-	}
-	s.routerDetach = detach
-	s.mu.Unlock()
-}
-
 func (s *queuedSink) detach(err error) {
 	s.mu.Lock()
 	if s.detached {
@@ -151,13 +138,10 @@ func (s *queuedSink) markDetachedLocked(err error) sinkDetach {
 	if s.onDetach != nil {
 		s.onDetach(err)
 	}
-	return sinkDetach{router: s.routerDetach, callback: s.spec.OnDetach}
+	return sinkDetach{callback: s.spec.OnDetach}
 }
 
 func (s *queuedSink) completeDetach(cleanup sinkDetach, err error) {
-	if cleanup.router != nil {
-		cleanup.router()
-	}
 	s.session.changeActivity(activitySink, -1)
 	close(s.done)
 	if cleanup.callback != nil {

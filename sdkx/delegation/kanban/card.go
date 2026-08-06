@@ -103,16 +103,6 @@ func cloneAsyncRequest(req delegation.AsyncRequest) delegation.AsyncRequest {
 	return req
 }
 
-func sameAsyncRequest(left, right delegation.AsyncRequest) bool {
-	return left.Caller == right.Caller &&
-		left.Depth == right.Depth &&
-		left.Request.Mode == right.Request.Mode &&
-		left.Request.Target == right.Request.Target &&
-		left.Request.Input == right.Request.Input &&
-		left.Request.IdempotencyKey == right.Request.IdempotencyKey &&
-		maps.Equal(left.Request.Metadata, right.Request.Metadata)
-}
-
 func cloneResponse(response sdkdelegation.Response) sdkdelegation.Response {
 	response.Metadata = cloneMetadata(response.Metadata)
 	return response

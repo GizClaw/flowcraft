@@ -12,9 +12,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,7 +26,6 @@ import (
 type capturedAnthropic struct {
 	t *testing.T
 
-	bodies  []map[string]any
 	handler func(w http.ResponseWriter, r *http.Request, body map[string]any)
 }
 
@@ -51,18 +50,9 @@ func newCapturedAnthropic(
 				return
 			}
 		}
-		capture.bodies = append(capture.bodies, body)
 		handler(w, r, body)
 	}))
 	return server, capture
-}
-
-func (c *capturedAnthropic) body(index int) map[string]any {
-	c.t.Helper()
-	if index >= len(c.bodies) {
-		c.t.Fatalf("only %d captured requests", len(c.bodies))
-	}
-	return c.bodies[index]
 }
 
 func testClients(t *testing.T, server *httptest.Server) *clients {

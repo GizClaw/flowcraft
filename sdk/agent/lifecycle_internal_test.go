@@ -320,9 +320,3 @@ func TestBaseReferee_ZeroValueDecision(t *testing.T) {
 		t.Errorf("BaseReferee returned non-zero decision: %+v", dec)
 	}
 }
-
-type stubFn func() (Decision, error)
-
-func (f stubFn) After(context.Context, Identity, *Request, *Result) (Decision, error) {
-	return f()
-}

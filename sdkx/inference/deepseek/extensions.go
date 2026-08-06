@@ -6,17 +6,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
-// driverID is the provider id extensions target by default. Deployments
-// that rename the provider set Provider on each extension to match.
-const driverID = "deepseek"
-
-func extensionProvider(provider string) string {
-	if provider != "" {
-		return provider
-	}
-	return driverID
-}
-
 func clonePointer[T any](value *T) *T {
 	if value == nil {
 		return nil

@@ -443,7 +443,6 @@ type execConfig struct {
 	committers         []Committer
 	commitViewProvider CommitViewProvider
 	resumeFrom         *Checkpoint
-	runID              string
 	parentRunID        string
 	maxRevise          int
 	artifactChannels   []string
