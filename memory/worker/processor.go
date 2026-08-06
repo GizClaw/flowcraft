@@ -124,6 +124,9 @@ func (processor *Processor) processScope(ctx context.Context, scope sdkmemory.Sc
 	if ctx == nil {
 		return errors.New("memory worker: context is required")
 	}
+	if err := processor.validate(); err != nil {
+		return err
+	}
 	if err := scope.Validate(); err != nil {
 		return err
 	}
@@ -142,6 +145,35 @@ func (processor *Processor) processScope(ctx context.Context, scope sdkmemory.Sc
 		failures = append(failures, err)
 	}
 	return errors.Join(failures...)
+}
+
+// validate reports whether the processor has all required components.
+// It mirrors the NewProcessor checks so a zero-value Processor passed
+// directly to Runner returns an error instead of panicking on a nil
+// store interface during the first scan.
+func (processor *Processor) validate() error {
+	if processor == nil {
+		return errors.New("memory worker: processor is required")
+	}
+	if nilInterface(processor.messages) || nilInterface(processor.documents) ||
+		nilInterface(processor.facts) || nilInterface(processor.documentViews) ||
+		processor.chatDAG == nil || processor.knowledgeDAG == nil ||
+		nilInterface(processor.checkpoints) {
+		return errors.New("memory worker: canonical stores, view stores, DAGs, and checkpoints are required")
+	}
+	if (nilInterface(processor.summaries)) != (processor.compactor == nil) {
+		return errors.New("memory worker: summary store and compactor must be configured together")
+	}
+	if strings.TrimSpace(processor.projection) == "" {
+		return errors.New("memory worker: projection name is required")
+	}
+	if strings.TrimSpace(processor.policyDigest) == "" {
+		return errors.New("memory worker: policy digest is required")
+	}
+	if len(processor.indexers) != 3 {
+		return fmt.Errorf("memory worker: exactly three projection indexers are required, got %d", len(processor.indexers))
+	}
+	return nil
 }
 
 func (processor *Processor) processConversationStream(
