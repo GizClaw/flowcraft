@@ -1,7 +1,0 @@
-# User-facing speaker labels per graph node. TUI and test logs render
-# each node's output under its label.
-chat_buffer: 助手
-function_play_music: 音乐
-function_read_story: 故事
-function_adjust_device_volume: 音量
-function_stop: 停止

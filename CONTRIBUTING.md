@@ -98,7 +98,7 @@ the next push to `main` or a manual workflow dispatch.
   `make ci` covers them in-tree.
 - The forge demo's scenarios are native deployment documents; changes to the
   assembly or runtime surface should be exercised with a demo run
-  (`cd examples/forge && go run . test -test func_chat/music_direct`).
+  (`cd examples/forge && go run . test -test werewolf/opening_setup`).
 
 For larger work, please open a discussion or draft RFC issue first — it's much
 faster than reviewing a 5k-line PR cold.

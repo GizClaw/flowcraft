@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
@@ -207,8 +208,7 @@ type telemetryStream struct {
 	GenerateStream
 	tel  callTelemetry
 	ctx  context.Context
-	seen bool // any event observed
-	done bool
+	once sync.Once
 	last *Usage
 }
 
@@ -219,7 +219,6 @@ func wrapStreamTelemetry(ctx context.Context, tel callTelemetry, stream Generate
 func (s *telemetryStream) Next(ctx context.Context) (GenerateStreamEvent, error) {
 	event, err := s.GenerateStream.Next(ctx)
 	if err == nil {
-		s.seen = true
 		if event.Usage != nil {
 			// Stamp before retaining so the recorded snapshot and the
 			// caller-visible event carry the same envelope.
@@ -252,18 +251,16 @@ func (s *telemetryStream) Close() error {
 	return err
 }
 
-// end finishes the call exactly once: a clean EOF and a stream whose
-// Result already confirmed success both land here. Abandoned streams
-// (caller drops the handle without EOF/Close) end on Close by
-// contract; without either, the span leaks by design — the same
-// trade-off every streaming API makes.
+// end finishes the call exactly once: a clean EOF, a terminal error, and
+// Close all land here, and sync.Once keeps the ending race-free when they
+// happen concurrently. Abandoned streams (caller drops the handle without
+// EOF/Close) never end — the same trade-off every streaming API makes;
+// callers are expected to Close.
 func (s *telemetryStream) end(err error) {
-	if s.done {
-		return
-	}
-	s.done = true
-	if s.last != nil {
-		s.tel.recordUsage(s.ctx, *s.last)
-	}
-	s.tel.finish(s.ctx, err)
+	s.once.Do(func() {
+		if s.last != nil {
+			s.tel.recordUsage(s.ctx, *s.last)
+		}
+		s.tel.finish(s.ctx, err)
+	})
 }

@@ -48,7 +48,7 @@ agents:
       settings:
         graph: ./graphs/assistant.json
         build:
-          max_iterations: 36
+          max_iterations: 120
     deps:
       inference: infer
       tools: tools

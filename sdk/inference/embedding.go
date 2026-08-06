@@ -38,7 +38,13 @@ func (r EmbedRequest) Clone() EmbedRequest {
 }
 
 func (r EmbedRequest) ActiveFields() []FieldID {
-	fields := activeTaggedFields(r)
+	var fields []FieldID
+	if len(r.Items) > 0 {
+		fields = append(fields, FieldEmbedItems)
+	}
+	if r.Dimensions != nil {
+		fields = append(fields, FieldEmbedDimensions)
+	}
 	var hasText, hasImage, hasAudio, hasVideo, hasFile, hasData bool
 	var hasToolCall, hasToolResult, hasMultiPart bool
 	for _, item := range r.Items {

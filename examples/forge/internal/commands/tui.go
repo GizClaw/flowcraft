@@ -113,7 +113,7 @@ func runTUIWorkspace(workspacePath string) error {
 		return err
 	}
 	defer func() { _ = a.Close() }()
-	program := tea.NewProgram(tui.NewModel(a, workspacePath), tea.WithAltScreen())
+	program := tea.NewProgram(tui.NewModel(a, workspacePath), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = program.Run()
 	return err
 }

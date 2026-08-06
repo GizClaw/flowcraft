@@ -12,8 +12,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/tool"
 )
 
-// Register registers the func_chat simulated tools and wires the
-// shared execution counter used by test statistics.
+// Register registers the demo's application-owned simulated tools and
+// wires the shared execution counter used by test statistics.
 func Register(registry *tool.Registry, counter *atomic.Int64) {
 	if registry == nil {
 		return

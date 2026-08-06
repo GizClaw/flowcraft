@@ -21,13 +21,13 @@ go run . help
 Run one scripted test:
 
 ```bash
-go run . test -test func_chat/music_direct
+go run . test -test werewolf/opening_setup
 ```
 
 Create a workspace and inspect it:
 
 ```bash
-go run . workspace create --config func_chat --workspace ./workspace
+go run . workspace create --config werewolf --workspace ./workspace
 go run . workspace inspect --workspace ./workspace
 ```
 
@@ -76,11 +76,11 @@ A scenario may additionally deploy `memory.yaml` and wire the
 `scenarios/tests/<raid>/<name>.yaml` defines one scripted test:
 
 ```yaml
-name: func_chat_music_direct
-description: Direct music request should cancel chat and emit play_music.
-raid: func_chat
+name: werewolf_opening_setup
+description: Starts a new Werewolf game and reveals the user as seat 3 villager.
+raid: werewolf
 turns:
-  - 我想听卡农
+  - 开始狼人杀
 ```
 
 `forge test` copies the raid into `.out/<raid>_<timestamp>/`, runs every turn
@@ -109,11 +109,12 @@ with a clear message.
 - **Chat** — send turns and watch streamed output.
 - **Workspace** — workspace metadata and token usage.
 
-`Tab` switches focus, `Enter` submits, `q` / `Esc` quits. After each turn the
-top bar and the Usage panel show that turn's token accounting: input / output /
-total tokens, reasoning tokens, and cache read / write tokens. Usage is
-mirrored from the runtime host through `sdkx/runtime`'s `WithHostFactory`
-decorator; the runtime remains the owner of usage aggregation.
+`Tab` switches focus, `Enter` submits, `Esc` clears the focused input, and
+`Ctrl+C` twice quits. After each turn the Chat panel shows that turn's token
+accounting under the input box: input / output / total tokens, reasoning
+tokens, cache read / write tokens, and call count. Usage is mirrored from the
+runtime host through `sdkx/runtime`'s `WithHostFactory` decorator; the runtime
+remains the owner of usage aggregation.
 
 Chat output is split per speaker: every graph node's streamed text appears as
 its own labelled block, and tool invocations appear as separate

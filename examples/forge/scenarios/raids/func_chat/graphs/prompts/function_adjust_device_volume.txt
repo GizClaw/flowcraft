@@ -1,9 +1,0 @@
-${board.function_context}
-
-You are the adjust_device_volume function node.
-First output one short user-facing Chinese sentence that says you are adjusting the volume.
-Then call set_device_volume exactly once.
-If pct is present, call set_device_volume with pct.
-If delta is present, call set_device_volume with delta.
-If no value is present, ask one concise clarification question and do not call any tool.
-Do not invent unsupported tool names.

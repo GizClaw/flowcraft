@@ -1,970 +1,175 @@
 {
   "edges": [
-    {
-      "from": "load_game_state",
-      "to": "route_setup"
-    },
-    {
-      "from": "route_setup",
-      "to": "setup_game",
-      "condition": "werewolf_route == \"setup_game\""
-    },
-    {
-      "from": "route_setup",
-      "to": "route_post_game_chat",
-      "condition": "werewolf_route == \"post_game_free_chat\""
-    },
-    {
-      "from": "route_setup",
-      "to": "host_night_begin",
-      "condition": "werewolf_route == \"night_open\""
-    },
-    {
-      "from": "route_setup",
-      "to": "host_day_announce",
-      "condition": "werewolf_route == \"day_open\""
-    },
-    {
-      "from": "route_setup",
-      "to": "format_player_move",
-      "condition": "werewolf_route == \"user_speech\" || werewolf_route == \"vote\""
-    },
-    {
-      "from": "route_post_game_chat",
-      "to": "post_game_seat_1_free_chat",
-      "condition": "post_game_mode == \"role_chain\""
-    },
-    {
-      "from": "route_post_game_chat",
-      "to": "post_game_host_wrap",
-      "condition": "post_game_mode != \"role_chain\""
-    },
-    {
-      "from": "setup_game",
-      "to": "host_opening"
-    },
-    {
-      "from": "host_opening",
-      "to": "host_night_begin"
-    },
-    {
-      "from": "host_night_begin",
-      "to": "host_werewolf_action"
-    },
-    {
-      "from": "host_werewolf_action",
-      "to": "host_seer_action"
-    },
-    {
-      "from": "host_seer_action",
-      "to": "host_witch_action"
-    },
-    {
-      "from": "host_witch_action",
-      "to": "resolve_night"
-    },
-    {
-      "from": "resolve_night",
-      "to": "call_game_event",
-      "condition": "werewolf_pending_tool_event != \"\""
-    },
-    {
-      "from": "resolve_night",
-      "to": "write_game_audit",
-      "condition": "werewolf_pending_tool_event == \"\""
-    },
-    {
-      "from": "format_player_move",
-      "to": "validate_user_speech",
-      "condition": "werewolf_route == \"user_speech\""
-    },
-    {
-      "from": "format_player_move",
-      "to": "apply_vote",
-      "condition": "werewolf_route == \"vote\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "user_speech_retry",
-      "condition": "speech_valid != \"true\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "seat_4_xiaoman_speak",
-      "condition": "speech_valid == \"true\" && seat_4_alive == \"true\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "seat_5_zhoulan_speak",
-      "condition": "speech_valid == \"true\" && seat_4_alive != \"true\" && seat_5_alive == \"true\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "seat_6_chen_doctor_speak",
-      "condition": "speech_valid == \"true\" && seat_4_alive != \"true\" && seat_5_alive != \"true\" && seat_6_alive == \"true\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "seat_7_laozhao_speak",
-      "condition": "speech_valid == \"true\" && seat_4_alive != \"true\" && seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive == \"true\""
-    },
-    {
-      "from": "validate_user_speech",
-      "to": "prepare_vote_phase",
-      "condition": "speech_valid == \"true\" && seat_4_alive != \"true\" && seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "user_speech_retry",
-      "to": "save_game_state"
-    },
-    {
-      "from": "seat_4_xiaoman_speak",
-      "to": "seat_4_xiaoman_speak_publish",
-      "condition": "seat_5_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak_publish",
-      "to": "seat_5_zhoulan_speak",
-      "condition": "seat_5_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak",
-      "to": "seat_4_xiaoman_speak_publish",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak_publish",
-      "to": "seat_6_chen_doctor_speak",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak",
-      "to": "seat_4_xiaoman_speak_publish",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak_publish",
-      "to": "seat_7_laozhao_speak",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak",
-      "to": "seat_4_xiaoman_speak_publish",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_4_xiaoman_speak_publish",
-      "to": "prepare_vote_phase",
-      "condition": "seat_5_alive != \"true\" && seat_6_alive != \"true\" && seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak",
-      "to": "seat_5_zhoulan_speak_publish",
-      "condition": "seat_6_alive == \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak_publish",
-      "to": "seat_6_chen_doctor_speak",
-      "condition": "seat_6_alive == \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak",
-      "to": "seat_5_zhoulan_speak_publish",
-      "condition": "seat_6_alive != \"true\" && seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak_publish",
-      "to": "seat_7_laozhao_speak",
-      "condition": "seat_6_alive != \"true\" && seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak",
-      "to": "seat_5_zhoulan_speak_publish",
-      "condition": "seat_6_alive != \"true\" && seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_5_zhoulan_speak_publish",
-      "to": "prepare_vote_phase",
-      "condition": "seat_6_alive != \"true\" && seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_6_chen_doctor_speak",
-      "to": "seat_6_chen_doctor_speak_publish",
-      "condition": "seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_6_chen_doctor_speak_publish",
-      "to": "seat_7_laozhao_speak",
-      "condition": "seat_7_alive == \"true\""
-    },
-    {
-      "from": "seat_6_chen_doctor_speak",
-      "to": "seat_6_chen_doctor_speak_publish",
-      "condition": "seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_6_chen_doctor_speak_publish",
-      "to": "prepare_vote_phase",
-      "condition": "seat_7_alive != \"true\" && seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_7_laozhao_speak",
-      "to": "seat_7_laozhao_speak_publish",
-      "condition": "seat_8_alive == \"true\""
-    },
-    {
-      "from": "seat_7_laozhao_speak_publish",
-      "to": "seat_8_suhe_speak",
-      "condition": "seat_8_alive == \"true\""
-    },
-    {
-      "from": "seat_7_laozhao_speak",
-      "to": "seat_7_laozhao_speak_publish",
-      "condition": "seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_7_laozhao_speak_publish",
-      "to": "prepare_vote_phase",
-      "condition": "seat_8_alive != \"true\""
-    },
-    {
-      "from": "seat_8_suhe_speak",
-      "to": "seat_8_suhe_speak_publish"
-    },
-    {
-      "from": "seat_8_suhe_speak_publish",
-      "to": "prepare_vote_phase"
-    },
-    {
-      "from": "prepare_vote_phase",
-      "to": "host_vote_prompt"
-    },
-    {
-      "from": "host_vote_prompt",
-      "to": "save_game_state"
-    },
-    {
-      "from": "apply_vote",
-      "to": "vote_retry",
-      "condition": "vote_valid != \"true\""
-    },
-    {
-      "from": "apply_vote",
-      "to": "host_vote_result",
-      "condition": "vote_valid == \"true\""
-    },
-    {
-      "from": "vote_retry",
-      "to": "save_game_state"
-    },
-    {
-      "from": "host_vote_result",
-      "to": "call_game_over_event",
-      "condition": "werewolf_pending_tool_event == \"game_over\""
-    },
-    {
-      "from": "host_vote_result",
-      "to": "host_night_begin",
-      "condition": "werewolf_phase == \"night_open\""
-    },
-    {
-      "from": "host_vote_result",
-      "to": "call_game_event",
-      "condition": "werewolf_pending_tool_event != \"\" && werewolf_pending_tool_event != \"game_over\" && werewolf_phase != \"night_open\""
-    },
-    {
-      "from": "host_vote_result",
-      "to": "write_game_audit",
-      "condition": "werewolf_pending_tool_event == \"\" && werewolf_phase != \"night_open\""
-    },
-    {
-      "from": "host_day_announce",
-      "to": "seat_1_lin_zhi_speak",
-      "condition": "seat_1_alive == \"true\""
-    },
-    {
-      "from": "host_day_announce",
-      "to": "seat_2_ache_speak",
-      "condition": "seat_1_alive != \"true\" && seat_2_alive == \"true\""
-    },
-    {
-      "from": "host_day_announce",
-      "to": "prepare_user_speech",
-      "condition": "seat_1_alive != \"true\" && seat_2_alive != \"true\""
-    },
-    {
-      "from": "seat_1_lin_zhi_speak",
-      "to": "seat_2_ache_speak",
-      "condition": "seat_2_alive == \"true\""
-    },
-    {
-      "from": "seat_1_lin_zhi_speak",
-      "to": "prepare_user_speech",
-      "condition": "seat_2_alive != \"true\""
-    },
-    {
-      "from": "seat_2_ache_speak",
-      "to": "prepare_user_speech"
-    },
-    {
-      "from": "prepare_user_speech",
-      "to": "user_speech_prompt"
-    },
-    {
-      "from": "user_speech_prompt",
-      "to": "call_game_event",
-      "condition": "werewolf_pending_tool_event != \"\""
-    },
-    {
-      "from": "user_speech_prompt",
-      "to": "save_game_state",
-      "condition": "werewolf_pending_tool_event == \"\""
-    },
-    {
-      "from": "call_game_event",
-      "to": "call_game_event_exec",
-      "condition": "call_game_event_pending == true"
-    },
-    {
-      "from": "call_game_event_exec",
-      "to": "write_game_audit"
-    },
-    {
-      "from": "call_game_event",
-      "to": "write_game_audit",
-      "condition": "call_game_event_pending != true"
-    },
-    {
-      "from": "call_game_over_event",
-      "to": "call_game_over_event_exec",
-      "condition": "call_game_over_event_pending == true"
-    },
-    {
-      "from": "call_game_over_event_exec",
-      "to": "write_game_audit"
-    },
-    {
-      "from": "call_game_over_event",
-      "to": "write_game_audit",
-      "condition": "call_game_over_event_pending != true"
-    },
-    {
-      "from": "write_game_audit",
-      "to": "host_day_announce",
-      "condition": "werewolf_phase == \"day_open\""
-    },
-    {
-      "from": "write_game_audit",
-      "to": "save_game_state",
-      "condition": "werewolf_phase != \"day_open\""
-    },
-    {
-      "from": "post_game_seat_1_free_chat",
-      "to": "post_game_seat_2_free_chat"
-    },
-    {
-      "from": "post_game_seat_2_free_chat",
-      "to": "post_game_seat_4_free_chat"
-    },
-    {
-      "from": "post_game_seat_4_free_chat",
-      "to": "post_game_seat_5_free_chat"
-    },
-    {
-      "from": "post_game_seat_5_free_chat",
-      "to": "post_game_seat_6_free_chat"
-    },
-    {
-      "from": "post_game_seat_6_free_chat",
-      "to": "post_game_seat_7_free_chat"
-    },
-    {
-      "from": "post_game_seat_7_free_chat",
-      "to": "post_game_seat_8_free_chat"
-    },
-    {
-      "from": "post_game_seat_8_free_chat",
-      "to": "post_game_host_wrap"
-    },
-    {
-      "from": "post_game_host_wrap",
-      "to": "save_game_state"
-    },
-    {
-      "from": "load_game_state_file",
-      "to": "load_game_state"
-    },
-    {
-      "from": "save_game_state",
-      "to": "__end__"
-    }
+    { "from": "load_game_state_file", "to": "input_validate" },
+    { "from": "input_validate", "to": "progress_route" },
+    { "from": "progress_route", "to": "init_game", "condition": "werewolf_init == \"true\"" },
+    { "from": "progress_route", "to": "command_reply", "condition": "werewolf_init == \"false\" && werewolf_command_kind != \"\"" },
+    { "from": "progress_route", "to": "host_router", "condition": "werewolf_init == \"false\" && werewolf_command_kind == \"\"" },
+    { "from": "command_reply", "to": "save_state" },
+    { "from": "init_game", "to": "host_opening" },
+    { "from": "host_opening", "to": "host_router" },
+
+    { "from": "host_router", "to": "night_wolf_rule", "condition": "werewolf_next_rule == \"night_wolf\"" },
+    { "from": "host_router", "to": "night_witch_rule", "condition": "werewolf_next_rule == \"night_witch\"" },
+    { "from": "host_router", "to": "night_seer_rule", "condition": "werewolf_next_rule == \"night_seer\"" },
+    { "from": "host_router", "to": "dawn_resolve", "condition": "werewolf_next_rule == \"dawn\"" },
+    { "from": "host_router", "to": "hunter_rule", "condition": "werewolf_next_rule == \"hunter\"" },
+    { "from": "host_router", "to": "day_speech_rule", "condition": "werewolf_next_rule == \"day\"" },
+    { "from": "host_router", "to": "vote_rule", "condition": "werewolf_next_rule == \"vote\"" },
+    { "from": "host_router", "to": "vote_tally", "condition": "werewolf_next_rule == \"tally\"" },
+    { "from": "host_router", "to": "pk_rule", "condition": "werewolf_next_rule == \"pk\"" },
+    { "from": "host_router", "to": "exile_resolve", "condition": "werewolf_next_rule == \"exile\"" },
+    { "from": "host_router", "to": "post_game_rule", "condition": "werewolf_next_rule == \"ended\"" },
+
+    { "from": "night_wolf_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "night_wolf_rule", "to": "wolf_discuss", "condition": "werewolf_wolf_step == \"discuss\"" },
+    { "from": "night_wolf_rule", "to": "wolf_decide", "condition": "werewolf_wolf_step == \"decide\"" },
+    { "from": "night_wolf_rule", "to": "host_router", "condition": "werewolf_wolf_step == \"done\"" },
+    { "from": "wolf_discuss", "to": "wolf_after_discuss" },
+    { "from": "wolf_after_discuss", "to": "host_router" },
+    { "from": "wolf_decide", "to": "wolf_decide_apply" },
+    { "from": "wolf_decide_apply", "to": "host_router" },
+
+    { "from": "night_witch_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "night_witch_rule", "to": "witch_decide", "condition": "werewolf_witch_step == \"decide\"" },
+    { "from": "night_witch_rule", "to": "host_router", "condition": "werewolf_witch_step == \"done\"" },
+    { "from": "witch_decide", "to": "witch_after" },
+    { "from": "witch_after", "to": "host_router" },
+
+    { "from": "night_seer_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "night_seer_rule", "to": "seer_decide", "condition": "werewolf_seer_step == \"decide\"" },
+    { "from": "night_seer_rule", "to": "host_router", "condition": "werewolf_seer_step == \"done\"" },
+    { "from": "seer_decide", "to": "seer_after" },
+    { "from": "seer_after", "to": "host_router" },
+
+    { "from": "dawn_resolve", "to": "host_router" },
+
+    { "from": "hunter_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "hunter_rule", "to": "hunter_decide", "condition": "werewolf_hunter_step == \"decide\"" },
+    { "from": "hunter_rule", "to": "host_router", "condition": "werewolf_hunter_step == \"done\"" },
+    { "from": "hunter_decide", "to": "hunter_after" },
+    { "from": "hunter_after", "to": "host_router" },
+
+    { "from": "day_speech_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "day_speech_rule", "to": "seat_1_speak", "condition": "werewolf_speaker_seat == \"1\"" },
+    { "from": "day_speech_rule", "to": "seat_2_speak", "condition": "werewolf_speaker_seat == \"2\"" },
+    { "from": "day_speech_rule", "to": "seat_3_speak", "condition": "werewolf_speaker_seat == \"3\"" },
+    { "from": "day_speech_rule", "to": "seat_4_speak", "condition": "werewolf_speaker_seat == \"4\"" },
+    { "from": "day_speech_rule", "to": "seat_5_speak", "condition": "werewolf_speaker_seat == \"5\"" },
+    { "from": "day_speech_rule", "to": "seat_6_speak", "condition": "werewolf_speaker_seat == \"6\"" },
+    { "from": "day_speech_rule", "to": "seat_7_speak", "condition": "werewolf_speaker_seat == \"7\"" },
+    { "from": "day_speech_rule", "to": "seat_8_speak", "condition": "werewolf_speaker_seat == \"8\"" },
+    { "from": "day_speech_rule", "to": "host_router", "condition": "werewolf_speech_step == \"done\"" },
+
+    { "from": "pk_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "pk_rule", "to": "seat_1_speak", "condition": "werewolf_speaker_seat == \"1\"" },
+    { "from": "pk_rule", "to": "seat_2_speak", "condition": "werewolf_speaker_seat == \"2\"" },
+    { "from": "pk_rule", "to": "seat_3_speak", "condition": "werewolf_speaker_seat == \"3\"" },
+    { "from": "pk_rule", "to": "seat_4_speak", "condition": "werewolf_speaker_seat == \"4\"" },
+    { "from": "pk_rule", "to": "seat_5_speak", "condition": "werewolf_speaker_seat == \"5\"" },
+    { "from": "pk_rule", "to": "seat_6_speak", "condition": "werewolf_speaker_seat == \"6\"" },
+    { "from": "pk_rule", "to": "seat_7_speak", "condition": "werewolf_speaker_seat == \"7\"" },
+    { "from": "pk_rule", "to": "seat_8_speak", "condition": "werewolf_speaker_seat == \"8\"" },
+    { "from": "pk_rule", "to": "host_router", "condition": "werewolf_speech_step == \"done\"" },
+
+    { "from": "seat_1_speak", "to": "speech_publish" },
+    { "from": "seat_2_speak", "to": "speech_publish" },
+    { "from": "seat_3_speak", "to": "speech_publish" },
+    { "from": "seat_4_speak", "to": "speech_publish" },
+    { "from": "seat_5_speak", "to": "speech_publish" },
+    { "from": "seat_6_speak", "to": "speech_publish" },
+    { "from": "seat_7_speak", "to": "speech_publish" },
+    { "from": "seat_8_speak", "to": "speech_publish" },
+    { "from": "speech_publish", "to": "seat_1_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"1\"" },
+    { "from": "speech_publish", "to": "seat_2_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"2\"" },
+    { "from": "speech_publish", "to": "seat_3_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"3\"" },
+    { "from": "speech_publish", "to": "seat_4_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"4\"" },
+    { "from": "speech_publish", "to": "seat_5_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"5\"" },
+    { "from": "speech_publish", "to": "seat_6_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"6\"" },
+    { "from": "speech_publish", "to": "seat_7_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"7\"" },
+    { "from": "speech_publish", "to": "seat_8_speak", "condition": "werewolf_speech_step == \"retry\" && werewolf_speaker_seat == \"8\"" },
+    { "from": "speech_publish", "to": "host_router", "condition": "werewolf_speech_step == \"done\"" },
+
+    { "from": "vote_rule", "to": "save_state", "condition": "werewolf_waiting_for != \"\"" },
+    { "from": "vote_rule", "to": "seat_1_vote", "condition": "werewolf_vote_seat == \"1\"" },
+    { "from": "vote_rule", "to": "seat_2_vote", "condition": "werewolf_vote_seat == \"2\"" },
+    { "from": "vote_rule", "to": "seat_3_vote", "condition": "werewolf_vote_seat == \"3\"" },
+    { "from": "vote_rule", "to": "seat_4_vote", "condition": "werewolf_vote_seat == \"4\"" },
+    { "from": "vote_rule", "to": "seat_5_vote", "condition": "werewolf_vote_seat == \"5\"" },
+    { "from": "vote_rule", "to": "seat_6_vote", "condition": "werewolf_vote_seat == \"6\"" },
+    { "from": "vote_rule", "to": "seat_7_vote", "condition": "werewolf_vote_seat == \"7\"" },
+    { "from": "vote_rule", "to": "seat_8_vote", "condition": "werewolf_vote_seat == \"8\"" },
+    { "from": "vote_rule", "to": "host_router", "condition": "werewolf_vote_step == \"done\"" },
+
+    { "from": "seat_1_vote", "to": "vote_after" },
+    { "from": "seat_2_vote", "to": "vote_after" },
+    { "from": "seat_3_vote", "to": "vote_after" },
+    { "from": "seat_4_vote", "to": "vote_after" },
+    { "from": "seat_5_vote", "to": "vote_after" },
+    { "from": "seat_6_vote", "to": "vote_after" },
+    { "from": "seat_7_vote", "to": "vote_after" },
+    { "from": "seat_8_vote", "to": "vote_after" },
+    { "from": "vote_after", "to": "host_router" },
+
+    { "from": "vote_tally", "to": "host_router" },
+    { "from": "exile_resolve", "to": "host_router" },
+    { "from": "post_game_rule", "to": "save_state" },
+    { "from": "save_state", "to": "__end__" }
   ],
   "entry": "load_game_state_file",
   "name": "forge-werewolf",
   "nodes": [
-    {
-      "id": "load_game_state_file",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/load_game_state_file.js"
-        }
-      }
-    },
-    {
-      "id": "load_game_state",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/load_game_state.js"
-        }
-      }
-    },
-    {
-      "id": "route_setup",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/route_setup.js"
-        }
-      }
-    },
-    {
-      "id": "route_post_game_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/route_post_game_chat.js"
-        }
-      }
-    },
-    {
-      "id": "setup_game",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/setup_game.js"
-        }
-      }
-    },
-    {
-      "id": "host_opening",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_opening.js"
-        }
-      }
-    },
-    {
-      "id": "host_night_begin",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_night_begin.js"
-        }
-      }
-    },
-    {
-      "id": "host_werewolf_action",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_werewolf_action.js"
-        }
-      }
-    },
-    {
-      "id": "host_seer_action",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_seer_action.js"
-        }
-      }
-    },
-    {
-      "id": "host_witch_action",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_witch_action.js"
-        }
-      }
-    },
-    {
-      "id": "resolve_night",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/resolve_night.js"
-        }
-      }
-    },
-    {
-      "id": "format_player_move",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "output_key": "werewolf_move_text",
-        "reasoning_enabled": true,
-        "stream": false,
-        "system_prompt": {
-          "file": "graphs/prompts/format_player_move.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "validate_user_speech",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/validate_user_speech.js"
-        }
-      }
-    },
-    {
-      "id": "user_speech_retry",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/user_speech_retry.js"
-        }
-      }
-    },
-    {
-      "id": "seat_4_xiaoman_speak",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "seat_4_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "output_key": "tmp_speech_text",
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/seat_4_xiaoman_speak.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "seat_5_zhoulan_speak",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "seat_5_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/seat_5_zhoulan_speak.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "seat_6_chen_doctor_speak",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "seat_6_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/seat_6_chen_doctor_speak.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "seat_7_laozhao_speak",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "seat_7_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/seat_7_laozhao_speak.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "seat_8_suhe_speak",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 1024,
-        "messages_channel": "seat_8_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/seat_8_suhe_speak.txt"
-        },
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "prepare_vote_phase",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/prepare_vote_phase.js"
-        }
-      }
-    },
-    {
-      "id": "host_vote_prompt",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_vote_prompt.js"
-        }
-      }
-    },
-    {
-      "id": "apply_vote",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/apply_vote.js"
-        }
-      }
-    },
-    {
-      "id": "vote_retry",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/vote_retry.js"
-        }
-      }
-    },
-    {
-      "id": "host_vote_result",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_vote_result.js"
-        }
-      }
-    },
-    {
-      "id": "host_day_announce",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/host_day_announce.js"
-        }
-      }
-    },
-    {
-      "id": "seat_1_lin_zhi_speak",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_1_lin_zhi_speak.js"
-        }
-      }
-    },
-    {
-      "id": "seat_2_ache_speak",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_2_ache_speak.js"
-        }
-      }
-    },
-    {
-      "id": "prepare_user_speech",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/prepare_user_speech.js"
-        }
-      }
-    },
-    {
-      "id": "user_speech_prompt",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/user_speech_prompt.js"
-        }
-      }
-    },
-    {
-      "id": "call_game_event",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 2048,
-        "messages_channel": "werewolf_tool_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/call_game_event.txt"
-        },
-        "tool_pending_key": "call_game_event_pending",
-        "tools": [
-          "werewolf_game_event"
-        ],
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "call_game_over_event",
-      "type": "inference",
-      "config": {
-        "max_output_tokens": 2048,
-        "messages_channel": "werewolf_tool_channel",
-        "model": {
-          "id": {
-            "name": "deepseek-v4-flash",
-            "provider": "deepseek"
-          }
-        },
-        "reasoning_enabled": true,
-        "stream": true,
-        "system_prompt": {
-          "file": "graphs/prompts/call_game_over_event.txt"
-        },
-        "tool_pending_key": "call_game_over_event_pending",
-        "tools": [
-          "werewolf_game_event"
-        ],
-        "reasoning_effort": "high"
-      }
-    },
-    {
-      "id": "write_game_audit",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/write_game_audit.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_1_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_1_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_2_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_2_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_4_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_4_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_5_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_5_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_6_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_6_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_7_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_7_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_seat_8_free_chat",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_seat_8_free_chat.js"
-        }
-      }
-    },
-    {
-      "id": "post_game_host_wrap",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/post_game_host_wrap.js"
-        }
-      }
-    },
-    {
-      "id": "call_game_event_exec",
-      "type": "tool",
-      "config": {
-        "messages_channel": "werewolf_tool_channel"
-      }
-    },
-    {
-      "id": "call_game_over_event_exec",
-      "type": "tool",
-      "config": {
-        "messages_channel": "werewolf_tool_channel"
-      }
-    },
-    {
-      "id": "seat_6_chen_doctor_speak_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_6_chen_doctor_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "seat_7_laozhao_speak_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_7_laozhao_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "seat_8_suhe_speak_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_8_suhe_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "seat_4_xiaoman_speak_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_4_xiaoman_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "seat_5_zhoulan_speak_publish",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/seat_5_zhoulan_speak_publish.js"
-        }
-      }
-    },
-    {
-      "id": "save_game_state",
-      "type": "script",
-      "config": {
-        "runtime": "js",
-        "source": {
-          "file": "graphs/scripts/save_game_state.js"
-        }
-      }
-    }
+    { "id": "load_game_state_file", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/load_game_state_file.js" } } },
+    { "id": "input_validate", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/input_validate.js" } } },
+    { "id": "progress_route", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/progress_route.js" } } },
+    { "id": "command_reply", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/command_reply.js" } } },
+    { "id": "init_game", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/init_game.js" } } },
+    { "id": "host_opening", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/host_opening.js" } } },
+    { "id": "host_router", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/host_router.js" } } },
+
+    { "id": "night_wolf_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/night_wolf_rule.js" } } },
+    { "id": "wolf_after_discuss", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/wolf_after_discuss.js" } } },
+    { "id": "wolf_decide_apply", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/wolf_decide_apply.js" } } },
+    { "id": "night_witch_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/night_witch_rule.js" } } },
+    { "id": "witch_after", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/witch_after.js" } } },
+    { "id": "night_seer_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/night_seer_rule.js" } } },
+    { "id": "seer_after", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/seer_after.js" } } },
+    { "id": "dawn_resolve", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/dawn_resolve.js" } } },
+    { "id": "hunter_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/hunter_rule.js" } } },
+    { "id": "hunter_after", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/hunter_after.js" } } },
+
+    { "id": "day_speech_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/day_speech_rule.js" } } },
+    { "id": "speech_publish", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/speech_publish.js" } } },
+    { "id": "pk_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/pk_rule.js" } } },
+    { "id": "vote_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/vote_rule.js" } } },
+    { "id": "vote_after", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/vote_after.js" } } },
+    { "id": "vote_tally", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/vote_tally.js" } } },
+    { "id": "exile_resolve", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/exile_resolve.js" } } },
+    { "id": "post_game_rule", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/post_game_rule.js" } } },
+    { "id": "save_state", "type": "script", "config": { "runtime": "js", "source": { "file": "graphs/scripts/save_state.js" } } },
+
+    { "id": "wolf_discuss", "type": "inference", "config": { "messages_channel": "wolf_team_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/wolf_discuss.txt" } } },
+    { "id": "wolf_decide", "type": "inference", "config": { "messages_channel": "wolf_team_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/wolf_decide.txt" } } },
+    { "id": "witch_decide", "type": "inference", "config": { "messages_channel": "witch_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/witch_decide.txt" } } },
+    { "id": "seer_decide", "type": "inference", "config": { "messages_channel": "seer_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/seer_decide.txt" } } },
+    { "id": "hunter_decide", "type": "inference", "config": { "messages_channel": "hunter_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/hunter_decide.txt" } } },
+
+    { "id": "seat_1_speak", "type": "inference", "config": { "messages_channel": "seat_1_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_2_speak", "type": "inference", "config": { "messages_channel": "seat_2_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_3_speak", "type": "inference", "config": { "messages_channel": "seat_3_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_4_speak", "type": "inference", "config": { "messages_channel": "seat_4_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_5_speak", "type": "inference", "config": { "messages_channel": "seat_5_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_6_speak", "type": "inference", "config": { "messages_channel": "seat_6_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_7_speak", "type": "inference", "config": { "messages_channel": "seat_7_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+    { "id": "seat_8_speak", "type": "inference", "config": { "messages_channel": "seat_8_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": true, "system_prompt": { "file": "graphs/prompts/seat_speak.txt" } } },
+
+    { "id": "seat_1_vote", "type": "inference", "config": { "messages_channel": "seat_1_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_2_vote", "type": "inference", "config": { "messages_channel": "seat_2_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_3_vote", "type": "inference", "config": { "messages_channel": "seat_3_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_4_vote", "type": "inference", "config": { "messages_channel": "seat_4_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_5_vote", "type": "inference", "config": { "messages_channel": "seat_5_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_6_vote", "type": "inference", "config": { "messages_channel": "seat_6_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_7_vote", "type": "inference", "config": { "messages_channel": "seat_7_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } },
+    { "id": "seat_8_vote", "type": "inference", "config": { "messages_channel": "seat_8_vote_channel", "model": { "id": { "name": "deepseek-v4-flash", "provider": "deepseek" } }, "max_output_tokens": 2048, "reasoning_enabled": true, "reasoning_effort": "high", "stream": false, "system_prompt": { "file": "graphs/prompts/vote_decide.txt" } } }
   ]
 }

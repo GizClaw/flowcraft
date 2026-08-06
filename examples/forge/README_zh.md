@@ -18,13 +18,13 @@ go run . help
 运行一条脚本化测试:
 
 ```bash
-go run . test -test func_chat/music_direct
+go run . test -test werewolf/opening_setup
 ```
 
 创建工作区并查看信息:
 
 ```bash
-go run . workspace create --config func_chat --workspace ./workspace
+go run . workspace create --config werewolf --workspace ./workspace
 go run . workspace inspect --workspace ./workspace
 ```
 
@@ -61,11 +61,11 @@ hook 来启用长期记忆。
 `scenarios/tests/<raid>/<name>.yaml` 定义一条脚本化测试:
 
 ```yaml
-name: func_chat_music_direct
-description: Direct music request should cancel chat and emit play_music.
-raid: func_chat
+name: werewolf_opening_setup
+description: 开局一盘新的狼人杀,并向用户揭示其 3 号村民身份。
+raid: werewolf
 turns:
-  - 我想听卡农
+  - 开始狼人杀
 ```
 
 `forge test` 会把 raid 复制到 `.out/<raid>_<时间戳>/`,逐轮通过 session
@@ -91,10 +91,11 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 - **Chat** — 发送对话并查看流式输出。
 - **Workspace** — 工作区元信息和 token 用量。
 
-`Tab` 切换焦点,`Enter` 提交,`q` / `Esc` 退出。每轮结束后,顶栏和 Usage
-面板会显示该轮的 token 统计:输入 / 输出 / 总 token、reasoning token、缓存
-读 / 写 token。用量通过 `sdkx/runtime` 的 `WithHostFactory` 装饰器从
-runtime host 镜像到应用侧;聚合责任仍在 runtime。
+`Tab` 切换焦点,`Enter` 提交,`Esc` 清空当前输入,连续按两次 `Ctrl+C`
+退出。每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
+输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
+`sdkx/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
+聚合责任仍在 runtime。
 
 聊天输出按发言人分块:每个 graph 节点的流式文本显示为独立的带标签段落,
 工具调用显示为独立的 `[工具调用]` / `[工具结果]` 块,不再混进发言里。

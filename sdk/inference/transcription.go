@@ -79,7 +79,20 @@ func (r TranscriptionRequest) Clone() TranscriptionRequest {
 }
 
 func (r TranscriptionRequest) ActiveFields() []FieldID {
-	return r.Extensions.AppendActiveFields(activeTaggedFields(r))
+	var fields []FieldID
+	if r.Audio.Kind() != "" {
+		fields = append(fields, FieldTranscriptionAudio)
+	}
+	if r.Language != "" {
+		fields = append(fields, FieldTranscriptionLanguage)
+	}
+	if r.Prompt != "" {
+		fields = append(fields, FieldTranscriptionPrompt)
+	}
+	if r.Timestamps != nil {
+		fields = append(fields, FieldTranscriptionTimestamps)
+	}
+	return r.Extensions.AppendActiveFields(fields)
 }
 
 func (r TranscriptionRequest) Validate() error {
@@ -231,7 +244,20 @@ func (c TranscriptionSessionConfig) Validate() error {
 }
 
 func (c TranscriptionSessionConfig) ActiveFields() []FieldID {
-	return c.Extensions.AppendActiveFields(activeTaggedFields(c))
+	var fields []FieldID
+	if c.InputFormat.Encoding != "" || c.InputFormat.SampleRateHz != 0 || c.InputFormat.Channels != 0 {
+		fields = append(fields, FieldTranscriptionInputFormat)
+	}
+	if c.Language != "" {
+		fields = append(fields, FieldTranscriptionLanguage)
+	}
+	if c.Prompt != "" {
+		fields = append(fields, FieldTranscriptionPrompt)
+	}
+	if c.Timestamps != nil {
+		fields = append(fields, FieldTranscriptionTimestamps)
+	}
+	return c.Extensions.AppendActiveFields(fields)
 }
 
 type TranscriptionEventKind string

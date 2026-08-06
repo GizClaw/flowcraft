@@ -69,9 +69,9 @@ The fastest way to explore the stack is the runnable demo in
 cd examples/forge
 go run . help
 
-# Create a workspace from the func_chat scenario and run a scripted test.
-go run . workspace create --config func_chat --workspace ./workspace
-go run . test -test func_chat/music_direct
+# Create a workspace from the werewolf scenario and run a scripted test.
+go run . workspace create --config werewolf --workspace ./workspace
+go run . test -test werewolf/opening_setup
 ```
 
 The demo builds workspaces from native deploy/inference/memory scenario

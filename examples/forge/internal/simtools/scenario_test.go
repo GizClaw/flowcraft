@@ -29,7 +29,6 @@ func TestScenarioToolsDeclareAllSimtoolsAsBuiltin(t *testing.T) {
 		"../../scenarios/personas/tom/tools.yaml",
 		"../../scenarios/raids/werewolf/tools.yaml",
 		"../../scenarios/raids/multi_role_storyteller/tools.yaml",
-		"../../scenarios/raids/func_chat/tools.yaml",
 	}
 	for _, path := range scenarios {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {

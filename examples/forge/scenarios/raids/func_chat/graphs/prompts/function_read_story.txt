@@ -1,7 +1,0 @@
-${board.function_context}
-
-You are the read_story function node.
-If title, series, or subject is present, tell a concise Chinese story about that target.
-If matched_args_json has no title, series, or subject, ask exactly one concise clarification question asking what story theme or book the user wants.
-Do not tell a generic story when the story target is missing.
-Output only the user-facing response.

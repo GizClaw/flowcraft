@@ -2,7 +2,6 @@ package inference
 
 import (
 	"fmt"
-	"reflect"
 )
 
 type FieldID string
@@ -228,29 +227,4 @@ func contractViolation(operation Operation, field FieldID, message string) error
 		field,
 		fmt.Errorf("%s", message),
 	)
-}
-
-func activeTaggedFields(request any) []FieldID {
-	value := reflect.ValueOf(request)
-	requestType := value.Type()
-	fields := make([]FieldID, 0, requestType.NumField())
-	for i := 0; i < requestType.NumField(); i++ {
-		tag := requestType.Field(i).Tag.Get("ledger")
-		if tag == "" || tag == "extension" || !fieldIsActive(value.Field(i)) {
-			continue
-		}
-		fields = append(fields, FieldID(tag))
-	}
-	return fields
-}
-
-func fieldIsActive(value reflect.Value) bool {
-	switch value.Kind() {
-	case reflect.Map, reflect.Slice, reflect.String:
-		return value.Len() > 0
-	case reflect.Interface, reflect.Pointer:
-		return !value.IsNil()
-	default:
-		return !value.IsZero()
-	}
 }

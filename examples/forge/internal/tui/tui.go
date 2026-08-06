@@ -7,12 +7,16 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
@@ -67,7 +71,7 @@ func (m selectorModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl+c", "esc", "q":
+		case "ctrl+c", "esc":
 			m.canceled = true
 			return m, tea.Quit
 		case "up", "k":
@@ -111,7 +115,7 @@ func (m selectorModel) View() string {
 		b.WriteString(style.Render(line))
 		b.WriteByte('\n')
 	}
-	b.WriteString("\n" + selectorHelpStyle.Render("up/down select  enter open  q quit"))
+	b.WriteString("\n" + selectorHelpStyle.Render("up/down select  enter open  ctrl+c quit"))
 	return b.String()
 }
 
@@ -142,6 +146,8 @@ type eventMsg struct {
 	done   bool
 }
 
+type quitDisarmMsg struct{}
+
 // Model is the three-panel TUI.
 type Model struct {
 	app           *app.App
@@ -157,6 +163,9 @@ type Model struct {
 	height        int
 	chatInput     textinput.Model
 	recallInput   textinput.Model
+	chatViewport  viewport.Model
+	chatSpinner   spinner.Model
+	quitArmed     bool
 	usageBefore   app.UsageSnapshot
 	usage         app.UsageSnapshot
 	curNodeID     string
@@ -173,12 +182,30 @@ func NewModel(a *app.App, workspacePath string) Model {
 	recall.Placeholder = "recall query"
 	recall.Prompt = "? "
 	recall.CharLimit = 1000
+	chatViewport := viewport.New(0, 0)
+	chatViewport.MouseWheelEnabled = true
+	chatViewport.KeyMap = viewport.KeyMap{
+		PageDown:     key.NewBinding(key.WithKeys("pgdown")),
+		PageUp:       key.NewBinding(key.WithKeys("pgup")),
+		HalfPageDown: key.NewBinding(key.WithDisabled()),
+		HalfPageUp:   key.NewBinding(key.WithDisabled()),
+		Down:         key.NewBinding(key.WithKeys("down")),
+		Up:           key.NewBinding(key.WithKeys("up")),
+		Left:         key.NewBinding(key.WithDisabled()),
+		Right:        key.NewBinding(key.WithDisabled()),
+	}
+	chatSpinner := spinner.New(
+		spinner.WithSpinner(spinner.MiniDot),
+		spinner.WithStyle(lipgloss.NewStyle().Foreground(lipgloss.Color("39"))),
+	)
 	return Model{
 		app:           a,
 		workspacePath: workspacePath,
 		status:        "ready",
 		chatInput:     chat,
 		recallInput:   recall,
+		chatViewport:  chatViewport,
+		chatSpinner:   chatSpinner,
 	}
 }
 
@@ -189,15 +216,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		_, _, bodyHeight, midW := m.panelLayout()
+		m.syncChatViewport(midW, bodyHeight)
+		return m, nil
+	case tea.MouseMsg:
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		return m, cmd
+	case spinner.TickMsg:
+		if !m.running {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.chatSpinner, cmd = m.chatSpinner.Update(msg)
+		return m, cmd
+	case quitDisarmMsg:
+		m.quitArmed = false
 		return m, nil
 	case tea.KeyMsg:
 		if isEnter(msg) {
 			return m.submitFocusedInput()
 		}
 		switch msg.String() {
-		case "ctrl+c", "esc", "q":
-			return m, tea.Quit
+		case "ctrl+c":
+			if m.quitArmed {
+				return m, tea.Quit
+			}
+			m.quitArmed = true
+			return m, tea.Tick(2*time.Second, func(time.Time) tea.Msg {
+				return quitDisarmMsg{}
+			})
+		case "esc":
+			m.quitArmed = false
+			if m.focus == focusChat {
+				m.chatInput.SetValue("")
+			} else {
+				m.recallInput.SetValue("")
+			}
+			return m, nil
 		case "tab":
+			m.quitArmed = false
 			if m.focus == focusChat {
 				m.focus = focusRecall
 				m.chatInput.Blur()
@@ -205,9 +263,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.focus = focusChat
 				m.recallInput.Blur()
-				m.chatInput.Focus()
+				if m.running {
+					m.chatInput.Blur()
+				} else {
+					m.chatInput.Focus()
+				}
 			}
 			return m, nil
+		}
+		m.quitArmed = false
+		if m.focus == focusChat {
+			var cmd tea.Cmd
+			m.chatViewport, cmd = m.chatViewport.Update(msg)
+			if cmd != nil {
+				return m, cmd
+			}
 		}
 	case eventMsg:
 		if msg.done {
@@ -217,15 +287,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.err != nil {
 				m.err = msg.err.Error()
 				m.status = "error"
+			} else {
+				m.err = ""
 			}
-			return m, nil
+			return m, m.afterRun()
 		}
 		if msg.err != nil {
 			m.running = false
 			m.err = msg.err.Error()
 			m.status = "error"
 			m.usage = m.app.Usage().Since(m.usageBefore)
-			return m, nil
+			return m, m.afterRun()
 		}
 		if msg.delta != nil {
 			switch msg.delta.Type {
@@ -262,42 +334,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	width := m.width
-	if width <= 0 {
-		width = 120
-	}
-	height := m.height
-	if height <= 0 {
-		height = 32
-	}
+	width, _, bodyHeight, midW := m.panelLayout()
 	top := topStyle.Width(width - 2).MaxWidth(width - 2).Render(m.topLine())
-	bodyHeight := height - 4
-	if bodyHeight < 12 {
-		bodyHeight = 12
-	}
 	leftW := maxInt(24, width/4)
 	rightW := maxInt(26, width/4)
-	midW := width - leftW - rightW - 6
-	if midW < 32 {
-		midW = 32
-	}
 	left := panelStyle.Width(leftW).Height(bodyHeight).Render(m.recallView(leftW, bodyHeight))
 	mid := panelStyle.Width(midW).Height(bodyHeight).Render(m.chatView(midW, bodyHeight))
 	right := panelStyle.Width(rightW).Height(bodyHeight).Render(m.debugView(rightW, bodyHeight))
 	return top + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right) + "\n" +
-		helpStyle.Render("tab focus  enter submit  q/esc quit")
+		helpStyle.Render("tab focus  enter submit  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
 }
 
 func (m Model) topLine() string {
 	info := m.app.Info()
-	line := fmt.Sprintf("Forge TUI  agent=%s  context=%s  status=%s",
-		info.AgentName, info.ContextID, m.status)
-	if m.usage.Calls > 0 {
-		line += fmt.Sprintf("  tokens in %d out %d total %d reason %d cache_r %d cache_w %d",
-			m.usage.InputTokens, m.usage.OutputTokens, m.usage.TotalTokens,
-			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens)
+	status := m.status
+	if m.quitArmed {
+		status = "press ctrl+c again to quit"
 	}
-	return line
+	return fmt.Sprintf("Forge TUI  agent=%s  context=%s  status=%s",
+		info.AgentName, info.ContextID, status)
 }
 
 func (m Model) recallView(width, height int) string {
@@ -324,8 +379,39 @@ func (m Model) chatView(width, height int) string {
 	if m.focus == focusChat {
 		title += " *"
 	}
-	lines := []string{panelTitleStyle.Render(title)}
-	msgHeight := height - 5
+	vp := m.chatViewportFor(width, height)
+	lines := []string{panelTitleStyle.Render(title), vp.View()}
+	if m.err != "" {
+		lines = append(lines, errorStyle.Render("error: "+m.err))
+	}
+	input := m.chatInput.View()
+	if m.running {
+		input = m.chatSpinner.View() + " " + helpStyle.Render("agent running…")
+	}
+	lines = append(lines, "", input)
+	lines = append(lines, m.usageLines(width)...)
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) usageLines(width int) []string {
+	var text string
+	if m.usage.Calls <= 0 {
+		text = "usage: -"
+	} else {
+		text = fmt.Sprintf("usage in %d out %d total %d reason %d cache_r %d cache_w %d calls %d",
+			m.usage.InputTokens, m.usage.OutputTokens, m.usage.TotalTokens,
+			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens,
+			m.usage.Calls)
+	}
+	lines := wrapLine(text, width-4)
+	for i := range lines {
+		lines[i] = helpStyle.Render(lines[i])
+	}
+	return lines
+}
+
+func (m Model) chatContent(width int) string {
+	var b strings.Builder
 	for _, msg := range m.messages {
 		text := strings.TrimSpace(msg.Text)
 		if text == "" && msg.Role == "assistant" && m.running {
@@ -339,22 +425,20 @@ func (m Model) chatView(width, height int) string {
 			prefix = "[工具结果] "
 		default:
 			if msg.Role == "assistant" {
-				if label := m.app.SpeakerLabel(msg.NodeID); label != "" {
-					prefix = "[" + label + "] "
+				if m.app != nil {
+					if label := m.app.SpeakerLabel(msg.NodeID); label != "" {
+						prefix = "[" + label + "] "
+					}
 				}
 			}
 		}
-		lines = append(lines, wrapLine(prefix+text, width-4)...)
-		lines = append(lines, "")
+		for _, line := range wrapLine(prefix+text, width-4) {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
 	}
-	if len(lines) > msgHeight {
-		lines = append([]string{lines[0]}, lines[len(lines)-msgHeight:]...)
-	}
-	if m.err != "" {
-		lines = append(lines, errorStyle.Render("error: "+m.err))
-	}
-	lines = append(lines, "", m.chatInput.View())
-	return strings.Join(trimLines(lines, height), "\n")
+	return strings.TrimSuffix(b.String(), "\n")
 }
 
 func (m Model) debugView(width, height int) string {
@@ -369,13 +453,6 @@ func (m Model) debugView(width, height int) string {
 		panelTitleStyle.Render("Memory"),
 		fmt.Sprintf("enabled: %t", info.MemoryEnabled),
 		"top_k: " + fmt.Sprint(info.MemoryTopK),
-		"",
-		panelTitleStyle.Render("Usage"),
-		fmt.Sprintf("calls: %d", m.usage.Calls),
-		fmt.Sprintf("in: %d  out: %d", m.usage.InputTokens, m.usage.OutputTokens),
-		fmt.Sprintf("reason: %d  cache_r: %d  cache_w: %d",
-			m.usage.ReasoningTokens, m.usage.CacheReadTokens, m.usage.CacheWriteTokens),
-		fmt.Sprintf("total: %d", m.usage.TotalTokens),
 	}
 	return strings.Join(trimLines(wrapLines(lines, width-4), height), "\n")
 }
@@ -395,6 +472,8 @@ func (m *Model) appendAssistant(text, nodeID string) {
 	}
 	last := &m.messages[len(m.messages)-1]
 	last.Text += text
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
 }
 
 // appendTool records one tool-use block in the chat.
@@ -408,9 +487,12 @@ func (m *Model) appendTool(kind, name, detail string) {
 		}
 	}
 	m.messages = append(m.messages, chatMessage{Role: "tool", Kind: kind, Text: text})
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
 }
 
 func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
+	m.quitArmed = false
 	if m.focus == focusRecall {
 		query := strings.TrimSpace(m.recallInput.Value())
 		if query == "" {
@@ -428,11 +510,62 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	m.messages = append(m.messages, chatMessage{Role: "user", Text: text})
 	m.running = true
 	m.status = "running"
+	m.err = ""
+	m.chatInput.Blur()
 	m.usageBefore = m.app.Usage()
 	m.curNodeID = ""
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
 	ch := make(chan eventMsg, 256)
 	m.eventCh = ch
-	return m, tea.Batch(startRoundCmd(m.app, text, ch), pollCmd(ch))
+	return m, tea.Batch(startRoundCmd(m.app, text, ch), pollCmd(ch), m.chatSpinner.Tick)
+}
+
+func (m Model) panelLayout() (width, height, bodyHeight, midW int) {
+	width, height = m.width, m.height
+	if width <= 0 {
+		width = 120
+	}
+	if height <= 0 {
+		height = 32
+	}
+	bodyHeight = height - 4
+	if bodyHeight < 12 {
+		bodyHeight = 12
+	}
+	leftW := maxInt(24, width/4)
+	rightW := maxInt(26, width/4)
+	midW = maxInt(32, width-leftW-rightW-6)
+	return width, height, bodyHeight, midW
+}
+
+func (m *Model) syncChatViewport(width, height int) {
+	m.chatViewport = m.chatViewportFor(width, height)
+}
+
+func (m *Model) afterRun() tea.Cmd {
+	var cmds []tea.Cmd
+	if m.focus == focusChat {
+		cmds = append(cmds, m.chatInput.Focus())
+	}
+	_, _, bodyHeight, midW := m.panelLayout()
+	m.syncChatViewport(midW, bodyHeight)
+	return tea.Batch(cmds...)
+}
+
+func (m Model) chatViewportFor(width, height int) viewport.Model {
+	vp := m.chatViewport
+	vp.Width = maxInt(1, width-4)
+	vp.Height = maxInt(1, height-3-len(m.usageLines(width)))
+	if m.err != "" {
+		vp.Height = maxInt(1, vp.Height-1)
+	}
+	follow := vp.AtBottom()
+	vp.SetContent(m.chatContent(width))
+	if follow {
+		vp.GotoBottom()
+	}
+	return vp
 }
 
 func startRoundCmd(a *app.App, text string, ch chan<- eventMsg) tea.Cmd {

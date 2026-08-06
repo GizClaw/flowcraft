@@ -86,7 +86,26 @@ func (c RealtimeConfig) Validate() error {
 }
 
 func (c RealtimeConfig) ActiveFields() []FieldID {
-	return c.Extensions.AppendActiveFields(activeTaggedFields(c))
+	var fields []FieldID
+	if c.Instructions != "" {
+		fields = append(fields, FieldRealtimeInstructions)
+	}
+	if len(c.Modalities) > 0 {
+		fields = append(fields, FieldRealtimeModalities)
+	}
+	if c.InputAudioFormat != nil {
+		fields = append(fields, FieldRealtimeInputAudioFormat)
+	}
+	if c.OutputAudioFormat != nil {
+		fields = append(fields, FieldRealtimeOutputAudioFormat)
+	}
+	if c.Voice != nil {
+		fields = append(fields, FieldRealtimeVoice)
+	}
+	if len(c.Tools) > 0 {
+		fields = append(fields, FieldRealtimeTools)
+	}
+	return c.Extensions.AppendActiveFields(fields)
 }
 
 type RealtimeInputKind string

@@ -28,4 +28,32 @@
 // settings and treats the rest as inert. An extension that does address the
 // executing provider but is unknown to it, meant for another operation, or
 // colliding with a canonical field is still a structured rejection.
+//
+// # Error classification
+//
+// Every inference error carries two parallel labels: an ErrorKind (the
+// structural label callers switch on) and an errdefs classification (the
+// machine-readable category for HTTP mapping and retry policy). The mapping
+// below is implemented by ErrorKind.classify in errors.go and pinned by
+// TestEveryErrorKindClassifies.
+//
+//	ErrorKind                    errdefs marker     HTTP status
+//	InvalidRequest               Validation         400
+//	UnsupportedOperation         NotAvailable       503
+//	UnsupportedFeature           Validation         400
+//	InvalidExtension             Validation         400
+//	UnknownProvider              NotFound           404
+//	UnknownModel                 NotFound           404
+//	UnknownProfile               NotFound           404
+//	PolicyDenied                 PolicyDenied       403
+//	OperationInterrupted         Aborted*           409
+//	CompilerContractViolation    Internal           500
+//	ProviderFailure              NotAvailable*      503
+//	InvalidProviderResponse      Internal           500
+//
+// * depends on the cause: OperationInterrupted passes through an aborted or
+// timed-out cause and otherwise wraps as Aborted; ProviderFailure passes
+// through an already-classified cause and otherwise wraps as NotAvailable.
+// Callers may read either label: inference.IsKind(err, kind) or the errdefs
+// predicates (e.g. errdefs.IsValidation(err)) — they describe the same error.
 package inference
