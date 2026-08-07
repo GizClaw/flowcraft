@@ -14,12 +14,14 @@ const END = "__end__"
 // GraphDefinition is the serialisable declarative definition of a
 // graph (the wire layer).
 //
-// It is deliberately JSON-shaped only. A graph is not a shared
-// resource: [Build] returns a *Graph that IS an agent.Engine, so
-// declarative authoring enters through the engine settings of a
+// It is deliberately JSON-shaped at the wire layer. A graph is not a
+// shared resource: [Build] returns a *Graph that IS an agent.Engine,
+// so declarative authoring enters through the engine settings of a
 // deployment document (sdkx/deploy) rather than a config package of
-// its own. Keeping the kernel JSON-only avoids a YAML dependency in
-// sdk and gives node configs a single canonical encoding.
+// its own. sdk/graph/config accepts YAML as authoring sugar and
+// converts it to JSON with sdk/config/utils before this type is
+// decoded; the kernel itself never parses YAML, which keeps node
+// configs in a single canonical encoding.
 //
 // Validate performs structural checks (unique ids, known edge
 // endpoints, entry presence). Semantic checks — unknown node types,

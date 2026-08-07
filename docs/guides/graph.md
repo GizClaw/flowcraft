@@ -88,8 +88,9 @@ func main() {
     }))
     must(nodes.RegisterTool(reg, executor)) // tool.Dispatcher
 
-    // 2. Load a graph definition. The kernel is JSON-only: unmarshal into
-    //    GraphDefinition yourself (or let the deploy factory load the file).
+    // 2. Load a graph definition. The kernel's wire form is JSON; if you
+    //    unmarshal yourself, feed it JSON. The deploy factory also accepts
+    //    YAML for graph.file / graph.inline and converts it before Build.
     data, err := os.ReadFile("graphs/greeter.json")
     if err != nil { panic(err) }
     var def graph.GraphDefinition
@@ -136,6 +137,11 @@ func must(err error) {
   "edges": []
 }
 ```
+
+The wire form is JSON; when a graph is loaded through `sdk/graph/config`
+(e.g. `engine.settings.graph` in a deployment), `graph.file` and
+`graph.inline` also accept YAML, which the loader converts to JSON with
+`sdk/config/utils` before `Build` sees the definition.
 
 The build step validates the definition against the registry, compiles edge
 and skip conditions, statically resolves I/O roles, and returns an immutable

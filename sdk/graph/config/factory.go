@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/graph/nodes"
@@ -338,8 +339,8 @@ func (f *Factory) definition(ctx context.Context, source *graphSource) (*coregra
 		return nil, errdefs.Validationf(
 			"graph agent: definition exceeds %d bytes", MaxDefinitionBytes)
 	}
-	var definition coregraph.GraphDefinition
-	if err := decodeStrictJSON(data, &definition); err != nil {
+	definition, err := utils.Decode[coregraph.GraphDefinition](data)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("graph agent: decode definition: %w", err))
 	}
 	if err := f.materializeConfigFileRefs(ctx, &definition); err != nil {
