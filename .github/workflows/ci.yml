@@ -96,13 +96,13 @@ jobs:
         run: |
           # Workspace members (go.work) — vetted with the workspace
           # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory sdkx; do
+          for m in sdk memory memory/eval sdkx; do
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
       - name: gofmt check
         run: |
-          diff=$(gofmt -l sdk memory sdkx)
+          diff=$(gofmt -l sdk memory memory/eval sdkx)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
@@ -142,6 +142,25 @@ jobs:
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: memory
+
+  test-eval:
+    name: Test eval (Go ${{ matrix.go-version }})
+    needs: detect
+    # eval is a workspace member (see go.work) — sdk/sdkx/memory resolve to
+    # monorepo HEAD via the workspace overlay.
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+      - name: Test
+        run: go test -count=1 ./...
+        working-directory: memory/eval
 
   test-sdkx:
     name: Test sdkx (Go ${{ matrix.go-version }})
@@ -220,7 +239,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-sdkx, test-sdkx-nsjail-integration]
+    needs: [detect, release-intent, lint, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-nsjail-integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -234,6 +253,7 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-memory.result }}" \
+            "${{ needs.test-eval.result }}" \
             "${{ needs.test-sdkx.result }}" \
             "${{ needs.test-sdkx-nsjail-integration.result }}" \
           )

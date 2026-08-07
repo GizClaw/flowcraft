@@ -42,6 +42,7 @@ Run flags:
   --concurrency N            QA worker count (default 4)
   --ingest-timeout D         per-conversation ingest+derive deadline (default 0)
   --qa-timeout D             per-question recall+answer+judge deadline (default 0)
+  --commit-granularity G     session, exchange, or turn (default session)
   --out PATH                 report.json destination
   --notify-name NAME         run identifier shown in Feishu card header
   --notify-progress-pct N    milestone notifications every N percent (0 disables)
@@ -58,25 +59,26 @@ Convert flags:
 func runCommand(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	var (
-		datasetPath   string
-		inferencePath string
-		suite         string
-		generateModel string
-		embedModel    string
-		answerModel   string
-		judgeModel    string
-		out           string
-		maxItems      int
-		maxTokens     int
-		limit         int
-		limitConvs    int
-		concurrency   int
-		ingestTimeout time.Duration
-		qaTimeout     time.Duration
-		verbose       bool
-		notifyName    string
-		notifyPct     int
-		notifyDryRun  bool
+		datasetPath       string
+		inferencePath     string
+		suite             string
+		generateModel     string
+		embedModel        string
+		answerModel       string
+		judgeModel        string
+		out               string
+		maxItems          int
+		maxTokens         int
+		limit             int
+		limitConvs        int
+		concurrency       int
+		ingestTimeout     time.Duration
+		qaTimeout         time.Duration
+		commitGranularity string
+		verbose           bool
+		notifyName        string
+		notifyPct         int
+		notifyDryRun      bool
 	)
 	fs.StringVar(&datasetPath, "dataset", "", "converted dataset (.jsonl)")
 	fs.StringVar(&inferencePath, "inference", "", "inference.yaml")
@@ -93,6 +95,7 @@ func runCommand(ctx context.Context, args []string) error {
 	fs.IntVar(&concurrency, "concurrency", defaultConcurrency, "QA worker count")
 	fs.DurationVar(&ingestTimeout, "ingest-timeout", 0, "per-conversation ingest deadline")
 	fs.DurationVar(&qaTimeout, "qa-timeout", 0, "per-question QA deadline")
+	fs.StringVar(&commitGranularity, "commit-granularity", string(granularitySession), "session, exchange, or turn")
 	fs.BoolVar(&verbose, "verbose", false, "print the full wrapped error chain on failure")
 	fs.StringVar(&notifyName, "notify-name", "", "run identifier shown in Feishu card header")
 	fs.IntVar(&notifyPct, "notify-progress-pct", 25, "milestone notifications every N percent")
@@ -108,27 +111,32 @@ func runCommand(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	granularity, err := parseCommitGranularity(commitGranularity)
+	if err != nil {
+		return err
+	}
 	ds, err := dataset.Load(datasetPath)
 	if err != nil {
 		return err
 	}
 	dataset.ApplyConversationLimit(ds, limitConvs)
 	report, err := Run(ctx, runOptions{
-		Dataset:       ds,
-		InferencePath: inferencePath,
-		Scenario:      scenario,
-		GenerateModel: generateModel,
-		EmbedModel:    embedModel,
-		AnswerModel:   answerModel,
-		JudgeModel:    judgeModel,
-		MaxItems:      maxItems,
-		MaxTokens:     maxTokens,
-		Limit:         limit,
-		Concurrency:   concurrency,
-		IngestTimeout: ingestTimeout,
-		QATimeout:     qaTimeout,
-		Notifier:      buildNotifier(notifyName, notifyDryRun),
-		ProgressPct:   notifyPct,
+		Dataset:           ds,
+		InferencePath:     inferencePath,
+		Scenario:          scenario,
+		GenerateModel:     generateModel,
+		EmbedModel:        embedModel,
+		AnswerModel:       answerModel,
+		JudgeModel:        judgeModel,
+		MaxItems:          maxItems,
+		MaxTokens:         maxTokens,
+		Limit:             limit,
+		Concurrency:       concurrency,
+		IngestTimeout:     ingestTimeout,
+		QATimeout:         qaTimeout,
+		CommitGranularity: granularity,
+		Notifier:          buildNotifier(notifyName, notifyDryRun),
+		ProgressPct:       notifyPct,
 	})
 	if err != nil {
 		if verbose {

@@ -17,21 +17,22 @@ import (
 )
 
 type runOptions struct {
-	Dataset       *dataset.Dataset
-	InferencePath string
-	Scenario      scenarios.Scenario
-	GenerateModel string
-	EmbedModel    string
-	AnswerModel   string
-	JudgeModel    string
-	MaxItems      int
-	MaxTokens     int
-	Limit         int
-	Concurrency   int
-	IngestTimeout time.Duration
-	QATimeout     time.Duration
-	Notifier      notifier
-	ProgressPct   int
+	Dataset           *dataset.Dataset
+	InferencePath     string
+	Scenario          scenarios.Scenario
+	GenerateModel     string
+	EmbedModel        string
+	AnswerModel       string
+	JudgeModel        string
+	MaxItems          int
+	MaxTokens         int
+	Limit             int
+	Concurrency       int
+	IngestTimeout     time.Duration
+	QATimeout         time.Duration
+	CommitGranularity commitGranularity
+	Notifier          notifier
+	ProgressPct       int
 }
 
 // Run ingests the dataset through a real memory assembly and evaluates every
@@ -72,6 +73,9 @@ func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, err
 	}
 	if opts.Concurrency <= 0 {
 		opts.Concurrency = 1
+	}
+	if opts.CommitGranularity == "" {
+		opts.CommitGranularity = granularitySession
 	}
 	generateRef, err := parseModelRef(opts.GenerateModel)
 	if err != nil {
@@ -128,7 +132,7 @@ func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, err
 	seqByEvidence := make(map[string]map[string]uint64)
 	for index, conversation := range opts.Dataset.Conversations {
 		if err := ingestConversation(
-			ctx, assembly, opts.Scenario, conversation, seqByEvidence, opts.IngestTimeout,
+			ctx, assembly, opts.Scenario, conversation, seqByEvidence, opts.IngestTimeout, opts.CommitGranularity,
 		); err != nil {
 			return nil, err
 		}

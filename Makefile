@@ -32,7 +32,7 @@ help:
 	@echo "  make release-plan   Print the pending module release plan as JSON."
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 	@echo ""
-	@echo "  make eval              Hermetic memory retrieval eval (memory/eval)."
+	@echo "  make eval              Hermetic memory retrieval eval (memory/eval module)."
 	@echo "  make eval-smoke        Compatibility alias for the hermetic memory eval."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
 	@echo "                         the pre-eval/ migration entry point."
@@ -79,7 +79,7 @@ release-changelog:
 # Credential-free retrieval quality evaluation over real memory components.
 .PHONY: eval
 eval:
-	@cd memory && go test ./eval -count=1 -v
+	@cd memory/eval && go test ./... -count=1 -v
 
 # Compatibility target retained after removal of the old top-level eval module.
 .PHONY: eval-smoke

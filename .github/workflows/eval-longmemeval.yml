@@ -62,6 +62,10 @@ on:
         description: "Per-question recall+answer+judge deadline"
         required: false
         default: "10m"
+      commit_granularity:
+        description: "session, exchange, or turn"
+        required: false
+        default: "session"
 
 concurrency:
   group: eval-longmemeval
@@ -79,8 +83,8 @@ jobs:
 
       - name: Build eval binary
         run: |
-          cd memory
-          go build -trimpath -o /tmp/memory-eval ./eval
+          cd memory/eval
+          go build -trimpath -o /tmp/memory-eval .
 
       - name: Refresh dataset from fixed ref
         env:
@@ -133,6 +137,7 @@ jobs:
             --concurrency "${{ inputs.concurrency }}" \
             --ingest-timeout "${{ inputs.ingest_timeout }}" \
             --qa-timeout "${{ inputs.qa_timeout }}" \
+            --commit-granularity "${{ inputs.commit_granularity }}" \
             --notify-name "longmemeval-${{ github.run_id }}" \
             --notify-progress-pct 10 \
             --out "$REPORT_OUT"

@@ -16,6 +16,30 @@ import (
 
 const maxBatchRunes = 12000
 
+// commitGranularity selects how conversation turns are grouped into
+// CommitTurn batches.
+type commitGranularity string
+
+const (
+	// granularitySession keeps the benchmark default: one batch per session,
+	// split by the rune budget.
+	granularitySession commitGranularity = "session"
+	// granularityExchange mirrors real usage: one batch per user+assistant
+	// exchange (consecutive same-role messages stay together).
+	granularityExchange commitGranularity = "exchange"
+	// granularityTurn commits every message separately.
+	granularityTurn commitGranularity = "turn"
+)
+
+func parseCommitGranularity(value string) (commitGranularity, error) {
+	switch commitGranularity(value) {
+	case granularitySession, granularityExchange, granularityTurn:
+		return commitGranularity(value), nil
+	default:
+		return "", fmt.Errorf("--commit-granularity must be session, exchange, or turn")
+	}
+}
+
 // ingestConversation commits one conversation's turns to memory in session /
 // rune-bounded batches, recording the evidence-id -> sequence mapping used
 // by k_hit.
@@ -26,6 +50,7 @@ func ingestConversation(
 	conversation dataset.Conversation,
 	seqByEvidence map[string]map[string]uint64,
 	timeout time.Duration,
+	granularity commitGranularity,
 ) error {
 	ingestCtx := ctx
 	var cancel context.CancelFunc
@@ -34,7 +59,7 @@ func ingestConversation(
 		defer cancel()
 	}
 	scope := scopeFor(scenario.RuntimeID(), conversation.ID)
-	batches := batchTurns(conversation.Turns)
+	batches := batchTurns(conversation.Turns, granularity)
 	seq := uint64(0)
 	for batchIndex, batch := range batches {
 		messages := make([]message.Message, 0, len(batch))
@@ -63,39 +88,52 @@ func ingestConversation(
 	return nil
 }
 
-// batchTurns groups turns by session and by a rune budget so each CommitTurn
-// stays inside the extractor's context window.
-func batchTurns(turns []dataset.Turn) [][]dataset.Turn {
+// batchTurns groups turns into CommitTurn batches. Granularity controls the
+// primary boundary (session, user+assistant exchange, or every turn); the
+// rune budget and session changes always apply as safety boundaries.
+func batchTurns(turns []dataset.Turn, granularity commitGranularity) [][]dataset.Turn {
 	var (
 		batches        [][]dataset.Turn
 		current        []dataset.Turn
 		currentSession string
+		lastRole       message.Role
 		runes          int
 	)
+	flush := func() {
+		if len(current) > 0 {
+			batches = append(batches, current)
+			current, runes = nil, 0
+		}
+	}
 	for _, turn := range turns {
 		content := strings.TrimSpace(turn.Message.Content.Text())
 		if content == "" {
 			continue
 		}
 		if turn.SessionID != "" && turn.SessionID != currentSession && len(current) > 0 {
-			batches = append(batches, current)
-			current, currentSession, runes = nil, turn.SessionID, 0
+			flush()
+			currentSession = turn.SessionID
+		}
+		if granularity == granularityTurn {
+			flush()
+		}
+		if granularity == granularityExchange &&
+			turn.Message.Role == message.RoleUser && lastRole == message.RoleAssistant {
+			flush()
 		}
 		nextRunes := utf8.RuneCountInString(content)
 		if len(current) > 0 && runes+nextRunes > maxBatchRunes {
-			batches = append(batches, current)
-			current, runes = nil, 0
+			flush()
 		}
-		turn.Content = message.Content{Parts: append([]message.Part(nil), turn.Message.Content.Parts...)}
+		turn.Message.Content = message.Content{Parts: append([]message.Part(nil), turn.Message.Content.Parts...)}
 		current = append(current, turn)
 		runes += nextRunes
+		lastRole = turn.Message.Role
 		if turn.SessionID != "" {
 			currentSession = turn.SessionID
 		}
 	}
-	if len(current) > 0 {
-		batches = append(batches, current)
-	}
+	flush()
 	return batches
 }
 
