@@ -1,4 +1,4 @@
-package graphagent
+package config
 
 import (
 	"context"

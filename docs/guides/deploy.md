@@ -248,7 +248,7 @@ import (
     "github.com/GizClaw/flowcraft/sdk/agent"
     "github.com/GizClaw/flowcraft/sdk/message"
     "github.com/GizClaw/flowcraft/sdkx/deploy"
-    graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
+    graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
     inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 )
 
@@ -256,7 +256,7 @@ func main() {
     ctx := context.Background()
 
     engines := agent.NewRegistry()
-    engines.MustRegister(graphagent.NewFactory())
+    engines.MustRegister(graphconfig.NewFactory())
 
     builder := deploy.NewBuilder(engines)
     // Register the inference resource; pass your provider factory and
@@ -430,7 +430,7 @@ agents:
 
 ### Engines
 
-The graph engine (`sdkx/agent/graph`) is the built-in. Its
+The graph engine (`sdk/graph/config`) is the built-in. Its
 settings accept a graph definition by file path, by explicit
 `{file: ...}`, or by `{inline: ...}`:
 
@@ -623,7 +623,7 @@ toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
 toolBuilder.RegisterBuiltins(tooldelegation.New(directory)...)
 
 engines := agent.NewRegistry()
-engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
 
 builder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
 builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
@@ -828,7 +828,7 @@ The host owns execution behavior; `Result` owns the bus lifecycle.
 
 ```go
 engines := agent.NewRegistry()
-engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
 
 builder := deploy.NewBuilder(engines)
 
@@ -974,7 +974,7 @@ factory is registered.
 
 For full turn-level tests (the engine, the host, the hook chain),
 see `sdkx/delegation/integration_test.go` and the engine-specific packages
-(`sdkx/agent/graph`). The deploy layer itself is
+(`sdk/graph/config`). The deploy layer itself is
 hermetic: a `Build` over a parsed document does not perform network
 I/O unless a resource factory does (e.g. an inference provider that
 warms up its catalog on first use).
@@ -989,7 +989,7 @@ warms up its catalog on first use).
   `sdk/sandbox/config/doc.go`, `sdk/inference/config/doc.go`,
   `sdk/tool/config/doc.go`, `sdk/event/config/resource.go`,
   `sdk/memory/config/doc.go`.
-- Engine contract: `sdk/agent/doc.go`, `sdkx/agent/graph/factory.go`.
+- Engine contract: `sdk/agent/doc.go`, `sdk/graph/config/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
 - Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Referee`,

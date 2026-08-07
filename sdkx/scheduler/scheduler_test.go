@@ -535,41 +535,70 @@ func TestCompleteRetentionRejectsDeadlineBeyondServerMaximum(t *testing.T) {
 }
 
 func TestRuleReplaceAndRemoveShareTriggerGate(t *testing.T) {
-	server, _ := newTestServer(t)
-	key := scheduleKey{namespace: "race", id: "job"}
-	if err := server.PutRule(context.Background(), rule("race", "job", sdkscheduler.OverlapAllow)); err != nil {
-		t.Fatal(err)
-	}
-	server.mu.Lock()
-	old := server.rules[key]
-	server.mu.Unlock()
-	gate := server.gateForKey(key)
-	gate.Lock()
-	fired := make(chan struct{})
-	go func() {
+	t.Run("replace drops admitted stale fire", func(t *testing.T) {
+		store := &blockingRuleStore{
+			memoryRuleStore: &memoryRuleStore{rules: make(map[scheduleKey]sdkscheduler.Rule)},
+		}
+		server, err := NewLocalServer(WithRuleStore(store))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = server.Close() })
+		key := scheduleKey{namespace: "race", id: "job"}
+		if err := server.PutRule(context.Background(), rule("race", "job", sdkscheduler.OverlapAllow)); err != nil {
+			t.Fatal(err)
+		}
+		server.mu.Lock()
+		old := server.rules[key]
+		server.mu.Unlock()
+
+		store.saveEntered = make(chan struct{})
+		store.continueSave = make(chan struct{})
+		replaced := rule("race", "job", sdkscheduler.OverlapAllow)
+		replaced.Task = task("new")
+		replaceDone := make(chan error, 1)
+		go func() { replaceDone <- server.PutRule(context.Background(), replaced) }()
+		<-store.saveEntered
+
+		fired := make(chan struct{})
+		go func() {
+			server.fireRule(key, old, old.generation)
+			close(fired)
+		}()
+		if delivery := claim(t, server, "race", time.Minute); delivery != nil {
+			t.Fatalf("fire passed trigger gate before replacement completed: %+v", delivery)
+		}
+		close(store.continueSave)
+		if err := <-replaceDone; err != nil {
+			t.Fatal(err)
+		}
+		<-fired
+		if delivery := claim(t, server, "race", time.Minute); delivery != nil {
+			t.Fatalf("replaced generation queued stale fire: %+v", delivery)
+		}
+	})
+
+	t.Run("delete leaves queued execution", func(t *testing.T) {
+		server, _ := newTestServer(t)
+		key := scheduleKey{namespace: "race", id: "job"}
+		if err := server.PutRule(context.Background(), rule("race", "job", sdkscheduler.OverlapAllow)); err != nil {
+			t.Fatal(err)
+		}
+		server.mu.Lock()
+		old := server.rules[key]
+		server.mu.Unlock()
 		server.fireRule(key, old, old.generation)
-		close(fired)
-	}()
-	time.Sleep(10 * time.Millisecond)
-	replaced := rule("race", "job", sdkscheduler.OverlapAllow)
-	replaced.Task = task("new")
-	replaceDone := make(chan error, 1)
-	go func() { replaceDone <- server.PutRule(context.Background(), replaced) }()
-	gate.Unlock()
-	<-fired
-	if err := <-replaceDone; err != nil {
-		t.Fatal(err)
-	}
-	if err := server.DeleteRule(context.Background(), "race", "job"); err != nil {
-		t.Fatal(err)
-	}
-	server.fireRule(key, old, old.generation)
-	if delivery := claim(t, server, "race", time.Minute); delivery == nil {
-		t.Fatal("delete canceled an execution already queued before removal")
-	}
-	if extra := claim(t, server, "race", time.Minute); extra != nil {
-		t.Fatalf("removed generation queued extra work: %+v", extra)
-	}
+		if err := server.DeleteRule(context.Background(), "race", "job"); err != nil {
+			t.Fatal(err)
+		}
+		server.fireRule(key, old, old.generation)
+		if delivery := claim(t, server, "race", time.Minute); delivery == nil {
+			t.Fatal("delete canceled an execution already queued before removal")
+		}
+		if extra := claim(t, server, "race", time.Minute); extra != nil {
+			t.Fatalf("removed generation queued extra work: %+v", extra)
+		}
+	})
 }
 
 type memoryRuleStore struct {
