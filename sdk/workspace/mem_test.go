@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -80,6 +81,19 @@ func TestMemWorkspace_AppendToDir(t *testing.T) {
 	}
 }
 
+func TestMemWorkspace_WriteOverDir(t *testing.T) {
+	ws := NewMemWorkspace()
+	ws.MustWrite("dir/file.txt", []byte("x"))
+
+	if err := ws.Write(context.Background(), "dir", []byte("bad")); err == nil {
+		t.Fatal("expected error writing over a directory")
+	}
+	data, err := ws.Read(context.Background(), "dir/file.txt")
+	if err != nil || string(data) != "x" {
+		t.Fatalf("child file should be untouched: data=%q err=%v", data, err)
+	}
+}
+
 func TestMemWorkspace_DeleteDirectory(t *testing.T) {
 	ws := NewMemWorkspace()
 	ctx := context.Background()
@@ -99,11 +113,10 @@ func TestMemWorkspace_DeleteDirectory(t *testing.T) {
 	}
 }
 
-func TestMemWorkspace_DeleteNotFound(t *testing.T) {
+func TestMemWorkspace_DeleteIdempotent(t *testing.T) {
 	ws := NewMemWorkspace()
-	err := ws.Delete(context.Background(), "nope.txt")
-	if err == nil {
-		t.Fatal("expected not-found error")
+	if err := ws.Delete(context.Background(), "nope.txt"); err != nil {
+		t.Fatalf("deleting a missing path should be idempotent: %v", err)
 	}
 }
 
@@ -274,6 +287,44 @@ func TestMemWorkspace_ListNested(t *testing.T) {
 	}
 }
 
+func TestMemWorkspace_ListMissingIsEmpty(t *testing.T) {
+	ws := NewMemWorkspace()
+	entries, err := ws.List(context.Background(), "nonexistent")
+	if err != nil {
+		t.Fatalf("listing a missing directory should not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestMemWorkspace_ListSorted(t *testing.T) {
+	ws := NewMemWorkspace()
+	ws.MustWrite("z.txt", []byte("z"))
+	ws.MustWrite("a.txt", []byte("a"))
+	ws.MustWrite("m.txt", []byte("m"))
+
+	entries, err := ws.List(context.Background(), ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "m.txt", "z.txt"}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("List order = %v, want %v", got, want)
+	}
+}
+
+func TestMemWorkspace_RemoveAllIdempotent(t *testing.T) {
+	ws := NewMemWorkspace()
+	if err := ws.RemoveAll(context.Background(), "missing"); err != nil {
+		t.Fatalf("removing a missing path should be idempotent: %v", err)
+	}
+}
+
 func TestMemWorkspace_CleanPathTraversal(t *testing.T) {
 	ws := NewMemWorkspace()
 	ctx := context.Background()
@@ -364,5 +415,18 @@ func TestMemWorkspace_RenameOntoDir(t *testing.T) {
 	// Orphan check: the child must still be reachable afterwards.
 	if !ws.Contains("dst/child.txt", "y") {
 		t.Fatal("child entry must survive the rejected rename")
+	}
+}
+
+func TestMemWorkspace_RenameDirSrc(t *testing.T) {
+	ws := NewMemWorkspace()
+	ws.MustWrite("dir/file.txt", []byte("x"))
+
+	err := ws.Rename(context.Background(), "dir", "moved")
+	if err == nil {
+		t.Fatal("expected error renaming a directory")
+	}
+	if errdefs.IsNotFound(err) {
+		t.Fatalf("renaming a directory should be a validation error, not ErrNotFound: %v", err)
 	}
 }

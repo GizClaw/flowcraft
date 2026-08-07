@@ -14,7 +14,10 @@ import (
 // AtomicWrite writes data to path via a tmp file + Rename, so concurrent
 // readers never observe a half-written payload. The tmp file is placed in
 // the same directory as path so Rename stays atomic on POSIX filesystems
-// (cross-directory renames are not guaranteed atomic).
+// (cross-directory renames are not guaranteed atomic). The tmp name is a
+// private implementation detail, but it may briefly appear in List results;
+// consumers that enumerate a directory should tolerate entries ending in
+// ".tmp".
 //
 // On workspaces whose Rename is non-atomic (e.g. object stores) AtomicWrite
 // still runs cleanly; durability/atomicity is then bounded by the underlying

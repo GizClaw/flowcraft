@@ -97,6 +97,15 @@ func TestWorkspace_Delete(t *testing.T) {
 	}
 }
 
+func TestWorkspace_DeleteIdempotent(t *testing.T) {
+	store, ctx := newTestWS()
+	ws := NewWorkspace(store)
+
+	if err := ws.Delete(ctx, "missing.txt"); err != nil {
+		t.Fatalf("deleting a missing path should be idempotent: %v", err)
+	}
+}
+
 func TestWorkspace_RemoveAll(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
@@ -163,6 +172,43 @@ func TestWorkspace_List(t *testing.T) {
 	}
 	if len(subEntries) != 1 || subEntries[0].Name() != "c.txt" {
 		t.Fatalf("sub/ listing: %v", subEntries)
+	}
+}
+
+func TestWorkspace_ListMissingIsEmpty(t *testing.T) {
+	store, ctx := newTestWS()
+	ws := NewWorkspace(store)
+
+	entries, err := ws.List(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("listing a missing directory should not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestWorkspace_ListSorted(t *testing.T) {
+	store, ctx := newTestWS()
+	ws := NewWorkspace(store)
+
+	ws.Write(ctx, "z.txt", []byte("z"))
+	ws.Write(ctx, "a.txt", []byte("a"))
+	ws.Write(ctx, "m.txt", []byte("m"))
+
+	entries, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "m.txt", "z.txt"}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("List order = %v, want %v", got, want)
+		}
 	}
 }
 

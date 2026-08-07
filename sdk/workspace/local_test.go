@@ -158,12 +158,38 @@ func TestLocalWorkspace_List(t *testing.T) {
 	}
 }
 
-func TestLocalWorkspace_ListNotFound(t *testing.T) {
+func TestLocalWorkspace_ListMissingIsEmpty(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	_, err := ws.List(ctx, "nonexistent")
-	if err == nil {
-		t.Fatal("expected error listing nonexistent dir")
+	entries, err := ws.List(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("listing a missing directory should not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestLocalWorkspace_ListSorted(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	ws.Write(ctx, "z.txt", []byte("z"))
+	ws.Write(ctx, "a.txt", []byte("a"))
+	ws.Write(ctx, "m.txt", []byte("m"))
+
+	entries, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "m.txt", "z.txt"}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("List order = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -230,12 +256,39 @@ func TestLocalWorkspace_ReadNotFound(t *testing.T) {
 	}
 }
 
-func TestLocalWorkspace_DeleteNotFound(t *testing.T) {
+func TestLocalWorkspace_DeleteIdempotent(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	err := ws.Delete(ctx, "nonexistent.txt")
-	if err == nil {
-		t.Fatal("expected not-found error")
+	if err := ws.Delete(ctx, "nonexistent.txt"); err != nil {
+		t.Fatalf("deleting a missing path should be idempotent: %v", err)
+	}
+}
+
+func TestLocalWorkspace_DeleteEmptyDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "emptydir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Delete(ctx, "emptydir"); err == nil {
+		t.Fatal("expected error deleting a directory")
+	}
+	exists, err := ws.Exists(ctx, "emptydir")
+	if err != nil || !exists {
+		t.Fatalf("directory should remain after rejected delete: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestLocalWorkspace_WriteOverDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	ws.Write(ctx, "dir/file.txt", []byte("x"))
+	if err := ws.Write(ctx, "dir", []byte("bad")); err == nil {
+		t.Fatal("expected error writing over a directory")
+	}
+	data, err := ws.Read(ctx, "dir/file.txt")
+	if err != nil || string(data) != "x" {
+		t.Fatalf("child file should be untouched: data=%q err=%v", data, err)
 	}
 }
 
