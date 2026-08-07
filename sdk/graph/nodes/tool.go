@@ -92,7 +92,7 @@ func Tool(dispatcher tool.Dispatcher) graph.NodeType[ToolConfig] {
 					// graph retry to re-run side effects).
 					telemetry.WarnErr(ec.Context, "tool node: stream delta publish failed", err,
 						otellog.String("node.type", "tool"),
-						otellog.String("tool.call_id", result.CallID))
+						otellog.String(telemetry.AttrToolCallID, result.CallID))
 				}
 			}
 			board.AppendChannelMessage(channel, message.Message{

@@ -10,11 +10,11 @@ func TestAttrConstants_StableNames(t *testing.T) {
 	cases := []struct {
 		got, want string
 	}{
-		{AttrPodID, "pod.id"},
 		{AttrAgentID, "agent.id"},
 		{AttrTenantID, "tenant.id"},
 		{AttrRunID, "run.id"},
 		{AttrParentRunID, "parent.run.id"},
+		{AttrTaskID, "task.id"},
 		{AttrEngineKind, "engine.kind"},
 		{AttrRunStatus, "run.status"},
 		{AttrGraphName, "graph.name"},
@@ -32,7 +32,6 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMRequestID, "llm.request.id"},
 		{AttrLLMResponseID, "llm.response.id"},
 		{AttrConversationID, "conversation.id"},
-		{AttrDatasetID, "dataset.id"},
 		{AttrErrorMessage, "error.message"},
 	}
 	for _, tc := range cases {
@@ -47,13 +46,14 @@ func TestAttrConstants_StableNames(t *testing.T) {
 // would silently collide if the constants resolved to the same string.
 func TestAttrConstants_Unique(t *testing.T) {
 	all := []string{
-		AttrPodID, AttrAgentID, AttrTenantID,
-		AttrRunID, AttrParentRunID, AttrEngineKind, AttrRunStatus,
+		AttrAgentID, AttrTenantID,
+		AttrRunID, AttrParentRunID, AttrTaskID, AttrEngineKind, AttrRunStatus,
 		AttrGraphName, AttrNodeID,
 		AttrToolName, AttrToolCallID,
 		AttrLLMProvider, AttrLLMModel, AttrLLMInputTokens, AttrLLMOutputTokens,
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
-		AttrConversationID, AttrDatasetID, AttrErrorMessage,
+		AttrLLMRequestID, AttrLLMResponseID,
+		AttrConversationID, AttrErrorMessage,
 	}
 	seen := make(map[string]struct{}, len(all))
 	for _, k := range all {

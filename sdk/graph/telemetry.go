@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
@@ -18,11 +19,17 @@ import (
 //
 // Metric attribute conventions:
 //   - status: "success" / "error" / "interrupted" / "skipped"
-//   - identity: telemetry.AttrGraphName / AttrNodeID / AttrRunID
+//   - identity: telemetry.AttrGraphName / AttrNodeID / AttrRunID /
+//     AttrEngineKind
 //
 // Subjects themselves carry run ids and are unsuitable as metric
 // attributes; publish failures use the low-cardinality "event.kind"
 // classes "step" / "stream_delta".
+
+// engineKind is the stable engine-kind token for the graph runner,
+// matching the "graph" registry key used by sdk/graph/config.
+const engineKind = "graph"
+
 var (
 	graphMeter = telemetry.MeterWithSuffix("graph")
 
@@ -44,12 +51,52 @@ var (
 			"Event publish failures swallowed by the graph kernel (best-effort observability events)"))
 )
 
+// runScopeAttrs returns the run-level scope attributes for spans:
+// parent run, task, conversation, tenant and engine kind. Empty
+// identity dimensions are omitted so spans stay slim; engine kind is
+// always present.
+func runScopeAttrs(run agent.Run) []attribute.KeyValue {
+	attrs := make([]attribute.KeyValue, 0, 5)
+	if run.ParentRunID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrParentRunID, run.ParentRunID))
+	}
+	if run.TaskID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrTaskID, run.TaskID))
+	}
+	if run.ConversationID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrConversationID, run.ConversationID))
+	}
+	if tenantID := run.Attributes[telemetry.AttrTenantID]; tenantID != "" {
+		attrs = append(attrs, attribute.String(telemetry.AttrTenantID, tenantID))
+	}
+	return append(attrs, attribute.String(telemetry.AttrEngineKind, engineKind))
+}
+
+// runScopeLogAttrs mirrors runScopeAttrs for structured log records.
+func runScopeLogAttrs(run agent.Run) []otellog.KeyValue {
+	attrs := make([]otellog.KeyValue, 0, 5)
+	if run.ParentRunID != "" {
+		attrs = append(attrs, otellog.String(telemetry.AttrParentRunID, run.ParentRunID))
+	}
+	if run.TaskID != "" {
+		attrs = append(attrs, otellog.String(telemetry.AttrTaskID, run.TaskID))
+	}
+	if run.ConversationID != "" {
+		attrs = append(attrs, otellog.String(telemetry.AttrConversationID, run.ConversationID))
+	}
+	if tenantID := run.Attributes[telemetry.AttrTenantID]; tenantID != "" {
+		attrs = append(attrs, otellog.String(telemetry.AttrTenantID, tenantID))
+	}
+	return append(attrs, otellog.String(telemetry.AttrEngineKind, engineKind))
+}
+
 // recordGraphExec records one completed Execute call.
 func recordGraphExec(ctx context.Context, g *Graph, run agent.Run, status string, dur time.Duration) {
 	attrs := metric.WithAttributes(
 		attribute.String(telemetry.AttrGraphName, g.name),
 		attribute.String(telemetry.AttrRunID, run.RunID),
 		attribute.String(telemetry.AttrAgentID, run.AgentID),
+		attribute.String(telemetry.AttrEngineKind, engineKind),
 		attribute.String("status", status),
 	)
 	graphExecCount.Add(ctx, 1, attrs)
@@ -89,6 +136,19 @@ func execStatus(err error) string {
 		return "interrupted"
 	default:
 		return "error"
+	}
+}
+
+// runStatusValue maps the engine's outcome vocabulary to the
+// canonical telemetry values documented on AttrRunStatus.
+func runStatusValue(status string) string {
+	switch status {
+	case "success":
+		return "ok"
+	case "interrupted":
+		return "interrupted"
+	default:
+		return "failed"
 	}
 }
 

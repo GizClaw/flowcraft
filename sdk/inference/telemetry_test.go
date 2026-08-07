@@ -103,6 +103,12 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 					OutputTokens: 5,
 					TotalTokens:  15,
 					Input:        InputTokenUsage{CacheReadTokens: &cached},
+					LatencyMs:    42,
+					Billing: &BillingUsage{Cost: &Money{
+						Currency: "USD",
+						Units:    12345,
+						Scale:    6,
+					}},
 				},
 				Metadata: Metadata{
 					RequestID:  "req-1",
@@ -135,6 +141,8 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 		telemetry.AttrLLMOutputTokens:      int64(5),
 		telemetry.AttrLLMTotalTokens:       int64(15),
 		telemetry.AttrLLMCachedInputTokens: int64(4),
+		telemetry.AttrLLMLatencyMs:         int64(42),
+		telemetry.AttrLLMCostMicros:        int64(12345),
 		telemetry.AttrLLMRequestID:         "req-1",
 		telemetry.AttrLLMResponseID:        "resp-1",
 	} {
@@ -363,5 +371,39 @@ func TestRuntimeTelemetryExplainStaysSilent(t *testing.T) {
 	}
 	if got := len(recorder.Ended()); got != 0 {
 		t.Fatalf("ExplainGenerate produced %d spans, want 0", got)
+	}
+}
+
+func TestBillingCostMicros(t *testing.T) {
+	cost := func(units int64, scale uint8) *BillingUsage {
+		return &BillingUsage{Cost: &Money{Currency: "USD", Units: units, Scale: scale}}
+	}
+
+	tests := []struct {
+		name    string
+		billing *BillingUsage
+		want    int64
+		ok      bool
+	}{
+		{name: "nil", billing: nil, ok: false},
+		{name: "no cost", billing: &BillingUsage{}, ok: false},
+		{name: "zero cost", billing: cost(0, 6), ok: false},
+		{name: "micros scale", billing: cost(12345, 6), want: 12345, ok: true},
+		{name: "cents to micros", billing: cost(123, 2), want: 1230000, ok: true},
+		{name: "dollars to micros", billing: cost(12, 0), want: 12000000, ok: true},
+		{name: "xai tenths of micro-USD", billing: cost(123456, 10), want: 12, ok: true},
+		{name: "sub-micro floors to zero", billing: cost(5, 7), ok: false},
+		{name: "invalid scale", billing: cost(1, 19), ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := billingCostMicros(tt.billing)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && got != tt.want {
+				t.Fatalf("micros = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

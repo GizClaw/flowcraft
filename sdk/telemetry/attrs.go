@@ -7,9 +7,7 @@ package telemetry
 //     reference one constant instead of re-typing string literals,
 //     guaranteeing key parity across the codebase;
 //   - consumers (dashboards, alerting, log queries) have one place to
-//     learn what to filter on;
-//   - the `sdk/pod` orchestration layer (planned) can inject pod-level
-//     identity (pod.id / pod.agent) without inventing its own keys.
+//     learn what to filter on.
 //
 // The constants are deliberately *strings*, not typed wrappers around
 // attribute.Key / otellog.KeyValue. Producer call sites typically wrap
@@ -25,11 +23,6 @@ package telemetry
 const (
 	// ----- Identity (who is doing the work) -----
 
-	// AttrPodID identifies the sdk/pod runtime instance an operation
-	// belongs to. Set by the pod controller; absent when the
-	// operation runs outside any pod (e.g. a bare agent.Run).
-	AttrPodID = "pod.id"
-
 	// AttrAgentID identifies the agent (sdk/agent.Agent.ID) executing
 	// the operation. Stable across runs of the same logical agent.
 	AttrAgentID = "agent.id"
@@ -43,8 +36,7 @@ const (
 
 	// AttrRunID identifies one engine.Run execution
 	// (engine.Run.ID). Used as the routing key for engine event
-	// envelopes (engine.run.<run_id>.*) and as the correlation
-	// key in run-summary spans.
+	// envelopes (engine.run.<run_id>.*).
 	AttrRunID = "run.id"
 
 	// AttrParentRunID identifies the parent run when one engine.Run
@@ -108,8 +100,7 @@ const (
 	AttrLLMProvider = "llm.provider"
 
 	// AttrLLMModel identifies the resolved LLM model name a call
-	// targets. Emitted by sdk/llm dispatch spans and by the
-	// run-summary span when usage is reported.
+	// targets. Emitted by sdk/llm dispatch spans.
 	AttrLLMModel = "llm.model"
 
 	// AttrLLMInputTokens / AttrLLMOutputTokens / AttrLLMTotalTokens
@@ -166,13 +157,6 @@ const (
 	// so dashboards can join across these packages by a single
 	// dimension.
 	AttrConversationID = "conversation.id"
-
-	// AttrDatasetID identifies a knowledge dataset. Emitted by
-	// memory/knowledge (rebuild / write / delete) and any retrieval
-	// span that targets one specific dataset. Cross-package dimension;
-	// needed for "errors per
-	// dataset" / "latency per dataset" splits in the dashboard.
-	AttrDatasetID = "dataset.id"
 
 	// ----- Errors -----
 

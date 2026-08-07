@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 // HostMiddleware decorates a Host with policy / observability /
@@ -168,8 +169,8 @@ const tracingScope = "github.com/GizClaw/flowcraft/sdk/agent"
 //   - engine.host.checkpoint   — attribs: checkpoint.run_id, checkpoint.node_id,
 //     checkpoint.seq
 //   - engine.host.ask_user     — attribs: prompt.kind
-//   - engine.host.report_usage — attribs: usage.model, usage.input_tokens,
-//     usage.output_tokens
+//   - engine.host.report_usage — attribs: llm.provider, llm.model,
+//     llm.tokens.input, llm.tokens.output
 //
 // Errors set the span status to Error and record the error.
 //
@@ -269,10 +270,10 @@ func (h tracingHost) Checkpoint(ctx context.Context, cp Checkpoint) error {
 func (h tracingHost) ReportUsage(ctx context.Context, usage inference.Usage) error {
 	ctx, span := h.tracer.Start(ctx, "agent.host.report_usage",
 		trace.WithAttributes(
-			attribute.String("usage.provider", usage.Model.ID.Provider),
-			attribute.String("usage.model", usage.Model.ID.Name),
-			attribute.Int64("usage.input_tokens", usage.InputTokens),
-			attribute.Int64("usage.output_tokens", usage.OutputTokens),
+			attribute.String(telemetry.AttrLLMProvider, usage.Model.ID.Provider),
+			attribute.String(telemetry.AttrLLMModel, usage.Model.ID.Name),
+			attribute.Int64(telemetry.AttrLLMInputTokens, usage.InputTokens),
+			attribute.Int64(telemetry.AttrLLMOutputTokens, usage.OutputTokens),
 		),
 	)
 	defer span.End()

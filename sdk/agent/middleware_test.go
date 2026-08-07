@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 )
 
 func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
@@ -233,8 +234,8 @@ func TestTracingMiddleware_ReportUsageAttribs(t *testing.T) {
 		t.Fatalf("spans = %+v", spans)
 	}
 	a := attrMap(spans[0].Attributes())
-	if a["usage.provider"] != "openai" || a["usage.model"] != "gpt-4o" ||
-		a["usage.input_tokens"] != int64(12) || a["usage.output_tokens"] != int64(34) {
+	if a[telemetry.AttrLLMProvider] != "openai" || a[telemetry.AttrLLMModel] != "gpt-4o" ||
+		a[telemetry.AttrLLMInputTokens] != int64(12) || a[telemetry.AttrLLMOutputTokens] != int64(34) {
 		t.Fatalf("attrs = %#v", a)
 	}
 }
