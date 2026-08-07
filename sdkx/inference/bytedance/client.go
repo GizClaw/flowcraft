@@ -3,8 +3,10 @@ package bytedance
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
@@ -16,6 +18,14 @@ import (
 const (
 	arkAuthAPIKey = "api_key"
 	arkAuthAKSK   = "aksk"
+
+	// defaultResponseHeaderTimeout bounds how long Ark may take before
+	// response headers arrive; HTTP/1.1 + this timeout keeps a stalled
+	// request from wedging the shared connection.
+	defaultResponseHeaderTimeout = 5 * time.Minute
+	// defaultClientTimeout is the whole-request budget (mirrors the SDK
+	// default of 10m).
+	defaultClientTimeout = 10 * time.Minute
 )
 
 // profileMaterial is one credential profile after secret resolution: the
@@ -124,6 +134,16 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if spec.Region != "" {
 		options = append(options, arkruntime.WithRegion(spec.Region))
 	}
+	options = append(options,
+		arkruntime.WithHTTPClient(httpkit.NewClient(
+			httpkit.WithHTTP2(),
+			httpkit.WithTimeout(defaultClientTimeout),
+			httpkit.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
+		)),
+		// SDK-internal retries are disabled; the retry transport above owns
+		// replayable transient failures so attempts do not multiply.
+		arkruntime.WithRetryTimes(0),
+	)
 	switch {
 	case m.apiKey != "":
 		built.ark = arkruntime.NewClientWithApiKey(m.apiKey, options...)
