@@ -5,14 +5,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
+	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
 	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
 func TestGraphFactoryJavaScriptDeployment(t *testing.T) {
 	engines := agent.NewRegistry()
-	engines.MustRegister(graphagent.NewFactory())
+	engines.MustRegister(graphconfig.NewFactory())
 	builder := deploy.NewBuilder(engines)
 	builder.MustRegisterResource(jsrt.NewDeployFactory())
 

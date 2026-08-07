@@ -225,7 +225,7 @@ cancel a branch through the `parallel.cancelNode` bridge.
 
 ## Deploy integration
 
-`sdkx/agent/graph` ships the production factory used by the `graph` engine
+`sdk/graph/config` ships the production factory used by the `graph` engine
 kind in deployment documents. It wires the standard node factories
 (inference, tool, script) and exposes the canonical dependency names:
 
@@ -288,7 +288,7 @@ type is registered.
 - Package contract: `sdk/graph/doc.go` (the four layers in detail).
 - Standard node types: `sdk/graph/nodes/doc.go`,
   `sdk/graph/nodes/script/node.go`.
-- Production factory: `sdkx/agent/graph/factory.go`.
+- Production factory: `sdk/graph/config/factory.go`.
 - Board and run contract: `sdk/agent/board.go`, `sdk/agent/execute.go`
   (`Run` / `Identity`).
 - Engine wiring in deployment documents:

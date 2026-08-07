@@ -9,13 +9,13 @@ import (
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
+	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
 	memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
 	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
 	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
-	graphagent "github.com/GizClaw/flowcraft/sdkx/agent/graph"
 	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
 	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
@@ -36,7 +36,7 @@ import (
 
 func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) (*runtimecore.Runtime, error) {
 	engines := agent.NewRegistry()
-	engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(a.dir)))
+	engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(a.dir)))
 	simtools.Register(a.tools, &a.toolCalls)
 
 	deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(a.dir))
