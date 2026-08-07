@@ -283,9 +283,10 @@ func (s *responsesStream) finishEvent(
 	s.finished = true
 	usage := arkUsage(response.GetUsage())
 	return streamRaw{
-		kind:   streamRawFinish,
-		usage:  &usage,
-		finish: finish,
+		kind:       streamRawFinish,
+		usage:      &usage,
+		finish:     finish,
+		responseID: response.GetId(),
 	}, nil
 }
 
@@ -329,7 +330,10 @@ func decodeGenerateStream(
 			},
 		}, nil
 	case streamRawFinish:
-		event := inference.GenerateStreamEvent{FinishReason: raw.finish}
+		event := inference.GenerateStreamEvent{
+			FinishReason: raw.finish,
+			ResponseID:   raw.responseID,
+		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

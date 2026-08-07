@@ -142,6 +142,19 @@ const (
 	// milliseconds.
 	AttrLLMLatencyMs = "llm.latency.ms"
 
+	// AttrLLMRequestID is the provider-assigned request identifier for
+	// an inference call (e.g. DashScope's request_id or an error
+	// envelope's request id). Use it to join flowcraft spans with the
+	// provider's own request logs.
+	AttrLLMRequestID = "llm.request.id"
+
+	// AttrLLMResponseID is the provider-assigned identifier of the
+	// response object (e.g. OpenAI Responses' response.id, Anthropic's
+	// message.id, or a chat completion id). Providers that only expose
+	// one identifier usually surface it here rather than in
+	// AttrLLMRequestID.
+	AttrLLMResponseID = "llm.response.id"
+
 	// ----- Conversation / data scope -----
 
 	// AttrConversationID identifies the conversation an operation

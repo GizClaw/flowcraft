@@ -37,8 +37,9 @@ type musicWire struct {
 }
 
 type musicRaw struct {
-	data   []byte
-	format media.AudioFormat
+	data      []byte
+	format    media.AudioFormat
+	requestID string
 }
 
 var musicSampleRates = map[int]bool{
@@ -256,6 +257,9 @@ type musicResponse struct {
 	Data struct {
 		Audio string `json:"audio"`
 	} `json:"data"`
+	// TraceID is the server-assigned request trace id; the docs' example
+	// places it at the envelope root alongside data and base_resp.
+	TraceID  string   `json:"trace_id"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
@@ -274,7 +278,11 @@ func transportMusic(
 		if err != nil {
 			return musicRaw{}, err
 		}
-		return musicRaw{data: data, format: musicCanonicalFormat(wire)}, nil
+		return musicRaw{
+			data:      data,
+			format:    musicCanonicalFormat(wire),
+			requestID: resp.TraceID,
+		}, nil
 	}
 }
 
@@ -295,6 +303,7 @@ func decodeMusic(
 			}},
 		},
 		FinishReason: inference.FinishCompleted,
+		Metadata:     inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 

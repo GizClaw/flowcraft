@@ -93,6 +93,9 @@ func TestGenerateUnaryReasoning(t *testing.T) {
 	if response.Usage.Output.ReasoningAccounting != inference.ReasoningIncludedInOutput {
 		t.Fatalf("accounting = %q", response.Usage.Output.ReasoningAccounting)
 	}
+	if response.Metadata.ResponseID != "chatcmpl_1" {
+		t.Fatalf("response id = %q, want chatcmpl_1", response.Metadata.ResponseID)
+	}
 }
 
 func TestGenerateStreamReasoningThenText(t *testing.T) {
@@ -155,6 +158,16 @@ func TestGenerateStreamReasoningThenText(t *testing.T) {
 	}
 	if finish.Usage == nil || finish.Usage.TotalTokens != 19 {
 		t.Fatalf("usage = %+v", finish.Usage)
+	}
+	if finish.ResponseID != "chatcmpl_1" {
+		t.Fatalf("stream response id = %q, want chatcmpl_1", finish.ResponseID)
+	}
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if result.Metadata.ResponseID != "chatcmpl_1" {
+		t.Fatalf("result response id = %q, want chatcmpl_1", result.Metadata.ResponseID)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -88,10 +89,12 @@ func TestRouteTelemetryRecordsFallbackJourney(t *testing.T) {
 		t.Fatalf("route span status = %v, want Ok", routeSpan.Status())
 	}
 	for key, want := range map[string]any{
-		"route.selected.provider": "fake",
-		"route.selected.model":    "primary",
-		"route.executed.model":    "backup",
-		"route.fallbacks":         1,
+		"route.selected.provider":   "fake",
+		"route.selected.model":      "primary",
+		"route.executed.model":      "backup",
+		"route.fallbacks":           1,
+		telemetry.AttrLLMRequestID:  "route-req",
+		telemetry.AttrLLMResponseID: "route-resp",
 	} {
 		attr, ok := routeSpanAttr(routeSpan, key)
 		if !ok {

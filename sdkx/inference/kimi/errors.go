@@ -22,6 +22,8 @@ type errorEnvelope struct {
 		Type    string `json:"type"`
 		Code    string `json:"code"`
 	} `json:"error"`
+	// RequestID is the request identifier some Kimi failure bodies carry.
+	RequestID string `json:"request_id"`
 }
 
 // classifyError normalizes transport-level errors into the errdefs
@@ -72,31 +74,32 @@ func classifyHTTPError(ctx context.Context, status int, body []byte) error {
 	}
 	detail := fmt.Errorf("kimi: HTTP %d: %s", status, message)
 
+	var classified error
 	switch status {
 	case http.StatusBadRequest:
 		// Kimi marks request-shape failures invalid_request_error; a
 		// missing model surfaces as a 400 naming the model.
 		if strings.Contains(kind, "invalid") || kind == "" {
-			return errdefs.Validation(detail)
+			classified = errdefs.Validation(detail)
+		} else {
+			classified = classifyKind(kind, detail)
 		}
-		return classifyKind(kind, detail)
 	case http.StatusUnauthorized:
-		return errdefs.Unauthorized(detail)
+		classified = errdefs.Unauthorized(detail)
 	case http.StatusForbidden:
-		return errdefs.Forbidden(detail)
+		classified = errdefs.Forbidden(detail)
 	case http.StatusNotFound:
-		return errdefs.Validation(detail)
+		classified = errdefs.Validation(detail)
 	case http.StatusTooManyRequests:
-		return errdefs.RateLimit(detail)
+		classified = errdefs.RateLimit(detail)
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
-		return errdefs.Timeout(detail)
+		classified = errdefs.Timeout(detail)
 	case http.StatusConflict:
-		return errdefs.Conflict(detail)
+		classified = errdefs.Conflict(detail)
+	default:
+		classified = errdefs.NotAvailable(detail)
 	}
-	if status >= 500 {
-		return errdefs.NotAvailable(detail)
-	}
-	return errdefs.NotAvailable(detail)
+	return errdefs.WithRequestID(classified, envelope.RequestID)
 }
 
 // classifyKind maps Kimi's error.type vocabulary when the status alone

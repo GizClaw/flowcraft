@@ -24,6 +24,7 @@ type messagesStream struct {
 	finished bool
 	sawTools bool
 	usage    rawUsage // accumulates message_start input + message_delta output
+	id       string   // message id from message_start
 }
 
 type streamPart struct {
@@ -87,6 +88,7 @@ func (s *messagesStream) apply(
 ) (streamRaw, bool, error) {
 	switch event.Type {
 	case "message_start":
+		s.id = event.Message.ID
 		s.usage.inputTokens = event.Message.Usage.InputTokens
 		s.usage.cacheReadTokens = event.Message.Usage.CacheReadInputTokens
 		s.usage.cacheWriteTokens = event.Message.Usage.CacheCreationInputTokens
@@ -227,9 +229,10 @@ func (s *messagesStream) finishEvent(
 	s.finished = true
 	usage := s.usage
 	return streamRaw{
-		kind:   streamRawFinish,
-		usage:  &usage,
-		finish: finish,
+		kind:       streamRawFinish,
+		usage:      &usage,
+		finish:     finish,
+		responseID: s.id,
 	}, true, nil
 }
 
@@ -263,7 +266,10 @@ func decodeGenerateStream(
 			},
 		}, nil
 	case streamRawFinish:
-		event := inference.GenerateStreamEvent{FinishReason: raw.finish}
+		event := inference.GenerateStreamEvent{
+			FinishReason: raw.finish,
+			ResponseID:   raw.responseID,
+		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

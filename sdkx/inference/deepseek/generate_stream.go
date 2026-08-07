@@ -32,6 +32,7 @@ type chatStream struct {
 	usage     *rawUsage
 	sawTools  bool
 	ended     bool
+	id        string // chat completion id from the stream chunks
 }
 
 // transportGenerateStream opens the streaming request and returns the
@@ -93,6 +94,9 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 // usage are recorded, not emitted: the finish event ships at stream end so
 // it carries both.
 func (s *chatStream) apply(chunk openaigo.ChatCompletionChunk) {
+	if chunk.ID != "" {
+		s.id = chunk.ID
+	}
 	if chunk.Usage.JSON.PromptTokens.Valid() || chunk.Usage.JSON.CompletionTokens.Valid() {
 		usage := usageToRaw(chunk.Usage)
 		s.usage = &usage
@@ -152,7 +156,12 @@ func (s *chatStream) end() {
 	if finish == "" {
 		finish = inference.FinishCompleted
 	}
-	s.pending = append(s.pending, streamRaw{kind: streamRawFinish, finish: finish, usage: s.usage})
+	s.pending = append(s.pending, streamRaw{
+		kind:       streamRawFinish,
+		finish:     finish,
+		usage:      s.usage,
+		responseID: s.id,
+	})
 }
 
 func (s *chatStream) assignPart() int {
@@ -199,7 +208,10 @@ func decodeGenerateStream(_ context.Context, raw streamRaw) (inference.GenerateS
 			},
 		}, nil
 	case streamRawFinish:
-		event := inference.GenerateStreamEvent{FinishReason: raw.finish}
+		event := inference.GenerateStreamEvent{
+			FinishReason: raw.finish,
+			ResponseID:   raw.responseID,
+		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

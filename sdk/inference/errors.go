@@ -44,7 +44,12 @@ type Error struct {
 	// before surfacing this failure. Zero means the provider did not report
 	// a count.
 	WireAttempts int
-	cause        error
+	// RequestID is the provider-assigned request identifier attached to
+	// this failure when the provider reported one. Empty otherwise.
+	// Runtime telemetry mirrors it onto error spans and logs as
+	// llm.request.id.
+	RequestID string
+	cause     error
 }
 
 func NewError(kind ErrorKind, operation Operation, field FieldID, cause error) *Error {
@@ -73,6 +78,9 @@ func newProviderError(
 		err.RetryAfter = retryAfter
 	}
 	err.WireAttempts = errdefs.RetryCount(cause)
+	if requestID, ok := errdefs.RequestID(cause); ok {
+		err.RequestID = requestID
+	}
 	return err
 }
 

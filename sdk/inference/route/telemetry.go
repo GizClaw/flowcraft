@@ -54,6 +54,7 @@ func recordRoute(
 	span trace.Span,
 	operation inference.Operation,
 	routeTrace Trace,
+	metadata inference.Metadata,
 	err error,
 ) {
 	opAttr := attribute.String("inference.operation", string(operation))
@@ -121,6 +122,14 @@ func recordRoute(
 		attribute.String("route.executed.provider", executed.ID.Provider),
 		attribute.String("route.executed.model", executed.ID.Name),
 	)
+	if metadata.RequestID != "" {
+		span.SetAttributes(
+			attribute.String(telemetry.AttrLLMRequestID, metadata.RequestID))
+	}
+	if metadata.ResponseID != "" {
+		span.SetAttributes(
+			attribute.String(telemetry.AttrLLMResponseID, metadata.ResponseID))
+	}
 	if len(routeTrace.Fallbacks) > 0 {
 		routeFallbackCount.Add(ctx, 1, metric.WithAttributes(opAttr))
 	}

@@ -35,6 +35,7 @@ func musicOKServer(t *testing.T, audio []byte) *messagesServer {
 	return newMessagesServer(t, func(w http.ResponseWriter, body map[string]any) {
 		payload, _ := json.Marshal(map[string]any{
 			"data":      map[string]any{"audio": hex.EncodeToString(audio), "status": 2},
+			"trace_id":  "music-1",
 			"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 		})
 		_, _ = w.Write(payload)
@@ -101,6 +102,9 @@ func TestMusicUnary(t *testing.T) {
 	}
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %v", response.FinishReason)
+	}
+	if response.Metadata.RequestID != "music-1" {
+		t.Fatalf("request id = %q, want music-1", response.Metadata.RequestID)
 	}
 
 	sent := server.body(t, 0)
@@ -199,12 +203,14 @@ func TestMusicStream(t *testing.T) {
 		for _, chunk := range chunks {
 			payload, _ := json.Marshal(map[string]any{
 				"data":      map[string]any{"audio": chunk, "status": 1},
+				"trace_id":  "music-1",
 				"base_resp": map[string]any{"status_code": 0},
 			})
 			_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
 		}
 		payload, _ := json.Marshal(map[string]any{
 			"data":      map[string]any{"audio": "", "status": 2},
+			"trace_id":  "music-1",
 			"base_resp": map[string]any{"status_code": 0},
 		})
 		_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
@@ -238,6 +244,13 @@ func TestMusicStream(t *testing.T) {
 	}
 	if !finished {
 		t.Fatal("no finish event")
+	}
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if result.Metadata.RequestID != "music-1" {
+		t.Fatalf("stream request id = %q, want music-1", result.Metadata.RequestID)
 	}
 
 	sent := server.body(t, 0)

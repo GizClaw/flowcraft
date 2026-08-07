@@ -14,6 +14,7 @@ import (
 // reason, and (on the final chunk, since the driver always requests
 // stream_options.include_usage) the usage object.
 type chunkEnvelope struct {
+	ID      string `json:"id"`
 	Choices []struct {
 		Index int `json:"index"`
 		Delta struct {
@@ -47,12 +48,13 @@ const (
 )
 
 type streamRaw struct {
-	kind   streamRawKind
-	part   int // canonical part index, assigned by the transport
-	text   string
-	tool   streamRawTool
-	usage  *rawUsage
-	finish inference.FinishReason
+	kind       streamRawKind
+	part       int // canonical part index, assigned by the transport
+	text       string
+	responseID string // chat completion id from the stream chunks
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
 }
 
 type streamRawTool struct {
@@ -81,6 +83,7 @@ type chatStream struct {
 	usage    *rawUsage
 	sawTools bool
 	ended    bool
+	id       string // chat completion id from the stream chunks
 }
 
 // transportGenerateStream opens the streaming request and returns the
@@ -158,6 +161,9 @@ func (s *chatStream) apply(data []byte) error {
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return errdefs.NotAvailablef("kimi: decode stream chunk: %v", err)
 	}
+	if chunk.ID != "" {
+		s.id = chunk.ID
+	}
 	if chunk.Usage != nil {
 		usage := chunk.Usage.toRaw()
 		s.usage = &usage
@@ -212,7 +218,12 @@ func (s *chatStream) end() {
 	if finish == "" {
 		finish = inference.FinishCompleted
 	}
-	s.pending = append(s.pending, streamRaw{kind: streamRawFinish, finish: finish, usage: s.usage})
+	s.pending = append(s.pending, streamRaw{
+		kind:       streamRawFinish,
+		finish:     finish,
+		usage:      s.usage,
+		responseID: s.id,
+	})
 }
 
 func (s *chatStream) assignPart() int {
@@ -259,7 +270,10 @@ func decodeGenerateStream(_ context.Context, raw streamRaw) (inference.GenerateS
 			},
 		}, nil
 	case streamRawFinish:
-		event := inference.GenerateStreamEvent{FinishReason: raw.finish}
+		event := inference.GenerateStreamEvent{
+			FinishReason: raw.finish,
+			ResponseID:   raw.responseID,
+		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

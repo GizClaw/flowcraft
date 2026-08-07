@@ -25,6 +25,9 @@ type streamFragment struct {
 	call   *wireToolCall // tool-call delta
 	finish string        // wire finish reason
 	usage  *dashUsage
+	// requestID rides every fragment from the shared SSE envelope so the
+	// terminal event can carry it onto the canonical stream result.
+	requestID string
 }
 
 type fragmentKind int
@@ -82,6 +85,7 @@ func decodeStreamFragment(
 	case fragmentFinish:
 		event := inference.GenerateStreamEvent{
 			FinishReason: finishReason(fragment.finish),
+			RequestID:    fragment.requestID,
 		}
 		if fragment.usage != nil {
 			usage := fragment.usage.canonical()
@@ -207,7 +211,9 @@ func splitChunk(payload []byte) ([]streamFragment, error) {
 	if err := json.Unmarshal(payload, &chunk); err != nil {
 		return nil, fmt.Errorf("qwen: decode stream chunk: %w", err)
 	}
-	if err := classifyEnvelope(chunk.Code, chunk.Message); err != nil {
+	if err := classifyEnvelope(
+		chunk.Code, chunk.Message, chunk.RequestID,
+	); err != nil {
 		return nil, err
 	}
 	if len(chunk.Output.Choices) == 0 {
@@ -216,32 +222,36 @@ func splitChunk(payload []byte) ([]streamFragment, error) {
 	choice := chunk.Output.Choices[0]
 	message := choice.Message
 	var fragments []streamFragment
+	stamp := func(fragment streamFragment) streamFragment {
+		fragment.requestID = chunk.RequestID
+		return fragment
+	}
 	if message.ReasoningContent != "" {
-		fragments = append(fragments, streamFragment{
+		fragments = append(fragments, stamp(streamFragment{
 			kind: fragmentReasoning,
 			text: message.ReasoningContent,
-		})
+		}))
 	}
 	if text := messageContentText(message.Content); text != "" {
-		fragments = append(fragments, streamFragment{
+		fragments = append(fragments, stamp(streamFragment{
 			kind: fragmentText,
 			text: text,
-		})
+		}))
 	}
 	for i := range message.ToolCalls {
 		call := message.ToolCalls[i]
-		fragments = append(fragments, streamFragment{
+		fragments = append(fragments, stamp(streamFragment{
 			kind: fragmentToolCall,
 			call: &call,
-		})
+		}))
 	}
 	if choice.FinishReason != "" && choice.FinishReason != "null" {
 		usage := chunk.usage()
-		fragments = append(fragments, streamFragment{
+		fragments = append(fragments, stamp(streamFragment{
 			kind:   fragmentFinish,
 			finish: choice.FinishReason,
 			usage:  &usage,
-		})
+		}))
 	}
 	return fragments, nil
 }

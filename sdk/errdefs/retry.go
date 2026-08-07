@@ -19,6 +19,13 @@ type RetryCountCoder interface {
 	RetryCount() int
 }
 
+// RequestIDCoder is implemented by errors that carry a provider-assigned
+// request identifier, useful for correlating a failure with the provider's
+// own trace/log surface.
+type RequestIDCoder interface {
+	RequestID() string
+}
+
 type retryAfterHint struct {
 	error
 	retryAfter time.Duration
@@ -103,4 +110,34 @@ func RetryCount(err error) int {
 		return coder.RetryCount()
 	}
 	return 0
+}
+
+type requestIDHint struct {
+	error
+	requestID string
+}
+
+func (e requestIDHint) Unwrap() error { return e.error }
+
+func (e requestIDHint) RequestID() string { return e.requestID }
+
+// WithRequestID wraps err with a provider-assigned request identifier. Nil
+// and empty identifiers return err unchanged so callers can attach them
+// unconditionally.
+func WithRequestID(err error, id string) error {
+	if err == nil || strings.TrimSpace(id) == "" {
+		return err
+	}
+	return requestIDHint{error: err, requestID: id}
+}
+
+// RequestID reads the provider request identifier from an error chain. It
+// reports false when the chain carries no identifier.
+func RequestID(err error) (string, bool) {
+	var coder RequestIDCoder
+	if errors.As(err, &coder) {
+		id := coder.RequestID()
+		return id, id != ""
+	}
+	return "", false
 }

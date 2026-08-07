@@ -110,16 +110,45 @@ func (t callTelemetry) finish(ctx context.Context, err error) {
 	}
 	kind := classifyError(err)
 	t.span.SetAttributes(attribute.String("inference.error_kind", kind))
-	t.span.SetStatus(codes.Error, err.Error())
-	t.span.End()
-	inferenceExecCount.Add(ctx, 1, t.metricAttrs(attribute.String("status", "error")))
-	inferenceErrorCount.Add(ctx, 1, t.metricAttrs(attribute.String("error_kind", kind)))
-	telemetry.Warn(ctx, "inference operation failed",
+	logAttrs := []otellog.KeyValue{
 		otellog.String("inference.operation", string(t.op)),
 		otellog.String(telemetry.AttrLLMProvider, t.model.ID.Provider),
 		otellog.String(telemetry.AttrLLMModel, t.model.ID.Name),
 		otellog.String("inference.error_kind", kind),
-		otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	}
+	if requestID := requestIDOf(err); requestID != "" {
+		t.span.SetAttributes(attribute.String(telemetry.AttrLLMRequestID, requestID))
+		logAttrs = append(logAttrs, otellog.String(telemetry.AttrLLMRequestID, requestID))
+	}
+	t.span.SetStatus(codes.Error, err.Error())
+	t.span.End()
+	inferenceExecCount.Add(ctx, 1, t.metricAttrs(attribute.String("status", "error")))
+	inferenceErrorCount.Add(ctx, 1, t.metricAttrs(attribute.String("error_kind", kind)))
+	telemetry.Warn(ctx, "inference operation failed", logAttrs...)
+}
+
+// requestIDOf extracts the provider request identifier from a structured
+// inference error when the provider attached one.
+func requestIDOf(err error) string {
+	var inferenceErr *Error
+	if errors.As(err, &inferenceErr) {
+		return inferenceErr.RequestID
+	}
+	return ""
+}
+
+// recordIDs mirrors provider-assigned request/response identifiers onto
+// the call span. Empty values are left out so spans stay slim.
+func (t callTelemetry) recordIDs(_ context.Context, metadata Metadata) {
+	if metadata.RequestID != "" {
+		t.span.SetAttributes(
+			attribute.String(telemetry.AttrLLMRequestID, metadata.RequestID))
+	}
+	if metadata.ResponseID != "" {
+		t.span.SetAttributes(
+			attribute.String(telemetry.AttrLLMResponseID, metadata.ResponseID))
+	}
 }
 
 // stampUsage fills the call-context envelope on a usage value about
@@ -206,10 +235,12 @@ func (t callTelemetry) recordTranscriptionUsage(_ context.Context, usage Transcr
 // the one recorded.
 type telemetryStream struct {
 	GenerateStream
-	tel  callTelemetry
-	ctx  context.Context
-	once sync.Once
-	last *Usage
+	tel        callTelemetry
+	ctx        context.Context
+	once       sync.Once
+	last       *Usage
+	requestID  string
+	responseID string
 }
 
 func wrapStreamTelemetry(ctx context.Context, tel callTelemetry, stream GenerateStream) GenerateStream {
@@ -224,6 +255,12 @@ func (s *telemetryStream) Next(ctx context.Context) (GenerateStreamEvent, error)
 			// caller-visible event carry the same envelope.
 			s.tel.stampUsage(event.Usage)
 			s.last = event.Usage
+		}
+		if event.RequestID != "" {
+			s.requestID = event.RequestID
+		}
+		if event.ResponseID != "" {
+			s.responseID = event.ResponseID
 		}
 		return event, nil
 	}
@@ -241,6 +278,7 @@ func (s *telemetryStream) Result() (GenerateResponse, error) {
 	resp, err := s.GenerateStream.Result()
 	if err == nil {
 		s.tel.stampUsage(&resp.Usage)
+		s.tel.recordIDs(s.ctx, resp.Metadata)
 	}
 	return resp, err
 }
@@ -260,6 +298,12 @@ func (s *telemetryStream) end(err error) {
 	s.once.Do(func() {
 		if s.last != nil {
 			s.tel.recordUsage(s.ctx, *s.last)
+		}
+		if s.requestID != "" || s.responseID != "" {
+			s.tel.recordIDs(s.ctx, Metadata{
+				RequestID:  s.requestID,
+				ResponseID: s.responseID,
+			})
 		}
 		s.tel.finish(s.ctx, err)
 	})

@@ -14,6 +14,7 @@ func (r *Runtime) Transcribe(
 	defer func() {
 		if err == nil {
 			tel.recordTranscriptionUsage(ctx, resp.Usage)
+			tel.recordIDs(ctx, resp.Metadata)
 		}
 		tel.finish(ctx, err)
 	}()

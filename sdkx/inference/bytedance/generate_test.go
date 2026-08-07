@@ -198,6 +198,9 @@ func TestGenerateUnaryCapturedWire(t *testing.T) {
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
+	if response.Metadata.ResponseID != "resp_1" {
+		t.Fatalf("response id = %q, want resp_1", response.Metadata.ResponseID)
+	}
 	if response.Usage.TotalTokens != 19 {
 		t.Fatalf("usage = %+v", response.Usage)
 	}

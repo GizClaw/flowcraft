@@ -112,8 +112,9 @@ func (c *dashClient) request(
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		var failure struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
+			Code      string `json:"code"`
+			Message   string `json:"message"`
+			RequestID string `json:"request_id"`
 		}
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
 		// A failure here means we cannot enrich classifyHTTPError with
@@ -125,11 +126,15 @@ func (c *dashClient) request(
 				otellog.String("provider", "qwen"),
 				otellog.Int("http.status", resp.StatusCode))
 		}
+		classified := errdefs.WithRequestID(
+			classifyHTTPError(
+				resp.StatusCode, failure.Code, failure.Message, snippet,
+			),
+			failure.RequestID,
+		)
 		return nil, errdefs.WithRetryCount(
 			errdefs.WithRetryAfter(
-				classifyHTTPError(
-					resp.StatusCode, failure.Code, failure.Message, snippet,
-				),
+				classified,
 				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
 			),
 			httpkit.RetryCountOf(resp),

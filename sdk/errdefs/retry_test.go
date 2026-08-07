@@ -74,3 +74,29 @@ func TestParseRetryCount(t *testing.T) {
 		}
 	}
 }
+
+func TestWithRequestIDAndRequestID(t *testing.T) {
+	err := WithRequestID(NotAvailable(errors.New("boom")), "req-1")
+	got, ok := RequestID(err)
+	if !ok || got != "req-1" {
+		t.Fatalf("RequestID = %q/%v, want req-1/true", got, ok)
+	}
+	if got, ok := RequestID(errors.New("plain")); ok || got != "" {
+		t.Fatalf("RequestID(plain) = %q/%v, want empty/false", got, ok)
+	}
+}
+
+func TestRequestIDWalksWrappedChain(t *testing.T) {
+	inner := WithRequestID(Timeout(errors.New("slow")), "req-2")
+	wrapped := errors.Join(errors.New("outer"), inner)
+	got, ok := RequestID(wrapped)
+	if !ok || got != "req-2" {
+		t.Fatalf("RequestID = %q/%v, want req-2/true", got, ok)
+	}
+}
+
+func TestWithRequestIDIgnoresEmpty(t *testing.T) {
+	if got, ok := RequestID(WithRequestID(errors.New("plain"), " ")); ok || got != "" {
+		t.Fatalf("empty identifier reported: %q/%v", got, ok)
+	}
+}

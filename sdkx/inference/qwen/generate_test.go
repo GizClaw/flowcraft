@@ -46,6 +46,9 @@ func TestUnaryTextOnWire(t *testing.T) {
 	if response.Usage.TotalTokens != 19 {
 		t.Fatalf("usage = %+v", response.Usage)
 	}
+	if response.Metadata.RequestID != "req_1" {
+		t.Fatalf("request id = %q, want req_1", response.Metadata.RequestID)
+	}
 
 	if path := server.path(t, 0); path != pathTextGeneration {
 		t.Fatalf("path = %q", path)
@@ -714,6 +717,9 @@ func TestStreamToolCalls(t *testing.T) {
 	}
 	if string(call.Call.Arguments) != `{"city":"hz"}` {
 		t.Fatalf("arguments = %s", call.Call.Arguments)
+	}
+	if result.Metadata.RequestID != "req_1" {
+		t.Fatalf("stream request id = %q, want req_1", result.Metadata.RequestID)
 	}
 }
 

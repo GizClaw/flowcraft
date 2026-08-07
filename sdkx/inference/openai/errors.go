@@ -24,6 +24,10 @@ func classifyError(err error) error {
 	if apiErr, ok := errors.AsType[*openai.Error](err); ok {
 		classified := classifyHTTPStatus(apiErr.StatusCode, err)
 		if apiErr.Response != nil {
+			classified = errdefs.WithRequestID(
+				classified,
+				apiErr.Response.Header.Get("x-request-id"),
+			)
 			classified = errdefs.WithRetryAfter(
 				classified,
 				errdefs.ParseRetryAfter(apiErr.Response.Header.Get("Retry-After")),

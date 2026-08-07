@@ -152,13 +152,14 @@ type rawUsage struct {
 // canonical part indices (it is the stateful stage) so the decoder function
 // stays pure and concurrency-safe.
 type streamRaw struct {
-	kind   streamRawKind
-	part   int    // canonical part index (text / tool / reasoning kinds)
-	text   string // text / summary delta
-	id     string // terminal reasoning item id
-	tool   streamRawTool
-	usage  *rawUsage
-	finish inference.FinishReason
+	kind       streamRawKind
+	part       int    // canonical part index (text / tool / reasoning kinds)
+	text       string // text / summary delta
+	id         string // terminal reasoning item id
+	responseID string // response id from the terminal event
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
 }
 
 type streamRawKind int

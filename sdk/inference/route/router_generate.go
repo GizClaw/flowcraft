@@ -46,7 +46,7 @@ func (r *Router) Generate(
 			return response, response.Metadata, err
 		},
 	)
-	recordRoute(ctx, span, inference.OperationGenerate, trace, err)
+	recordRoute(ctx, span, inference.OperationGenerate, trace, response.Metadata, err)
 	return response, trace, err
 }
 
@@ -55,7 +55,12 @@ func (r *Router) GenerateStream(
 	request inference.GenerateRequest,
 ) (stream inference.GenerateStream, routeTrace Trace, err error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
-	defer func() { recordRoute(ctx, span, inference.OperationGenerate, routeTrace, err) }()
+	defer func() {
+		recordRoute(
+			ctx, span, inference.OperationGenerate, routeTrace,
+			inference.Metadata{}, err,
+		)
+	}()
 	snapshot := request.Clone()
 	stream, routeTrace, err = openSessionWithFallback(r,
 		ctx,

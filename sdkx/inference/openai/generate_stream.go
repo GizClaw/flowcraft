@@ -246,9 +246,10 @@ func (s *responsesStream) finishEvent(
 	s.finished = true
 	usage := responseUsage(response.Usage)
 	return streamRaw{
-		kind:   streamRawFinish,
-		usage:  &usage,
-		finish: finish,
+		kind:       streamRawFinish,
+		usage:      &usage,
+		finish:     finish,
+		responseID: response.ID,
 	}, nil
 }
 
@@ -283,7 +284,10 @@ func decodeGenerateStream(
 			},
 		}, nil
 	case streamRawFinish:
-		event := inference.GenerateStreamEvent{FinishReason: raw.finish}
+		event := inference.GenerateStreamEvent{
+			FinishReason: raw.finish,
+			ResponseID:   raw.responseID,
+		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

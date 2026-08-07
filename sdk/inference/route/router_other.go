@@ -90,7 +90,7 @@ func (r *Router) Embed(
 			return response, response.Metadata, err
 		},
 	)
-	recordRoute(ctx, span, inference.OperationEmbed, trace, err)
+	recordRoute(ctx, span, inference.OperationEmbed, trace, response.Metadata, err)
 	return response, trace, err
 }
 
@@ -140,7 +140,7 @@ func (r *Router) Transcribe(
 			return response, response.Metadata, err
 		},
 	)
-	recordRoute(ctx, span, inference.OperationTranscription, trace, err)
+	recordRoute(ctx, span, inference.OperationTranscription, trace, response.Metadata, err)
 	return response, trace, err
 }
 
@@ -187,7 +187,10 @@ func (r *Router) OpenTranscription(
 		nil,
 		r.runtime.OpenTranscription,
 	)
-	recordRoute(ctx, span, inference.OperationTranscription, trace, err)
+	recordRoute(
+		ctx, span, inference.OperationTranscription, trace,
+		inference.Metadata{}, err,
+	)
 	return session, trace, err
 }
 
@@ -238,7 +241,10 @@ func (r *Router) OpenRealtime(
 		nil,
 		r.runtime.OpenRealtime,
 	)
-	recordRoute(ctx, span, inference.OperationRealtime, trace, err)
+	recordRoute(
+		ctx, span, inference.OperationRealtime, trace,
+		inference.Metadata{}, err,
+	)
 	return session, trace, err
 }
 

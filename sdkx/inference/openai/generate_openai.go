@@ -330,6 +330,7 @@ func decodeGenerate(
 		},
 		FinishReason: raw.finish,
 		Usage:        rawUsageCanonical(raw.usage),
+		Metadata:     inference.Metadata{ResponseID: raw.id},
 	}, nil
 }
 

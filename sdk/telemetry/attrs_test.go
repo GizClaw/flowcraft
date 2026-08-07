@@ -29,6 +29,8 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMCachedInputTokens, "llm.tokens.input.cached"},
 		{AttrLLMCostMicros, "llm.cost.micros"},
 		{AttrLLMLatencyMs, "llm.latency.ms"},
+		{AttrLLMRequestID, "llm.request.id"},
+		{AttrLLMResponseID, "llm.response.id"},
 		{AttrConversationID, "conversation.id"},
 		{AttrDatasetID, "dataset.id"},
 		{AttrErrorMessage, "error.message"},

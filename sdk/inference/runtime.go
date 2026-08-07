@@ -105,6 +105,7 @@ func (r *Runtime) Generate(
 		if err == nil {
 			tel.stampUsage(&resp.Usage)
 			tel.recordUsage(ctx, resp.Usage)
+			tel.recordIDs(ctx, resp.Metadata)
 		}
 		tel.finish(ctx, err)
 	}()
@@ -220,6 +221,7 @@ func (r *Runtime) Embed(
 	defer func() {
 		if err == nil {
 			tel.recordEmbedUsage(ctx, resp.Usage)
+			tel.recordIDs(ctx, resp.Metadata)
 		}
 		tel.finish(ctx, err)
 	}()
