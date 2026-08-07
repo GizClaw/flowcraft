@@ -1,5 +1,7 @@
-// Package graphagent provides the production agent.Factory for sdk/graph.
-package graphagent
+// Package config assembles graph agents: it provides the production
+// agent.Factory for sdk/graph and is the graph domain's deployment
+// configuration assembly.
+package config
 
 import (
 	"bytes"

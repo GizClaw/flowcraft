@@ -147,12 +147,13 @@ Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdk/inference/config`, `memoryconfig` =
 `github.com/GizClaw/flowcraft/sdk/memory/config`, `flowcraftmemory` =
 `github.com/GizClaw/flowcraft/memory/config`, `flowcraftruntime` =
-`github.com/GizClaw/flowcraft/memory/runtime`, and `message` =
+`github.com/GizClaw/flowcraft/memory/runtime`, `graphconfig` =
+`github.com/GizClaw/flowcraft/sdk/graph/config`, and `message` =
 `github.com/GizClaw/flowcraft/sdk/message`.
 
 ```go
 engines := agent.NewRegistry()
-engines.MustRegister(graphagent.NewFactory(graphagent.WithBaseDir(configDir)))
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
 
 deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
 deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
