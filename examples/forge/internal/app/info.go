@@ -1,15 +1,16 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
+	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	memoryhook "github.com/GizClaw/flowcraft/sdkx/memory/hook"
-	"gopkg.in/yaml.v3"
 )
 
 // inspectDocument reads metadata out of the native documents without
@@ -17,8 +18,7 @@ import (
 func inspectDocument(workspaceDir string, doc deploy.Document) (Info, error) {
 	info := Info{ContextID: "__default__"}
 	if rawSpeakers, err := os.ReadFile(filepath.Join(workspaceDir, "speakers.yaml")); err == nil {
-		var speakers map[string]string
-		if err := yaml.Unmarshal(rawSpeakers, &speakers); err == nil {
+		if speakers, err := decodeSpeakers(rawSpeakers); err == nil {
 			info.Speakers = speakers
 		}
 	}
@@ -31,8 +31,7 @@ func inspectDocument(workspaceDir string, doc deploy.Document) (Info, error) {
 		break
 	}
 	if rawMemory, err := os.ReadFile(filepath.Join(workspaceDir, "memory.yaml")); err == nil {
-		var settings flowcraftmemory.Settings
-		if err := yaml.Unmarshal(rawMemory, &settings); err == nil {
+		if settings, err := decodeMemorySettings(rawMemory); err == nil {
 			info.MemoryEnabled = true
 			info.GenerateModel = settings.Generate.Provider + "/" + settings.Generate.Name
 			if len(settings.Scopes) > 0 {
@@ -72,17 +71,8 @@ func requireProviderCredential(workspaceDir string) error {
 	if err != nil {
 		return fmt.Errorf("read inference config: %w", err)
 	}
-	var doc struct {
-		Providers []struct {
-			Profiles []struct {
-				Secrets map[string]struct {
-					Resolver string `yaml:"resolver"`
-					Key      string `yaml:"key"`
-				} `yaml:"secrets"`
-			} `yaml:"profiles"`
-		} `yaml:"providers"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
+	doc, err := decodeInferenceCredentials(raw)
+	if err != nil {
 		return fmt.Errorf("decode inference config: %w", err)
 	}
 	var keys []string
@@ -99,4 +89,63 @@ func requireProviderCredential(workspaceDir string) error {
 		}
 	}
 	return fmt.Errorf("no provider credentials available; set one of %s in .env", strings.Join(keys, ", "))
+}
+
+// decodeSpeakers reads the YAML authoring file with JSON semantics:
+// utils converts the document at the boundary, and the result is a
+// plain string map.
+func decodeSpeakers(raw []byte) (map[string]string, error) {
+	jsonData, err := configutils.ToJSON(raw)
+	if err != nil {
+		return nil, err
+	}
+	var speakers map[string]string
+	if err := json.Unmarshal(jsonData, &speakers); err != nil {
+		return nil, err
+	}
+	return speakers, nil
+}
+
+// decodeMemorySettings decodes memory.yaml through the JSON wire
+// protocol. The settings type is JSON-tagged, so the YAML document
+// must pass through utils.ToJSON before encoding/json sees it; this
+// keeps keys like runtime_id matching the wire protocol.
+func decodeMemorySettings(raw []byte) (flowcraftmemory.Settings, error) {
+	jsonData, err := configutils.ToJSON(raw)
+	if err != nil {
+		return flowcraftmemory.Settings{}, err
+	}
+	var settings flowcraftmemory.Settings
+	if err := json.Unmarshal(jsonData, &settings); err != nil {
+		return flowcraftmemory.Settings{}, err
+	}
+	return settings, nil
+}
+
+type inferenceCredentials struct {
+	Providers []struct {
+		Profiles []struct {
+			Secrets map[string]struct {
+				Resolver string `json:"resolver"`
+				Key      string `json:"key"`
+			} `json:"secrets"`
+		} `json:"profiles"`
+	} `json:"providers"`
+}
+
+// decodeInferenceCredentials converts the YAML authoring document to
+// JSON and decodes only the secret references the preflight needs.
+// json.Unmarshal (not utils.Decode) is used on purpose: version, id,
+// driver, and provider-specific fields are valid in inference.yaml but
+// irrelevant here, and the preflight should stay best-effort.
+func decodeInferenceCredentials(raw []byte) (inferenceCredentials, error) {
+	jsonData, err := configutils.ToJSON(raw)
+	if err != nil {
+		return inferenceCredentials{}, err
+	}
+	var doc inferenceCredentials
+	if err := json.Unmarshal(jsonData, &doc); err != nil {
+		return inferenceCredentials{}, err
+	}
+	return doc, nil
 }

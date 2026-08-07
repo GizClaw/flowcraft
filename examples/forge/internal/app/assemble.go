@@ -1,14 +1,18 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 
+	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
@@ -30,9 +34,6 @@ import (
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	delegationruntime "github.com/GizClaw/flowcraft/sdkx/runtime/integration/delegation"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
-	"gopkg.in/yaml.v3"
-
-	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
 )
 
 func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) (*runtimecore.Runtime, error) {
@@ -114,9 +115,19 @@ func providerFactories() map[string]inferenceconfig.Factory {
 // untouched; this is application-side file resolution, which the docs
 // leave to the consumer. Workspace roots resolve against the host
 // builder's BaseDir instead of a document field.
+//
+// YAML is converted to JSON at the parsing boundary by sdk/config/utils;
+// the rewrite then happens on plain JSON values, and the returned bytes
+// are JSON, which deploy.Parse accepts natively.
 func absolutizeDeployment(raw []byte, dir string) ([]byte, error) {
+	jsonData, err := configutils.ToJSON(raw)
+	if err != nil {
+		return nil, err
+	}
 	var document map[string]any
-	if err := yaml.Unmarshal(raw, &document); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(jsonData))
+	decoder.UseNumber()
+	if err := decoder.Decode(&document); err != nil {
 		return nil, err
 	}
 	resources, _ := document["resources"].(map[string]any)
@@ -133,5 +144,5 @@ func absolutizeDeployment(raw []byte, dir string) ([]byte, error) {
 			settings["file"] = filepath.Join(dir, file)
 		}
 	}
-	return yaml.Marshal(document)
+	return json.Marshal(document)
 }
