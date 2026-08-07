@@ -29,10 +29,10 @@ type mediaClient struct {
 
 func newMediaClient(key, base string) *mediaClient {
 	return &mediaClient{
-		http: &http.Client{
-			Transport: httpkit.NewRetryTransport(nil, httpkit.DefaultRetry),
-			Timeout:   10 * time.Minute,
-		},
+		http: httpkit.NewClient(
+			httpkit.WithTimeout(10*time.Minute),
+			httpkit.WithResponseHeaderTimeout(5*time.Minute),
+		),
 		key:  key,
 		base: strings.TrimRight(base, "/"),
 	}

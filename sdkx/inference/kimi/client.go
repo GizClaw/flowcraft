@@ -57,10 +57,10 @@ func (m profileMaterial) newClient(spec Spec) *kimiClient {
 	return &kimiClient{
 		baseURL: baseURL,
 		apiKey:  m.apiKey,
-		http: &http.Client{
-			Transport: httpkit.NewRetryTransport(nil, httpkit.DefaultRetry),
-			Timeout:   300 * time.Second,
-		},
+		http: httpkit.NewClient(
+			httpkit.WithTimeout(300*time.Second),
+			httpkit.WithResponseHeaderTimeout(5*time.Minute),
+		),
 	}
 }
 
