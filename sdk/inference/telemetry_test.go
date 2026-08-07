@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
 	"github.com/GizClaw/flowcraft/sdk/message"
@@ -103,6 +104,10 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 					TotalTokens:  15,
 					Input:        InputTokenUsage{CacheReadTokens: &cached},
 				},
+				Metadata: Metadata{
+					RequestID:  "req-1",
+					ResponseID: "resp-1",
+				},
 			}, nil
 		},
 		nil,
@@ -130,6 +135,8 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 		telemetry.AttrLLMOutputTokens:      int64(5),
 		telemetry.AttrLLMTotalTokens:       int64(15),
 		telemetry.AttrLLMCachedInputTokens: int64(4),
+		telemetry.AttrLLMRequestID:         "req-1",
+		telemetry.AttrLLMResponseID:        "resp-1",
 	} {
 		attr, ok := attrs[key]
 		if !ok {
@@ -150,7 +157,8 @@ func TestRuntimeTelemetryGenerateSuccess(t *testing.T) {
 
 func TestRuntimeTelemetryGenerateFailure(t *testing.T) {
 	recorder := installSpanRecorder(t)
-	runtime := newTelemetryRuntime(t, errors.New("connection reset"),
+	runtime := newTelemetryRuntime(t,
+		errdefs.WithRequestID(errors.New("connection reset"), "req-fail"),
 		func(context.Context, string) (GenerateResponse, error) {
 			return GenerateResponse{}, errors.New("decode unused")
 		},
@@ -172,6 +180,9 @@ func TestRuntimeTelemetryGenerateFailure(t *testing.T) {
 	if got := attrs["inference.error_kind"].AsString(); got != string(ProviderFailure) {
 		t.Fatalf("error_kind = %q, want %q", got, ProviderFailure)
 	}
+	if got := attrs[telemetry.AttrLLMRequestID].AsString(); got != "req-fail" {
+		t.Fatalf("request id attr = %q, want req-fail", got)
+	}
 }
 
 func TestRuntimeTelemetryStreamClosesSpanOnEOF(t *testing.T) {
@@ -185,7 +196,11 @@ func TestRuntimeTelemetryStreamClosesSpanOnEOF(t *testing.T) {
 		[]GenerateStreamEvent{
 			{PartIndex: 0, Delta: TextPartDelta{Text: "ok"}},
 			{Usage: usage},
-			{FinishReason: FinishCompleted},
+			{
+				FinishReason: FinishCompleted,
+				RequestID:    "req-stream",
+				ResponseID:   "resp-stream",
+			},
 		},
 	)
 	stream, err := runtime.GenerateStream(context.Background(), telemetryModelRef(), validGenerateTextRequest())
@@ -227,6 +242,12 @@ func TestRuntimeTelemetryStreamClosesSpanOnEOF(t *testing.T) {
 	if got := attrs[telemetry.AttrLLMTotalTokens].AsInt64(); got != 10 {
 		t.Fatalf("total tokens attr = %d, want 10", got)
 	}
+	if got := attrs[telemetry.AttrLLMRequestID].AsString(); got != "req-stream" {
+		t.Fatalf("request id attr = %q, want req-stream", got)
+	}
+	if got := attrs[telemetry.AttrLLMResponseID].AsString(); got != "resp-stream" {
+		t.Fatalf("response id attr = %q, want resp-stream", got)
+	}
 }
 
 func TestRuntimeStampsUsageEnvelope(t *testing.T) {
@@ -245,7 +266,11 @@ func TestRuntimeStampsUsageEnvelope(t *testing.T) {
 		[]GenerateStreamEvent{
 			{Usage: &Usage{InputTokens: 1, OutputTokens: 1, TotalTokens: 2}},
 			{PartIndex: 0, Delta: TextPartDelta{Text: "ok"}},
-			{FinishReason: FinishCompleted},
+			{
+				FinishReason: FinishCompleted,
+				RequestID:    "req-stream",
+				ResponseID:   "resp-stream",
+			},
 		},
 	)
 	resp, err := runtime.Generate(context.Background(), telemetryModelRef(), validGenerateTextRequest())
@@ -283,6 +308,10 @@ func TestRuntimeStampsUsageEnvelope(t *testing.T) {
 	}
 	if result.Usage.Model != telemetryModelRef() {
 		t.Fatalf("result usage not stamped: %+v", result.Usage.Model)
+	}
+	if result.Metadata.RequestID != "req-stream" ||
+		result.Metadata.ResponseID != "resp-stream" {
+		t.Fatalf("result ids = %+v", result.Metadata)
 	}
 	_ = stream.Close()
 }

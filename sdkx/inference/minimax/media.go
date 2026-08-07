@@ -76,12 +76,20 @@ func (c *mediaClient) request(
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		var errorBody struct {
+			RequestID string `json:"request_id"`
+		}
+		_ = json.Unmarshal(snippet, &errorBody)
+		classified := classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
+			"minimax: %s %s: HTTP %d: %s",
+			method, path, resp.StatusCode, strings.TrimSpace(string(snippet)),
+		))
+		if errorBody.RequestID != "" {
+			classified = errdefs.WithRequestID(classified, errorBody.RequestID)
+		}
 		return nil, errdefs.WithRetryCount(
 			errdefs.WithRetryAfter(
-				classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
-					"minimax: %s %s: HTTP %d: %s",
-					method, path, resp.StatusCode, strings.TrimSpace(string(snippet)),
-				)),
+				classified,
 				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
 			),
 			httpkit.RetryCountOf(resp),
@@ -188,6 +196,9 @@ type hexAudioStreamEvent struct {
 		Audio  string `json:"audio"`
 		Status int    `json:"status"`
 	} `json:"data"`
+	// TraceID is the server-assigned session id; every SSE chunk carries
+	// the trace for the same request.
+	TraceID  string   `json:"trace_id"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
@@ -195,16 +206,18 @@ type hexAudioStreamEvent struct {
 // format is fixed at compile time, flows compile → transport → raw, and
 // never passes through the stateless decoder's construction site.
 type hexAudioStreamRaw struct {
-	data   []byte
-	format *media.AudioFormat
-	last   bool
+	data      []byte
+	format    *media.AudioFormat
+	requestID string
+	last      bool
 }
 
 type hexAudioStream struct {
-	body   io.ReadCloser
-	events chan hexAudioStreamEvent
-	errs   chan error
-	format media.AudioFormat
+	body    io.ReadCloser
+	events  chan hexAudioStreamEvent
+	errs    chan error
+	format  media.AudioFormat
+	traceID string // last trace id seen; rides the synthetic finish
 
 	emitFinish bool // terminal chunk seen; finish event pending
 	done       bool // finish delivered; next Next returns EOF
@@ -246,7 +259,7 @@ func (s *hexAudioStream) Next(ctx context.Context) (hexAudioStreamRaw, error) {
 	if s.emitFinish {
 		s.emitFinish = false
 		s.done = true
-		return hexAudioStreamRaw{last: true}, nil
+		return hexAudioStreamRaw{last: true, requestID: s.traceID}, nil
 	}
 	if s.done {
 		return hexAudioStreamRaw{}, io.EOF
@@ -270,6 +283,9 @@ func (s *hexAudioStream) Next(ctx context.Context) (hexAudioStreamRaw, error) {
 		if failure := event.BaseResp.err("audio stream"); failure != nil {
 			return hexAudioStreamRaw{}, failure
 		}
+		if event.TraceID != "" {
+			s.traceID = event.TraceID
+		}
 		if event.Data.Status == 2 {
 			s.emitFinish = true
 		}
@@ -278,7 +294,7 @@ func (s *hexAudioStream) Next(ctx context.Context) (hexAudioStreamRaw, error) {
 				// Silent terminal chunk: finish immediately.
 				s.emitFinish = false
 				s.done = true
-				return hexAudioStreamRaw{last: true}, nil
+				return hexAudioStreamRaw{last: true, requestID: s.traceID}, nil
 			}
 			return s.Next(ctx) // progress-only event
 		}
@@ -287,7 +303,11 @@ func (s *hexAudioStream) Next(ctx context.Context) (hexAudioStreamRaw, error) {
 			return hexAudioStreamRaw{}, err
 		}
 		format := s.format
-		return hexAudioStreamRaw{data: data, format: &format}, nil
+		return hexAudioStreamRaw{
+			data:      data,
+			format:    &format,
+			requestID: s.traceID,
+		}, nil
 	}
 }
 
@@ -305,6 +325,7 @@ func decodeHexAudioStream(
 	if raw.last {
 		return inference.GenerateStreamEvent{
 			FinishReason: inference.FinishCompleted,
+			RequestID:    raw.requestID,
 		}, nil
 	}
 	if len(raw.data) == 0 || raw.format == nil {
@@ -314,6 +335,7 @@ func decodeHexAudioStream(
 	}
 	format := *raw.format
 	return inference.GenerateStreamEvent{
-		Delta: inference.AudioPartDelta{Data: raw.data, Format: &format},
+		Delta:     inference.AudioPartDelta{Data: raw.data, Format: &format},
+		RequestID: raw.requestID,
 	}, nil
 }

@@ -251,6 +251,7 @@ func embedImageValue(source media.ImageSource, ledger *ledger) string {
 type embedRaw struct {
 	vectors     [][]float32
 	inputTokens int64
+	requestID   string
 }
 
 // dashEmbedEnvelope is the embedding response envelope, shared by the
@@ -322,7 +323,9 @@ func transportEmbedText(
 	if err := client.postJSON(ctx, wire.Path, body, &envelope); err != nil {
 		return embedRaw{}, err
 	}
-	if err := classifyEnvelope(envelope.Code, envelope.Message); err != nil {
+	if err := classifyEnvelope(
+		envelope.Code, envelope.Message, envelope.RequestID,
+	); err != nil {
 		return embedRaw{}, err
 	}
 	vectors := make([][]float32, len(wire.Texts))
@@ -335,7 +338,11 @@ func transportEmbedText(
 		}
 		vectors[embedding.TextIndex] = embedding.Embedding
 	}
-	return embedRaw{vectors: vectors, inputTokens: envelope.tokens()}, nil
+	return embedRaw{
+		vectors:     vectors,
+		inputTokens: envelope.tokens(),
+		requestID:   envelope.RequestID,
+	}, nil
 }
 
 // multimodalEmbedBody is the multimodal-embedding request body, used by
@@ -377,7 +384,9 @@ func transportEmbedIndependent(
 	); err != nil {
 		return embedRaw{}, err
 	}
-	if err := classifyEnvelope(envelope.Code, envelope.Message); err != nil {
+	if err := classifyEnvelope(
+		envelope.Code, envelope.Message, envelope.RequestID,
+	); err != nil {
 		return embedRaw{}, err
 	}
 	vectors := make([][]float32, len(wire.Contents))
@@ -390,7 +399,11 @@ func transportEmbedIndependent(
 		}
 		vectors[embedding.Index] = embedding.Embedding
 	}
-	return embedRaw{vectors: vectors, inputTokens: envelope.tokens()}, nil
+	return embedRaw{
+		vectors:     vectors,
+		inputTokens: envelope.tokens(),
+		requestID:   envelope.RequestID,
+	}, nil
 }
 
 // transportEmbedFusion fuses each multi-part item into one vector, one
@@ -408,7 +421,9 @@ func transportEmbedFusion(
 		); err != nil {
 			return embedRaw{}, err
 		}
-		if err := classifyEnvelope(envelope.Code, envelope.Message); err != nil {
+		if err := classifyEnvelope(
+			envelope.Code, envelope.Message, envelope.RequestID,
+		); err != nil {
 			return embedRaw{}, err
 		}
 		if len(envelope.Output.Embeddings) != 1 {
@@ -419,6 +434,9 @@ func transportEmbedFusion(
 		}
 		raw.vectors = append(raw.vectors, envelope.Output.Embeddings[0].Embedding)
 		raw.inputTokens += envelope.tokens()
+		if envelope.RequestID != "" {
+			raw.requestID = envelope.RequestID
+		}
 	}
 	return raw, nil
 }
@@ -443,5 +461,6 @@ func decodeEmbed(
 			InputTokens: raw.inputTokens,
 			ItemCount:   len(raw.vectors),
 		},
+		Metadata: inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }

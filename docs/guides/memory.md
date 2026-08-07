@@ -228,6 +228,7 @@ starts its workers when Runtime starts; the flowcraft implementation's
 Obtain an `sdkmemory.Assembly` from the deployment (for example as a bound
 dependency), then use the three capabilities directly:
 
+{% raw %}
 ```go
 var assembly sdkmemory.Assembly // bound from the deployment
 
@@ -263,6 +264,7 @@ err = assembly.PutDocument(ctx, sdkmemory.Document{
     Provenance:     []sdkmemory.SourceRef{{Kind: sdkmemory.SourceDocument, ID: "source/handbook"}},
 })
 ```
+{% endraw %}
 
 Implementations may expose implementation-specific services (workers,
 stores, backends) through their own types; the SDK contracts never require

@@ -34,6 +34,7 @@ type imageRaw struct {
 	urls      []string
 	b64       []string
 	mediaType string
+	requestID string
 }
 
 // imageAspectRatios are the ratios image_generation accepts.
@@ -228,6 +229,9 @@ type imageResponse struct {
 		URLs []string `json:"image_urls"`
 		B64  []string `json:"image_base64"`
 	} `json:"data"`
+	// ID is the trace id for request tracking on the image_generation
+	// endpoint.
+	ID       string   `json:"id"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
@@ -246,6 +250,7 @@ func transportImage(
 			urls:      resp.Data.URLs,
 			b64:       resp.Data.B64,
 			mediaType: media.ImageFormatJPEG.MediaType(),
+			requestID: resp.ID,
 		}, nil
 	}
 }
@@ -290,6 +295,7 @@ func decodeImage(
 		Usage: inference.Usage{
 			GeneratedImages: &generated,
 		},
+		Metadata: inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 

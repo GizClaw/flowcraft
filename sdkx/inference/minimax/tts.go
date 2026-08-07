@@ -29,8 +29,9 @@ type ttsWire struct {
 }
 
 type ttsRaw struct {
-	data   []byte
-	format media.AudioFormat
+	data      []byte
+	format    media.AudioFormat
+	requestID string
 }
 
 var ttsSampleRates = map[int]bool{
@@ -249,6 +250,9 @@ type ttsResponse struct {
 	Data struct {
 		Audio string `json:"audio"`
 	} `json:"data"`
+	// TraceID is the server-assigned session id the docs describe as
+	// "used for troubleshooting and support".
+	TraceID  string   `json:"trace_id"`
 	BaseResp baseResp `json:"base_resp"`
 }
 
@@ -267,7 +271,11 @@ func transportTTS(
 		if err != nil {
 			return ttsRaw{}, err
 		}
-		return ttsRaw{data: data, format: ttsCanonicalFormat(wire)}, nil
+		return ttsRaw{
+			data:      data,
+			format:    ttsCanonicalFormat(wire),
+			requestID: resp.TraceID,
+		}, nil
 	}
 }
 
@@ -288,6 +296,7 @@ func decodeTTS(
 			}},
 		},
 		FinishReason: inference.FinishCompleted,
+		Metadata:     inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 

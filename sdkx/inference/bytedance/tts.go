@@ -43,17 +43,19 @@ type ttsWire struct {
 }
 
 type ttsRaw struct {
-	data   []byte
-	format media.AudioFormat
+	data      []byte
+	format    media.AudioFormat
+	requestID string
 }
 
 // ttsStreamRaw carries the negotiated format with every delta: the format is
 // fixed at compile time, flows compile → transport → raw, and never passes
 // through the stateless decoder's construction site.
 type ttsStreamRaw struct {
-	data   []byte
-	format *media.AudioFormat
-	last   bool
+	data      []byte
+	format    *media.AudioFormat
+	requestID string
+	last      bool
 }
 
 func compileTTS(
@@ -273,6 +275,9 @@ func transportTTS(
 				return ttsRaw{}, failure
 			}
 			raw.data = append(raw.data, chunk.Audio...)
+			if chunk.ReqID != "" {
+				raw.requestID = chunk.ReqID
+			}
 		}
 		if len(raw.data) == 0 {
 			return ttsRaw{}, fmt.Errorf("bytedance: synthesis produced no audio")
@@ -364,6 +369,7 @@ func decodeTTS(
 			}},
 		},
 		FinishReason: inference.FinishCompleted,
+		Metadata:     inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 
@@ -375,9 +381,10 @@ func decodeTTS(
 // audio deltas, one finish event, then EOF — the runtime requires exactly
 // that terminal sequence.
 type ttsStream struct {
-	pull   func() (*doubaospeech.TTSV2Chunk, error, bool)
-	stop   func()
-	format media.AudioFormat
+	pull      func() (*doubaospeech.TTSV2Chunk, error, bool)
+	stop      func()
+	format    media.AudioFormat
+	requestID string
 
 	emitFinish bool // final audio chunk delivered; finish event pending
 	done       bool // finish delivered; next Next returns EOF
@@ -407,7 +414,7 @@ func (s *ttsStream) Next(ctx context.Context) (ttsStreamRaw, error) {
 		if s.emitFinish {
 			s.emitFinish = false
 			s.done = true
-			return ttsStreamRaw{last: true}, nil
+			return ttsStreamRaw{last: true, requestID: s.requestID}, nil
 		}
 		chunk, err, ok := s.pull()
 		if err != nil {
@@ -426,6 +433,9 @@ func (s *ttsStream) Next(ctx context.Context) (ttsStreamRaw, error) {
 		}
 		if chunk.IsLast {
 			s.emitFinish = true
+		}
+		if chunk.ReqID != "" {
+			s.requestID = chunk.ReqID
 		}
 		if len(chunk.Audio) == 0 {
 			continue // progress-only line, or a silent final chunk
@@ -450,6 +460,7 @@ func decodeTTSStream(
 	if raw.last {
 		return inference.GenerateStreamEvent{
 			FinishReason: inference.FinishCompleted,
+			RequestID:    raw.requestID,
 		}, nil
 	}
 	if len(raw.data) == 0 || raw.format == nil {

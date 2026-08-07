@@ -169,6 +169,9 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 	if result.FinishReason != inference.FinishToolCalls {
 		t.Fatalf("result finish = %q", result.FinishReason)
 	}
+	if result.Metadata.ResponseID != "resp_1" {
+		t.Fatalf("stream response id = %q, want resp_1", result.Metadata.ResponseID)
+	}
 	parts := result.Message.Content.Parts
 	text, ok := parts[0].(message.TextPart)
 	if !ok || text.Text != "hello" {
@@ -190,6 +193,7 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 func TestGenerateErrorClassification(t *testing.T) {
 	server, _ := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Client-Request-Id", "r1")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprint(w, `{"error":{"code":"rate_limit","message":"slow down","type":"rate_limit","request_id":"r1"}}`)
 	})
@@ -208,6 +212,9 @@ func TestGenerateErrorClassification(t *testing.T) {
 	}
 	if !errdefs.HasClassification(errdefs.FromContext(err)) {
 		t.Fatalf("classification lost: %v", err)
+	}
+	if got, ok := errdefs.RequestID(err); !ok || got != "r1" {
+		t.Fatalf("RequestID = %q/%v, want r1/true", got, ok)
 	}
 }
 

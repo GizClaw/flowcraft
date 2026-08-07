@@ -23,6 +23,7 @@ func classifyError(err error) error {
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
 		classified := classifyHTTPStatus(apiErr.StatusCode, err)
+		classified = errdefs.WithRequestID(classified, apiErr.RequestID)
 		if apiErr.Response != nil {
 			classified = errdefs.WithRetryAfter(
 				classified,

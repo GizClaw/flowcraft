@@ -59,6 +59,9 @@ func TestUnaryTextOnWire(t *testing.T) {
 	if response.Usage.Input.CacheReadTokens == nil || *response.Usage.Input.CacheReadTokens != 10 {
 		t.Fatalf("cached tokens = %+v", response.Usage.Input.CacheReadTokens)
 	}
+	if response.Metadata.ResponseID != "cmpl-1" {
+		t.Fatalf("response id = %q, want cmpl-1", response.Metadata.ResponseID)
+	}
 }
 
 func TestMultimodalContentParts(t *testing.T) {
@@ -627,6 +630,7 @@ func TestStreamTextAndUsage(t *testing.T) {
 	var text string
 	var usage *inference.Usage
 	var finish inference.FinishReason
+	var responseID string
 	for {
 		event, err := stream.Next(context.Background())
 		if err == io.EOF {
@@ -644,6 +648,7 @@ func TestStreamTextAndUsage(t *testing.T) {
 		}
 		if event.FinishReason != "" {
 			finish = event.FinishReason
+			responseID = event.ResponseID
 		}
 	}
 	if text != "你好" || finish != inference.FinishCompleted {
@@ -651,6 +656,16 @@ func TestStreamTextAndUsage(t *testing.T) {
 	}
 	if usage == nil || usage.InputTokens != 19 || usage.OutputTokens != 13 {
 		t.Fatalf("usage = %+v", usage)
+	}
+	if responseID != "cmpl-1" {
+		t.Fatalf("stream response id = %q, want cmpl-1", responseID)
+	}
+	result, err := stream.Result()
+	if err != nil {
+		t.Fatalf("Result: %v", err)
+	}
+	if result.Metadata.ResponseID != "cmpl-1" {
+		t.Fatalf("result response id = %q, want cmpl-1", result.Metadata.ResponseID)
 	}
 }
 
@@ -727,12 +742,13 @@ func TestStreamReasoningAndToolCalls(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	cases := []struct {
-		name   string
-		status int
-		body   string
-		check  func(error) bool
+		name      string
+		status    int
+		body      string
+		check     func(error) bool
+		requestID string
 	}{
-		{name: "rate limit", status: 429, body: `{"error":{"type":"rate_limit_error","message":"slow down"}}`, check: errdefs.IsRateLimit},
+		{name: "rate limit", status: 429, body: `{"error":{"type":"rate_limit_error","message":"slow down"},"request_id":"kr-1"}`, check: errdefs.IsRateLimit, requestID: "kr-1"},
 		{name: "bad key", status: 401, body: `{"error":{"type":"authentication_error","message":"bad key"}}`, check: errdefs.IsUnauthorized},
 		{name: "invalid request", status: 400, body: `{"error":{"type":"invalid_request_error","message":"bad model"}}`, check: errdefs.IsValidation},
 		{name: "server error", status: 500, body: `{"error":{"type":"server_error","message":"boom"}}`, check: errdefs.IsNotAvailable},
@@ -747,6 +763,11 @@ func TestErrorClassification(t *testing.T) {
 			_, err := runtime.Generate(context.Background(), kimiModel("moonshot-v1-8k"), simpleTextRequest("hi"))
 			if !tc.check(err) {
 				t.Fatalf("error = %v", err)
+			}
+			if tc.requestID != "" {
+				if got, ok := errdefs.RequestID(err); !ok || got != tc.requestID {
+					t.Fatalf("RequestID = %q/%v, want %q/true", got, ok, tc.requestID)
+				}
 			}
 		})
 	}

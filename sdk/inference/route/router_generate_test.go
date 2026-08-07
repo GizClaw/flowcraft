@@ -607,5 +607,9 @@ func validGenerateResponse() inference.GenerateResponse {
 			},
 		},
 		FinishReason: inference.FinishCompleted,
+		Metadata: inference.Metadata{
+			RequestID:  "route-req",
+			ResponseID: "route-resp",
+		},
 	}
 }

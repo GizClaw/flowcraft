@@ -79,6 +79,7 @@ func (s *chatServer) clients(t *testing.T) *clients {
 
 func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("x-request-id", "req-deepseek")
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprint(w, `{"error":{"message":"slow down","type":"rate_limit_error","code":"x"}}`)
@@ -105,6 +106,9 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	}
 	if got := errdefs.RetryCount(err); got < 1 {
 		t.Fatalf("RetryCount = %d, want at least 1 wire attempt", got)
+	}
+	if got, ok := errdefs.RequestID(err); !ok || got != "req-deepseek" {
+		t.Fatalf("RequestID = %q/%v, want req-deepseek/true", got, ok)
 	}
 }
 

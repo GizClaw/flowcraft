@@ -221,6 +221,9 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if string(part.Source.Bytes()) != "chunk-1chunk-2" {
 		t.Fatalf("audio = %q", part.Source.Bytes())
 	}
+	if result.Metadata.RequestID != "req-1" {
+		t.Fatalf("request id = %q, want req-1", result.Metadata.RequestID)
+	}
 }
 
 func TestTTSRejections(t *testing.T) {

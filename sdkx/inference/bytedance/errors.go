@@ -22,10 +22,18 @@ func classifyError(err error) error {
 		return classified
 	}
 	if apiErr, ok := errors.AsType[*arkmodel.APIError](err); ok {
-		return classifyHTTPStatus(apiErr.HTTPStatusCode, apiErr.Code, apiErr.Message, err)
+		return errdefs.WithRequestID(
+			classifyHTTPStatus(
+				apiErr.HTTPStatusCode, apiErr.Code, apiErr.Message, err,
+			),
+			apiErr.RequestId,
+		)
 	}
 	if reqErr, ok := errors.AsType[*arkmodel.RequestError](err); ok {
-		return classifyHTTPStatus(reqErr.HTTPStatusCode, "", "", reqErr.Err)
+		return errdefs.WithRequestID(
+			classifyHTTPStatus(reqErr.HTTPStatusCode, "", "", reqErr.Err),
+			reqErr.RequestId,
+		)
 	}
 	if speechErr, ok := errors.AsType[*doubaospeech.Error](err); ok {
 		return classifySpeechError(speechErr, err)
@@ -55,19 +63,22 @@ func classifyHTTPStatus(status int, code, message string, err error) error {
 }
 
 func classifySpeechError(speechErr *doubaospeech.Error, err error) error {
+	var classified error
 	switch {
 	case speechErr.IsAuthError():
 		if speechErr.HTTPStatus == http.StatusForbidden {
-			return errdefs.Forbidden(fmt.Errorf("bytedance: %w", err))
+			classified = errdefs.Forbidden(fmt.Errorf("bytedance: %w", err))
+		} else {
+			classified = errdefs.Unauthorized(fmt.Errorf("bytedance: %w", err))
 		}
-		return errdefs.Unauthorized(fmt.Errorf("bytedance: %w", err))
 	case speechErr.IsRateLimit(), speechErr.IsQuotaExceeded():
-		return errdefs.RateLimit(fmt.Errorf("bytedance: %w", err))
+		classified = errdefs.RateLimit(fmt.Errorf("bytedance: %w", err))
 	case speechErr.IsInvalidParam():
-		return errdefs.Validation(fmt.Errorf("bytedance: %w", err))
+		classified = errdefs.Validation(fmt.Errorf("bytedance: %w", err))
 	case speechErr.IsServerError():
-		return errdefs.NotAvailable(fmt.Errorf("bytedance: %w", err))
+		classified = errdefs.NotAvailable(fmt.Errorf("bytedance: %w", err))
 	default:
-		return errdefs.NotAvailable(fmt.Errorf("bytedance: %w", err))
+		classified = errdefs.NotAvailable(fmt.Errorf("bytedance: %w", err))
 	}
+	return errdefs.WithRequestID(classified, speechErr.ReqID)
 }

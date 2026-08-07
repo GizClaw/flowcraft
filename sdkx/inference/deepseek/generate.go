@@ -62,6 +62,7 @@ type wireToolChoice struct {
 // generateRaw is the transport stage's normalized completion: everything
 // the decoder needs, nothing it does not.
 type generateRaw struct {
+	id        string // chat completion id from the wire response
 	reasoning string
 	text      string
 	toolCalls []rawToolCall
@@ -96,12 +97,13 @@ const (
 )
 
 type streamRaw struct {
-	kind   streamRawKind
-	part   int // canonical part index, assigned by the transport
-	text   string
-	tool   streamRawTool
-	usage  *rawUsage
-	finish inference.FinishReason
+	kind       streamRawKind
+	part       int // canonical part index, assigned by the transport
+	text       string
+	responseID string // chat completion id from the stream chunks
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
 }
 
 type streamRawTool struct {

@@ -123,6 +123,11 @@ type GenerateStreamEvent struct {
 	// Usage is a cumulative snapshot and replaces the previous snapshot.
 	Usage        *Usage       `json:"usage,omitempty"`
 	FinishReason FinishReason `json:"finish_reason,omitempty"`
+	// RequestID / ResponseID ride the terminal finish event when the
+	// provider exposes them. The stream accumulator carries them onto
+	// the final Result metadata.
+	RequestID  string `json:"request_id,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
 }
 
 // GenerateStreamDecoder implementations must support concurrent calls.
@@ -216,14 +221,16 @@ type generatePartAccumulator struct {
 }
 
 type decodedGenerateStream[RawEvent any] struct {
-	raw     ProviderStream[RawEvent]
-	decode  GenerateStreamDecoder[RawEvent]
-	model   ModelRef
-	request GenerateRequest
-	report  CompileReport
-	parts   map[int]*generatePartAccumulator
-	usage   Usage
-	finish  FinishReason
+	raw        ProviderStream[RawEvent]
+	decode     GenerateStreamDecoder[RawEvent]
+	model      ModelRef
+	request    GenerateRequest
+	report     CompileReport
+	parts      map[int]*generatePartAccumulator
+	usage      Usage
+	finish     FinishReason
+	requestID  string
+	responseID string
 
 	done      bool
 	result    GenerateResponse
@@ -328,6 +335,12 @@ func (s *decodedGenerateStream[RawEvent]) accumulate(
 	if event.Usage != nil {
 		s.usage = event.Usage.Clone()
 	}
+	if event.RequestID != "" {
+		s.requestID = event.RequestID
+	}
+	if event.ResponseID != "" {
+		s.responseID = event.ResponseID
+	}
 	if event.FinishReason != "" {
 		if s.finish != "" {
 			return fmt.Errorf("stream emitted multiple finish reasons")
@@ -420,8 +433,11 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 		},
 		FinishReason: s.finish,
 		Usage:        s.usage,
-		Metadata:     s.report.Metadata(s.model),
 	}
+	metadata := s.report.Metadata(s.model)
+	metadata.RequestID = s.requestID
+	metadata.ResponseID = s.responseID
+	response.Metadata = metadata
 	deriveGenerateUsage(s.request, &response)
 	if err := response.ValidateFor(s.request); err != nil {
 		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)

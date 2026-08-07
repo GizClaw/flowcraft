@@ -45,6 +45,7 @@ func ttsGenerateRequest(format media.AudioFormat) inference.GenerateRequest {
 func ttsUnaryBody(audio string) string {
 	payload, _ := json.Marshal(map[string]any{
 		"data":      map[string]any{"audio": hex.EncodeToString([]byte(audio))},
+		"trace_id":  "tts-1",
 		"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 	})
 	return string(payload)
@@ -69,6 +70,7 @@ func ttsStreamChunk(status int, audio string) map[string]any {
 			"audio":  hex.EncodeToString([]byte(audio)),
 			"status": status,
 		},
+		"trace_id":  "tts-1",
 		"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 	}
 }
@@ -92,6 +94,9 @@ func TestTTSUnaryCapturedWire(t *testing.T) {
 	}
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %q", response.FinishReason)
+	}
+	if response.Metadata.RequestID != "tts-1" {
+		t.Fatalf("request id = %q, want tts-1", response.Metadata.RequestID)
 	}
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
@@ -330,6 +335,9 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if string(part.Source.Bytes()) != "chunk-1chunk-2" {
 		t.Fatalf("audio = %q", part.Source.Bytes())
 	}
+	if result.Metadata.RequestID != "tts-1" {
+		t.Fatalf("stream request id = %q, want tts-1", result.Metadata.RequestID)
+	}
 
 	body := server.body(t, 0)
 	if body["stream"] != true {
@@ -369,5 +377,32 @@ func TestTTSStreamBaseRespError(t *testing.T) {
 	}
 	if !errdefs.IsRateLimit(err) {
 		t.Fatalf("classification = %v", err)
+	}
+}
+
+// TestMediaHTTPErrorRequestID asserts a non-200 media response carries
+// its request_id onto the classified error (the OpenAI-style error body
+// MiniMax documents for its async/v2 endpoints).
+func TestMediaHTTPErrorRequestID(t *testing.T) {
+	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"},"request_id":"rid-1"}`)
+	})
+	runtime := newTestRuntime(t, server)
+
+	_, err := runtime.Generate(
+		context.Background(),
+		minimaxModel("speech-2.8-hd"),
+		ttsGenerateRequest(media.AudioFormat{Encoding: media.AudioEncodingMP3}),
+	)
+	if err == nil {
+		t.Fatal("expected HTTP failure")
+	}
+	if !errdefs.IsRateLimit(err) {
+		t.Fatalf("classification = %v", err)
+	}
+	var inferenceErr *inference.Error
+	if !errors.As(err, &inferenceErr) || inferenceErr.RequestID != "rid-1" {
+		t.Fatalf("request id = %v, want rid-1", err)
 	}
 }

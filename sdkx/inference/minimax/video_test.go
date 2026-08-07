@@ -96,6 +96,9 @@ func TestVideoUnaryCapturedWire(t *testing.T) {
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %q", response.FinishReason)
 	}
+	if response.Metadata.RequestID != "task-1" {
+		t.Fatalf("request id = %q, want task-1", response.Metadata.RequestID)
+	}
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}

@@ -39,6 +39,7 @@ func imageGenerateRequest(intent inference.ImageIntent) inference.GenerateReques
 func imageEnvelope(data map[string]any) string {
 	payload, _ := json.Marshal(map[string]any{
 		"data":      data,
+		"id":        "img-1",
 		"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 	})
 	return string(payload)
@@ -75,6 +76,9 @@ func TestImageUnaryCapturedWire(t *testing.T) {
 	}
 	if response.FinishReason != inference.FinishCompleted {
 		t.Fatalf("finish = %q", response.FinishReason)
+	}
+	if response.Metadata.RequestID != "img-1" {
+		t.Fatalf("request id = %q, want img-1", response.Metadata.RequestID)
 	}
 	if len(response.Message.Content.Parts) != 2 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
@@ -155,6 +159,9 @@ func TestImageInlineDelivery(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
+	}
+	if response.Metadata.RequestID != "img-1" {
+		t.Fatalf("request id = %q, want img-1", response.Metadata.RequestID)
 	}
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))

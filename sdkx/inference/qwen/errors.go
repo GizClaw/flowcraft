@@ -57,14 +57,15 @@ func classifyCode(code string, err error) error {
 
 // classifyEnvelope checks the code/message pair on a 200 response: SSE
 // streams and edge gateways can report failures with an HTTP-200 envelope
-// whose code is non-empty.
-func classifyEnvelope(code, message string) error {
+// whose code is non-empty. requestID, when present, rides onto the
+// classified error for upstream correlation.
+func classifyEnvelope(code, message, requestID string) error {
 	if code == "" {
 		return nil
 	}
 	err := fmt.Errorf("qwen: %s: %s", code, message)
 	if classified := classifyCode(code, err); classified != nil {
-		return classified
+		return errdefs.WithRequestID(classified, requestID)
 	}
-	return errdefs.NotAvailable(err)
+	return errdefs.WithRequestID(errdefs.NotAvailable(err), requestID)
 }

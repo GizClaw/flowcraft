@@ -183,6 +183,7 @@ In the snippets below, `message` is
 `github.com/GizClaw/flowcraft/sdk/message` — request history and content
 use the shared message DTOs, not inference-specific types.
 
+{% raw %}
 ```go
 model := inference.ModelRef{ID: inference.ModelID{Provider: "openai", Name: "gpt-5.4"}}
 
@@ -208,6 +209,7 @@ resp, err := runtime.Generate(ctx, model, inference.GenerateRequest{
 })
 // resp.Message.Content.Parts, resp.FinishReason, resp.Usage, resp.Metadata
 ```
+{% endraw %}
 
 `intPtr` / `floatPtr` / `int64Ptr` in these snippets are local
 address-taking helpers (`func intPtr(v int) *int { return &v }`), not

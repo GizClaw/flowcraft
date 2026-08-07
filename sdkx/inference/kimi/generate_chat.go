@@ -12,6 +12,7 @@ import (
 // generateRaw is the transport stage's normalized completion: everything
 // the decoder needs, nothing it does not.
 type generateRaw struct {
+	id        string // chat completion id from the wire response
 	reasoning string
 	text      string
 	toolCalls []rawToolCall
@@ -105,6 +106,7 @@ func completionToRaw(envelope *completionEnvelope) (generateRaw, error) {
 	}
 
 	raw := generateRaw{
+		id:        envelope.ID,
 		reasoning: choice.Message.ReasoningContent,
 		text:      choice.Message.Content,
 		finish:    finish,
@@ -165,6 +167,7 @@ func decodeGenerate(_ context.Context, raw generateRaw) (inference.GenerateRespo
 			Content: message.Content{Parts: parts},
 		},
 		FinishReason: raw.finish,
+		Metadata:     inference.Metadata{ResponseID: raw.id},
 	}
 	if raw.usage.present {
 		response.Usage = rawUsageCanonical(raw.usage)

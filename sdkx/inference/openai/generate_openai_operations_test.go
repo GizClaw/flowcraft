@@ -425,6 +425,9 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	if response.Metadata.ResponseID != "resp_1" {
+		t.Fatalf("response id = %q, want resp_1", response.Metadata.ResponseID)
+	}
 	parts := response.Message.Content.Parts
 	if len(parts) != 2 {
 		t.Fatalf("parts = %+v", parts)
@@ -516,6 +519,9 @@ func TestGenerateStreamReasoning(t *testing.T) {
 	response, err := stream.Result()
 	if err != nil {
 		t.Fatalf("Result: %v", err)
+	}
+	if response.Metadata.ResponseID != "resp_1" {
+		t.Fatalf("stream response id = %q, want resp_1", response.Metadata.ResponseID)
 	}
 	parts := response.Message.Content.Parts
 	if len(parts) != 2 {

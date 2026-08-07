@@ -145,6 +145,7 @@ func completionToRaw(response *openaigo.ChatCompletion) (generateRaw, error) {
 	}
 
 	raw := generateRaw{
+		id:        response.ID,
 		reasoning: reasoningContentOf(choice.Message.JSON.ExtraFields),
 		text:      choice.Message.Content,
 		finish:    finish,
@@ -245,6 +246,7 @@ func decodeGenerate(_ context.Context, raw generateRaw) (inference.GenerateRespo
 			Content: message.Content{Parts: parts},
 		},
 		FinishReason: raw.finish,
+		Metadata:     inference.Metadata{ResponseID: raw.id},
 	}
 	if raw.usage.present {
 		response.Usage = rawUsageCanonical(raw.usage)

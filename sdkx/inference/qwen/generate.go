@@ -754,6 +754,7 @@ func decodeGenerate(
 	}
 	response.FinishReason = finishReason(choice.FinishReason)
 	response.Usage = raw.usage().canonical()
+	response.Metadata.RequestID = raw.RequestID
 	return response, nil
 }
 
@@ -767,7 +768,9 @@ func transportGenerate(
 		if err := client.postJSON(ctx, wire.Path, wire, &envelope); err != nil {
 			return dashResponse{}, err
 		}
-		if err := classifyEnvelope(envelope.Code, envelope.Message); err != nil {
+		if err := classifyEnvelope(
+			envelope.Code, envelope.Message, envelope.RequestID,
+		); err != nil {
 			return dashResponse{}, err
 		}
 		return envelope, nil

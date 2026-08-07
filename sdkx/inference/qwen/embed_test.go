@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -99,6 +100,9 @@ func TestTextEmbeddingOnWire(t *testing.T) {
 	}
 	if response.Usage.InputTokens != 27 || response.Usage.ItemCount != 2 {
 		t.Fatalf("usage = %+v", response.Usage)
+	}
+	if response.Metadata.RequestID != "emb-1" {
+		t.Fatalf("request id = %q, want emb-1", response.Metadata.RequestID)
 	}
 }
 
@@ -380,6 +384,10 @@ func TestEmbedEnvelopeError(t *testing.T) {
 	)
 	if !errdefs.IsUnauthorized(err) {
 		t.Fatalf("error = %v, want unauthorized", err)
+	}
+	var inferenceErr *inference.Error
+	if !errors.As(err, &inferenceErr) || inferenceErr.RequestID != "x" {
+		t.Fatalf("error request id = %+v, want x", inferenceErr)
 	}
 }
 

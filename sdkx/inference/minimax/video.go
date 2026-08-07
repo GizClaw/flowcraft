@@ -32,7 +32,8 @@ type videoWire struct {
 }
 
 type videoRaw struct {
-	videoURL string
+	videoURL  string
+	requestID string
 }
 
 func compileVideo(
@@ -269,6 +270,10 @@ func transportVideo(
 		}
 
 		query := url.Values{"task_id": {created.TaskID}}
+		// MiniMax's v1 video endpoint returns no request/trace id on
+		// success; the task_id is the only server-assigned handle for the
+		// create request, so it doubles as the request id for tracing.
+		requestID := created.TaskID
 		for {
 			var task videoQueryResponse
 			if err := client.getJSON(ctx, "/v1/query/video_generation", query, &task); err != nil {
@@ -299,7 +304,10 @@ func transportVideo(
 						task.FileID,
 					)
 				}
-				return videoRaw{videoURL: file.File.DownloadURL}, nil
+				return videoRaw{
+					videoURL:  file.File.DownloadURL,
+					requestID: requestID,
+				}, nil
 			case "fail", "failed":
 				return videoRaw{}, errdefs.NotAvailable(fmt.Errorf(
 					"minimax: video task %q failed server-side",
@@ -335,6 +343,7 @@ func decodeVideo(
 		Usage: inference.Usage{
 			GeneratedVideos: &generated,
 		},
+		Metadata: inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 

@@ -30,7 +30,7 @@ func (d *generateDriver[Wire, Raw]) Execute(
 		return GenerateResponse{}, err
 	}
 	deriveGenerateUsage(request, &response)
-	response.Metadata = report.Metadata(model)
+	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
 	return response, nil
 }
 
@@ -58,7 +58,7 @@ func (d *embedDriver[Wire, Raw]) Execute(
 		return EmbedResponse{}, err
 	}
 	response.Usage.ItemCount = len(response.Embeddings)
-	response.Metadata = report.Metadata(model)
+	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
 	return response, nil
 }
 
@@ -85,6 +85,18 @@ func (d *transcriptionDriver[Wire, Raw]) Execute(
 	if err != nil {
 		return TranscriptionResponse{}, err
 	}
-	response.Metadata = report.Metadata(model)
+	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
 	return response, nil
+}
+
+// mergeProviderIDs keeps provider-reported request/response identifiers
+// when the runtime stamps the operation metadata over the decoder's result.
+func mergeProviderIDs(metadata, decoded Metadata) Metadata {
+	if decoded.RequestID != "" {
+		metadata.RequestID = decoded.RequestID
+	}
+	if decoded.ResponseID != "" {
+		metadata.ResponseID = decoded.ResponseID
+	}
+	return metadata
 }

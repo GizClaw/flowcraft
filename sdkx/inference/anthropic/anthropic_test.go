@@ -413,6 +413,7 @@ func TestClassifyError(t *testing.T) {
 
 func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+		w.Header().Set("request-id", "req-anthropic")
 		w.Header().Set("Retry-After", "2")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
@@ -441,6 +442,9 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 	}
 	if got := errdefs.RetryCount(err); got < 1 {
 		t.Fatalf("RetryCount = %d, want at least 1 wire attempt", got)
+	}
+	if got, ok := errdefs.RequestID(err); !ok || got != "req-anthropic" {
+		t.Fatalf("RequestID = %q/%v, want req-anthropic/true", got, ok)
 	}
 }
 
@@ -609,6 +613,9 @@ func TestGenerateUnaryThinkingBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
+	if response.Metadata.ResponseID != "msg_1" {
+		t.Fatalf("response id = %q, want msg_1", response.Metadata.ResponseID)
+	}
 	parts := response.Message.Content.Parts
 	if len(parts) != 3 {
 		t.Fatalf("parts = %+v", parts)
@@ -705,6 +712,9 @@ func TestGenerateStreamThinkingBlocks(t *testing.T) {
 	response, err := generateStream.Result()
 	if err != nil {
 		t.Fatalf("Result: %v", err)
+	}
+	if response.Metadata.ResponseID != "msg_1" {
+		t.Fatalf("stream response id = %q, want msg_1", response.Metadata.ResponseID)
 	}
 	parts := response.Message.Content.Parts
 	if len(parts) != 3 {
