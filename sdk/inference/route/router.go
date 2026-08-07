@@ -697,7 +697,7 @@ func nextFallbackTarget[Request any](
 	}
 	if !skipEligibility {
 		eligible := fallbackEligible(attempt)
-		if !eligible && !(allowTransient && attempt.Transient) {
+		if !eligible && (!allowTransient || !attempt.Transient) {
 			return inference.ModelRef{}, false, nil
 		}
 	}
