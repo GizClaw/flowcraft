@@ -26,12 +26,12 @@ type systemClock struct{}
 func (systemClock) Now() time.Time { return time.Now() }
 
 type DecayConfig struct {
-	Version         string        `json:"version" yaml:"version"`
-	HalfLife        time.Duration `json:"half_life" yaml:"half_life"`
-	RecencyWeight   float64       `json:"recency_weight" yaml:"recency_weight"`
-	FrequencyWeight float64       `json:"frequency_weight" yaml:"frequency_weight"`
-	RelevanceWeight float64       `json:"relevance_weight" yaml:"relevance_weight"`
-	FrequencyScale  float64       `json:"frequency_scale" yaml:"frequency_scale"`
+	Version         string        `json:"version"`
+	HalfLife        time.Duration `json:"half_life"`
+	RecencyWeight   float64       `json:"recency_weight"`
+	FrequencyWeight float64       `json:"frequency_weight"`
+	RelevanceWeight float64       `json:"relevance_weight"`
+	FrequencyScale  float64       `json:"frequency_scale"`
 }
 
 type DecayInput struct {
@@ -115,10 +115,10 @@ const (
 )
 
 type ForgetConfig struct {
-	Mode                 ForgetMode `json:"mode" yaml:"mode"`
-	EnableSoftVisibility bool       `json:"enable_soft_visibility" yaml:"enable_soft_visibility"`
-	SoftForgetThreshold  float64    `json:"soft_forget_threshold" yaml:"soft_forget_threshold"`
-	ArchiveThreshold     float64    `json:"archive_threshold" yaml:"archive_threshold"`
+	Mode                 ForgetMode `json:"mode"`
+	EnableSoftVisibility bool       `json:"enable_soft_visibility"`
+	SoftForgetThreshold  float64    `json:"soft_forget_threshold"`
+	ArchiveThreshold     float64    `json:"archive_threshold"`
 }
 
 type ForgetCandidate struct {

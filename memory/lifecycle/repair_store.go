@@ -1,40 +1,36 @@
 package lifecycle
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-const repairAuditSchemaVersion = 1
+const repairEventType = "repair.plan"
 
-type repairPlanEnvelope struct {
-	SchemaVersion int        `json:"schema_version"`
-	Plan          RepairPlan `json:"plan"`
+// RepairAuditStore persists immutable repair evidence and actions as events
+// in a storage.Log.
+type RepairAuditStore struct {
+	log storage.Log
 }
 
-// WorkspaceRepairAuditStore persists immutable repair evidence and actions.
-type WorkspaceRepairAuditStore struct {
-	ws workspace.Workspace
-}
-
-func NewWorkspaceRepairAuditStore(ws workspace.Workspace) (*WorkspaceRepairAuditStore, error) {
-	if ws == nil {
-		return nil, errors.New("memory lifecycle repair audit: workspace is required")
+// NewRepairAuditStore constructs a Log-backed repair audit store.
+func NewRepairAuditStore(log storage.Log) (*RepairAuditStore, error) {
+	if nilStore(log) {
+		return nil, errors.New("memory lifecycle repair audit: log is required")
 	}
-	return &WorkspaceRepairAuditStore{ws: ws}, nil
+	return &RepairAuditStore{log: log}, nil
 }
 
-func (store *WorkspaceRepairAuditStore) Save(ctx context.Context, plan RepairPlan) error {
-	if store == nil || store.ws == nil {
+// Save appends one immutable repair plan. Retrying the same plan ID with the
+// same content is idempotent; different content under the same ID conflicts.
+func (store *RepairAuditStore) Save(ctx context.Context, plan RepairPlan) error {
+	if store == nil || nilStore(store.log) {
 		return errors.New("memory lifecycle repair audit: store is required")
 	}
 	if err := plan.Scope.Validate(); err != nil {
@@ -43,29 +39,25 @@ func (store *WorkspaceRepairAuditStore) Save(ctx context.Context, plan RepairPla
 	if strings.TrimSpace(plan.ID) == "" || plan.AlgorithmVersion != RepairAlgorithmVersion {
 		return errors.New("memory lifecycle repair audit: plan identity and version are required")
 	}
-	data, err := json.Marshal(repairPlanEnvelope{SchemaVersion: repairAuditSchemaVersion, Plan: plan})
+	partition, err := storage.ScopePartition(plan.Scope)
 	if err != nil {
 		return err
 	}
-	target := store.planPath(plan.Scope, plan.ID)
-	existing, err := store.ws.Read(ctx, target)
-	if err == nil {
-		if bytes.Equal(existing, data) {
-			return nil
+	stream := "audit/v1/repair/" + partition
+	payload, err := json.Marshal(plan)
+	if err != nil {
+		return fmt.Errorf("memory lifecycle repair audit: encode plan: %w", err)
+	}
+	_, err = store.log.Append(ctx, stream, []storage.Event{{
+		Stream:  stream,
+		Type:    repairEventType,
+		Payload: payload,
+	}}, storage.AppendOptions{IdempotencyKey: plan.ID})
+	if err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			return errdefs.Conflictf("memory lifecycle repair audit: immutable plan %q conflicts", plan.ID)
 		}
-		return errdefs.Conflictf("memory lifecycle repair audit: immutable plan %q conflicts", plan.ID)
-	}
-	if !errdefs.IsNotFound(err) {
-		return err
-	}
-	if err := workspace.AtomicWrite(ctx, store.ws, target, data); err != nil {
 		return fmt.Errorf("memory lifecycle repair audit: save plan: %w", err)
 	}
 	return nil
-}
-
-func (store *WorkspaceRepairAuditStore) planPath(scope sdkmemory.Scope, id string) string {
-	return path.Join("audit", "memory-lifecycle", "repair", "v1", "partitions",
-		encodeLifecycle(scope.RuntimeID), encodeLifecycle(scope.UserID), encodeLifecycle(scope.AgentID),
-		encodeLifecycle(id)+".json")
 }

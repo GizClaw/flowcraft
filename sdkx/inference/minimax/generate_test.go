@@ -23,7 +23,7 @@ import (
 // never output_config.effort.
 func TestAdaptiveThinkingOnWire(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "text", "text": "ok"},
 		}))
 	})
@@ -56,7 +56,7 @@ func TestAdaptiveThinkingOnWire(t *testing.T) {
 // sends no thinking param — MiniMax-M3 keeps thinking off by default.
 func TestNoThinkingByDefault(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "text", "text": "ok"},
 		}))
 	})
@@ -92,7 +92,7 @@ func TestSignedThinkingRoundTrip(t *testing.T) {
 				}
 			}
 		}
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "thinking", "thinking": "reasoning about it", "signature": "sig-abc"},
 			{"type": "text", "text": "answer"},
 		}))
@@ -133,7 +133,7 @@ func TestSignedThinkingRoundTrip(t *testing.T) {
 // on the text-only M2.x series.
 func TestVisionGating(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "text", "text": "ok"},
 		}))
 	})
@@ -180,7 +180,7 @@ func TestVisionGating(t *testing.T) {
 func TestStreamDecodesThinking(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "message_start",
 				"message": map[string]any{
@@ -262,7 +262,7 @@ func TestStreamDecodesThinking(t *testing.T) {
 func TestErrorClassification(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+		_, _ = fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
 	})
 	runtime := newTestRuntime(t, server)
 

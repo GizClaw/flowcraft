@@ -50,11 +50,11 @@ func videoTaskHandler(
 				"content": map[string]any{"video_url": "https://example.com/out.mp4"},
 				"usage":   map[string]any{"completion_tokens": 1320},
 			})
-			fmt.Fprint(w, string(payload))
+			_, _ = fmt.Fprint(w, string(payload))
 			return
 		}
 		payload, _ := json.Marshal(map[string]any{"id": "cgt-1"})
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	}
 }
 

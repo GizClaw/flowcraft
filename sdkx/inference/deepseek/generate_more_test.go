@@ -63,7 +63,7 @@ func decisionOf(response inference.GenerateResponse, field inference.FieldID) in
 func TestGenerateUnaryReasoning(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, chatCompletionJSON("stop", map[string]any{
+		_, _ = fmt.Fprint(w, chatCompletionJSON("stop", map[string]any{
 			"reasoning_content": "thinking aloud",
 		}))
 	})
@@ -98,7 +98,7 @@ func TestGenerateUnaryReasoning(t *testing.T) {
 func TestGenerateStreamReasoningThenText(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			reasoningChunk("think"),
 			reasoningChunk("ing"),
 			textChunk("an"),
@@ -113,7 +113,7 @@ func TestGenerateStreamReasoningThenText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	type delta struct {
 		part int
@@ -161,7 +161,7 @@ func TestGenerateStreamReasoningThenText(t *testing.T) {
 func TestGenerateStreamToolCalls(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			toolCallDeltaChunk(0, "call_9", "lookup", ""),
 			toolCallDeltaChunk(0, "", "", `{"q":`),
 			toolCallDeltaChunk(0, "", "", `"ark"}`),
@@ -178,7 +178,7 @@ func TestGenerateStreamToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var id, name, args string
 	var finish inference.FinishReason
@@ -217,7 +217,7 @@ func TestGenerateStreamToolCalls(t *testing.T) {
 func TestReasoningRoundTripPolicy(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, chatCompletionJSON("stop", nil))
+		_, _ = fmt.Fprint(w, chatCompletionJSON("stop", nil))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -286,7 +286,7 @@ func TestReasoningRoundTripPolicy(t *testing.T) {
 func TestThinkingAndEffortOverrides(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, chatCompletionJSON("stop", nil))
+		_, _ = fmt.Fprint(w, chatCompletionJSON("stop", nil))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -329,11 +329,11 @@ func TestInsufficientSystemResource(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, request map[string]any) {
 		if request["stream"] == true {
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, sseBody(textChunk("partial"), finishChunk("insufficient_system_resource")))
+			_, _ = fmt.Fprint(w, sseBody(textChunk("partial"), finishChunk("insufficient_system_resource")))
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, chatCompletionJSON("insufficient_system_resource", nil))
+		_, _ = fmt.Fprint(w, chatCompletionJSON("insufficient_system_resource", nil))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -346,7 +346,7 @@ func TestInsufficientSystemResource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		_, err = stream.Next(context.Background())
 		if err != nil {
@@ -361,7 +361,7 @@ func TestInsufficientSystemResource(t *testing.T) {
 func TestStreamWireCarriesStreamOptions(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(textChunk("ok"), finishChunk("stop"), usageChunk()))
+		_, _ = fmt.Fprint(w, sseBody(textChunk("ok"), finishChunk("stop"), usageChunk()))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -369,7 +369,7 @@ func TestStreamWireCarriesStreamOptions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	for {
 		if _, err := stream.Next(context.Background()); err != nil {
 			break

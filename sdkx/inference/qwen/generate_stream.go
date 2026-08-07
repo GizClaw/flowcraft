@@ -135,7 +135,7 @@ func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			s.closeBody()
+			_ = s.closeBody()
 		case <-stopWatch:
 		}
 	}()

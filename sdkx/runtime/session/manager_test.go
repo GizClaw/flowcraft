@@ -165,7 +165,7 @@ func TestContractsValidateTypedNil(t *testing.T) {
 
 func TestManagerRejectsInvalidDependencies(t *testing.T) {
 	router := agent.NewStreamRouter(event.NewMemoryBus())
-	defer router.Close()
+	defer func() { _ = router.Close() }()
 	host := HostFactoryFunc(func(context.Context, HostRequest) (agent.Host, error) {
 		return agent.NoopHost{}, nil
 	})
@@ -198,6 +198,7 @@ func TestManagerRejectsInvalidOpenInputs(t *testing.T) {
 	if _, err := manager.Open(context.Background(), Key{}); !errdefs.IsValidation(err) {
 		t.Fatalf("Open(invalid key) error = %v, want validation", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := manager.Open(nil, Key{AgentID: "agent-a", ContextID: "ctx"}); !errdefs.IsValidation(err) {
 		t.Fatalf("Open(nil context) error = %v, want validation", err)
 	}
@@ -253,8 +254,8 @@ func TestManagerSeparatesAgentsSharingContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer a.Close()
-	defer b.Close()
+	defer func() { _ = a.Close() }()
+	defer func() { _ = b.Close() }()
 	if a.Session() == b.Session() {
 		t.Fatal("different AgentIDs unexpectedly share Session")
 	}
@@ -279,8 +280,8 @@ func TestLeaseCloseIsIdempotentAndPartialReleaseDoesNotReclaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer third.Close()
-	defer second.Close()
+	defer func() { _ = third.Close() }()
+	defer func() { _ = second.Close() }()
 	if third.Session() != session {
 		t.Fatal("partial release reclaimed Session")
 	}
@@ -298,7 +299,7 @@ func TestManagerFinalLeaseTimeoutReclaimsIdleSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	if second.Session() == session {
 		t.Fatal("reclaimed Session was reused")
 	}
@@ -331,7 +332,7 @@ func TestManagerReopenInvalidatesStaleTimer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	time.Sleep(40 * time.Millisecond)
 	if second.Session() != session || manager.sessionCount() != 1 {
 		t.Fatal("stale timer reclaimed reactivated Session")

@@ -104,13 +104,23 @@ type Summarizer interface {
 	Summarize(context.Context, SummarizeRequest) (string, error)
 }
 
+// Store is the narrow consumer-side view of the summary view required by the
+// compactor; *summaryview.SummaryStore satisfies it structurally.
+type Store interface {
+	Add(context.Context, summaryview.AddRequest) (summaryview.Record, error)
+	Get(context.Context, sdkmemory.Scope, string, string) (summaryview.Record, bool, error)
+	LoadActive(context.Context, sdkmemory.Scope, string) (summaryview.Manifest, bool, error)
+	PublishActive(context.Context, summaryview.Manifest) error
+	ListActive(context.Context, sdkmemory.Scope, string, summaryview.ListOptions) ([]summaryview.Record, error)
+}
+
 type Compactor struct {
 	config     Config
-	store      summaryview.Store
+	store      Store
 	summarizer Summarizer
 }
 
-func New(config Config, store summaryview.Store, summarizer Summarizer) (*Compactor, error) {
+func New(config Config, store Store, summarizer Summarizer) (*Compactor, error) {
 	config = config.withDefaults()
 	if err := config.validate(); err != nil {
 		return nil, err

@@ -115,7 +115,7 @@ func TestPromptTimeoutAndInterruptRejectLateReply(t *testing.T) {
 		})
 		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
 		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
-		defer sub.Close()
+		defer func() { _ = sub.Close() }()
 		go capturePromptIDs(sub, promptIDs)
 		turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 		if err != nil {
@@ -138,7 +138,7 @@ func TestPromptTimeoutAndInterruptRejectLateReply(t *testing.T) {
 		})
 		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
 		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
-		defer sub.Close()
+		defer func() { _ = sub.Close() }()
 		go capturePromptIDs(sub, promptIDs)
 		turn, err := session.Start(context.Background(), agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
 		if err != nil {

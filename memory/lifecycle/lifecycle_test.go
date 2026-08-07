@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
@@ -127,7 +128,7 @@ func TestFactMergeCreatesDistinctPublicationTaskAndReplayIsIdempotent(t *testing
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
 	base := factview.AddRequest{
 		ID: "fact", Scope: scope, ConversationID: "conversation",
 		Content:  sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: "stable body"}}},
@@ -185,7 +186,7 @@ func TestFactMergeCreatesDistinctPublicationTaskAndReplayIsIdempotent(t *testing
 func TestReinforceIdempotentAndForgetSafety(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 4, 0, 0, 0, time.UTC)
-	store, _ := NewWorkspaceEventStore(workspace.NewMemWorkspace())
+	store := newEventStore(t, workspace.NewMemWorkspace())
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	event := sdkmemory.RecallEvent{ID: "invocation-1", Scope: scope, ItemIDs: []string{"a"}, Scores: []float64{.7}, Time: now}
 	if err := store.RecordRecall(ctx, event); err != nil {
@@ -236,7 +237,11 @@ func TestRepairFindsDanglingSummaryAndProjectionEvidence(t *testing.T) {
 	if again.ID != plan.ID {
 		t.Fatalf("unstable plan id %q != %q", again.ID, plan.ID)
 	}
-	store, err := NewWorkspaceRepairAuditStore(workspace.NewMemWorkspace())
+	logStore, logErr := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if logErr != nil {
+		t.Fatal(logErr)
+	}
+	store, err := NewRepairAuditStore(logStore)
 	if err != nil {
 		t.Fatal(err)
 	}

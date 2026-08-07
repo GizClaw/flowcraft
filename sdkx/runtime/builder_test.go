@@ -1153,7 +1153,7 @@ func TestBuilderIsSingleUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Build: %v", err)
 	}
-	defer runtime.Close()
+	defer func() { _ = runtime.Close() }()
 	if runtime.Scheduler() != nil {
 		t.Fatalf("Scheduler() = %p, want nil when runtime.scheduler is omitted", runtime.Scheduler())
 	}
@@ -1165,7 +1165,7 @@ func TestBuilderIsSingleUse(t *testing.T) {
 
 func TestBaseHostPublishesAndExposesBorrowedBus(t *testing.T) {
 	bus := event.NewMemoryBus()
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 	factory, err := newBaseHostFactory(bus)
 	if err != nil {
 		t.Fatal(err)
@@ -1197,7 +1197,7 @@ func TestBaseHostPublishesAndExposesBorrowedBus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 	envelope, err := event.NewEnvelope(context.Background(), "runtime.test", map[string]string{"ok": "yes"})
 	if err != nil {
 		t.Fatal(err)

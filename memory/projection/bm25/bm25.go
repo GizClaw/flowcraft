@@ -13,8 +13,8 @@ import (
 	"github.com/GizClaw/flowcraft/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/memory/internal/projection"
 	"github.com/GizClaw/flowcraft/memory/internal/textutil"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const (
@@ -25,7 +25,7 @@ const (
 type Thresholds = projectionstore.Thresholds
 
 type Config struct {
-	Workspace  workspace.Workspace
+	KV         storage.Store
 	Projection string
 	K1         float64
 	B          float64
@@ -91,7 +91,7 @@ func New(config Config) (*Index, error) {
 		return nil, errors.New("bm25 projection: b must be in [0,1]")
 	}
 	key := bm25EntryKey()
-	store, err := projectionstore.NewTypedStore(config.Workspace, laneName,
+	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[doc]]{
 			Thresholds: config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[doc]) projectionstore.EntryDelta[doc] {

@@ -112,7 +112,7 @@ func textOutputItem(text string) map[string]any {
 func TestGenerateUnaryCapturedWire(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			textOutputItem(`{"answer":"ok"}`),
 		}))
 	})

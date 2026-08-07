@@ -137,9 +137,15 @@ func TestLocalWorkspace_Append(t *testing.T) {
 func TestLocalWorkspace_List(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	ws.Write(ctx, "a.txt", []byte("a"))
-	ws.Write(ctx, "b.txt", []byte("b"))
-	ws.Write(ctx, "sub/c.txt", []byte("c"))
+	if err := ws.Write(ctx, "a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "b.txt", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "sub/c.txt", []byte("c")); err != nil {
+		t.Fatal(err)
+	}
 
 	entries, err := ws.List(ctx, ".")
 	if err != nil {
@@ -158,19 +164,53 @@ func TestLocalWorkspace_List(t *testing.T) {
 	}
 }
 
-func TestLocalWorkspace_ListNotFound(t *testing.T) {
+func TestLocalWorkspace_ListMissingIsEmpty(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	_, err := ws.List(ctx, "nonexistent")
-	if err == nil {
-		t.Fatal("expected error listing nonexistent dir")
+	entries, err := ws.List(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("listing a missing directory should not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestLocalWorkspace_ListSorted(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "z.txt", []byte("z")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "m.txt", []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "m.txt", "z.txt"}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("List order = %v, want %v", got, want)
+		}
 	}
 }
 
 func TestLocalWorkspace_Stat(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	ws.Write(ctx, "data.txt", []byte("12345"))
+	if err := ws.Write(ctx, "data.txt", []byte("12345")); err != nil {
+		t.Fatal(err)
+	}
 	info, err := ws.Stat(ctx, "data.txt")
 	if err != nil {
 		t.Fatal(err)
@@ -198,8 +238,12 @@ func TestLocalWorkspace_StatNotFound(t *testing.T) {
 func TestLocalWorkspace_RemoveAll(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	ws.Write(ctx, "dir/a.txt", []byte("a"))
-	ws.Write(ctx, "dir/sub/b.txt", []byte("b"))
+	if err := ws.Write(ctx, "dir/a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "dir/sub/b.txt", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := ws.RemoveAll(ctx, "dir"); err != nil {
 		t.Fatal(err)
@@ -230,12 +274,41 @@ func TestLocalWorkspace_ReadNotFound(t *testing.T) {
 	}
 }
 
-func TestLocalWorkspace_DeleteNotFound(t *testing.T) {
+func TestLocalWorkspace_DeleteIdempotent(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	err := ws.Delete(ctx, "nonexistent.txt")
-	if err == nil {
-		t.Fatal("expected not-found error")
+	if err := ws.Delete(ctx, "nonexistent.txt"); err != nil {
+		t.Fatalf("deleting a missing path should be idempotent: %v", err)
+	}
+}
+
+func TestLocalWorkspace_DeleteEmptyDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "emptydir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Delete(ctx, "emptydir"); err == nil {
+		t.Fatal("expected error deleting a directory")
+	}
+	exists, err := ws.Exists(ctx, "emptydir")
+	if err != nil || !exists {
+		t.Fatalf("directory should remain after rejected delete: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestLocalWorkspace_WriteOverDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "dir/file.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "dir", []byte("bad")); err == nil {
+		t.Fatal("expected error writing over a directory")
+	}
+	data, err := ws.Read(ctx, "dir/file.txt")
+	if err != nil || string(data) != "x" {
+		t.Fatalf("child file should be untouched: data=%q err=%v", data, err)
 	}
 }
 
@@ -270,8 +343,12 @@ func TestLocalWorkspace_SymlinkEscape(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
 	outside := t.TempDir()
-	os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("leaked"), 0o644)
-	os.Symlink(outside, filepath.Join(ws.Root(), "escape"))
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("leaked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws.Root(), "escape")); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := ws.Read(ctx, "escape/secret.txt"); err == nil {
 		t.Fatal("expected symlink escape to be blocked on read")
@@ -305,8 +382,12 @@ func TestLocalWorkspace_SymlinkFileEscape(t *testing.T) {
 
 	outside := t.TempDir()
 	secretFile := filepath.Join(outside, "passwd")
-	os.WriteFile(secretFile, []byte("root:x:0:0"), 0o644)
-	os.Symlink(secretFile, filepath.Join(ws.Root(), "passwd"))
+	if err := os.WriteFile(secretFile, []byte("root:x:0:0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secretFile, filepath.Join(ws.Root(), "passwd")); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := ws.Read(ctx, "passwd"); err == nil {
 		t.Fatal("expected symlink file escape to be blocked")
@@ -317,8 +398,12 @@ func TestLocalWorkspace_InternalSymlinkAllowed(t *testing.T) {
 	skipWindows(t)
 	ws, ctx := newLocalWS(t)
 
-	ws.Write(ctx, "real/data.txt", []byte("internal"))
-	os.Symlink(filepath.Join(ws.Root(), "real"), filepath.Join(ws.Root(), "link"))
+	if err := ws.Write(ctx, "real/data.txt", []byte("internal")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(ws.Root(), "real"), filepath.Join(ws.Root(), "link")); err != nil {
+		t.Fatal(err)
+	}
 
 	data, err := ws.Read(ctx, "link/data.txt")
 	if err != nil {
@@ -332,7 +417,9 @@ func TestLocalWorkspace_InternalSymlinkAllowed(t *testing.T) {
 func TestLocalWorkspace_ResolveEmptyAndDot(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
-	ws.Write(ctx, "f.txt", []byte("x"))
+	if err := ws.Write(ctx, "f.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
 
 	entries, err := ws.List(ctx, "")
 	if err != nil {

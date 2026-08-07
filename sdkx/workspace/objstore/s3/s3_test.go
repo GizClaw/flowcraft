@@ -155,10 +155,10 @@ func TestS3Store_ListPrefix(t *testing.T) {
 	store := New(client, "b")
 	ctx := context.Background()
 
-	store.Put(ctx, "dir/a.txt", []byte("a"))
-	store.Put(ctx, "dir/b.txt", []byte("b"))
-	store.Put(ctx, "dir/sub/c.txt", []byte("c"))
-	store.Put(ctx, "other.txt", []byte("o"))
+	_ = store.Put(ctx, "dir/a.txt", []byte("a"))
+	_ = store.Put(ctx, "dir/b.txt", []byte("b"))
+	_ = store.Put(ctx, "dir/sub/c.txt", []byte("c"))
+	_ = store.Put(ctx, "other.txt", []byte("o"))
 
 	result, err := store.ListPrefix(ctx, "dir/", "/")
 	if err != nil {
@@ -177,9 +177,9 @@ func TestS3Store_DelPrefix(t *testing.T) {
 	store := New(client, "b")
 	ctx := context.Background()
 
-	store.Put(ctx, "dir/a.txt", []byte("a"))
-	store.Put(ctx, "dir/sub/b.txt", []byte("b"))
-	store.Put(ctx, "keep.txt", []byte("k"))
+	_ = store.Put(ctx, "dir/a.txt", []byte("a"))
+	_ = store.Put(ctx, "dir/sub/b.txt", []byte("b"))
+	_ = store.Put(ctx, "keep.txt", []byte("k"))
 
 	if err := store.DelPrefix(ctx, "dir/"); err != nil {
 		t.Fatal(err)

@@ -3,6 +3,7 @@ go 1.26.0
 use (
 	./examples/forge
 	./memory
+	./memory/eval
 	./sdk
 	./sdkx
 )

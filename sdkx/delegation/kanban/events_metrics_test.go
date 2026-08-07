@@ -21,7 +21,7 @@ func TestEventsCarryTypedDelegationAndLocalHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
-	defer subscription.Close()
+	defer func() { _ = subscription.Close() }()
 
 	id := submit(t, board, "worker")
 	work, _ := board.Claim(context.Background())

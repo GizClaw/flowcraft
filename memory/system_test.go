@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/sources"
 	docsource "github.com/GizClaw/flowcraft/memory/sources/document"
 	msgsource "github.com/GizClaw/flowcraft/memory/sources/message"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -17,9 +18,9 @@ import (
 func TestSystemAdaptsThreeCapabilitiesAndIdempotency(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
-	messages, _ := msgsource.NewWorkspaceStore(ws)
-	documents, _ := docsource.NewWorkspaceStore(ws)
-	catalog, _ := sources.NewWorkspaceScopeCatalog(ws)
+	messages := newMessageStore(t, ws)
+	documents := newDocumentStore(t, ws)
+	catalog := newCatalog(t, ws)
 	provider := &captureProvider{result: sdkmemory.ContextResult{}}
 	system, err := NewSystem(messages, documents, catalog, provider)
 	if err != nil {
@@ -77,15 +78,29 @@ func TestSystemAdaptsThreeCapabilitiesAndIdempotency(t *testing.T) {
 	}
 }
 
+func newMessageStore(t *testing.T, ws workspace.Workspace) *msgsource.MessageStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := msgsource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func TestSystemClassifiesValidationErrors(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
-	messages, _ := msgsource.NewWorkspaceStore(ws)
-	documents, _ := docsource.NewWorkspaceStore(ws)
-	catalog, _ := sources.NewWorkspaceScopeCatalog(ws)
+	messages := newMessageStore(t, ws)
+	documents := newDocumentStore(t, ws)
+	catalog := newCatalog(t, ws)
 	system, _ := NewSystem(messages, documents, catalog, &captureProvider{})
 	if err := system.CommitTurn(context.Background(), sdkmemory.Turn{}); !sdkmemory.IsKind(err, sdkmemory.KindInvalidRequest) {
 		t.Fatalf("CommitTurn error = %v", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := system.Context(nil, sdkmemory.ContextRequest{}); !sdkmemory.IsKind(err, sdkmemory.KindInvalidRequest) {
 		t.Fatalf("Context error = %v", err)
 	}
@@ -93,13 +108,29 @@ func TestSystemClassifiesValidationErrors(t *testing.T) {
 
 func TestSystemClassifiesStoreFailures(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
-	messages, _ := msgsource.NewWorkspaceStore(ws)
-	documents, _ := docsource.NewWorkspaceStore(ws)
-	catalog, _ := sources.NewWorkspaceScopeCatalog(ws)
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cause := errors.New("storage unavailable")
+	documents, err := docsource.NewDocumentStore(
+		failingLog{Log: logStore, CommitLog: logStore, err: cause}, kvStore,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := newCatalog(t, ws)
+	messages, err := msgsource.NewMessageStore(failingLog{Log: logStore, CommitLog: logStore, err: cause})
+	if err != nil {
+		t.Fatal(err)
+	}
 	system, err := NewSystem(
-		failingMessageStore{Store: messages, err: cause},
-		failingDocumentStore{Store: documents, err: cause},
+		messages,
+		documents,
 		catalog,
 		&captureProvider{},
 	)
@@ -133,22 +164,14 @@ func TestSystemClassifiesStoreFailures(t *testing.T) {
 	}
 }
 
-type failingMessageStore struct {
-	msgsource.Store
+type failingLog struct {
+	storage.Log
+	storage.CommitLog
 	err error
 }
 
-func (store failingMessageStore) Commit(context.Context, msgsource.AppendRequest) (msgsource.Commit, error) {
-	return msgsource.Commit{}, store.err
-}
-
-type failingDocumentStore struct {
-	docsource.Store
-	err error
-}
-
-func (store failingDocumentStore) Put(context.Context, docsource.PutRequest) (docsource.Document, error) {
-	return docsource.Document{}, store.err
+func (log failingLog) Append(context.Context, string, []storage.Event, storage.AppendOptions) (storage.Commit, error) {
+	return storage.Commit{}, log.err
 }
 
 type captureProvider struct {
@@ -160,4 +183,34 @@ type captureProvider struct {
 func (provider *captureProvider) Context(_ context.Context, request sdkmemory.ContextRequest) (sdkmemory.ContextResult, error) {
 	provider.request = request
 	return provider.result, provider.err
+}
+
+func newCatalog(t *testing.T, ws workspace.Workspace) *sources.ScopeCatalog {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := sources.NewScopeCatalog(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return catalog
+}
+
+func newDocumentStore(t *testing.T, ws workspace.Workspace, options ...docsource.Option) *docsource.DocumentStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := docsource.NewDocumentStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

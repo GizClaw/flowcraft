@@ -239,7 +239,7 @@ runtime:
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	received := [2]chan agent.StreamDeltaPayload{
 		make(chan agent.StreamDeltaPayload, 1),

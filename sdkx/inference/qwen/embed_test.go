@@ -43,7 +43,7 @@ func TestTextEmbeddingOnWire(t *testing.T) {
 		if requested, ok := body["parameters"].(map[string]any)["dimension"].(float64); ok {
 			dimension = int(requested)
 		}
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"request_id": "emb-1",
 			"output": {"embeddings": [
 				{"embedding": %s, "text_index": 1},
@@ -113,7 +113,7 @@ func TestMultimodalEmbeddingIndependent(t *testing.T) {
 	}
 
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"output": {"embeddings": [
 				{"index": 0, "embedding": [1], "type": "text"},
 				{"index": 1, "embedding": [2], "type": "image"},
@@ -170,7 +170,7 @@ func TestMultimodalEmbeddingFusionPerItem(t *testing.T) {
 		if requested, ok := body["parameters"].(map[string]any)["dimension"].(float64); ok {
 			dimension = int(requested)
 		}
-		fmt.Fprintf(w, `{
+		_, _ = fmt.Fprintf(w, `{
 			"output": {"embeddings": [{"index": 0, "embedding": %s, "type": "fusion"}]},
 			"usage": {"input_tokens": 10, "image_tokens": 90, "total_tokens": 100}
 		}`, floatArray(dimension, 0.7))
@@ -369,7 +369,7 @@ func TestEmbedRejectsForeignExtension(t *testing.T) {
 
 func TestEmbedEnvelopeError(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, `{"code": "InvalidApiKey", "message": "bad key", "request_id": "x"}`)
+		_, _ = fmt.Fprint(w, `{"code": "InvalidApiKey", "message": "bad key", "request_id": "x"}`)
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -389,7 +389,7 @@ func TestEmbedFusionServerReturnsMultiple(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"output": {"embeddings": [
 				{"index": 0, "embedding": [1], "type": "text"},
 				{"index": 1, "embedding": [2], "type": "image"}

@@ -210,7 +210,7 @@ func isNilAssembly(assembly sdkmemory.Assembly) bool {
 		return true
 	}
 	value := reflect.ValueOf(assembly)
-	return value.Kind() == reflect.Ptr && value.IsNil()
+	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 func (s ContextSettings) validate() error {

@@ -55,7 +55,7 @@ func instrumentedGenerateDrivers(
 func TestConformanceGenerateUnary(t *testing.T) {
 	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "text", "text": "ok"},
 		}))
 	})
@@ -92,7 +92,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "message_start",
 				"message": map[string]any{

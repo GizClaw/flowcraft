@@ -5,14 +5,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
+	"text/template"
 	"time"
 	"unicode/utf8"
 
@@ -36,9 +40,23 @@ const (
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
 	TransformSignatureSimple  = "fact-extract-simple-v1"
 	TransformSignatureRich    = "fact-extract-rich-v1"
-
-	factPrompt = "Extract durable facts from this source batch. Return only JSON matching the schema."
 )
+
+//go:embed prompts/fact_system.tmpl
+var factPromptFS embed.FS
+
+var (
+	factSystemTmpl = template.Must(template.ParseFS(factPromptFS, "prompts/fact_system.tmpl"))
+	factSystem     = mustRenderFactSystem()
+)
+
+func mustRenderFactSystem() string {
+	var builder strings.Builder
+	if err := factSystemTmpl.Execute(&builder, nil); err != nil {
+		panic(err)
+	}
+	return strings.TrimSpace(builder.String())
+}
 
 // FactStrategy controls extraction detail without changing the one-call batch contract.
 type FactStrategy string
@@ -60,7 +78,7 @@ type Config struct {
 	Runtime                *inference.Runtime
 	GenerateModel          *inference.ModelRef
 	EmbedModel             *inference.ModelRef
-	Facts                  factview.Store
+	Facts                  *factview.FactStore
 	LinkVectorSearcher     component.VectorSearcher
 }
 
@@ -108,6 +126,7 @@ type FactExtractor struct {
 
 type modelFact struct {
 	Text           string   `json:"text"`
+	Fact           string   `json:"fact,omitempty"`
 	Entities       []string `json:"entities,omitempty"`
 	Predicate      string   `json:"predicate,omitempty"`
 	TemporalDetail string   `json:"temporal_detail,omitempty"`
@@ -164,25 +183,25 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		return []component.Artifact{}, nil
 	}
 
-	request := inference.GenerateRequest{
-		Input: inference.GenerateInput{
-			Role: inference.InputRoleUser,
-			Content: inference.InputContent{
-				Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{
-					Text: factPrompt + "\n\n" + tailRunes(input.Content.Text(), extractor.config.TailMaxChars),
-				}}},
-				Intent: inference.Intent{Text: &inference.TextIntent{Response: &inference.ResponseFormat{
-					Kind: inference.ResponseJSONSchema, Name: "facts", Schema: schemaFor(extractor.config.Strategy),
-				}}},
-			},
-		},
-	}
+	content := tailRunes(input.Content.Text(), extractor.config.TailMaxChars)
+	schema := true
+	request := extractionRequest(content, schema, extractor.config.Strategy)
 	response, err := extractor.config.Runtime.Generate(ctx, *extractor.config.GenerateModel, request)
+	if err != nil && inference.IsKind(err, inference.UnsupportedFeature) {
+		// DeepSeek and other json_object-only providers reject schema
+		// constrained responses at compile time. Retry once with
+		// json_object; the lenient decoder below still enforces the fact
+		// shape.
+		schema = false
+		response, err = extractor.config.Runtime.Generate(
+			ctx, *extractor.config.GenerateModel, extractionRequest(content, schema, extractor.config.Strategy),
+		)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("chat line: generate facts: %w", err)
 	}
-	var decoded factBatch
-	if err := decodeStrict([]byte(response.Message.Content.Text()), &decoded); err != nil {
+	decoded, err := decodeFacts([]byte(response.Message.Content.Text()), schema)
+	if err != nil {
 		return nil, fmt.Errorf("chat line: decode facts: %w", err)
 	}
 	if len(decoded.Facts) > extractor.config.MaxFacts {
@@ -199,6 +218,12 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	output := make([]component.Artifact, 0, len(decoded.Facts))
 	for index, item := range decoded.Facts {
 		text := factview.NormalizeText(item.Text)
+		if text == "" {
+			// json_object-only providers may name the field "fact" instead
+			// of "text" when the prompt contract is not enforced by a
+			// response schema; accept it as a lenient alias.
+			text = factview.NormalizeText(item.Fact)
+		}
 		if text == "" {
 			continue
 		}
@@ -218,11 +243,12 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		}
 		itemTime := eventTime
 		if strings.TrimSpace(item.EventTime) != "" {
-			parsed, parseErr := time.Parse(time.RFC3339Nano, item.EventTime)
+			parsed, parseErr := parseEventTime(strings.TrimSpace(item.EventTime))
 			if parseErr != nil {
-				return nil, fmt.Errorf("chat line: fact %d event_time: %w", index, parseErr)
+				itemTime = eventTime
+			} else {
+				itemTime = parsed.UTC()
 			}
-			itemTime = parsed.UTC()
 		}
 		metadata := cloneMetadata(input.Metadata)
 		metadata["canonical_hash"] = hash
@@ -244,6 +270,110 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		return nil, err
 	}
 	return output, nil
+}
+
+func extractionRequest(content string, schema bool, strategy FactStrategy) inference.GenerateRequest {
+	intent := inference.Intent{Text: &inference.TextIntent{}}
+	if schema {
+		intent.Text.Response = &inference.ResponseFormat{
+			Kind: inference.ResponseJSONSchema, Name: "facts", Schema: schemaFor(strategy),
+		}
+	} else {
+		intent.Text.Response = &inference.ResponseFormat{Kind: inference.ResponseJSONObject}
+	}
+	return inference.GenerateRequest{
+		Context: []sdkmessage.Message{{
+			Role:    sdkmessage.RoleSystem,
+			Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: factSystem}}},
+		}},
+		Input: inference.GenerateInput{
+			Role: inference.InputRoleUser,
+			Content: inference.InputContent{
+				Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: content}}},
+				Intent:  intent,
+			},
+		},
+	}
+}
+
+func decodeFacts(data []byte, strict bool) (factBatch, error) {
+	if strict {
+		var batch factBatch
+		if err := decodeStrict(data, &batch); err != nil {
+			return factBatch{}, err
+		}
+		return batch, nil
+	}
+	var loose struct {
+		Facts  json.RawMessage `json:"facts"`
+		Fact   json.RawMessage `json:"fact"`
+		Result json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &loose); err != nil {
+		var many []modelFact
+		if arrayErr := json.Unmarshal(data, &many); arrayErr == nil {
+			return factBatch{Facts: many}, nil
+		}
+		return factBatch{}, err
+	}
+	if facts, ok := decodeFactList(loose.Facts); ok {
+		return factBatch{Facts: facts}, nil
+	}
+	for _, raw := range []json.RawMessage{loose.Fact, loose.Result} {
+		if facts, ok := decodeFactList(raw); ok {
+			return factBatch{Facts: facts}, nil
+		}
+	}
+	return factBatch{}, errors.New("response contains no facts array")
+}
+
+// decodeFactList accepts an array of facts, a single fact object, or a JSON
+// string that itself encodes either shape. A present-but-empty array is a
+// valid "no durable facts" result.
+func decodeFactList(raw json.RawMessage) ([]modelFact, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, false
+	}
+	var many []modelFact
+	if err := json.Unmarshal(raw, &many); err == nil {
+		return many, true
+	}
+	var single modelFact
+	if err := json.Unmarshal(raw, &single); err == nil && single.Text != "" {
+		return []modelFact{single}, true
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		trimmed := strings.TrimSpace(text)
+		if trimmed != "" && (strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{")) {
+			return decodeFactList(json.RawMessage(trimmed))
+		}
+	}
+	return nil, false
+}
+
+// parseEventTime accepts the RFC3339 contract plus the common date-only and
+// space-separated date-time forms LLM extractors return in practice.
+func parseEventTime(value string) (time.Time, error) {
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02",
+		"2006/01/02 15:04:05",
+		"2006/01/02 15:04",
+		"2006/01/02",
+		"2006/1/2 15:04:05",
+		"2006/1/2 15:04",
+		"2006/1/2",
+	}
+	for _, layout := range layouts {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed.UTC(), nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported event_time %q", value)
 }
 
 func (extractor *FactExtractor) associate(ctx context.Context, input component.Artifact, output []component.Artifact) error {
@@ -535,12 +665,7 @@ func sortedKeys(values map[string]struct{}) []string {
 }
 
 func supports(operations []inference.Operation, wanted inference.Operation) bool {
-	for _, operation := range operations {
-		if operation == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(operations, wanted)
 }
 
 func embedItem(text string) inference.EmbedItem {
@@ -569,9 +694,7 @@ func cloneMetadata(value sdkmemory.Metadata) sdkmemory.Metadata {
 		return sdkmemory.Metadata{}
 	}
 	cloned := make(sdkmemory.Metadata, len(value)+8)
-	for key, item := range value {
-		cloned[key] = item
-	}
+	maps.Copy(cloned, value)
 	return cloned
 }
 

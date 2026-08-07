@@ -53,6 +53,9 @@ func (m *MemWorkspace) Write(_ context.Context, path string, data []byte) error 
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if f, ok := m.files[p]; ok && f.isDir {
+		return errdefs.Validationf("workspace: %s is a directory", path)
+	}
 	m.ensureParents(p)
 	cp := make([]byte, len(data))
 	copy(cp, data)
@@ -95,8 +98,11 @@ func (m *MemWorkspace) Rename(_ context.Context, src, dst string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	f, ok := m.files[srcP]
-	if !ok || f.isDir {
+	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotFound, src)
+	}
+	if f.isDir {
+		return errdefs.Validationf("workspace: rename: %s is a directory", src)
 	}
 	if srcP == dstP {
 		return nil
@@ -128,7 +134,7 @@ func (m *MemWorkspace) Delete(_ context.Context, path string) error {
 	defer m.mu.Unlock()
 	f, ok := m.files[p]
 	if !ok {
-		return fmt.Errorf("%w: %s", ErrNotFound, path)
+		return nil
 	}
 	if f.isDir {
 		return errdefs.Validationf("workspace: %s is a directory (use RemoveAll)", path)

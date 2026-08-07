@@ -102,11 +102,11 @@ func TestTTSCapturedWire(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprint(w, ttsChunkLine(0, []byte("audio-one")))
+		_, _ = fmt.Fprint(w, ttsChunkLine(0, []byte("audio-one")))
 		flusher.Flush()
-		fmt.Fprint(w, ttsChunkLine(0, []byte("audio-two")))
+		_, _ = fmt.Fprint(w, ttsChunkLine(0, []byte("audio-two")))
 		flusher.Flush()
-		fmt.Fprint(w, ttsChunkLine(20000000, nil))
+		_, _ = fmt.Fprint(w, ttsChunkLine(20000000, nil))
 		flusher.Flush()
 	}))
 	defer server.Close()
@@ -162,11 +162,11 @@ func TestTTSStreamDeltas(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		flusher, _ := w.(http.Flusher)
-		fmt.Fprint(w, ttsChunkLine(0, []byte("chunk-1")))
+		_, _ = fmt.Fprint(w, ttsChunkLine(0, []byte("chunk-1")))
 		flusher.Flush()
-		fmt.Fprint(w, ttsChunkLine(0, []byte("chunk-2")))
+		_, _ = fmt.Fprint(w, ttsChunkLine(0, []byte("chunk-2")))
 		flusher.Flush()
-		fmt.Fprint(w, ttsChunkLine(20000000, nil))
+		_, _ = fmt.Fprint(w, ttsChunkLine(20000000, nil))
 		flusher.Flush()
 	}))
 	defer server.Close()
@@ -184,7 +184,7 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var deltas int
 	var sawFinish bool

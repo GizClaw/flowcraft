@@ -21,7 +21,7 @@ func TestIntegration_NetDenyAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	port := listener.Addr().(*net.TCPAddr).Port
 
 	runner, err := New(t.TempDir())

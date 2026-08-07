@@ -42,6 +42,7 @@ func TestEmitWithNilContext(t *testing.T) {
 	defer func() { _ = shutdown(context.Background()) }()
 
 	Enable()
+	//nolint:staticcheck // deliberate: verify nil Context does not panic
 	Info(nil, "nil context msg")
 }
 

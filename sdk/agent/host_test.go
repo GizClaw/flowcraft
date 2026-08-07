@@ -246,6 +246,7 @@ func TestWithHost_NilHostIsNoop(t *testing.T) {
 }
 
 func TestHostFromContext_NilCtxReturnsFalse(t *testing.T) {
+	//nolint:staticcheck // deliberate: nil Context must yield (nil, false)
 	if h, ok := agent.HostFromContext(nil); ok || h != nil {
 		t.Errorf("nil ctx must yield (nil, false); got (%v, %v)", h, ok)
 	}

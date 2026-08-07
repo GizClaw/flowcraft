@@ -3,6 +3,7 @@
 
 # ── Git config ──
 !.gitignore
+!.golangci.yml
 
 # ── Root documentation ──
 !README.md

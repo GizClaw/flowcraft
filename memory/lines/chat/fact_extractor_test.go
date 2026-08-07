@@ -44,6 +44,14 @@ func TestFactExtractorStableIDProvenancePromptAndClone(t *testing.T) {
 		!strings.Contains(request.Input.Content.Text(), "Remember that I like tea") {
 		t.Fatalf("generate request = %#v", request)
 	}
+	if len(request.Context) != 1 ||
+		request.Context[0].Role != sdkmessage.RoleSystem ||
+		!strings.Contains(request.Context[0].Content.Text(), "Extract durable facts") {
+		t.Fatalf("instructions must live in the system message: %#v", request.Context)
+	}
+	if strings.Contains(request.Input.Content.Text(), "Extract durable facts") {
+		t.Fatalf("instructions leaked into the user message: %q", request.Input.Content.Text())
+	}
 	input.Sources[0].ID = "input mutation"
 	input.Metadata["key"] = "input mutation"
 	first[0].Sources[0].ID = "output mutation"
@@ -94,6 +102,40 @@ func TestFactExtractorConstructorValidation(t *testing.T) {
 	runtime := (&inferencetest.GenerateFake{}).Runtime(t)
 	if _, err := NewFactExtractor(runtime, nil); err == nil {
 		t.Fatal("nil model accepted")
+	}
+}
+
+func TestDecodeFactsLooseShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want int
+	}{
+		{name: "facts array", data: `{"facts":[{"text":"a"}]}`, want: 1},
+		{name: "singular fact object", data: `{"fact":{"text":"a"}}`, want: 1},
+		{name: "singular fact array", data: `{"fact":[{"text":"a"},{"text":"b"}]}`, want: 2},
+		{name: "result array", data: `{"result":[{"text":"a"}]}`, want: 1},
+		{name: "empty facts array", data: `{"facts":[]}`, want: 0},
+		{name: "facts as JSON string", data: `{"facts":"[{\"text\":\"a\"},{\"text\":\"b\"}]"}`, want: 2},
+		{name: "top-level array", data: `[{"text":"a"}]`, want: 1},
+		{name: "no facts", data: `{"foo":1}`, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			batch, err := decodeFacts([]byte(test.data), false)
+			if err != nil {
+				if test.want == 0 && !strings.Contains(err.Error(), "no facts array") {
+					t.Fatalf("decodeFacts(%s) unexpected error: %v", test.data, err)
+				}
+				if test.want > 0 {
+					t.Fatalf("decodeFacts(%s) error: %v", test.data, err)
+				}
+				return
+			}
+			if len(batch.Facts) != test.want {
+				t.Fatalf("decodeFacts(%s) = %#v, %v; want %d facts", test.data, batch, err, test.want)
+			}
+		})
 	}
 }
 

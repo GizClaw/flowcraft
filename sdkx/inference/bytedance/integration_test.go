@@ -146,7 +146,7 @@ func newArkServer(
 			record(body)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "resp_1", "object": "response", "status": "completed",
 			"output": [{
 				"type": "message", "role": "assistant",

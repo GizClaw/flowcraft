@@ -1,6 +1,5 @@
-// Package document provides the workspace-backed canonical source of
-// normalized document content and provenance. Each document has an independent
-// file and idempotency scope. Documents are hard-partitioned by memory scope
-// and isolated by dataset. Concurrent writers in one process must share one
-// WorkspaceStore.
+// Package document provides the canonical source of normalized document
+// content and provenance. Current values live in a storage.Store and every
+// immutable revision is appended to a storage.Log stream per hard scope.
+// Documents are hard-partitioned by memory scope and isolated by dataset.
 package document

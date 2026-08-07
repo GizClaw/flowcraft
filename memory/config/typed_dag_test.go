@@ -18,20 +18,17 @@ import (
 
 func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, err := NewBuilder(workspace.NewMemWorkspace(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	builder := newBuilder(t, runtime, nil)
 	settings := Settings{
-		Generate: modelSettings(generate),
-		Embed:    modelSettings(embed),
+		Generate: FromModelRef(generate),
+		Embed:    FromModelRef(embed),
 		Interval: Duration(time.Second),
 	}
 	first, err := builder.NewAssembly(context.Background(), settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	if first.PolicyDigest == "" {
 		t.Fatal("empty automatic policy digest")
 	}
@@ -46,7 +43,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	if first.PolicyDigest != second.PolicyDigest {
 		t.Fatalf("same normalized settings changed digest: %q != %q", first.PolicyDigest, second.PolicyDigest)
 	}
@@ -55,7 +52,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer third.Close()
+	defer func() { _ = third.Close() }()
 	if first.PolicyDigest != third.PolicyDigest {
 		t.Fatal("runtime poll interval changed semantic policy digest")
 	}
@@ -64,7 +61,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fourth.Close()
+	defer func() { _ = fourth.Close() }()
 	if first.PolicyDigest == fourth.PolicyDigest {
 		t.Fatal("semantic chunk configuration did not change digest")
 	}
@@ -121,7 +118,7 @@ func (d customChatDeriver) Derive(_ context.Context, input component.Artifact) (
 
 func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	builder := newBuilder(t, runtime, nil)
 	factories := NewFactoryCatalog()
 	if err := component.RegisterTypedDeriver(
 		factories,
@@ -148,8 +145,8 @@ func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := Settings{
-		Generate:       modelSettings(generate),
-		Embed:          modelSettings(embed),
+		Generate:       FromModelRef(generate),
+		Embed:          FromModelRef(embed),
 		FactoryCatalog: factories,
 		ChatDAG: ChatDAGSettings{Nodes: []ChatNodeSettings{
 			CustomChatNode("custom", component.NewDeriverSpec("custom.prefix", customChatConfig{Prefix: "x-"})),
@@ -159,7 +156,7 @@ func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if got := assembly.ChatDAG.TopologicalOrder(); len(got) != 1 || got[0] != "custom" {
 		t.Fatalf("custom order = %v", got)
 	}
@@ -201,7 +198,7 @@ func (step customLifecycleStep) Run(_ context.Context, state *lifecycle.RunState
 func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
 	ws := workspace.NewMemWorkspace()
-	builder, _ := NewBuilder(ws, runtime)
+	builder := newBuilder(t, runtime, ws)
 	factories := lifecycle.NewCatalog()
 	var calls atomic.Int32
 	if err := lifecycle.RegisterTypedStep(
@@ -214,7 +211,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	}
 	scope := memory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	settings := Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed), LifecycleFactoryCatalog: factories,
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed), LifecycleFactoryCatalog: factories,
 		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 		LifecycleDAG: LifecycleDAGSettings{Nodes: []LifecycleNodeSettings{
 			CustomLifecycleNode("custom", lifecycle.NewStepSpec("custom.observe", customLifecycleConfig{Label: "called"})),
@@ -224,7 +221,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if assembly.LifecycleDAG == nil || assembly.LifecycleRunner == nil {
 		t.Fatal("lifecycle DAG was not wired into the runner")
 	}
@@ -243,7 +240,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("custom lifecycle calls=%d", calls.Load())
 	}
-	facts, err := factview.NewWorkspaceStore(ws)
+	facts := newFactStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}

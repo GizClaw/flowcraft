@@ -1,33 +1,31 @@
 ---
 layout: default
-title: Memory Stack
+title: Memory Stack Guide
 ---
 # Memory Stack Guide
 
 FlowCraft's memory stack is split into three layers, mirroring the
-inference stack: an SDK contract, a concrete implementation, and the
-generic deploy/runtime glue.
+inference stack: an SDK contract, concrete implementations, and the generic
+deploy/runtime glue.
 
 | Layer                 | Owns                                                                      | Lives in          |
 | --------------------- | ------------------------------------------------------------------------- | ----------------- |
 | Contract              | `ContextProvider`, `TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope` | `sdk/memory`      |
-| Implementation        | canonical stores, projections, retrieval, worker, lifecycle maintenance   | `memory/`         |
+| Implementation        | canonical stores, projections, retrieval, worker, lifecycle maintenance   | implementation modules (e.g. `memory/`) |
 | Glue                  | `memory.Assembly` deploy resource, `memory.context` / `memory.turn` hooks, GoTemplate renderer | `sdk/memory/config` + `sdkx/memory` |
-| Runtime integration   | starting the implementation's background worker inside `sdkx/runtime`     | `memory/runtime`  |
 
 `sdk/memory` deliberately knows nothing about agents, hooks, or storage
-backends. It defines the capabilities a deployment binds to; the
-`memory/` module is **one implementation** of those capabilities and owns
-its own settings schema and background worker. Other implementations can
-register under their own `impl:` name with their own parameters.
+backends. It defines the capabilities a deployment binds to. Implementations
+own their settings schema and background workers, and register under their
+own `impl:` name with their own parameters.
 
 ## Concepts
 
 ### Scope
 
-`Scope` is the hard-partition key for every memory operation. Unlike the
-older design, conversation and dataset addresses are **request fields**,
-not scope fields; they can never widen the partition.
+`Scope` is the hard-partition key for every memory operation. Conversation
+and dataset addresses are **request fields**, not scope fields; they can
+never widen the partition.
 
 ```go
 type Scope struct {
@@ -117,142 +115,31 @@ type ContextRenderer interface {
 escapes recalled text as untrusted reference data. See
 [Hooks](#hooks) for configuration.
 
-## Building a runtime
+## Deployment
 
-There is no generic `memory.New` anymore. You build an implementation's
-assembly through its own config package:
+`memory.Assembly` is a first-party deploy resource kind
+(`sdk/memory/config`). There is no generic `memory.New`: each implementation
+exposes its own factory and registers it under its `impl:` name, mirroring
+inference provider factories.
 
-```go
-import (
-    flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
-    sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-    "github.com/GizClaw/flowcraft/sdk/workspace"
-    "time"
-)
-
-ws := workspace.NewMemWorkspace()
-builder, err := flowcraftmemory.NewBuilder(ws, inferRuntime) // *inference.Runtime
-if err != nil { /* ... */ }
-
-assembly, err := builder.NewAssembly(ctx, flowcraftmemory.Settings{
-    Generate: flowcraftmemory.ModelSettings{Provider: "openai", Name: "gpt-5.4"},
-    Embed:    flowcraftmemory.ModelSettings{Provider: "openai", Name: "text-embedding-3-small"},
-    Scopes:   []flowcraftmemory.ScopeSettings{{RuntimeID: "prod", UserID: "u1"}},
-    Interval: flowcraftmemory.Duration(time.Hour),
-})
-if err != nil { /* ... */ }
-defer assembly.Close()
-
-// The assembly implements all three SDK capabilities:
-var _ sdkmemory.ContextProvider = assembly.System
-var _ sdkmemory.TurnSink        = assembly.System
-var _ sdkmemory.DocumentSink    = assembly.System
-
-// Run one derivation scan synchronously (the runtime integration runs this
-// on a loop for you).
-if err := assembly.Runner.RunOnce(ctx); err != nil { /* ... */ }
-```
-
-`assembly.System` exposes the canonical stores and retrieval provider;
-`assembly.Runner` is the in-process derivation worker; `assembly.ChatDAG`,
-`assembly.KnowledgeDAG`, `assembly.LifecycleDAG` describe the write-side
-pipelines; `assembly.LifecycleRunner` owns durable maintenance ("Dreaming").
-
-## Config: memory.yaml
-
-The flowcraft implementation's settings document is strict and has **no
-`version` field** — it is implementation-owned, not a versioned envelope.
-`embed` is always required, and `generate` is required unless fact
-extraction is disabled (`fact.strategy: none` with an empty `chat_dag`);
-every other block has safe defaults.
-
-```yaml
-generate:
-  provider: deepseek
-  name: deepseek-v4-flash
-embed:
-  provider: openai
-  name: text-embedding-3-small
-scopes:
-  - runtime_id: prod
-    user_id: u1
-interval: 1m
-```
-
-Model references are exact `inference.ModelRef` values (provider, name,
-optional profile). Credentials and provider catalogs stay in `inference.yaml`
-— `memory.yaml` never contains secrets.
-
-Optional blocks, all strictly decoded:
-
-| Block               | What it controls                                                                 |
-| ------------------- | -------------------------------------------------------------------------------- |
-| `scopes`            | scope seeds registered before worker scans; duplicates are rejected               |
-| `interval`          | derivation scan interval (default `1m`)                                           |
-| `projection`        | projection family name (default `default`)                                        |
-| `fact`              | fact-extraction strategy and resource caps                                        |
-| `chunk`             | knowledge chunk size, overlap, and deterministic hierarchy summaries              |
-| `recent`            | recent-context caps (`max_items`, `max_tokens`)                                   |
-| `summary`           | durable summary branch (compactor thresholds, depth, group size)                  |
-| `bm25`              | BM25 algorithm version and `k1` / `b`                                             |
-| `projection_storage`| LSM projection storage (`algorithm_version`, `max_segments`, `max_delta_bytes`)   |
-| `reranker`          | optional programmatic post-fusion reranker (version required when enabled)        |
-| `lanes`             | vector / bm25 / entity lane weights and score calibration                         |
-| `chat_dag`          | conversation derivation nodes (default: one `extract-facts` node)                 |
-| `knowledge_dag`     | document derivation nodes (default: one `chunk-document` node)                    |
-| `lifecycle`         | durable maintenance: `disabled`, `periodic`, `interval`, `lease_ttl`, `owner`, `decay`, `forget` |
-| `lifecycle_dag`     | lifecycle node order (default: integrate → compact → decay → forget → repair)     |
-
-Custom algorithm/deriver/factory selections are programmatic-only and pass
-through `FactoryCatalog`, `LifecycleFactoryCatalog`, and
-`LifecycleEffects` on `Settings`.
-
-## Deploy integration
-
-`memory.Assembly` is a first-party deploy resource. The application registers
-the implementation factory by name, mirroring inference provider factories:
+The registration protocol is dependency-neutral. `sdkmemory.Input` carries
+only `Settings` and a generic `Deps` map; the implementation declares the
+resource deps it needs at registration and type-asserts them itself:
 
 ```go
-import (
-    flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
-    sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
-    memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
-)
-
 deployBuilder.MustRegisterResource(
     memoryconfig.NewDeployFactory(
-        "flowcraft",
-        flowcraftmemory.Factory(),
+        "my-memory",
+        myMemory.Factory(),
+        // deps declared by the implementation, e.g.:
         sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-        sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
     ),
 )
 ```
 
-The `sdk/memory` protocol itself hard-codes no dependencies: each
-implementation declares the resource deps it needs at registration, and the
-factory type-asserts them. The flowcraft implementation requires a workspace
-(for the canonical stores) and an `inference.Runtime` (for generation and
-embeddings), and exposes its system as the `system` item:
-
-```yaml
-resources:
-  ws:
-    kind: workspace.Registry
-    impl: yaml
-    settings: {file: ./workspace.yaml}
-  infer:
-    kind: inference.Assembly
-    impl: yaml
-    settings: {file: ./inference.yaml}
-  memories:
-    kind: memory.Assembly
-    impl: flowcraft
-    deps:
-      workspace: ws/project
-      inference: infer/runtime
-    settings: {file: ./memory.yaml}
-```
+The built `memory.Assembly` is bound **whole** as hooks' `memory` dependency.
+A complete deploy document with a concrete implementation is shown in the
+[deploy guide](deploy.md).
 
 ## Hooks
 
@@ -316,33 +203,10 @@ channels.
 ## Runtime integration
 
 Background derivation and lifecycle maintenance are owned by the
-implementation. `memory/runtime` exposes a `sdkx/runtime` integration that
-starts the flowcraft worker:
-
-```go
-import flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
-
-if err := runtimeBuilder.RegisterIntegration(flowcraftruntime.NewFactory()); err != nil {
-    return err
-}
-```
-
-```yaml
-runtime:
-  event_bus: events
-  scheduler: schedules
-  integrations:
-    - name: memory
-      kind: memory.worker
-      deps: {memory: memories}
-      settings: {}
-```
-
-`memory.worker` requires the `memory.Assembly` dependency, and its settings
-must be empty — maintenance policy comes from `memory.yaml` (`lifecycle`,
-`interval`, `scopes`). It starts the derivation runner and, unless lifecycle
-is disabled, the durable dreaming runner; shutdown is reversed on Runtime
-close.
+implementation. An implementation may ship an `sdkx/runtime` integration that
+starts its workers when Runtime starts; the flowcraft implementation's
+`memory.worker` integration is described in the
+[runtime guide](runtime.md).
 
 ## Error taxonomy
 
@@ -361,9 +225,14 @@ close.
 
 ## Using the capabilities in Go
 
+Obtain an `sdkmemory.Assembly` from the deployment (for example as a bound
+dependency), then use the three capabilities directly:
+
 ```go
+var assembly sdkmemory.Assembly // bound from the deployment
+
 // Commit a turn.
-err := assembly.System.CommitTurn(ctx, sdkmemory.Turn{
+err := assembly.CommitTurn(ctx, sdkmemory.Turn{
     Scope:          sdkmemory.Scope{RuntimeID: "prod", UserID: "u1"},
     ConversationID: "c-42",
     IdempotencyKey: runID,
@@ -374,7 +243,7 @@ err := assembly.System.CommitTurn(ctx, sdkmemory.Turn{
 })
 
 // Recall context.
-result, err := assembly.System.Context(ctx, sdkmemory.ContextRequest{
+result, err := assembly.Context(ctx, sdkmemory.ContextRequest{
     Scope:          sdkmemory.Scope{RuntimeID: "prod", UserID: "u1"},
     ConversationID: "c-42",
     DatasetIDs:     []string{"knowledge"},
@@ -385,7 +254,7 @@ result, err := assembly.System.Context(ctx, sdkmemory.ContextRequest{
 })
 
 // Store a document.
-err = assembly.System.PutDocument(ctx, sdkmemory.Document{
+err = assembly.PutDocument(ctx, sdkmemory.Document{
     Scope:          sdkmemory.Scope{RuntimeID: "prod", UserID: "u1"},
     DatasetID:      "knowledge",
     DocumentID:     "handbook",
@@ -395,23 +264,20 @@ err = assembly.System.PutDocument(ctx, sdkmemory.Document{
 })
 ```
 
-Leave storage-level identifiers to the implementation: the SDK contracts
-require caller-supplied `IdempotencyKey` / `DocumentID` but never invent
-stable IDs for you.
+Implementations may expose implementation-specific services (workers,
+stores, backends) through their own types; the SDK contracts never require
+them. Storage-level identifiers stay caller-supplied: the contracts require
+`IdempotencyKey` / `DocumentID` but never invent stable IDs for you.
 
 ## Testing
 
-There is no shared `memorytest` black-box suite in the current stack. The
-contract is small enough to test directly:
+There is no shared `memorytest` black-box suite; the contract is small enough
+to test directly:
 
 - `sdk/memory` package tests assert the SPI invariants (scope validation,
   request/result validation, error classification).
-- `memory/config/config_test.go` builds a real assembly over
-  `workspace.NewMemWorkspace` + a fake inference runtime and asserts
-  commit → derive → recall end to end.
 - `sdkx/memory/hook/hook_test.go` covers both hook factories with a
   recording `Assembly`.
-- `memory/runtime/integration_test.go` covers the runtime worker lifecycle.
 
 For your own implementation, implement the three SPI methods and test the
 same commit/recall/document round trip against your storage.
@@ -421,10 +287,6 @@ same commit/recall/document round trip against your storage.
 - Contract: `sdk/memory/doc.go`, `sdk/memory/assembly.go`,
   `sdk/memory/context.go`, `sdk/memory/turn.go`, `sdk/memory/document.go`,
   `sdk/memory/scope.go`, `sdk/memory/render.go`.
-- Implementation: `memory/config/config.go` (Settings, defaults,
-  validation), `memory/config/settings.go`, `memory/config/build.go`,
-  `memory/runtime/integration.go`.
 - Glue: `sdkx/memory/hook/hook.go`, `sdkx/memory/render/gotmpl.go`,
   `sdk/memory/config/resource.go`.
-- Deploy wiring: [deploy.md](deploy.md) and
-  [runtime.md](runtime.md) (the `memory.worker` integration).
+- Deploy wiring: [deploy.md](deploy.md) and [runtime.md](runtime.md).

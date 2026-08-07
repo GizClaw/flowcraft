@@ -166,9 +166,16 @@ func (w *LocalWorkspace) Delete(_ context.Context, path string) error {
 	if err != nil {
 		return err
 	}
+	if info, statErr := os.Stat(full); statErr == nil {
+		if info.IsDir() {
+			return errdefs.Validationf("workspace: %s is a directory (use RemoveAll)", path)
+		}
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("workspace: delete %s: %w", path, statErr)
+	}
 	if err := os.Remove(full); err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("%w: %s", ErrNotFound, path)
+			return nil
 		}
 		return fmt.Errorf("workspace: delete %s: %w", path, err)
 	}
@@ -194,7 +201,7 @@ func (w *LocalWorkspace) List(_ context.Context, dir string) ([]fs.DirEntry, err
 	entries, err := os.ReadDir(full)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s", ErrNotFound, dir)
+			return []fs.DirEntry{}, nil
 		}
 		return nil, fmt.Errorf("workspace: list %s: %w", dir, err)
 	}

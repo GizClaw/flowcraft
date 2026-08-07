@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +36,7 @@ func TestHelperProcess(t *testing.T) {
 			chunks = append(chunks, b)
 			time.Sleep(5 * time.Millisecond)
 		}
+		runtime.KeepAlive(chunks)
 		fmt.Println("helper allocated 512MiB")
 		// Sleep, not select{}: a bare select trips Go's deadlock
 		// detector and exits on its own, which fakes the kill signal
@@ -42,6 +44,7 @@ func TestHelperProcess(t *testing.T) {
 		time.Sleep(time.Hour)
 	case "spin":
 		fmt.Println("helper started")
+		//nolint:staticcheck // deliberate: busy-spin so the runner must kill the process
 		for {
 		}
 	}

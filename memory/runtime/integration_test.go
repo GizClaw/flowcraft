@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/memory/sources"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/memory/worker"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -26,7 +27,11 @@ func TestFactorySpecRequiresFlowcraftAssembly(t *testing.T) {
 }
 
 func TestStartCloseIdempotent(t *testing.T) {
-	catalog, err := sources.NewWorkspaceScopeCatalog(workspace.NewMemWorkspace())
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := sources.NewScopeCatalog(kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}

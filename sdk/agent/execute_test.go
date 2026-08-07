@@ -1907,6 +1907,7 @@ func TestLoadAndResume_HonoursResumerCanResume(t *testing.T) {
 }
 
 func TestResumeContextFromContext_NilCtxReturnsFalse(t *testing.T) {
+	//nolint:staticcheck // deliberate: nil Context must return ok=false
 	if _, ok := agent.ResumeContextFromContext(nil); ok {
 		t.Fatal("nil ctx must return ok=false")
 	}
@@ -1932,6 +1933,7 @@ func TestRunInfoFromContext_AbsentAndNil(t *testing.T) {
 	if _, ok := agent.RunInfoFromContext(context.Background()); ok {
 		t.Fatal("empty ctx must return ok=false")
 	}
+	//nolint:staticcheck // deliberate: nil Context must return ok=false
 	if _, ok := agent.RunInfoFromContext(nil); ok {
 		t.Fatal("nil ctx must return ok=false")
 	}

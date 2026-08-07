@@ -580,6 +580,9 @@ providers:
 
 ```yaml
 # memory.yaml
+storage:
+  log: {driver: workspace}
+  kv: {driver: workspace}
 generate:
   provider: deepseek
   name: deepseek-v4-flash
@@ -593,9 +596,9 @@ interval: 1m
 ```
 
 Credentials and provider catalogs stay in `inference.yaml`; `memory.yaml`
-contains only exact model references, scopes, and derivation/maintenance
-policy (see the [memory guide](memory.md#config-memoryyaml) for the full
-schema; note the implementation settings document has no `version` field).
+contains only flat model references (provider, name, optional profile),
+scopes, and derivation/maintenance policy. The implementation owns the full
+schema of its settings document (which has no `version` field).
 
 Background work is not a cron schema anymore. The flowcraft implementation
 owns a worker and lifecycle runner; in an application Runtime, register the

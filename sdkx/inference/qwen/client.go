@@ -105,7 +105,7 @@ func (c *dashClient) request(
 		return nil, fmt.Errorf("qwen: post %s: %w", path, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		var failure struct {
 			Code    string `json:"code"`
 			Message string `json:"message"`
@@ -136,7 +136,7 @@ func (c *dashClient) postJSON(
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("qwen: decode %s response: %w", path, err)
 	}

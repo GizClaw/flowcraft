@@ -19,7 +19,7 @@ func TestCollectorSplitsByNodeID(t *testing.T) {
 		t.Fatalf("blocks = %d, want 2", len(c.Blocks))
 	}
 	labels := map[string]string{
-		"host_opening":        "主持人",
+		"host_opening":         "主持人",
 		"seat_1_lin_zhi_speak": "1号林知",
 	}
 	got := Render(c.Blocks, func(nodeID string) string { return labels[nodeID] })

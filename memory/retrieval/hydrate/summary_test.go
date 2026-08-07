@@ -16,8 +16,8 @@ func TestSummarySearchHydrateHintAndStrictExpansion(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 	ws := workspace.NewMemWorkspace()
-	messages, _ := messagesource.NewWorkspaceStore(ws)
-	summaries, _ := summaryview.NewWorkspaceStore(ws)
+	messages := newMessageStore(t, ws)
+	summaries := newSummaryStore(t, ws)
 	records, err := messages.Append(ctx, messagesource.AppendRequest{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
 		Messages: []sdkmessage.Message{sdkmessage.NewTextMessage(sdkmessage.RoleUser, "architecture decision")},

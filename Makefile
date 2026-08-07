@@ -9,7 +9,12 @@ SHELL := /bin/bash
 # (sdkx imports sdk).
 MODULES_WORK := sdk memory sdkx examples/forge
 
-ALL_MODULES := $(MODULES_WORK)
+# Modules gated by CI's gofmt -s + golangci-lint lanes.
+MODULES_LINT := sdk memory memory/eval sdkx
+
+# `make fmt` mirrors the CI gofmt -s gate; memory/eval is included here
+# even though it is not part of MODULES_WORK (vet/test run).
+ALL_MODULES := $(MODULES_WORK) memory/eval
 
 # `set -e` inside the for-loop body so a failure in any submodule stops the
 # loop. The previous form (` ( cd $$m && ... ) `) silently swallowed errors
@@ -24,7 +29,8 @@ help:
 	@echo ""
 	@echo "  make vet         Run go vet on all modules"
 	@echo "  make test        Run tests on all modules (excl. Go benchmarks)"
-	@echo "  make fmt         Run gofmt on all modules"
+	@echo "  make fmt         Run gofmt -s on all modules"
+	@echo "  make lint        Run golangci-lint on CI-gated modules"
 	@echo "  make tidy        Run go mod tidy on all modules"
 	@echo "  make ci          vet + test"
 	@echo "  make release-check  Test release tooling, validate changesets, and"
@@ -32,7 +38,7 @@ help:
 	@echo "  make release-plan   Print the pending module release plan as JSON."
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 	@echo ""
-	@echo "  make eval              Hermetic memory retrieval eval (memory/eval)."
+	@echo "  make eval              Hermetic memory retrieval eval (memory/eval module)."
 	@echo "  make eval-smoke        Compatibility alias for the hermetic memory eval."
 	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
 	@echo "                         the pre-eval/ migration entry point."
@@ -49,7 +55,11 @@ test:
 
 .PHONY: fmt
 fmt:
-	@$(call GO_FOREACH,$(ALL_MODULES),fmt,go fmt ./...)
+	@$(call GO_FOREACH,$(ALL_MODULES),fmt,gofmt -s -w .)
+
+.PHONY: lint
+lint:
+	@$(call GO_FOREACH,$(MODULES_LINT),lint,golangci-lint run --timeout 5m ./...)
 
 .PHONY: tidy
 tidy:
@@ -79,7 +89,7 @@ release-changelog:
 # Credential-free retrieval quality evaluation over real memory components.
 .PHONY: eval
 eval:
-	@cd memory && go test ./eval -count=1 -v
+	@cd memory/eval && go test ./... -count=1 -v
 
 # Compatibility target retained after removal of the old top-level eval module.
 .PHONY: eval-smoke

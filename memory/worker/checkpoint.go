@@ -4,20 +4,17 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/derive"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const checkpointSchemaVersion = 2
@@ -47,6 +44,7 @@ type Checkpoint struct {
 	UpdatedAt time.Time
 }
 
+// CheckpointStore is the consumer-side contract used by the Processor.
 type CheckpointStore interface {
 	Load(context.Context, sdkmemory.Scope, WorkIdentity, string) (Checkpoint, bool, error)
 	Save(context.Context, Checkpoint) error
@@ -66,8 +64,10 @@ type SourceWatermark struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
-type WorkspaceCheckpointStore struct {
-	ws    workspace.Workspace
+// WorkerCheckpointStore persists derivation checkpoints and source
+// watermarks on a storage.Store.
+type WorkerCheckpointStore struct {
+	kv    storage.Store
 	clock func() time.Time
 }
 
@@ -88,20 +88,27 @@ type persistedWatermark struct {
 	Watermark     SourceWatermark `json:"watermark"`
 }
 
-func NewWorkspaceCheckpointStore(ws workspace.Workspace) (*WorkspaceCheckpointStore, error) {
-	if nilInterface(ws) {
-		return nil, errors.New("memory worker checkpoint: workspace is required")
+// NewWorkerCheckpointStore constructs a KV-backed derivation checkpoint
+// store.
+func NewWorkerCheckpointStore(kv storage.Store) (*WorkerCheckpointStore, error) {
+	if nilInterface(kv) {
+		return nil, errors.New("memory worker checkpoint: store is required")
 	}
-	return &WorkspaceCheckpointStore{ws: ws, clock: time.Now}, nil
+	return &WorkerCheckpointStore{kv: kv, clock: time.Now}, nil
 }
 
-func (store *WorkspaceCheckpointStore) Load(ctx context.Context, scope sdkmemory.Scope, work WorkIdentity, branch string) (Checkpoint, bool, error) {
+// Load implements CheckpointStore.
+func (store *WorkerCheckpointStore) Load(ctx context.Context, scope sdkmemory.Scope, work WorkIdentity, branch string) (Checkpoint, bool, error) {
 	if err := validateKey(scope, work, branch); err != nil {
 		return Checkpoint{}, false, err
 	}
-	data, err := store.ws.Read(ctx, store.checkpointPath(scope, work, branch))
+	key, err := store.checkpointKey(scope, work, branch)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		return Checkpoint{}, false, err
+	}
+	data, err := store.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return Checkpoint{}, false, nil
 		}
 		return Checkpoint{}, false, fmt.Errorf("memory worker checkpoint: read: %w", err)
@@ -114,7 +121,7 @@ func (store *WorkspaceCheckpointStore) Load(ctx context.Context, scope sdkmemory
 		return Checkpoint{}, false, fmt.Errorf("memory worker checkpoint: unsupported schema_version %d", value.SchemaVersion)
 	}
 	if value.Scope != scope || value.Work != work || value.Branch != branch {
-		return Checkpoint{}, false, errors.New("memory worker checkpoint: persisted address does not match path")
+		return Checkpoint{}, false, errors.New("memory worker checkpoint: persisted address does not match key")
 	}
 	checkpoint := Checkpoint{
 		Scope: value.Scope, Work: value.Work, Branch: value.Branch, Status: value.Status,
@@ -126,8 +133,9 @@ func (store *WorkspaceCheckpointStore) Load(ctx context.Context, scope sdkmemory
 	return checkpoint, true, nil
 }
 
-func (store *WorkspaceCheckpointStore) Save(ctx context.Context, checkpoint Checkpoint) error {
-	if store == nil || nilInterface(store.ws) {
+// Save implements CheckpointStore.
+func (store *WorkerCheckpointStore) Save(ctx context.Context, checkpoint Checkpoint) error {
+	if store == nil || nilInterface(store.kv) {
 		return errors.New("memory worker checkpoint: store is required")
 	}
 	checkpoint.RunResult = cloneRunResult(checkpoint.RunResult)
@@ -135,6 +143,10 @@ func (store *WorkspaceCheckpointStore) Save(ctx context.Context, checkpoint Chec
 		checkpoint.UpdatedAt = store.clock()
 	}
 	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	key, err := store.checkpointKey(checkpoint.Scope, checkpoint.Work, checkpoint.Branch)
+	if err != nil {
 		return err
 	}
 	data, err := json.Marshal(persistedCheckpoint{
@@ -145,13 +157,14 @@ func (store *WorkspaceCheckpointStore) Save(ctx context.Context, checkpoint Chec
 	if err != nil {
 		return fmt.Errorf("memory worker checkpoint: encode: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.checkpointPath(checkpoint.Scope, checkpoint.Work, checkpoint.Branch), data); err != nil {
+	if err := store.kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("memory worker checkpoint: write: %w", err)
 	}
 	return nil
 }
 
-func (store *WorkspaceCheckpointStore) LoadWatermark(
+// LoadWatermark implements CheckpointStore.
+func (store *WorkerCheckpointStore) LoadWatermark(
 	ctx context.Context,
 	scope sdkmemory.Scope,
 	streamKind string,
@@ -164,9 +177,13 @@ func (store *WorkspaceCheckpointStore) LoadWatermark(
 	if err := validateWatermarkKey(key); err != nil {
 		return SourceWatermark{}, false, err
 	}
-	data, err := store.ws.Read(ctx, store.watermarkPath(key))
+	watermarkKey, err := store.watermarkKey(key)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		return SourceWatermark{}, false, err
+	}
+	data, err := store.kv.Get(ctx, watermarkKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return SourceWatermark{}, false, nil
 		}
 		return SourceWatermark{}, false, fmt.Errorf("memory worker watermark: read: %w", err)
@@ -181,13 +198,14 @@ func (store *WorkspaceCheckpointStore) LoadWatermark(
 	value := persisted.Watermark
 	if value.Scope != scope || value.StreamKind != streamKind || value.StreamID != streamID ||
 		value.PolicyDigest != policyDigest || value.UpdatedAt.IsZero() {
-		return SourceWatermark{}, false, errors.New("memory worker watermark: persisted address does not match path")
+		return SourceWatermark{}, false, errors.New("memory worker watermark: persisted address does not match key")
 	}
 	return value, true, nil
 }
 
-func (store *WorkspaceCheckpointStore) SaveWatermark(ctx context.Context, value SourceWatermark) error {
-	if store == nil || nilInterface(store.ws) {
+// SaveWatermark implements CheckpointStore.
+func (store *WorkerCheckpointStore) SaveWatermark(ctx context.Context, value SourceWatermark) error {
+	if store == nil || nilInterface(store.kv) {
 		return errors.New("memory worker watermark: store is required")
 	}
 	if err := validateWatermarkKey(value); err != nil {
@@ -205,16 +223,43 @@ func (store *WorkspaceCheckpointStore) SaveWatermark(ctx context.Context, value 
 	if ok && value.Cursor < current.Cursor {
 		return errors.New("memory worker watermark: cursor must not move backwards")
 	}
+	key, err := store.watermarkKey(value)
+	if err != nil {
+		return err
+	}
 	data, err := json.Marshal(persistedWatermark{
 		SchemaVersion: checkpointSchemaVersion, Watermark: value,
 	})
 	if err != nil {
 		return fmt.Errorf("memory worker watermark: encode: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.watermarkPath(value), data); err != nil {
+	if err := store.kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("memory worker watermark: write: %w", err)
 	}
 	return nil
+}
+
+func (store *WorkerCheckpointStore) checkpointKey(scope sdkmemory.Scope, work WorkIdentity, branch string) (string, error) {
+	partition, err := storage.ScopePartition(scope)
+	if err != nil {
+		return "", err
+	}
+	return "worker/v1/checkpoints/" + partition + "/" +
+		storage.EncodeSegment(work.PolicyDigest) + "/" +
+		storage.EncodeSegment(work.Kind) + "/" +
+		storage.EncodeSegment(work.ID) + "/" +
+		storage.EncodeSegment(branch), nil
+}
+
+func (store *WorkerCheckpointStore) watermarkKey(value SourceWatermark) (string, error) {
+	partition, err := storage.ScopePartition(value.Scope)
+	if err != nil {
+		return "", err
+	}
+	return "worker/v1/watermarks/" + partition + "/" +
+		storage.EncodeSegment(value.PolicyDigest) + "/" +
+		storage.EncodeSegment(value.StreamKind) + "/" +
+		storage.EncodeSegment(value.StreamID), nil
 }
 
 func validateWatermarkKey(value SourceWatermark) error {
@@ -261,24 +306,6 @@ func validateCheckpoint(value Checkpoint) error {
 	return nil
 }
 
-func (store *WorkspaceCheckpointStore) checkpointPath(scope sdkmemory.Scope, work WorkIdentity, branch string) string {
-	return path.Join("checkpoints", "memory-derivation", "v2", "partitions",
-		encode(scope.RuntimeID), encode(scope.UserID), encode(scope.AgentID),
-		"policies", encode(work.PolicyDigest), "work", encode(work.Kind), encode(work.ID),
-		encode(branch)+".json")
-}
-
-func (store *WorkspaceCheckpointStore) watermarkPath(value SourceWatermark) string {
-	return path.Join("checkpoints", "memory-derivation", "v2", "partitions",
-		encode(value.Scope.RuntimeID), encode(value.Scope.UserID), encode(value.Scope.AgentID),
-		"policies", encode(value.PolicyDigest), "watermarks",
-		encode(value.StreamKind), encode(value.StreamID)+".json")
-}
-
-func encode(value string) string {
-	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
-}
-
 func cloneRunResult(value *derive.RunResult) *derive.RunResult {
 	if value == nil {
 		return nil
@@ -307,10 +334,10 @@ func nilInterface(value any) bool {
 	if value == nil {
 		return true
 	}
-	ref := reflect.ValueOf(value)
-	switch ref.Kind() {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return ref.IsNil()
+		return reflected.IsNil()
 	default:
 		return false
 	}

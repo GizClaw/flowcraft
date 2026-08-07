@@ -371,7 +371,8 @@ func TestFactoryFileErrors(t *testing.T) {
 }
 
 func TestFactoryLoaderReceivesContext(t *testing.T) {
-	key := struct{}{}
+	type loaderContextKey struct{}
+	key := loaderContextKey{}
 	ctx := context.WithValue(context.Background(), key, "seen")
 	var gotContext bool
 	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {

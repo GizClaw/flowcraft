@@ -3,22 +3,25 @@ package lifecycle
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
-	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const lifecycleEventSchemaVersion = 1
+
+const (
+	recallEventType     = "lifecycle.recall"
+	visibilityEventType = "lifecycle.visibility"
+)
 
 type AccessAggregate struct {
 	ItemID          string
@@ -36,9 +39,12 @@ type VisibilityEvent struct {
 	Time          time.Time       `json:"time"`
 }
 
-type WorkspaceEventStore struct {
-	ws workspace.Workspace
-	mu sync.Mutex
+// EventStore persists recall and visibility lifecycle events as appends in a
+// storage.Log. Aggregates (Access, Visible) are reduced from the Log so the
+// Log is the single source of truth.
+type EventStore struct {
+	log storage.Log
+	mu  sync.Mutex
 }
 
 type recallEnvelope struct {
@@ -50,14 +56,16 @@ type visibilityEnvelope struct {
 	Event         VisibilityEvent `json:"event"`
 }
 
-func NewWorkspaceEventStore(ws workspace.Workspace) (*WorkspaceEventStore, error) {
-	if ws == nil {
-		return nil, errors.New("memory lifecycle events: workspace is required")
+// NewEventStore constructs a Log-backed lifecycle event store.
+func NewEventStore(log storage.Log) (*EventStore, error) {
+	if nilStore(log) {
+		return nil, errors.New("memory lifecycle events: log is required")
 	}
-	return &WorkspaceEventStore{ws: ws}, nil
+	return &EventStore{log: log}, nil
 }
 
-func (store *WorkspaceEventStore) RecordRecall(ctx context.Context, event sdkmemory.RecallEvent) error {
+// RecordRecall appends one immutable recall event.
+func (store *EventStore) RecordRecall(ctx context.Context, event sdkmemory.RecallEvent) error {
 	event.ItemIDs = append([]string(nil), event.ItemIDs...)
 	event.Scores = append([]float64(nil), event.Scores...)
 	if err := event.Validate(); err != nil {
@@ -69,10 +77,11 @@ func (store *WorkspaceEventStore) RecordRecall(ctx context.Context, event sdkmem
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.putImmutable(ctx, store.recallPath(event.Scope, event.ID), data)
+	return store.append(ctx, event.Scope, recallEventType, event.ID, data)
 }
 
-func (store *WorkspaceEventStore) Access(ctx context.Context, scope sdkmemory.Scope, itemID string) (AccessAggregate, bool, error) {
+// Access reduces recall events into one per-item aggregate.
+func (store *EventStore) Access(ctx context.Context, scope sdkmemory.Scope, itemID string) (AccessAggregate, bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	events, err := store.recallEvents(ctx, scope)
@@ -94,7 +103,8 @@ func (store *WorkspaceEventStore) Access(ctx context.Context, scope sdkmemory.Sc
 	return result, result.AccessCount > 0, nil
 }
 
-func (store *WorkspaceEventStore) SetSoftForgotten(ctx context.Context, event VisibilityEvent) error {
+// SetSoftForgotten appends one immutable visibility overlay event.
+func (store *EventStore) SetSoftForgotten(ctx context.Context, event VisibilityEvent) error {
 	if err := event.Scope.Validate(); err != nil {
 		return err
 	}
@@ -108,32 +118,26 @@ func (store *WorkspaceEventStore) SetSoftForgotten(ctx context.Context, event Vi
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return store.putImmutable(ctx, store.visibilityPath(event.Scope, event.ID), data)
+	return store.append(ctx, event.Scope, visibilityEventType, event.ID, data)
 }
 
 // Visible implements retrieval.Visibility. With no overlay event, items are
 // visible by default.
-func (store *WorkspaceEventStore) Visible(ctx context.Context, scope sdkmemory.Scope, itemID string) (bool, error) {
+func (store *EventStore) Visible(ctx context.Context, scope sdkmemory.Scope, itemID string) (bool, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	entries, err := store.ws.List(ctx, store.visibilityDir(scope))
+	stream, err := store.stream(scope, visibilityEventType)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return true, nil
-		}
+		return false, err
+	}
+	logEvents, err := store.log.Read(ctx, stream, 0, 0)
+	if err != nil {
 		return false, err
 	}
 	var latest VisibilityEvent
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		data, err := store.ws.Read(ctx, path.Join(store.visibilityDir(scope), entry.Name()))
-		if err != nil {
-			return false, err
-		}
+	for _, logEvent := range logEvents {
 		var value visibilityEnvelope
-		if err := decodeLifecycleEvent(data, &value); err != nil {
+		if err := decodeLifecycleEvent(logEvent.Payload, &value); err != nil {
 			return false, err
 		}
 		if value.SchemaVersion != lifecycleEventSchemaVersion {
@@ -149,25 +153,19 @@ func (store *WorkspaceEventStore) Visible(ctx context.Context, scope sdkmemory.S
 	return !latest.SoftForgotten, nil
 }
 
-func (store *WorkspaceEventStore) recallEvents(ctx context.Context, scope sdkmemory.Scope) ([]sdkmemory.RecallEvent, error) {
-	entries, err := store.ws.List(ctx, store.recallDir(scope))
+func (store *EventStore) recallEvents(ctx context.Context, scope sdkmemory.Scope) ([]sdkmemory.RecallEvent, error) {
+	stream, err := store.stream(scope, recallEventType)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return []sdkmemory.RecallEvent{}, nil
-		}
 		return nil, err
 	}
-	result := make([]sdkmemory.RecallEvent, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		data, err := store.ws.Read(ctx, path.Join(store.recallDir(scope), entry.Name()))
-		if err != nil {
-			return nil, err
-		}
+	logEvents, err := store.log.Read(ctx, stream, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]sdkmemory.RecallEvent, 0, len(logEvents))
+	for _, logEvent := range logEvents {
 		var value recallEnvelope
-		if err := decodeLifecycleEvent(data, &value); err != nil {
+		if err := decodeLifecycleEvent(logEvent.Payload, &value); err != nil {
 			return nil, err
 		}
 		if value.SchemaVersion != lifecycleEventSchemaVersion {
@@ -181,38 +179,32 @@ func (store *WorkspaceEventStore) recallEvents(ctx context.Context, scope sdkmem
 	return result, nil
 }
 
-func (store *WorkspaceEventStore) putImmutable(ctx context.Context, target string, data []byte) error {
-	existing, err := store.ws.Read(ctx, target)
-	if err == nil {
-		if bytes.Equal(existing, data) {
-			return nil
-		}
-		return errdefs.Conflictf("memory lifecycle events: immutable event conflict")
-	}
-	if !errdefs.IsNotFound(err) {
+func (store *EventStore) append(ctx context.Context, scope sdkmemory.Scope, eventType, id string, payload []byte) error {
+	stream, err := store.stream(scope, eventType)
+	if err != nil {
 		return err
 	}
-	return workspace.AtomicWrite(ctx, store.ws, target, data)
+	if _, err := store.log.Append(ctx, stream, []storage.Event{{
+		Stream:  stream,
+		Type:    eventType,
+		Payload: payload,
+	}}, storage.AppendOptions{IdempotencyKey: id}); err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			return errdefs.Conflictf("memory lifecycle events: immutable event conflict")
+		}
+		return err
+	}
+	return nil
 }
 
-func (store *WorkspaceEventStore) root(scope sdkmemory.Scope) string {
-	return path.Join("events", "memory-lifecycle", "v1", "partitions", encodeLifecycle(scope.RuntimeID), encodeLifecycle(scope.UserID), encodeLifecycle(scope.AgentID))
+func (store *EventStore) stream(scope sdkmemory.Scope, eventType string) (string, error) {
+	partition, err := storage.ScopePartition(scope)
+	if err != nil {
+		return "", err
+	}
+	return "events/v1/" + partition + "/" + eventType, nil
 }
-func (store *WorkspaceEventStore) recallDir(scope sdkmemory.Scope) string {
-	return path.Join(store.root(scope), "recall")
-}
-func (store *WorkspaceEventStore) recallPath(scope sdkmemory.Scope, id string) string {
-	return path.Join(store.recallDir(scope), encodeLifecycle(id)+".json")
-}
-func (store *WorkspaceEventStore) visibilityDir(scope sdkmemory.Scope) string {
-	return path.Join(store.root(scope), "visibility")
-}
-func (store *WorkspaceEventStore) visibilityPath(scope sdkmemory.Scope, id string) string {
-	return path.Join(store.visibilityDir(scope), encodeLifecycle(id)+".json")
-}
-func encodeLifecycle(value string) string {
-	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
-}
+
 func decodeLifecycleEvent(data []byte, destination any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()

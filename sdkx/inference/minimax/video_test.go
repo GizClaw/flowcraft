@@ -54,7 +54,7 @@ func videoGenerateRequest() inference.GenerateRequest {
 func videoTaskHandler(gets *int, statuses []string) func(w http.ResponseWriter, body map[string]any) {
 	return func(w http.ResponseWriter, body map[string]any) {
 		if body != nil {
-			fmt.Fprint(w, `{"task_id":"task-1","base_resp":{"status_code":0,"status_msg":"success"}}`)
+			_, _ = fmt.Fprint(w, `{"task_id":"task-1","base_resp":{"status_code":0,"status_msg":"success"}}`)
 			return
 		}
 		*gets++
@@ -65,10 +65,10 @@ func videoTaskHandler(gets *int, statuses []string) func(w http.ResponseWriter, 
 				"file_id":   "file-1",
 				"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 			})
-			fmt.Fprint(w, string(payload))
+			_, _ = fmt.Fprint(w, string(payload))
 			return
 		}
-		fmt.Fprint(w, `{"file":{"download_url":"https://example.com/out.mp4"},"base_resp":{"status_code":0,"status_msg":"success"}}`)
+		_, _ = fmt.Fprint(w, `{"file":{"download_url":"https://example.com/out.mp4"},"base_resp":{"status_code":0,"status_msg":"success"}}`)
 	}
 }
 

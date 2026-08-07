@@ -622,7 +622,7 @@ func envelopeForDelta(t *testing.T, delta agent.StreamDeltaPayload) event.Envelo
 }
 
 func finalizeCoordinator(coordinator *streamCoordinator, attempts int) {
-	coordinator.finalize(context.Background(), &agent.Result{
+	_ = coordinator.finalize(context.Background(), &agent.Result{
 		Status: agent.StatusCompleted, Attempts: attempts,
 	}, nil)
 }

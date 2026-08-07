@@ -28,7 +28,7 @@ type Diagnostic struct {
 
 type Provider struct {
 	Fusion        *fusion.Fusion
-	Messages      messagesource.Store
+	Messages      *messagesource.MessageStore
 	Summary       component.Searcher
 	Hydrator      hydrate.Hydrator
 	Packer        component.Packer
@@ -58,7 +58,7 @@ type RerankerConfig struct {
 // ProviderConfig declares the fixed recent + hybrid + optional summary path.
 type ProviderConfig struct {
 	Fusion        *fusion.Fusion
-	Messages      messagesource.Store
+	Messages      *messagesource.MessageStore
 	Summary       component.Searcher
 	Hydrator      hydrate.Hydrator
 	Packer        component.Packer
@@ -157,7 +157,7 @@ func (provider *Provider) Context(ctx context.Context, request sdkmemory.Context
 			diagnostics = append(diagnostics, Diagnostic{Stage: "hydrate", Lane: candidate.Lane, Err: hydrateErr})
 			continue
 		}
-		if provider.Visibility != nil && !isRecent {
+		if !isNilInterface(provider.Visibility) && !isRecent {
 			visible, visibilityErr := provider.Visibility.Visible(ctx, request.Scope, item.Identity(request.Scope))
 			if visibilityErr != nil {
 				diagnostics = append(diagnostics, Diagnostic{Stage: "visibility", Lane: candidate.Lane, Err: visibilityErr})
@@ -211,7 +211,7 @@ func (provider *Provider) Context(ctx context.Context, request sdkmemory.Context
 		return sdkmemory.ContextResult{}, sdkmemory.NewError(sdkmemory.KindInternal, "context", fmt.Errorf("retrieval: pack: %w", err))
 	}
 	result.RecallEventID = request.RecallEventID
-	if request.RecallEventID != "" && provider.RecallEvents != nil {
+	if request.RecallEventID != "" && !isNilInterface(provider.RecallEvents) {
 		scores := make(map[string]float64)
 		for _, item := range result.Items {
 			if item.SourceClass != sdkmemory.ContextSourceLongTerm && item.SourceClass != sdkmemory.ContextSourceSummary {
@@ -343,6 +343,21 @@ func candidateIdentity(candidate component.Candidate) string {
 		}, "\x00")
 	}
 	return candidate.ID
+}
+
+// isNilInterface reports whether an interface value is nil or holds a typed
+// nil pointer, which would otherwise panic on method dispatch.
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
 
 func cloneCandidates(values []component.Candidate) []component.Candidate {

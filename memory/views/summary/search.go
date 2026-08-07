@@ -11,7 +11,7 @@ import (
 )
 
 // Searcher exposes immutable summary records as a real retrieval lane.
-type Searcher struct{ Store Store }
+type Searcher struct{ Store *SummaryStore }
 
 var _ component.Searcher = (*Searcher)(nil)
 

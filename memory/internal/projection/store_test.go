@@ -4,18 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func TestPublishFailureRetainsOldActiveBuild(t *testing.T) {
-	base := workspace.NewMemWorkspace()
-	fault := &faultWorkspace{Workspace: base}
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fault := &faultKV{Store: kvStore}
 	store, err := NewTypedStore(fault, "test", TypedOptions[map[string]bool, map[string]bool]{
 		Apply: func(base *map[string]bool, delta map[string]bool) error {
 			for key, value := range delta {
@@ -31,11 +34,11 @@ func TestPublishFailureRetainsOldActiveBuild(t *testing.T) {
 	if err := store.FullRebuild(context.Background(), scope, "index", map[string]bool{"old": true}, "old"); err != nil {
 		t.Fatal(err)
 	}
-	fault.failActiveRename = true
+	fault.failActive = true
 	if err := store.FullRebuild(context.Background(), scope, "index", map[string]bool{"new": true}, "new"); err == nil {
 		t.Fatal("publish unexpectedly succeeded")
 	}
-	fault.failActiveRename = false
+	fault.failActive = false
 	data, _, err := store.Materialize(context.Background(), scope, "index")
 	if err != nil {
 		t.Fatal(err)
@@ -47,8 +50,11 @@ func TestPublishFailureRetainsOldActiveBuild(t *testing.T) {
 
 func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 	ctx := context.Background()
-	ws := workspace.NewMemWorkspace()
-	store, err := NewTypedStore(ws, "test", TypedOptions[map[string]bool, map[string]bool]{
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewTypedStore(kvStore, "test", TypedOptions[map[string]bool, map[string]bool]{
 		Apply: func(base *map[string]bool, delta map[string]bool) error {
 			for key, value := range delta {
 				(*base)[key] = value
@@ -72,7 +78,7 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 		t.Fatalf("normal audit mismatched = %#v", evidence)
 	}
 
-	data, err := ws.Read(ctx, store.activePath(scope, "index"))
+	data, err := kvStore.Get(ctx, store.activePath(scope, "index"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +92,9 @@ func TestAuditDigestEvidenceSeparatesStoredAndComputedDigests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws.MustWrite(store.activePath(scope, "index"), data)
+	if err := kvStore.Put(ctx, store.activePath(scope, "index"), data); err != nil {
+		t.Fatal(err)
+	}
 
 	evidence, found, err = store.AuditDigestEvidence(ctx, scope, "index")
 	if err != nil || !found {
@@ -128,27 +136,18 @@ func TestMatchesRequestAppliesDatasetOnlyToDocumentKinds(t *testing.T) {
 	}
 }
 
-type faultWorkspace struct {
-	workspace.Workspace
-	failActiveRename bool
+type faultKV struct {
+	storage.Store
+	failActive bool
 }
 
-func (workspace *faultWorkspace) Rename(ctx context.Context, source, destination string) error {
-	if workspace.failActiveRename && strings.HasSuffix(destination, "/active.json") {
+func (kv *faultKV) Put(ctx context.Context, key string, data []byte) error {
+	if kv.failActive && strings.HasSuffix(key, "/active.json") {
 		return errors.New("injected publish failure")
 	}
-	return workspace.Workspace.Rename(ctx, source, destination)
+	return kv.Store.Put(ctx, key, data)
 }
 
-// Compile-time documentation that the fault wrapper remains a full Workspace.
-var _ interface {
-	Read(context.Context, string) ([]byte, error)
-	Write(context.Context, string, []byte) error
-	Append(context.Context, string, []byte) error
-	Rename(context.Context, string, string) error
-	Delete(context.Context, string) error
-	RemoveAll(context.Context, string) error
-	List(context.Context, string) ([]fs.DirEntry, error)
-	Exists(context.Context, string) (bool, error)
-	Stat(context.Context, string) (fs.FileInfo, error)
-} = (*faultWorkspace)(nil)
+func (kv *faultKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return kv.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}

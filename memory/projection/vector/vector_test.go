@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
@@ -18,7 +19,7 @@ import (
 func TestVectorUsesInferenceRuntimeAndCosineSort(t *testing.T) {
 	runtime, model := fakeRuntime(t)
 	index, err := New(Config{
-		Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts",
+		KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +54,7 @@ func TestVectorSearchVectorUsesStoredVectorsStableTopFiveAndScopeFilter(t *testi
 		return vectors
 	})
 	index, err := New(Config{
-		Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts",
+		KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +123,7 @@ func TestVectorDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 				return vectors
 			})
 			index, err := New(Config{
-				Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "documents",
+				KV: kvFor(t), Runtime: runtime, Model: model, Projection: "documents",
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -160,7 +161,7 @@ func TestVectorRejectsZeroVector(t *testing.T) {
 	runtime, model := runtimeFor(t, func([]string) [][]float32 {
 		return [][]float32{{0, 0}}
 	})
-	index, _ := New(Config{Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts"})
+	index, _ := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
 	err := index.Rebuild(context.Background(), component.ProjectionRequest{
 		Scope: sdkmemory.Scope{RuntimeID: "runtime"}, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
 	})
@@ -170,7 +171,7 @@ func TestVectorRejectsZeroVector(t *testing.T) {
 }
 
 func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
+	kv := kvFor(t)
 	runtime, firstModel := runtimeForModel(t, "first", func(texts []string) [][]float32 {
 		vectors := make([][]float32, len(texts))
 		for i := range vectors {
@@ -178,7 +179,7 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 		}
 		return vectors
 	})
-	first, err := New(Config{Workspace: ws, Runtime: runtime, Model: firstModel, Projection: "facts"})
+	first, err := New(Config{KV: kv, Runtime: runtime, Model: firstModel, Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +190,7 @@ func TestVectorEmbeddingModelUsesIsolatedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	secondModel := inference.ModelRef{ID: inference.ModelID{Provider: "fake", Name: "second"}}
-	second, err := New(Config{Workspace: ws, Runtime: runtime, Model: secondModel, Projection: "facts"})
+	second, err := New(Config{KV: kv, Runtime: runtime, Model: secondModel, Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +214,7 @@ func TestVectorRejectsQueryDimensionMismatch(t *testing.T) {
 		}
 		return vectors
 	})
-	index, _ := New(Config{Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts"})
+	index, _ := New(Config{KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts"})
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	if err := index.Rebuild(context.Background(), component.ProjectionRequest{
 		Scope: scope, Artifacts: []component.Artifact{vectorArtifact("a", "alpha")},
@@ -236,7 +237,7 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 		return result
 	})
 	index, _ := New(Config{
-		Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts",
+		KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts",
 	})
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	value := vectorArtifact("a", "same")
@@ -284,7 +285,7 @@ func TestVectorDeltaSkipsUnchangedEmbeddingDeletesTombstoneAndFullRebuilds(t *te
 }
 
 func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T) {
-	meter := &vectorMeter{Workspace: workspace.NewMemWorkspace()}
+	meter := &vectorMeter{Store: kvFor(t)}
 	runtime, model := runtimeFor(t, func(texts []string) [][]float32 {
 		result := make([][]float32, len(texts))
 		for i := range result {
@@ -293,7 +294,7 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 		return result
 	})
 	index, err := New(Config{
-		Workspace: meter, Runtime: runtime, Model: model, Projection: "facts",
+		KV: meter, Runtime: runtime, Model: model, Projection: "facts",
 		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
 	})
 	if err != nil {
@@ -335,7 +336,7 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 		t.Fatalf("SearchVector results=%d, err=%v", len(results), err)
 	}
 	full, err := New(Config{
-		Workspace: workspace.NewMemWorkspace(), Runtime: runtime, Model: model, Projection: "facts",
+		KV: kvFor(t), Runtime: runtime, Model: model, Projection: "facts",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -358,22 +359,38 @@ func TestVectorDeltaPersistenceIsBoundedAndSearchVectorSeesSegments(t *testing.T
 }
 
 type vectorMeter struct {
-	workspace.Workspace
+	storage.Store
 	mu      sync.Mutex
 	written int
 }
 
-func (meter *vectorMeter) Write(ctx context.Context, name string, data []byte) error {
+func (meter *vectorMeter) Put(ctx context.Context, key string, data []byte) error {
 	meter.mu.Lock()
 	meter.written += len(data)
 	meter.mu.Unlock()
-	return meter.Workspace.Write(ctx, name, data)
+	return meter.Store.Put(ctx, key, data)
+}
+
+func (meter *vectorMeter) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	meter.mu.Lock()
+	meter.written += len(data)
+	meter.mu.Unlock()
+	return meter.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }
 
 func (meter *vectorMeter) reset() {
 	meter.mu.Lock()
 	meter.written = 0
 	meter.mu.Unlock()
+}
+
+func kvFor(t *testing.T) storage.Store {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvStore
 }
 
 func candidateIDs(values []component.Candidate) []string {

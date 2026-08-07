@@ -104,7 +104,7 @@ func (c *kimiClient) postJSON(ctx context.Context, body any, out any) error {
 	if err != nil {
 		return classifyError(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: read response: %w", err))

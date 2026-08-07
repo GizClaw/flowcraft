@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func TestBM25HappyPathUnicodeAndStableTie(t *testing.T) {
-	index, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "facts", K1: 1.2, B: 0.75})
+	index, err := New(Config{KV: kvFor(t), Projection: "facts", K1: 1.2, B: 0.75})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,16 +37,16 @@ func TestBM25HappyPathUnicodeAndStableTie(t *testing.T) {
 }
 
 func TestBM25RejectsParameters(t *testing.T) {
-	if _, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "x", K1: -1}); err == nil {
+	if _, err := New(Config{KV: kvFor(t), Projection: "x", K1: -1}); err == nil {
 		t.Fatal("accepted negative k1")
 	}
-	if _, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "x", K1: 1, B: 2}); err == nil {
+	if _, err := New(Config{KV: kvFor(t), Projection: "x", K1: 1, B: 2}); err == nil {
 		t.Fatal("accepted b > 1")
 	}
 }
 
 func TestBM25EmptyQueryReturnsEmpty(t *testing.T) {
-	index, _ := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "facts"})
+	index, _ := New(Config{KV: kvFor(t), Projection: "facts"})
 	results, err := index.Search(context.Background(), component.SearchRequest{
 		Scope: sdkmemory.Scope{RuntimeID: "runtime"}, Query: " \t ",
 	})
@@ -63,7 +64,7 @@ func TestBM25DatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 	}
 	for _, kind := range kinds {
 		t.Run(string(kind), func(t *testing.T) {
-			index, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "documents"})
+			index, err := New(Config{KV: kvFor(t), Projection: "documents"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,9 +96,9 @@ func TestBM25DatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 }
 
 func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
-	meter := &bm25Meter{Workspace: workspace.NewMemWorkspace()}
+	meter := &bm25Meter{Store: kvFor(t)}
 	index, err := New(Config{
-		Workspace: meter, Projection: "facts",
+		KV: meter, Projection: "facts",
 		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
 	})
 	if err != nil {
@@ -136,7 +137,7 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].ID != "changed" {
 		t.Fatalf("delta results = %+v, %v", results, err)
 	}
-	full, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "facts"})
+	full, err := New(Config{KV: kvFor(t), Projection: "facts"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,22 +154,38 @@ func TestBM25DeltaPersistenceIsBoundedAndMatchesFullRebuild(t *testing.T) {
 }
 
 type bm25Meter struct {
-	workspace.Workspace
+	storage.Store
 	mu      sync.Mutex
 	written int
 }
 
-func (meter *bm25Meter) Write(ctx context.Context, name string, data []byte) error {
+func (meter *bm25Meter) Put(ctx context.Context, key string, data []byte) error {
 	meter.mu.Lock()
 	meter.written += len(data)
 	meter.mu.Unlock()
-	return meter.Workspace.Write(ctx, name, data)
+	return meter.Store.Put(ctx, key, data)
+}
+
+func (meter *bm25Meter) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	meter.mu.Lock()
+	meter.written += len(data)
+	meter.mu.Unlock()
+	return meter.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }
 
 func (meter *bm25Meter) reset() {
 	meter.mu.Lock()
 	meter.written = 0
 	meter.mu.Unlock()
+}
+
+func kvFor(t *testing.T) storage.Store {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvStore
 }
 
 func artifact(id, text string) component.Artifact {

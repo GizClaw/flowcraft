@@ -53,7 +53,7 @@ func instrumentedGenerateDrivers(
 func TestConformanceGenerateUnary(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, chatCompletionJSON("stop", nil))
+		_, _ = fmt.Fprint(w, chatCompletionJSON("stop", nil))
 	})
 	calls := &inferencetest.Counter{}
 	unary, _ := instrumentedGenerateDrivers(t, server, calls)
@@ -83,7 +83,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(textChunk("ok"), finishChunk("stop"), usageChunk()))
+		_, _ = fmt.Fprint(w, sseBody(textChunk("ok"), finishChunk("stop"), usageChunk()))
 	})
 	calls := &inferencetest.Counter{}
 	_, stream := instrumentedGenerateDrivers(t, server, calls)

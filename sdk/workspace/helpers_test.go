@@ -132,6 +132,21 @@ func TestWalk_Error(t *testing.T) {
 	}
 }
 
+func TestWalk_MissingRoot(t *testing.T) {
+	ws := NewMemWorkspace()
+	called := false
+	err := Walk(context.Background(), ws, "missing", func(_ string, _ fs.DirEntry) error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking a missing directory should not error: %v", err)
+	}
+	if called {
+		t.Fatal("walk over a missing directory should not visit entries")
+	}
+}
+
 func TestGlob_Doublestar(t *testing.T) {
 	ws := NewMemWorkspace()
 	ws.MustWrite("readme.md", []byte("r"))

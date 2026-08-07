@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/sources"
 	docsource "github.com/GizClaw/flowcraft/memory/sources/document"
 	msgsource "github.com/GizClaw/flowcraft/memory/sources/message"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	docview "github.com/GizClaw/flowcraft/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	summaryview "github.com/GizClaw/flowcraft/memory/views/summary"
@@ -81,7 +82,7 @@ func TestCheckpointFailureRedoesWithoutDuplicatingFactAndReopens(t *testing.T) {
 		t.Fatalf("deriver calls=%d, want crash-window redo", fixture.chatDeriver.calls())
 	}
 
-	reopenedCheckpoints, _ := NewWorkspaceCheckpointStore(fixture.ws)
+	reopenedCheckpoints := newCheckpointStore(t, fixture.ws)
 	reopened := fixture.makeProcessor(t, reopenedCheckpoints, fixture.indexers)
 	if err := reopened.ProcessScope(context.Background(), scopeA); err != nil {
 		t.Fatal(err)
@@ -118,7 +119,7 @@ func TestSummaryBranchRetriesWithoutReplayingFactOrDuplicatingRecords(t *testing
 func TestSummaryManifestPublishesBeforeCheckpointCompletes(t *testing.T) {
 	fixture := newFixture(t)
 	fixture.putTurn(t, scopeA, "conversation", "turn", "stable summary")
-	failing := &failManifestStore{Store: fixture.summaries}
+	failing := &failManifestStore{SummaryStore: fixture.summaries}
 	compactor, _ := summaryderive.New(summaryderive.DefaultConfig(), failing, nil)
 	processor, err := NewProcessor(ProcessorConfig{
 		Messages: fixture.messages, Documents: fixture.documents, Facts: fixture.facts,
@@ -216,13 +217,23 @@ func TestProjectionLaneFailureDoesNotBlockOtherLanes(t *testing.T) {
 func TestCheckpointRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
-	store, _ := NewWorkspaceCheckpointStore(ws)
+	store := newCheckpointStore(t, ws)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	work := WorkIdentity{Kind: "message-commit", ID: "work", PolicyDigest: "policy-v1"}
 	for _, data := range [][]byte{
 		[]byte(`{"schema_version":`),
 		[]byte(`{"schema_version":99}`),
 	} {
-		ws.MustWrite(store.checkpointPath(scopeA, work, chatBranch), data)
+		key, keyErr := store.checkpointKey(scopeA, work, chatBranch)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		if err := kvStore.Put(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
 		if _, _, err := store.Load(ctx, scopeA, work, chatBranch); err == nil {
 			t.Fatal("corrupt checkpoint was accepted")
 		}
@@ -349,8 +360,8 @@ func TestProcessorUsesDurableSourceWatermarks(t *testing.T) {
 	for index := 0; index < 3; index++ {
 		fixture.putDocument(t, scopeA, "dataset", fmt.Sprintf("document-%03d", index), fmt.Sprint(index))
 	}
-	messages := &countingMessageSource{Store: fixture.messages}
-	documents := &countingDocumentSource{Store: fixture.documents}
+	messages := &countingMessageSource{MessageStore: fixture.messages}
+	documents := &countingDocumentSource{DocumentStore: fixture.documents}
 	processor := fixture.makeLeanProcessorWithSources(t, messages, documents, fixture.checkpoints, "policy-v1")
 	if err := processor.ProcessScope(context.Background(), scopeA); err != nil {
 		t.Fatal(err)
@@ -493,14 +504,14 @@ func TestFactEntitiesFeedProjectionFromTypedState(t *testing.T) {
 type fixture struct {
 	t             *testing.T
 	ws            *workspace.MemWorkspace
-	messages      *msgsource.WorkspaceStore
-	documents     *docsource.WorkspaceStore
-	facts         *factview.WorkspaceStore
-	summaries     *summaryview.WorkspaceStore
+	messages      *msgsource.MessageStore
+	documents     *docsource.DocumentStore
+	facts         *factview.FactStore
+	summaries     *summaryview.SummaryStore
 	compactor     *summaryderive.Compactor
-	documentViews *docview.WorkspaceStore
-	checkpoints   *WorkspaceCheckpointStore
-	catalog       *sources.WorkspaceScopeCatalog
+	documentViews *docview.DocumentViewStore
+	checkpoints   *WorkerCheckpointStore
+	catalog       *sources.ScopeCatalog
 	chatDeriver   *fakeFactDeriver
 	chatDAG       *derive.DAG
 	knowledgeDAG  *derive.DAG
@@ -511,14 +522,22 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ws := workspace.NewMemWorkspace()
-	messages, _ := msgsource.NewWorkspaceStore(ws)
-	documents, _ := docsource.NewWorkspaceStore(ws)
-	facts, _ := factview.NewWorkspaceStore(ws)
-	summaries, _ := summaryview.NewWorkspaceStore(ws)
+	messages := newMessageStore(t, ws)
+	documents := newDocumentStore(t, ws)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, _ := factview.NewFactStore(logStore, kvStore)
+	summaries, _ := summaryview.NewSummaryStore(logStore, kvStore)
 	compactor, _ := summaryderive.New(summaryderive.DefaultConfig(), summaries, nil)
-	documentViews, _ := docview.NewWorkspaceStore(ws)
-	checkpoints, _ := NewWorkspaceCheckpointStore(ws)
-	catalog, _ := sources.NewWorkspaceScopeCatalog(ws)
+	documentViews, _ := docview.NewDocumentViewStore(kvStore)
+	checkpoints, _ := NewWorkerCheckpointStore(kvStore)
+	catalog, _ := sources.NewScopeCatalog(kvStore)
 	factDeriver := &fakeFactDeriver{}
 	chatDAG := buildDAG(t, "facts", factDeriver)
 	chunker, _ := knowledge.NewChunker(knowledge.ChunkerConfig{MaxRunes: 100})
@@ -548,8 +567,8 @@ func (fixture *fixture) makeProcessorWithPolicy(t *testing.T, checkpoints Checkp
 
 func (fixture *fixture) makeProcessorWithSources(
 	t *testing.T,
-	messages msgsource.Store,
-	documents docsource.Store,
+	messages MessageReader,
+	documents DocumentReader,
 	checkpoints CheckpointStore,
 	indexers []ProjectionIndexer,
 	policyDigest string,
@@ -570,8 +589,8 @@ func (fixture *fixture) makeProcessorWithSources(
 
 func (fixture *fixture) makeLeanProcessorWithSources(
 	t *testing.T,
-	messages msgsource.Store,
-	documents docsource.Store,
+	messages MessageReader,
+	documents DocumentReader,
 	checkpoints CheckpointStore,
 	policyDigest string,
 ) *Processor {
@@ -724,7 +743,7 @@ type failCompleteCheckpoint struct {
 }
 
 type failManifestStore struct {
-	summaryview.Store
+	*summaryview.SummaryStore
 	mu     sync.Mutex
 	failed bool
 }
@@ -737,11 +756,11 @@ func (store *failManifestStore) PublishActive(ctx context.Context, manifest summ
 		return errors.New("manifest publish failed")
 	}
 	store.mu.Unlock()
-	return store.Store.PublishActive(ctx, manifest)
+	return store.SummaryStore.PublishActive(ctx, manifest)
 }
 
 type countingMessageSource struct {
-	msgsource.Store
+	*msgsource.MessageStore
 	mu      sync.Mutex
 	calls   int
 	commits int
@@ -753,7 +772,7 @@ func (source *countingMessageSource) ListCommits(
 	conversationID string,
 	options msgsource.ListCommitOptions,
 ) ([]msgsource.Commit, error) {
-	values, err := source.Store.ListCommits(ctx, scope, conversationID, options)
+	values, err := source.MessageStore.ListCommits(ctx, scope, conversationID, options)
 	source.mu.Lock()
 	source.calls++
 	source.commits += len(values)
@@ -768,6 +787,32 @@ func (source *countingMessageSource) reset() {
 	source.mu.Unlock()
 }
 
+func newMessageStore(t *testing.T, ws workspace.Workspace) *msgsource.MessageStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := msgsource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newCheckpointStore(t *testing.T, ws workspace.Workspace) *WorkerCheckpointStore {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewWorkerCheckpointStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func (source *countingMessageSource) snapshot() (int, int) {
 	source.mu.Lock()
 	defer source.mu.Unlock()
@@ -775,7 +820,7 @@ func (source *countingMessageSource) snapshot() (int, int) {
 }
 
 type countingDocumentSource struct {
-	docsource.Store
+	*docsource.DocumentStore
 	mu     sync.Mutex
 	calls  int
 	events int
@@ -786,7 +831,7 @@ func (source *countingDocumentSource) ListEvents(
 	scope sdkmemory.Scope,
 	options docsource.ListEventOptions,
 ) ([]docsource.Event, error) {
-	values, err := source.Store.ListEvents(ctx, scope, options)
+	values, err := source.DocumentStore.ListEvents(ctx, scope, options)
 	source.mu.Lock()
 	source.calls++
 	source.events += len(values)
@@ -851,4 +896,21 @@ func (store *failCompleteCheckpoint) Save(ctx context.Context, checkpoint Checkp
 	}
 	store.mu.Unlock()
 	return store.CheckpointStore.Save(ctx, checkpoint)
+}
+
+func newDocumentStore(t *testing.T, ws workspace.Workspace, options ...docsource.Option) *docsource.DocumentStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := docsource.NewDocumentStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

@@ -1,416 +1,143 @@
 name: eval / locomo
 
-# ---------------------------------------------------------------------
-# LoCoMo-10 dialog-memory benchmark, executed on the self-hosted
-# runner labelled `flowcraft-eval`. Host-side setup (runner install,
-# /etc/flowcraft-eval/.env, /var/lib/flowcraft-eval/reports) is
-# tracked out-of-band by the eval owners.
-#
-# This workflow defaults to the `locomo-leaderboard` profile: a
-# benchmark-oriented configuration for reproducing public LoCoMo-style
-# comparisons. It is intentionally allowed to differ from SDK defaults.
-# Report and leaderboard consumers must treat this as a named profile, not
-# as "the SDK default score". Use `profile=sdk-default` plus matching inputs
-# when the goal is measuring default SDK behaviour.
-#
-# Canonical CLI: `eval locomo run --runner flowcraft-recall-v2
-#                  --dataset <path> --topk N
-#                  --extractor --extractor-llm <alias>
-#                  --answer-llm <alias> --judge-llm <alias>
-#                  --reranker-llm <alias> --embedder <alias>
-#                  --concurrency N --ingest-concurrency N
-#                  --dump-facts <facts.jsonl> --dump-recall <recall.jsonl>
-#                  [v2 diagnostics: --dump-stage-audit <stage-audit.jsonl>]
-#                  [v2 diagnostics: --diagnostics <path.json>]
-#                  [retrieval: --retrieval-backend <memory|bbh> --retrieval-dir <dir>]
-#                  --out <report.json>`
-# ---------------------------------------------------------------------
-
+# LoCoMo-10 dialog-memory benchmark against the flowcraft memory
+# implementation. Runs the memory/eval CLI on the self-hosted
+# flowcraft-eval runner; datasets are regenerated from a fixed upstream
+# ref into an external JSONL on the runner host.
 on:
   workflow_dispatch:
     inputs:
       dataset:
-        description: "Dataset path (.jsonl) or 'synthetic' (smoke)"
+        description: "Converted dataset path (host) or fixed-ref refresh"
         required: true
-        # Runner-host path (the flowcraft-eval VM stages datasets under
-        # /var/lib/flowcraft-eval/datasets). Override when smoke-testing
-        # locally with 'synthetic' or with a repo-relative path.
         default: "/var/lib/flowcraft-eval/datasets/locomo10.jsonl"
-      runner:
-        description: "Runner: flowcraft-recall-v2 (default) | flowcraft-recall-v2-bbh"
+      locomo_ref:
+        description: "Upstream snap-research/locomo git ref"
         required: false
-        default: "flowcraft-recall-v2"
-      # NOTE: the previous `profile` input was removed when `runner`
-      # was added, because workflow_dispatch caps inputs at 25 and
-      # `profile` was a label-only knob (it never altered CLI args —
-      # only RUN_TAG). The default profile remains "locomo-leaderboard"
-      # and the RUN_TAG now embeds `runner` instead so the artifact /
-      # CardKit naming still identifies the configuration in use.
-      # The previous `locomo_ref` input was later removed to keep room
-      # for `stage_audit`; the dataset refresh step pins LOCOMO_REF.
-      topk:
-        description: "Recall top-k (profile default: locomo-leaderboard uses 30; sdk-default should use 10)"
+        default: "main"
+      inference:
+        description: "inference.yaml path (repo default uses env keys)"
         required: false
-        default: "30"
-      # Alias conventions in this repo (see eval/internal/env/provider.go):
-      #   <env_suffix>[:<model>] → uses FLOWCRAFT_<ENV_SUFFIX> /
-      #                            FLOWCRAFT_TEST_<ENV_SUFFIX> as the
-      #                            JSON profile; :model overrides the
-      #                            JSON's "model" field. With no :model
-      #                            suffix the profile's own model is used.
-      #
-      # Defaults below are the locomo-leaderboard profile's model aliases.
-      # They are benchmark-runner inputs, not SDK defaults. Publish the
-      # selected profile and all non-default knobs with every report.
-      extractor_llm:
-        description: "Extractor model alias"
+        default: "memory/eval/inference.yaml"
+      generate_model:
+        description: "Fact extraction model"
         required: false
-        default: "azure_4o_mini"
-      answer_llm:
-        description: "Answer-synthesis model alias"
+        default: "deepseek:deepseek-v4-flash:default"
+      embed_model:
+        description: "Embedding model"
         required: false
-        default: "azure_4o_mini"
-      judge_llm:
-        description: "Judge model alias"
+        default: "bytedance:doubao-embedding-vision:default"
+      answer_model:
+        description: "QA answer model"
         required: false
-        default: "azure_4o_mini"
-      judge_style:
-        description: "Judge prompt style: default (answer-inclusion) or locomo (leaderboard reproducer)"
+        default: "bytedance:doubao-seed-2-0-lite:default"
+      judge_model:
+        description: "LLM judge model (empty disables judge)"
         required: false
-        default: "locomo"
-      reranker_llm:
-        description: "Reranker LLM alias ('' to disable)"
+        default: "bytedance:doubao-seed-2-0-lite:default"
+      max_items:
+        description: "ContextRequest max items"
         required: false
-        default: ""
-      embedder:
-        description: "Embedder alias (e.g. qwen:text-embedding-v4)"
+        default: "20"
+      max_tokens:
+        description: "ContextRequest max tokens"
         required: false
-        default: "qwen:text-embedding-v4"
-      concurrency:
-        description: "QA-loop parallelism"
-        required: false
-        default: "16"
-      ingest_concurrency:
-        description: "Per-conversation extractor parallelism"
-        required: false
-        default: "16"
-      notify_progress_pct:
-        description: "Feishu milestone resolution (% of work; 0=off)"
-        required: false
-        default: "10"
-      limit_questions:
-        description: "Debug: cap to first N questions (0 = full set)"
+        default: "4096"
+      limit:
+        description: "Cap questions to the first N (0 = all)"
         required: false
         default: "0"
-      stage_audit:
-        description: "Enable v2 per-stage recall diagnostics and stage-audit dumps"
+      limit_conversations:
+        description: "Cap conversations to the first N (0 = all)"
         required: false
-        type: boolean
-        default: true
-      qa_timeout:
-        # CLI default: 2m. The first smoke run showed a single
-        # azure.generate hitting 1m59s — too tight for the current
-        # Azure latency profile. Larger envelopes are safer for the
-        # full LoCoMo-10 198-question set against Azure.
-        description: "Per-question recall+answer+judge deadline (Go duration)"
+        default: "0"
+      concurrency:
+        description: "QA worker count"
         required: false
-        default: "3m"
+        default: "4"
       ingest_timeout:
-        # CLI default: 10m. Per-conversation cap, before falling back
-        # to whatever was extracted so far.
-        description: "Per-conversation ingest deadline (Go duration)"
+        description: "Per-conversation ingest deadline"
         required: false
         default: "10m"
-# Per-kind serialisation: at most one locomo run at a time. Other eval
-# kinds (longmemeval / beir / …) have their own concurrency.group and
-# run independently.
+      qa_timeout:
+        description: "Per-question recall+answer+judge deadline"
+        required: false
+        default: "10m"
+      commit_granularity:
+        description: "session, exchange, or turn"
+        required: false
+        default: "session"
+
 concurrency:
   group: eval-locomo
   cancel-in-progress: false
 
 env:
-  RUN_ID: ${{ github.run_id }}
   REPORT_DIR: /var/lib/flowcraft-eval/reports
-  RUN_TAG: locomo-${{ inputs.runner }}-${{ github.run_id }}
 
 jobs:
   run:
     runs-on: [self-hosted, flowcraft-eval]
-    # 12h ceiling. LoCoMo-10 with topk=30 + LLM judge fits well within
-    # 4h on the current azure:deepseek-flash + azure:gpt-5.4 combo;
-    # the headroom guards against accidental --dataset bumps.
     timeout-minutes: 720
     steps:
       - uses: actions/checkout@v4
 
-      - name: Load secrets from runner host
-        # All credentials (LLM provider keys + FEISHU_*) live in
-        # /etc/flowcraft-eval/.env on this runner, mode 0600. The
-        # file is shell-quoted dotenv format: each value is a JSON
-        # blob wrapped in single quotes, often spanning multiple
-        # physical lines, e.g.
-        #     FLOWCRAFT_TEST_AZURE='{
-        #       "provider":"azure",
-        #       "api_key":"sk-...",
-        #     }'
-        # A naive `while IFS='=' read` would preserve the quotes AND
-        # truncate at the first newline, breaking both JSON parsing
-        # and key/value boundaries.
-        #
-        # Strategy: let bash itself parse the file via `source`
-        # (under `set -a` to auto-export every assignment), then
-        # transfer only the explicitly-declared keys into
-        # $GITHUB_ENV with proper multi-line heredoc syntax.
-        # ::add-mask:: is registered per line of every secret value
-        # so even a multi-line JSON dump masks correctly in the UI.
-        # A copy is also placed at ./.env for the eval binary's own
-        # dotenv loader (eval/internal/env/dotenv.go handles quotes
-        # + multi-line natively, independent of this path).
+      - name: Build eval binary
+        run: |
+          cd memory/eval
+          go build -trimpath -o /tmp/memory-eval .
+
+      - name: Refresh dataset from fixed ref
+        env:
+          DATASET_IN: ${{ inputs.dataset }}
+          LOCOMO_REF: ${{ inputs.locomo_ref }}
         run: |
           set -eu
+          DEFAULT=/var/lib/flowcraft-eval/datasets/locomo10.jsonl
+          if [ "$DATASET_IN" != "$DEFAULT" ]; then
+            echo "skipping refresh: custom dataset path"
+            exit 0
+          fi
+          mkdir -p /var/lib/flowcraft-eval/datasets /var/lib/flowcraft-eval/datasets/cache
+          CACHE="/var/lib/flowcraft-eval/datasets/cache/locomo10-${LOCOMO_REF}.json"
+          if [ ! -s "$CACHE" ]; then
+            curl -sSLf --max-time 600 -o "$CACHE.partial" \
+              "https://cdn.jsdelivr.net/gh/snap-research/locomo@${LOCOMO_REF}/data/locomo10.json" \
+              || curl -sSLf --max-time 600 -o "$CACHE.partial" \
+                "https://raw.githubusercontent.com/snap-research/locomo/${LOCOMO_REF}/data/locomo10.json"
+            mv "$CACHE.partial" "$CACHE"
+          fi
+          /tmp/memory-eval convert --suite locomo --in "$CACHE" --out "$DEFAULT"
+
+      - name: Run
+        env:
+          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
+        run: |
+          set -eu
+          mkdir -p "$REPORT_DIR"
           test -f /etc/flowcraft-eval/.env
           set -a
-          # shellcheck disable=SC1091
           source /etc/flowcraft-eval/.env
           set +a
-          while IFS= read -r key; do
-            [ -z "$key" ] && continue
-            value="${!key:-}"
-            [ -z "$value" ] && continue
-            while IFS= read -r line; do
-              [ -n "$line" ] && echo "::add-mask::$line"
-            done <<< "$value"
-            if [[ "$value" == *$'\n'* ]]; then
-              DELIM="EOF_${RANDOM}${RANDOM}"
-              {
-                echo "${key}<<${DELIM}"
-                echo "$value"
-                echo "$DELIM"
-              } >> "$GITHUB_ENV"
-            else
-              echo "${key}=${value}" >> "$GITHUB_ENV"
-            fi
-          done < <(grep -E '^[A-Z_][A-Z_0-9]*=' /etc/flowcraft-eval/.env | sed 's/=.*$//' | sort -u)
-          cp /etc/flowcraft-eval/.env .env
-          chmod 600 .env
-
-      - name: Ensure report dir
-        run: |
-          mkdir -p "$REPORT_DIR"
-          # 0750: runner OS user + group readable; world denied.
-          chmod 0750 "$REPORT_DIR" || true
-
-      - name: Show eval binary toolchain
-        run: |
-          go version
-          go env GOMODCACHE GOCACHE
-
-      - name: Build eval binary
-        # `eval` is a workspace member (see ../go.work) — build with
-        # the workspace overlay so sdk/sdkx resolve to monorepo HEAD
-        # rather than the v0.3.x require pins (which are only a
-        # GOWORK=off / `go mod tidy` fallback).
-        run: |
-          cd eval
-          go build -trimpath -o /tmp/eval ./cmd/eval
-          /tmp/eval --help | head -20
-
-      - name: Refresh dataset from upstream
-        # The `eval locomo convert` step is the single source of truth
-        # for upstream-LoCoMo→eval-JSONL normalisation (speaker→role
-        # mapping, session date_time injection, image-annotation
-        # surfacing for the ~15 % of turns where the visual is the
-        # answer, nil-answer pruning). Until May 15 2026 the runner
-        # consumed a pre-staged JSONL that pre-dated the image-
-        # annotation work, so any change to the convert layer was
-        # silently dead code on CI. We now ALWAYS regenerate the JSONL
-        # from a freshly-downloaded upstream JSON so every run is
-        # reproducible from a single immutable source.
-        #
-        # Skipped when dataset == "synthetic" (smoke runs use the
-        # in-binary synthetic set), or when the input is already a
-        # non-default custom path (e.g. an ad-hoc local override on
-        # the runner host).
-        #
-        # Fetch strategy (CN-friendly, May 15 2026):
-        #   1. Cache by upstream git ref under the host-persistent
-        #      /var/lib/flowcraft-eval/datasets/cache/. Same ref =>
-        #      zero network. The workflow pins the default upstream
-        #      ref below; change LOCOMO_REF in this step when an
-        #      immutable upstream snapshot is needed.
-        #   2. Primary fetch is jsDelivr's GitHub mirror — has CN
-        #      edge nodes and is typically 20-50x faster than
-        #      raw.githubusercontent.com on this runner.
-        #   3. Fall back to raw.githubusercontent.com if jsDelivr is
-        #      unreachable or the ref isn't yet propagated to its
-        #      edge cache (can lag GitHub by minutes-hours).
-        env:
-          DATASET_IN: ${{ inputs.dataset }}
-          DEFAULT_DATASET: /var/lib/flowcraft-eval/datasets/locomo10.jsonl
-          LOCOMO_REF: main
-        run: |
-          set -eu
-          if [ "$DATASET_IN" = "synthetic" ] || [ "$DATASET_IN" != "$DEFAULT_DATASET" ]; then
-            echo "skipping refresh: dataset='$DATASET_IN' is not the default JSONL path"
-            exit 0
-          fi
-          mkdir -p /var/lib/flowcraft-eval/datasets
-          CACHE_DIR=/var/lib/flowcraft-eval/datasets/cache
-          mkdir -p "$CACHE_DIR"
-          CACHE="$CACHE_DIR/locomo10-${LOCOMO_REF}.json"
-          RAW=/tmp/locomo-raw/locomo10.json
-          mkdir -p "$(dirname "$RAW")"
-          if [ -s "$CACHE" ]; then
-            echo "cache hit ($CACHE, $(wc -c < "$CACHE") bytes) — skipping download"
-          else
-            URL_PRIMARY="https://cdn.jsdelivr.net/gh/snap-research/locomo@${LOCOMO_REF}/data/locomo10.json"
-            URL_FALLBACK="https://raw.githubusercontent.com/snap-research/locomo/${LOCOMO_REF}/data/locomo10.json"
-            TMP="${CACHE}.partial"
-            echo "downloading (primary: jsDelivr) ref=$LOCOMO_REF → $CACHE"
-            if curl -sSLf --max-time 90 -o "$TMP" "$URL_PRIMARY"; then
-              mv "$TMP" "$CACHE"
-            else
-              echo "jsDelivr unavailable, falling back to raw.githubusercontent.com"
-              rm -f "$TMP"
-              curl -sSLf --max-time 300 -o "$TMP" "$URL_FALLBACK"
-              mv "$TMP" "$CACHE"
-            fi
-            echo "downloaded $(wc -c < "$CACHE") bytes"
-          fi
-          cp "$CACHE" "$RAW"
-          /tmp/eval locomo convert --in "$RAW" --out "$DEFAULT_DATASET"
-          echo "fresh dataset size: $(wc -c < "$DEFAULT_DATASET") bytes"
-          echo "image-annotated turns: $(grep -o 'shared image' "$DEFAULT_DATASET" | wc -l)"
-      - name: Run locomo
-        env:
-          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
-          # Diagnostic dumps are emitted unconditionally for every run.
-          # They are cheap to produce (in-process JSONL writes) and
-          # invaluable when classifying regressions after the fact —
-          # without them an "I don't know" failure can't be attributed
-          # to extract-miss vs recall-miss vs answer-miss without
-          # rerunning the whole eval. They are deliberately NOT exposed
-          # as workflow inputs: making them a knob would tempt people
-          # to forget to enable them, and forensic value compounds when
-          # we have dumps for every historical run.
-          FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
-          RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
-          ANSWER_REPLAY_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
-          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
-          # v2-only diagnostics dump (per-stage pipeline health). v1
-          # ignores --diagnostics so we always declare the path; the
-          # condition below decides whether to add the flag.
-          DIAGNOSTICS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
-        # CardKit live-update flags:
-        #   --notify-name      identifies this run in the card header
-        #   --notify-progress-pct  milestone resolution
-        # We default reranker/embedder/limit-questions to optional so a
-        # smoke run (`--dataset synthetic --limit-questions 50`) reuses
-        # the same workflow.
-        run: |
-          set -eu
-          RUNNER_INPUT="${{ inputs.runner }}"
-          RUNNER_CANONICAL="$RUNNER_INPUT"
-          RETRIEVAL_BACKEND="memory"
-          RETRIEVAL_DIR="$REPORT_DIR/${RUN_ID}-retrieval"
-          case "$RUNNER_INPUT" in
-            flowcraft-recall-v2-bbh|flowcraft-v2-bbh)
-              RUNNER_CANONICAL="flowcraft-recall-v2"
-              RETRIEVAL_BACKEND="bbh"
-              ;;
-          esac
-          ARGS=(
-            locomo run
-            --runner "$RUNNER_CANONICAL"
-            --dataset "${{ inputs.dataset }}"
-            --topk "${{ inputs.topk }}"
-            --extractor
-            --extractor-llm "${{ inputs.extractor_llm }}"
-            --answer-llm "${{ inputs.answer_llm }}"
-            --judge-llm "${{ inputs.judge_llm }}"
-            --judge-style "${{ inputs.judge_style }}"
-            --concurrency "${{ inputs.concurrency }}"
-            --ingest-concurrency "${{ inputs.ingest_concurrency }}"
-            --qa-timeout "${{ inputs.qa_timeout }}"
-            --ingest-timeout "${{ inputs.ingest_timeout }}"
-            --notify-name "$RUN_TAG"
-            --notify-progress-pct "${{ inputs.notify_progress_pct }}"
-            --dump-facts "$FACTS_OUT"
-            --dump-recall "$RECALL_OUT"
-            --dump-answer-replay "$ANSWER_REPLAY_OUT"
+          /tmp/memory-eval run \
+            --dataset "${{ inputs.dataset }}" \
+            --inference "${{ inputs.inference }}" \
+            --suite locomo \
+            --generate-model "${{ inputs.generate_model }}" \
+            --embed-model "${{ inputs.embed_model }}" \
+            --answer-model "${{ inputs.answer_model }}" \
+            --judge-model "${{ inputs.judge_model }}" \
+            --max-items "${{ inputs.max_items }}" \
+            --max-tokens "${{ inputs.max_tokens }}" \
+            --limit "${{ inputs.limit }}" \
+            --limit-conversations "${{ inputs.limit_conversations }}" \
+            --concurrency "${{ inputs.concurrency }}" \
+            --ingest-timeout "${{ inputs.ingest_timeout }}" \
+            --qa-timeout "${{ inputs.qa_timeout }}" \
+            --commit-granularity "${{ inputs.commit_granularity }}" \
+            --notify-name "locomo-${{ github.run_id }}" \
+            --notify-progress-pct 10 \
             --out "$REPORT_OUT"
-          )
-          if [ -n "${{ inputs.reranker_llm }}" ]; then
-            ARGS+=( --reranker-llm "${{ inputs.reranker_llm }}" )
-          fi
-          if [ -n "${{ inputs.embedder }}" ]; then
-            ARGS+=( --embedder "${{ inputs.embedder }}" )
-          fi
-          if [ "${{ inputs.limit_questions }}" != "0" ]; then
-            ARGS+=( --limit-questions "${{ inputs.limit_questions }}" )
-          fi
-          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
-            rm -rf "$RETRIEVAL_DIR"
-            mkdir -p "$RETRIEVAL_DIR"
-          fi
-          ARGS+=( --retrieval-backend "$RETRIEVAL_BACKEND" )
-          if [ "$RETRIEVAL_BACKEND" = "bbh" ]; then
-            ARGS+=( --retrieval-dir "$RETRIEVAL_DIR" )
-          fi
-          # v2-only per-stage diagnostics. These force RecallExplain
-          # and produce large candidate snapshots, so they are
-          # controlled by the stage_audit workflow input. Facts and
-          # recall top-k dumps remain unconditional forensic outputs.
-          if { [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; } && [ "${{ inputs.stage_audit }}" = "true" ]; then
-            ARGS+=(
-              --diagnostics "$DIAGNOSTICS_OUT"
-              --dump-stage-audit "$STAGE_AUDIT_OUT"
-            )
-          elif [ "$RUNNER_CANONICAL" = "flowcraft-recall-v2" ] || [ "$RUNNER_CANONICAL" = "flowcraft-v2" ]; then
-            echo "stage_audit=false: skipping v2 RecallExplain diagnostics and stage audit dump"
-          fi
-          /tmp/eval "${ARGS[@]}"
-
-      - name: Analyze recall/facts audit
-        if: always()
-        env:
-          REPORT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
-          FACTS_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
-          RECALL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
-          STAGE_AUDIT_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
-          AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
-          AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
-          EXTRACT_AUDIT_JSONL_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
-          EXTRACT_AUDIT_MD_OUT: ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
-          DATASET_IN: ${{ inputs.dataset }}
-        run: |
-          set -eu
-          if [ ! -s "$REPORT_OUT" ] || [ ! -s "$RECALL_OUT" ]; then
-            echo "skip audit: report or recall dump is missing"
-            exit 0
-          fi
-          ARGS=(
-            locomo analyze-recall
-            "$REPORT_OUT"
-            "$RECALL_OUT"
-          )
-          if [ -s "$FACTS_OUT" ]; then
-            ARGS+=( --facts "$FACTS_OUT" )
-          fi
-          if [ "${{ inputs.stage_audit }}" = "true" ] && [ -s "$STAGE_AUDIT_OUT" ]; then
-            ARGS+=( --stage-audit "$STAGE_AUDIT_OUT" )
-          fi
-          if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ]; then
-            ARGS+=( --dataset "$DATASET_IN" )
-          fi
-          /tmp/eval "${ARGS[@]}" --format jsonl --out "$AUDIT_JSONL_OUT"
-          /tmp/eval "${ARGS[@]}" --format markdown --out "$AUDIT_MD_OUT"
-          if [ "$DATASET_IN" != "synthetic" ] && [ -s "$DATASET_IN" ] && [ -s "$FACTS_OUT" ]; then
-            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format jsonl --out "$EXTRACT_AUDIT_JSONL_OUT"
-            /tmp/eval locomo analyze-extract "$DATASET_IN" "$FACTS_OUT" --format markdown --out "$EXTRACT_AUDIT_MD_OUT"
-          else
-            echo "skip extract quality audit: dataset or facts dump is missing"
-          fi
 
       - name: Upload report artifact
         if: always()
@@ -420,27 +147,3 @@ jobs:
           path: ${{ env.REPORT_DIR }}/${{ github.run_id }}.json
           if-no-files-found: warn
           retention-days: 90
-
-      - name: Upload diagnostic dumps artifact
-        if: always()
-        # Bundles the per-Save extracted-facts JSONL and the per-question
-        # recall-hits JSONL so a post-hoc audit can classify any failure
-        # into extract-miss / recall-miss / answer-miss without rerunning
-        # the eval. Retention is shorter than the report because the
-        # dumps are larger (~2-5 MB each) but they only matter when
-        # debugging a specific run.
-        uses: actions/upload-artifact@v4
-        with:
-          name: locomo-dumps-${{ github.run_id }}
-          path: |
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-facts.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-recall.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-answer-replay.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-stage-audit.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-diagnostics.json
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-audit.md
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.jsonl
-            ${{ env.REPORT_DIR }}/${{ github.run_id }}-extract-audit.md
-          if-no-files-found: warn
-          retention-days: 30
