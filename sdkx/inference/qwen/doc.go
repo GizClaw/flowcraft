@@ -65,4 +65,13 @@
 // the spec (name, kind, vision, reasoning). Media output (image /
 // speech / video generation) lives in dedicated DashScope SKUs, not this
 // driver.
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). Nil keeps the httpkit default (three attempts); 0 disables
+// transport retries so the route Router owns the budget; N sets total wire
+// attempts. Retry-After and wire attempts observed at the HTTP layer are
+// propagated onto ProviderFailure so Router backoff and trace
+// wire_attempts can observe them.
 package qwen

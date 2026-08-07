@@ -24,6 +24,10 @@ type Spec struct {
 	// https://dashscope.aliyuncs.com; workspace-dedicated and regional
 	// domains plug in here (without the /api/v1 suffix).
 	BaseURL string `json:"base_url,omitempty"`
+	// HTTPRetries bounds wire-level HTTP retries inside one logical
+	// inference attempt. Zero disables transport retries so the route
+	// Router owns the full retry budget; nil keeps the httpkit default.
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
 	// catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
@@ -59,6 +63,9 @@ func (s Spec) Validate() error {
 		if err := validateURL("base_url", s.BaseURL); err != nil {
 			return err
 		}
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("http_retries must not be negative")
 	}
 	seen := make(map[string]bool, len(s.Models))
 	for _, model := range s.Models {

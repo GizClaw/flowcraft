@@ -52,5 +52,17 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if spec.BaseURL != "" {
 		options = append(options, option.WithBaseURL(spec.BaseURL))
 	}
+	if spec.HTTPRetries != nil {
+		options = append(options, option.WithMaxRetries(sdkMaxRetries(*spec.HTTPRetries)))
+	}
 	return &clients{api: anthropicgo.NewClient(options...)}
+}
+
+// sdkMaxRetries converts a total-attempt budget (including the first) into
+// the SDK's retry-count option.
+func sdkMaxRetries(total int) int {
+	if total <= 1 {
+		return 0
+	}
+	return total - 1
 }

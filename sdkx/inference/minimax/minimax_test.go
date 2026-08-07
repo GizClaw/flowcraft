@@ -274,3 +274,9 @@ func TestFactoryRejectsBadSecrets(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
+	}
+}

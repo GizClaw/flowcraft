@@ -75,4 +75,15 @@
 // resource IDs, or — for realtime models — the duplex engine version.
 // Unmapped models are addressed by their catalog name. See
 // integration_test.go for a worked example.
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). It governs the Ark and Doubao speech HTTP clients through the
+// shared httpkit transport. Nil keeps the httpkit default (three attempts);
+// 0 disables transport retries so the route Router owns the budget; N sets
+// total wire attempts. The Ark and speech SDK error types do not expose
+// response headers, so Retry-After is honored inside the httpkit transport
+// but is not visible to Router backoff; wire attempts are likewise not
+// reported through the SDK error chain.
 package bytedance

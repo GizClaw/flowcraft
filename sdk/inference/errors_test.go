@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -91,6 +92,28 @@ func TestNewProviderFailureDefaultsToNotAvailable(t *testing.T) {
 	)
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("NewError = %v, want errdefs.NotAvailable", err)
+	}
+}
+
+func TestProviderFailureCarriesRetryAfter(t *testing.T) {
+	cause := errdefs.WithRetryAfter(
+		errdefs.RateLimit(errors.New("slow down")),
+		5*time.Second,
+	)
+	err := newProviderError(OperationGenerate, "fake", cause)
+	if err.RetryAfter != 5*time.Second {
+		t.Fatalf("RetryAfter = %v, want 5s", err.RetryAfter)
+	}
+	if got, ok := errdefs.RetryAfter(err); !ok || got != 5*time.Second {
+		t.Fatalf("RetryAfter through chain = %v/%v, want 5s/true", got, ok)
+	}
+}
+
+func TestProviderFailureCarriesWireAttempts(t *testing.T) {
+	cause := errdefs.WithRetryCount(errors.New("boom"), 3)
+	err := newProviderError(OperationGenerate, "fake", cause)
+	if err.WireAttempts != 3 {
+		t.Fatalf("WireAttempts = %d, want 3", err.WireAttempts)
 	}
 }
 

@@ -54,13 +54,17 @@ func (m profileMaterial) newClient(spec Spec) *kimiClient {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
+	options := []httpkit.Option{
+		httpkit.WithTimeout(300 * time.Second),
+		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
+	}
+	if spec.HTTPRetries != nil {
+		options = append(options, httpkit.WithRetryAttempts(*spec.HTTPRetries))
+	}
 	return &kimiClient{
 		baseURL: baseURL,
 		apiKey:  m.apiKey,
-		http: httpkit.NewClient(
-			httpkit.WithTimeout(300*time.Second),
-			httpkit.WithResponseHeaderTimeout(5*time.Minute),
-		),
+		http:    httpkit.NewClient(options...),
 	}
 }
 
@@ -110,7 +114,13 @@ func (c *kimiClient) postJSON(ctx context.Context, body any, out any) error {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: read response: %w", err))
 	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return classifyHTTPError(ctx, response.StatusCode, payload)
+		return errdefs.WithRetryCount(
+			errdefs.WithRetryAfter(
+				classifyHTTPError(ctx, response.StatusCode, payload),
+				errdefs.ParseRetryAfter(response.Header.Get("Retry-After")),
+			),
+			httpkit.RetryCountOf(response),
+		)
 	}
 	if err := json.Unmarshal(payload, out); err != nil {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: decode response: %w", err))

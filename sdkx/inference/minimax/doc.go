@@ -103,4 +103,14 @@
 // base_url (Anthropic endpoint) and media_base_url (media API root, which
 // defaults to base_url with the /anthropic suffix trimmed), paces video
 // polling, and declares extra models.
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). It maps to option.WithMaxRetries on the Anthropic Messages
+// client and to the httpkit retry budget on the media client. Nil keeps the
+// SDK/httpkit defaults; 0 disables provider-level retries so the route
+// Router owns the budget. Retry-After and wire attempts are propagated onto
+// ProviderFailure so Router backoff and trace wire_attempts can observe
+// them.
 package minimax

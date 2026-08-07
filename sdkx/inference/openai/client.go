@@ -68,5 +68,17 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if spec.Project != "" {
 		options = append(options, option.WithProject(spec.Project))
 	}
+	if spec.HTTPRetries != nil {
+		options = append(options, option.WithMaxRetries(sdkMaxRetries(*spec.HTTPRetries)))
+	}
 	return &clients{api: openai.NewClient(options...)}
+}
+
+// sdkMaxRetries converts a total-attempt budget (including the first) into
+// the SDK's retry-count option.
+func sdkMaxRetries(total int) int {
+	if total <= 1 {
+		return 0
+	}
+	return total - 1
 }

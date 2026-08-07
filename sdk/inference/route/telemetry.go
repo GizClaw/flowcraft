@@ -27,6 +27,18 @@ var (
 	routeFallbackCount, _ = routeMeter.Int64Counter(
 		"fallbacks.total",
 		metric.WithDescription("Routed operations that fell back at least once"))
+	routeRetryCount, _ = routeMeter.Int64Counter(
+		"retries.total",
+		metric.WithDescription("Same-target retry attempts"))
+	routeCircuitOpens, _ = routeMeter.Int64Counter(
+		"circuit.opens",
+		metric.WithDescription("Circuit transitions to open"))
+	routeCircuitSkips, _ = routeMeter.Int64Counter(
+		"circuit.skips",
+		metric.WithDescription("Attempts skipped because the circuit was open"))
+	routeCircuitProbes, _ = routeMeter.Int64Counter(
+		"circuit.half_open_probes",
+		metric.WithDescription("Half-open circuit probes"))
 )
 
 func startRouteSpan(ctx context.Context, operation inference.Operation) (context.Context, trace.Span) {
@@ -46,11 +58,18 @@ func recordRoute(
 ) {
 	opAttr := attribute.String("inference.operation", string(operation))
 	selected := routeTrace.Decision.Selected
+	retries := 0
+	for _, attempt := range routeTrace.Attempts {
+		if attempt.Trigger == AttemptTriggerRetry {
+			retries++
+		}
+	}
 	span.SetAttributes(
 		attribute.String("route.selected.provider", selected.ID.Provider),
 		attribute.String("route.selected.model", selected.ID.Name),
 		attribute.Int("route.attempts", len(routeTrace.Attempts)),
 		attribute.Int("route.fallbacks", len(routeTrace.Fallbacks)),
+		attribute.Int("route.retries", retries),
 	)
 	for _, attempt := range routeTrace.Attempts {
 		attrs := []attribute.KeyValue{
@@ -63,7 +82,33 @@ func recordRoute(
 		if attempt.ErrorKind != "" {
 			attrs = append(attrs, attribute.String("error_kind", string(attempt.ErrorKind)))
 		}
+		if attempt.Number > 0 {
+			attrs = append(attrs, attribute.Int("attempt", attempt.Number))
+		}
+		if attempt.BackoffMillis > 0 {
+			attrs = append(attrs, attribute.Int64("backoff_ms", attempt.BackoffMillis))
+		}
+		if attempt.Circuit != "" {
+			attrs = append(attrs, attribute.String("circuit", attempt.Circuit))
+		}
+		if attempt.CircuitTransition != "" {
+			attrs = append(
+				attrs,
+				attribute.String("circuit_transition", attempt.CircuitTransition),
+			)
+		}
+		if attempt.WireAttempts > 0 {
+			attrs = append(attrs, attribute.Int("wire_attempts", attempt.WireAttempts))
+		}
 		span.AddEvent("route.attempt", trace.WithAttributes(attrs...))
+		if attempt.Trigger == AttemptTriggerRetry {
+			routeRetryCount.Add(ctx, 1, metric.WithAttributes(
+				opAttr,
+				attribute.String(telemetry.AttrLLMProvider, attempt.Target.ID.Provider),
+				attribute.String(telemetry.AttrLLMModel, attempt.Target.ID.Name),
+				attribute.String("error_kind", string(attempt.ErrorKind)),
+			))
+		}
 	}
 	if err != nil {
 		routeExecCount.Add(ctx, 1, metric.WithAttributes(opAttr, attribute.String("status", "error")))

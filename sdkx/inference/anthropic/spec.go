@@ -11,6 +11,11 @@ type Spec struct {
 	// BaseURL overrides the API origin, e.g. for a gateway. Empty uses the
 	// SDK default (https://api.anthropic.com).
 	BaseURL string `json:"base_url,omitempty"`
+	// HTTPRetries bounds wire-level retries inside one logical inference
+	// attempt, including the first. Zero disables SDK-internal retries so
+	// the route Router owns the full retry budget; nil keeps the
+	// anthropic-sdk-go default (two retries).
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Models declares custom models or overrides built-in catalog entries.
 	Models []ModelSpec `json:"models,omitempty"`
 }
@@ -31,6 +36,9 @@ func (s Spec) Validate() error {
 		!strings.HasPrefix(s.BaseURL, "https://") &&
 		!strings.HasPrefix(s.BaseURL, "http://") {
 		return fmt.Errorf("anthropic: base_url %q must be an http(s) URL", s.BaseURL)
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("anthropic: http_retries must not be negative")
 	}
 	seen := make(map[string]bool, len(s.Models))
 	for _, model := range s.Models {

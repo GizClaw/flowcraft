@@ -46,4 +46,13 @@
 // and optional model declarations for deployments serving unreleased or
 // gateway-renamed models. All models are generate kind; the built-in
 // catalog tracks the Claude lineup of July 2026.
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). Nil keeps the anthropic-sdk-go default (two retries); 0
+// disables SDK-internal retries so the route Router owns the budget; N maps
+// to option.WithMaxRetries(N-1). Retry-After and the SDK retry count are
+// propagated onto ProviderFailure so Router backoff and trace
+// wire_attempts can observe them.
 package anthropic

@@ -22,6 +22,7 @@ func TestErrorClassificationCoversEveryKind(t *testing.T) {
 		{FallbackFailed, errdefs.IsNotAvailable},
 		{FallbackContractViolation, errdefs.IsInternal},
 		{FallbackLimitExceeded, errdefs.IsInternal},
+		{CircuitOpen, errdefs.IsNotAvailable},
 	}
 	for _, item := range kinds {
 		err := NewError(item.kind, inference.OperationGenerate, errors.New("cause"))

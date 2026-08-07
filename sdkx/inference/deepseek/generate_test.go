@@ -1,13 +1,16 @@
 package deepseek
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
 )
@@ -72,6 +75,43 @@ func (s *chatServer) clients(t *testing.T) *clients {
 		t.Fatalf("decodeSpec: %v", err)
 	}
 	return profileMaterial{apiKey: "test-key"}.newClients(spec)
+}
+
+func TestRateLimitCarriesRetryAfter(t *testing.T) {
+	server := newChatServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Retry-After", "2")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"slow down","type":"rate_limit_error","code":"x"}}`)
+	})
+	cls := server.clients(t)
+	driver, err := inference.BindGenerate(
+		compileGenerate("deepseek-v4-pro", catalog["deepseek-v4-pro"]),
+		transportGenerate(cls.api),
+		decodeGenerate,
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	_, err = driver.Execute(
+		context.Background(),
+		generateModel("deepseek-v4-pro"),
+		simpleTextRequest("hi"),
+	)
+	if !errdefs.IsRateLimit(err) {
+		t.Fatalf("err = %v, want rate limit", err)
+	}
+	if got, ok := errdefs.RetryAfter(err); !ok || got != 2*time.Second {
+		t.Fatalf("RetryAfter = %v/%v, want 2s/true", got, ok)
+	}
+	if got := errdefs.RetryCount(err); got < 1 {
+		t.Fatalf("RetryCount = %d, want at least 1 wire attempt", got)
+	}
+}
+
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
+	}
 }
 
 // chatCompletionJSON renders a unary completion fixture. Extra message

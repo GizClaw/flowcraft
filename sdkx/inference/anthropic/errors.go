@@ -22,9 +22,33 @@ func classifyError(err error) error {
 	}
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
-		return classifyHTTPStatus(apiErr.StatusCode, err)
+		classified := classifyHTTPStatus(apiErr.StatusCode, err)
+		if apiErr.Response != nil {
+			classified = errdefs.WithRetryAfter(
+				classified,
+				errdefs.ParseRetryAfter(apiErr.Response.Header.Get("Retry-After")),
+			)
+		}
+		if attempts := wireAttempts(apiErr.Request); attempts > 0 {
+			classified = errdefs.WithRetryCount(classified, attempts)
+		}
+		return classified
 	}
 	return errdefs.NotAvailable(fmt.Errorf("anthropic: %w", err))
+}
+
+// wireAttempts derives the total HTTP sends from the SDK's
+// X-Stainless-Retry-Count header (zero-based retry count on the final
+// request). Zero means the count was unavailable.
+func wireAttempts(request *http.Request) int {
+	if request == nil {
+		return 0
+	}
+	value := request.Header.Get("X-Stainless-Retry-Count")
+	if value == "" {
+		return 0
+	}
+	return errdefs.ParseRetryCount(value) + 1
 }
 
 func classifyHTTPStatus(status int, err error) error {

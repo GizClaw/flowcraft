@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -450,6 +451,45 @@ func TestClassifyError(t *testing.T) {
 				t.Fatalf("classified error = %v", err)
 			}
 		})
+	}
+}
+
+func TestRateLimitCarriesRetryAfter(t *testing.T) {
+	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+		w.Header().Set("Retry-After", "4")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"slow down","type":"rate_limit_error","code":"x"}}`)
+	})
+	defer server.Close()
+	cls := testClients(t, server)
+	operations, err := openGenerate(
+		cls,
+		catalog["gpt-5.6-sol"],
+		openaiModel("gpt-5.6-sol").ID,
+		"default",
+	)
+	if err != nil {
+		t.Fatalf("openGenerate: %v", err)
+	}
+	_, err = operations.Unary.Execute(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		simpleTextRequest("hi"),
+	)
+	if !errdefs.IsRateLimit(err) {
+		t.Fatalf("err = %v, want rate limit", err)
+	}
+	if got, ok := errdefs.RetryAfter(err); !ok || got != 4*time.Second {
+		t.Fatalf("RetryAfter = %v/%v, want 4s/true", got, ok)
+	}
+	if got := errdefs.RetryCount(err); got < 1 {
+		t.Fatalf("RetryCount = %d, want at least 1 wire attempt", got)
+	}
+}
+
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
 	}
 }
 

@@ -128,6 +128,14 @@ func secretString(secret config.Secret) string {
 func (m profileMaterial) newClients(spec Spec) *clients {
 	built := &clients{endpoints: m.spec.Endpoints}
 	options := []arkruntime.ConfigOption{}
+	httpOptions := []httpkit.Option{
+		httpkit.WithHTTP2(),
+		httpkit.WithTimeout(defaultClientTimeout),
+		httpkit.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
+	}
+	if spec.HTTPRetries != nil {
+		httpOptions = append(httpOptions, httpkit.WithRetryAttempts(*spec.HTTPRetries))
+	}
 	if spec.BaseURL != "" {
 		options = append(options, arkruntime.WithBaseUrl(spec.BaseURL))
 	}
@@ -135,11 +143,7 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		options = append(options, arkruntime.WithRegion(spec.Region))
 	}
 	options = append(options,
-		arkruntime.WithHTTPClient(httpkit.NewClient(
-			httpkit.WithHTTP2(),
-			httpkit.WithTimeout(defaultClientTimeout),
-			httpkit.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
-		)),
+		arkruntime.WithHTTPClient(httpkit.NewClient(httpOptions...)),
 		// SDK-internal retries are disabled; the retry transport above owns
 		// replayable transient failures so attempts do not multiply.
 		arkruntime.WithRetryTimes(0),
@@ -158,6 +162,11 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	}
 	if speechKey != "" && m.spec.AppID != "" {
 		options := []doubaospeech.Option{doubaospeech.WithAPIKey(speechKey)}
+		// The speech SDK shares the httpkit retry budget with the Ark
+		// client so http_retries governs both surfaces.
+		options = append(options, doubaospeech.WithHTTPClient(
+			httpkit.NewClient(httpOptions...),
+		))
 		if spec.SpeechBaseURL != "" {
 			options = append(options, doubaospeech.WithBaseURL(spec.SpeechBaseURL))
 		}
