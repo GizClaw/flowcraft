@@ -5,6 +5,10 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/GizClaw/flowcraft/memory/eval/dataset"
+	"github.com/GizClaw/flowcraft/memory/eval/scenarios"
+	"github.com/GizClaw/flowcraft/sdk/message"
 )
 
 // TestRunIntegration exercises the full real-inference path. It self-skips
@@ -17,24 +21,39 @@ func TestRunIntegration(t *testing.T) {
 	}
 	generateModel := envOrDefault("MEMORY_EVAL_GENERATE_MODEL", "bytedance:doubao-seed-2-0-lite")
 	embedModel := envOrDefault("MEMORY_EVAL_EMBED_MODEL", "bytedance:doubao-embedding-vision")
-	dataset := &Dataset{
+	scenario, err := scenarios.Lookup("locomo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &dataset.Dataset{
 		Name: "integration",
-		Conversations: []Conversation{{
+		Conversations: []dataset.Conversation{{
 			ID: "c1",
-			Turns: []Turn{
-				{Role: "user", Content: "I moved to San Francisco last month.", EvidenceID: "c1:1"},
-				{Role: "assistant", Content: "Welcome to SF!"},
+			Turns: []dataset.Turn{
+				{
+					Message: message.Message{
+						Role:    message.RoleUser,
+						Content: message.Content{Parts: []message.Part{message.TextPart{Text: "I moved to San Francisco last month."}}},
+					},
+					EvidenceID: "c1:1",
+				},
+				{
+					Message: message.Message{
+						Role:    message.RoleAssistant,
+						Content: message.Content{Parts: []message.Part{message.TextPart{Text: "Welcome to SF!"}}},
+					},
+				},
 			},
 		}},
-		Questions: []Question{{
+		Questions: []dataset.Question{{
 			ID: "q1", ConversationID: "c1", Query: "Where does the user live now?",
 			GoldAnswers: []string{"San Francisco"}, EvidenceIDs: []string{"c1:1"},
 		}},
 	}
 	report, err := Run(context.Background(), runOptions{
-		Dataset:       dataset,
+		Dataset:       ds,
 		InferencePath: inferencePath,
-		Suite:         "locomo",
+		Scenario:      scenario,
 		GenerateModel: generateModel,
 		EmbedModel:    embedModel,
 		AnswerModel:   generateModel,

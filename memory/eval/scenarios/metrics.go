@@ -1,12 +1,8 @@
-package main
+package scenarios
 
 import (
-	"context"
-	"fmt"
 	"strings"
 	"unicode"
-
-	"github.com/GizClaw/flowcraft/sdk/inference"
 )
 
 // scoreEMF1 computes loose EM (gold contained in prediction) and token F1
@@ -35,10 +31,7 @@ func normalizeText(value string) string {
 func tokenF1(prediction, gold string) float64 {
 	predictionTokens := tokenize(prediction)
 	goldTokens := tokenize(gold)
-	if len(goldTokens) == 0 {
-		return 0
-	}
-	if len(predictionTokens) == 0 {
+	if len(goldTokens) == 0 || len(predictionTokens) == 0 {
 		return 0
 	}
 	goldSet := make(map[string]struct{}, len(goldTokens))
@@ -63,34 +56,4 @@ func tokenize(value string) []string {
 	return strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 	})
-}
-
-// judgeResponse asks the judge model whether the prediction answers the gold.
-func judgeResponse(
-	ctx context.Context,
-	runtime *inference.Runtime,
-	model inference.ModelRef,
-	golds []string,
-	prediction string,
-) (float64, error) {
-	var prompt strings.Builder
-	prompt.WriteString("Decide whether the prediction answers the gold answer(s) correctly.\n")
-	prompt.WriteString("Answer with exactly one word: CORRECT or INCORRECT.\n\n")
-	prompt.WriteString("Gold:\n")
-	for _, gold := range golds {
-		fmt.Fprintf(&prompt, "- %s\n", gold)
-	}
-	fmt.Fprintf(&prompt, "\nPrediction:\n%s\n", prediction)
-	response, err := generateText(ctx, runtime, model, prompt.String())
-	if err != nil {
-		return 0, err
-	}
-	lower := strings.ToLower(strings.TrimSpace(response))
-	if strings.Contains(lower, "incorrect") {
-		return 0, nil
-	}
-	if strings.Contains(lower, "correct") {
-		return 1, nil
-	}
-	return 0, fmt.Errorf("judge response %q is not CORRECT or INCORRECT", response)
 }

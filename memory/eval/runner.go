@@ -5,32 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	memoryconfig "github.com/GizClaw/flowcraft/memory/config"
+	"github.com/GizClaw/flowcraft/memory/eval/dataset"
+	"github.com/GizClaw/flowcraft/memory/eval/scenarios"
 	"github.com/GizClaw/flowcraft/sdk/inference"
-	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
-	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
-	"github.com/GizClaw/flowcraft/sdkx/inference/azure"
-	"github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
-	"github.com/GizClaw/flowcraft/sdkx/inference/deepseek"
-	"github.com/GizClaw/flowcraft/sdkx/inference/minimax"
-	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
-	"github.com/GizClaw/flowcraft/sdkx/inference/qwen"
 )
 
-const maxBatchRunes = 12000
-
 type runOptions struct {
-	Dataset       *Dataset
+	Dataset       *dataset.Dataset
 	InferencePath string
-	Suite         string
+	Scenario      scenarios.Scenario
 	GenerateModel string
 	EmbedModel    string
 	AnswerModel   string
@@ -41,11 +30,37 @@ type runOptions struct {
 	Concurrency   int
 	IngestTimeout time.Duration
 	QATimeout     time.Duration
+	Notifier      notifier
+	ProgressPct   int
 }
 
 // Run ingests the dataset through a real memory assembly and evaluates every
 // question with the sdk-default retrieval profile.
 func Run(ctx context.Context, opts runOptions) (*Report, error) {
+	notifier := opts.Notifier
+	if notifier == nil {
+		notifier = noopNotifier{}
+	}
+	host, _ := os.Hostname()
+	bestEffortNotify(ctx, notifier, notifyEvent{
+		Kind:   "start",
+		Title:  "memory eval started",
+		Fields: map[string]string{"host": host},
+	})
+	report, err := runInternal(ctx, opts, notifier)
+	if err != nil {
+		bestEffortNotify(ctx, notifier, notifyEvent{
+			Kind: "error", Title: "memory eval failed", Body: err.Error(),
+		})
+		return nil, err
+	}
+	bestEffortNotify(ctx, notifier, notifyEvent{
+		Kind: "done", Title: "memory eval finished", Body: reportSummary(report),
+	})
+	return report, nil
+}
+
+func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, error) {
 	if opts.Dataset == nil {
 		return nil, errors.New("eval: dataset is required")
 	}
@@ -90,7 +105,7 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 	}
 	scopes := make([]memoryconfig.ScopeSettings, 0, len(opts.Dataset.Conversations))
 	for _, conversation := range opts.Dataset.Conversations {
-		scope := scopeFor(opts.Suite, conversation.ID)
+		scope := scopeFor(opts.Scenario.RuntimeID(), conversation.ID)
 		scopes = append(scopes, memoryconfig.ScopeSettings{
 			RuntimeID: scope.RuntimeID,
 			UserID:    scope.UserID,
@@ -113,7 +128,7 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 	seqByEvidence := make(map[string]map[string]uint64)
 	for index, conversation := range opts.Dataset.Conversations {
 		if err := ingestConversation(
-			ctx, assembly, opts.Suite, conversation, seqByEvidence, opts.IngestTimeout,
+			ctx, assembly, opts.Scenario, conversation, seqByEvidence, opts.IngestTimeout,
 		); err != nil {
 			return nil, err
 		}
@@ -125,7 +140,7 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 		if opts.IngestTimeout > 0 {
 			deriveCtx, cancel = context.WithTimeout(ctx, opts.IngestTimeout)
 		}
-		err := assembly.Runner.ProcessScope(deriveCtx, scopeFor(opts.Suite, conversation.ID))
+		err := assembly.Runner.ProcessScope(deriveCtx, scopeFor(opts.Scenario.RuntimeID(), conversation.ID))
 		if cancel != nil {
 			cancel()
 		}
@@ -138,7 +153,7 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 			if opts.IngestTimeout > 0 {
 				retryCtx, retryCancel = context.WithTimeout(ctx, opts.IngestTimeout)
 			}
-			retryErr := assembly.Runner.ProcessScope(retryCtx, scopeFor(opts.Suite, conversation.ID))
+			retryErr := assembly.Runner.ProcessScope(retryCtx, scopeFor(opts.Scenario.RuntimeID(), conversation.ID))
 			if retryCancel != nil {
 				retryCancel()
 			}
@@ -150,21 +165,28 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 		}
 		fmt.Fprintf(os.Stderr, "derive %d/%d conversations\n", index+1, len(opts.Dataset.Conversations))
 	}
+	bestEffortNotify(ctx, n, notifyEvent{
+		Kind:  "ingest_done",
+		Title: fmt.Sprintf("ingested %d conversations", len(opts.Dataset.Conversations)),
+	})
 
 	questions := opts.Dataset.Questions
 	if opts.Limit > 0 && len(questions) > opts.Limit {
 		questions = questions[:opts.Limit]
 	}
-	scores := make([]questionScore, len(questions))
+	scores := make([]scenarios.QuestionScore, len(questions))
 	latency := newLatencyAggregator()
 	var (
-		wg  sync.WaitGroup
-		mu  sync.Mutex
-		sem = make(chan struct{}, opts.Concurrency)
+		wg            sync.WaitGroup
+		mu            sync.Mutex
+		sem           = make(chan struct{}, opts.Concurrency)
+		completed     int
+		nextMilestone = opts.ProgressPct
+		milestoneMu   sync.Mutex
 	)
 	for index, question := range questions {
 		wg.Add(1)
-		go func(index int, question Question) {
+		go func(index int, question dataset.Question) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -176,89 +198,29 @@ func Run(ctx context.Context, opts runOptions) (*Report, error) {
 			mu.Lock()
 			scores[index] = score
 			mu.Unlock()
+			milestoneMu.Lock()
+			completed++
+			pct := completed * 100 / len(questions)
+			fire := false
+			if nextMilestone > 0 && nextMilestone <= 100 && pct >= nextMilestone {
+				fire = true
+				for nextMilestone <= 100 && pct >= nextMilestone {
+					nextMilestone += opts.ProgressPct
+				}
+			}
+			milestoneMu.Unlock()
+			if fire {
+				bestEffortNotify(ctx, n, notifyEvent{
+					Kind:  "qa_progress",
+					Title: fmt.Sprintf("qa %d/%d", completed, len(questions)),
+					Body:  fmt.Sprintf("progress %d%%", pct),
+				})
+			}
 		}(index, question)
 	}
 	wg.Wait()
 
 	return buildReport(opts, started, scores, latency, assembly.PolicyDigest), nil
-}
-
-func ingestConversation(
-	ctx context.Context,
-	assembly *memoryconfig.Assembly,
-	suite string,
-	conversation Conversation,
-	seqByEvidence map[string]map[string]uint64,
-	timeout time.Duration,
-) error {
-	ingestCtx := ctx
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		ingestCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-	scope := scopeFor(suite, conversation.ID)
-	batches := batchTurns(conversation.Turns)
-	seq := uint64(0)
-	for batchIndex, batch := range batches {
-		messages := make([]message.Message, 0, len(batch))
-		for _, turn := range batch {
-			seq++
-			if turn.EvidenceID != "" {
-				if seqByEvidence[conversation.ID] == nil {
-					seqByEvidence[conversation.ID] = make(map[string]uint64)
-				}
-				seqByEvidence[conversation.ID][turn.EvidenceID] = seq
-			}
-			messages = append(messages, message.NewTextMessage(turnRole(turn.Role), turn.Content))
-		}
-		if len(messages) == 0 {
-			continue
-		}
-		if err := assembly.System.CommitTurn(ingestCtx, sdkmemory.Turn{
-			Scope:          scope,
-			ConversationID: conversation.ID,
-			IdempotencyKey: fmt.Sprintf("%s/%d", conversation.ID, batchIndex),
-			Messages:       messages,
-		}); err != nil {
-			return fmt.Errorf("commit conversation %s batch %d: %w", conversation.ID, batchIndex, err)
-		}
-	}
-	return nil
-}
-
-func batchTurns(turns []Turn) [][]Turn {
-	var (
-		batches        [][]Turn
-		current        []Turn
-		currentSession string
-		runes          int
-	)
-	for _, turn := range turns {
-		content := strings.TrimSpace(turn.Content)
-		if content == "" {
-			continue
-		}
-		turn.Content = content
-		if turn.SessionID != "" && turn.SessionID != currentSession && len(current) > 0 {
-			batches = append(batches, current)
-			current, currentSession, runes = nil, turn.SessionID, 0
-		}
-		nextRunes := utf8.RuneCountInString(content)
-		if len(current) > 0 && runes+nextRunes > maxBatchRunes {
-			batches = append(batches, current)
-			current, runes = nil, 0
-		}
-		current = append(current, turn)
-		runes += nextRunes
-		if turn.SessionID != "" {
-			currentSession = turn.SessionID
-		}
-	}
-	if len(current) > 0 {
-		batches = append(batches, current)
-	}
-	return batches
 }
 
 func evalQuestion(
@@ -269,10 +231,10 @@ func evalQuestion(
 	answerRef inference.ModelRef,
 	judgeRef *inference.ModelRef,
 	seqByEvidence map[string]map[string]uint64,
-	question Question,
+	question dataset.Question,
 	latency *latencyAggregator,
-) questionScore {
-	score := questionScore{
+) scenarios.QuestionScore {
+	score := scenarios.QuestionScore{
 		ID:            question.ID,
 		Query:         question.Query,
 		Tags:          append([]string(nil), question.Tags...),
@@ -290,12 +252,12 @@ func evalQuestion(
 	}
 	recallStart := time.Now()
 	result, err := assembly.System.Context(questionCtx, sdkmemory.ContextRequest{
-		Scope:          scopeFor(opts.Suite, question.ConversationID),
+		Scope:          scopeFor(opts.Scenario.RuntimeID(), question.ConversationID),
 		ConversationID: question.ConversationID,
 		Query:          question.Query,
 		Budget:         sdkmemory.Budget{MaxItems: opts.MaxItems, MaxTokens: opts.MaxTokens},
 		Metadata:       metadata,
-		RecallEventID:  "eval:" + opts.Suite + ":" + question.ID,
+		RecallEventID:  "eval:" + opts.Scenario.Name() + ":" + question.ID,
 	})
 	latency.record("recall", time.Since(recallStart), err == nil)
 	if err != nil {
@@ -310,16 +272,22 @@ func evalQuestion(
 		score.KHitFact = boolFloatPtr(hit.Fact)
 	}
 
-	prompt := answerPrompt(question, result.Items)
+	content, err := buildAnswerInput(question, result.Items)
+	if err != nil {
+		score.Error = err.Error()
+		return score
+	}
 	answerStart := time.Now()
-	prediction, err := generateText(questionCtx, runtime, answerRef, prompt)
+	prediction, err := generateWithSystem(questionCtx, runtime, answerRef, answerSystem, content)
 	latency.record("answer", time.Since(answerStart), err == nil)
 	if err != nil {
 		score.Error = err.Error()
 		return score
 	}
 	score.Prediction = prediction
-	score.EM, score.F1 = scoreEMF1(prediction, question.GoldAnswers)
+	em, f1, abstention := opts.Scenario.Score(prediction, question, 0, false)
+	score.EM, score.F1 = em, f1
+	score.Abstention = abstention
 	if judgeRef != nil {
 		judgeStart := time.Now()
 		judge, judgeErr := judgeResponse(questionCtx, runtime, *judgeRef, question.GoldAnswers, prediction)
@@ -334,162 +302,10 @@ func evalQuestion(
 	return score
 }
 
-func answerPrompt(question Question, items []sdkmemory.ContextItem) string {
-	var prompt strings.Builder
-	prompt.WriteString("Answer the question using only the memories below. ")
-	prompt.WriteString("If the memories do not contain the answer, answer \"I don't know\".\n")
-	if question.AskedAt != "" {
-		fmt.Fprintf(&prompt, "The question was asked at: %s\n", question.AskedAt)
-	}
-	fmt.Fprintf(&prompt, "Question: %s\n\nMemories:\n", question.Query)
-	for index, item := range items {
-		fmt.Fprintf(&prompt, "%d. [%s/%s] %s\n", index+1, item.SourceClass, item.Kind, item.Content.Text())
-	}
-	return prompt.String()
-}
-
-func generateText(
-	ctx context.Context,
-	runtime *inference.Runtime,
-	model inference.ModelRef,
-	prompt string,
-) (string, error) {
-	response, err := runtime.Generate(ctx, model, inference.GenerateRequest{
-		Input: inference.GenerateInput{
-			Role: inference.InputRoleUser,
-			Content: inference.InputContent{
-				Content: message.Content{Parts: []message.Part{message.TextPart{Text: prompt}}},
-				Intent:  inference.Intent{Text: &inference.TextIntent{}},
-			},
-		},
-	})
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(response.Message.Content.Text()), nil
-}
-
-func buildInferenceRuntime(ctx context.Context, path string) (*inference.Runtime, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read inference config: %w", err)
-	}
-	document, err := inferenceconfig.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("parse inference config: %w", err)
-	}
-	builder, err := inferenceconfig.NewBuilder(
-		providerFactories(),
-		map[string]inferenceconfig.SecretResolver{"env": envresolver.New()},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("inference builder: %w", err)
-	}
-	runtime, err := builder.NewRuntime(ctx, document)
-	if err != nil {
-		return nil, fmt.Errorf("build inference runtime: %w", err)
-	}
-	return runtime, nil
-}
-
-func providerFactories() map[string]inferenceconfig.Factory {
-	return map[string]inferenceconfig.Factory{
-		"openai":    openai.Factory(),
-		"azure":     azure.Factory(),
-		"deepseek":  deepseek.Factory(),
-		"qwen":      qwen.Factory(),
-		"bytedance": bytedance.Factory(),
-		"minimax":   minimax.Factory(),
-	}
-}
-
-func parseModelRef(spec string) (inference.ModelRef, error) {
-	parts := strings.Split(spec, ":")
-	if len(parts) < 2 || len(parts) > 3 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
-		return inference.ModelRef{}, fmt.Errorf("model spec %q must be provider:model[:profile]", spec)
-	}
-	ref := inference.ModelRef{
-		ID: inference.ModelID{Provider: parts[0], Name: parts[1]},
-	}
-	if len(parts) == 3 {
-		ref.Profile = parts[2]
-	}
-	if err := ref.Validate(); err != nil {
-		return inference.ModelRef{}, err
-	}
-	return ref, nil
-}
-
-func toModelSettings(ref inference.ModelRef) memoryconfig.ModelSettings {
-	return memoryconfig.ModelSettings{
-		Provider: ref.ID.Provider,
-		Name:     ref.ID.Name,
-		Profile:  ref.Profile,
-	}
-}
-
-func scopeFor(suite, conversationID string) sdkmemory.Scope {
-	return sdkmemory.Scope{RuntimeID: suiteRuntimeID(suite), UserID: conversationID}
-}
-
-func suiteRuntimeID(suite string) string {
-	if suite == "longmemeval" {
-		return "eval-lme"
-	}
-	return "eval-locomo"
-}
-
-func turnRole(role string) message.Role {
-	switch strings.ToLower(strings.TrimSpace(role)) {
-	case "assistant":
-		return message.RoleAssistant
-	case "system":
-		return message.RoleSystem
-	default:
-		return message.RoleUser
-	}
-}
-
 func boolFloatPtr(value bool) *float64 {
 	number := 0.0
 	if value {
 		number = 1
 	}
 	return &number
-}
-
-type latencyAggregator struct {
-	mu     sync.Mutex
-	totals map[string]time.Duration
-	calls  map[string]int
-}
-
-func newLatencyAggregator() *latencyAggregator {
-	return &latencyAggregator{
-		totals: make(map[string]time.Duration),
-		calls:  make(map[string]int),
-	}
-}
-
-func (aggregator *latencyAggregator) record(stage string, duration time.Duration, ok bool) {
-	if !ok {
-		return
-	}
-	aggregator.mu.Lock()
-	defer aggregator.mu.Unlock()
-	aggregator.totals[stage] += duration
-	aggregator.calls[stage]++
-}
-
-func (aggregator *latencyAggregator) snapshot() map[string]latencySummary {
-	aggregator.mu.Lock()
-	defer aggregator.mu.Unlock()
-	result := make(map[string]latencySummary, len(aggregator.totals))
-	for stage, total := range aggregator.totals {
-		result[stage] = latencySummary{
-			Calls:   aggregator.calls[stage],
-			TotalMs: total.Milliseconds(),
-		}
-	}
-	return result
 }

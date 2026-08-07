@@ -124,7 +124,7 @@ func (index *Index) FullRebuild(ctx context.Context, request component.Projectio
 		if err := artifact.Validate(); err != nil {
 			return fmt.Errorf("vector projection: artifact %d: %w", i, err)
 		}
-		items[i] = inference.EmbedItem{Content: artifact.Content.Clone()}
+		items[i] = inference.EmbedItem{Content: sanitizeEmbedContent(artifact.Content)}
 	}
 	response, err := index.runtime.Embed(ctx, index.model, inference.EmbedRequest{Items: items})
 	if err != nil {
@@ -186,7 +186,7 @@ func (index *Index) ApplyDelta(ctx context.Context, delta component.ProjectionDe
 	if len(changed) > 0 {
 		items := make([]inference.EmbedItem, len(changed))
 		for i, artifact := range changed {
-			items[i] = inference.EmbedItem{Content: artifact.Content.Clone()}
+			items[i] = inference.EmbedItem{Content: sanitizeEmbedContent(artifact.Content)}
 		}
 		response, err := index.runtime.Embed(ctx, index.model, inference.EmbedRequest{Items: items})
 		if err != nil {
@@ -413,6 +413,19 @@ func vectorEntryKey() projectionstore.EntryKey[entry] {
 func contentDigest(artifact component.Artifact) string {
 	sum := sha256.Sum256([]byte(artifact.Content.Text()))
 	return fmt.Sprintf("%x", sum[:])
+}
+
+// sanitizeEmbedContent keeps only parts the embedding model can consume
+// (text and image) and drops eval-only data parts and tool parts.
+func sanitizeEmbedContent(content sdkmessage.Content) sdkmessage.Content {
+	var parts []sdkmessage.Part
+	for _, part := range content.Parts {
+		switch part.Kind() {
+		case sdkmessage.PartText, sdkmessage.PartImage:
+			parts = append(parts, part)
+		}
+	}
+	return sdkmessage.Content{Parts: parts}
 }
 
 // generationProjection isolates vectors produced by different embedding

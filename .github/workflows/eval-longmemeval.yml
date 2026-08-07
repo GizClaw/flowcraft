@@ -133,6 +133,8 @@ jobs:
             --concurrency "${{ inputs.concurrency }}" \
             --ingest-timeout "${{ inputs.ingest_timeout }}" \
             --qa-timeout "${{ inputs.qa_timeout }}" \
+            --notify-name "longmemeval-${{ github.run_id }}" \
+            --notify-progress-pct 10 \
             --out "$REPORT_OUT"
 
       - name: Upload report artifact
