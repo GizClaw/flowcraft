@@ -387,7 +387,7 @@ func TestClassifyError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 				w.WriteHeader(tc.status)
-				fmt.Fprintf(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+				_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
 			})
 			defer server.Close()
 			cls := testClients(t, server)
@@ -552,7 +552,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 func TestGenerateUnaryThinkingBlocks(t *testing.T) {
 	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "thinking", "thinking": "let me think", "signature": "sig-1"},
 			{"type": "redacted_thinking", "data": "opaque-9"},
 			{"type": "text", "text": "answer"},
@@ -589,7 +589,7 @@ func TestGenerateUnaryThinkingBlocks(t *testing.T) {
 func TestGenerateStreamThinkingBlocks(t *testing.T) {
 	server, _ := newCapturedAnthropic(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "message_start",
 				"message": map[string]any{

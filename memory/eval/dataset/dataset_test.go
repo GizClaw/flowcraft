@@ -74,8 +74,8 @@ func TestDatasetRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	turn := decodedMultimodal.Conversations[0].Turns[0]
-	if len(turn.Message.Content.Parts) != 3 {
-		t.Fatalf("multimodal parts = %d, want 3: %#v", len(turn.Message.Content.Parts), turn.Message.Content.Parts)
+	if len(turn.Content.Parts) != 3 {
+		t.Fatalf("multimodal parts = %d, want 3: %#v", len(turn.Content.Parts), turn.Content.Parts)
 	}
 }
 

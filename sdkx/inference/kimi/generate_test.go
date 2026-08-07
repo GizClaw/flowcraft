@@ -21,7 +21,7 @@ func intPointer(value int) *int           { return &value }
 
 func TestUnaryTextOnWire(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("ok"))
+		_, _ = fmt.Fprint(w, textCompletion("ok"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -72,7 +72,7 @@ func TestMultimodalContentParts(t *testing.T) {
 	}
 
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("ok"))
+		_, _ = fmt.Fprint(w, textCompletion("ok"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -109,7 +109,7 @@ func TestMultimodalContentParts(t *testing.T) {
 
 func TestSamplingOnWire(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("{}"))
+		_, _ = fmt.Fprint(w, textCompletion("{}"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -137,7 +137,7 @@ func TestSamplingOnWire(t *testing.T) {
 
 func TestJSONSchemaOnWire(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("{}"))
+		_, _ = fmt.Fprint(w, textCompletion("{}"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -197,7 +197,7 @@ func TestSamplingDropsOnKModels(t *testing.T) {
 
 func TestToolsOnWire(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, completionBody(map[string]any{
+		_, _ = fmt.Fprint(w, completionBody(map[string]any{
 			"role": "assistant",
 			"tool_calls": []any{map[string]any{
 				"id":   "call_1",
@@ -277,7 +277,7 @@ func TestNamedToolChoiceOnWire(t *testing.T) {
 
 func TestToolResultRoundTrip(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("晴，25°C"))
+		_, _ = fmt.Fprint(w, textCompletion("晴，25°C"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -394,7 +394,7 @@ func TestReasoningRoundTrip(t *testing.T) {
 	// Unary response carries reasoning_content; feeding it back must
 	// round-trip as reasoning_content plus thinking.keep="all" on k2.6.
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, completionBody(map[string]any{
+		_, _ = fmt.Fprint(w, completionBody(map[string]any{
 			"role":              "assistant",
 			"content":           "4",
 			"reasoning_content": "2+2",
@@ -502,7 +502,7 @@ func TestPreserveThinkingOverride(t *testing.T) {
 
 func TestPromptCacheKeyOnWire(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("ok"))
+		_, _ = fmt.Fprint(w, textCompletion("ok"))
 	})
 
 	runtime := newTestRuntime(t, server)
@@ -603,7 +603,7 @@ func TestCompileRejections(t *testing.T) {
 func TestStreamTextAndUsage(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, chunkBody(
+		_, _ = fmt.Fprint(w, chunkBody(
 			streamChunk(map[string]any{"role": "assistant", "content": ""}, nil, false),
 			streamChunk(map[string]any{"content": "你"}, nil, false),
 			streamChunk(map[string]any{"content": "好"}, nil, false),
@@ -616,7 +616,7 @@ func TestStreamTextAndUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if !server.streaming(t, 0) {
 		t.Fatal("stream request must ask for SSE")
 	}
@@ -657,7 +657,7 @@ func TestStreamTextAndUsage(t *testing.T) {
 func TestStreamReasoningAndToolCalls(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, chunkBody(
+		_, _ = fmt.Fprint(w, chunkBody(
 			streamChunk(map[string]any{"role": "assistant", "reasoning_content": "想"}, nil, false),
 			streamChunk(map[string]any{"reasoning_content": "一下"}, nil, false),
 			streamChunk(map[string]any{"tool_calls": []any{map[string]any{
@@ -685,7 +685,7 @@ func TestStreamReasoningAndToolCalls(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var reasoning string
 	var toolID, toolName, toolArgs string
@@ -741,7 +741,7 @@ func TestErrorClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
 				w.WriteHeader(tc.status)
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			})
 			runtime := newTestRuntime(t, server)
 			_, err := runtime.Generate(context.Background(), kimiModel("moonshot-v1-8k"), simpleTextRequest("hi"))

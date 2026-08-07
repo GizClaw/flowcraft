@@ -41,6 +41,7 @@ jobs:
             ci:
               - '.github/workflows/**'
               - '.release/**'
+              - '.golangci.yml'
               - 'Makefile'
               - 'tools/releasegate/**'
 
@@ -100,14 +101,41 @@ jobs:
             echo "==> vet $m"
             (cd "$m" && go vet ./...)
           done
-      - name: gofmt check
+      - name: gofmt -s check
         run: |
-          diff=$(gofmt -l sdk memory memory/eval sdkx)
+          diff=$(gofmt -s -l sdk memory memory/eval sdkx)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
             exit 1
           fi
+
+  lint-golangci:
+    name: Lint golangci (${{ matrix.module }})
+    needs: detect
+    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        module: [sdk, memory, memory/eval, sdkx]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so --new-from-rev can resolve the PR base (or the
+          # workflow_dispatch base_sha) as a lint baseline.
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.12.2
+          working-directory: ${{ matrix.module }}
+          # Report only issues on lines changed since the baseline; the tree
+          # still carries pre-existing findings, so a full-tree gate would
+          # block unrelated PRs. `make lint` runs the full tree locally.
+          args: --new-from-rev=${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
 
   test-sdk:
     name: Test sdk (Go ${{ matrix.go-version }})
@@ -239,7 +267,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-nsjail-integration]
+    needs: [detect, release-intent, lint, lint-golangci, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-nsjail-integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -251,6 +279,7 @@ jobs:
           results=( \
             "${{ needs.release-intent.result }}" \
             "${{ needs.lint.result }}" \
+            "${{ needs.lint-golangci.result }}" \
             "${{ needs.test-sdk.result }}" \
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-eval.result }}" \

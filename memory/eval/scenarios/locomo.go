@@ -179,11 +179,9 @@ func loCoMoFlatten(
 			if speaker == "" {
 				speaker = role
 			}
-			content := body
+			content := fmt.Sprintf("%s: %s", speaker, body)
 			if current.dateTime != "" {
 				content = fmt.Sprintf("[%s] %s: %s", current.dateTime, speaker, body)
-			} else {
-				content = fmt.Sprintf("%s: %s", speaker, body)
 			}
 			parts := []message.Part{message.TextPart{Text: content}}
 			for _, imageURL := range raw.ImgURL {

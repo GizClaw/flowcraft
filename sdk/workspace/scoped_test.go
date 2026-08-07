@@ -160,7 +160,7 @@ func TestScopedWorkspace_CustomLogger(t *testing.T) {
 		WithViolationLogger(logger),
 	)
 
-	sw.Read(context.Background(), "secret/key.txt")
+	_, _ = sw.Read(context.Background(), "secret/key.txt")
 
 	mu.Lock()
 	defer mu.Unlock()

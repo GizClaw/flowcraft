@@ -25,7 +25,7 @@ func TestGenerateUnaryToolCalls(t *testing.T) {
 			t.Errorf("request model = %v", body["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			toolCallOutputItem(),
 		}))
 	})
@@ -80,7 +80,7 @@ func TestEmbedTransport(t *testing.T) {
 			t.Errorf("dimensions = %v", body["dimensions"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"object": "list",
 			"data": [
 				{"object": "embedding", "index": 0, "embedding": [0.5, -0.25]},
@@ -147,7 +147,7 @@ func TestImageTransport(t *testing.T) {
 			"data":  []map[string]any{{"b64_json": base64.StdEncoding.EncodeToString(png)}},
 			"usage": map[string]any{"input_tokens": 11, "output_tokens": 0},
 		})
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	cls := testClients(t, server)
@@ -206,7 +206,7 @@ func TestTTSTransport(t *testing.T) {
 			t.Errorf("response_format = %v", body["response_format"])
 		}
 		w.Header().Set("Content-Type", "audio/mpeg")
-		w.Write(audio)
+		_, _ = w.Write(audio)
 	})
 	defer server.Close()
 	cls := testClients(t, server)
@@ -260,7 +260,7 @@ func TestTTSStreamTransport(t *testing.T) {
 	payload := []byte{1, 2, 3, 4, 5, 6}
 	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "audio/mpeg")
-		w.Write(payload)
+		_, _ = w.Write(payload)
 	})
 	defer server.Close()
 	cls := testClients(t, server)
@@ -291,7 +291,7 @@ func TestTTSStreamTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var audio []byte
 	for {
@@ -326,7 +326,7 @@ func TestSTTTransport(t *testing.T) {
 			t.Errorf("language = %q", r.FormValue("language"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"text": "hello there",
 			"language": "english",
 			"duration": 2.5,
@@ -397,7 +397,7 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 			t.Errorf("include = %v, want reasoning.encrypted_content", include)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			{
 				"type": "reasoning",
 				"id":   "rs_1",
@@ -444,7 +444,7 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 func TestGenerateStreamReasoning(t *testing.T) {
 	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "response.output_item.added", "output_index": 0,
 				"item": map[string]any{"type": "reasoning", "id": "rs_1"},

@@ -69,7 +69,7 @@ func (c *mediaClient) request(
 		return nil, fmt.Errorf("minimax: %s %s: %w", method, path, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
 			"minimax: %s %s: HTTP %d: %s",
@@ -90,7 +90,7 @@ func (c *mediaClient) postJSON(
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("minimax: decode %s response: %w", path, err)
 	}
@@ -107,7 +107,7 @@ func (c *mediaClient) getJSON(
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("minimax: decode %s response: %w", path, err)
 	}

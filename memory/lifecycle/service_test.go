@@ -387,7 +387,7 @@ func TestDreamingRunnerRetriesNotificationFailureAndRecordsLastError(t *testing.
 	if err := runner.Start(ctx); err != nil {
 		t.Fatal(err)
 	}
-	defer runner.Close()
+	defer func() { _ = runner.Close() }()
 	deadline := time.Now().Add(time.Second)
 	for (phase.count() < 2 || runner.LastError() != nil) && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)

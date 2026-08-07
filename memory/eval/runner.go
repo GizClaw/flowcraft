@@ -137,7 +137,7 @@ func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, err
 	if err != nil {
 		return nil, fmt.Errorf("memory assembly: %w", err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 
 	started := time.Now().UTC()
 	seqByEvidence := make(map[string]map[string]uint64)

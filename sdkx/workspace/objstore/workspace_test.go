@@ -40,8 +40,8 @@ func TestWorkspace_Overwrite(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "f.txt", []byte("v1"))
-	ws.Write(ctx, "f.txt", []byte("v2"))
+	_ = ws.Write(ctx, "f.txt", []byte("v1"))
+	_ = ws.Write(ctx, "f.txt", []byte("v2"))
 
 	data, _ := ws.Read(ctx, "f.txt")
 	if string(data) != "v2" {
@@ -87,7 +87,7 @@ func TestWorkspace_Delete(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "del.txt", []byte("bye"))
+	_ = ws.Write(ctx, "del.txt", []byte("bye"))
 	if err := ws.Delete(ctx, "del.txt"); err != nil {
 		t.Fatal(err)
 	}
@@ -110,9 +110,9 @@ func TestWorkspace_RemoveAll(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "dir/a.txt", []byte("a"))
-	ws.Write(ctx, "dir/sub/b.txt", []byte("b"))
-	ws.Write(ctx, "keep.txt", []byte("keep"))
+	_ = ws.Write(ctx, "dir/a.txt", []byte("a"))
+	_ = ws.Write(ctx, "dir/sub/b.txt", []byte("b"))
+	_ = ws.Write(ctx, "keep.txt", []byte("keep"))
 
 	if err := ws.RemoveAll(ctx, "dir"); err != nil {
 		t.Fatal(err)
@@ -143,9 +143,9 @@ func TestWorkspace_List(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "a.txt", []byte("a"))
-	ws.Write(ctx, "b.txt", []byte("b"))
-	ws.Write(ctx, "sub/c.txt", []byte("c"))
+	_ = ws.Write(ctx, "a.txt", []byte("a"))
+	_ = ws.Write(ctx, "b.txt", []byte("b"))
+	_ = ws.Write(ctx, "sub/c.txt", []byte("c"))
 
 	entries, err := ws.List(ctx, ".")
 	if err != nil {
@@ -192,9 +192,9 @@ func TestWorkspace_ListSorted(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "z.txt", []byte("z"))
-	ws.Write(ctx, "a.txt", []byte("a"))
-	ws.Write(ctx, "m.txt", []byte("m"))
+	_ = ws.Write(ctx, "z.txt", []byte("z"))
+	_ = ws.Write(ctx, "a.txt", []byte("a"))
+	_ = ws.Write(ctx, "m.txt", []byte("m"))
 
 	entries, err := ws.List(ctx, ".")
 	if err != nil {
@@ -216,7 +216,7 @@ func TestWorkspace_ListDirEntryInfo(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "file.txt", []byte("12345"))
+	_ = ws.Write(ctx, "file.txt", []byte("12345"))
 	entries, _ := ws.List(ctx, ".")
 	if len(entries) != 1 {
 		t.Fatalf("expected 1, got %d", len(entries))
@@ -239,7 +239,7 @@ func TestWorkspace_Exists(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "yes.txt", []byte("y"))
+	_ = ws.Write(ctx, "yes.txt", []byte("y"))
 
 	exists, err := ws.Exists(ctx, "yes.txt")
 	if err != nil || !exists {
@@ -256,7 +256,7 @@ func TestWorkspace_ExistsImplicitDir(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "dir/file.txt", []byte("x"))
+	_ = ws.Write(ctx, "dir/file.txt", []byte("x"))
 
 	exists, err := ws.Exists(ctx, "dir")
 	if err != nil {
@@ -271,7 +271,7 @@ func TestWorkspace_Stat(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "data.bin", []byte("hello"))
+	_ = ws.Write(ctx, "data.bin", []byte("hello"))
 	info, err := ws.Stat(ctx, "data.bin")
 	if err != nil {
 		t.Fatal(err)
@@ -297,7 +297,7 @@ func TestWorkspace_StatImplicitDir(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "mydir/f.txt", []byte("x"))
+	_ = ws.Write(ctx, "mydir/f.txt", []byte("x"))
 	info, err := ws.Stat(ctx, "mydir")
 	if err != nil {
 		t.Fatal(err)
@@ -324,8 +324,8 @@ func TestWorkspace_AppendNative(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Append(ctx, "log.txt", []byte("line1\n"))
-	ws.Append(ctx, "log.txt", []byte("line2\n"))
+	_ = ws.Append(ctx, "log.txt", []byte("line1\n"))
+	_ = ws.Append(ctx, "log.txt", []byte("line2\n"))
 
 	data, _ := ws.Read(ctx, "log.txt")
 	if string(data) != "line1\nline2\n" {
@@ -338,8 +338,8 @@ func TestWorkspace_AppendFallback(t *testing.T) {
 	// Wrap in a non-Appender to force the read-modify-write fallback.
 	ws := NewWorkspace(&noAppendStore{store})
 
-	ws.Append(ctx, "log.txt", []byte("a"))
-	ws.Append(ctx, "log.txt", []byte("b"))
+	_ = ws.Append(ctx, "log.txt", []byte("a"))
+	_ = ws.Append(ctx, "log.txt", []byte("b"))
 
 	data, _ := ws.Read(ctx, "log.txt")
 	if string(data) != "ab" {
@@ -367,7 +367,7 @@ func TestWorkspace_WithPrefix(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store, WithPrefix("tenant-42"))
 
-	ws.Write(ctx, "config.json", []byte(`{"a":1}`))
+	_ = ws.Write(ctx, "config.json", []byte(`{"a":1}`))
 
 	// Verify the key in the underlying store has the prefix.
 	_, err := store.Head(ctx, "tenant-42/config.json")
@@ -390,8 +390,8 @@ func TestWorkspace_WithPrefixIsolation(t *testing.T) {
 	ws1 := NewWorkspace(store, WithPrefix("ns1"))
 	ws2 := NewWorkspace(store, WithPrefix("ns2"))
 
-	ws1.Write(ctx, "secret.txt", []byte("ns1-data"))
-	ws2.Write(ctx, "secret.txt", []byte("ns2-data"))
+	_ = ws1.Write(ctx, "secret.txt", []byte("ns1-data"))
+	_ = ws2.Write(ctx, "secret.txt", []byte("ns2-data"))
 
 	d1, _ := ws1.Read(ctx, "secret.txt")
 	d2, _ := ws2.Read(ctx, "secret.txt")
@@ -404,8 +404,8 @@ func TestWorkspace_WithPrefixList(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store, WithPrefix("app"))
 
-	ws.Write(ctx, "a.txt", []byte("a"))
-	ws.Write(ctx, "dir/b.txt", []byte("b"))
+	_ = ws.Write(ctx, "a.txt", []byte("a"))
+	_ = ws.Write(ctx, "dir/b.txt", []byte("b"))
 
 	entries, err := ws.List(ctx, ".")
 	if err != nil {
@@ -420,7 +420,7 @@ func TestWorkspace_NestedDirs(t *testing.T) {
 	store, ctx := newTestWS()
 	ws := NewWorkspace(store)
 
-	ws.Write(ctx, "a/b/c/d.txt", []byte("deep"))
+	_ = ws.Write(ctx, "a/b/c/d.txt", []byte("deep"))
 
 	entries, _ := ws.List(ctx, ".")
 	if len(entries) != 1 || entries[0].Name() != "a" || !entries[0].IsDir() {

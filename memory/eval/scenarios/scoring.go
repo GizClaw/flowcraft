@@ -94,11 +94,11 @@ func aggregateScores(scores []QuestionScore) ScoreAggregate {
 
 func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
 	type accumulator struct {
-		count                       int
-		em, f1, itemRecall, judge   float64
-		judgeCount                  int
-		kHitSum, kHitMessageSum     float64
-		kHitCount, kHitMessageCount int
+		count                     int
+		em, f1, itemRecall, judge float64
+		judgeCount                int
+		kHitSum                   float64
+		kHitCount                 int
 	}
 	groups := make(map[string]*accumulator)
 	for _, score := range scores {

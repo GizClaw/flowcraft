@@ -17,7 +17,7 @@ import (
 
 func TestConformanceGenerateUnary(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textEnvelope("ok"))
+		_, _ = fmt.Fprint(w, textEnvelope("ok"))
 	})
 
 	ops := server.bindOps(t, "qwen-plus")
@@ -48,7 +48,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
+		_, _ = fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
 			"role":    "assistant",
 			"content": "ok",
 		}, "stop", true)))

@@ -427,7 +427,7 @@ func TestClassifyError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 				w.WriteHeader(tc.status)
-				fmt.Fprintf(w, `{"error":{"message":"boom","type":"api_error","code":"x"}}`)
+				_, _ = fmt.Fprintf(w, `{"error":{"message":"boom","type":"api_error","code":"x"}}`)
 			})
 			defer server.Close()
 			cls := testClients(t, server)

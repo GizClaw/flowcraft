@@ -183,7 +183,7 @@ func convertCommand(_ context.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create output: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err := dataset.Write(file, ds); err != nil {
 		return fmt.Errorf("write output: %w", err)
 	}

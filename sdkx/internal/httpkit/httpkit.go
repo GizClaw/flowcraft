@@ -300,7 +300,7 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 		if response != nil && response.Body != nil {
 			// Drain so the pooled connection can be reused.
 			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
-			response.Body.Close()
+			_ = response.Body.Close()
 		}
 
 		delay := t.backoff(attempt, response)

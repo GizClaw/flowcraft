@@ -45,7 +45,7 @@ func writeReport(path string, report *Report) error {
 	if err != nil {
 		return fmt.Errorf("create report: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(report); err != nil {

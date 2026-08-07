@@ -266,8 +266,7 @@ func TestRuntime_CloseIdempotent(t *testing.T) {
 func TestRuntime_ExecAfterClose(t *testing.T) {
 	rt := New(WithPoolSize(1))
 	_, _ = rt.Exec(context.Background(), "warmup", `local x = 1`, nil)
-	rt.Close()
-
+	_ = rt.Close()
 	_, err := rt.Exec(context.Background(), "after-close", `local x = 1`, nil)
 	if err == nil {
 		t.Fatal("expected error from Exec after Close")
@@ -362,7 +361,7 @@ func TestPushGoValue_UintKeyMap(t *testing.T) {
 
 func TestRuntime_MaxExecTime_RuntimeEnforced(t *testing.T) {
 	rt := New(WithPoolSize(1), WithMaxExecTime(50*time.Millisecond))
-	defer rt.Close()
+	defer func() { _ = rt.Close() }()
 	start := time.Now()
 	_, err := rt.Exec(context.Background(), "loop", `while true do end`, nil)
 	elapsed := time.Since(start)
@@ -379,7 +378,7 @@ func TestRuntime_MaxExecTime_RuntimeEnforced(t *testing.T) {
 
 func TestRuntime_MaxExecTime_CallerCtxStillWins(t *testing.T) {
 	rt := New(WithPoolSize(1), WithMaxExecTime(10*time.Second))
-	defer rt.Close()
+	defer func() { _ = rt.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	start := time.Now()

@@ -100,6 +100,7 @@ func TestSystemClassifiesValidationErrors(t *testing.T) {
 	if err := system.CommitTurn(context.Background(), sdkmemory.Turn{}); !sdkmemory.IsKind(err, sdkmemory.KindInvalidRequest) {
 		t.Fatalf("CommitTurn error = %v", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := system.Context(nil, sdkmemory.ContextRequest{}); !sdkmemory.IsKind(err, sdkmemory.KindInvalidRequest) {
 		t.Fatalf("Context error = %v", err)
 	}

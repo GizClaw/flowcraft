@@ -55,7 +55,7 @@ func instrumentedGenerateDrivers(
 func TestConformanceGenerateUnary(t *testing.T) {
 	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			textOutputItem("ok"),
 		}))
 	})
@@ -88,7 +88,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "response.output_item.added", "output_index": 0,
 				"item": map[string]any{"type": "message"},

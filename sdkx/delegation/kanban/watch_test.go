@@ -82,7 +82,7 @@ func TestWatchClosesOnContextAndBoardClose(t *testing.T) {
 			watch := board.Watch(ctx, kanban.Filter{})
 			test.close(board, cancel)
 			defer cancel()
-			defer board.Close()
+			defer func() { _ = board.Close() }()
 			select {
 			case _, ok := <-watch:
 				if ok {

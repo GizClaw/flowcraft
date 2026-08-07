@@ -38,7 +38,7 @@ func get(t *testing.T, client *http.Client, url string) *http.Response {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	return response
 }
 
@@ -212,7 +212,7 @@ func TestHTTP2ClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.ProtoMajor != 2 {
 		t.Fatalf("proto = %s, want HTTP/2", response.Proto)
 	}
@@ -264,7 +264,7 @@ func TestHTTP3ClientRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	go func() { _ = server.ServeListener(listener) }()
-	defer server.Close()
+	defer func() { _ = server.Close() }()
 
 	leaf, err := x509.ParseCertificate(cert.Certificate[0])
 	if err != nil {
@@ -287,7 +287,7 @@ func TestHTTP3ClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.ProtoMajor != 3 {
 		t.Fatalf("proto = %s, want HTTP/3", response.Proto)
 	}
@@ -399,7 +399,7 @@ func TestUnreplayableBodyPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if calls.Load() != 1 {
 		t.Fatalf("calls = %d, want 1 (no replay possible)", calls.Load())
 	}

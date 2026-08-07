@@ -38,7 +38,7 @@ func TestImageCapturedWire(t *testing.T) {
 			"usage":   map[string]any{"generated_images": 1, "output_tokens": 42, "total_tokens": 42},
 		})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
@@ -120,7 +120,7 @@ func TestImageCountFanout(t *testing.T) {
 			"usage":   map[string]any{"generated_images": 1, "output_tokens": 10, "total_tokens": 10},
 		})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)

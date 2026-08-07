@@ -256,7 +256,7 @@ func transportTTS(
 		if err != nil {
 			return ttsRaw{}, classifyError(err)
 		}
-		defer body.Body.Close()
+		defer func() { _ = body.Body.Close() }()
 		data, err := io.ReadAll(body.Body)
 		if err != nil {
 			return ttsRaw{}, classifyError(err)

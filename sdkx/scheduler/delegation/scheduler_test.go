@@ -403,6 +403,7 @@ func TestValidationAndLifecycleIdempotence(t *testing.T) {
 		call func() error
 	}{
 		{"nil context", func() error {
+			//nolint:staticcheck // deliberate: nil Context must be rejected
 			_, err := delegationscheduler.New(nil, server, "delegation", delegationService)
 			return err
 		}},

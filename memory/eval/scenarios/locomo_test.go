@@ -46,18 +46,18 @@ func TestConvertLoCoMoRealShape(t *testing.T) {
 	if conversation.ID != "conv-26" || len(conversation.Turns) != 4 {
 		t.Fatalf("conversation = %#v", conversation)
 	}
-	if got := conversation.Turns[0].Message.Content.Text(); !strings.Contains(got, "[1:56 pm on 8 May, 2023] Caroline: Hello Mel!") {
+	if got := conversation.Turns[0].Content.Text(); !strings.Contains(got, "[1:56 pm on 8 May, 2023] Caroline: Hello Mel!") {
 		t.Fatalf("turn content = %q", got)
 	}
-	if conversation.Turns[1].Message.Role != message.RoleAssistant {
-		t.Fatalf("speaker_b role = %q", conversation.Turns[1].Message.Role)
+	if conversation.Turns[1].Role != message.RoleAssistant {
+		t.Fatalf("speaker_b role = %q", conversation.Turns[1].Role)
 	}
 	imageTurn := conversation.Turns[3]
-	if got := imageTurn.Message.Content.Text(); !strings.Contains(got, "[shared image: transgender pride flag mural]") {
+	if got := imageTurn.Content.Text(); !strings.Contains(got, "[shared image: transgender pride flag mural]") {
 		t.Fatalf("image annotation = %q", got)
 	}
 	var hasImage, hasData bool
-	for _, part := range imageTurn.Message.Content.Parts {
+	for _, part := range imageTurn.Content.Parts {
 		switch part.Kind() {
 		case message.PartImage:
 			hasImage = true
@@ -66,7 +66,7 @@ func TestConvertLoCoMoRealShape(t *testing.T) {
 		}
 	}
 	if !hasImage || !hasData {
-		t.Fatalf("image turn parts missing image/data: %#v", imageTurn.Message.Content.Parts)
+		t.Fatalf("image turn parts missing image/data: %#v", imageTurn.Content.Parts)
 	}
 	if len(converted.Questions) != 3 {
 		t.Fatalf("questions = %d, want 3 (null-answer row skipped)", len(converted.Questions))

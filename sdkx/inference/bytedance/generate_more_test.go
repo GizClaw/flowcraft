@@ -40,7 +40,7 @@ func toolCallOutputItem() map[string]any {
 func TestGenerateUnaryToolCalls(t *testing.T) {
 	server, _ := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			toolCallOutputItem(),
 		}))
 	})
@@ -89,7 +89,7 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 			t.Error("stream request did not carry stream: true")
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{"type": "response.output_item.added", "output_index": 0, "item": map[string]any{"type": "message"}},
 			map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "hel"},
 			map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "lo"},
@@ -124,7 +124,7 @@ func TestGenerateStreamCapturedWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var textDeltas int
 	var toolFragments []string
@@ -191,7 +191,7 @@ func TestGenerateErrorClassification(t *testing.T) {
 	server, _ := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"error":{"code":"rate_limit","message":"slow down","type":"rate_limit","request_id":"r1"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"code":"rate_limit","message":"slow down","type":"rate_limit","request_id":"r1"}}`)
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
@@ -230,7 +230,7 @@ func reasoningOutputItem(id string, summaries ...string) map[string]any {
 func TestGenerateUnaryReasoningItem(t *testing.T) {
 	server, _ := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			reasoningOutputItem("rs_1", "first thought", "second thought"),
 			textOutputItem("answer"),
 		}))
@@ -265,7 +265,7 @@ func TestGenerateUnaryReasoningItem(t *testing.T) {
 func TestGenerateStreamReasoning(t *testing.T) {
 	server, _ := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, sseBody(
+		_, _ = fmt.Fprint(w, sseBody(
 			map[string]any{
 				"type": "response.output_item.added", "output_index": 0,
 				"item": map[string]any{"type": "reasoning", "id": "rs_1"},

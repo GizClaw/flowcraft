@@ -51,11 +51,11 @@ func TestConvertLongMemEvalRealShape(t *testing.T) {
 	if len(first.Turns) != 3 {
 		t.Fatalf("first turns = %d", len(first.Turns))
 	}
-	if got := first.Turns[0].Message.Content.Text(); !strings.Contains(got, "[2023/04/10 (Mon) 14:47] user: early evidence turn") {
+	if got := first.Turns[0].Content.Text(); !strings.Contains(got, "[2023/04/10 (Mon) 14:47] user: early evidence turn") {
 		t.Fatalf("sessions not sorted chronologically: %q", got)
 	}
-	if first.Turns[1].Message.Role != message.RoleAssistant {
-		t.Fatalf("middle role = %q", first.Turns[1].Message.Role)
+	if first.Turns[1].Role != message.RoleAssistant {
+		t.Fatalf("middle role = %q", first.Turns[1].Role)
 	}
 	question := converted.Questions[0]
 	if question.AskedAt != "2023/04/10 (Mon) 23:07" {

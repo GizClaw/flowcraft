@@ -22,7 +22,7 @@ func rolesOf(batches [][]dataset.Turn) [][]string {
 	for _, batch := range batches {
 		var roles []string
 		for _, turn := range batch {
-			roles = append(roles, string(turn.Message.Role))
+			roles = append(roles, string(turn.Role))
 		}
 		result = append(result, roles)
 	}

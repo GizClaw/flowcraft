@@ -140,11 +140,9 @@ func lmeFlatten(instance lmeRawInstance, conversationID string) ([]dataset.Turn,
 			if role != "user" && role != "assistant" {
 				role = "user"
 			}
-			body := content
+			body := fmt.Sprintf("%s: %s", role, content)
 			if date != "" {
 				body = fmt.Sprintf("[%s] %s: %s", date, role, content)
-			} else {
-				body = fmt.Sprintf("%s: %s", role, content)
 			}
 			evidenceID := lmeTurnEvidenceID(conversationID, sessionID, turnIndex)
 			parts := []message.Part{

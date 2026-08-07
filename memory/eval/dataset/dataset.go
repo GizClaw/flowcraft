@@ -71,7 +71,7 @@ func Load(path string) (*Dataset, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open dataset: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	dataset, err := Decode(file)
 	if err != nil {
 		return nil, fmt.Errorf("load dataset %s: %w", path, err)

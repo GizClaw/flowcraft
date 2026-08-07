@@ -395,18 +395,6 @@ func (outbox *WorkspaceOutbox) eventsDir(id string) string {
 func encodeOutbox(value string) string {
 	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }
-func taskStatusOrder(value TaskStatus) int {
-	switch value {
-	case TaskLeased:
-		return 1
-	case TaskFailed:
-		return 2
-	case TaskCompleted:
-		return 3
-	default:
-		return 0
-	}
-}
 func leaseToken() (string, error) {
 	var value [16]byte
 	if _, err := rand.Read(value[:]); err != nil {

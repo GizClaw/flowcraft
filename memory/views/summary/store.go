@@ -69,11 +69,6 @@ type persistedRecord struct {
 	Record         Record `json:"record"`
 }
 
-type persistedManifest struct {
-	SchemaVersion int      `json:"schema_version"`
-	Manifest      Manifest `json:"manifest"`
-}
-
 // NewSummaryStore constructs a Log+KV backed summary view.
 func NewSummaryStore(log storage.Log, kv storage.Store, options ...Option) (*SummaryStore, error) {
 	if nilValue(log) || nilValue(kv) {

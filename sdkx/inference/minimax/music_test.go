@@ -37,7 +37,7 @@ func musicOKServer(t *testing.T, audio []byte) *messagesServer {
 			"data":      map[string]any{"audio": hex.EncodeToString(audio), "status": 2},
 			"base_resp": map[string]any{"status_code": 0, "status_msg": "success"},
 		})
-		w.Write(payload)
+		_, _ = w.Write(payload)
 	})
 }
 
@@ -131,7 +131,7 @@ func TestMusicRejectsVoice(t *testing.T) {
 
 	request := musicTestRequest("pop")
 	request.Input.Content.Intent.Audio.Voice = media.VoiceSpec{ID: "male-qn-qingse"}
-	rejectField(t, runtime, minimaxModel("music-3.0"), request,
+	_ = rejectField(t, runtime, minimaxModel("music-3.0"), request,
 		inference.UnsupportedFeature, inference.FieldGenerateIntentAudioVoiceID)
 	if server.requests() != 0 {
 		t.Fatalf("transport ran %d times", server.requests())
@@ -145,7 +145,7 @@ func TestMusicRejectsSpeedAndChannels(t *testing.T) {
 	speed := 1.5
 	request := musicTestRequest("pop")
 	request.Input.Content.Intent.Audio.Speed = &speed
-	rejectField(t, runtime, minimaxModel("music-3.0"), request,
+	_ = rejectField(t, runtime, minimaxModel("music-3.0"), request,
 		inference.UnsupportedFeature, inference.FieldGenerateIntentAudioSpeed)
 
 	request = musicTestRequest("pop")
@@ -154,7 +154,7 @@ func TestMusicRejectsSpeedAndChannels(t *testing.T) {
 		SampleRateHz: 44100,
 		Channels:     1,
 	}
-	rejectField(t, runtime, minimaxModel("music-3.0"), request,
+	_ = rejectField(t, runtime, minimaxModel("music-3.0"), request,
 		inference.UnsupportedFeature, inference.FieldGenerateIntentAudioFormatChannels)
 	if server.requests() != 0 {
 		t.Fatalf("transport ran %d times", server.requests())
@@ -172,7 +172,7 @@ func TestMusicRejectsForeignExtension(t *testing.T) {
 	request := musicTestRequest("pop")
 	request.Input.Content.Intent.Audio.Voice = media.VoiceSpec{ID: "male-qn-qingse"}
 	request.Extensions = inference.Extensions{MusicOptions{Lyrics: "la"}}
-	rejectField(t, runtime, minimaxModel("speech-2.8-hd"), request,
+	_ = rejectField(t, runtime, minimaxModel("speech-2.8-hd"), request,
 		inference.InvalidExtension, "")
 }
 
@@ -201,13 +201,13 @@ func TestMusicStream(t *testing.T) {
 				"data":      map[string]any{"audio": chunk, "status": 1},
 				"base_resp": map[string]any{"status_code": 0},
 			})
-			w.Write([]byte("data: " + string(payload) + "\n\n"))
+			_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
 		}
 		payload, _ := json.Marshal(map[string]any{
 			"data":      map[string]any{"audio": "", "status": 2},
 			"base_resp": map[string]any{"status_code": 0},
 		})
-		w.Write([]byte("data: " + string(payload) + "\n\n"))
+		_, _ = w.Write([]byte("data: " + string(payload) + "\n\n"))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -215,7 +215,7 @@ func TestMusicStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	var deltas int
 	finished := false
 	for {

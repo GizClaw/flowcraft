@@ -461,7 +461,7 @@ func (f *feishuApp) doJSON(ctx context.Context, method, path string, body []byte
 	if err != nil {
 		return err
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	responseBody, _ := io.ReadAll(io.LimitReader(response.Body, 32*1024))
 	if response.StatusCode/100 != 2 {
 		return fmt.Errorf("HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(responseBody)))

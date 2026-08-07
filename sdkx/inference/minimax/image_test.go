@@ -46,7 +46,7 @@ func imageEnvelope(data map[string]any) string {
 
 func TestImageUnaryCapturedWire(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, imageEnvelope(map[string]any{
+		_, _ = fmt.Fprint(w, imageEnvelope(map[string]any{
 			"image_urls": []string{
 				"https://example.com/out-1.jpg",
 				"https://example.com/out-2.jpg",
@@ -139,7 +139,7 @@ func TestImageUnaryCapturedWire(t *testing.T) {
 func TestImageInlineDelivery(t *testing.T) {
 	jpegBytes := []byte{0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4}
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, imageEnvelope(map[string]any{
+		_, _ = fmt.Fprint(w, imageEnvelope(map[string]any{
 			"image_base64": []string{base64.StdEncoding.EncodeToString(jpegBytes)},
 		}))
 	})

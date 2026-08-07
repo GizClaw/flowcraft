@@ -75,7 +75,7 @@ func ttsStreamChunk(status int, audio string) map[string]any {
 
 func TestTTSUnaryCapturedWire(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, ttsUnaryBody("spoken-audio"))
+		_, _ = fmt.Fprint(w, ttsUnaryBody("spoken-audio"))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -244,7 +244,7 @@ func TestTTSBaseRespClassification(t *testing.T) {
 					"data":      map[string]any{"audio": ""},
 					"base_resp": map[string]any{"status_code": tc.code, "status_msg": "boom"},
 				})
-				fmt.Fprint(w, string(payload))
+				_, _ = fmt.Fprint(w, string(payload))
 			})
 			runtime := newTestRuntime(t, server)
 			_, err := runtime.Generate(
@@ -268,7 +268,7 @@ func TestTTSBaseRespClassification(t *testing.T) {
 func TestTTSStreamDeltas(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, ttsSSEBody(
+		_, _ = fmt.Fprint(w, ttsSSEBody(
 			ttsStreamChunk(1, "chunk-1"),
 			ttsStreamChunk(1, "chunk-2"),
 			ttsStreamChunk(2, ""),
@@ -287,7 +287,7 @@ func TestTTSStreamDeltas(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	var deltas int
 	var sawFinish bool
@@ -346,7 +346,7 @@ func TestTTSStreamDeltas(t *testing.T) {
 func TestTTSStreamBaseRespError(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, ttsSSEBody(map[string]any{
+		_, _ = fmt.Fprint(w, ttsSSEBody(map[string]any{
 			"data":      map[string]any{"audio": "", "status": 1},
 			"base_resp": map[string]any{"status_code": statusRateLimited, "status_msg": "slow down"},
 		}))
@@ -361,7 +361,7 @@ func TestTTSStreamBaseRespError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateStream: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 
 	_, err = stream.Next(context.Background())
 	if err == nil || err == io.EOF {

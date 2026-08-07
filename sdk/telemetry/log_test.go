@@ -165,6 +165,7 @@ func TestWithLogServiceVersion(t *testing.T) {
 }
 
 func TestInitLog_NilContext(t *testing.T) {
+	//nolint:staticcheck // deliberate: verify nil Context is accepted
 	shutdown, err := InitLog(nil)
 	if err != nil {
 		t.Fatalf("InitLog error: %v", err)

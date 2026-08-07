@@ -31,7 +31,7 @@ func TestAssemblyRunOnceDerivesAndRetrieves(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 
 	var _ sdkmemory.ContextProvider = assembly.System
 	var _ sdkmemory.TurnSink = assembly.System
@@ -99,7 +99,7 @@ func TestAssemblyExposesLaneSearchBackends(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if len(assembly.LaneBackends) != 3 {
 		t.Fatalf("lane backends = %d, want 3", len(assembly.LaneBackends))
 	}
@@ -145,7 +145,7 @@ func TestAssemblyLinksFactsAcrossTwoWorkerCommitsThroughSharedVectorIndex(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	store := newFactStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
@@ -198,7 +198,7 @@ func TestAssemblyPreservesExactMergeLinksBeforeProjectionExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	for _, key := range []string{"first", "second"} {
 		if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
 			Scope: scope, ConversationID: "conversation", IdempotencyKey: key,
@@ -243,7 +243,7 @@ func TestSummaryTypedDisable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
 		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "disable summary")},
@@ -280,7 +280,7 @@ func TestAssemblyLifecycleDisabledContextDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "run-1",
 		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "alpha preference")},
@@ -575,7 +575,7 @@ func TestAssemblyResolvesDeclarativeSearchLanes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if len(assembly.LaneBackends) != 1 {
 		t.Fatalf("lane backends = %d, want 1", len(assembly.LaneBackends))
 	}
@@ -623,7 +623,7 @@ func TestAssemblyUsesInjectedSearchBackendsAndRejectsConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if len(assembly.LaneBackends) != 1 {
 		t.Fatalf("injected lane backends = %d, want 1", len(assembly.LaneBackends))
 	}
@@ -635,7 +635,7 @@ func TestAssemblyUsesInjectedSearchBackendsAndRejectsConflict(t *testing.T) {
 		}}},
 	})
 	if err == nil {
-		conflict.Close()
+		_ = conflict.Close()
 		t.Fatal("injected search backends plus declarative lanes accepted")
 	}
 	if !errdefs.IsValidation(err) {

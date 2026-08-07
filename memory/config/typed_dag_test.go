@@ -28,7 +28,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	if first.PolicyDigest == "" {
 		t.Fatal("empty automatic policy digest")
 	}
@@ -43,7 +43,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 	if first.PolicyDigest != second.PolicyDigest {
 		t.Fatalf("same normalized settings changed digest: %q != %q", first.PolicyDigest, second.PolicyDigest)
 	}
@@ -52,7 +52,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer third.Close()
+	defer func() { _ = third.Close() }()
 	if first.PolicyDigest != third.PolicyDigest {
 		t.Fatal("runtime poll interval changed semantic policy digest")
 	}
@@ -61,7 +61,7 @@ func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fourth.Close()
+	defer func() { _ = fourth.Close() }()
 	if first.PolicyDigest == fourth.PolicyDigest {
 		t.Fatal("semantic chunk configuration did not change digest")
 	}
@@ -156,7 +156,7 @@ func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if got := assembly.ChatDAG.TopologicalOrder(); len(got) != 1 || got[0] != "custom" {
 		t.Fatalf("custom order = %v", got)
 	}
@@ -221,7 +221,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer assembly.Close()
+	defer func() { _ = assembly.Close() }()
 	if assembly.LifecycleDAG == nil || assembly.LifecycleRunner == nil {
 		t.Fatal("lifecycle DAG was not wired into the runner")
 	}

@@ -172,7 +172,7 @@ func TestGenerateEndToEnd(t *testing.T) {
 			t.Errorf("request model = %v", body["model"])
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{
+		_, _ = fmt.Fprint(w, `{
 			"id": "resp_1", "object": "response", "status": "completed",
 			"output": [{"type": "message", "role": "assistant",
 				"content": [{"type": "output_text", "text": "ok"}]}],

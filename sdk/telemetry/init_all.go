@@ -49,13 +49,13 @@ func InitAll(ctx context.Context, opts ...Option) (shutdown func(context.Context
 	}
 	meterShutdown, err := InitMeter(ctx, cfg.meter...)
 	if err != nil {
-		traceShutdown(ctx)
+		_ = traceShutdown(ctx)
 		return nil, fmt.Errorf("init meter: %w", err)
 	}
 	logShutdown, err := InitLog(ctx, cfg.log...)
 	if err != nil {
-		meterShutdown(ctx)
-		traceShutdown(ctx)
+		_ = meterShutdown(ctx)
+		_ = traceShutdown(ctx)
 		return nil, fmt.Errorf("init log: %w", err)
 	}
 	shutdown = func(ctx context.Context) error {

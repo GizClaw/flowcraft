@@ -19,7 +19,7 @@ import (
 
 func TestConformanceGenerateUnary(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, messageJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, messageJSON([]map[string]any{
 			{"type": "text", "text": "ok"},
 		}))
 	})
@@ -56,7 +56,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server := newMessagesServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, textStreamBody("ok"))
+		_, _ = fmt.Fprint(w, textStreamBody("ok"))
 	})
 
 	ops, err := openGenerate(server.clients(t), catalog["MiniMax-M3"],

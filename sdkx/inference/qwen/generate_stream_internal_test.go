@@ -10,8 +10,8 @@ import (
 
 func TestSSEStreamNextHonorsCancelledContext(t *testing.T) {
 	pr, pw := io.Pipe()
-	defer pw.Close()
-	defer pr.Close()
+	defer func() { _ = pw.Close() }()
+	defer func() { _ = pr.Close() }()
 
 	s := &sseStream{body: pr, scanner: bufio.NewScanner(pr)}
 	ctx, cancel := context.WithCancel(context.Background())

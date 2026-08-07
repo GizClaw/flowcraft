@@ -30,7 +30,7 @@ func TestRegistryResolveSearchLanes(t *testing.T) {
 		t.Fatal("duplicate search driver accepted")
 	}
 	lane := &fakeSearcher{}
-	backends, err := registry.ResolveSearchLanes(SearchSettings{
+	_, err = registry.ResolveSearchLanes(SearchSettings{
 		Lanes: map[string]BackendSettings{
 			"vector": {Driver: "lsm"},
 			"bm25":   {Driver: "missing"},
@@ -39,7 +39,7 @@ func TestRegistryResolveSearchLanes(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown search driver accepted")
 	}
-	backends, err = registry.ResolveSearchLanes(SearchSettings{
+	backends, err := registry.ResolveSearchLanes(SearchSettings{
 		Lanes: map[string]BackendSettings{
 			"vector": {Driver: "lsm"},
 		},

@@ -202,10 +202,10 @@ func TestBindDecoratesHostsAndBindsOnlyOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer prepared.Close()
+	defer func() { _ = prepared.Close() }()
 
 	bus := event.NewMemoryBus()
-	defer bus.Close()
+	defer func() { _ = bus.Close() }()
 	var workerRequest session.HostRequest
 	base := session.HostFactoryFunc(func(_ context.Context, request session.HostRequest) (agent.Host, error) {
 		workerRequest = request

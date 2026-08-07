@@ -108,7 +108,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 		}
 		return nil, fmt.Errorf("s3: get %q: %w", key, err)
 	}
-	defer out.Body.Close()
+	defer func() { _ = out.Body.Close() }()
 	return io.ReadAll(out.Body)
 }
 

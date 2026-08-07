@@ -205,7 +205,7 @@ func TestSessionStartOverridesIdentityAndAttachesBeforeExecute(t *testing.T) {
 		_ = bus.Close()
 	})
 	lease, _ := manager.Open(context.Background(), Key{AgentID: "agent-a", ContextID: "ctx"})
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	turn, err := lease.Session().Start(context.Background(), agent.Request{
 		ContextID: "caller-context",
@@ -472,7 +472,7 @@ func TestAuthoritativeAckCommitsOnlyFrozenPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	deliveries := make(chan DeliveryCursor, 2)
 	turn, err := lease.Session().Start(
@@ -581,7 +581,7 @@ func TestSessionAuthoritySurvivesReviseAttempts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	var (
 		mu      sync.Mutex
@@ -705,7 +705,7 @@ func TestSessionInterruptedReviseCommitsOnlySecondAttemptPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	releaseOld := make(chan struct{})
 	secondCursor := make(chan DeliveryCursor, 1)
@@ -801,7 +801,7 @@ func TestSessionRunEndPublishFailureDoesNotEmitLogicalSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lease.Close()
+	defer func() { _ = lease.Close() }()
 
 	var (
 		mu       sync.Mutex
@@ -879,7 +879,7 @@ func TestTurnConcurrentPromptsReplyOutOfOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 	go func() {
 		for env := range sub.C() {
 			var requested PromptRequested

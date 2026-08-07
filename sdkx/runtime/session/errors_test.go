@@ -27,15 +27,19 @@ func TestSessionErrorsRemainDistinctWhenWrapped(t *testing.T) {
 
 func TestPublicBoundaryErrorsCarryClassifications(t *testing.T) {
 	turn := &Turn{done: make(chan struct{})}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := turn.Wait(nil); !errdefs.IsValidation(err) {
 		t.Fatalf("Wait(nil) error = %v, want validation", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if err := turn.Reply(nil, "prompt", agent.UserReply{}); !errdefs.IsValidation(err) {
 		t.Fatalf("Reply(nil) error = %v, want validation", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := turn.askUser(nil, agent.UserPrompt{}); !errdefs.IsValidation(err) {
 		t.Fatalf("askUser(nil) error = %v, want validation", err)
 	}
+	//nolint:staticcheck // deliberate: nil Context must be rejected
 	if _, err := (&Session{}).Start(nil, agent.Request{}); !errdefs.IsValidation(err) {
 		t.Fatalf("Start(nil) error = %v, want validation", err)
 	}

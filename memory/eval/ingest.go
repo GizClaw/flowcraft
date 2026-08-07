@@ -71,7 +71,7 @@ func ingestConversation(
 				}
 				seqByEvidence[conversation.ID][turn.EvidenceID] = seq
 			}
-			messages = append(messages, turn.Message.Clone())
+			messages = append(messages, turn.Clone())
 		}
 		if len(messages) == 0 {
 			continue
@@ -106,7 +106,7 @@ func batchTurns(turns []dataset.Turn, granularity commitGranularity) [][]dataset
 		}
 	}
 	for _, turn := range turns {
-		content := strings.TrimSpace(turn.Message.Content.Text())
+		content := strings.TrimSpace(turn.Content.Text())
 		if content == "" {
 			continue
 		}
@@ -118,17 +118,17 @@ func batchTurns(turns []dataset.Turn, granularity commitGranularity) [][]dataset
 			flush()
 		}
 		if granularity == granularityExchange &&
-			turn.Message.Role == message.RoleUser && lastRole == message.RoleAssistant {
+			turn.Role == message.RoleUser && lastRole == message.RoleAssistant {
 			flush()
 		}
 		nextRunes := utf8.RuneCountInString(content)
 		if len(current) > 0 && runes+nextRunes > maxBatchRunes {
 			flush()
 		}
-		turn.Message.Content = message.Content{Parts: append([]message.Part(nil), turn.Message.Content.Parts...)}
+		turn.Content = message.Content{Parts: append([]message.Part(nil), turn.Content.Parts...)}
 		current = append(current, turn)
 		runes += nextRunes
-		lastRole = turn.Message.Role
+		lastRole = turn.Role
 		if turn.SessionID != "" {
 			currentSession = turn.SessionID
 		}

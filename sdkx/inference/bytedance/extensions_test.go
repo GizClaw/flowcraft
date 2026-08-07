@@ -19,7 +19,7 @@ import (
 func TestGenerateExtensionsCapturedWire(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			textOutputItem("done"),
 		}))
 	})
@@ -105,7 +105,7 @@ func TestGenerateExtensionsCapturedWire(t *testing.T) {
 func TestGenerateThinkingSwitch(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			textOutputItem("done"),
 		}))
 	})
@@ -160,7 +160,7 @@ func TestImageExtensionsCapturedWire(t *testing.T) {
 			"usage": map[string]any{"generated_images": 2, "output_tokens": 84, "total_tokens": 84},
 		})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
@@ -303,8 +303,8 @@ func TestImageExtensionConflicts(t *testing.T) {
 func TestTTSExtensionsCapturedWire(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, ttsChunkLine(0, []byte{1, 2, 3}))
-		fmt.Fprint(w, ttsChunkLine(ttsV2CodeStreamDone, nil))
+		_, _ = fmt.Fprint(w, ttsChunkLine(0, []byte{1, 2, 3}))
+		_, _ = fmt.Fprint(w, ttsChunkLine(ttsV2CodeStreamDone, nil))
 	})
 	defer server.Close()
 	runtime := newSpeechRuntime(t, server)
@@ -473,7 +473,7 @@ func (e foreignProviderExtension) Clone() inference.Extension {
 func TestForeignProviderExtensionIsInertOnBytedanceAttempts(t *testing.T) {
 	server, capture := newCapturedArk(t, func(w http.ResponseWriter, _ map[string]any, _ bool) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
 			textOutputItem("ok"),
 		}))
 	})

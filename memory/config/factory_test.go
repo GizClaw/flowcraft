@@ -65,7 +65,7 @@ func TestFactoryBuildsAssemblyFromDeps(t *testing.T) {
 	if !ok {
 		t.Fatalf("New returned %T, want *Assembly", assembly)
 	}
-	defer built.Close()
+	defer func() { _ = built.Close() }()
 	if built.System == nil {
 		t.Fatal("assembly has no system")
 	}

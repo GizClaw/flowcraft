@@ -18,7 +18,7 @@ import (
 
 func TestConformanceGenerateUnary(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textCompletion("ok"))
+		_, _ = fmt.Fprint(w, textCompletion("ok"))
 	})
 
 	ops := server.bindOps(t, "moonshot-v1-8k")
@@ -49,7 +49,7 @@ func TestConformanceGenerateUnary(t *testing.T) {
 func TestConformanceGenerateStream(t *testing.T) {
 	server := newKimiServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, chunkBody(streamChunk(map[string]any{
+		_, _ = fmt.Fprint(w, chunkBody(streamChunk(map[string]any{
 			"role":    "assistant",
 			"content": "ok",
 		}, "stop", true)))

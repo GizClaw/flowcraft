@@ -24,7 +24,7 @@ import (
 // text-generation path.
 func TestUnaryTextOnWire(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textEnvelope("ok"))
+		_, _ = fmt.Fprint(w, textEnvelope("ok"))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -76,7 +76,7 @@ func TestUnaryTextOnWire(t *testing.T) {
 func TestMultimodalEndpointSelection(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		// Multimodal models answer content as an array of text items.
-		fmt.Fprint(w, dashEnvelope(map[string]any{
+		_, _ = fmt.Fprint(w, dashEnvelope(map[string]any{
 			"role": "assistant",
 			"content": []any{map[string]any{
 				"text": "a dog and a girl",
@@ -132,7 +132,7 @@ func TestMultimodalEndpointSelection(t *testing.T) {
 // temperature, top_p, and the json_object response format.
 func TestSamplingOnWire(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textEnvelope("{}"))
+		_, _ = fmt.Fprint(w, textEnvelope("{}"))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -170,7 +170,7 @@ func TestSamplingOnWire(t *testing.T) {
 // ToolCallPart.
 func TestToolsOnWire(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, dashEnvelope(map[string]any{
+		_, _ = fmt.Fprint(w, dashEnvelope(map[string]any{
 			"role":    "assistant",
 			"content": "",
 			"tool_calls": []any{map[string]any{
@@ -233,7 +233,7 @@ func TestToolsOnWire(t *testing.T) {
 // messages carrying the call id.
 func TestToolResultRoundTrip(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textEnvelope("sunny"))
+		_, _ = fmt.Fprint(w, textEnvelope("sunny"))
 	})
 	runtime := newTestRuntime(t, server)
 
@@ -280,7 +280,7 @@ func TestToolResultRoundTrip(t *testing.T) {
 func TestThinkingStreamOnly(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(
+		_, _ = fmt.Fprint(w, dashSSEBody(
 			streamChunk(map[string]any{
 				"role":              "assistant",
 				"reasoning_content": "thinking",
@@ -346,7 +346,7 @@ func TestThinkingStreamOnly(t *testing.T) {
 func TestReasoningEffortDialect(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
+		_, _ = fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
 			"role":    "assistant",
 			"content": "ok",
 		}, "stop", true)))
@@ -408,7 +408,7 @@ func TestReasoningRoundTrip(t *testing.T) {
 
 	streamServer := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
+		_, _ = fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
 			"role":    "assistant",
 			"content": "ok",
 		}, "stop", true)))
@@ -438,7 +438,7 @@ func TestReasoningRoundTrip(t *testing.T) {
 
 	// qwen-plus cannot re-ingest traces: the reasoning part drops.
 	unaryServer := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, textEnvelope("ok"))
+		_, _ = fmt.Fprint(w, textEnvelope("ok"))
 	})
 	unaryRuntime := newTestRuntime(t, unaryServer)
 	if _, err := unaryRuntime.Generate(context.Background(), qwenModel("qwen-plus"), request()); err != nil {
@@ -460,7 +460,7 @@ func TestReasoningRoundTrip(t *testing.T) {
 func TestGenerateOptionsExtension(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
+		_, _ = fmt.Fprint(w, dashSSEBody(streamChunk(map[string]any{
 			"role":    "assistant",
 			"content": "ok",
 		}, "stop", true)))
@@ -636,7 +636,7 @@ func TestCompileRejections(t *testing.T) {
 func TestStreamToolCalls(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(
+		_, _ = fmt.Fprint(w, dashSSEBody(
 			streamChunk(map[string]any{
 				"role":    "assistant",
 				"content": "",
@@ -735,7 +735,7 @@ func TestErrorClassification(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 				w.WriteHeader(tc.status)
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			})
 			runtime := newTestRuntime(t, server)
 			_, err := runtime.Generate(context.Background(), qwenModel("qwen-plus"), simpleTextRequest("hi"))
@@ -750,7 +750,7 @@ func TestErrorClassification(t *testing.T) {
 // classifies as a provider failure.
 func TestEnvelopeErrorOn200(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
-		fmt.Fprint(w, `{"status_code":200,"code":"Throttling.RateQuota","message":"slow down"}`)
+		_, _ = fmt.Fprint(w, `{"status_code":200,"code":"Throttling.RateQuota","message":"slow down"}`)
 	})
 	runtime := newTestRuntime(t, server)
 	_, err := runtime.Generate(context.Background(), qwenModel("qwen-plus"), simpleTextRequest("hi"))
@@ -764,7 +764,7 @@ func TestEnvelopeErrorOn200(t *testing.T) {
 func TestStreamEnvelopeError(t *testing.T) {
 	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, dashSSEBody(
+		_, _ = fmt.Fprint(w, dashSSEBody(
 			streamChunk(map[string]any{
 				"role":    "assistant",
 				"content": "partial",

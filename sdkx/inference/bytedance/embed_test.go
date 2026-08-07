@@ -38,7 +38,7 @@ func TestEmbedTextCapturedWire(t *testing.T) {
 			"usage":  map[string]any{"prompt_tokens": 9, "total_tokens": 9},
 		})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
@@ -91,7 +91,7 @@ func TestEmbedMultimodalPerItemCalls(t *testing.T) {
 			"usage": map[string]any{"prompt_tokens": 4, "total_tokens": 4},
 		})
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, string(payload))
+		_, _ = fmt.Fprint(w, string(payload))
 	})
 	defer server.Close()
 	runtime := newTestRuntime(t, server)
