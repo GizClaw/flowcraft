@@ -68,10 +68,10 @@ func newProfileMaterial(profile config.ResolvedProfile) (profileMaterial, error)
 
 func (m profileMaterial) newClient(spec Spec) *dashClient {
 	return &dashClient{
-		http: &http.Client{
-			Transport: httpkit.NewRetryTransport(nil, httpkit.DefaultRetry),
-			Timeout:   10 * time.Minute,
-		},
+		http: httpkit.NewClient(
+			httpkit.WithTimeout(10*time.Minute),
+			httpkit.WithResponseHeaderTimeout(5*time.Minute),
+		),
 		key:  m.apiKey,
 		base: spec.apiBase(),
 	}
