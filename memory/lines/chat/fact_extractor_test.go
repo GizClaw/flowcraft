@@ -97,6 +97,40 @@ func TestFactExtractorConstructorValidation(t *testing.T) {
 	}
 }
 
+func TestDecodeFactsLooseShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want int
+	}{
+		{name: "facts array", data: `{"facts":[{"text":"a"}]}`, want: 1},
+		{name: "singular fact object", data: `{"fact":{"text":"a"}}`, want: 1},
+		{name: "singular fact array", data: `{"fact":[{"text":"a"},{"text":"b"}]}`, want: 2},
+		{name: "result array", data: `{"result":[{"text":"a"}]}`, want: 1},
+		{name: "empty facts array", data: `{"facts":[]}`, want: 0},
+		{name: "facts as JSON string", data: `{"facts":"[{\"text\":\"a\"},{\"text\":\"b\"}]"}`, want: 2},
+		{name: "top-level array", data: `[{"text":"a"}]`, want: 1},
+		{name: "no facts", data: `{"foo":1}`, want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			batch, err := decodeFacts([]byte(test.data), false)
+			if err != nil {
+				if test.want == 0 && !strings.Contains(err.Error(), "no facts array") {
+					t.Fatalf("decodeFacts(%s) unexpected error: %v", test.data, err)
+				}
+				if test.want > 0 {
+					t.Fatalf("decodeFacts(%s) error: %v", test.data, err)
+				}
+				return
+			}
+			if len(batch.Facts) != test.want {
+				t.Fatalf("decodeFacts(%s) = %#v, %v; want %d facts", test.data, batch, err, test.want)
+			}
+		})
+	}
+}
+
 func rawMessageArtifact() component.Artifact {
 	return component.Artifact{
 		Kind: KindRawMessage, ID: "message",

@@ -86,6 +86,18 @@ func (runner *Runner) RunOnce(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+// ProcessScope runs derivation for exactly one hard scope without scanning
+// every catalog scope. It is safe to call before or instead of RunOnce.
+func (runner *Runner) ProcessScope(ctx context.Context, scope sdkmemory.Scope) error {
+	if runner == nil || runner.processor == nil {
+		return errors.New("memory worker runner: runner is incomplete")
+	}
+	if err := scope.Validate(); err != nil {
+		return err
+	}
+	return runner.processor.ProcessScope(ctx, scope)
+}
+
 // Start begins a loop whose first scan runs immediately.
 func (runner *Runner) Start(ctx context.Context) error {
 	if runner == nil {

@@ -484,14 +484,21 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	if summaries != nil {
 		summarySearcher = &summaryview.Searcher{Store: summaries}
 	}
-	provider, err := retrieval.NewProviderWithConfig(retrieval.ProviderConfig{
+	providerConfig := retrieval.ProviderConfig{
 		Fusion: fusor, Messages: messages, Hydrator: &hydrate.Composite{
 			Messages: messages, Facts: facts, Chunks: chunks, Summaries: summaries,
 		}, Summary: summarySearcher, Packer: packer, ExpandParents: true,
-		Recent:       retrieval.RecentConfig{MaxItems: settings.Recent.MaxItems, MaxTokens: settings.Recent.MaxTokens},
-		Reranker:     retrieval.RerankerConfig{Enabled: settings.Reranker.Enabled, Value: settings.Reranker.Value},
-		RecallEvents: lifecycleEvents, Visibility: lifecycleEvents,
-	})
+		Recent:   retrieval.RecentConfig{MaxItems: settings.Recent.MaxItems, MaxTokens: settings.Recent.MaxTokens},
+		Reranker: retrieval.RerankerConfig{Enabled: settings.Reranker.Enabled, Value: settings.Reranker.Value},
+	}
+	// A disabled lifecycle leaves lifecycleEvents as a typed nil pointer;
+	// assigning it to the Visibility/RecallEvents interfaces would produce
+	// non-nil interfaces that panic on call.
+	if lifecycleEvents != nil {
+		providerConfig.RecallEvents = lifecycleEvents
+		providerConfig.Visibility = lifecycleEvents
+	}
+	provider, err := retrieval.NewProviderWithConfig(providerConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -230,6 +230,44 @@ func TestSummaryTypedDisable(t *testing.T) {
 	}
 }
 
+func TestAssemblyLifecycleDisabledContextDoesNotPanic(t *testing.T) {
+	runtime, generate, embed := testRuntime(t)
+	builder, err := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
+	assembly, err := builder.NewAssembly(context.Background(), Settings{
+		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Scopes:    []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
+		Interval:  Duration(time.Hour),
+		Lifecycle: LifecycleSettings{Disabled: true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assembly.Close()
+	if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "run-1",
+		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "alpha preference")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assembly.Runner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := assembly.System.Context(context.Background(), sdkmemory.ContextRequest{
+		Scope: scope, ConversationID: "conversation",
+		Query: "alpha", Budget: sdkmemory.Budget{MaxItems: 10, MaxTokens: 1000},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) == 0 {
+		t.Fatal("context returned no items")
+	}
+}
+
 func TestSettingsRejectInvalidLaneCalibration(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
 	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
