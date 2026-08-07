@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 	"time"
 
@@ -188,6 +189,49 @@ func (t callTelemetry) recordUsage(ctx context.Context, usage Usage) {
 		inferenceCachedTokens.Add(ctx, *usage.Input.CacheReadTokens, t.metricAttrs())
 		t.span.SetAttributes(
 			attribute.Int64(telemetry.AttrLLMCachedInputTokens, *usage.Input.CacheReadTokens))
+	}
+	if usage.LatencyMs > 0 {
+		t.span.SetAttributes(attribute.Int64(telemetry.AttrLLMLatencyMs, usage.LatencyMs))
+	}
+	if costMicros, ok := billingCostMicros(usage.Billing); ok {
+		t.span.SetAttributes(attribute.Int64(telemetry.AttrLLMCostMicros, costMicros))
+	}
+}
+
+// pow10 gives exact 10^n for n in [0, 18], matching Money.Scale's
+// validated range.
+var pow10 = [19]int64{
+	1, 10, 100, 1000, 10000, 100000, 1000000,
+	10000000, 100000000, 1000000000, 10000000000,
+	100000000000, 1000000000000, 10000000000000,
+	100000000000000, 1000000000000000, 10000000000000000,
+	100000000000000000, 1000000000000000000,
+}
+
+// billingCostMicros converts a provider-reported cost into micro-units
+// of its currency (Money.Units / 10^Scale, e.g. micro-USD when the
+// scale is 6), matching AttrLLMCostMicros. It reports ok=false when
+// there is no cost, when converting to micros would overflow, or when
+// a sub-micro remainder floors to zero.
+func billingCostMicros(b *BillingUsage) (int64, bool) {
+	if b == nil || b.Cost == nil || b.Cost.Units == 0 {
+		return 0, false
+	}
+	m := *b.Cost
+	switch {
+	case m.Scale > 18:
+		return 0, false
+	case m.Scale == 6:
+		return m.Units, true
+	case m.Scale < 6:
+		factor := pow10[6-m.Scale]
+		if m.Units > math.MaxInt64/factor {
+			return 0, false
+		}
+		return m.Units * factor, true
+	default:
+		micros := m.Units / pow10[m.Scale-6]
+		return micros, micros > 0
 	}
 }
 

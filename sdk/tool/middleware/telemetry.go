@@ -34,7 +34,9 @@ func Telemetry() tool.Middleware {
 		return func(ctx context.Context, call message.Call) message.Result {
 			ctx, span := telemetry.Tracer().Start(ctx,
 				fmt.Sprintf("tool.%s.execute", call.Name),
-				trace.WithAttributes(attribute.String(telemetry.AttrToolName, call.Name)))
+				trace.WithAttributes(
+					attribute.String(telemetry.AttrToolName, call.Name),
+					attribute.String(telemetry.AttrToolCallID, call.ID)))
 			defer span.End()
 
 			nameAttr := metric.WithAttributes(
@@ -55,6 +57,7 @@ func Telemetry() tool.Middleware {
 				toolErrorCount.Add(ctx, 1, nameAttr)
 				telemetry.Warn(ctx, "tool execution failed",
 					otellog.String(telemetry.AttrToolName, call.Name),
+					otellog.String(telemetry.AttrToolCallID, call.ID),
 					otellog.String(telemetry.AttrErrorMessage, res.Content))
 				return res
 			}

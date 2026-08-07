@@ -52,15 +52,18 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 	}
 	retBoard = board
 
+	spanAttrs := []attribute.KeyValue{
+		attribute.String(telemetry.AttrGraphName, g.name),
+		attribute.String(telemetry.AttrRunID, run.RunID),
+		attribute.String(telemetry.AttrAgentID, run.AgentID),
+	}
+	spanAttrs = append(spanAttrs, runScopeAttrs(run)...)
 	ctx, span := telemetry.Tracer().Start(ctx, "graph.execute",
-		trace.WithAttributes(
-			attribute.String(telemetry.AttrGraphName, g.name),
-			attribute.String(telemetry.AttrRunID, run.RunID),
-			attribute.String(telemetry.AttrAgentID, run.AgentID),
-		))
+		trace.WithAttributes(spanAttrs...))
 	graphStart := time.Now()
 	defer func() {
 		status := execStatus(runErr)
+		span.SetAttributes(attribute.String(telemetry.AttrRunStatus, runStatusValue(status)))
 		if runErr != nil && !isInterruptedErr(runErr) {
 			span.RecordError(runErr)
 			span.SetStatus(codes.Error, runErr.Error())
@@ -94,9 +97,12 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		}
 	}()
 
-	telemetry.Info(ctx, "graph execution started",
+	startLogAttrs := []otellog.KeyValue{
 		otellog.String(telemetry.AttrGraphName, g.name),
-		otellog.String(telemetry.AttrRunID, run.RunID))
+		otellog.String(telemetry.AttrRunID, run.RunID),
+	}
+	startLogAttrs = append(startLogAttrs, runScopeLogAttrs(run)...)
+	telemetry.Info(ctx, "graph execution started", startLogAttrs...)
 
 	// originalStartedAt persists "when did the user-visible run begin"
 	// across resume boundaries; checkpoints thread it through.
@@ -151,10 +157,13 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 				g.name, g.maxIterations)
 		}
 		if err := g.executeWave(ctx, run, host, board, wave, iterations); err != nil {
-			telemetry.Error(ctx, "graph execution failed",
+			errorLogAttrs := []otellog.KeyValue{
 				otellog.String(telemetry.AttrGraphName, g.name),
 				otellog.String(telemetry.AttrRunID, run.RunID),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+				otellog.String(telemetry.AttrErrorMessage, err.Error()),
+			}
+			errorLogAttrs = append(errorLogAttrs, runScopeLogAttrs(run)...)
+			telemetry.Error(ctx, "graph execution failed", errorLogAttrs...)
 			return retBoard, err
 		}
 		if ctx.Err() != nil {

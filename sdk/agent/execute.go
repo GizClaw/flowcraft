@@ -705,8 +705,8 @@ func WithArtifactChannels(channels ...string) ExecuteOption {
 // cross-process dispatch (application runtimes, A2A bridges).
 //
 // Engines / hosts that don't read ParentRunID are unaffected. The
-// field is also surfaced under telemetry.AttrParentRunID by
-// observers that emit run-summary spans (sdk/telemetry/run_summary).
+// field is also surfaced under telemetry.AttrParentRunID by engine
+// telemetry (the graph runner stamps it onto the run span).
 func WithParentRunID(id string) ExecuteOption {
 	return func(rc *execConfig) { rc.parentRunID = id }
 }
