@@ -78,13 +78,14 @@ func (longmemevalScenario) Convert(raw []byte) (dataset.Dataset, Stats, error) {
 	return converted, stats, nil
 }
 
-func (longmemevalScenario) Score(prediction string, question dataset.Question, _ float64, _ bool) (float64, float64, *float64) {
+func (longmemevalScenario) Score(prediction string, question dataset.Question, _ float64, _ bool) (float64, float64, float64, *float64) {
 	em, f1 := scoreEMF1(prediction, question.GoldAnswers)
+	itemRecall := scoreItemRecall(prediction, question.GoldAnswers)
 	if !isAbstentionQuestion(question) {
-		return em, f1, nil
+		return em, f1, itemRecall, nil
 	}
 	abstained := hasAbstained(prediction)
-	return em, f1, boolFloatPtr(abstained)
+	return em, f1, itemRecall, boolFloatPtr(abstained)
 }
 
 func (longmemevalScenario) Aggregate(scores []QuestionScore) ScoreAggregate {

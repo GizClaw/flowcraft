@@ -17,7 +17,7 @@ type Scenario interface {
 	Convert(raw []byte) (dataset.Dataset, Stats, error)
 	// Score returns QA metrics for one prediction. abstention is nil when
 	// the scenario/question has no abstention semantics.
-	Score(prediction string, question dataset.Question, judge float64, judgeScored bool) (em, f1 float64, abstention *float64)
+	Score(prediction string, question dataset.Question, judge float64, judgeScored bool) (em, f1, itemRecall float64, abstention *float64)
 	Aggregate(scores []QuestionScore) ScoreAggregate
 }
 

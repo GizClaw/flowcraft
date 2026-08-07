@@ -117,8 +117,8 @@ func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, err
 		})
 	}
 	assembly, err := builder.NewAssembly(ctx, memoryconfig.Settings{
-		Generate:  toModelSettings(generateRef),
-		Embed:     toModelSettings(embedRef),
+		Generate:  memoryconfig.FromModelRef(generateRef),
+		Embed:     memoryconfig.FromModelRef(embedRef),
 		Scopes:    scopes,
 		Interval:  memoryconfig.Duration(time.Hour),
 		Lifecycle: memoryconfig.LifecycleSettings{Disabled: true},
@@ -289,8 +289,8 @@ func evalQuestion(
 		return score
 	}
 	score.Prediction = prediction
-	em, f1, abstention := opts.Scenario.Score(prediction, question, 0, false)
-	score.EM, score.F1 = em, f1
+	em, f1, itemRecall, abstention := opts.Scenario.Score(prediction, question, 0, false)
+	score.EM, score.F1, score.ItemRecall = em, f1, itemRecall
 	score.Abstention = abstention
 	if judgeRef != nil {
 		judgeStart := time.Now()

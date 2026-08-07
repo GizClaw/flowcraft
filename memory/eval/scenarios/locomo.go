@@ -83,9 +83,9 @@ func (locomoScenario) Convert(raw []byte) (dataset.Dataset, Stats, error) {
 	return converted, stats, nil
 }
 
-func (locomoScenario) Score(prediction string, question dataset.Question, _ float64, _ bool) (float64, float64, *float64) {
+func (locomoScenario) Score(prediction string, question dataset.Question, _ float64, _ bool) (float64, float64, float64, *float64) {
 	em, f1 := scoreEMF1(prediction, question.GoldAnswers)
-	return em, f1, nil
+	return em, f1, scoreItemRecall(prediction, question.GoldAnswers), nil
 }
 
 func (locomoScenario) Aggregate(scores []QuestionScore) ScoreAggregate {

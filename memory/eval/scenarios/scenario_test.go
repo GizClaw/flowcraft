@@ -29,15 +29,15 @@ func TestAbstentionScoring(t *testing.T) {
 		Tags:        []string{"qtype:single-session-user"},
 	}
 
-	_, _, abstention := scenario.Score("I don't know", absQuestion, 0, false)
+	_, _, _, abstention := scenario.Score("I don't know", absQuestion, 0, false)
 	if abstention == nil || *abstention != 1 {
 		t.Fatalf("correct abstention = %v", abstention)
 	}
-	_, _, abstention = scenario.Score("The user lives in Paris.", absQuestion, 0, false)
+	_, _, _, abstention = scenario.Score("The user lives in Paris.", absQuestion, 0, false)
 	if abstention == nil || *abstention != 0 {
 		t.Fatalf("wrong abstention = %v", abstention)
 	}
-	_, _, abstention = scenario.Score("I don't know", normalQuestion, 0, false)
+	_, _, _, abstention = scenario.Score("I don't know", normalQuestion, 0, false)
 	if abstention != nil {
 		t.Fatalf("non-abstention question should not score abstention: %v", abstention)
 	}

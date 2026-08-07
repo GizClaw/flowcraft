@@ -100,8 +100,8 @@ func reportSummary(report *Report) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "n=%d errors=%d qa.judge=%v qa.f1=%v qa.em=%v",
-		report.N, errors, report.Aggregate.Judge, report.Aggregate.F1, report.Aggregate.EM)
+	fmt.Fprintf(&b, "n=%d errors=%d qa.judge=%v qa.f1=%v qa.em=%v qa.item_recall=%v",
+		report.N, errors, report.Aggregate.Judge, report.Aggregate.F1, report.Aggregate.EM, report.Aggregate.ItemRecall)
 	if report.Aggregate.KHit != nil {
 		fmt.Fprintf(&b, " recall.k_hit=%v", *report.Aggregate.KHit)
 	}

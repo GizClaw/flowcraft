@@ -9,6 +9,7 @@ import (
 type ScoreAggregate struct {
 	EM          float64                  `json:"qa.em"`
 	F1          float64                  `json:"qa.f1"`
+	ItemRecall  float64                  `json:"qa.item_recall"`
 	Judge       float64                  `json:"qa.judge"`
 	Abstain     *float64                 `json:"qa.abstain,omitempty"`
 	KHit        *float64                 `json:"recall.k_hit,omitempty"`
@@ -19,11 +20,12 @@ type ScoreAggregate struct {
 
 // CategoryScore is one category's slice of the headline metrics.
 type CategoryScore struct {
-	Count int      `json:"count"`
-	EM    float64  `json:"qa.em"`
-	F1    float64  `json:"qa.f1"`
-	Judge float64  `json:"qa.judge"`
-	KHit  *float64 `json:"recall.k_hit,omitempty"`
+	Count      int      `json:"count"`
+	EM         float64  `json:"qa.em"`
+	F1         float64  `json:"qa.f1"`
+	ItemRecall float64  `json:"qa.item_recall"`
+	Judge      float64  `json:"qa.judge"`
+	KHit       *float64 `json:"recall.k_hit,omitempty"`
 }
 
 // QuestionScore is one question's per-metric breakdown.
@@ -33,6 +35,7 @@ type QuestionScore struct {
 	Prediction    string   `json:"prediction"`
 	EM            float64  `json:"em"`
 	F1            float64  `json:"f1"`
+	ItemRecall    float64  `json:"item_recall"`
 	Judge         float64  `json:"judge,omitempty"`
 	JudgeScored   bool     `json:"-"`
 	Abstention    *float64 `json:"abstention,omitempty"`
@@ -58,6 +61,7 @@ func aggregateScores(scores []QuestionScore) ScoreAggregate {
 	for _, score := range scores {
 		aggregate.EM += score.EM
 		aggregate.F1 += score.F1
+		aggregate.ItemRecall += score.ItemRecall
 		if score.JudgeScored {
 			aggregate.Judge += score.Judge
 			judgeCount++
@@ -77,6 +81,7 @@ func aggregateScores(scores []QuestionScore) ScoreAggregate {
 	}
 	aggregate.EM /= float64(len(scores))
 	aggregate.F1 /= float64(len(scores))
+	aggregate.ItemRecall /= float64(len(scores))
 	if judgeCount > 0 {
 		aggregate.Judge /= float64(judgeCount)
 	}
@@ -90,7 +95,7 @@ func aggregateScores(scores []QuestionScore) ScoreAggregate {
 func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
 	type accumulator struct {
 		count                       int
-		em, f1, judge               float64
+		em, f1, itemRecall, judge   float64
 		judgeCount                  int
 		kHitSum, kHitMessageSum     float64
 		kHitCount, kHitMessageCount int
@@ -109,6 +114,7 @@ func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
 			group.count++
 			group.em += score.EM
 			group.f1 += score.F1
+			group.itemRecall += score.ItemRecall
 			if score.JudgeScored {
 				group.judge += score.Judge
 				group.judgeCount++
@@ -125,9 +131,10 @@ func aggregateByCategory(scores []QuestionScore) map[string]CategoryScore {
 	result := make(map[string]CategoryScore, len(groups))
 	for tag, group := range groups {
 		category := CategoryScore{
-			Count: group.count,
-			EM:    group.em / float64(group.count),
-			F1:    group.f1 / float64(group.count),
+			Count:      group.count,
+			EM:         group.em / float64(group.count),
+			F1:         group.f1 / float64(group.count),
+			ItemRecall: group.itemRecall / float64(group.count),
 		}
 		if group.judgeCount > 0 {
 			category.Judge = group.judge / float64(group.judgeCount)
