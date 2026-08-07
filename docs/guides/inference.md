@@ -369,6 +369,63 @@ canonical validation never enters selection at all. Custom selection
 logic (score-aware, request-aware) builds `route.New(runtime,
 selectors)` directly.
 
+## Retry, backoff, and circuit breaker
+
+`route.Router` can retry a transient provider failure on the same target
+before falling back. Retries are conservative by default: only
+`ProviderFailure` classified as rate limit, timeout, or unavailable is
+retried, never after observable output, and never for validation,
+compile rejections, policy denials, or context cancellation. Streams and
+sessions only retry before they open; once a stream or session is
+returned, the Router never transparently reopens it.
+
+The route policy section declares retries and the per-target circuit
+breaker. The DTO is JSON (the config entry point still accepts YAML and
+converts it to JSON):
+
+```json
+{
+  "route": {
+    "generate": [
+      {"tier": "primary", "targets": [{"model": {"id": {"provider": "openai", "name": "gpt"}}}]}
+    ],
+    "retry": {
+      "generate": {
+        "max_attempts": 3,
+        "max_total_attempts": 8,
+        "backoff": {"kind": "exponential", "initial": "100ms", "max": "2s", "jitter": "full"},
+        "retryable": ["rate_limit", "timeout", "unavailable"],
+        "fallback_on_retry_exhausted": false
+      }
+    },
+    "circuit_breaker": {
+      "failure_threshold": 5,
+      "recovery_window": "30s",
+      "half_open_max_probes": 1
+    }
+  }
+}
+```
+
+`fallback_on_retry_exhausted` is off by default: a transient provider
+failure never moves to another target unless the deployment opts in.
+Circuit-breaker state is per `Operation + ModelRef` and lives on the
+`Router` instance; open targets are skipped without wire attempts, and a
+half-open circuit admits one probe at a time.
+
+`http_retries` on any provider spec means total wire attempts including
+the first. On httpkit-backed providers it sets the transport retry
+budget; on openai / anthropic / azure / deepseek it maps to the vendor
+SDK's max-retries option. `0` disables provider-level retries so the
+Router owns the whole budget.
+
+`max_total_attempts` caps logical attempts across all targets for one
+request (0 or absent means no cap). Circuit state can be cleared at
+runtime with `Router.ResetCircuitBreaker()`.
+
+Programmatic callers build the same behavior with
+`route.WithRetryPolicies` and `route.WithCircuitBreaker`.
+
 ## Hot reload
 
 There is no built-in `config.Reloader` in the current stack. `Builder` and
