@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdk/telemetry"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
@@ -67,11 +68,15 @@ func newProfileMaterial(profile config.ResolvedProfile) (profileMaterial, error)
 }
 
 func (m profileMaterial) newClient(spec Spec) *dashClient {
+	options := []httpkit.Option{
+		httpkit.WithTimeout(10 * time.Minute),
+		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
+	}
+	if spec.HTTPRetries != nil {
+		options = append(options, httpkit.WithRetryAttempts(*spec.HTTPRetries))
+	}
 	return &dashClient{
-		http: httpkit.NewClient(
-			httpkit.WithTimeout(10*time.Minute),
-			httpkit.WithResponseHeaderTimeout(5*time.Minute),
-		),
+		http: httpkit.NewClient(options...),
 		key:  m.apiKey,
 		base: spec.apiBase(),
 	}
@@ -120,8 +125,14 @@ func (c *dashClient) request(
 				otellog.String("provider", "qwen"),
 				otellog.Int("http.status", resp.StatusCode))
 		}
-		return nil, classifyHTTPError(
-			resp.StatusCode, failure.Code, failure.Message, snippet,
+		return nil, errdefs.WithRetryCount(
+			errdefs.WithRetryAfter(
+				classifyHTTPError(
+					resp.StatusCode, failure.Code, failure.Message, snippet,
+				),
+				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			),
+			httpkit.RetryCountOf(resp),
 		)
 	}
 	return resp, nil

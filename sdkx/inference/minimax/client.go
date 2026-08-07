@@ -61,11 +61,24 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	return &clients{
-		api: anthropicgo.NewClient(
-			option.WithAPIKey(m.apiKey),
-			option.WithBaseURL(baseURL),
-		),
-		media: newMediaClient(m.apiKey, spec.mediaBaseURL()),
+	options := []option.RequestOption{
+		option.WithAPIKey(m.apiKey),
+		option.WithBaseURL(baseURL),
 	}
+	if spec.HTTPRetries != nil {
+		options = append(options, option.WithMaxRetries(sdkMaxRetries(*spec.HTTPRetries)))
+	}
+	return &clients{
+		api:   anthropicgo.NewClient(options...),
+		media: newMediaClient(m.apiKey, spec.mediaBaseURL(), spec),
+	}
+}
+
+// sdkMaxRetries converts a total-attempt budget (including the first) into
+// the SDK's retry-count option.
+func sdkMaxRetries(total int) int {
+	if total <= 1 {
+		return 0
+	}
+	return total - 1
 }

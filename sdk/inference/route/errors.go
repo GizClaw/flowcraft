@@ -22,6 +22,7 @@ const (
 	FallbackFailed            ErrorKind = "fallback_failed"
 	FallbackContractViolation ErrorKind = "fallback_contract_violation"
 	FallbackLimitExceeded     ErrorKind = "fallback_limit_exceeded"
+	CircuitOpen               ErrorKind = "circuit_open"
 )
 
 // Error carries safe route context. Error() excludes selector inputs and
@@ -67,7 +68,7 @@ func classify(kind ErrorKind, cause error) error {
 		return errdefs.Validation(cause)
 	case SelectorUnavailable, NoRoute:
 		return errdefs.NotAvailable(cause)
-	case SelectionFailed, FallbackFailed:
+	case SelectionFailed, FallbackFailed, CircuitOpen:
 		classified := errdefs.FromContext(cause)
 		if errdefs.HasClassification(classified) {
 			return classified

@@ -58,10 +58,23 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
-	return &clients{
-		api: openaigo.NewClient(
-			option.WithAPIKey(m.apiKey),
-			option.WithBaseURL(baseURL),
-		),
+	options := []option.RequestOption{
+		option.WithAPIKey(m.apiKey),
+		option.WithBaseURL(baseURL),
 	}
+	if spec.HTTPRetries != nil {
+		options = append(options, sdkMaxRetriesOption(*spec.HTTPRetries))
+	}
+	return &clients{
+		api: openaigo.NewClient(options...),
+	}
+}
+
+// sdkMaxRetriesOption converts a total-attempt budget (including the first)
+// into the openai-go retry-count option.
+func sdkMaxRetriesOption(total int) option.RequestOption {
+	if total <= 1 {
+		return option.WithMaxRetries(0)
+	}
+	return option.WithMaxRetries(total - 1)
 }

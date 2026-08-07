@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -743,6 +744,35 @@ func TestErrorClassification(t *testing.T) {
 				t.Fatalf("err = %v", err)
 			}
 		})
+	}
+}
+
+func TestRateLimitCarriesRetryAfter(t *testing.T) {
+	server := newDashServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Retry-After", "3")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = fmt.Fprint(w, `{"code":"Throttling.RateQuota","message":"slow down"}`)
+	})
+	runtime := newTestRuntime(t, server)
+	_, err := runtime.Generate(
+		context.Background(),
+		qwenModel("qwen-plus"),
+		simpleTextRequest("hi"),
+	)
+	if !errdefs.IsRateLimit(err) {
+		t.Fatalf("err = %v, want rate limit", err)
+	}
+	if got, ok := errdefs.RetryAfter(err); !ok || got != 3*time.Second {
+		t.Fatalf("RetryAfter = %v/%v, want 3s/true", got, ok)
+	}
+	if got := errdefs.RetryCount(err); got < 1 {
+		t.Fatalf("RetryCount = %d, want at least 1 wire attempt", got)
+	}
+}
+
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
 	}
 }
 

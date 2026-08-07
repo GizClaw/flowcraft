@@ -83,6 +83,14 @@ func TestSpecValidation(t *testing.T) {
 	}
 }
 
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(
+		`{"endpoint":"https://res.openai.azure.com","http_retries":-1,"models":[{"name":"chat-1","kind":"generate"}]}`,
+	)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
+	}
+}
+
 func TestProfileMaterial(t *testing.T) {
 	t.Run("missing api key", func(t *testing.T) {
 		if _, err := newProfileMaterial(config.ResolvedProfile{ID: "default"}); err == nil {

@@ -22,6 +22,11 @@ type Spec struct {
 	// MediaBaseURL overrides the media API root (t2a, video, image).
 	// Defaults to BaseURL with the /anthropic suffix trimmed.
 	MediaBaseURL string `json:"media_base_url,omitempty"`
+	// HTTPRetries bounds wire-level HTTP retries on the media client.
+	// Zero disables transport retries so the route Router owns the full
+	// retry budget; nil keeps the httpkit default. The Anthropic Messages
+	// surface rides the vendor SDK and is not governed by this field.
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// VideoPollIntervalMillis paces video task polling; defaults to 5000.
 	VideoPollIntervalMillis int `json:"video_poll_interval_millis,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
@@ -68,6 +73,9 @@ func (s Spec) Validate() error {
 	}
 	if s.VideoPollIntervalMillis < 0 {
 		return fmt.Errorf("video_poll_interval_millis must not be negative")
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("http_retries must not be negative")
 	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for _, model := range s.Models {

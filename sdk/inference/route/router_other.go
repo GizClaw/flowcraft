@@ -73,9 +73,8 @@ func (r *Router) Embed(
 	request inference.EmbedRequest,
 ) (inference.EmbedResponse, Trace, error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationEmbed)
-	response, trace, err := executeWithFallback(
+	response, trace, err := executeWithFallback(r,
 		ctx,
-		r.runtime,
 		inference.OperationEmbed,
 		request.Clone(),
 		inference.EmbedRequest.Clone,
@@ -124,9 +123,8 @@ func (r *Router) Transcribe(
 	request inference.TranscriptionRequest,
 ) (inference.TranscriptionResponse, Trace, error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
-	response, trace, err := executeWithFallback(
+	response, trace, err := executeWithFallback(r,
 		ctx,
-		r.runtime,
 		inference.OperationTranscription,
 		request.Clone(),
 		inference.TranscriptionRequest.Clone,
@@ -175,9 +173,8 @@ func (r *Router) OpenTranscription(
 	config inference.TranscriptionSessionConfig,
 ) (inference.OpenedTranscriptionSession, Trace, error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
-	session, trace, err := openSessionWithFallback(
+	session, trace, err := openSessionWithFallback(r,
 		ctx,
-		r.runtime,
 		inference.OperationTranscription,
 		config.Clone(),
 		inference.TranscriptionSessionConfig.Clone,
@@ -187,6 +184,7 @@ func (r *Router) OpenTranscription(
 			return r.selectors.TranscriptionSession.SelectTranscriptionSession(ctx, snapshot)
 		},
 		transcriptionSessionFallbackNext(r.selectors.TranscriptionSessionFallback),
+		nil,
 		r.runtime.OpenTranscription,
 	)
 	recordRoute(ctx, span, inference.OperationTranscription, trace, err)
@@ -226,9 +224,8 @@ func (r *Router) OpenRealtime(
 	config inference.RealtimeConfig,
 ) (inference.OpenedRealtimeSession, Trace, error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationRealtime)
-	session, trace, err := openSessionWithFallback(
+	session, trace, err := openSessionWithFallback(r,
 		ctx,
-		r.runtime,
 		inference.OperationRealtime,
 		config.Clone(),
 		inference.RealtimeConfig.Clone,
@@ -238,6 +235,7 @@ func (r *Router) OpenRealtime(
 			return r.selectors.Realtime.SelectRealtime(ctx, snapshot)
 		},
 		realtimeFallbackNext(r.selectors.RealtimeFallback),
+		nil,
 		r.runtime.OpenRealtime,
 	)
 	recordRoute(ctx, span, inference.OperationRealtime, trace, err)

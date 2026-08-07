@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message/media"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
@@ -27,12 +28,16 @@ type mediaClient struct {
 	base string // API root, e.g. https://api.minimaxi.com
 }
 
-func newMediaClient(key, base string) *mediaClient {
+func newMediaClient(key, base string, spec Spec) *mediaClient {
+	options := []httpkit.Option{
+		httpkit.WithTimeout(10 * time.Minute),
+		httpkit.WithResponseHeaderTimeout(5 * time.Minute),
+	}
+	if spec.HTTPRetries != nil {
+		options = append(options, httpkit.WithRetryAttempts(*spec.HTTPRetries))
+	}
 	return &mediaClient{
-		http: httpkit.NewClient(
-			httpkit.WithTimeout(10*time.Minute),
-			httpkit.WithResponseHeaderTimeout(5*time.Minute),
-		),
+		http: httpkit.NewClient(options...),
 		key:  key,
 		base: strings.TrimRight(base, "/"),
 	}
@@ -71,10 +76,16 @@ func (c *mediaClient) request(
 	if resp.StatusCode != http.StatusOK {
 		defer func() { _ = resp.Body.Close() }()
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
-			"minimax: %s %s: HTTP %d: %s",
-			method, path, resp.StatusCode, strings.TrimSpace(string(snippet)),
-		))
+		return nil, errdefs.WithRetryCount(
+			errdefs.WithRetryAfter(
+				classifyHTTPStatus(resp.StatusCode, fmt.Errorf(
+					"minimax: %s %s: HTTP %d: %s",
+					method, path, resp.StatusCode, strings.TrimSpace(string(snippet)),
+				)),
+				errdefs.ParseRetryAfter(resp.Header.Get("Retry-After")),
+			),
+			httpkit.RetryCountOf(resp),
+		)
 	}
 	return resp, nil
 }

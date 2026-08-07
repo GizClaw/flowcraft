@@ -58,13 +58,26 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if version == "" {
 		version = DefaultAPIVersion
 	}
-	return &clients{
-		api: openaigo.NewClient(
-			azure.WithEndpoint(strings.TrimSuffix(spec.Endpoint, "/"), version),
-			azure.WithAPIKey(m.apiKey),
-			option.WithMiddleware(deploymentRouteMiddleware),
-		),
+	options := []option.RequestOption{
+		azure.WithEndpoint(strings.TrimSuffix(spec.Endpoint, "/"), version),
+		azure.WithAPIKey(m.apiKey),
+		option.WithMiddleware(deploymentRouteMiddleware),
 	}
+	if spec.HTTPRetries != nil {
+		options = append(options, sdkMaxRetriesOption(*spec.HTTPRetries))
+	}
+	return &clients{
+		api: openaigo.NewClient(options...),
+	}
+}
+
+// sdkMaxRetriesOption converts a total-attempt budget (including the first)
+// into the openai-go retry-count option.
+func sdkMaxRetriesOption(total int) option.RequestOption {
+	if total <= 1 {
+		return option.WithMaxRetries(0)
+	}
+	return option.WithMaxRetries(total - 1)
 }
 
 // deploymentRouteMiddleware scopes the Responses API route to its

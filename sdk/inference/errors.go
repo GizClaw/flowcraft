@@ -3,6 +3,7 @@ package inference
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -35,7 +36,15 @@ type Error struct {
 	Kind      ErrorKind
 	Operation Operation
 	Field     FieldID
-	cause     error
+	// RetryAfter is a server-provided backoff hint (Retry-After) when a
+	// provider failure carries one. Zero means no hint. It is diagnostic
+	// metadata, not part of the redacted Error() text.
+	RetryAfter time.Duration
+	// WireAttempts is the number of HTTP sends the provider transport made
+	// before surfacing this failure. Zero means the provider did not report
+	// a count.
+	WireAttempts int
+	cause        error
 }
 
 func NewError(kind ErrorKind, operation Operation, field FieldID, cause error) *Error {
@@ -59,7 +68,12 @@ func newProviderError(
 	if !errdefs.HasClassification(classified) {
 		classified = errdefs.ClassifyProviderError(provider, classified)
 	}
-	return NewError(ProviderFailure, operation, "", classified)
+	err := NewError(ProviderFailure, operation, "", classified)
+	if retryAfter, ok := errdefs.RetryAfter(cause); ok {
+		err.RetryAfter = retryAfter
+	}
+	err.WireAttempts = errdefs.RetryCount(cause)
+	return err
 }
 
 func (e *Error) Error() string {

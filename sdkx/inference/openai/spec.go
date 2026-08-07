@@ -25,6 +25,11 @@ type Spec struct {
 	Organization string `json:"organization,omitempty"`
 	// Project sets the OpenAI-Project header.
 	Project string `json:"project,omitempty"`
+	// HTTPRetries bounds wire-level retries inside one logical inference
+	// attempt, including the first. Zero disables SDK-internal retries so
+	// the route Router owns the full retry budget; nil keeps the openai-go
+	// default (two retries).
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Models declares additional models beyond the built-in catalog or
 	// overrides catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
@@ -60,6 +65,9 @@ func (s Spec) Validate() error {
 		!strings.HasPrefix(s.BaseURL, "https://") &&
 		!strings.HasPrefix(s.BaseURL, "http://") {
 		return fmt.Errorf("base_url must be an http(s) URL")
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("http_retries must not be negative")
 	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for index, model := range s.Models {

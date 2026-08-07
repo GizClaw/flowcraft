@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 )
 
 // chunkEnvelope is one streaming chunk: delta content, optional finish
@@ -98,7 +99,13 @@ func transportGenerateStream(client *kimiClient) inference.Transport[generateWir
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			defer func() { _ = response.Body.Close() }()
 			payload, _ := io.ReadAll(response.Body)
-			return nil, classifyHTTPError(ctx, response.StatusCode, payload)
+			return nil, errdefs.WithRetryCount(
+				errdefs.WithRetryAfter(
+					classifyHTTPError(ctx, response.StatusCode, payload),
+					errdefs.ParseRetryAfter(response.Header.Get("Retry-After")),
+				),
+				httpkit.RetryCountOf(response),
+			)
 		}
 		streamCtx, cancel := context.WithCancel(ctx)
 		return &chatStream{

@@ -31,4 +31,12 @@
 // The resource endpoint and api-version live on the provider Spec
 // (endpoint, api_version), not per profile: all profiles of one provider
 // config share one resource.
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). Nil keeps the openai-go default (two retries); 0 disables
+// SDK-internal retries so the route Router owns the budget; N maps to
+// option.WithMaxRetries(N-1). Error classification rides the openai kernel,
+// so Retry-After and the SDK retry count propagate onto ProviderFailure.
 package azure

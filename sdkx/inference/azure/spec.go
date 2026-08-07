@@ -20,6 +20,11 @@ type Spec struct {
 	// APIVersion overrides the query api-version; defaults to
 	// DefaultAPIVersion.
 	APIVersion string `json:"api_version,omitempty"`
+	// HTTPRetries bounds wire-level retries inside one logical inference
+	// attempt, including the first. Zero disables SDK-internal retries so
+	// the route Router owns the full retry budget; nil keeps the openai-go
+	// default (two retries).
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Models declares the deployments to expose; at least one is required.
 	Models []ModelSpec `json:"models"`
 }
@@ -51,6 +56,9 @@ func (s Spec) Validate() error {
 	}
 	if s.APIVersion != "" && strings.ContainsAny(s.APIVersion, "?&") {
 		return fmt.Errorf("azure: api_version %q is not a version token", s.APIVersion)
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("azure: http_retries must not be negative")
 	}
 	if len(s.Models) == 0 {
 		return fmt.Errorf(

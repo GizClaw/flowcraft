@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/net/http2"
@@ -141,6 +143,18 @@ func WithRetry(config RetryConfig) Option {
 		cfg.Retry = config
 		cfg.RetryEnabled = true
 	}
+}
+
+// WithRetryAttempts sets the total wire attempts including the first,
+// keeping the default backoff curve. Zero or negative disables transport
+// retries so an outer retry owner (route.Router) controls the full budget.
+func WithRetryAttempts(maxAttempts int) Option {
+	if maxAttempts <= 0 {
+		return WithoutRetry()
+	}
+	config := DefaultRetry
+	config.MaxAttempts = maxAttempts
+	return WithRetry(config)
 }
 
 func WithoutRetry() Option {
@@ -272,6 +286,19 @@ type retryTransport struct {
 	config RetryConfig
 }
 
+// retryCountHeader is the internal response header carrying the total wire
+// attempts (1-based) that produced the response.
+const retryCountHeader = "X-Flowcraft-Retry-Count"
+
+// RetryCountOf reports the wire attempts that produced a response. It
+// returns 0 for responses the retry transport did not stamp.
+func RetryCountOf(response *http.Response) int {
+	if response == nil {
+		return 0
+	}
+	return errdefs.ParseRetryCount(response.Header.Get(retryCountHeader))
+}
+
 func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	// Without GetBody the body cannot be replayed: one attempt, exactly
 	// like a bare transport.
@@ -295,6 +322,12 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 
 		response, err = t.base.RoundTrip(attemptRequest)
 		if attempt >= t.config.MaxAttempts || !retryable(response, err) {
+			if err != nil {
+				err = errdefs.WithRetryCount(err, attempt)
+			}
+			if response != nil {
+				response.Header.Set(retryCountHeader, strconv.Itoa(attempt))
+			}
 			return response, err
 		}
 		if response != nil && response.Body != nil {
@@ -309,7 +342,10 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 		case <-timer.C:
 		case <-request.Context().Done():
 			timer.Stop()
-			return nil, request.Context().Err()
+			return nil, errdefs.WithRetryCount(
+				request.Context().Err(),
+				attempt,
+			)
 		}
 	}
 }

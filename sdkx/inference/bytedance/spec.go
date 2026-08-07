@@ -38,6 +38,10 @@ type Spec struct {
 	// SpeechWebSocketURL overrides the Doubao speech WebSocket endpoint (ASR,
 	// realtime duplex).
 	SpeechWebSocketURL string `json:"speech_web_socket_url,omitempty"`
+	// HTTPRetries bounds wire-level HTTP retries on the Ark and Doubao
+	// speech HTTP clients. Zero disables transport retries so the route
+	// Router owns the full retry budget; nil keeps the httpkit default.
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Region selects the Ark service region.
 	Region string `json:"region,omitempty"`
 	// VideoPollIntervalMillis paces content-generation task polls (Seedance
@@ -114,6 +118,9 @@ func (s Spec) videoPollInterval() time.Duration {
 func (s Spec) Validate() error {
 	if s.VideoPollIntervalMillis != nil && *s.VideoPollIntervalMillis <= 0 {
 		return fmt.Errorf("video_poll_interval_millis must be positive")
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("http_retries must not be negative")
 	}
 	for name, value := range map[string]string{
 		"base_url":              s.BaseURL,

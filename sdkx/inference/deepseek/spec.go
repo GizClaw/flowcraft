@@ -18,6 +18,11 @@ type Spec struct {
 	// https://api.deepseek.com (the OpenAI-compatible surface; the
 	// provider serves chat completions only, no Responses API).
 	BaseURL string `json:"base_url,omitempty"`
+	// HTTPRetries bounds wire-level retries inside one logical inference
+	// attempt, including the first. Zero disables SDK-internal retries so
+	// the route Router owns the full retry budget; nil keeps the openai-go
+	// default (two retries).
+	HTTPRetries *int `json:"http_retries,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
 	// catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
@@ -50,6 +55,9 @@ func (s Spec) Validate() error {
 		if err := validateURL("base_url", s.BaseURL); err != nil {
 			return err
 		}
+	}
+	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
+		return fmt.Errorf("http_retries must not be negative")
 	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for _, model := range s.Models {

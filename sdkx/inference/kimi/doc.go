@@ -57,4 +57,13 @@
 // kimi-k2.7-code pair, kimi-k2.6, kimi-k2.5, and the moonshot-v1 family
 // (text plus vision previews). Deployments declare additional models
 // through the spec (name, kind, vision, video, reasoning).
+//
+// # Retries
+//
+// The provider Spec accepts `http_retries` (total wire attempts including
+// the first). Nil keeps the httpkit default (three attempts); 0 disables
+// transport retries so the route Router owns the budget; N sets total wire
+// attempts. Retry-After and wire attempts observed at the HTTP layer are
+// propagated onto ProviderFailure so Router backoff and trace
+// wire_attempts can observe them.
 package kimi

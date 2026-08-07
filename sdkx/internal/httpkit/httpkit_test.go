@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
+
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"
 )
@@ -424,5 +426,69 @@ func TestContextCancellationStopsBackoff(t *testing.T) {
 	_, err = client.Do(request)
 	if err == nil || !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+type failingRoundTripper struct {
+	calls int
+}
+
+func (f *failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	f.calls++
+	return nil, errors.New("transport failed")
+}
+
+func TestRetryCountAttachedToFinalTransportError(t *testing.T) {
+	base := &failingRoundTripper{}
+	client := &http.Client{
+		Transport: newRetryTransport(base, fastRetry()),
+	}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		"https://example.invalid/",
+		bytes.NewReader([]byte("x")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Do(request)
+	if err == nil {
+		t.Fatal("Do succeeded, want transport failure")
+	}
+	if got := errdefs.RetryCount(err); got != 3 {
+		t.Fatalf("RetryCount = %d, want 3", got)
+	}
+	if base.calls != 3 {
+		t.Fatalf("base calls = %d, want 3", base.calls)
+	}
+}
+
+func TestRetryCountOfStatusResponse(t *testing.T) {
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Transport: newRetryTransport(nil, fastRetry())}
+	request, err := http.NewRequest(
+		http.MethodPost,
+		server.URL,
+		bytes.NewReader([]byte("x")),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if got := RetryCountOf(response); got != 3 {
+		t.Fatalf("RetryCountOf = %d, want 3", got)
+	}
+	if calls.Load() != 3 {
+		t.Fatalf("calls = %d, want 3", calls.Load())
 	}
 }

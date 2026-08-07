@@ -44,6 +44,12 @@ func testProfiles() []config.ResolvedProfile {
 	}}
 }
 
+func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
+	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+		t.Fatal("decodeSpec accepted negative http_retries")
+	}
+}
+
 func testProfilesWithSpec(t *testing.T, spec ProfileSpec) []config.ResolvedProfile {
 	t.Helper()
 	secret, err := config.NewSecret([]byte("test-key"))

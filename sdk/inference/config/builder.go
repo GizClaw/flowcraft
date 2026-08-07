@@ -235,7 +235,11 @@ func (b *Builder) NewAssembly(
 	}
 	assembly := Assembly{Runtime: runtime}
 	if document.Route != nil {
-		router, err := route.New(runtime, document.Route.Selectors())
+		options, err := document.Route.Options()
+		if err != nil {
+			return Assembly{}, fmt.Errorf("build route options: %w", err)
+		}
+		router, err := route.New(runtime, document.Route.Selectors(), options...)
 		if err != nil {
 			return Assembly{}, fmt.Errorf("build route router: %w", err)
 		}
