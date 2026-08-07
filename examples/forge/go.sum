@@ -9,4 +9,3 @@ github.com/mattn/go-runewidth v0.0.19/go.mod h1:XBkDxAl56ILZc9knddidhrOlY5R/pDhg
 google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d h1:33JLrUF0lFT31667SAtJzZAjLewV0ew5Mizks4caz0A=
 google.golang.org/genproto v0.0.0-20260803160001-6ac0973c030d/go.mod h1:I7vGRdTamb7ukERkgP9I+0e4p21O4ak3cM7ICA3krg8=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
-gopkg.in/yaml.v3 v3.0.1/go.mod h1:K4uyk7z7BCEPqu6E+C64Yfv1cQ7kz7rIZviUmN+EgEM=

@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -9,18 +10,17 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 )
 
 type testFile struct {
-	Name        string   `yaml:"name"`
-	Description string   `yaml:"description"`
-	Raid        string   `yaml:"raid"`
-	Turns       []string `yaml:"turns"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Raid        string   `json:"raid"`
+	Turns       []string `json:"turns"`
 }
 
 type testMetrics struct {
@@ -61,8 +61,8 @@ func testCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	var test testFile
-	if err := yaml.Unmarshal(raw, &test); err != nil {
+	test, err := parseTestFile(raw)
+	if err != nil {
 		return fmt.Errorf("test %q: %w", *testSource, err)
 	}
 	raid := strings.TrimSpace(test.Raid)
@@ -93,6 +93,21 @@ func testCmd(args []string) error {
 	}
 	fmt.Printf("wrote test %s\n", outputDir)
 	return nil
+}
+
+// parseTestFile decodes a scenario test document. utils converts the
+// YAML authoring form to JSON at the boundary; json.Unmarshal keeps the
+// decode permissive so test files may carry extra fields.
+func parseTestFile(data []byte) (testFile, error) {
+	jsonData, err := configutils.ToJSON(data)
+	if err != nil {
+		return testFile{}, err
+	}
+	var test testFile
+	if err := json.Unmarshal(jsonData, &test); err != nil {
+		return testFile{}, err
+	}
+	return test, nil
 }
 
 func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.Duration) (testMetrics, error) {
