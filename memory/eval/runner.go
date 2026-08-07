@@ -11,6 +11,7 @@ import (
 	memoryconfig "github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/memory/eval/dataset"
 	"github.com/GizClaw/flowcraft/memory/eval/scenarios"
+	memorystorage "github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -103,7 +104,17 @@ func runInternal(ctx context.Context, opts runOptions, n notifier) (*Report, err
 		return nil, err
 	}
 	ws := workspace.NewMemWorkspace()
-	builder, err := memoryconfig.NewBuilder(ws, runtime)
+	logStore, err := memorystorage.NewWorkspaceLog(ws)
+	if err != nil {
+		return nil, fmt.Errorf("memory log backend: %w", err)
+	}
+	kvStore, err := memorystorage.NewWorkspaceKV(ws)
+	if err != nil {
+		return nil, fmt.Errorf("memory store backend: %w", err)
+	}
+	builder, err := memoryconfig.NewBuilder(memoryconfig.Backends{
+		Log: logStore, KV: kvStore,
+	}, runtime)
 	if err != nil {
 		return nil, fmt.Errorf("memory builder: %w", err)
 	}

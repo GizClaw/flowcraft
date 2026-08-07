@@ -4,29 +4,28 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const schemaVersion = 1
 
-// WorkspaceStore writes immutable chunk builds and atomically publishes a
-// small pointer. Calls through one instance are safe for concurrent use.
-type WorkspaceStore struct {
-	ws workspace.Workspace
+// DocumentViewStore writes immutable chunk builds and atomically publishes a
+// small pointer on a storage.Store. Calls through one instance are safe for
+// concurrent use.
+type DocumentViewStore struct {
+	kv storage.Store
 	mu sync.RWMutex
 }
 
@@ -54,16 +53,20 @@ type persistedChunk struct {
 	Chunk         Chunk  `json:"chunk"`
 }
 
-var _ Store = (*WorkspaceStore)(nil)
-
-func NewWorkspaceStore(ws workspace.Workspace) (*WorkspaceStore, error) {
-	if nilWorkspace(ws) {
-		return nil, errors.New("document view: workspace is required")
+// NewDocumentViewStore constructs a KV-backed document chunk view.
+func NewDocumentViewStore(kv storage.Store) (*DocumentViewStore, error) {
+	if nilValue(kv) {
+		return nil, errors.New("document view: store is required")
 	}
-	return &WorkspaceStore{ws: ws}, nil
+	if _, ok := kv.(storage.PutIfAbsentStore); !ok {
+		return nil, errors.New("document view: store must support immutable writes")
+	}
+	return &DocumentViewStore{kv: kv}, nil
 }
 
-func (store *WorkspaceStore) ReplaceDocument(ctx context.Context, request ReplaceRequest) ([]Chunk, error) {
+// ReplaceDocument publishes one immutable chunk build and moves the active
+// pointer.
+func (store *DocumentViewStore) ReplaceDocument(ctx context.Context, request ReplaceRequest) ([]Chunk, error) {
 	chunks := cloneChunks(request.Chunks)
 	for index := range chunks {
 		normalizeRecord(&chunks[index])
@@ -118,13 +121,18 @@ func (store *WorkspaceStore) ReplaceDocument(ctx context.Context, request Replac
 	if err != nil {
 		return nil, fmt.Errorf("document view: encode active build: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.activePath(request.Scope, request.DatasetID, request.DocumentID), data); err != nil {
+	activeKey, err := store.activeKey(request.Scope, request.DatasetID, request.DocumentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.kv.Put(ctx, activeKey, data); err != nil {
 		return nil, fmt.Errorf("document view: publish active build: %w", err)
 	}
 	return cloneChunks(chunks), nil
 }
 
-func (store *WorkspaceStore) Get(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID, chunkID string) (Chunk, bool, error) {
+// Get returns one chunk from the active build.
+func (store *DocumentViewStore) Get(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID, chunkID string) (Chunk, bool, error) {
 	if err := validateAddress(scope, datasetID, documentID); err != nil {
 		return Chunk{}, false, err
 	}
@@ -144,7 +152,8 @@ func (store *WorkspaceStore) Get(ctx context.Context, scope sdkmemory.Scope, dat
 	return cloneChunk(persisted.Chunk), true, nil
 }
 
-func (store *WorkspaceStore) List(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID string, options ListOptions) ([]Chunk, error) {
+// List returns chunks from the active build in (Ordinal, ID) order.
+func (store *DocumentViewStore) List(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID string, options ListOptions) ([]Chunk, error) {
 	if err := validateAddress(scope, datasetID, documentID); err != nil {
 		return nil, err
 	}
@@ -157,31 +166,27 @@ func (store *WorkspaceStore) List(ctx context.Context, scope sdkmemory.Scope, da
 		}
 		return nil, err
 	}
-	entries, err := store.ws.List(ctx, store.chunksDir(scope, datasetID, documentID, active.BuildID))
+	prefix, err := store.chunksPrefix(scope, datasetID, documentID, active.BuildID)
 	if err != nil {
-		if errdefs.IsNotFound(err) && active.ChunkCount == 0 {
-			return []Chunk{}, nil
-		}
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
 		return nil, fmt.Errorf("document view: list active build %q: %w", active.BuildID, err)
 	}
 	chunks := make([]Chunk, 0, len(entries))
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		id, dataName, err := decodeDataFilename(entry.Name())
+		id, err := chunkIDFromKey(prefix, entry.Key)
 		if err != nil {
-			return nil, fmt.Errorf("document view: decode chunk filename %q: %w", entry.Name(), err)
+			return nil, fmt.Errorf("document view: decode chunk key %q: %w", entry.Key, err)
 		}
-		if !dataName {
-			continue
+		var persisted persistedChunk
+		if err := decodeJSON(entry.Value, &persisted); err != nil {
+			return nil, fmt.Errorf("document view: decode chunk %q: %w", id, err)
 		}
-		persisted, ok, err := store.readChunk(ctx, active, scope, datasetID, documentID, id)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, fmt.Errorf("document view: chunk %q disappeared during scan", id)
+		normalizeRecord(&persisted.Chunk)
+		if err := validatePersistedChunk(persisted, active, scope, datasetID, documentID, id); err != nil {
+			return nil, fmt.Errorf("document view: corrupt chunk %q: %w", id, err)
 		}
 		chunks = append(chunks, cloneChunk(persisted.Chunk))
 	}
@@ -208,36 +213,48 @@ func (store *WorkspaceStore) List(ctx context.Context, scope sdkmemory.Scope, da
 	return result, nil
 }
 
-func (store *WorkspaceStore) writeImmutableChunk(ctx context.Context, persisted persistedChunk) error {
-	target := store.chunkPath(persisted.Chunk.Scope, persisted.DatasetID, persisted.DocumentID, persisted.BuildID, persisted.ChunkID)
-	existing, err := store.ws.Read(ctx, target)
-	if err == nil {
-		var prior persistedChunk
-		if decodeErr := decodeJSON(existing, &prior); decodeErr != nil {
-			return fmt.Errorf("document view: decode existing immutable chunk %q: %w", persisted.ChunkID, decodeErr)
-		}
-		if !reflect.DeepEqual(prior, persisted) {
-			return errdefs.Conflictf("document view: immutable chunk %q conflicts", persisted.ChunkID)
-		}
-		return nil
-	}
-	if !errdefs.IsNotFound(err) {
-		return fmt.Errorf("document view: inspect chunk %q: %w", persisted.ChunkID, err)
+func (store *DocumentViewStore) writeImmutableChunk(ctx context.Context, persisted persistedChunk) error {
+	key, err := store.chunkKey(persisted.Chunk.Scope, persisted.DatasetID, persisted.DocumentID, persisted.BuildID, persisted.ChunkID)
+	if err != nil {
+		return err
 	}
 	data, err := json.Marshal(persisted)
 	if err != nil {
 		return fmt.Errorf("document view: encode chunk %q: %w", persisted.ChunkID, err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, target, data); err != nil {
-		return fmt.Errorf("document view: write chunk %q: %w", persisted.ChunkID, err)
+	put, ok := store.kv.(storage.PutIfAbsentStore)
+	if !ok {
+		return errors.New("document view: store must support immutable writes")
+	}
+	written, err := put.PutIfAbsent(ctx, key, data)
+	if err != nil {
+		return err
+	}
+	if written {
+		return nil
+	}
+	existing, err := store.kv.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	var prior persistedChunk
+	if err := decodeJSON(existing, &prior); err != nil {
+		return fmt.Errorf("document view: decode existing immutable chunk %q: %w", persisted.ChunkID, err)
+	}
+	if !reflect.DeepEqual(prior, persisted) {
+		return errdefs.Conflictf("document view: immutable chunk %q conflicts", persisted.ChunkID)
 	}
 	return nil
 }
 
-func (store *WorkspaceStore) readActive(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID string) (activeBuild, bool, error) {
-	data, err := store.ws.Read(ctx, store.activePath(scope, datasetID, documentID))
+func (store *DocumentViewStore) readActive(ctx context.Context, scope sdkmemory.Scope, datasetID, documentID string) (activeBuild, bool, error) {
+	key, err := store.activeKey(scope, datasetID, documentID)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		return activeBuild{}, false, err
+	}
+	data, err := store.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return activeBuild{}, false, nil
 		}
 		return activeBuild{}, false, fmt.Errorf("document view: read active build: %w", err)
@@ -258,10 +275,14 @@ func (store *WorkspaceStore) readActive(ctx context.Context, scope sdkmemory.Sco
 	return active, true, nil
 }
 
-func (store *WorkspaceStore) readChunk(ctx context.Context, active activeBuild, scope sdkmemory.Scope, datasetID, documentID, chunkID string) (persistedChunk, bool, error) {
-	data, err := store.ws.Read(ctx, store.chunkPath(scope, datasetID, documentID, active.BuildID, chunkID))
+func (store *DocumentViewStore) readChunk(ctx context.Context, active activeBuild, scope sdkmemory.Scope, datasetID, documentID, chunkID string) (persistedChunk, bool, error) {
+	key, err := store.chunkKey(scope, datasetID, documentID, active.BuildID, chunkID)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		return persistedChunk{}, false, err
+	}
+	data, err := store.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return persistedChunk{}, false, nil
 		}
 		return persistedChunk{}, false, fmt.Errorf("document view: read chunk %q: %w", chunkID, err)
@@ -275,6 +296,48 @@ func (store *WorkspaceStore) readChunk(ctx context.Context, active activeBuild, 
 		return persistedChunk{}, false, fmt.Errorf("document view: corrupt chunk %q: %w", chunkID, err)
 	}
 	return persisted, true, nil
+}
+
+func (store *DocumentViewStore) documentPrefix(scope sdkmemory.Scope, datasetID, documentID string) (string, error) {
+	partition, err := storage.ScopePartition(scope)
+	if err != nil {
+		return "", err
+	}
+	return "views/v1/documents/" + partition + "/" +
+		storage.EncodeSegment(datasetID) + "/" +
+		storage.EncodeSegment(documentID), nil
+}
+
+func (store *DocumentViewStore) activeKey(scope sdkmemory.Scope, datasetID, documentID string) (string, error) {
+	prefix, err := store.documentPrefix(scope, datasetID, documentID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/active", nil
+}
+
+func (store *DocumentViewStore) chunksPrefix(scope sdkmemory.Scope, datasetID, documentID, buildID string) (string, error) {
+	prefix, err := store.documentPrefix(scope, datasetID, documentID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/builds/" + storage.EncodeSegment(buildID) + "/chunks", nil
+}
+
+func (store *DocumentViewStore) chunkKey(scope sdkmemory.Scope, datasetID, documentID, buildID, chunkID string) (string, error) {
+	prefix, err := store.chunksPrefix(scope, datasetID, documentID, buildID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/" + storage.EncodeSegment(chunkID), nil
+}
+
+func chunkIDFromKey(prefix, key string) (string, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return "", errors.New("chunk key outside build prefix")
+	}
+	return storage.DecodeSegment(suffix)
 }
 
 func validateReplace(request ReplaceRequest) error {
@@ -361,7 +424,7 @@ func validatePersistedChunk(value persistedChunk, active activeBuild, scope sdkm
 		value.AgentID != scope.AgentID ||
 		value.DatasetID != datasetID || value.DocumentID != documentID ||
 		value.BuildID != active.BuildID || value.ChunkID != chunkID {
-		return errors.New("persisted address does not match workspace path")
+		return errors.New("persisted address does not match document key")
 	}
 	return validateChunk(value.Chunk, scope, datasetID, documentID, active.DocumentVersion)
 }
@@ -395,46 +458,6 @@ func buildDigest(request ReplaceRequest, chunks []Chunk) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func (store *WorkspaceStore) documentDir(scope sdkmemory.Scope, datasetID, documentID string) string {
-	return path.Join("views", "document", "v1", "partitions", encodeSegment(scope.RuntimeID),
-		encodeSegment(scope.UserID), encodeSegment(scope.AgentID), "datasets", encodeSegment(datasetID),
-		"documents", encodeSegment(documentID))
-}
-
-func (store *WorkspaceStore) activePath(scope sdkmemory.Scope, datasetID, documentID string) string {
-	return path.Join(store.documentDir(scope, datasetID, documentID), "active.json")
-}
-
-func (store *WorkspaceStore) chunksDir(scope sdkmemory.Scope, datasetID, documentID, buildID string) string {
-	return path.Join(store.documentDir(scope, datasetID, documentID), "builds", encodeSegment(buildID), "chunks")
-}
-
-func (store *WorkspaceStore) chunkPath(scope sdkmemory.Scope, datasetID, documentID, buildID, chunkID string) string {
-	return path.Join(store.chunksDir(scope, datasetID, documentID, buildID), encodeSegment(chunkID)+".json")
-}
-
-func encodeSegment(value string) string {
-	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
-}
-
-func decodeDataFilename(name string) (string, bool, error) {
-	if !strings.HasSuffix(name, ".json") {
-		return "", false, nil
-	}
-	segment := strings.TrimSuffix(name, ".json")
-	if !strings.HasPrefix(segment, "k_") {
-		return "", false, nil
-	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(segment, "k_"))
-	if err != nil {
-		return "", true, err
-	}
-	if encodeSegment(string(data)) != segment {
-		return "", true, errors.New("non-canonical path segment")
-	}
-	return string(data), true, nil
-}
-
 func decodeJSON(data []byte, destination any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -451,14 +474,14 @@ func decodeJSON(data []byte, destination any) error {
 	return nil
 }
 
-func nilWorkspace(ws workspace.Workspace) bool {
-	if ws == nil {
+func nilValue(value any) bool {
+	if value == nil {
 		return true
 	}
-	value := reflect.ValueOf(ws)
-	switch value.Kind() {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
+		return reflected.IsNil()
 	default:
 		return false
 	}

@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -25,7 +26,7 @@ var (
 	testSource     = sdkmemory.SourceRef{Kind: sdkmemory.SourceExternal, ID: "source-1", Locator: "file:///source"}
 )
 
-func TestWorkspaceStorePutReplaceAndRetry(t *testing.T) {
+func TestDocumentStorePutReplaceAndRetry(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	store := newDocumentStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
@@ -86,7 +87,7 @@ func TestEventIDRemainsByteCompatibleWithLegacyScopeEncoding(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreHardPartitionAndDatasetIsolation(t *testing.T) {
+func TestDocumentStoreHardPartitionAndDatasetIsolation(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	requests := []PutRequest{
@@ -110,7 +111,7 @@ func TestWorkspaceStoreHardPartitionAndDatasetIsolation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreAgentPartitionIsolation(t *testing.T) {
+func TestDocumentStoreAgentPartitionIsolation(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	scopeA := sdkmemory.Scope{RuntimeID: "runtime", UserID: "same-user", AgentID: "agent-a"}
@@ -143,7 +144,7 @@ func TestWorkspaceStoreAgentPartitionIsolation(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStorePersistsAndPaginatesStably(t *testing.T) {
+func TestDocumentStorePersistsAndPaginatesStably(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
 	store := newDocumentStore(t, ws)
@@ -166,27 +167,44 @@ func TestWorkspaceStorePersistsAndPaginatesStably(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreDocumentFilesDoNotRewriteSiblings(t *testing.T) {
+func TestDocumentStoreSiblingWritesAreIsolated(t *testing.T) {
 	ctx := context.Background()
-	counting := newCountingWorkspace(workspace.NewMemWorkspace())
-	store := newDocumentStore(t, counting)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingKV{Store: kvStore}
+	store, err := NewDocumentStore(logStore, counting)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.Put(ctx, documentRequest(documentScopeA, "dataset", "doc-a", "a1", "a1")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Put(ctx, documentRequest(documentScopeA, "dataset", "doc-b", "b1", "b1")); err != nil {
 		t.Fatal(err)
 	}
-	pathA := store.documentPath(documentScopeA, "dataset", "doc-a")
-	pathB := store.documentPath(documentScopeA, "dataset", "doc-b")
+	keyA, keyErr := store.currentKey(documentScopeA, "dataset", "doc-a")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	keyB, keyErr := store.currentKey(documentScopeA, "dataset", "doc-b")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
 	if _, err := store.Put(ctx, documentRequest(documentScopeA, "dataset", "doc-a", "a2", "a2")); err != nil {
 		t.Fatal(err)
 	}
-	if counting.renameCount(pathA) != 2 || counting.renameCount(pathB) != 1 {
-		t.Fatalf("publish counts: doc-a=%d doc-b=%d", counting.renameCount(pathA), counting.renameCount(pathB))
+	if counting.putCount(keyA) != 2 || counting.putCount(keyB) != 1 {
+		t.Fatalf("publish counts: doc-a=%d doc-b=%d", counting.putCount(keyA), counting.putCount(keyB))
 	}
 }
 
-func TestWorkspaceStoreIdempotencyKeyIsPerDocument(t *testing.T) {
+func TestDocumentStoreIdempotencyKeyIsPerDocument(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	for _, id := range []string{"doc-a", "doc-b"} {
@@ -197,7 +215,7 @@ func TestWorkspaceStoreIdempotencyKeyIsPerDocument(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreConcurrentPut(t *testing.T) {
+func TestDocumentStoreConcurrentPut(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	const count = 40
@@ -226,29 +244,45 @@ func TestWorkspaceStoreConcurrentPut(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreRecoversEventAfterCurrentPublishCrash(t *testing.T) {
+func TestDocumentStoreRecoversEventAfterCurrentPublishCrash(t *testing.T) {
 	ctx := context.Background()
-	base := workspace.NewMemWorkspace()
-	faults := &failRenameWorkspace{Workspace: base}
-	store := newDocumentStore(t, faults)
-	faults.destination = store.currentPath(documentScopeA, "dataset", "doc")
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentKey, keyErr := dummyDocumentStore.currentKey(documentScopeA, "dataset", "doc")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	faults := &failKV{Store: kvStore, key: currentKey}
+	store, err := NewDocumentStore(logStore, faults)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := documentRequest(documentScopeA, "dataset", "doc", "put-1", "durable")
 	if _, err := store.Put(ctx, request); err == nil {
 		t.Fatal("current pointer publish failure was not surfaced")
 	}
 
-	reopened := newDocumentStore(t, base)
+	reopened, err := NewDocumentStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	events, err := reopened.ListEvents(ctx, documentScopeA, ListEventOptions{})
 	if err != nil || len(events) != 1 || events[0].Version != 1 {
 		t.Fatalf("durable event after crash = %#v, %v", events, err)
 	}
-	current, ok, err := reopened.Get(ctx, documentScopeA, "dataset", "doc")
-	if err != nil || !ok || current.Version != 1 {
-		t.Fatalf("event scan did not recover current: %#v ok=%v err=%v", current, ok, err)
-	}
 	repaired, err := reopened.Put(ctx, request)
 	if err != nil || repaired.Version != 1 {
 		t.Fatalf("retry repair = %#v, %v", repaired, err)
+	}
+	current, ok, err := reopened.Get(ctx, documentScopeA, "dataset", "doc")
+	if err != nil || !ok || current.Version != 1 {
+		t.Fatalf("current after repair: %#v ok=%v err=%v", current, ok, err)
 	}
 	events, err = reopened.ListEvents(ctx, documentScopeA, ListEventOptions{})
 	if err != nil || len(events) != 1 {
@@ -256,7 +290,7 @@ func TestWorkspaceStoreRecoversEventAfterCurrentPublishCrash(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreEventsUseScopeOutboxCursorAcrossDocuments(t *testing.T) {
+func TestDocumentStoreEventsUseScopeOutboxCursorAcrossDocuments(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	for _, item := range []struct {
@@ -295,18 +329,33 @@ func TestWorkspaceStoreEventsUseScopeOutboxCursorAcrossDocuments(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreRepairsEventPublishedBeforeOutboxHead(t *testing.T) {
+func TestDocumentStoreRetryRepairsIncompletePublication(t *testing.T) {
 	ctx := context.Background()
-	base := workspace.NewMemWorkspace()
-	faults := &failRenameWorkspace{Workspace: base}
-	store := newDocumentStore(t, faults)
-	faults.destination = store.outboxHeadPath(documentScopeA)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey, keyErr := dummyDocumentStore.byKeyKey(documentScopeA, "dataset", "doc", "put-1")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	faults := &failKV{Store: kvStore, key: byKey}
+	store, err := NewDocumentStore(logStore, faults)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := documentRequest(documentScopeA, "dataset", "doc", "put-1", "durable")
 	if _, err := store.Put(ctx, request); err == nil {
-		t.Fatal("outbox head publish failure was not surfaced")
+		t.Fatal("by-key publish failure was not surfaced")
 	}
-
-	reopened := newDocumentStore(t, base)
+	reopened, err := NewDocumentStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	repaired, err := reopened.Put(ctx, request)
 	if err != nil || repaired.Version != 1 {
 		t.Fatalf("retry repair=%#v err=%v", repaired, err)
@@ -317,26 +366,7 @@ func TestWorkspaceStoreRepairsEventPublishedBeforeOutboxHead(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreRepairsFailureAfterOutboxHeadPublication(t *testing.T) {
-	ctx := context.Background()
-	base := workspace.NewMemWorkspace()
-	faults := &failDeleteWorkspace{Workspace: base}
-	store := newDocumentStore(t, faults)
-	faults.target = store.outboxPendingPath(documentScopeA)
-	if _, err := store.Put(ctx, documentRequest(
-		documentScopeA, "dataset", "doc", "put-1", "durable",
-	)); err == nil {
-		t.Fatal("post-head cleanup failure was not surfaced")
-	}
-
-	reopened := newDocumentStore(t, base)
-	events, err := reopened.ListEvents(ctx, documentScopeA, ListEventOptions{})
-	if err != nil || len(events) != 1 || events[0].OutboxSeq != 1 {
-		t.Fatalf("repair after head=%#v err=%v", events, err)
-	}
-}
-
-func TestWorkspaceStoreOwnsInputsAndResults(t *testing.T) {
+func TestDocumentStoreOwnsInputsAndResults(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	raw := json.RawMessage(`{"value":"original"}`)
@@ -377,7 +407,7 @@ func TestWorkspaceStoreOwnsInputsAndResults(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreDeleteAndDeleteDataset(t *testing.T) {
+func TestDocumentStoreDeleteAndDeleteDataset(t *testing.T) {
 	ctx := context.Background()
 	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	for _, item := range []struct{ dataset, id string }{
@@ -435,9 +465,13 @@ func TestWorkspaceStoreDeleteAndDeleteDataset(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreEncodesMaliciousIDs(t *testing.T) {
+func TestDocumentStoreEncodesMaliciousIDs(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := newDocumentStore(t, ws)
 	scope := sdkmemory.Scope{RuntimeID: "../runtime", UserID: "/../../user"}
 	dataset := "../../escape/dataset"
@@ -446,16 +480,20 @@ func TestWorkspaceStoreEncodesMaliciousIDs(t *testing.T) {
 	if err != nil || got.DocumentID != documentID {
 		t.Fatalf("Put = %#v, %v", got, err)
 	}
-	documentPath := store.documentPath(scope, dataset, documentID)
-	if strings.Contains(documentPath, "..") || strings.Contains(documentPath, dataset) || strings.HasPrefix(documentPath, "/") {
-		t.Fatalf("unsafe document path %q", documentPath)
+	currentKey, keyErr := store.currentKey(scope, dataset, documentID)
+	if keyErr != nil {
+		t.Fatal(keyErr)
 	}
-	if exists, err := ws.Exists(ctx, documentPath); err != nil || !exists {
-		t.Fatalf("encoded document missing: exists=%v err=%v", exists, err)
+	if strings.Contains(currentKey, "..") || strings.Contains(currentKey, dataset) ||
+		strings.HasPrefix(currentKey, "/") {
+		t.Fatalf("unsafe current key %q", currentKey)
+	}
+	if _, err := kvStore.Get(ctx, currentKey); err != nil {
+		t.Fatalf("encoded current missing: %v", err)
 	}
 }
 
-func TestWorkspaceStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
+func TestDocumentStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	ctx := context.Background()
 	for _, test := range []struct {
 		name string
@@ -466,8 +504,25 @@ func TestWorkspaceStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ws := workspace.NewMemWorkspace()
-			store := newDocumentStore(t, ws)
-			ws.MustWrite(store.documentPath(documentScopeA, "dataset", "doc"), test.data)
+			logStore, err := storage.NewWorkspaceLog(ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			kvStore, err := storage.NewWorkspaceKV(ws)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewDocumentStore(logStore, kvStore)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, keyErr := store.currentKey(documentScopeA, "dataset", "doc")
+			if keyErr != nil {
+				t.Fatal(keyErr)
+			}
+			if err := kvStore.Put(ctx, key, test.data); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := store.List(ctx, documentScopeA, "dataset", ListOptions{}); err == nil {
 				t.Fatal("List error = nil")
 			}
@@ -475,50 +530,52 @@ func TestWorkspaceStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	}
 
 	ws := workspace.NewMemWorkspace()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store := newDocumentStore(t, ws)
 	if _, err := store.Put(ctx, documentRequest(documentScopeA, "dataset", "doc", "key", "ok")); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := ws.Read(ctx, store.eventPath(documentScopeA, "dataset", "doc", "key"))
+	key, keyErr := store.currentKey(documentScopeA, "dataset", "doc")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	data, _ := kvStore.Get(ctx, key)
 	var state map[string]any
 	if err := json.Unmarshal(data, &state); err != nil {
 		t.Fatal(err)
 	}
 	state["event"].(map[string]any)["document"].(map[string]any)["version"] = float64(0)
 	corrupt, _ := json.Marshal(state)
-	ws.MustWrite(store.eventPath(documentScopeA, "dataset", "doc", "key"), corrupt)
+	if err := kvStore.Put(ctx, key, corrupt); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.List(ctx, documentScopeA, "dataset", ListOptions{}); err == nil {
 		t.Fatal("invalid document was accepted")
 	}
 }
 
-func TestWorkspaceStoreIgnoresForeignFilesButRejectsDataLikeNames(t *testing.T) {
-	ctx := context.Background()
-	ws := workspace.NewMemWorkspace()
-	store := newDocumentStore(t, ws)
-	if _, err := store.Put(ctx, documentRequest(documentScopeA, "dataset", "doc", "key", "ok")); err != nil {
+func TestDocumentStoreValidationAndNilDependencies(t *testing.T) {
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
 		t.Fatal(err)
 	}
-	ws.MustWrite(store.documentsDir(documentScopeA, "dataset")+"/README.txt", []byte("ignored"))
-	ws.MustWrite(store.documentsDir(documentScopeA, "dataset")+"/.document.json.tmp", []byte("ignored"))
-	if documents, err := store.List(ctx, documentScopeA, "dataset", ListOptions{}); err != nil || len(documents) != 1 {
-		t.Fatalf("foreign files affected scan: documents=%d err=%v", len(documents), err)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
 	}
-	ws.MustWrite(store.documentsDir(documentScopeA, "dataset")+"/k_!!!.json", []byte("{}"))
-	if _, err := store.List(ctx, documentScopeA, "dataset", ListOptions{}); err == nil {
-		t.Fatal("data-like invalid filename was ignored")
+	if _, err := NewDocumentStore(nil, kvStore); err == nil {
+		t.Fatal("nil log accepted")
 	}
-}
-
-func TestWorkspaceStoreValidationAndNilWorkspace(t *testing.T) {
-	if _, err := NewWorkspaceStore(nil); err == nil {
-		t.Fatal("nil workspace accepted")
+	if _, err := NewDocumentStore(logStore, nil); err == nil {
+		t.Fatal("nil store accepted")
 	}
-	var typedNil *workspace.MemWorkspace
-	if _, err := NewWorkspaceStore(typedNil); err == nil {
-		t.Fatal("typed nil workspace accepted")
+	store, err := NewDocumentStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
 	}
-	store := newDocumentStore(t, workspace.NewMemWorkspace())
 	request := documentRequest(documentScopeA, "dataset", "doc", "key", "content")
 	request.Provenance = nil
 	if _, err := store.Put(context.Background(), request); err == nil {
@@ -543,73 +600,85 @@ func documentIDs(documents []Document) []string {
 	return ids
 }
 
-func newDocumentStore(t *testing.T, ws workspace.Workspace, options ...Option) *WorkspaceStore {
+func newDocumentStore(t *testing.T, ws workspace.Workspace, options ...Option) *DocumentStore {
 	t.Helper()
-	store, err := NewWorkspaceStore(ws, options...)
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDocumentStore(logStore, kvStore, options...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store
 }
 
-type countingWorkspace struct {
-	workspace.Workspace
-	mu      sync.Mutex
-	renames map[string]int
+var dummyDocumentStore = mustDocumentStore()
+
+func mustDocumentStore() *DocumentStore {
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		panic(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		panic(err)
+	}
+	store, err := NewDocumentStore(logStore, kvStore)
+	if err != nil {
+		panic(err)
+	}
+	return store
 }
 
-type failRenameWorkspace struct {
-	workspace.Workspace
-	mu          sync.Mutex
-	destination string
-	failed      bool
+type countingKV struct {
+	storage.Store
+	mu   sync.Mutex
+	puts map[string]int
 }
 
-type failDeleteWorkspace struct {
-	workspace.Workspace
-	mu     sync.Mutex
-	target string
+func (kv *countingKV) Put(ctx context.Context, key string, data []byte) error {
+	kv.mu.Lock()
+	if kv.puts == nil {
+		kv.puts = make(map[string]int)
+	}
+	kv.puts[key]++
+	kv.mu.Unlock()
+	return kv.Store.Put(ctx, key, data)
+}
+
+func (kv *countingKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return kv.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}
+
+func (kv *countingKV) putCount(key string) int {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return kv.puts[key]
+}
+
+type failKV struct {
+	storage.Store
+	key    string
 	failed bool
 }
 
-func (ws *failDeleteWorkspace) Delete(ctx context.Context, name string) error {
-	ws.mu.Lock()
-	if name == ws.target && !ws.failed {
-		ws.failed = true
-		ws.mu.Unlock()
-		return errors.New("injected delete failure")
+func (kv *failKV) Put(ctx context.Context, key string, data []byte) error {
+	if kv.key == key && !kv.failed {
+		kv.failed = true
+		return errors.New("injected publish failure")
 	}
-	ws.mu.Unlock()
-	return ws.Workspace.Delete(ctx, name)
+	return kv.Store.Put(ctx, key, data)
 }
 
-func (ws *failRenameWorkspace) Rename(ctx context.Context, source, destination string) error {
-	ws.mu.Lock()
-	if destination == ws.destination && !ws.failed {
-		ws.failed = true
-		ws.mu.Unlock()
-		return errors.New("injected rename failure")
+func (kv *failKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	if kv.key == key && !kv.failed {
+		kv.failed = true
+		return false, errors.New("injected publish failure")
 	}
-	ws.mu.Unlock()
-	return ws.Workspace.Rename(ctx, source, destination)
-}
-
-func newCountingWorkspace(ws workspace.Workspace) *countingWorkspace {
-	return &countingWorkspace{Workspace: ws, renames: make(map[string]int)}
-}
-
-func (ws *countingWorkspace) Rename(ctx context.Context, source, destination string) error {
-	if err := ws.Workspace.Rename(ctx, source, destination); err != nil {
-		return err
-	}
-	ws.mu.Lock()
-	ws.renames[destination]++
-	ws.mu.Unlock()
-	return nil
-}
-
-func (ws *countingWorkspace) renameCount(path string) int {
-	ws.mu.Lock()
-	defer ws.mu.Unlock()
-	return ws.renames[path]
+	return kv.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }

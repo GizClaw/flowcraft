@@ -2,19 +2,17 @@ package lifecycle
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	observationview "github.com/GizClaw/flowcraft/memory/views/observation"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const lifecycleCheckpointSchemaVersion = 1
@@ -52,21 +50,17 @@ type CheckpointState struct {
 	RepairPlan   *RepairPlan                   `json:"repair_plan,omitempty"`
 }
 
+// CheckpointStore is the consumer-side contract used by the lifecycle DAG.
 type CheckpointStore interface {
 	Load(context.Context, CheckpointKey) (Checkpoint, bool, error)
 	Save(context.Context, Checkpoint) error
 }
 
-type WorkspaceCheckpointStore struct {
-	ws    workspace.Workspace
+// LifecycleCheckpointStore persists lifecycle DAG node checkpoints on a
+// storage.Store.
+type LifecycleCheckpointStore struct {
+	kv    storage.Store
 	clock func() time.Time
-}
-
-func NewWorkspaceCheckpointStore(ws workspace.Workspace) (*WorkspaceCheckpointStore, error) {
-	if ws == nil {
-		return nil, errors.New("memory lifecycle checkpoint: workspace is required")
-	}
-	return &WorkspaceCheckpointStore{ws: ws, clock: time.Now}, nil
 }
 
 type checkpointEnvelope struct {
@@ -74,13 +68,27 @@ type checkpointEnvelope struct {
 	Checkpoint    Checkpoint `json:"checkpoint"`
 }
 
-func (store *WorkspaceCheckpointStore) Load(ctx context.Context, key CheckpointKey) (Checkpoint, bool, error) {
+// NewLifecycleCheckpointStore constructs a KV-backed lifecycle checkpoint
+// store.
+func NewLifecycleCheckpointStore(kv storage.Store) (*LifecycleCheckpointStore, error) {
+	if nilStore(kv) {
+		return nil, errors.New("memory lifecycle checkpoint: store is required")
+	}
+	return &LifecycleCheckpointStore{kv: kv, clock: time.Now}, nil
+}
+
+// Load implements CheckpointStore.
+func (store *LifecycleCheckpointStore) Load(ctx context.Context, key CheckpointKey) (Checkpoint, bool, error) {
 	if err := validateCheckpointKey(key); err != nil {
 		return Checkpoint{}, false, err
 	}
-	data, err := store.ws.Read(ctx, store.checkpointPath(key))
+	checkpointKey, err := store.key(key)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
+		return Checkpoint{}, false, err
+	}
+	data, err := store.kv.Get(ctx, checkpointKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return Checkpoint{}, false, nil
 		}
 		return Checkpoint{}, false, err
@@ -98,14 +106,19 @@ func (store *WorkspaceCheckpointStore) Load(ctx context.Context, key CheckpointK
 	return envelope.Checkpoint, true, nil
 }
 
-func (store *WorkspaceCheckpointStore) Save(ctx context.Context, checkpoint Checkpoint) error {
-	if store == nil || store.ws == nil {
+// Save implements CheckpointStore.
+func (store *LifecycleCheckpointStore) Save(ctx context.Context, checkpoint Checkpoint) error {
+	if store == nil || nilStore(store.kv) {
 		return errors.New("memory lifecycle checkpoint: store is required")
 	}
 	if checkpoint.UpdatedAt.IsZero() {
 		checkpoint.UpdatedAt = store.clock().UTC()
 	}
 	if err := validateCheckpoint(checkpoint); err != nil {
+		return err
+	}
+	key, err := store.key(checkpoint.Key)
+	if err != nil {
 		return err
 	}
 	data, err := json.Marshal(checkpointEnvelope{
@@ -115,10 +128,23 @@ func (store *WorkspaceCheckpointStore) Save(ctx context.Context, checkpoint Chec
 	if err != nil {
 		return err
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.checkpointPath(checkpoint.Key), data); err != nil {
+	if err := store.kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("memory lifecycle checkpoint: write: %w", err)
 	}
 	return nil
+}
+
+func (store *LifecycleCheckpointStore) key(key CheckpointKey) (string, error) {
+	partition, err := storage.ScopePartition(key.Scope)
+	if err != nil {
+		return "", err
+	}
+	return "lifecycle/v1/checkpoints/" + partition + "/" +
+		storage.EncodeSegment(key.PolicyDigest) + "/" +
+		storage.EncodeSegment(key.DAGDigest) + "/" +
+		storage.EncodeSegment(key.PublicationID) + "/" +
+		storage.EncodeSegment(key.Branch) + "/" +
+		storage.EncodeSegment(key.Node), nil
 }
 
 func validateCheckpoint(value Checkpoint) error {
@@ -156,20 +182,6 @@ func validateCheckpointKey(key CheckpointKey) error {
 		}
 	}
 	return nil
-}
-
-func (store *WorkspaceCheckpointStore) checkpointPath(key CheckpointKey) string {
-	return path.Join(
-		"checkpoints", "memory-lifecycle", "v1", "partitions",
-		encodeCheckpoint(key.Scope.RuntimeID), encodeCheckpoint(key.Scope.UserID), encodeCheckpoint(key.Scope.AgentID),
-		"policies", encodeCheckpoint(key.PolicyDigest), "dags", encodeCheckpoint(key.DAGDigest),
-		"publications", encodeCheckpoint(key.PublicationID), "branches", encodeCheckpoint(key.Branch),
-		encodeCheckpoint(key.Node)+".json",
-	)
-}
-
-func encodeCheckpoint(value string) string {
-	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
 }
 
 type memoryCheckpointStore struct {
@@ -218,4 +230,17 @@ func cloneCheckpoint(value Checkpoint) Checkpoint {
 	}
 	value.State = &state
 	return value
+}
+
+func nilStore(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }

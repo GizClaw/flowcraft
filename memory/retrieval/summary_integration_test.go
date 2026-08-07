@@ -19,8 +19,8 @@ func TestFactCompactProviderIntegration(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 	ws := workspace.NewMemWorkspace()
-	facts, _ := factview.NewWorkspaceStore(ws)
-	summaries, _ := summaryview.NewWorkspaceStore(ws)
+	facts := newFactStore(t, ws)
+	summaries := newSummaryStore(t, ws)
 	source := sdkmemory.SourceRef{
 		Kind: sdkmemory.SourceMessage, ID: "conversation/message", Revision: "1",
 	}

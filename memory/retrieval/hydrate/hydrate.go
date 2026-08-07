@@ -35,10 +35,10 @@ type ProvenanceExpander interface {
 
 // Composite resolves message source, fact view, and document chunk addresses.
 type Composite struct {
-	Messages  messagesource.Store
-	Facts     factview.Store
-	Chunks    documentview.Store
-	Summaries summaryview.Store
+	Messages  *messagesource.MessageStore
+	Facts     *factview.FactStore
+	Chunks    *documentview.DocumentViewStore
+	Summaries *summaryview.SummaryStore
 }
 
 var _ Hydrator = (*Composite)(nil)

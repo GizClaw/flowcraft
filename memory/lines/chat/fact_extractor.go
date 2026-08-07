@@ -78,7 +78,7 @@ type Config struct {
 	Runtime                *inference.Runtime
 	GenerateModel          *inference.ModelRef
 	EmbedModel             *inference.ModelRef
-	Facts                  factview.Store
+	Facts                  *factview.FactStore
 	LinkVectorSearcher     component.VectorSearcher
 }
 
@@ -126,6 +126,7 @@ type FactExtractor struct {
 
 type modelFact struct {
 	Text           string   `json:"text"`
+	Fact           string   `json:"fact,omitempty"`
 	Entities       []string `json:"entities,omitempty"`
 	Predicate      string   `json:"predicate,omitempty"`
 	TemporalDetail string   `json:"temporal_detail,omitempty"`
@@ -217,6 +218,12 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	output := make([]component.Artifact, 0, len(decoded.Facts))
 	for index, item := range decoded.Facts {
 		text := factview.NormalizeText(item.Text)
+		if text == "" {
+			// json_object-only providers may name the field "fact" instead
+			// of "text" when the prompt contract is not enforced by a
+			// response schema; accept it as a lenient alias.
+			text = factview.NormalizeText(item.Fact)
+		}
 		if text == "" {
 			continue
 		}

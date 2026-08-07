@@ -18,13 +18,10 @@ import (
 
 func TestDefaultTypedDAGsAndPolicyDigest(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, err := NewBuilder(workspace.NewMemWorkspace(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	builder := newBuilder(t, runtime, nil)
 	settings := Settings{
-		Generate: modelSettings(generate),
-		Embed:    modelSettings(embed),
+		Generate: FromModelRef(generate),
+		Embed:    FromModelRef(embed),
 		Interval: Duration(time.Second),
 	}
 	first, err := builder.NewAssembly(context.Background(), settings)
@@ -121,7 +118,7 @@ func (d customChatDeriver) Derive(_ context.Context, input component.Artifact) (
 
 func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	builder := newBuilder(t, runtime, nil)
 	factories := NewFactoryCatalog()
 	if err := component.RegisterTypedDeriver(
 		factories,
@@ -148,8 +145,8 @@ func TestCustomTypedDAGAndBuildDiagnostics(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := Settings{
-		Generate:       modelSettings(generate),
-		Embed:          modelSettings(embed),
+		Generate:       FromModelRef(generate),
+		Embed:          FromModelRef(embed),
 		FactoryCatalog: factories,
 		ChatDAG: ChatDAGSettings{Nodes: []ChatNodeSettings{
 			CustomChatNode("custom", component.NewDeriverSpec("custom.prefix", customChatConfig{Prefix: "x-"})),
@@ -201,7 +198,7 @@ func (step customLifecycleStep) Run(_ context.Context, state *lifecycle.RunState
 func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
 	ws := workspace.NewMemWorkspace()
-	builder, _ := NewBuilder(ws, runtime)
+	builder := newBuilder(t, runtime, ws)
 	factories := lifecycle.NewCatalog()
 	var calls atomic.Int32
 	if err := lifecycle.RegisterTypedStep(
@@ -214,7 +211,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	}
 	scope := memory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	settings := Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed), LifecycleFactoryCatalog: factories,
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed), LifecycleFactoryCatalog: factories,
 		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 		LifecycleDAG: LifecycleDAGSettings{Nodes: []LifecycleNodeSettings{
 			CustomLifecycleNode("custom", lifecycle.NewStepSpec("custom.observe", customLifecycleConfig{Label: "called"})),
@@ -243,7 +240,7 @@ func TestAssemblyExecutesCustomTypedLifecycleDAGForRealFactTask(t *testing.T) {
 	if calls.Load() != 1 {
 		t.Fatalf("custom lifecycle calls=%d", calls.Load())
 	}
-	facts, err := factview.NewWorkspaceStore(ws)
+	facts := newFactStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}

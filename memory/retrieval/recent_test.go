@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval/hydrate"
 	"github.com/GizClaw/flowcraft/memory/retrieval/pack"
 	messagesource "github.com/GizClaw/flowcraft/memory/sources/message"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -18,7 +19,7 @@ import (
 func TestProviderReturnsRecentForEmptyQueryAndAllHybridLanesFailed(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "agent"}
-	messages, _ := messagesource.NewWorkspaceStore(workspace.NewMemWorkspace())
+	messages := newMessageStore(t, workspace.NewMemWorkspace())
 	if _, err := messages.Append(ctx, messagesource.AppendRequest{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
 		Messages: []sdkmessage.Message{
@@ -62,10 +63,23 @@ func TestProviderReturnsRecentForEmptyQueryAndAllHybridLanesFailed(t *testing.T)
 	}
 }
 
+func newMessageStore(t *testing.T, ws workspace.Workspace) *messagesource.MessageStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := messagesource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
 func TestProviderRecentPrioritySurvivesBudgetAndDeduplicatesHybrid(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
-	messages, _ := messagesource.NewWorkspaceStore(workspace.NewMemWorkspace())
+	messages := newMessageStore(t, workspace.NewMemWorkspace())
 	records, err := messages.Append(ctx, messagesource.AppendRequest{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
 		Messages: []sdkmessage.Message{sdkmessage.NewTextMessage(sdkmessage.RoleUser, "recent")},

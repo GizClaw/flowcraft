@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -147,7 +148,15 @@ func TestFactExtractorLinksEntityEmbeddingTopFiveAndTimeWindow(t *testing.T) {
 	ctx := context.Background()
 	runtime, generate, embed, embedding := associationRuntime(t)
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
-	store, err := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := factview.NewFactStore(logStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -38,13 +38,41 @@ type ProjectionIndexer struct {
 	Indexer component.Indexer
 }
 
+// MessageReader is the narrow, consumer-side view of the canonical message
+// store required by the worker: conversation enumeration, commit work items,
+// and record scans. The concrete MessageStore satisfies it structurally.
+type MessageReader interface {
+	ListConversations(context.Context, sdkmemory.Scope) ([]string, error)
+	ListCommits(context.Context, sdkmemory.Scope, string, msgsource.ListCommitOptions) ([]msgsource.Commit, error)
+	List(context.Context, sdkmemory.Scope, string, msgsource.ListOptions) ([]msgsource.Record, error)
+}
+
+// SummaryStore is the consumer-side view of the summary view required by the
+// processor wiring; *summaryview.SummaryStore satisfies it structurally.
+type SummaryStore interface {
+	Add(context.Context, summaryview.AddRequest) (summaryview.Record, error)
+	Get(context.Context, sdkmemory.Scope, string, string) (summaryview.Record, bool, error)
+	List(context.Context, sdkmemory.Scope, string, summaryview.ListOptions) ([]summaryview.Record, error)
+	LoadActive(context.Context, sdkmemory.Scope, string) (summaryview.Manifest, bool, error)
+	PublishActive(context.Context, summaryview.Manifest) error
+	ListActive(context.Context, sdkmemory.Scope, string, summaryview.ListOptions) ([]summaryview.Record, error)
+}
+
+// DocumentReader is the consumer-side view of the canonical document source
+// required by the worker; *docsource.DocumentStore satisfies it structurally.
+type DocumentReader interface {
+	ListEvents(context.Context, sdkmemory.Scope, docsource.ListEventOptions) ([]docsource.Event, error)
+	ListDatasets(context.Context, sdkmemory.Scope) ([]string, error)
+	List(context.Context, sdkmemory.Scope, string, docsource.ListOptions) ([]docsource.Document, error)
+}
+
 type ProcessorConfig struct {
-	Messages      msgsource.Store
-	Documents     docsource.Store
-	Facts         factview.Store
-	Summaries     summaryview.Store
+	Messages      MessageReader
+	Documents     DocumentReader
+	Facts         *factview.FactStore
+	Summaries     SummaryStore
 	Compactor     *summaryderive.Compactor
-	DocumentViews docview.Store
+	DocumentViews *docview.DocumentViewStore
 	ChatDAG       *derive.DAG
 	KnowledgeDAG  *derive.DAG
 	Checkpoints   CheckpointStore
@@ -55,12 +83,12 @@ type ProcessorConfig struct {
 
 // Processor scans and processes exactly one explicitly supplied hard scope.
 type Processor struct {
-	messages      msgsource.Store
-	documents     docsource.Store
-	facts         factview.Store
-	summaries     summaryview.Store
+	messages      MessageReader
+	documents     DocumentReader
+	facts         *factview.FactStore
+	summaries     SummaryStore
 	compactor     *summaryderive.Compactor
-	documentViews docview.Store
+	documentViews *docview.DocumentViewStore
 	chatDAG       *derive.DAG
 	knowledgeDAG  *derive.DAG
 	checkpoints   CheckpointStore

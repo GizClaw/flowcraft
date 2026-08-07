@@ -7,13 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path"
 	"reflect"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const activeCatalogSchemaVersion = 1
@@ -77,7 +76,7 @@ type activeCatalogCache struct {
 	manifest   Manifest
 }
 
-func (store *WorkspaceStore) publishActiveLocked(ctx context.Context, desired Manifest) error {
+func (store *SummaryStore) publishActiveLocked(ctx context.Context, desired Manifest) error {
 	previous, head, found, err := store.materializeActiveLocked(ctx, desired.Scope, desired.ConversationID)
 	if err != nil {
 		return err
@@ -126,7 +125,11 @@ func (store *WorkspaceStore) publishActiveLocked(ctx context.Context, desired Ma
 	if err != nil {
 		return fmt.Errorf("summary view: encode active segment: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.activeSegmentPath(desired.Scope, desired.ConversationID, segment.SegmentID), data); err != nil {
+	segmentPath, err := store.activeSegmentPath(desired.Scope, desired.ConversationID, segment.SegmentID)
+	if err != nil {
+		return err
+	}
+	if err := store.putImmutable(ctx, segmentPath, data); err != nil {
 		return fmt.Errorf("summary view: write active segment: %w", err)
 	}
 	nextHead := activeCatalogHead{
@@ -143,7 +146,7 @@ func (store *WorkspaceStore) publishActiveLocked(ctx context.Context, desired Ma
 
 const timeLayout = "2006-01-02T15:04:05.999999999Z07:00"
 
-func (store *WorkspaceStore) writeActiveBase(ctx context.Context, manifest Manifest) error {
+func (store *SummaryStore) writeActiveBase(ctx context.Context, manifest Manifest) error {
 	base := activeCatalogBase{
 		SchemaVersion: activeCatalogSchemaVersion,
 		RuntimeID:     manifest.Scope.RuntimeID, UserID: manifest.Scope.UserID, AgentID: manifest.Scope.AgentID,
@@ -157,7 +160,11 @@ func (store *WorkspaceStore) writeActiveBase(ctx context.Context, manifest Manif
 	if err != nil {
 		return fmt.Errorf("summary view: encode active base: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.activeBasePath(manifest.Scope, manifest.ConversationID, base.BaseID), data); err != nil {
+	basePath, err := store.activeBasePath(manifest.Scope, manifest.ConversationID, base.BaseID)
+	if err != nil {
+		return err
+	}
+	if err := store.putImmutable(ctx, basePath, data); err != nil {
 		return fmt.Errorf("summary view: write active base: %w", err)
 	}
 	head := activeCatalogHead{
@@ -171,26 +178,34 @@ func (store *WorkspaceStore) writeActiveBase(ctx context.Context, manifest Manif
 	return store.writeActiveHead(ctx, head, manifest)
 }
 
-func (store *WorkspaceStore) writeActiveHead(ctx context.Context, head activeCatalogHead, manifest Manifest) error {
+func (store *SummaryStore) writeActiveHead(ctx context.Context, head activeCatalogHead, manifest Manifest) error {
 	data, err := json.Marshal(head)
 	if err != nil {
 		return fmt.Errorf("summary view: encode active manifest: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.manifestPath(manifest.Scope, manifest.ConversationID), data); err != nil {
+	key, err := store.manifestPath(manifest.Scope, manifest.ConversationID)
+	if err != nil {
+		return err
+	}
+	if err := store.kv.Put(ctx, key, data); err != nil {
 		return fmt.Errorf("summary view: publish active manifest: %w", err)
 	}
 	store.cacheActive(store.catalogKey(manifest.Scope, manifest.ConversationID), digestBytes(data), manifest)
 	return nil
 }
 
-func (store *WorkspaceStore) materializeActiveLocked(
+func (store *SummaryStore) materializeActiveLocked(
 	ctx context.Context,
 	scope sdkmemory.Scope,
 	conversationID string,
 ) (Manifest, activeCatalogHead, bool, error) {
-	data, err := store.ws.Read(ctx, store.manifestPath(scope, conversationID))
+	manifestKey, err := store.manifestPath(scope, conversationID)
 	if err != nil {
-		if errors.Is(err, workspace.ErrNotFound) {
+		return Manifest{}, activeCatalogHead{}, false, err
+	}
+	data, err := store.kv.Get(ctx, manifestKey)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
 			return Manifest{}, activeCatalogHead{}, false, nil
 		}
 		return Manifest{}, activeCatalogHead{}, false, fmt.Errorf("summary view: read active manifest: %w", err)
@@ -206,7 +221,11 @@ func (store *WorkspaceStore) materializeActiveLocked(
 	if err := validateActiveHead(head, scope, conversationID); err != nil {
 		return Manifest{}, activeCatalogHead{}, false, err
 	}
-	baseData, err := store.ws.Read(ctx, store.activeBasePath(scope, conversationID, head.BaseID))
+	baseKey, err := store.activeBasePath(scope, conversationID, head.BaseID)
+	if err != nil {
+		return Manifest{}, activeCatalogHead{}, false, err
+	}
+	baseData, err := store.kv.Get(ctx, baseKey)
 	if err != nil {
 		return Manifest{}, activeCatalogHead{}, false, fmt.Errorf("summary view: read active base: %w", err)
 	}
@@ -223,7 +242,11 @@ func (store *WorkspaceStore) materializeActiveLocked(
 		if nextID == "" || nextDigest == "" {
 			return Manifest{}, activeCatalogHead{}, false, errors.New("summary view: active segment chain ended early")
 		}
-		segmentData, readErr := store.ws.Read(ctx, store.activeSegmentPath(scope, conversationID, nextID))
+		segmentKey, keyErr := store.activeSegmentPath(scope, conversationID, nextID)
+		if keyErr != nil {
+			return Manifest{}, activeCatalogHead{}, false, keyErr
+		}
+		segmentData, readErr := store.kv.Get(ctx, segmentKey)
 		if readErr != nil {
 			return Manifest{}, activeCatalogHead{}, false, fmt.Errorf("summary view: read active segment: %w", readErr)
 		}
@@ -406,7 +429,7 @@ func digestBytes(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (store *WorkspaceStore) cacheActive(key, headDigest string, manifest Manifest) {
+func (store *SummaryStore) cacheActive(key, headDigest string, manifest Manifest) {
 	if _, exists := store.activeCache[key]; !exists {
 		store.activeCacheOrder = append(store.activeCacheOrder, key)
 	}
@@ -418,18 +441,30 @@ func (store *WorkspaceStore) cacheActive(key, headDigest string, manifest Manife
 	}
 }
 
-func (store *WorkspaceStore) catalogKey(scope sdkmemory.Scope, conversationID string) string {
+func (store *SummaryStore) catalogKey(scope sdkmemory.Scope, conversationID string) string {
 	return strings.Join([]string{scope.RuntimeID, scope.UserID, scope.AgentID, conversationID}, "\x00")
 }
 
-func (store *WorkspaceStore) activeBasePath(scope sdkmemory.Scope, conversationID, id string) string {
-	return path.Join(store.activeCatalogRoot(scope, conversationID), "bases", encode(id)+".json")
+func (store *SummaryStore) activeBasePath(scope sdkmemory.Scope, conversationID, id string) (string, error) {
+	root, err := store.activeCatalogRoot(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return root + "/bases/" + storage.EncodeSegment(id) + ".json", nil
 }
 
-func (store *WorkspaceStore) activeSegmentPath(scope sdkmemory.Scope, conversationID, id string) string {
-	return path.Join(store.activeCatalogRoot(scope, conversationID), "segments", encode(id)+".json")
+func (store *SummaryStore) activeSegmentPath(scope sdkmemory.Scope, conversationID, id string) (string, error) {
+	root, err := store.activeCatalogRoot(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return root + "/segments/" + storage.EncodeSegment(id) + ".json", nil
 }
 
-func (store *WorkspaceStore) activeCatalogRoot(scope sdkmemory.Scope, conversationID string) string {
-	return path.Dir(store.manifestPath(scope, conversationID))
+func (store *SummaryStore) activeCatalogRoot(scope sdkmemory.Scope, conversationID string) (string, error) {
+	partition, err := storage.ScopePartition(scope)
+	if err != nil {
+		return "", err
+	}
+	return "views/summary/v1/" + partition + "/conversations/" + storage.EncodeSegment(conversationID), nil
 }

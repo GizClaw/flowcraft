@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval/hydrate"
 	"github.com/GizClaw/flowcraft/memory/retrieval/pack"
 	"github.com/GizClaw/flowcraft/memory/sources"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	observationview "github.com/GizClaw/flowcraft/memory/views/observation"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
@@ -53,9 +54,9 @@ func TestFactOutboxObservationRecallReinforceMainline(t *testing.T) {
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
-	observations, _ := observationview.NewWorkspaceStore(ws, observationview.WithClock(clock.Now))
-	events, _ := NewWorkspaceEventStore(ws)
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	observations := newObservationStore(t, ws, observationview.WithClock(clock.Now))
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	service, _ := NewService(ServiceConfig{Facts: facts, Observations: observations, Events: events, Decay: decay,
 		Forget: ForgetConfig{Mode: ModeAuditOnly}})
@@ -116,7 +117,7 @@ func TestReconcileRecoversFactAfterInitialOutboxWriteFailure(t *testing.T) {
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
 	if _, err := facts.Add(ctx, factview.AddRequest{
 		ID: "fact", Scope: scope, ConversationID: "conversation",
 		Content:    sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: "durable before outbox"}}},
@@ -128,8 +129,8 @@ func TestReconcileRecoversFactAfterInitialOutboxWriteFailure(t *testing.T) {
 	if err != nil || !ok || stored.Text != "durable before outbox" {
 		t.Fatalf("fact was not durable: %#v, %v, %v", stored, ok, err)
 	}
-	events, _ := NewWorkspaceEventStore(ws)
-	observations, _ := observationview.NewWorkspaceStore(ws, observationview.WithClock(clock.Now))
+	events := newEventStore(t, ws)
+	observations := newObservationStore(t, ws, observationview.WithClock(clock.Now))
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	service, _ := NewService(ServiceConfig{
 		Facts: facts, Observations: observations, Events: events, Decay: decay,
@@ -151,9 +152,9 @@ func TestCompleteFailureReplayDoesNotDuplicateObservationSideEffect(t *testing.T
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
-	observations, _ := observationview.NewWorkspaceStore(ws, observationview.WithClock(clock.Now))
-	events, _ := NewWorkspaceEventStore(ws)
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	observations := newObservationStore(t, ws, observationview.WithClock(clock.Now))
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	service, _ := NewService(ServiceConfig{
 		Facts: facts, Observations: observations, Events: events, Decay: decay,
@@ -195,9 +196,9 @@ func TestSoftVisibilityFiltersRealProviderResults(t *testing.T) {
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
-	observations, _ := observationview.NewWorkspaceStore(ws, observationview.WithClock(clock.Now))
-	events, _ := NewWorkspaceEventStore(ws)
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	observations := newObservationStore(t, ws, observationview.WithClock(clock.Now))
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	service, _ := NewService(ServiceConfig{
 		Facts: facts, Observations: observations, Events: events, Decay: decay,
@@ -243,12 +244,16 @@ func TestDreamingRunnerDiscoversCatalogScopeAfterConstruction(t *testing.T) {
 	clock := &fixedClock{value: now}
 	ws := workspace.NewMemWorkspace()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "dynamic"}
-	catalog, _ := sources.NewWorkspaceScopeCatalog(ws)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, _ := sources.NewScopeCatalog(kvStore)
 	outbox, _ := NewWorkspaceOutbox(ws, clock)
 	sink := &OutboxSink{Outbox: outbox, PolicyDigest: "policy", Branch: "integrate"}
-	facts, _ := factview.NewWorkspaceStore(ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
-	observations, _ := observationview.NewWorkspaceStore(ws, observationview.WithClock(clock.Now))
-	events, _ := NewWorkspaceEventStore(ws)
+	facts := newFactStore(t, ws, factview.WithClock(clock.Now), factview.WithPublicationSink(sink))
+	observations := newObservationStore(t, ws, observationview.WithClock(clock.Now))
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	service, _ := NewService(ServiceConfig{
 		Facts: facts, Observations: observations, Events: events, Decay: decay,
@@ -323,7 +328,7 @@ func TestDreamingRunnerHeartbeatsSlowTaskAcrossRunners(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, nil)
-	events, _ := NewWorkspaceEventStore(ws)
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, nil)
 	phase := &retryPhase{delay: 100 * time.Millisecond}
 	service, _ := NewService(ServiceConfig{
@@ -362,7 +367,7 @@ func TestDreamingRunnerRetriesNotificationFailureAndRecordsLastError(t *testing.
 	ws := workspace.NewMemWorkspace()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	outbox, _ := NewWorkspaceOutbox(ws, nil)
-	events, _ := NewWorkspaceEventStore(ws)
+	events := newEventStore(t, ws)
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, nil)
 	phase := &retryPhase{failFirst: true}
 	service, _ := NewService(ServiceConfig{
@@ -423,7 +428,7 @@ func TestDreamingRunnerSerializesScopeAndIsolatesScopes(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
 	outbox, _ := NewWorkspaceOutbox(ws, nil)
-	events, _ := NewWorkspaceEventStore(ws)
+	events := newEventStore(t, ws)
 	clock := fixedClock{time.Date(2026, 8, 5, 6, 0, 0, 0, time.UTC)}
 	decay, _ := NewDecay(DecayConfig{HalfLife: time.Hour, RecencyWeight: 1}, clock)
 	facts := &fakeFacts{}

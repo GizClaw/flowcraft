@@ -13,13 +13,10 @@ import (
 func TestLatestReturnsCanonicalWindowAscendingAndIsolated(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
-	store, err := NewWorkspaceStore(workspace.NewMemWorkspace(), WithClock(func() time.Time {
+	store := newMessageStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time {
 		now = now.Add(time.Second)
 		return now
 	}))
-	if err != nil {
-		t.Fatal(err)
-	}
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "agent-a"}
 	for index, text := range []string{"one", "two", "three", "four"} {
 		if _, err := store.Append(ctx, AppendRequest{

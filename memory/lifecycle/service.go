@@ -86,7 +86,7 @@ func (function RepairPhaseFunc) RunRepair(ctx context.Context, task Task) (Repai
 type ServiceConfig struct {
 	Facts        FactReader
 	Observations ObservationStore
-	Events       *WorkspaceEventStore
+	Events       *EventStore
 	Decay        *Decay
 	Forget       ForgetConfig
 	Compact      TaskPhase
@@ -345,7 +345,7 @@ func taskForPublication(publication factview.Publication, policyDigest, branch s
 type DreamingRunnerConfig struct {
 	Outbox       *WorkspaceOutbox
 	Service      *Service
-	Catalog      sources.ScopeCatalog
+	Catalog      *sources.ScopeCatalog
 	Scopes       []sdkmemory.Scope
 	Owner        string
 	LeaseTTL     time.Duration

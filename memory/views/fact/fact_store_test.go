@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
@@ -21,7 +22,7 @@ var (
 	factSource = sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message-1", Revision: "1"}
 )
 
-func TestWorkspaceStoreAddRetryConflictListAndClone(t *testing.T) {
+func TestFactStoreAddRetryConflictListAndClone(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 4, 12, 0, 0, 0, time.UTC)
 	store := newFactStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
@@ -63,7 +64,7 @@ func TestWorkspaceStoreAddRetryConflictListAndClone(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreIsolationReopenTraversalAndConcurrency(t *testing.T) {
+func TestFactStoreIsolationReopenTraversalAndConcurrency(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
 	store := newFactStore(t, ws)
@@ -108,21 +109,34 @@ func TestWorkspaceStoreIsolationReopenTraversalAndConcurrency(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	target := reopened.factPath(malicious, "../../conversation", "../fact")
+	target, err := reopened.factKey(malicious, "../../conversation", "../fact")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(target, "..") || strings.HasPrefix(target, "/") {
-		t.Fatalf("unsafe path %q", target)
+		t.Fatalf("unsafe key %q", target)
 	}
 }
 
-func TestWorkspaceStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
+func TestFactStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	ctx := context.Background()
 	for _, data := range [][]byte{
 		[]byte(`{"schema_version":`),
 		[]byte(`{"schema_version":99}`),
 	} {
 		ws := workspace.NewMemWorkspace()
+		kvStore, err := storage.NewWorkspaceKV(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
 		store := newFactStore(t, ws)
-		ws.MustWrite(store.factPath(factScope, "conversation", "fact"), data)
+		key, keyErr := store.factKey(factScope, "conversation", "fact")
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		if err := kvStore.Put(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.List(ctx, factScope, "conversation", ListOptions{}); err == nil {
 			t.Fatal("corrupt data accepted")
 		}
@@ -132,12 +146,22 @@ func TestWorkspaceStoreRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	if _, err := store.Add(ctx, factRequest("fact", "text")); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := ws.Read(ctx, store.factPath(factScope, "conversation", "fact"))
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, keyErr := store.factKey(factScope, "conversation", "fact")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	data, _ := kvStore.Get(ctx, key)
 	var raw map[string]any
 	_ = json.Unmarshal(data, &raw)
 	raw["fact_id"] = "wrong"
 	data, _ = json.Marshal(raw)
-	ws.MustWrite(store.factPath(factScope, "conversation", "fact"), data)
+	if err := kvStore.Put(ctx, key, data); err != nil {
+		t.Fatal(err)
+	}
 	if _, _, err := store.Get(ctx, factScope, "conversation", "fact"); err == nil {
 		t.Fatal("address corruption accepted")
 	}
@@ -155,9 +179,17 @@ func textContent(text string) sdkmessage.Content {
 	return sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: text}}}
 }
 
-func newFactStore(t *testing.T, ws workspace.Workspace, options ...Option) *WorkspaceStore {
+func newFactStore(t *testing.T, ws workspace.Workspace, options ...Option) *FactStore {
 	t.Helper()
-	store, err := NewWorkspaceStore(ws, options...)
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFactStore(logStore, kvStore, options...)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,7 +28,7 @@ type Diagnostic struct {
 
 type Provider struct {
 	Fusion        *fusion.Fusion
-	Messages      messagesource.Store
+	Messages      *messagesource.MessageStore
 	Summary       component.Searcher
 	Hydrator      hydrate.Hydrator
 	Packer        component.Packer
@@ -58,7 +58,7 @@ type RerankerConfig struct {
 // ProviderConfig declares the fixed recent + hybrid + optional summary path.
 type ProviderConfig struct {
 	Fusion        *fusion.Fusion
-	Messages      messagesource.Store
+	Messages      *messagesource.MessageStore
 	Summary       component.Searcher
 	Hydrator      hydrate.Hydrator
 	Packer        component.Packer

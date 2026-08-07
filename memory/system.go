@@ -14,9 +14,9 @@ import (
 
 // System implements the three SDK memory capabilities.
 type System struct {
-	messages  msgsource.Store
-	documents docsource.Store
-	catalog   sources.ScopeCatalog
+	messages  *msgsource.MessageStore
+	documents *docsource.DocumentStore
+	catalog   *sources.ScopeCatalog
 	context   sdkmemory.ContextProvider
 }
 
@@ -27,7 +27,7 @@ var (
 )
 
 // NewSystem constructs a capability adapter without starting a worker.
-func NewSystem(messages msgsource.Store, documents docsource.Store, catalog sources.ScopeCatalog, provider sdkmemory.ContextProvider) (*System, error) {
+func NewSystem(messages *msgsource.MessageStore, documents *docsource.DocumentStore, catalog *sources.ScopeCatalog, provider sdkmemory.ContextProvider) (*System, error) {
 	if messages == nil {
 		return nil, errors.New("memory system: message store is required")
 	}
@@ -43,16 +43,16 @@ func NewSystem(messages msgsource.Store, documents docsource.Store, catalog sour
 	return &System{messages: messages, documents: documents, catalog: catalog, context: provider}, nil
 }
 
-// MessageStore returns the canonical store through its narrow interface.
-func (system *System) MessageStore() msgsource.Store {
+// MessageStore returns the canonical message store.
+func (system *System) MessageStore() *msgsource.MessageStore {
 	if system == nil {
 		return nil
 	}
 	return system.messages
 }
 
-// DocumentStore returns the canonical store through its narrow interface.
-func (system *System) DocumentStore() docsource.Store {
+// DocumentStore returns the canonical document store.
+func (system *System) DocumentStore() *docsource.DocumentStore {
 	if system == nil {
 		return nil
 	}

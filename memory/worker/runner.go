@@ -13,7 +13,7 @@ import (
 
 type RunnerConfig struct {
 	Processor *Processor
-	Catalog   sources.ScopeCatalog
+	Catalog   *sources.ScopeCatalog
 	Scopes    []sdkmemory.Scope
 	Interval  time.Duration
 }
@@ -22,7 +22,7 @@ type RunnerConfig struct {
 // cross-process writer coordinator.
 type Runner struct {
 	processor *Processor
-	catalog   sources.ScopeCatalog
+	catalog   *sources.ScopeCatalog
 	scopes    []sdkmemory.Scope
 	interval  time.Duration
 

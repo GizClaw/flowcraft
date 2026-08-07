@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
@@ -25,9 +25,9 @@ type testBase struct {
 	Entries []testEntry `json:"entries"`
 }
 
-func newTestStore(t *testing.T, ws workspace.Workspace, thresholds Thresholds) *Store[testBase, EntryDelta[testEntry]] {
+func newTestStore(t *testing.T, kv storage.Store, thresholds Thresholds) *Store[testBase, EntryDelta[testEntry]] {
 	t.Helper()
-	store, err := NewTypedStore(ws, "test", TypedOptions[testBase, EntryDelta[testEntry]]{
+	store, err := NewTypedStore(kv, "test", TypedOptions[testBase, EntryDelta[testEntry]]{
 		Thresholds: thresholds,
 		Canonicalize: func(delta EntryDelta[testEntry]) EntryDelta[testEntry] {
 			return CanonicalEntryDelta(delta, EntryKey[testEntry]{
@@ -53,8 +53,17 @@ func newTestStore(t *testing.T, ws workspace.Workspace, thresholds Thresholds) *
 	return store
 }
 
+func kvFor(t *testing.T) storage.Store {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvStore
+}
+
 func TestTypedStoreDeltaPublishIsSmallReplayableAndOrdered(t *testing.T) {
-	meter := &meterWorkspace{Workspace: workspace.NewMemWorkspace()}
+	meter := &meterKV{Store: kvFor(t)}
 	store := newTestStore(t, meter, Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20})
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 	base := testBase{Entries: make([]testEntry, 1000)}
@@ -94,8 +103,8 @@ func TestTypedStoreDeltaPublishIsSmallReplayableAndOrdered(t *testing.T) {
 }
 
 func TestTypedStoreCrashBeforeManifestLeavesInvisibleReusableOrphan(t *testing.T) {
-	base := workspace.NewMemWorkspace()
-	fault := &manifestFaultWorkspace{Workspace: base}
+	base := kvFor(t)
+	fault := &manifestFaultKV{Store: base}
 	store := newTestStore(t, fault, DefaultThresholds())
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
@@ -122,7 +131,7 @@ func TestTypedStoreCrashBeforeManifestLeavesInvisibleReusableOrphan(t *testing.T
 }
 
 func TestTypedStoreCompactsAndInvalidatesCache(t *testing.T) {
-	store := newTestStore(t, workspace.NewMemWorkspace(), Thresholds{MaxSegments: 1, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 1, MaxDeltaBytes: 1 << 20})
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
@@ -157,8 +166,8 @@ func TestTypedStoreCompactsAndInvalidatesCache(t *testing.T) {
 }
 
 func TestTypedStoreRejectsCorruptSegmentChain(t *testing.T) {
-	ws := workspace.NewMemWorkspace()
-	store := newTestStore(t, ws, DefaultThresholds())
+	kvStore := kvFor(t)
+	store := newTestStore(t, kvStore, DefaultThresholds())
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
@@ -169,17 +178,17 @@ func TestTypedStoreRejectsCorruptSegmentChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	segmentPath := store.segmentPath(scope, "index", result.Manifest.Segments[0].ID)
-	if err := ws.Write(context.Background(), segmentPath, []byte(`{"schema_version":2}`)); err != nil {
+	if err := kvStore.Put(context.Background(), segmentPath, []byte(`{"schema_version":2}`)); err != nil {
 		t.Fatal(err)
 	}
-	restarted := newTestStore(t, ws, DefaultThresholds())
+	restarted := newTestStore(t, kvStore, DefaultThresholds())
 	if _, _, err := restarted.Materialize(context.Background(), scope, "index"); err == nil {
 		t.Fatal("accepted corrupt segment")
 	}
 }
 
 func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
-	store := newTestStore(t, workspace.NewMemWorkspace(), Thresholds{MaxSegments: 128, MaxDeltaBytes: 1 << 20})
+	store := newTestStore(t, kvFor(t), Thresholds{MaxSegments: 128, MaxDeltaBytes: 1 << 20})
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	if err := store.FullRebuild(context.Background(), scope, "index", testBase{}, "base"); err != nil {
 		t.Fatal(err)
@@ -216,45 +225,44 @@ func TestTypedStoreConcurrentApplyAndMaterialize(t *testing.T) {
 	}
 }
 
-type meterWorkspace struct {
-	workspace.Workspace
+type meterKV struct {
+	storage.Store
 	mu    sync.Mutex
 	bytes int
 }
 
-func (meter *meterWorkspace) Write(ctx context.Context, name string, data []byte) error {
+func (meter *meterKV) Put(ctx context.Context, key string, data []byte) error {
 	meter.mu.Lock()
 	meter.bytes += len(data)
 	meter.mu.Unlock()
-	return meter.Workspace.Write(ctx, name, data)
+	return meter.Store.Put(ctx, key, data)
 }
 
-func (meter *meterWorkspace) reset() {
+func (meter *meterKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	meter.mu.Lock()
+	meter.bytes += len(data)
+	meter.mu.Unlock()
+	return meter.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}
+
+func (meter *meterKV) reset() {
 	meter.mu.Lock()
 	meter.bytes = 0
 	meter.mu.Unlock()
 }
 
-type manifestFaultWorkspace struct {
-	workspace.Workspace
+type manifestFaultKV struct {
+	storage.Store
 	failManifest bool
 }
 
-func (fault *manifestFaultWorkspace) Rename(ctx context.Context, source, destination string) error {
-	if fault.failManifest && strings.HasSuffix(destination, "/active.json") {
+func (fault *manifestFaultKV) Put(ctx context.Context, key string, data []byte) error {
+	if fault.failManifest && strings.HasSuffix(key, "/active.json") {
 		return errors.New("injected manifest failure")
 	}
-	return fault.Workspace.Rename(ctx, source, destination)
+	return fault.Store.Put(ctx, key, data)
 }
 
-var _ interface {
-	Read(context.Context, string) ([]byte, error)
-	Write(context.Context, string, []byte) error
-	Append(context.Context, string, []byte) error
-	Rename(context.Context, string, string) error
-	Delete(context.Context, string) error
-	RemoveAll(context.Context, string) error
-	List(context.Context, string) ([]fs.DirEntry, error)
-	Exists(context.Context, string) (bool, error)
-	Stat(context.Context, string) (fs.FileInfo, error)
-} = (*meterWorkspace)(nil)
+func (fault *manifestFaultKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return fault.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}

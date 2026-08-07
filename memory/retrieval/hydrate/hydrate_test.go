@@ -6,8 +6,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/component"
 	messagesource "github.com/GizClaw/flowcraft/memory/sources/message"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	documentview "github.com/GizClaw/flowcraft/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
+	summaryview "github.com/GizClaw/flowcraft/memory/views/summary"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -17,9 +19,9 @@ func TestCompositeHydratesThreeSourcesAndMissing(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 	ws := workspace.NewMemWorkspace()
-	messages, _ := messagesource.NewWorkspaceStore(ws)
-	facts, _ := factview.NewWorkspaceStore(ws)
-	chunks, _ := documentview.NewWorkspaceStore(ws)
+	messages := newMessageStore(t, ws)
+	facts := newFactStore(t, ws)
+	chunks := newDocumentView(t, ws)
 	records, err := messages.Append(ctx, messagesource.AppendRequest{
 		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn",
 		Messages: []sdkmessage.Message{sdkmessage.NewTextMessage(sdkmessage.RoleUser, "message text")},
@@ -82,6 +84,66 @@ func TestCompositeHydratesThreeSourcesAndMissing(t *testing.T) {
 	if _, err := hydrator.Hydrate(ctx, scope, hydratedCandidate(oldChunk, source)); err == nil {
 		t.Fatal("tombstoned build chunk remained hydratable")
 	}
+}
+
+func newMessageStore(t *testing.T, ws workspace.Workspace) *messagesource.MessageStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := messagesource.NewMessageStore(logStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newDocumentView(t *testing.T, ws workspace.Workspace) *documentview.DocumentViewStore {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := documentview.NewDocumentViewStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newFactStore(t *testing.T, ws workspace.Workspace, options ...factview.Option) *factview.FactStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := factview.NewFactStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newSummaryStore(t *testing.T, ws workspace.Workspace, options ...summaryview.Option) *summaryview.SummaryStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := summaryview.NewSummaryStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }
 
 func hydratedCandidate(address component.CandidateAddress, source sdkmemory.SourceRef) component.Candidate {

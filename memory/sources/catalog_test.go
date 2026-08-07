@@ -6,13 +6,17 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
-func TestWorkspaceScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
+func TestScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
 	ctx := context.Background()
-	ws := workspace.NewMemWorkspace()
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
 	scopes := []sdkmemory.Scope{
 		{RuntimeID: "runtime", UserID: "user", AgentID: "b"},
 		{RuntimeID: "runtime", UserID: "user"},
@@ -24,7 +28,7 @@ func TestWorkspaceScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			writer, err := NewWorkspaceScopeCatalog(ws)
+			writer, err := NewScopeCatalog(kvStore)
 			if err == nil {
 				err = writer.Register(ctx, scope)
 			}
@@ -37,7 +41,7 @@ func TestWorkspaceScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			writer, err := NewWorkspaceScopeCatalog(ws)
+			writer, err := NewScopeCatalog(kvStore)
 			if err == nil {
 				err = writer.Register(ctx, scopes[0])
 			}
@@ -48,7 +52,7 @@ func TestWorkspaceScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
 	}
 	wait.Wait()
 
-	reopened, err := NewWorkspaceScopeCatalog(ws)
+	reopened, err := NewScopeCatalog(kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,21 +66,61 @@ func TestWorkspaceScopeCatalogConcurrentRegisterReopenAndSort(t *testing.T) {
 	}
 }
 
-func TestWorkspaceScopeCatalogRejectsCorruptionAndUnknownSchema(t *testing.T) {
+func TestScopeCatalogRejectsCorruptionAndUnknownSchema(t *testing.T) {
 	ctx := context.Background()
 	for _, data := range [][]byte{
 		[]byte(`{"schema_version":`),
 		[]byte(`{"schema_version":99,"scope":{"RuntimeID":"runtime","UserID":"user","AgentID":"agent"}}`),
 	} {
-		ws := workspace.NewMemWorkspace()
-		catalog, err := NewWorkspaceScopeCatalog(ws)
+		kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+		if err != nil {
+			t.Fatal(err)
+		}
+		catalog, err := NewScopeCatalog(kvStore)
 		if err != nil {
 			t.Fatal(err)
 		}
 		scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user", AgentID: "agent"}
-		ws.MustWrite(catalog.entryPath(scope), data)
+		key, err := catalogKey(scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := kvStore.Put(ctx, key, data); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := catalog.List(ctx); err == nil {
 			t.Fatal("corrupt catalog entry was accepted")
 		}
 	}
+}
+
+func TestScopeCatalogValidationAndStoreRequirements(t *testing.T) {
+	if _, err := NewScopeCatalog(nil); err == nil {
+		t.Fatal("nil store accepted")
+	}
+	if _, err := NewScopeCatalog(plainStore{}); err == nil {
+		t.Fatal("store without immutable writes accepted")
+	}
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := NewScopeCatalog(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := catalog.Register(context.Background(), sdkmemory.Scope{}); err == nil {
+		t.Fatal("invalid scope accepted")
+	}
+}
+
+type plainStore struct{}
+
+func (plainStore) Get(context.Context, string) ([]byte, error) {
+	return nil, storage.ErrNotFound
+}
+func (plainStore) Put(context.Context, string, []byte) error { return nil }
+func (plainStore) Delete(context.Context, string) error      { return nil }
+func (plainStore) List(context.Context, string) ([]storage.Entry, error) {
+	return []storage.Entry{}, nil
 }

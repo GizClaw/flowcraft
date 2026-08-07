@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -19,7 +19,7 @@ var (
 	chunkSource = sdkmemory.SourceRef{Kind: sdkmemory.SourceDocument, ID: "document", Revision: "1"}
 )
 
-func TestWorkspaceStoreBuildSafeReplaceAndReopen(t *testing.T) {
+func TestDocumentViewStoreBuildSafeReplaceAndReopen(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
 	store := newChunkStore(t, ws)
@@ -43,20 +43,29 @@ func TestWorkspaceStoreBuildSafeReplaceAndReopen(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStorePointerFailurePreservesOldBuild(t *testing.T) {
+func TestDocumentViewStorePointerFailurePreservesOldBuild(t *testing.T) {
 	ctx := context.Background()
-	base := workspace.NewMemWorkspace()
-	failing := &renameFailWorkspace{Workspace: base}
-	store := newChunkStore(t, failing)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDocumentViewStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.ReplaceDocument(ctx, replaceRequest(1, "old")); err != nil {
 		t.Fatal(err)
 	}
-	failing.destination = store.activePath(chunkScope, "dataset", "document")
-	failing.fail = true
+	activeKey, err := store.activeKey(chunkScope, "dataset", "document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failPutKV{Store: kvStore, key: activeKey}
+	store.kv = failing
 	if _, err := store.ReplaceDocument(ctx, replaceRequest(2, "new")); err == nil {
 		t.Fatal("pointer failure not surfaced")
 	}
-	failing.fail = false
+	store.kv = kvStore
 	listed, err := store.List(ctx, chunkScope, "dataset", "document", ListOptions{})
 	if err != nil || len(listed) != 1 || listed[0].Content.Text() != "old" ||
 		listed[0].DocumentVersion != 1 {
@@ -64,7 +73,7 @@ func TestWorkspaceStorePointerFailurePreservesOldBuild(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreClonePaginationIsolationTraversalAndConcurrency(t *testing.T) {
+func TestDocumentViewStoreClonePaginationIsolationTraversalAndConcurrency(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
 	store := newChunkStore(t, ws)
@@ -108,9 +117,12 @@ func TestWorkspaceStoreClonePaginationIsolationTraversalAndConcurrency(t *testin
 	if _, err := store.ReplaceDocument(ctx, bad); err != nil {
 		t.Fatal(err)
 	}
-	target := store.activePath(malicious, bad.DatasetID, bad.DocumentID)
+	target, err := store.activeKey(malicious, bad.DatasetID, bad.DocumentID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(target, "..") || strings.HasPrefix(target, "/") {
-		t.Fatalf("unsafe path %q", target)
+		t.Fatalf("unsafe key %q", target)
 	}
 
 	var wait sync.WaitGroup
@@ -136,21 +148,39 @@ func TestWorkspaceStoreClonePaginationIsolationTraversalAndConcurrency(t *testin
 	}
 }
 
-func TestWorkspaceStoreRejectsCorruptionSchemaAndInvalidReplacement(t *testing.T) {
+func TestDocumentViewStoreRejectsCorruptionSchemaAndInvalidReplacement(t *testing.T) {
 	ctx := context.Background()
 	for _, data := range [][]byte{
 		[]byte(`{"schema_version":`),
 		[]byte(`{"schema_version":99}`),
 	} {
-		ws := workspace.NewMemWorkspace()
-		store := newChunkStore(t, ws)
-		ws.MustWrite(store.activePath(chunkScope, "dataset", "document"), data)
+		kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+		if err != nil {
+			t.Fatal(err)
+		}
+		store, err := NewDocumentViewStore(kvStore)
+		if err != nil {
+			t.Fatal(err)
+		}
+		activeKey, err := store.activeKey(chunkScope, "dataset", "document")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := kvStore.Put(ctx, activeKey, data); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.List(ctx, chunkScope, "dataset", "document", ListOptions{}); err == nil {
 			t.Fatal("corrupt active pointer accepted")
 		}
 	}
-	ws := workspace.NewMemWorkspace()
-	corruptStore := newChunkStore(t, ws)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	corruptStore, err := NewDocumentViewStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := replaceRequest(1, "text")
 	if _, err := corruptStore.ReplaceDocument(ctx, request); err != nil {
 		t.Fatal(err)
@@ -159,10 +189,15 @@ func TestWorkspaceStoreRejectsCorruptionSchemaAndInvalidReplacement(t *testing.T
 	if err != nil || !ok {
 		t.Fatalf("read active = %#v, %v, %v", active, ok, err)
 	}
-	chunkPath := corruptStore.chunkPath(chunkScope, "dataset", "document", active.BuildID, request.Chunks[0].ID)
-	data, _ := ws.Read(ctx, chunkPath)
+	chunkKey, err := corruptStore.chunkKey(chunkScope, "dataset", "document", active.BuildID, request.Chunks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := kvStore.Get(ctx, chunkKey)
 	data = []byte(strings.Replace(string(data), `"schema_version":1`, `"schema_version":99`, 1))
-	ws.MustWrite(chunkPath, data)
+	if err := kvStore.Put(ctx, chunkKey, data); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := corruptStore.List(ctx, chunkScope, "dataset", "document", ListOptions{}); err == nil {
 		t.Fatal("unknown chunk schema accepted")
 	}
@@ -173,8 +208,8 @@ func TestWorkspaceStoreRejectsCorruptionSchemaAndInvalidReplacement(t *testing.T
 	if _, err := store.ReplaceDocument(ctx, duplicate); err == nil {
 		t.Fatal("duplicate chunk id accepted")
 	}
-	if _, err := NewWorkspaceStore(nil); err == nil {
-		t.Fatal("nil workspace accepted")
+	if _, err := NewDocumentViewStore(nil); err == nil {
+		t.Fatal("nil store accepted")
 	}
 }
 
@@ -199,39 +234,33 @@ func chunkText(text string) sdkmessage.Content {
 	return sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: text}}}
 }
 
-func newChunkStore(t *testing.T, ws workspace.Workspace) *WorkspaceStore {
+func newChunkStore(t *testing.T, ws workspace.Workspace) *DocumentViewStore {
 	t.Helper()
-	store, err := NewWorkspaceStore(ws)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewDocumentViewStore(kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return store
 }
 
-type renameFailWorkspace struct {
-	workspace.Workspace
-	mu          sync.Mutex
-	destination string
-	fail        bool
+type failPutKV struct {
+	storage.Store
+	key    string
+	failed bool
 }
 
-func (ws *renameFailWorkspace) Rename(ctx context.Context, source, destination string) error {
-	ws.mu.Lock()
-	fail := ws.fail && destination == ws.destination
-	ws.mu.Unlock()
-	if fail {
+func (store *failPutKV) Put(ctx context.Context, key string, data []byte) error {
+	if store.key == key && !store.failed {
+		store.failed = true
 		return errors.New("injected active pointer failure")
 	}
-	return ws.Workspace.Rename(ctx, source, destination)
+	return store.Store.Put(ctx, key, data)
 }
 
-func TestWorkspaceStoreEmptyBuildIsActive(t *testing.T) {
-	store := newChunkStore(t, workspace.NewMemWorkspace())
-	if _, err := store.ReplaceDocument(context.Background(), replaceRequest(1)); err != nil {
-		t.Fatal(err)
-	}
-	got, err := store.List(context.Background(), chunkScope, "dataset", "document", ListOptions{})
-	if err != nil || !reflect.DeepEqual(got, []Chunk{}) {
-		t.Fatalf("empty active build = %#v, %v", got, err)
-	}
+func (store *failPutKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	return store.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }

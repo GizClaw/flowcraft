@@ -36,6 +36,7 @@ import (
 	observationview "github.com/GizClaw/flowcraft/memory/views/observation"
 	summaryview "github.com/GizClaw/flowcraft/memory/views/summary"
 	"github.com/GizClaw/flowcraft/memory/worker"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 )
@@ -186,6 +187,7 @@ func CustomKnowledgeNode(id string, spec component.DeriverSpec, dependsOn ...str
 type Settings struct {
 	Generate                ModelSettings             `json:"generate"`
 	Embed                   ModelSettings             `json:"embed"`
+	Storage                 StorageSettings           `json:"storage,omitempty"`
 	Scopes                  []ScopeSettings           `json:"scopes"`
 	Interval                Duration                  `json:"interval,omitempty"`
 	Projection              string                    `json:"projection,omitempty"`
@@ -217,6 +219,11 @@ type Assembly struct {
 	LifecycleDAG    *lifecycle.DAG
 	LifecycleRunner *lifecycle.DreamingRunner
 	PolicyDigest    string
+	// LaneBackends exposes each retrieval lane through the SearchBackend
+	// contract (vector, bm25, entity). The read path still consumes the
+	// component.Searcher plugin lanes; these adapters close the backend
+	// contract and are the parity surface for future drivers.
+	LaneBackends []retrieval.SearchBackend
 }
 
 // Close is idempotent. The stores and inference/workspace dependencies are
@@ -271,40 +278,53 @@ func (a *Assembly) PutDocument(ctx context.Context, document sdkmemory.Document)
 // exactly three projections, retrieval, the System, Processor, and Runner.
 // It performs no background work; callers explicitly start Runner.
 func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, error) {
-	if b == nil || nilInterface(b.workspace) || b.inference == nil {
+	if b == nil || nilInterface(b.log) || nilInterface(b.kv) || b.inference == nil {
 		return nil, errors.New("memory config: builder is incomplete")
+	}
+	if settings.Storage.Log.Driver != "" || settings.Storage.KV.Driver != "" {
+		return nil, errdefs.Validationf(
+			"memory config: storage log/kv section conflicts with injected backends; resolve drivers before NewBuilder")
+	}
+	if len(b.search) > 0 && len(settings.Storage.Search.Lanes) > 0 {
+		return nil, errdefs.Validationf(
+			"memory config: storage.search.lanes conflicts with injected search backends")
 	}
 	settings = settings.withDefaults()
 	if err := settings.validate(b.inference); err != nil {
 		return nil, err
 	}
 
-	messages, err := msgsource.NewWorkspaceStore(b.workspace)
+	logStore := b.log
+	kvStore := b.kv
+	messages, err := msgsource.NewMessageStore(logStore)
 	if err != nil {
 		return nil, err
 	}
-	documents, err := docsource.NewWorkspaceStore(b.workspace)
+	documents, err := docsource.NewDocumentStore(logStore, kvStore)
 	if err != nil {
 		return nil, err
 	}
-	catalog, err := sources.NewWorkspaceScopeCatalog(b.workspace)
+	catalog, err := sources.NewScopeCatalog(kvStore)
 	if err != nil {
 		return nil, err
 	}
 	var outbox *lifecycle.WorkspaceOutbox
 	var outboxSink *lifecycle.OutboxSink
-	var lifecycleEvents *lifecycle.WorkspaceEventStore
-	var repairAudit *lifecycle.WorkspaceRepairAuditStore
+	var lifecycleEvents *lifecycle.EventStore
+	var repairAudit *lifecycle.RepairAuditStore
 	if !settings.Lifecycle.Disabled {
-		outbox, err = lifecycle.NewWorkspaceOutbox(b.workspace, nil)
+		if nilInterface(b.outbox) {
+			return nil, errors.New("memory config: lifecycle requires an outbox workspace; call WithOutboxWorkspace")
+		}
+		outbox, err = lifecycle.NewWorkspaceOutbox(b.outbox, nil)
 		if err != nil {
 			return nil, err
 		}
-		lifecycleEvents, err = lifecycle.NewWorkspaceEventStore(b.workspace)
+		lifecycleEvents, err = lifecycle.NewEventStore(logStore)
 		if err != nil {
 			return nil, err
 		}
-		repairAudit, err = lifecycle.NewWorkspaceRepairAuditStore(b.workspace)
+		repairAudit, err = lifecycle.NewRepairAuditStore(logStore)
 		if err != nil {
 			return nil, err
 		}
@@ -314,22 +334,22 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	if outboxSink != nil {
 		factOptions = append(factOptions, factview.WithPublicationSink(outboxSink))
 	}
-	facts, err := factview.NewWorkspaceStore(b.workspace, factOptions...)
+	facts, err := factview.NewFactStore(logStore, kvStore, factOptions...)
 	if err != nil {
 		return nil, err
 	}
-	chunks, err := docview.NewWorkspaceStore(b.workspace)
+	chunks, err := docview.NewDocumentViewStore(kvStore)
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := worker.NewWorkspaceCheckpointStore(b.workspace)
+	checkpoints, err := worker.NewWorkerCheckpointStore(kvStore)
 	if err != nil {
 		return nil, err
 	}
-	var summaries summaryview.Store
+	var summaries *summaryview.SummaryStore
 	var compactor *summaryderive.Compactor
 	if !settings.Summary.Disabled {
-		summaryStore, summaryErr := summaryview.NewWorkspaceStore(b.workspace)
+		summaryStore, summaryErr := summaryview.NewSummaryStore(logStore, kvStore)
 		if summaryErr != nil {
 			return nil, summaryErr
 		}
@@ -343,9 +363,9 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 		}
 	}
 
-	generateRef, embedRef := settings.Generate.ref(), settings.Embed.ref()
+	generateRef, embedRef := settings.Generate.Ref(), settings.Embed.Ref()
 	vectorIndex, err := vector.New(vector.Config{
-		Workspace: b.workspace, Runtime: b.inference, Model: embedRef, Projection: settings.Projection,
+		KV: kvStore, Runtime: b.inference, Model: embedRef, Projection: settings.Projection,
 		Thresholds: vector.Thresholds{
 			MaxSegments:   settings.ProjectionStorage.MaxSegments,
 			MaxDeltaBytes: settings.ProjectionStorage.MaxDeltaBytes,
@@ -413,7 +433,7 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	}
 
 	bm25Index, err := bm25.New(bm25.Config{
-		Workspace: b.workspace, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
+		KV: kvStore, Projection: settings.Projection, K1: settings.BM25.K1, B: settings.BM25.B,
 		Thresholds: bm25.Thresholds{
 			MaxSegments:   settings.ProjectionStorage.MaxSegments,
 			MaxDeltaBytes: settings.ProjectionStorage.MaxDeltaBytes,
@@ -423,7 +443,7 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 		return nil, err
 	}
 	entityIndex, err := entity.New(entity.Config{
-		Workspace: b.workspace, Projection: settings.Projection,
+		KV: kvStore, Projection: settings.Projection,
 		Thresholds: entity.Thresholds{
 			MaxSegments:   settings.ProjectionStorage.MaxSegments,
 			MaxDeltaBytes: settings.ProjectionStorage.MaxDeltaBytes,
@@ -434,6 +454,39 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	}
 	indexes := map[string]component.Indexer{"vector": vectorIndex, "bm25": bm25Index, "entity": entityIndex}
 	searchers := map[string]component.Searcher{"vector": vectorIndex, "bm25": bm25Index, "entity": entityIndex}
+	searchRegistry := NewDriverRegistry()
+	if err := searchRegistry.RegisterSearchDriver("lsm", func(
+		deps SearchDriverDeps,
+		_ json.RawMessage,
+	) (retrieval.SearchBackend, error) {
+		if deps.Lane == nil {
+			return nil, errors.New("memory config: lsm lane is required")
+		}
+		return retrieval.NewLaneBackend(deps.Lane), nil
+	}); err != nil {
+		return nil, err
+	}
+	laneBackendsByName := make(map[string]retrieval.SearchBackend, len(searchers))
+	switch {
+	case len(b.search) > 0:
+		laneBackendsByName = b.search
+	case len(settings.Storage.Search.Lanes) > 0:
+		laneBackendsByName, err = searchRegistry.ResolveSearchLanes(
+			settings.Storage.Search, searchers, kvStore)
+		if err != nil {
+			return nil, err
+		}
+	default:
+		for name, searcher := range searchers {
+			laneBackendsByName[name] = retrieval.NewLaneBackend(searcher)
+		}
+	}
+	laneBackends := make([]retrieval.SearchBackend, 0, len(laneBackendsByName))
+	for _, name := range []string{"vector", "bm25", "entity"} {
+		if backend, ok := laneBackendsByName[name]; ok {
+			laneBackends = append(laneBackends, backend)
+		}
+	}
 	for _, name := range []string{"vector", "bm25", "entity"} {
 		indexer, searcher := indexes[name], searchers[name]
 		if err := registry.RegisterIndexer(name, func(component.Spec) (component.Indexer, error) { return indexer, nil }); err != nil {
@@ -527,11 +580,11 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	}
 	var lifecycleRunner *lifecycle.DreamingRunner
 	if !settings.Lifecycle.Disabled {
-		lifecycleCheckpoints, checkpointErr := lifecycle.NewWorkspaceCheckpointStore(b.workspace)
+		lifecycleCheckpoints, checkpointErr := lifecycle.NewLifecycleCheckpointStore(kvStore)
 		if checkpointErr != nil {
 			return nil, checkpointErr
 		}
-		observationStore, observationErr := observationview.NewWorkspaceStore(b.workspace)
+		observationStore, observationErr := observationview.NewObservationStore(logStore, kvStore)
 		if observationErr != nil {
 			return nil, observationErr
 		}
@@ -691,6 +744,7 @@ func (b *Builder) NewAssembly(_ context.Context, settings Settings) (*Assembly, 
 	return &Assembly{
 		System: system, Runner: runner, ChatDAG: chatDAG, KnowledgeDAG: knowledgeDAG,
 		LifecycleDAG: lifecycleDAG, LifecycleRunner: lifecycleRunner, PolicyDigest: digest,
+		LaneBackends: laneBackends,
 	}, nil
 }
 
@@ -893,11 +947,11 @@ func (s Settings) validate(runtime *inference.Runtime) error {
 		}
 	}
 	if requiresGenerate {
-		if err := validateModel(runtime, "generate", s.Generate.ref(), inference.OperationGenerate); err != nil {
+		if err := validateModel(runtime, "generate", s.Generate.Ref(), inference.OperationGenerate); err != nil {
 			return err
 		}
 	}
-	if err := validateModel(runtime, "embed", s.Embed.ref(), inference.OperationEmbed); err != nil {
+	if err := validateModel(runtime, "embed", s.Embed.Ref(), inference.OperationEmbed); err != nil {
 		return err
 	}
 	seenScopes := make(map[sdkmemory.Scope]struct{}, len(s.Scopes))

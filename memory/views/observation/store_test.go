@@ -3,12 +3,13 @@ package observation
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
-	"path"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -42,21 +43,30 @@ func TestClosedObservationEnumsValidate(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreRejectsUnknownPersistedEnums(t *testing.T) {
+func TestObservationStoreRejectsUnknownPersistedEnums(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 3, 0, 0, 0, time.UTC)
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 
 	t.Run("state", func(t *testing.T) {
 		ws := workspace.NewMemWorkspace()
-		store, _ := NewWorkspaceStore(ws, WithClock(func() time.Time { return now }))
+		kvStore, err := storage.NewWorkspaceKV(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := newObservationStore(t, ws, WithClock(func() time.Time { return now }))
 		value, err := store.Integrate(ctx, factview.Fact{ID: "fact", Scope: scope, CreatedAt: now}, "task")
 		if err != nil {
 			t.Fatal(err)
 		}
-		target := store.observationPath(scope, value.ID)
-		data, _ := ws.Read(ctx, target)
-		ws.MustWrite(target, bytes.Replace(data, []byte(`"state":"active"`), []byte(`"state":"unknown"`), 1))
+		key, keyErr := store.observationKey(scope, value.ID)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		data, _ := kvStore.Get(ctx, key)
+		if err := kvStore.Put(ctx, key, bytes.Replace(data, []byte(`"state":"active"`), []byte(`"state":"unknown"`), 1)); err != nil {
+			t.Fatal(err)
+		}
 		if _, _, err := store.Get(ctx, scope, value.ID); err == nil {
 			t.Fatal("Get accepted an unknown persisted state")
 		}
@@ -64,43 +74,41 @@ func TestWorkspaceStoreRejectsUnknownPersistedEnums(t *testing.T) {
 
 	t.Run("event kind", func(t *testing.T) {
 		ws := workspace.NewMemWorkspace()
-		store, _ := NewWorkspaceStore(ws, WithClock(func() time.Time { return now }))
+		logStore, err := storage.NewWorkspaceLog(ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store := newObservationStore(t, ws, WithClock(func() time.Time { return now }))
 		if _, err := store.Integrate(ctx, factview.Fact{ID: "fact", Scope: scope, CreatedAt: now}, "task"); err != nil {
 			t.Fatal(err)
 		}
-		events, err := store.Events(ctx, scope)
-		if err != nil || len(events) != 1 {
-			t.Fatalf("Events() = %#v, %v", events, err)
+		stream, streamErr := store.eventsStream(scope)
+		if streamErr != nil {
+			t.Fatal(streamErr)
 		}
-		target := path.Join(store.eventsDir(scope), encode(events[0].ID)+".json")
-		data, _ := ws.Read(ctx, target)
-		ws.MustWrite(target, bytes.Replace(data, []byte(`"kind":"integrated"`), []byte(`"kind":"unknown"`), 1))
+		payload, err := json.Marshal(envelope[Event]{
+			SchemaVersion: schemaVersion,
+			Value: Event{ID: "bad", Scope: scope, Kind: "unknown", ObservationID: "fact",
+				TaskID: "task", Time: now},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := logStore.Append(ctx, stream, []storage.Event{{
+			Stream: stream, Type: observationEventType, Payload: payload,
+		}}, storage.AppendOptions{IdempotencyKey: "bad"}); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.Events(ctx, scope); err == nil {
 			t.Fatal("Events accepted an unknown persisted kind")
 		}
 	})
 }
 
-type failObservationEventWorkspace struct {
-	workspace.Workspace
-	fail bool
-}
-
-func (ws *failObservationEventWorkspace) Rename(ctx context.Context, source, target string) error {
-	if ws.fail && strings.Contains(target, "/events/") {
-		ws.fail = false
-		return errors.New("injected event publish failure")
-	}
-	return ws.Workspace.Rename(ctx, source, target)
-}
-
 func TestIntegrateConflictReplacementAndReplay(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 3, 0, 0, 0, time.UTC)
-	store, err := NewWorkspaceStore(workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newObservationStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 	first := factview.Fact{ID: "old", Scope: scope, ConversationID: "c", Entities: []string{"alice"}, Predicate: "city", CreatedAt: now}
 	second := factview.Fact{ID: "new", Scope: scope, ConversationID: "c", Entities: []string{"alice"}, Predicate: "city", CreatedAt: now.Add(time.Second)}
@@ -134,10 +142,7 @@ func TestIntegrateSameFactWithDistinctTasksMaintainsSingleReplacementChain(t *te
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 3, 0, 0, 0, time.UTC)
 	clock := now
-	store, err := NewWorkspaceStore(workspace.NewMemWorkspace(), WithClock(func() time.Time { return clock }))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newObservationStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time { return clock }))
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	fact := factview.Fact{
 		ID: "fact", Scope: scope, ConversationID: "conversation",
@@ -186,7 +191,7 @@ func TestIntegrateSameFactWithDistinctTasksMaintainsSingleReplacementChain(t *te
 func TestIntegrateFallbackKeyAndRejectsReplacementCycle(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 3, 0, 0, 0, time.UTC)
-	store, _ := NewWorkspaceStore(workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
+	store := newObservationStore(t, workspace.NewMemWorkspace(), WithClock(func() time.Time { return now }))
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	value := factview.Fact{ID: "fact", Scope: scope, ConversationID: "c", CanonicalHash: "hash", CreatedAt: now}
 	got, err := store.Integrate(ctx, value, "task")
@@ -205,8 +210,20 @@ func TestIntegrateRetryReusesDurableObservationAfterEventFailure(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 3, 0, 0, 0, time.UTC)
 	clock := now
-	ws := &failObservationEventWorkspace{Workspace: workspace.NewMemWorkspace(), fail: true}
-	store, _ := NewWorkspaceStore(ws, WithClock(func() time.Time { return clock }))
+	ws := workspace.NewMemWorkspace()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := &failAppendLog{Log: logStore}
+	store, err := NewObservationStore(failing, kvStore, WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	fact := factview.Fact{
 		ID: "fact", Scope: scope, ConversationID: "conversation", CanonicalHash: "hash",
@@ -216,7 +233,10 @@ func TestIntegrateRetryReusesDurableObservationAfterEventFailure(t *testing.T) {
 		t.Fatal("injected post-observation event failure succeeded")
 	}
 	clock = now.Add(time.Hour)
-	reopened, _ := NewWorkspaceStore(ws, WithClock(func() time.Time { return clock }))
+	reopened, err := NewObservationStore(logStore, kvStore, WithClock(func() time.Time { return clock }))
+	if err != nil {
+		t.Fatal(err)
+	}
 	got, err := reopened.Integrate(ctx, fact, "task")
 	if err != nil {
 		t.Fatal(err)
@@ -228,4 +248,39 @@ func TestIntegrateRetryReusesDurableObservationAfterEventFailure(t *testing.T) {
 	if err != nil || len(events) != 1 || !events[0].Time.Equal(now) {
 		t.Fatalf("repaired events=%#v err=%v", events, err)
 	}
+}
+
+func newObservationStore(t *testing.T, ws workspace.Workspace, options ...Option) *ObservationStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewObservationStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+type failAppendLog struct {
+	storage.Log
+	failed bool
+}
+
+func (log *failAppendLog) Append(
+	ctx context.Context,
+	stream string,
+	events []storage.Event,
+	options storage.AppendOptions,
+) (storage.Commit, error) {
+	if !log.failed && strings.Contains(stream, "/events") {
+		log.failed = true
+		return storage.Commit{}, errors.New("injected event publish failure")
+	}
+	return log.Log.Append(ctx, stream, events, options)
 }

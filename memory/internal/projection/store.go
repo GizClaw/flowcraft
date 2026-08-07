@@ -18,9 +18,9 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const (
@@ -128,11 +128,11 @@ type materializedCache[B any] struct {
 
 // Store owns the common typed immutable-base and ordered-segment protocol.
 type Store[B, D any] struct {
-	Workspace workspace.Workspace
-	Family    string
-	options   TypedOptions[B, D]
-	mu        sync.Mutex
-	cache     *materializedCache[B]
+	KV      storage.Store
+	Family  string
+	options TypedOptions[B, D]
+	mu      sync.Mutex
+	cache   *materializedCache[B]
 }
 
 type ApplyResult struct {
@@ -141,9 +141,9 @@ type ApplyResult struct {
 	Compacted bool
 }
 
-func NewTypedStore[B, D any](ws workspace.Workspace, family string, options TypedOptions[B, D]) (*Store[B, D], error) {
-	if nilInterface(ws) {
-		return nil, errors.New("projection: workspace is required")
+func NewTypedStore[B, D any](kv storage.Store, family string, options TypedOptions[B, D]) (*Store[B, D], error) {
+	if nilInterface(kv) {
+		return nil, errors.New("projection: store is required")
 	}
 	if strings.TrimSpace(family) == "" {
 		return nil, errors.New("projection: family is required")
@@ -156,7 +156,10 @@ func NewTypedStore[B, D any](ws workspace.Workspace, family string, options Type
 		return nil, errors.New("projection: typed delta apply function is required")
 	}
 	options.Thresholds = thresholds
-	return &Store[B, D]{Workspace: ws, Family: family, options: options}, nil
+	if _, ok := kv.(storage.PutIfAbsentStore); !ok {
+		return nil, errors.New("projection: store must support immutable writes")
+	}
+	return &Store[B, D]{KV: kv, Family: family, options: options}, nil
 }
 
 func (store *Store[B, D]) FullRebuild(ctx context.Context, scope sdkmemory.Scope, name string, base B, sourceDigest string) error {
@@ -295,7 +298,7 @@ func (store *Store[B, D]) Materialize(ctx context.Context, scope sdkmemory.Scope
 		return zero, Manifest{}, err
 	}
 	if !found {
-		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", workspace.ErrNotFound)
+		return zero, Manifest{}, fmt.Errorf("projection: read active manifest: %w", storage.ErrNotFound)
 	}
 	base, err := store.materializeLocked(ctx, scope, name, active)
 	return base, active, err
@@ -380,7 +383,7 @@ func (store *Store[B, D]) materializeAuditLocked(
 	var value B
 	buildDigest := ""
 	if active.Base != nil {
-		payload, err := store.Workspace.Read(ctx, store.buildPath(scope, name, active.Base.ID))
+		payload, err := store.KV.Get(ctx, store.buildPath(scope, name, active.Base.ID))
 		if err != nil {
 			return value, "", "", "", fmt.Errorf("projection: read base: %w", err)
 		}
@@ -410,7 +413,7 @@ func (store *Store[B, D]) materializeAuditLocked(
 		if ref.PreviousIdentity != previousIdentity {
 			return value, "", "", "", fmt.Errorf("projection: segment %d previous manifest identity mismatch", index)
 		}
-		payload, err := store.Workspace.Read(ctx, store.segmentPath(scope, name, ref.ID))
+		payload, err := store.KV.Get(ctx, store.segmentPath(scope, name, ref.ID))
 		if err != nil {
 			return value, "", "", "", fmt.Errorf("projection: read segment %d: %w", index, err)
 		}
@@ -492,17 +495,26 @@ func (store *Store[B, D]) publishBaseLocked(
 }
 
 func (store *Store[B, D]) writeImmutable(ctx context.Context, name string, payload []byte) error {
-	existing, err := store.Workspace.Read(ctx, name)
-	if err == nil {
-		if !bytes.Equal(existing, payload) {
-			return errors.New("projection: immutable object conflict")
-		}
-		return nil
+	put, ok := store.KV.(storage.PutIfAbsentStore)
+	if !ok {
+		return errors.New("projection: store must support immutable writes")
 	}
-	if !errdefs.IsNotFound(err) {
+	data := append([]byte(nil), payload...)
+	written, err := put.PutIfAbsent(ctx, name, data)
+	if err != nil {
 		return err
 	}
-	return workspace.AtomicWrite(ctx, store.Workspace, name, append([]byte(nil), payload...))
+	if written {
+		return nil
+	}
+	existing, err := store.KV.Get(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(existing, data) {
+		return errors.New("projection: immutable object conflict")
+	}
+	return nil
 }
 
 func (store *Store[B, D]) publishManifest(ctx context.Context, scope sdkmemory.Scope, name string, active Manifest) error {
@@ -510,7 +522,7 @@ func (store *Store[B, D]) publishManifest(ctx context.Context, scope sdkmemory.S
 	if err != nil {
 		return fmt.Errorf("projection: encode active manifest: %w", err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.Workspace, store.activePath(scope, name), payload); err != nil {
+	if err := store.KV.Put(ctx, store.activePath(scope, name), payload); err != nil {
 		return fmt.Errorf("projection: publish active manifest: %w", err)
 	}
 	return nil
@@ -532,7 +544,7 @@ func (store *Store[B, D]) loadManifestForAuditLocked(
 	scope sdkmemory.Scope,
 	name string,
 ) (Manifest, bool, error) {
-	data, err := store.Workspace.Read(ctx, store.activePath(scope, name))
+	data, err := store.KV.Get(ctx, store.activePath(scope, name))
 	if err != nil {
 		if errdefs.IsNotFound(err) {
 			return Manifest{}, false, nil

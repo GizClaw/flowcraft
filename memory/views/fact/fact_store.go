@@ -4,33 +4,33 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"reflect"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const schemaVersion = 2
 
-// Option configures a WorkspaceStore.
-type Option func(*WorkspaceStore)
+const mergeEventType = "fact.merge"
+
+// Option configures a FactStore.
+type Option func(*FactStore)
 
 // WithClock replaces the clock used for authoritative timestamps.
 func WithClock(clock func() time.Time) Option {
-	return func(store *WorkspaceStore) {
+	return func(store *FactStore) {
 		if clock != nil {
 			store.clock = clock
 		}
@@ -40,13 +40,15 @@ func WithClock(clock func() time.Time) Option {
 // WithPublicationSink attaches a durable outbox publisher. The sink is called
 // only after the immutable fact/merge record is durable.
 func WithPublicationSink(sink PublicationSink) Option {
-	return func(store *WorkspaceStore) { store.publications = sink }
+	return func(store *FactStore) { store.publications = sink }
 }
 
-// WorkspaceStore stores every fact in an independent schema-versioned file.
-// Calls through one instance are safe for concurrent use.
-type WorkspaceStore struct {
-	ws           workspace.Workspace
+// FactStore stores each immutable base fact as a KV snapshot and every merge
+// event as a storage.Log append. Reads aggregate the base with replayed merge
+// events, so the KV snapshot is a cache that repair can rebuild from the Log.
+type FactStore struct {
+	log          storage.Log
+	kv           storage.Store
 	clock        func() time.Time
 	publications PublicationSink
 	mu           sync.RWMutex
@@ -73,13 +75,16 @@ type mergeEvent struct {
 	EventTime       time.Time             `json:"event_time"`
 }
 
-var _ Store = (*WorkspaceStore)(nil)
-
-func NewWorkspaceStore(ws workspace.Workspace, options ...Option) (*WorkspaceStore, error) {
-	if nilWorkspace(ws) {
-		return nil, errors.New("fact view: workspace is required")
+// NewFactStore constructs a Log+KV backed fact view. The KV backend must
+// support immutable writes for base fact snapshots.
+func NewFactStore(log storage.Log, kv storage.Store, options ...Option) (*FactStore, error) {
+	if nilValue(log) || nilValue(kv) {
+		return nil, errors.New("fact view: log and store are required")
 	}
-	store := &WorkspaceStore{ws: ws, clock: time.Now}
+	if _, ok := kv.(storage.PutIfAbsentStore); !ok {
+		return nil, errors.New("fact view: store must support immutable writes")
+	}
+	store := &FactStore{log: log, kv: kv, clock: time.Now}
 	for _, option := range options {
 		if option != nil {
 			option(store)
@@ -88,7 +93,9 @@ func NewWorkspaceStore(ws workspace.Workspace, options ...Option) (*WorkspaceSto
 	return store, nil
 }
 
-func (store *WorkspaceStore) Add(ctx context.Context, request AddRequest) (Fact, error) {
+// Add appends one immutable fact or merges it into an existing canonical
+// identity.
+func (store *FactStore) Add(ctx context.Context, request AddRequest) (Fact, error) {
 	if err := validateAdd(request); err != nil {
 		return Fact{}, err
 	}
@@ -183,7 +190,11 @@ func (store *WorkspaceStore) Add(ctx context.Context, request AddRequest) (Fact,
 	if err != nil {
 		return Fact{}, fmt.Errorf("fact view: encode fact %q: %w", request.ID, err)
 	}
-	if err := workspace.AtomicWrite(ctx, store.ws, store.factPath(request.Scope, request.ConversationID, request.ID), data); err != nil {
+	key, err := store.factKey(request.Scope, request.ConversationID, request.ID)
+	if err != nil {
+		return Fact{}, err
+	}
+	if err := store.putImmutable(ctx, key, data); err != nil {
 		return Fact{}, fmt.Errorf("fact view: write fact %q: %w", request.ID, err)
 	}
 	if err := store.publish(ctx, candidate, "published", factRevisionDigest(candidate)); err != nil {
@@ -192,7 +203,7 @@ func (store *WorkspaceStore) Add(ctx context.Context, request AddRequest) (Fact,
 	return cloneFact(candidate), nil
 }
 
-func (store *WorkspaceStore) publish(ctx context.Context, value Fact, event, revisionDigest string) error {
+func (store *FactStore) publish(ctx context.Context, value Fact, event, revisionDigest string) error {
 	if store.publications == nil {
 		return nil
 	}
@@ -206,7 +217,8 @@ func (store *WorkspaceStore) publish(ctx context.Context, value Fact, event, rev
 	return nil
 }
 
-func (store *WorkspaceStore) Get(ctx context.Context, scope sdkmemory.Scope, conversationID, factID string) (Fact, bool, error) {
+// Get returns the aggregated fact for one ID.
+func (store *FactStore) Get(ctx context.Context, scope sdkmemory.Scope, conversationID, factID string) (Fact, bool, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
 		return Fact{}, false, err
 	}
@@ -223,7 +235,9 @@ func (store *WorkspaceStore) Get(ctx context.Context, scope sdkmemory.Scope, con
 	return aggregated, err == nil, err
 }
 
-func (store *WorkspaceStore) List(ctx context.Context, scope sdkmemory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
+// List returns aggregated facts in one conversation, ordered by (CreatedAt,
+// ID).
+func (store *FactStore) List(ctx context.Context, scope sdkmemory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
 		return nil, err
 	}
@@ -232,36 +246,17 @@ func (store *WorkspaceStore) List(ctx context.Context, scope sdkmemory.Scope, co
 	return store.listLocked(ctx, scope, conversationID, options)
 }
 
-// ListScope scans immutable facts across every conversation in one hard scope.
-// It is used by outbox reconciliation after a crash between fact publication
-// and task append.
-func (store *WorkspaceStore) ListScope(ctx context.Context, scope sdkmemory.Scope) ([]Fact, error) {
+// ListScope scans aggregated facts across every conversation in one hard
+// scope.
+func (store *FactStore) ListScope(ctx context.Context, scope sdkmemory.Scope) ([]Fact, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
 	}
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	entries, err := store.ws.List(ctx, store.conversationsDir(scope))
+	result, err := store.listScopeLocked(ctx, scope)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return []Fact{}, nil
-		}
-		return nil, fmt.Errorf("fact view: list conversations: %w", err)
-	}
-	var result []Fact
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		conversationID, err := decodeSegment(entry.Name())
-		if err != nil {
-			return nil, fmt.Errorf("fact view: decode conversation %q: %w", entry.Name(), err)
-		}
-		values, err := store.listLocked(ctx, scope, conversationID, ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, values...)
+		return nil, err
 	}
 	sort.Slice(result, func(i, j int) bool {
 		if result[i].ConversationID != result[j].ConversationID {
@@ -277,7 +272,7 @@ func (store *WorkspaceStore) ListScope(ctx context.Context, scope sdkmemory.Scop
 
 // ListPublications reconstructs every immutable initial and merge publication
 // so outbox reconciliation preserves per-revision task identity.
-func (store *WorkspaceStore) ListPublications(ctx context.Context, scope sdkmemory.Scope) ([]Publication, error) {
+func (store *FactStore) ListPublications(ctx context.Context, scope sdkmemory.Scope) ([]Publication, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
 	}
@@ -301,27 +296,18 @@ func (store *WorkspaceStore) ListPublications(ctx context.Context, scope sdkmemo
 			Fact: current, Event: "published", RevisionDigest: revision,
 			PublicationID: publicationID(scope, current.ConversationID, current.ID, "published", revision),
 		})
-		entries, err := store.ws.List(ctx, store.mergeDir(scope, current.ConversationID, current.ID))
+		events, err := store.mergeEvents(ctx, scope, current.ConversationID, current.ID)
 		if err != nil {
-			if errdefs.IsNotFound(err) {
-				continue
-			}
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			revision, dataName, err := decodeDataFilename(entry.Name())
+		for _, event := range events {
+			eventID, err := mergeEventID(event.Payload)
 			if err != nil {
 				return nil, err
 			}
-			if !dataName {
-				continue
-			}
 			result = append(result, Publication{
-				Fact: current, Event: "merged", RevisionDigest: revision,
-				PublicationID: publicationID(scope, current.ConversationID, current.ID, "merged", revision),
+				Fact: current, Event: "merged", RevisionDigest: eventID,
+				PublicationID: publicationID(scope, current.ConversationID, current.ID, "merged", eventID),
 			})
 		}
 	}
@@ -331,7 +317,7 @@ func (store *WorkspaceStore) ListPublications(ctx context.Context, scope sdkmemo
 
 // AuditSourceDigests reads each immutable fact and merge authority record and
 // independently rehashes only that record's provenance.
-func (store *WorkspaceStore) AuditSourceDigests(ctx context.Context, scope sdkmemory.Scope, conversationID string) ([]SourceDigestEvidence, error) {
+func (store *FactStore) AuditSourceDigests(ctx context.Context, scope sdkmemory.Scope, conversationID string) ([]SourceDigestEvidence, error) {
 	if err := validateAddress(scope, conversationID); err != nil {
 		return nil, err
 	}
@@ -354,35 +340,22 @@ func (store *WorkspaceStore) AuditSourceDigests(ctx context.Context, scope sdkme
 			Name: "fact:" + value.ID, StoredDigest: base.Fact.SourceDigest,
 			ComputedDigest: digestSources(base.Fact.Provenance),
 		})
-		entries, err := store.ws.List(ctx, store.mergeDir(scope, conversationID, value.ID))
+		events, err := store.mergeEvents(ctx, scope, conversationID, value.ID)
 		if err != nil {
-			if errdefs.IsNotFound(err) {
-				continue
-			}
 			return nil, err
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			revision, dataName, err := decodeDataFilename(entry.Name())
-			if err != nil {
+		for _, event := range events {
+			var merge mergeEvent
+			if err := decodeJSON(event.Payload, &merge); err != nil {
 				return nil, err
 			}
-			if !dataName {
-				continue
-			}
-			data, err := store.ws.Read(ctx, path.Join(store.mergeDir(scope, conversationID, value.ID), entry.Name()))
+			eventID, err := mergeEventID(event.Payload)
 			if err != nil {
-				return nil, err
-			}
-			var event mergeEvent
-			if err := decodeJSON(data, &event); err != nil {
 				return nil, err
 			}
 			result = append(result, SourceDigestEvidence{
-				Name: "merge:" + value.ID + ":" + revision, StoredDigest: event.SourceDigest,
-				ComputedDigest: digestSources(event.Provenance),
+				Name: "merge:" + value.ID + ":" + eventID, StoredDigest: merge.SourceDigest,
+				ComputedDigest: digestSources(merge.Provenance),
 			})
 		}
 	}
@@ -390,58 +363,58 @@ func (store *WorkspaceStore) AuditSourceDigests(ctx context.Context, scope sdkme
 	return result, nil
 }
 
-func (store *WorkspaceStore) listScopeLocked(ctx context.Context, scope sdkmemory.Scope) ([]Fact, error) {
-	entries, err := store.ws.List(ctx, store.conversationsDir(scope))
+func (store *FactStore) listScopeLocked(ctx context.Context, scope sdkmemory.Scope) ([]Fact, error) {
+	prefix, err := store.scopePrefix(scope)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return []Fact{}, nil
-		}
-		return nil, fmt.Errorf("fact view: list conversations: %w", err)
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return nil, err
 	}
 	var result []Fact
 	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-		conversationID, err := decodeSegment(entry.Name())
+		conversationID, factID, err := decodeScopeFactKey(prefix, entry.Key)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("fact view: decode fact key %q: %w", entry.Key, err)
 		}
-		values, err := store.listLocked(ctx, scope, conversationID, ListOptions{})
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, values...)
-	}
-	return result, nil
-}
-
-func (store *WorkspaceStore) listLocked(ctx context.Context, scope sdkmemory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
-	entries, err := store.ws.List(ctx, store.factsDir(scope, conversationID))
-	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return []Fact{}, nil
-		}
-		return nil, fmt.Errorf("fact view: list facts: %w", err)
-	}
-	facts := make([]Fact, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		id, dataName, err := decodeDataFilename(entry.Name())
-		if err != nil {
-			return nil, fmt.Errorf("fact view: decode fact filename %q: %w", entry.Name(), err)
-		}
-		if !dataName {
-			continue
-		}
-		persisted, ok, err := store.read(ctx, scope, conversationID, id)
+		persisted, ok, err := store.read(ctx, scope, conversationID, factID)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", id)
+			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", factID)
+		}
+		aggregated, err := store.aggregate(ctx, persisted)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, aggregated)
+	}
+	return result, nil
+}
+
+func (store *FactStore) listLocked(ctx context.Context, scope sdkmemory.Scope, conversationID string, options ListOptions) ([]Fact, error) {
+	prefix, err := store.conversationPrefix(scope, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
+		return nil, err
+	}
+	facts := make([]Fact, 0, len(entries))
+	for _, entry := range entries {
+		_, factID, err := decodeFactKey(prefix, entry.Key)
+		if err != nil {
+			return nil, fmt.Errorf("fact view: decode fact filename %q: %w", entry.Key, err)
+		}
+		persisted, ok, err := store.read(ctx, scope, conversationID, factID)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("fact view: fact %q disappeared during scan", factID)
 		}
 		aggregated, err := store.aggregate(ctx, persisted)
 		if err != nil {
@@ -469,26 +442,21 @@ func (store *WorkspaceStore) listLocked(ctx context.Context, scope sdkmemory.Sco
 	return result, nil
 }
 
-func (store *WorkspaceStore) findByCanonicalHash(ctx context.Context, scope sdkmemory.Scope, conversationID, canonicalHash string) (persistedFact, bool, error) {
-	entries, err := store.ws.List(ctx, store.factsDir(scope, conversationID))
+func (store *FactStore) findByCanonicalHash(ctx context.Context, scope sdkmemory.Scope, conversationID, canonicalHash string) (persistedFact, bool, error) {
+	prefix, err := store.conversationPrefix(scope, conversationID)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return persistedFact{}, false, nil
-		}
+		return persistedFact{}, false, err
+	}
+	entries, err := store.kv.List(ctx, prefix)
+	if err != nil {
 		return persistedFact{}, false, fmt.Errorf("fact view: scan exact identities: %w", err)
 	}
 	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		id, dataName, err := decodeDataFilename(entry.Name())
+		_, factID, err := decodeFactKey(prefix, entry.Key)
 		if err != nil {
 			return persistedFact{}, false, err
 		}
-		if !dataName {
-			continue
-		}
-		value, ok, err := store.read(ctx, scope, conversationID, id)
+		value, ok, err := store.read(ctx, scope, conversationID, factID)
 		if err != nil {
 			return persistedFact{}, false, err
 		}
@@ -499,43 +467,26 @@ func (store *WorkspaceStore) findByCanonicalHash(ctx context.Context, scope sdkm
 	return persistedFact{}, false, nil
 }
 
-func (store *WorkspaceStore) aggregate(ctx context.Context, base persistedFact) (Fact, error) {
+func (store *FactStore) aggregate(ctx context.Context, base persistedFact) (Fact, error) {
 	result := cloneFact(base.Fact)
-	entries, err := store.ws.List(ctx, store.mergeDir(result.Scope, result.ConversationID, result.ID))
+	events, err := store.mergeEvents(ctx, result.Scope, result.ConversationID, result.ID)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return result, nil
-		}
-		return Fact{}, fmt.Errorf("fact view: list merge events for %q: %w", result.ID, err)
+		return Fact{}, err
 	}
 	provenance := append([]sdkmemory.SourceRef(nil), result.Provenance...)
 	links := append([]string(nil), result.LinkedMemoryIDs...)
 	entities := append([]string(nil), result.Entities...)
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return Fact{}, fmt.Errorf("fact view: unexpected merge directory %q", entry.Name())
+	for _, event := range events {
+		var merge mergeEvent
+		if err := decodeJSON(event.Payload, &merge); err != nil {
+			return Fact{}, fmt.Errorf("fact view: decode merge event: %w", err)
 		}
-		eventID, dataName, err := decodeDataFilename(entry.Name())
-		if err != nil {
-			return Fact{}, fmt.Errorf("fact view: decode merge event %q: %w", entry.Name(), err)
+		if err := validateMergeEvent(merge, result); err != nil {
+			return Fact{}, fmt.Errorf("fact view: corrupt merge event: %w", err)
 		}
-		if !dataName {
-			continue
-		}
-		data, err := store.ws.Read(ctx, path.Join(store.mergeDir(result.Scope, result.ConversationID, result.ID), entry.Name()))
-		if err != nil {
-			return Fact{}, fmt.Errorf("fact view: read merge event %q: %w", eventID, err)
-		}
-		var event mergeEvent
-		if err := decodeJSON(data, &event); err != nil {
-			return Fact{}, fmt.Errorf("fact view: decode merge event %q: %w", eventID, err)
-		}
-		if err := validateMergeEvent(event, result); err != nil {
-			return Fact{}, fmt.Errorf("fact view: corrupt merge event %q: %w", eventID, err)
-		}
-		provenance = append(provenance, event.Provenance...)
-		links = append(links, event.LinkedMemoryIDs...)
-		entities = append(entities, event.Entities...)
+		provenance = append(provenance, merge.Provenance...)
+		links = append(links, merge.LinkedMemoryIDs...)
+		entities = append(entities, merge.Entities...)
 	}
 	result.Provenance = uniqueSources(provenance)
 	result.LinkedMemoryIDs = normalizeIDs(links, result.ID)
@@ -543,28 +494,164 @@ func (store *WorkspaceStore) aggregate(ctx context.Context, base persistedFact) 
 	return cloneFact(result), nil
 }
 
-func (store *WorkspaceStore) writeMergeEvent(ctx context.Context, scope sdkmemory.Scope, conversationID string, event mergeEvent) (string, error) {
+func (store *FactStore) writeMergeEvent(ctx context.Context, scope sdkmemory.Scope, conversationID string, event mergeEvent) (string, error) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return "", fmt.Errorf("fact view: encode merge event: %w", err)
 	}
-	sum := sha256.Sum256(append([]byte("flowcraft.memory.fact.merge\x00"), data...))
-	eventID := hex.EncodeToString(sum[:])
-	target := store.mergePath(scope, conversationID, event.FactID, eventID)
-	existing, err := store.ws.Read(ctx, target)
-	if err == nil {
-		if bytes.Equal(existing, data) {
-			return eventID, nil
+	eventID, err := mergeEventID(data)
+	if err != nil {
+		return "", err
+	}
+	stream, err := store.mergeStream(scope, conversationID, event.FactID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := store.log.Append(ctx, stream, []storage.Event{{
+		Stream:  stream,
+		Type:    mergeEventType,
+		Payload: data,
+	}}, storage.AppendOptions{IdempotencyKey: eventID}); err != nil {
+		if errors.Is(err, storage.ErrConflict) {
+			return "", errdefs.Conflictf("fact view: merge event %q conflicts", eventID)
 		}
-		return "", errdefs.Conflictf("fact view: merge event %q conflicts", eventID)
-	}
-	if !errdefs.IsNotFound(err) {
-		return "", fmt.Errorf("fact view: inspect merge event %q: %w", eventID, err)
-	}
-	if err := workspace.AtomicWrite(ctx, store.ws, target, data); err != nil {
 		return "", fmt.Errorf("fact view: write merge event %q: %w", eventID, err)
 	}
 	return eventID, nil
+}
+
+func (store *FactStore) mergeEvents(ctx context.Context, scope sdkmemory.Scope, conversationID, factID string) ([]storage.Event, error) {
+	stream, err := store.mergeStream(scope, conversationID, factID)
+	if err != nil {
+		return nil, err
+	}
+	return store.log.Read(ctx, stream, 0, 0)
+}
+
+func (store *FactStore) read(ctx context.Context, scope sdkmemory.Scope, conversationID, factID string) (persistedFact, bool, error) {
+	key, err := store.factKey(scope, conversationID, factID)
+	if err != nil {
+		return persistedFact{}, false, err
+	}
+	data, err := store.kv.Get(ctx, key)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return persistedFact{}, false, nil
+		}
+		return persistedFact{}, false, fmt.Errorf("fact view: read fact %q: %w", factID, err)
+	}
+	var persisted persistedFact
+	if err := decodeJSON(data, &persisted); err != nil {
+		return persistedFact{}, false, fmt.Errorf("fact view: decode fact %q: %w", factID, err)
+	}
+	if err := validatePersisted(persisted, scope, conversationID, factID); err != nil {
+		return persistedFact{}, false, fmt.Errorf("fact view: corrupt fact %q: %w", factID, err)
+	}
+	return persisted, true, nil
+}
+
+func (store *FactStore) putImmutable(ctx context.Context, key string, data []byte) error {
+	put, ok := store.kv.(storage.PutIfAbsentStore)
+	if !ok {
+		return errors.New("fact view: store must support immutable writes")
+	}
+	written, err := put.PutIfAbsent(ctx, key, data)
+	if err != nil {
+		return err
+	}
+	if written {
+		return nil
+	}
+	existing, err := store.kv.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(existing, data) {
+		return errdefs.Conflictf("fact view: immutable fact %q conflicts", key)
+	}
+	return nil
+}
+
+func (store *FactStore) scopePrefix(scope sdkmemory.Scope) (string, error) {
+	partition, err := storage.ScopePartition(scope)
+	if err != nil {
+		return "", err
+	}
+	return "views/fact/v1/" + partition, nil
+}
+
+func (store *FactStore) conversationPrefix(scope sdkmemory.Scope, conversationID string) (string, error) {
+	prefix, err := store.scopePrefix(scope)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/" + storage.EncodeSegment(conversationID) + "/facts", nil
+}
+
+func (store *FactStore) factKey(scope sdkmemory.Scope, conversationID, factID string) (string, error) {
+	prefix, err := store.conversationPrefix(scope, conversationID)
+	if err != nil {
+		return "", err
+	}
+	return prefix + "/" + storage.EncodeSegment(factID), nil
+}
+
+func (store *FactStore) mergeStream(scope sdkmemory.Scope, conversationID, factID string) (string, error) {
+	key, err := store.factKey(scope, conversationID, factID)
+	if err != nil {
+		return "", err
+	}
+	return key + "/merges", nil
+}
+
+func decodeFactKey(prefix, key string) (string, string, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return "", "", errors.New("fact key outside prefix")
+	}
+	segments := strings.Split(suffix, "/")
+	if len(segments) != 1 {
+		return "", "", errors.New("fact key has unexpected depth")
+	}
+	factID, err := storage.DecodeSegment(segments[0])
+	if err != nil {
+		return "", "", err
+	}
+	// Recover the conversation from the prefix segments.
+	prefixSegments := strings.Split(prefix, "/")
+	if len(prefixSegments) < 2 {
+		return "", "", errors.New("invalid fact prefix")
+	}
+	conversationID, err := storage.DecodeSegment(prefixSegments[len(prefixSegments)-2])
+	if err != nil {
+		return "", "", err
+	}
+	return conversationID, factID, nil
+}
+
+func decodeScopeFactKey(prefix, key string) (string, string, error) {
+	suffix := strings.TrimPrefix(key, prefix+"/")
+	if suffix == key {
+		return "", "", errors.New("fact key outside prefix")
+	}
+	segments := strings.Split(suffix, "/")
+	if len(segments) != 3 || segments[1] != "facts" {
+		return "", "", errors.New("fact key has unexpected shape")
+	}
+	conversationID, err := storage.DecodeSegment(segments[0])
+	if err != nil {
+		return "", "", err
+	}
+	factID, err := storage.DecodeSegment(segments[2])
+	if err != nil {
+		return "", "", err
+	}
+	return conversationID, factID, nil
+}
+
+func mergeEventID(data []byte) (string, error) {
+	sum := sha256.Sum256(append([]byte("flowcraft.memory.fact.merge\x00"), data...))
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func validateMergeEvent(event mergeEvent, fact Fact) error {
@@ -624,24 +711,6 @@ func sourcesContain(have, want []sdkmemory.SourceRef) bool {
 	return true
 }
 
-func (store *WorkspaceStore) read(ctx context.Context, scope sdkmemory.Scope, conversationID, factID string) (persistedFact, bool, error) {
-	data, err := store.ws.Read(ctx, store.factPath(scope, conversationID, factID))
-	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return persistedFact{}, false, nil
-		}
-		return persistedFact{}, false, fmt.Errorf("fact view: read fact %q: %w", factID, err)
-	}
-	var persisted persistedFact
-	if err := decodeJSON(data, &persisted); err != nil {
-		return persistedFact{}, false, fmt.Errorf("fact view: decode fact %q: %w", factID, err)
-	}
-	if err := validatePersisted(persisted, scope, conversationID, factID); err != nil {
-		return persistedFact{}, false, fmt.Errorf("fact view: corrupt fact %q: %w", factID, err)
-	}
-	return persisted, true, nil
-}
-
 func validateAdd(request AddRequest) error {
 	if err := validateAddress(request.Scope, request.ConversationID); err != nil {
 		return err
@@ -686,7 +755,7 @@ func validatePersisted(value persistedFact, scope sdkmemory.Scope, conversationI
 	if value.RuntimeID != scope.RuntimeID || value.UserID != scope.UserID ||
 		value.AgentID != scope.AgentID ||
 		value.ConversationID != conversationID || value.FactID != factID {
-		return errors.New("persisted address does not match workspace path")
+		return errors.New("persisted address does not match fact key")
 	}
 	fact := value.Fact
 	if fact.ID != factID || fact.Scope != scope || fact.ConversationID != conversationID ||
@@ -694,27 +763,6 @@ func validatePersisted(value persistedFact, scope sdkmemory.Scope, conversationI
 		return errors.New("fact address or authority fields are invalid")
 	}
 	return validateFact(fact)
-}
-
-func (store *WorkspaceStore) factsDir(scope sdkmemory.Scope, conversationID string) string {
-	return path.Join(store.conversationsDir(scope), encodeSegment(conversationID), "facts")
-}
-
-func (store *WorkspaceStore) conversationsDir(scope sdkmemory.Scope) string {
-	return path.Join("views", "fact", "v1", "partitions", encodeSegment(scope.RuntimeID),
-		encodeSegment(scope.UserID), encodeSegment(scope.AgentID), "conversations")
-}
-
-func (store *WorkspaceStore) factPath(scope sdkmemory.Scope, conversationID, factID string) string {
-	return path.Join(store.factsDir(scope, conversationID), encodeSegment(factID)+".json")
-}
-
-func (store *WorkspaceStore) mergeDir(scope sdkmemory.Scope, conversationID, factID string) string {
-	return path.Join(store.factsDir(scope, conversationID), "merges", encodeSegment(factID))
-}
-
-func (store *WorkspaceStore) mergePath(scope sdkmemory.Scope, conversationID, factID, eventID string) string {
-	return path.Join(store.mergeDir(scope, conversationID, factID), encodeSegment(eventID)+".json")
 }
 
 func factTextContent(text string) sdkmessage.Content {
@@ -793,39 +841,6 @@ func publicationID(scope sdkmemory.Scope, conversationID, factID, event, revisio
 	return hex.EncodeToString(sum[:])
 }
 
-func encodeSegment(value string) string {
-	return "k_" + base64.RawURLEncoding.EncodeToString([]byte(value))
-}
-
-func decodeDataFilename(name string) (string, bool, error) {
-	if !strings.HasSuffix(name, ".json") {
-		return "", false, nil
-	}
-	segment := strings.TrimSuffix(name, ".json")
-	if !strings.HasPrefix(segment, "k_") {
-		return "", false, nil
-	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(segment, "k_"))
-	if err != nil {
-		return "", true, err
-	}
-	if encodeSegment(string(data)) != segment {
-		return "", true, errors.New("non-canonical path segment")
-	}
-	return string(data), true, nil
-}
-
-func decodeSegment(segment string) (string, error) {
-	if !strings.HasPrefix(segment, "k_") {
-		return "", errors.New("invalid path segment")
-	}
-	data, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(segment, "k_"))
-	if err != nil || encodeSegment(string(data)) != segment {
-		return "", errors.New("non-canonical path segment")
-	}
-	return string(data), nil
-}
-
 func decodeJSON(data []byte, destination any) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
@@ -842,14 +857,14 @@ func decodeJSON(data []byte, destination any) error {
 	return nil
 }
 
-func nilWorkspace(ws workspace.Workspace) bool {
-	if ws == nil {
+func nilValue(value any) bool {
+	if value == nil {
 		return true
 	}
-	value := reflect.ValueOf(ws)
-	switch value.Kind() {
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return value.IsNil()
+		return reflected.IsNil()
 	default:
 		return false
 	}

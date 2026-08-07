@@ -12,11 +12,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/memory/component"
 	projectionstore "github.com/GizClaw/flowcraft/memory/internal/projection"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 const (
@@ -30,7 +30,7 @@ type Thresholds = projectionstore.Thresholds
 func DefaultThresholds() Thresholds { return projectionstore.DefaultThresholds() }
 
 type Config struct {
-	Workspace  workspace.Workspace
+	KV         storage.Store
 	Runtime    *inference.Runtime
 	Model      inference.ModelRef
 	Projection string
@@ -87,7 +87,7 @@ func New(config Config) (*Index, error) {
 		return nil, errors.New("vector projection: projection name is required")
 	}
 	key := vectorEntryKey()
-	store, err := projectionstore.NewTypedStore(config.Workspace, laneName,
+	store, err := projectionstore.NewTypedStore(config.KV, laneName,
 		projectionstore.TypedOptions[snapshot, projectionstore.EntryDelta[entry]]{
 			Thresholds: config.Thresholds,
 			Canonicalize: func(delta projectionstore.EntryDelta[entry]) projectionstore.EntryDelta[entry] {

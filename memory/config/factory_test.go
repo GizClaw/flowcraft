@@ -18,7 +18,8 @@ func TestFactoryRejectsMissingDeps(t *testing.T) {
 	}
 	runtime, _, _ := testRuntime(t)
 	if _, err := factory.New(context.Background(), sdkmemory.Input{
-		Deps: map[string]any{"inference": runtime},
+		Settings: factorySettings(t),
+		Deps:     map[string]any{"inference": runtime},
 	}); err == nil {
 		t.Fatal("New succeeded without workspace")
 	} else if !strings.Contains(err.Error(), "workspace") {
@@ -38,6 +39,7 @@ func TestFactoryRejectsWrongDepTypes(t *testing.T) {
 	}
 	runtime, _, _ := testRuntime(t)
 	if _, err := factory.New(context.Background(), sdkmemory.Input{
+		Settings: factorySettings(t),
 		Deps: map[string]any{
 			"inference": runtime,
 			"workspace": "not a workspace",
@@ -49,15 +51,8 @@ func TestFactoryRejectsWrongDepTypes(t *testing.T) {
 
 func TestFactoryBuildsAssemblyFromDeps(t *testing.T) {
 	runtime, _, _ := testRuntime(t)
-	// Wire-format settings: durations are strings, so marshal through the
-	// JSON protocol instead of the Go struct (Duration only unmarshals).
-	settings := []byte(`{
-		"generate": {"provider": "fake", "name": "generate"},
-		"embed": {"provider": "fake", "name": "embed"},
-		"scopes": [{"runtime_id": "memory", "user_id": "tenant"}]
-	}`)
 	assembly, err := Factory().New(context.Background(), sdkmemory.Input{
-		Settings: settings,
+		Settings: factorySettings(t),
 		Deps: map[string]any{
 			"inference": runtime,
 			"workspace": workspace.NewMemWorkspace(),
@@ -74,4 +69,19 @@ func TestFactoryBuildsAssemblyFromDeps(t *testing.T) {
 	if built.System == nil {
 		t.Fatal("assembly has no system")
 	}
+}
+
+func factorySettings(t *testing.T) []byte {
+	t.Helper()
+	// Wire-format settings: durations are strings, so marshal through the
+	// JSON protocol instead of the Go struct (Duration only unmarshals).
+	return []byte(`{
+		"storage": {
+			"log": {"driver": "workspace"},
+			"kv": {"driver": "workspace"}
+		},
+		"generate": {"provider": "fake", "name": "generate"},
+		"embed": {"provider": "fake", "name": "embed"},
+		"scopes": [{"runtime_id": "memory", "user_id": "tenant"}]
+	}`)
 }

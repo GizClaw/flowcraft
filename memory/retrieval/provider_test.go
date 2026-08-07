@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/memory/retrieval/fusion"
 	"github.com/GizClaw/flowcraft/memory/retrieval/hydrate"
 	"github.com/GizClaw/flowcraft/memory/retrieval/pack"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	documentview "github.com/GizClaw/flowcraft/memory/views/document"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
@@ -46,7 +47,7 @@ func (hiddenVisibility) Visible(context.Context, sdkmemory.Scope, string) (bool,
 func TestProviderReinforcesOnlyActuallyReturnedLongTermItems(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
-	facts, _ := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	facts := newFactStore(t, workspace.NewMemWorkspace())
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message"}
 	for _, id := range []string{"a", "b"} {
 		_, _ = facts.Add(ctx, factview.AddRequest{ID: id, Scope: scope, ConversationID: "conversation",
@@ -82,7 +83,7 @@ func TestProviderReinforcesOnlyActuallyReturnedLongTermItems(t *testing.T) {
 func TestProviderKeepsEqualLocalFactIDsAcrossConversations(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
-	facts, _ := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	facts := newFactStore(t, workspace.NewMemWorkspace())
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message"}
 	for _, conversationID := range []string{"conversation-a", "conversation-b"} {
 		if _, err := facts.Add(ctx, factview.AddRequest{
@@ -124,7 +125,7 @@ func TestProviderKeepsEqualLocalFactIDsAcrossConversations(t *testing.T) {
 func TestProviderHonorsExplicitSoftForgottenOverlay(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
-	facts, _ := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	facts := newFactStore(t, workspace.NewMemWorkspace())
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message"}
 	_, _ = facts.Add(ctx, factview.AddRequest{ID: "hidden", Scope: scope, ConversationID: "conversation",
 		Content: providerText("hidden"), Provenance: []sdkmemory.SourceRef{source}})
@@ -147,7 +148,11 @@ func TestProviderHonorsExplicitSoftForgottenOverlay(t *testing.T) {
 func TestContextProviderProgressivelyHydratesDocumentParents(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
-	documents, _ := documentview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	documents, _ := documentview.NewDocumentViewStore(kvStore)
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceDocument, ID: "dataset/document", Revision: "1"}
 	metadata := sdkmemory.Metadata{"dataset_id": "dataset", "document_id": "document"}
 	records := []documentview.Chunk{
@@ -187,7 +192,7 @@ func TestContextProviderProgressivelyHydratesDocumentParents(t *testing.T) {
 func TestContextProviderIntegrationDegradesHydratesFiltersAndPacks(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
-	facts, _ := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	facts := newFactStore(t, workspace.NewMemWorkspace())
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message"}
 	for _, fact := range []struct{ id, text string }{{"high", "important fact"}, {"low", "less relevant"}} {
 		if _, err := facts.Add(ctx, factview.AddRequest{
@@ -286,7 +291,11 @@ func TestFactEntityProjectionProviderIntegration(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	ws := workspace.NewMemWorkspace()
-	facts, _ := factview.NewWorkspaceStore(ws)
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := newFactStore(t, ws)
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "conversation/message"}
 	if _, err := facts.Add(ctx, factview.AddRequest{
 		ID: "fact", Scope: scope, ConversationID: "conversation",
@@ -299,7 +308,7 @@ func TestFactEntityProjectionProviderIntegration(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("stored fact = %+v, %v", stored, err)
 	}
-	index, _ := entity.New(entity.Config{Workspace: ws, Projection: "facts"})
+	index, _ := entity.New(entity.Config{KV: kvStore, Projection: "facts"})
 	if err := index.ApplyDelta(ctx, component.ProjectionDelta{
 		Scope: scope, Upserts: []component.Artifact{{
 			Kind: "fact", ID: "fact", Content: stored.Content, Entities: stored.Entities,
@@ -326,7 +335,7 @@ func TestFactEntityProjectionProviderIntegration(t *testing.T) {
 func TestProviderMinScoreStableAcrossCandidateSets(t *testing.T) {
 	ctx := context.Background()
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
-	facts, _ := factview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	facts := newFactStore(t, workspace.NewMemWorkspace())
 	source := sdkmemory.SourceRef{Kind: sdkmemory.SourceMessage, ID: "message"}
 	for _, id := range []string{"target", "distractor"} {
 		if _, err := facts.Add(ctx, factview.AddRequest{

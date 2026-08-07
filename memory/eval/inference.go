@@ -6,7 +6,6 @@ import (
 	"os"
 	"strings"
 
-	memoryconfig "github.com/GizClaw/flowcraft/memory/config"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
@@ -70,12 +69,4 @@ func parseModelRef(spec string) (inference.ModelRef, error) {
 		return inference.ModelRef{}, err
 	}
 	return ref, nil
-}
-
-func toModelSettings(ref inference.ModelRef) memoryconfig.ModelSettings {
-	return memoryconfig.ModelSettings{
-		Provider: ref.ID.Provider,
-		Name:     ref.ID.Name,
-		Profile:  ref.Profile,
-	}
 }

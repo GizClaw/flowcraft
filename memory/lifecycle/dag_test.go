@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
@@ -91,7 +92,7 @@ func TestTypedCustomStepRunsAndCompletedNodesReplaySelectively(t *testing.T) {
 		t.Fatal(err)
 	}
 	ws := workspace.NewMemWorkspace()
-	checkpoints, err := NewWorkspaceCheckpointStore(ws)
+	checkpoints := newCheckpointStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +112,7 @@ func TestTypedCustomStepRunsAndCompletedNodesReplaySelectively(t *testing.T) {
 	if err != nil || !found || failed.Status != CheckpointError {
 		t.Fatalf("failed checkpoint=%#v found=%v err=%v", failed, found, err)
 	}
-	checkpoints, err = NewWorkspaceCheckpointStore(ws)
+	checkpoints = newCheckpointStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +185,7 @@ func TestTaskIsImmutableAcrossFailedNodeRestart(t *testing.T) {
 		PolicyDigest: "policy", Branch: "branch",
 	}
 	state := &RunState{task: original}
-	checkpoints, _ := NewWorkspaceCheckpointStore(workspace.NewMemWorkspace())
+	checkpoints := newCheckpointStore(t, workspace.NewMemWorkspace())
 	if err := dag.Run(context.Background(), state, checkpoints); err == nil {
 		t.Fatal("failing custom node succeeded")
 	}
@@ -216,7 +217,7 @@ func TestDAGPolicyAndScopeIsolationAndCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkpoints, _ := NewWorkspaceCheckpointStore(workspace.NewMemWorkspace())
+	checkpoints := newCheckpointStore(t, workspace.NewMemWorkspace())
 	run := func(scope, policy string) error {
 		return dag.Run(context.Background(), &RunState{task: Task{
 			Scope: sdkmemory.Scope{RuntimeID: scope}, PublicationID: "publication",
@@ -246,4 +247,17 @@ func TestDAGPolicyAndScopeIsolationAndCancellation(t *testing.T) {
 	}}, checkpoints); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel error=%v", err)
 	}
+}
+
+func newCheckpointStore(t *testing.T, ws workspace.Workspace) *LifecycleCheckpointStore {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewLifecycleCheckpointStore(kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
 }

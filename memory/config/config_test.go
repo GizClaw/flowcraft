@@ -2,13 +2,17 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/lifecycle"
 	"github.com/GizClaw/flowcraft/memory/lines/chat"
+	"github.com/GizClaw/flowcraft/memory/retrieval"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	factview "github.com/GizClaw/flowcraft/memory/views/fact"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
@@ -17,13 +21,10 @@ import (
 
 func TestAssemblyRunOnceDerivesAndRetrieves(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, err := NewBuilder(workspace.NewMemWorkspace(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	builder := newBuilder(t, runtime, nil)
 	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes:   []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 		Interval: Duration(time.Hour),
 	})
@@ -87,26 +88,65 @@ func TestAssemblyRunOnceDerivesAndRetrieves(t *testing.T) {
 	}
 }
 
-func TestAssemblyLinksFactsAcrossTwoWorkerCommitsThroughSharedVectorIndex(t *testing.T) {
-	runtime, generate, embed := testRuntimeWithResponses(t, []string{
-		`{"facts":[{"text":"alpha fact","event_time":"2020-01-01T00:00:00Z"}]}`,
-		`{"facts":[{"text":"related fact","event_time":"2021-01-01T00:00:00Z"}]}`,
-	})
-	ws := workspace.NewMemWorkspace()
-	builder, err := NewBuilder(ws, runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestAssemblyExposesLaneSearchBackends(t *testing.T) {
+	runtime, generate, embed := testRuntime(t)
+	builder := newBuilder(t, runtime, nil)
 	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer assembly.Close()
-	store, err := factview.NewWorkspaceStore(ws)
+	if len(assembly.LaneBackends) != 3 {
+		t.Fatalf("lane backends = %d, want 3", len(assembly.LaneBackends))
+	}
+	if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn-1",
+		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "alpha preference")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assembly.Runner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	total := 0
+	for index, backend := range assembly.LaneBackends {
+		hits, err := backend.Search(context.Background(), "facts", retrieval.SearchQuery{
+			Scope: scope, Text: "alpha", TopK: 5,
+		})
+		if err != nil {
+			t.Fatalf("lane %d search: %v", index, err)
+		}
+		total += len(hits)
+		if index < 2 && len(hits) == 0 {
+			t.Fatalf("lane %d returned no hits", index)
+		}
+	}
+	if total == 0 {
+		t.Fatal("no lane returned hits")
+	}
+}
+
+func TestAssemblyLinksFactsAcrossTwoWorkerCommitsThroughSharedVectorIndex(t *testing.T) {
+	runtime, generate, embed := testRuntimeWithResponses(t, []string{
+		`{"facts":[{"text":"alpha fact","event_time":"2020-01-01T00:00:00Z"}]}`,
+		`{"facts":[{"text":"related fact","event_time":"2021-01-01T00:00:00Z"}]}`,
+	})
+	ws := workspace.NewMemWorkspace()
+	builder := newBuilder(t, runtime, ws)
+	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
+	assembly, err := builder.NewAssembly(context.Background(), Settings{
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
+		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assembly.Close()
+	store := newFactStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,13 +189,10 @@ func TestAssemblyPreservesExactMergeLinksBeforeProjectionExists(t *testing.T) {
 		`{"facts":[{"text":"shared fact","event_time":"2021-01-01T00:00:00Z"},{"text":"batch peer","event_time":"2022-01-01T00:00:00Z"}]}`,
 	})
 	ws := workspace.NewMemWorkspace()
-	builder, err := NewBuilder(ws, runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	builder := newBuilder(t, runtime, ws)
 	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 	})
 	if err != nil {
@@ -173,7 +210,7 @@ func TestAssemblyPreservesExactMergeLinksBeforeProjectionExists(t *testing.T) {
 	if err := assembly.Runner.RunOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	store, err := factview.NewWorkspaceStore(ws)
+	store := newFactStore(t, ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,10 +233,10 @@ func TestAssemblyPreservesExactMergeLinksBeforeProjectionExists(t *testing.T) {
 
 func TestSummaryTypedDisable(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	builder := newBuilder(t, runtime, nil)
 	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes:  []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 		Summary: SummarySettings{Disabled: true}, Interval: Duration(time.Hour),
 	})
@@ -232,13 +269,10 @@ func TestSummaryTypedDisable(t *testing.T) {
 
 func TestAssemblyLifecycleDisabledContextDoesNotPanic(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, err := NewBuilder(workspace.NewMemWorkspace(), runtime)
-	if err != nil {
-		t.Fatal(err)
-	}
+	builder := newBuilder(t, runtime, nil)
 	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes:    []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
 		Interval:  Duration(time.Hour),
 		Lifecycle: LifecycleSettings{Disabled: true},
@@ -270,9 +304,9 @@ func TestAssemblyLifecycleDisabledContextDoesNotPanic(t *testing.T) {
 
 func TestSettingsRejectInvalidLaneCalibration(t *testing.T) {
 	runtime, generate, embed := testRuntime(t)
-	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	builder := newBuilder(t, runtime, nil)
 	_, err := builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Scopes: []ScopeSettings{{RuntimeID: "memory"}},
 		Lanes: LanesSettings{Vector: LaneSettings{
 			Weight: 1, Calibration: CalibrationSettings{Kind: "logistic"},
@@ -289,10 +323,10 @@ func TestFactSettingsDefaultSimpleNoneAndCaps(t *testing.T) {
 		t.Fatalf("fact defaults = %#v", defaults.Fact)
 	}
 	runtime, _, embed := testRuntime(t)
-	builder, _ := NewBuilder(workspace.NewMemWorkspace(), runtime)
+	builder := newBuilder(t, runtime, nil)
 	assembly, err := builder.NewAssembly(context.Background(), Settings{
 		Fact:  FactSettings{Strategy: chat.StrategyNone},
-		Embed: modelSettings(embed), Interval: Duration(time.Hour),
+		Embed: FromModelRef(embed), Interval: Duration(time.Hour),
 	})
 	if err != nil {
 		t.Fatalf("none requires generation unexpectedly: %v", err)
@@ -301,7 +335,7 @@ func TestFactSettingsDefaultSimpleNoneAndCaps(t *testing.T) {
 
 	_, generate, _ := testRuntime(t)
 	_, err = builder.NewAssembly(context.Background(), Settings{
-		Generate: modelSettings(generate), Embed: modelSettings(embed),
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
 		Fact: FactSettings{MaxFacts: -1}, Interval: Duration(time.Hour),
 	})
 	if err == nil {
@@ -344,8 +378,56 @@ func TestProjectionRepairEvidenceKeepsStoredAndComputedDigestTypesAligned(t *tes
 	}
 }
 
-func modelSettings(ref inference.ModelRef) ModelSettings {
-	return ModelSettings{Provider: ref.ID.Provider, Name: ref.ID.Name, Profile: ref.Profile}
+func TestModelSettingsRoundTrip(t *testing.T) {
+	ref := inference.ModelRef{
+		ID:      inference.ModelID{Provider: "openai", Name: "gpt-5.4"},
+		Profile: "speech-key",
+	}
+	settings := FromModelRef(ref)
+	if got := settings.Ref(); got != ref {
+		t.Fatalf("Ref round trip = %#v, want %#v", got, ref)
+	}
+
+	want := map[string]string{"provider": "openai", "name": "gpt-5.4", "profile": "speech-key"}
+	jsonData, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jsonKeys map[string]string
+	if err := json.Unmarshal(jsonData, &jsonKeys); err != nil {
+		t.Fatal(err)
+	}
+	assertModelSettingsKeys(t, "JSON", jsonKeys, want)
+	var jsonDecoded ModelSettings
+	if err := json.Unmarshal(jsonData, &jsonDecoded); err != nil {
+		t.Fatal(err)
+	}
+	if jsonDecoded != settings {
+		t.Fatalf("JSON decode = %#v, want %#v", jsonDecoded, settings)
+	}
+
+	plain := FromModelRef(inference.ModelRef{ID: inference.ModelID{Provider: "openai", Name: "gpt-5.4"}})
+	plainData, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plainKeys map[string]string
+	if err := json.Unmarshal(plainData, &plainKeys); err != nil {
+		t.Fatal(err)
+	}
+	assertModelSettingsKeys(t, "JSON", plainKeys, map[string]string{"provider": "openai", "name": "gpt-5.4"})
+}
+
+func assertModelSettingsKeys(t *testing.T, format string, got, want map[string]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s wire keys = %v, want %v", format, got, want)
+	}
+	for key, value := range want {
+		if got[key] != value {
+			t.Fatalf("%s wire keys = %v, want %v", format, got, want)
+		}
+	}
 }
 
 type embedWire struct{ Texts []string }
@@ -440,4 +522,136 @@ func testRuntimeWithResponses(t *testing.T, responses []string) (*inference.Runt
 		t.Fatal(err)
 	}
 	return runtime, generate, embed
+}
+
+func newFactStore(t *testing.T, ws workspace.Workspace, options ...factview.Option) *factview.FactStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := factview.NewFactStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func newBuilder(t *testing.T, runtime *inference.Runtime, ws workspace.Workspace) *Builder {
+	t.Helper()
+	if ws == nil {
+		ws = workspace.NewMemWorkspace()
+	}
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := NewBuilder(Backends{Log: logStore, KV: kvStore}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return builder.WithOutboxWorkspace(ws)
+}
+
+func TestAssemblyResolvesDeclarativeSearchLanes(t *testing.T) {
+	runtime, generate, embed := testRuntime(t)
+	builder := newBuilder(t, runtime, nil)
+	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
+	assembly, err := builder.NewAssembly(context.Background(), Settings{
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
+		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
+		Storage: StorageSettings{Search: SearchSettings{Lanes: map[string]BackendSettings{
+			"vector": {Driver: "lsm"},
+		}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assembly.Close()
+	if len(assembly.LaneBackends) != 1 {
+		t.Fatalf("lane backends = %d, want 1", len(assembly.LaneBackends))
+	}
+	if err := assembly.System.CommitTurn(context.Background(), sdkmemory.Turn{
+		Scope: scope, ConversationID: "conversation", IdempotencyKey: "turn-1",
+		Messages: []message.Message{message.NewTextMessage(message.RoleUser, "alpha preference")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := assembly.Runner.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	hits, err := assembly.LaneBackends[0].Search(context.Background(), "facts", retrieval.SearchQuery{
+		Scope: scope, Text: "alpha", TopK: 5,
+	})
+	if err != nil || len(hits) == 0 {
+		t.Fatalf("declarative vector lane search = %#v, %v", hits, err)
+	}
+}
+
+func TestAssemblyUsesInjectedSearchBackendsAndRejectsConflict(t *testing.T) {
+	runtime, generate, embed := testRuntime(t)
+	ws := workspace.NewMemWorkspace()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := NewBuilder(Backends{
+		Log: logStore, KV: kvStore,
+		Search: map[string]retrieval.SearchBackend{"vector": fakeSearchBackend{}},
+	}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder.WithOutboxWorkspace(ws)
+	scope := sdkmemory.Scope{RuntimeID: "memory", UserID: "tenant"}
+	assembly, err := builder.NewAssembly(context.Background(), Settings{
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
+		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer assembly.Close()
+	if len(assembly.LaneBackends) != 1 {
+		t.Fatalf("injected lane backends = %d, want 1", len(assembly.LaneBackends))
+	}
+	conflict, err := builder.NewAssembly(context.Background(), Settings{
+		Generate: FromModelRef(generate), Embed: FromModelRef(embed),
+		Scopes: []ScopeSettings{{RuntimeID: scope.RuntimeID, UserID: scope.UserID}},
+		Storage: StorageSettings{Search: SearchSettings{Lanes: map[string]BackendSettings{
+			"vector": {Driver: "lsm"},
+		}}},
+	})
+	if err == nil {
+		conflict.Close()
+		t.Fatal("injected search backends plus declarative lanes accepted")
+	}
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("conflict error = %v, want Validation", err)
+	}
+}
+
+type fakeSearchBackend struct{}
+
+func (fakeSearchBackend) Upsert(context.Context, string, sdkmemory.Scope, string, retrieval.Document) error {
+	return nil
+}
+func (fakeSearchBackend) Delete(context.Context, string, sdkmemory.Scope, string) error { return nil }
+func (fakeSearchBackend) ReplaceAll(context.Context, string, sdkmemory.Scope, []retrieval.Document) error {
+	return nil
+}
+func (fakeSearchBackend) Search(context.Context, string, retrieval.SearchQuery) ([]retrieval.Hit, error) {
+	return nil, nil
 }

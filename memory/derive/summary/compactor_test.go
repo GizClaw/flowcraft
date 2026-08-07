@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/memory/storage"
 	summaryview "github.com/GizClaw/flowcraft/memory/views/summary"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
@@ -23,7 +24,9 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestCompactorBuildsFourLevelsRespectsThresholdDepthAndReplay(t *testing.T) {
 	ctx := context.Background()
-	store, _ := summaryview.NewWorkspaceStore(workspace.NewMemWorkspace(), summaryview.WithClock(func() time.Time {
+	logStore, _ := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	kvStore, _ := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	store, _ := summaryview.NewSummaryStore(logStore, kvStore, summaryview.WithClock(func() time.Time {
 		return time.Date(2026, 8, 5, 0, 0, 0, 0, time.UTC)
 	}))
 	compactor, err := New(Config{ChunkSize: 2, CondenseThreshold: 2, GroupSize: 2, MaxDepth: 4}, store, echoSummarizer{})
@@ -238,7 +241,7 @@ func (value *countingSummarizer) Summarize(_ context.Context, request SummarizeR
 }
 
 type countingStore struct {
-	summaryview.Store
+	Store
 	adds int
 }
 
@@ -287,9 +290,17 @@ func testScope() sdkmemory.Scope {
 	return sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 }
 
-func mustStore(t *testing.T) summaryview.Store {
+func mustStore(t *testing.T) Store {
 	t.Helper()
-	store, err := summaryview.NewWorkspaceStore(workspace.NewMemWorkspace())
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := summaryview.NewSummaryStore(logStore, kvStore)
 	if err != nil {
 		t.Fatal(err)
 	}

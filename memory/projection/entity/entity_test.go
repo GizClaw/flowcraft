@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func TestEntityIndependentRecallAndStableSort(t *testing.T) {
-	index, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "entities"})
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +41,7 @@ func TestEntityIndependentRecallAndStableSort(t *testing.T) {
 }
 
 func TestEntityRejectsMalformedJSON(t *testing.T) {
-	index, _ := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "entities"})
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
 	err := index.Rebuild(context.Background(), component.ProjectionRequest{
 		Scope:     sdkmemory.Scope{RuntimeID: "runtime"},
 		Artifacts: []component.Artifact{entityArtifact("a", `["broken"`)},
@@ -51,7 +52,7 @@ func TestEntityRejectsMalformedJSON(t *testing.T) {
 }
 
 func TestEntityExtractsMentionFromNormalQueryAndTypedFact(t *testing.T) {
-	index, _ := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "entities"})
+	index, _ := New(Config{KV: kvFor(t), Projection: "entities"})
 	scope := sdkmemory.Scope{RuntimeID: "runtime"}
 	value := entityArtifact("typed", "")
 	value.Entities = []string{"OpenAI", "Sam Altman"}
@@ -83,7 +84,7 @@ func TestEntityDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 	}
 	for _, kind := range kinds {
 		t.Run(string(kind), func(t *testing.T) {
-			index, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "documents"})
+			index, err := New(Config{KV: kvFor(t), Projection: "documents"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -115,9 +116,9 @@ func TestEntityDatasetFilterPrecedesLimitForEveryDocumentKind(t *testing.T) {
 }
 
 func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
-	meter := &entityMeter{Workspace: workspace.NewMemWorkspace()}
+	meter := &entityMeter{Store: kvFor(t)}
 	index, err := New(Config{
-		Workspace: meter, Projection: "entities",
+		KV: meter, Projection: "entities",
 		Thresholds: Thresholds{MaxSegments: 64, MaxDeltaBytes: 1 << 20},
 	})
 	if err != nil {
@@ -155,7 +156,7 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 	if err != nil || len(results) != 1 || results[0].ID != artifacts[1].ID {
 		t.Fatalf("reconciled results = %+v, %v", results, err)
 	}
-	full, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "entities"})
+	full, err := New(Config{KV: kvFor(t), Projection: "entities"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,7 +182,7 @@ func TestEntityDeltaPersistenceTombstoneAndReconcile(t *testing.T) {
 }
 
 func TestEntityReconcileIsDatasetQualified(t *testing.T) {
-	index, err := New(Config{Workspace: workspace.NewMemWorkspace(), Projection: "entities"})
+	index, err := New(Config{KV: kvFor(t), Projection: "entities"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,22 +214,38 @@ func TestEntityReconcileIsDatasetQualified(t *testing.T) {
 }
 
 type entityMeter struct {
-	workspace.Workspace
+	storage.Store
 	mu      sync.Mutex
 	written int
 }
 
-func (meter *entityMeter) Write(ctx context.Context, name string, data []byte) error {
+func (meter *entityMeter) Put(ctx context.Context, key string, data []byte) error {
 	meter.mu.Lock()
 	meter.written += len(data)
 	meter.mu.Unlock()
-	return meter.Workspace.Write(ctx, name, data)
+	return meter.Store.Put(ctx, key, data)
+}
+
+func (meter *entityMeter) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	meter.mu.Lock()
+	meter.written += len(data)
+	meter.mu.Unlock()
+	return meter.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
 }
 
 func (meter *entityMeter) reset() {
 	meter.mu.Lock()
 	meter.written = 0
 	meter.mu.Unlock()
+}
+
+func kvFor(t *testing.T) storage.Store {
+	t.Helper()
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kvStore
 }
 
 func entityArtifact(id, entities string) component.Artifact {

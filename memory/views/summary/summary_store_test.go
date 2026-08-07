@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/GizClaw/flowcraft/memory/component"
+	"github.com/GizClaw/flowcraft/memory/storage"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	sdkmessage "github.com/GizClaw/flowcraft/sdk/message"
@@ -19,14 +20,11 @@ import (
 
 var summaryScope = sdkmemory.Scope{RuntimeID: "runtime", UserID: "user"}
 
-func TestWorkspaceStoreAddIdempotentConflictGenerationAndClone(t *testing.T) {
+func TestSummaryStoreAddIdempotentConflictGenerationAndClone(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC)
 	ws := workspace.NewMemWorkspace()
-	store, err := NewWorkspaceStore(ws, WithClock(func() time.Time { return now }))
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := newSummaryStore(t, ws, WithClock(func() time.Time { return now }))
 	request := summaryRequest("summary-1")
 	first, err := store.Add(ctx, request)
 	if err != nil {
@@ -54,7 +52,7 @@ func TestWorkspaceStoreAddIdempotentConflictGenerationAndClone(t *testing.T) {
 		again.SourceRefs[0].ID != "conversation/message-1" {
 		t.Fatalf("stored summary aliased: %#v ok=%v err=%v", again, ok, err)
 	}
-	reopened, _ := NewWorkspaceStore(ws)
+	reopened := newSummaryStore(t, ws)
 	if _, ok, err := reopened.Get(ctx, summaryScope, "conversation", "summary-1"); err != nil || !ok {
 		t.Fatalf("reopen ok=%v err=%v", ok, err)
 	}
@@ -68,10 +66,10 @@ func TestStableIDPreservesInputOrder(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStorePublishesAndReopensActiveManifest(t *testing.T) {
+func TestSummaryStorePublishesAndReopensActiveManifest(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
-	store, _ := NewWorkspaceStore(ws)
+	store := newSummaryStore(t, ws)
 	old := summaryRequest("old-tail")
 	old.GenerationID = "generation-1"
 	if _, err := store.Add(ctx, old); err != nil {
@@ -94,7 +92,7 @@ func TestWorkspaceStorePublishesAndReopensActiveManifest(t *testing.T) {
 	if err != nil || len(active) != 1 || active[0].ID != "current" {
 		t.Fatalf("active=%#v err=%v", active, err)
 	}
-	reopened, _ := NewWorkspaceStore(ws)
+	reopened := newSummaryStore(t, ws)
 	got, ok, err := reopened.LoadActive(ctx, summaryScope, "conversation")
 	if err != nil || !ok || !reflect.DeepEqual(got.RecordIDs, manifest.RecordIDs) ||
 		got.GenerationID != manifest.GenerationID || got.FrontierDigest != manifest.FrontierDigest {
@@ -104,7 +102,7 @@ func TestWorkspaceStorePublishesAndReopensActiveManifest(t *testing.T) {
 
 func TestSearcherReturnsOnlyActiveManifestRecords(t *testing.T) {
 	ctx := context.Background()
-	store, _ := NewWorkspaceStore(workspace.NewMemWorkspace())
+	store := newSummaryStore(t, workspace.NewMemWorkspace())
 	old := summaryRequest("old-tail")
 	old.Text, old.Content = "obsolete tail", textContent("obsolete tail")
 	old.GenerationID = "generation-1"
@@ -140,24 +138,43 @@ func TestSearcherReturnsOnlyActiveManifestRecords(t *testing.T) {
 	}
 }
 
-func TestWorkspaceStoreAddDoesNotListRecords(t *testing.T) {
+func TestSummaryStoreAddDoesNotListRecords(t *testing.T) {
 	ctx := context.Background()
-	ws := &listCountingWorkspace{Workspace: workspace.NewMemWorkspace()}
-	store, _ := NewWorkspaceStore(ws)
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingKV{Store: kvStore}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSummaryStore(logStore, counting)
+	if err != nil {
+		t.Fatal(err)
+	}
 	request := summaryRequest("")
 	request.ID = ""
 	if _, err := store.Add(ctx, request); err != nil {
 		t.Fatal(err)
 	}
-	if ws.lists != 0 {
-		t.Fatalf("Add listed records %d times", ws.lists)
+	if counting.lists != 0 {
+		t.Fatalf("Add listed records %d times", counting.lists)
 	}
 }
 
-func TestWorkspaceStoreActiveCatalogDeltaIsBoundedAndOmitsRecordIDsFromHead(t *testing.T) {
+func TestSummaryStoreActiveCatalogDeltaIsBoundedAndOmitsRecordIDsFromHead(t *testing.T) {
 	ctx := context.Background()
-	ws := &activeCatalogWorkspace{Workspace: workspace.NewMemWorkspace()}
-	store, err := NewWorkspaceStore(ws, WithActiveCompactionThreshold(128))
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingKV{Store: kvStore}
+	store, err := NewSummaryStore(logStore, counting, WithActiveCompactionThreshold(128))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,14 +196,14 @@ func TestWorkspaceStoreActiveCatalogDeltaIsBoundedAndOmitsRecordIDsFromHead(t *t
 			t.Fatal(err)
 		}
 	}
-	ws.resetCounts()
+	counting.reset()
 	last := summaryRequest("summary-last")
 	last.InputIDs = []string{"summary-last"}
 	last.CoverageRange = CoverageRange{StartSeq: 1, EndSeq: 66}
 	if _, err := store.Add(ctx, last); err != nil {
 		t.Fatal(err)
 	}
-	ws.resetCounts()
+	counting.reset()
 	ids = append(ids, last.ID)
 	if err := store.PublishActive(ctx, Manifest{
 		Scope: summaryScope, ConversationID: "conversation", GenerationID: "generation-1",
@@ -194,11 +211,15 @@ func TestWorkspaceStoreActiveCatalogDeltaIsBoundedAndOmitsRecordIDsFromHead(t *t
 	}); err != nil {
 		t.Fatal(err)
 	}
-	publishReads, publishWritten := ws.reads, ws.written
+	publishReads, publishWritten := counting.reads, counting.written
 	if publishReads > 2 || publishWritten > 4096 {
 		t.Fatalf("single delta reads=%d written=%d", publishReads, publishWritten)
 	}
-	head, err := ws.Read(ctx, store.manifestPath(summaryScope, "conversation"))
+	headKey, err := store.manifestPath(summaryScope, "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, err := kvStore.Get(ctx, headKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,10 +233,21 @@ func TestWorkspaceStoreActiveCatalogDeltaIsBoundedAndOmitsRecordIDsFromHead(t *t
 	}
 }
 
-func TestWorkspaceStoreActiveCatalogCrashReplayRemovalAndGenerationSwitch(t *testing.T) {
+func TestSummaryStoreActiveCatalogCrashReplayRemovalAndGenerationSwitch(t *testing.T) {
 	ctx := context.Background()
-	ws := &activeCatalogWorkspace{Workspace: workspace.NewMemWorkspace()}
-	store, _ := NewWorkspaceStore(ws, WithActiveCompactionThreshold(2))
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	counting := &countingKV{Store: kvStore}
+	store, err := NewSummaryStore(logStore, counting, WithActiveCompactionThreshold(2))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"old", "keep", "new"} {
 		request := summaryRequest(id)
 		request.InputIDs = []string{id}
@@ -239,20 +271,20 @@ func TestWorkspaceStoreActiveCatalogCrashReplayRemovalAndGenerationSwitch(t *tes
 		RecordIDs: []string{"keep", "new"}, CoverageRange: CoverageRange{StartSeq: 1, EndSeq: 2},
 		FrontierDigest: "frontier-2",
 	}
-	ws.failSegmentRename = true
+	counting.failSegment = true
 	if err := store.PublishActive(ctx, next); err == nil {
 		t.Fatal("crash before active-segment publish succeeded")
 	}
-	ws.failSegmentRename = false
+	counting.failSegment = false
 	active, err := store.ListActive(ctx, summaryScope, "conversation", ListOptions{})
 	if err != nil || !reflect.DeepEqual(recordIDs(active), []string{"old", "keep"}) {
 		t.Fatalf("post-segment-crash active=%v err=%v", recordIDs(active), err)
 	}
-	ws.failActiveRename = true
+	counting.failActive = true
 	if err := store.PublishActive(ctx, next); err == nil {
 		t.Fatal("crash before active-head publish succeeded")
 	}
-	ws.failActiveRename = false
+	counting.failActive = false
 	active, err = store.ListActive(ctx, summaryScope, "conversation", ListOptions{})
 	if err != nil || !reflect.DeepEqual(recordIDs(active), []string{"old", "keep"}) {
 		t.Fatalf("post-crash active=%v err=%v", recordIDs(active), err)
@@ -263,21 +295,34 @@ func TestWorkspaceStoreActiveCatalogCrashReplayRemovalAndGenerationSwitch(t *tes
 	if err := store.PublishActive(ctx, next); err != nil {
 		t.Fatalf("replay: %v", err)
 	}
-	reopened, _ := NewWorkspaceStore(ws, WithActiveCompactionThreshold(2))
-	active, err = reopened.ListActive(ctx, summaryScope, "conversation", ListOptions{})
+	reopenedStore, err := NewSummaryStore(logStore, kvStore, WithActiveCompactionThreshold(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err = reopenedStore.ListActive(ctx, summaryScope, "conversation", ListOptions{})
 	if err != nil || !reflect.DeepEqual(recordIDs(active), []string{"keep", "new"}) {
 		t.Fatalf("switched active=%v err=%v", recordIDs(active), err)
 	}
-	all, err := reopened.List(ctx, summaryScope, "conversation", ListOptions{})
+	all, err := reopenedStore.List(ctx, summaryScope, "conversation", ListOptions{})
 	if err != nil || len(all) != 3 {
 		t.Fatalf("repair catalog=%v err=%v", recordIDs(all), err)
 	}
 }
 
-func TestWorkspaceStoreActiveCatalogRejectsBrokenPreviousChain(t *testing.T) {
+func TestSummaryStoreActiveCatalogRejectsBrokenPreviousChain(t *testing.T) {
 	ctx := context.Background()
-	ws := workspace.NewMemWorkspace()
-	store, _ := NewWorkspaceStore(ws, WithActiveCompactionThreshold(128))
+	kvStore, err := storage.NewWorkspaceKV(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	logStore, err := storage.NewWorkspaceLog(workspace.NewMemWorkspace())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSummaryStore(logStore, kvStore, WithActiveCompactionThreshold(128))
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, id := range []string{"first", "second"} {
 		request := summaryRequest(id)
 		request.InputIDs = []string{id}
@@ -294,7 +339,11 @@ func TestWorkspaceStoreActiveCatalogRejectsBrokenPreviousChain(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	headData, err := ws.Read(ctx, store.manifestPath(summaryScope, "conversation"))
+	headKey, err := store.manifestPath(summaryScope, "conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headData, err := kvStore.Get(ctx, headKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,8 +351,11 @@ func TestWorkspaceStoreActiveCatalogRejectsBrokenPreviousChain(t *testing.T) {
 	if err := decodeStrict(headData, &head); err != nil {
 		t.Fatal(err)
 	}
-	segmentPath := store.activeSegmentPath(summaryScope, "conversation", head.HeadSegmentID)
-	segmentData, err := ws.Read(ctx, segmentPath)
+	segmentKey, err := store.activeSegmentPath(summaryScope, "conversation", head.HeadSegmentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	segmentData, err := kvStore.Get(ctx, segmentKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,19 +370,36 @@ func TestWorkspaceStoreActiveCatalogRejectsBrokenPreviousChain(t *testing.T) {
 	head.HeadSegmentDigest = segment.Digest
 	segmentData, _ = json.Marshal(segment)
 	headData, _ = json.Marshal(head)
-	ws.MustWrite(segmentPath, segmentData)
-	ws.MustWrite(store.manifestPath(summaryScope, "conversation"), headData)
-	reopened, _ := NewWorkspaceStore(ws)
+	if err := kvStore.Put(ctx, segmentKey, segmentData); err != nil {
+		t.Fatal(err)
+	}
+	if err := kvStore.Put(ctx, headKey, headData); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSummaryStore(logStore, kvStore)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := reopened.ListActive(ctx, summaryScope, "conversation", ListOptions{}); err == nil {
 		t.Fatal("broken previous chain accepted")
 	}
 }
 
-func TestWorkspaceStoreRejectsCorruptionAndInvalidRecord(t *testing.T) {
+func TestSummaryStoreRejectsCorruptionAndInvalidRecord(t *testing.T) {
 	ctx := context.Background()
 	ws := workspace.NewMemWorkspace()
-	store, _ := NewWorkspaceStore(ws)
-	ws.MustWrite(store.recordPath(summaryScope, "conversation", "bad"), []byte(`{"schema_version":99}`))
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := newSummaryStore(t, ws)
+	badKey, keyErr := store.recordPath(summaryScope, "conversation", "bad")
+	if keyErr != nil {
+		t.Fatal(keyErr)
+	}
+	if err := kvStore.Put(ctx, badKey, []byte(`{"schema_version":99}`)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.List(ctx, summaryScope, "conversation", ListOptions{}); err == nil {
 		t.Fatal("corrupt record accepted")
 	}
@@ -339,57 +408,6 @@ func TestWorkspaceStoreRejectsCorruptionAndInvalidRecord(t *testing.T) {
 	if _, err := store.Add(ctx, invalid); err == nil {
 		t.Fatal("invalid level accepted")
 	}
-}
-
-type listCountingWorkspace struct {
-	workspace.Workspace
-	lists int
-}
-
-type activeCatalogWorkspace struct {
-	workspace.Workspace
-	reads             int
-	written           int
-	failActiveRename  bool
-	failSegmentRename bool
-}
-
-func (value *activeCatalogWorkspace) Read(ctx context.Context, name string) ([]byte, error) {
-	value.reads++
-	return value.Workspace.Read(ctx, name)
-}
-
-func (value *activeCatalogWorkspace) Write(ctx context.Context, name string, data []byte) error {
-	value.written += len(data)
-	return value.Workspace.Write(ctx, name, data)
-}
-
-func (value *activeCatalogWorkspace) Rename(ctx context.Context, source, destination string) error {
-	if value.failSegmentRename && strings.Contains(destination, "/segments/") {
-		return errors.New("injected active-segment failure")
-	}
-	if value.failActiveRename && strings.HasSuffix(destination, "/active.json") {
-		return errors.New("injected active-head failure")
-	}
-	return value.Workspace.Rename(ctx, source, destination)
-}
-
-func (value *activeCatalogWorkspace) resetCounts() {
-	value.reads = 0
-	value.written = 0
-}
-
-func recordIDs(records []Record) []string {
-	result := make([]string, len(records))
-	for index := range records {
-		result[index] = records[index].ID
-	}
-	return result
-}
-
-func (value *listCountingWorkspace) List(ctx context.Context, dir string) ([]fs.DirEntry, error) {
-	value.lists++
-	return value.Workspace.List(ctx, dir)
 }
 
 func TestLevelAndCoverageValidation(t *testing.T) {
@@ -421,4 +439,87 @@ func summaryRequest(id string) AddRequest {
 
 func textContent(text string) sdkmessage.Content {
 	return sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: text}}}
+}
+
+func newSummaryStore(t *testing.T, ws workspace.Workspace, options ...Option) *SummaryStore {
+	t.Helper()
+	logStore, err := storage.NewWorkspaceLog(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kvStore, err := storage.NewWorkspaceKV(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewSummaryStore(logStore, kvStore, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+type countingKV struct {
+	storage.Store
+	mu          sync.Mutex
+	reads       int
+	written     int
+	lists       int
+	failSegment bool
+	failActive  bool
+}
+
+func (kv *countingKV) Get(ctx context.Context, key string) ([]byte, error) {
+	kv.mu.Lock()
+	kv.reads++
+	kv.mu.Unlock()
+	return kv.Store.Get(ctx, key)
+}
+
+func (kv *countingKV) Put(ctx context.Context, key string, data []byte) error {
+	kv.mu.Lock()
+	kv.written += len(data)
+	if kv.failSegment && strings.Contains(key, "/segments/") {
+		kv.mu.Unlock()
+		return errors.New("injected active-segment failure")
+	}
+	if kv.failActive && strings.HasSuffix(key, "/active.json") {
+		kv.mu.Unlock()
+		return errors.New("injected active-head failure")
+	}
+	kv.mu.Unlock()
+	return kv.Store.Put(ctx, key, data)
+}
+
+func (kv *countingKV) PutIfAbsent(ctx context.Context, key string, data []byte) (bool, error) {
+	kv.mu.Lock()
+	kv.written += len(data)
+	fail := kv.failSegment && strings.Contains(key, "/segments/")
+	kv.mu.Unlock()
+	if fail {
+		return false, errors.New("injected active-segment failure")
+	}
+	return kv.Store.(storage.PutIfAbsentStore).PutIfAbsent(ctx, key, data)
+}
+
+func (kv *countingKV) List(ctx context.Context, prefix string) ([]storage.Entry, error) {
+	kv.mu.Lock()
+	kv.lists++
+	kv.mu.Unlock()
+	return kv.Store.List(ctx, prefix)
+}
+
+func (kv *countingKV) reset() {
+	kv.mu.Lock()
+	kv.reads = 0
+	kv.written = 0
+	kv.lists = 0
+	kv.mu.Unlock()
+}
+
+func recordIDs(records []Record) []string {
+	result := make([]string, len(records))
+	for index := range records {
+		result[index] = records[index].ID
+	}
+	return result
 }
