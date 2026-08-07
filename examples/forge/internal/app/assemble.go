@@ -8,6 +8,7 @@ import (
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
@@ -64,7 +65,12 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	factories := providerFactories()
 	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
 	deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(factories, resolvers))
-	deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory("flowcraft", flowcraftmemory.Factory()))
+	deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
+		"flowcraft",
+		flowcraftmemory.Factory(),
+		sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+		sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
+	))
 	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparerFactory)
 	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitterFactory)
 

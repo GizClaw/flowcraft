@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
-	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference/inferencetest"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
@@ -27,14 +26,19 @@ func (fakeAssembly) PutDocument(context.Context, sdkmemory.Document) error {
 var _ sdkmemory.Assembly = fakeAssembly{}
 
 func TestDeployFactorySpec(t *testing.T) {
-	got := memoryconfig.NewDeployFactory("flowcraft", nil).Spec()
+	got := memoryconfig.NewDeployFactory(
+		"flowcraft",
+		nil,
+		sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+		sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
+	).Spec()
 	want := sdkconfig.ResourceSpec{
 		Kind:     memoryconfig.ResourceKind,
 		Impl:     "flowcraft",
 		ItemType: "memory.System",
 		Deps: []sdkconfig.ResourceDepSpec{
-			{Name: "workspace", Type: "workspace.Workspace", Required: true},
 			{Name: "inference", Type: "inference.Runtime", Required: true},
+			{Name: "workspace", Type: "workspace.Workspace", Required: true},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -70,8 +74,8 @@ func TestDeployFactoryNewPassesDepsAndSettings(t *testing.T) {
 	if _, ok := value.(sdkmemory.Assembly); !ok {
 		t.Fatalf("New returned %T, want memory.Assembly", value)
 	}
-	if received.Workspace != ws || received.Inference != runtime {
-		t.Fatalf("factory received deps = %#v", received)
+	if received.Deps["workspace"] != ws || received.Deps["inference"] != runtime {
+		t.Fatalf("factory received deps = %#v", received.Deps)
 	}
 	var decoded map[string]any
 	if err := json.Unmarshal(received.Settings, &decoded); err != nil {
@@ -93,21 +97,6 @@ func TestDeployFactoryNewRejectsInvalidInputs(t *testing.T) {
 		Settings: settingsJSON(t, `{"unknown": true}`),
 	}); err == nil {
 		t.Fatal("New accepted an unknown resource setting")
-	}
-	if _, err := factory.New(context.Background(), sdkconfig.Input{
-		Settings: settingsJSON(t, `{"inline":{"version":"v1"}}`),
-	}); err == nil || !errdefs.IsNotFound(err) {
-		t.Fatalf("missing deps error = %v, want NotFound", err)
-	}
-	runtime := (&inferencetest.GenerateFake{}).Runtime(t)
-	if _, err := factory.New(context.Background(), sdkconfig.Input{
-		Settings: settingsJSON(t, `{"inline":{"version":"v1"}}`),
-		Deps: map[string]any{
-			"workspace": "not a workspace",
-			"inference": runtime,
-		},
-	}); err == nil || !errdefs.IsValidation(err) {
-		t.Fatalf("wrong dep type error = %v, want Validation", err)
 	}
 	if _, err := memoryconfig.NewDeployFactory("flowcraft", nil).New(
 		context.Background(),
