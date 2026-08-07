@@ -870,7 +870,7 @@ func TestBuild_AssemblesRunnableInstance(t *testing.T) {
 	if v, _ := tb.graph.gotCfg.Dep("tools"); v != "catalog:default" {
 		t.Errorf("cfg.Dep(tools) = %v", v)
 	}
-	if v, _ := tb.graph.gotCfg.Setting("graph"); v != "graphs/research.json" {
+	if v, _ := tb.graph.gotCfg.Setting("graph"); v != "graphs/research.yaml" {
 		t.Errorf("cfg.Setting(graph) = %v", v)
 	}
 

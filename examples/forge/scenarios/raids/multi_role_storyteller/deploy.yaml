@@ -46,7 +46,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/assistant.json
+        graph: ./graphs/assistant.yaml
         build:
           max_iterations: 40
     deps:

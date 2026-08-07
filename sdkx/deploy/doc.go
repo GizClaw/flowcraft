@@ -48,7 +48,7 @@
 //	    engine:
 //	      kind: graph                     # looked up in agent.Registry
 //	      settings:                       # opaque; the factory validates
-//	        graph: graphs/research.json
+//	        graph: graphs/research.yaml
 //	    deps:                             # keyed by the factory's DepSpec
 //	      inference: infer
 //	      tools:     kit
@@ -199,10 +199,11 @@
 //
 // # What this package does not own
 //
-// Graph definitions are not resources. A graph is JSON-shaped
-// (sdk/graph.GraphDefinition) and graph.Build returns a *Graph
-// that IS an agent.Engine, so a graph belongs to its engine
-// factory's settings, reached through engine.settings above.
+// Graph definitions are not resources. A graph belongs to its engine
+// factory's settings, reached through engine.settings above; its wire
+// form is JSON-shaped (sdk/graph.GraphDefinition), and sdk/graph/config
+// accepts YAML authoring sugar for both graph.file and graph.inline.
+// graph.Build returns a *Graph that IS an agent.Engine.
 //
 // Running a turn is not here either. Build produces assembled
 // instances; session concerns — turn lifecycle, streaming,

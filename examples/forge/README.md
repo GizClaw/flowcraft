@@ -62,7 +62,7 @@ Each `scenarios/raids/<name>/` is a complete workspace template:
 - `workspace.yaml` — the workspace registry root and layout.
 - `tools.yaml` — tool assembly policy; tool implementations are Go values
   registered from `internal/simtools`.
-- `graphs/assistant.json` — the graph definition, with `scripts/` and
+- `graphs/assistant.yaml` — the graph definition, with `scripts/` and
   `prompts/` beside it (script sources and system prompts are referenced as
   `{"file": ...}`).
 - `speakers.yaml` — optional user-facing labels per graph node; the TUI and

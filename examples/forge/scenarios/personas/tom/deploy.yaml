@@ -46,7 +46,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/persona.json
+        graph: ./graphs/persona.yaml
     deps:
       inference: infer
       tools: tools

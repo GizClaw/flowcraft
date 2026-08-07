@@ -41,7 +41,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: graphs/research.json
+        graph: graphs/research.yaml
         max_steps: 8
     deps:
       workspace: fs/project

@@ -134,6 +134,38 @@ func TestFactoryFileBuild(t *testing.T) {
 	}
 }
 
+func TestFactoryFileBuildYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "graphs", "simple.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`name: simple
+entry: node
+nodes:
+  - id: node
+    type: script
+    config:
+      runtime: js
+      source: ok
+edges: []
+`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rt := &recordingRuntime{}
+	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
+		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.yaml"}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := engine.(*coregraph.Graph); !ok {
+		t.Fatalf("engine = %T, want *graph.Graph", engine)
+	}
+}
+
 func TestFactoryFileBuildFromFS(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "simple.json"),
@@ -360,6 +392,20 @@ func TestFactoryFileErrors(t *testing.T) {
 	}
 	if err := newWithFile("trailing.json"); !errdefs.IsValidation(err) {
 		t.Fatalf("trailing error = %v, want Validation", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "unknown.yaml"),
+		[]byte("name: simple\nentry: node\nnodes: []\nedges: []\nsurprise: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newWithFile("unknown.yaml"); !errdefs.IsValidation(err) {
+		t.Fatalf("unknown yaml field error = %v, want Validation", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "multi.yaml"),
+		[]byte("name: simple\nentry: node\nnodes: []\nedges: []\n---\nname: second\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := newWithFile("multi.yaml"); !errdefs.IsValidation(err) {
+		t.Fatalf("multi yaml document error = %v, want Validation", err)
 	}
 	large := make([]byte, MaxDefinitionBytes+1)
 	if err := os.WriteFile(filepath.Join(dir, "large.json"), large, 0o600); err != nil {

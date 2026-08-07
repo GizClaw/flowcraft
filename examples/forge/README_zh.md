@@ -50,7 +50,7 @@ go run . workspace inspect --workspace ./workspace
 - `inference.yaml` — provider 配置文件和 secret 解析器。
 - `workspace.yaml` — workspace registry 的根目录与布局。
 - `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
-- `graphs/assistant.json` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
+- `graphs/assistant.yaml` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
 - `speakers.yaml` — 可选的每个 graph 节点的用户可见标签;TUI 和测试日志会以 `[主持人]` 这样的标签渲染每个节点的输出。
 
 场景还可以部署 `memory.yaml` 并在 agent 上挂 `memory.context` / `memory.turn`
