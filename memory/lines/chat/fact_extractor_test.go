@@ -44,6 +44,14 @@ func TestFactExtractorStableIDProvenancePromptAndClone(t *testing.T) {
 		!strings.Contains(request.Input.Content.Text(), "Remember that I like tea") {
 		t.Fatalf("generate request = %#v", request)
 	}
+	if len(request.Context) != 1 ||
+		request.Context[0].Role != sdkmessage.RoleSystem ||
+		!strings.Contains(request.Context[0].Content.Text(), "Extract durable facts") {
+		t.Fatalf("instructions must live in the system message: %#v", request.Context)
+	}
+	if strings.Contains(request.Input.Content.Text(), "Extract durable facts") {
+		t.Fatalf("instructions leaked into the user message: %q", request.Input.Content.Text())
+	}
 	input.Sources[0].ID = "input mutation"
 	input.Metadata["key"] = "input mutation"
 	first[0].Sources[0].ID = "output mutation"

@@ -1,0 +1,3 @@
+Extract durable facts from this source batch. Return only JSON matching the schema.
+event_time must be an RFC3339 UTC timestamp, for example "2023-03-22T14:30:00Z". When only a date is known, use midnight UTC, for example "2023-03-22T00:00:00Z". Do not use natural-language dates like "February 10th" or slash formats.
+The response must be a JSON object with a single key "facts" whose value is an array of fact objects.

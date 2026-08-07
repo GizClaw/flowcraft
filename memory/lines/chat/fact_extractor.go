@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"text/template"
 	"time"
 	"unicode/utf8"
 
@@ -38,13 +40,23 @@ const (
 	CanonicalAlgorithmVersion = factview.CanonicalAlgorithmVersion
 	TransformSignatureSimple  = "fact-extract-simple-v1"
 	TransformSignatureRich    = "fact-extract-rich-v1"
-
-	factPrompt = "Extract durable facts from this source batch. Return only JSON matching the schema.\n" +
-		"event_time must be an RFC3339 UTC timestamp, for example \"2023-03-22T14:30:00Z\". " +
-		"When only a date is known, use midnight UTC, for example \"2023-03-22T00:00:00Z\". " +
-		"Do not use natural-language dates like \"February 10th\" or slash formats.\n" +
-		"The response must be a JSON object with a single key \"facts\" whose value is an array of fact objects."
 )
+
+//go:embed prompts/fact_system.tmpl
+var factPromptFS embed.FS
+
+var (
+	factSystemTmpl = template.Must(template.ParseFS(factPromptFS, "prompts/fact_system.tmpl"))
+	factSystem     = mustRenderFactSystem()
+)
+
+func mustRenderFactSystem() string {
+	var builder strings.Builder
+	if err := factSystemTmpl.Execute(&builder, nil); err != nil {
+		panic(err)
+	}
+	return strings.TrimSpace(builder.String())
+}
 
 // FactStrategy controls extraction detail without changing the one-call batch contract.
 type FactStrategy string
@@ -170,9 +182,9 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		return []component.Artifact{}, nil
 	}
 
-	prompt := factPrompt + "\n\n" + tailRunes(input.Content.Text(), extractor.config.TailMaxChars)
+	content := tailRunes(input.Content.Text(), extractor.config.TailMaxChars)
 	schema := true
-	request := extractionRequest(prompt, schema, extractor.config.Strategy)
+	request := extractionRequest(content, schema, extractor.config.Strategy)
 	response, err := extractor.config.Runtime.Generate(ctx, *extractor.config.GenerateModel, request)
 	if err != nil && inference.IsKind(err, inference.UnsupportedFeature) {
 		// DeepSeek and other json_object-only providers reject schema
@@ -181,7 +193,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 		// shape.
 		schema = false
 		response, err = extractor.config.Runtime.Generate(
-			ctx, *extractor.config.GenerateModel, extractionRequest(prompt, schema, extractor.config.Strategy),
+			ctx, *extractor.config.GenerateModel, extractionRequest(content, schema, extractor.config.Strategy),
 		)
 	}
 	if err != nil {
@@ -253,7 +265,7 @@ func (extractor *FactExtractor) Derive(ctx context.Context, input component.Arti
 	return output, nil
 }
 
-func extractionRequest(prompt string, schema bool, strategy FactStrategy) inference.GenerateRequest {
+func extractionRequest(content string, schema bool, strategy FactStrategy) inference.GenerateRequest {
 	intent := inference.Intent{Text: &inference.TextIntent{}}
 	if schema {
 		intent.Text.Response = &inference.ResponseFormat{
@@ -263,10 +275,14 @@ func extractionRequest(prompt string, schema bool, strategy FactStrategy) infere
 		intent.Text.Response = &inference.ResponseFormat{Kind: inference.ResponseJSONObject}
 	}
 	return inference.GenerateRequest{
+		Context: []sdkmessage.Message{{
+			Role:    sdkmessage.RoleSystem,
+			Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: factSystem}}},
+		}},
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
 			Content: inference.InputContent{
-				Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: prompt}}},
+				Content: sdkmessage.Content{Parts: []sdkmessage.Part{sdkmessage.TextPart{Text: content}}},
 				Intent:  intent,
 			},
 		},
