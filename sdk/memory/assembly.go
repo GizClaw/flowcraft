@@ -2,9 +2,6 @@ package memory
 
 import (
 	"context"
-
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 // Assembly is the memory capability contract a deployment binds to:
@@ -24,10 +21,15 @@ type Assembly interface {
 // implementation-owned settings document to a memory Factory. Settings
 // is the raw settings sub-document (typically the memory.yaml bytes);
 // its schema belongs to the implementation, not to this package.
+//
+// Deps holds resolved dependencies keyed by the names the implementation
+// declared when it registered. This package deliberately knows nothing
+// about those names or types: each implementation (such as the flowcraft
+// memory module) names and type-asserts its own dependencies, exactly
+// like inference provider factories.
 type Input struct {
-	Workspace workspace.Workspace
-	Inference *inference.Runtime
-	Settings  []byte
+	Settings []byte
+	Deps     map[string]any
 }
 
 // Factory builds one Assembly from deployment inputs. Implementations

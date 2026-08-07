@@ -522,8 +522,9 @@ A `memory.Assembly` is bound **whole** as the hooks' `memory` dependency
 that need the raw stores can address the implementation's exposed item — with
 the flowcraft implementation it is `system`, i.e. `memories/system`.
 
-The memory resource requires a workspace and the inference runtime item
-exported by the inference assembly:
+The flowcraft implementation requires a workspace and the inference runtime
+item exported by the inference assembly (deps are declared by the
+implementation at registration, not by the `sdk/memory` protocol):
 
 ```yaml
 # deploy.yaml

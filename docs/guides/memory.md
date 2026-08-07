@@ -215,17 +215,25 @@ the implementation factory by name, mirroring inference provider factories:
 ```go
 import (
     flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
+    sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
     memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
 )
 
 deployBuilder.MustRegisterResource(
-    memoryconfig.NewDeployFactory("flowcraft", flowcraftmemory.Factory()),
+    memoryconfig.NewDeployFactory(
+        "flowcraft",
+        flowcraftmemory.Factory(),
+        sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+        sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
+    ),
 )
 ```
 
-The resource requires a workspace (for the canonical stores) and an
-`inference.Runtime` (for generation and embeddings), and exposes its system
-as the `system` item:
+The `sdk/memory` protocol itself hard-codes no dependencies: each
+implementation declares the resource deps it needs at registration, and the
+factory type-asserts them. The flowcraft implementation requires a workspace
+(for the canonical stores) and an `inference.Runtime` (for generation and
+embeddings), and exposes its system as the `system` item:
 
 ```yaml
 resources:

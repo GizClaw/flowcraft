@@ -6,9 +6,7 @@ import (
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
-	"github.com/GizClaw/flowcraft/sdk/inference"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
-	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 // ResourceKind is the deployment resource category for memory
@@ -24,6 +22,7 @@ type ResourceSettings struct {
 type deployFactory struct {
 	impl    string
 	factory sdkmemory.Factory
+	deps    []sdkconfig.ResourceDepSpec
 }
 
 // NewDeployFactory returns a deployment factory for one memory
@@ -35,8 +34,22 @@ type deployFactory struct {
 //	    kind: memory.Assembly
 //	    impl: flowcraft
 //	    settings: {file: ./memory.yaml}
-func NewDeployFactory(impl string, factory sdkmemory.Factory) sdkconfig.ResourceFactory {
-	return &deployFactory{impl: impl, factory: factory}
+//
+// Deps declares the resource dependencies the implementation needs; the
+// sdk/memory protocol itself never hard-codes them. The flowcraft
+// implementation, for example, registers "inference" and "workspace"
+// here. Every bound dependency is forwarded to the implementation
+// factory, which names and type-asserts its own dependencies.
+func NewDeployFactory(
+	impl string,
+	factory sdkmemory.Factory,
+	deps ...sdkconfig.ResourceDepSpec,
+) sdkconfig.ResourceFactory {
+	return &deployFactory{
+		impl:    impl,
+		factory: factory,
+		deps:    append([]sdkconfig.ResourceDepSpec(nil), deps...),
+	}
 }
 
 func (f *deployFactory) Spec() sdkconfig.ResourceSpec {
@@ -44,10 +57,7 @@ func (f *deployFactory) Spec() sdkconfig.ResourceSpec {
 		Kind:     ResourceKind,
 		Impl:     f.impl,
 		ItemType: "memory.System",
-		Deps: []sdkconfig.ResourceDepSpec{
-			{Name: "workspace", Type: "workspace.Workspace", Required: true},
-			{Name: "inference", Type: "inference.Runtime", Required: true},
-		},
+		Deps:     f.deps,
 	}
 }
 
@@ -65,31 +75,8 @@ func (f *deployFactory) New(ctx context.Context, in sdkconfig.Input) (any, error
 	if err != nil {
 		return nil, err
 	}
-	rawWorkspace, ok := in.Dep("workspace")
-	if !ok {
-		return nil, errdefs.NotFoundf(
-			"memory resource: dependency %q is not bound", "workspace")
-	}
-	ws, ok := rawWorkspace.(workspace.Workspace)
-	if !ok || ws == nil {
-		return nil, errdefs.Validationf(
-			"memory resource: dependency %q has Go type %T, want workspace.Workspace",
-			"workspace", rawWorkspace)
-	}
-	rawInference, ok := in.Dep("inference")
-	if !ok {
-		return nil, errdefs.NotFoundf(
-			"memory resource: dependency %q is not bound", "inference")
-	}
-	runtime, ok := rawInference.(*inference.Runtime)
-	if !ok || runtime == nil {
-		return nil, errdefs.Validationf(
-			"memory resource: dependency %q has Go type %T, want *inference.Runtime",
-			"inference", rawInference)
-	}
 	return f.factory.New(ctx, sdkmemory.Input{
-		Workspace: ws,
-		Inference: runtime,
-		Settings:  data,
+		Settings: data,
+		Deps:     in.Deps,
 	})
 }
