@@ -12,7 +12,7 @@ import (
 
 func TestGraphFactoryJavaScriptDeployment(t *testing.T) {
 	builder := deploy.NewBuilder()
-	builder.RegisterEngine(graphconfig.NewFactory())
+	builder.MustRegisterEngine(graphconfig.NewFactory())
 	builder.MustRegisterResource(jsrt.NewDeployFactory())
 
 	document, err := deploy.Parse([]byte(`

@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -48,15 +47,14 @@ func TestSource_EmbedRef(t *testing.T) {
 	}
 }
 
-func TestSource_ReferenceMixedWithContentRejected(t *testing.T) {
-	// A "file" key turns the object into a reference, so mixing it with
-	// content keys is a decode error instead of silently becoming a
-	// document with a stray "file" field.
-	err := json.Unmarshal([]byte(`{"file":"./a.yaml","version":"v1"}`), &Source{})
-	if err == nil {
-		t.Fatal("reference mixed with content keys accepted")
-	} else if !strings.Contains(err.Error(), "cannot be combined") {
-		t.Fatalf("error = %v, want combined-keys error", err)
+func TestSource_DocumentWithFileKeyIsContent(t *testing.T) {
+	// An object that is not exactly the file/embed keys is the document
+	// itself — a module schema may legitimately have a top level "file"
+	// or "embed" field.
+	raw := `{"file":"./a.yaml","version":"v1"}`
+	src := mustSource(t, raw)
+	if got, ok := src.Content(); !ok || string(got) != raw {
+		t.Fatalf("content = %q, %v", got, ok)
 	}
 }
 
@@ -85,12 +83,10 @@ func TestSource_FileAndEmbedMutuallyExclusive(t *testing.T) {
 	}
 }
 
-func TestSource_EmptyObjectIsContent(t *testing.T) {
-	// {} has no file/embed key, so it is structured content; the owning
-	// module's parser rejects an empty document.
-	src := mustSource(t, `{}`)
-	if _, ok := src.Content(); !ok {
-		t.Fatalf("empty object should decode as content, got %v", src.Kind())
+func TestSource_EmptyObjectRejected(t *testing.T) {
+	// {} is neither a reference nor a meaningful document.
+	if err := json.Unmarshal([]byte(`{}`), &Source{}); err == nil {
+		t.Fatal("empty object accepted")
 	}
 }
 

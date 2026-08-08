@@ -281,16 +281,14 @@ func TestFactoryMaterializesConfigFileRefs(t *testing.T) {
 
 func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
 	tests := map[string]map[string]any{
-		"extra key": {
-			"source": map[string]any{"file": "scripts/run.js", "extra": true},
+		"both forms": {
+			"source": map[string]any{"file": "scripts/run.js", "embed": "scripts/run.js"},
 		},
 		"empty file": {
 			"source": map[string]any{"file": "  "},
 		},
-		"wrong object": {
-			// a "file" key turns this into a reference, so extra keys are
-			// a decode error rather than content
-			"source": map[string]any{"file": "scripts/run.js", "bogus": "x"},
+		"empty embed": {
+			"source": map[string]any{"embed": ""},
 		},
 	}
 	for name, config := range tests {

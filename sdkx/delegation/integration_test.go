@@ -138,7 +138,7 @@ agents:
 	directory := delegation.NewDirectory()
 	delegationTools := tooldelegation.New(directory)
 	builder := deploy.NewBuilder(deploy.WithBaseDir(configDir))
-	builder.RegisterEngine(integrationEngineFactory{})
+	builder.MustRegisterEngine(integrationEngineFactory{})
 	builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 	builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 	builder.RegisterReferee(

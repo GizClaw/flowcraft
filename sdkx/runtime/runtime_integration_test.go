@@ -185,7 +185,7 @@ func TestRuntimePublicAPIEndToEnd(t *testing.T) {
 	buses := make(chan event.Bus, 1)
 	log := &lifecycleLog{}
 	deployment := deploy.NewBuilder()
-	deployment.RegisterEngine(&integrationEngineFactory{
+	deployment.MustRegisterEngine(&integrationEngineFactory{
 		identities: identities,
 		delivered:  delivered,
 		buses:      buses,

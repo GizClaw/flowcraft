@@ -59,12 +59,11 @@ func (k SourceKind) String() string {
 //	settings: {file: ./workspace.yaml}      # external file
 //	settings: {embed: scenarios/.../x.yaml} # embedded asset
 //
-// An object containing a "file" or "embed" key is a reference and must
-// use exactly those keys (one non-empty); any other object is the
-// document itself, nested inline — so a module document can be written
-// as plain YAML without a string wrapper. Mixing reference keys with
-// content keys, an empty {} reference form, or {"file": ""} fails at
-// decode time.
+// An object whose keys are exactly "file" and/or "embed" (one of them
+// non-empty) is a reference; any other object — including one whose
+// module schema happens to have a top level "embed" or "file" field —
+// is the document itself, nested inline. An empty {} reference form or
+// {"file": ""} fails at decode time.
 type Source struct {
 	kind    SourceKind
 	literal string          // SourceLiteral
@@ -146,42 +145,40 @@ func (s *Source) UnmarshalJSON(data []byte) error {
 		if err := json.Unmarshal(trimmed, &keys); err != nil {
 			return err
 		}
-		_, hasFile := keys["file"]
-		_, hasEmbed := keys["embed"]
-		if hasFile || hasEmbed {
-			// A reference object uses exactly the "file" / "embed" keys:
-			// mixing them with content keys is a decode error, so a typo
-			// like {"file": "./x.yaml", "fiel": ...} surfaces here.
-			for key := range keys {
-				if key != "file" && key != "embed" {
-					return errdefs.Validationf(
-						"config source: file/embed reference cannot be combined with %q", key)
-				}
-			}
-			var wire sourceWire
-			if err := json.Unmarshal(trimmed, &wire); err != nil {
-				return err
-			}
-			switch {
-			case wire.File != "" && wire.Embed != "":
-				return errdefs.Validationf(
-					"config source: file and embed are mutually exclusive")
-			case wire.File != "":
-				*s = Source{kind: SourceFile, path: wire.File}
-				return nil
-			case wire.Embed != "":
-				*s = Source{kind: SourceEmbed, path: wire.Embed}
-				return nil
-			default:
-				return errdefs.Validationf(
-					"config source: file/embed requires a non-empty value")
+		allReferenceKeys := true
+		for key := range keys {
+			if key != "file" && key != "embed" {
+				allReferenceKeys = false
+				break
 			}
 		}
-		// Any other object is the document itself, nested inline.
-		raw := make(json.RawMessage, len(trimmed))
-		copy(raw, trimmed)
-		*s = Source{kind: SourceContent, raw: raw}
-		return nil
+		if !allReferenceKeys {
+			// Any other key means the object is the document itself —
+			// a module document whose schema happens to include a top
+			// level "embed" (or "file") field stays content.
+			raw := make(json.RawMessage, len(trimmed))
+			copy(raw, trimmed)
+			*s = Source{kind: SourceContent, raw: raw}
+			return nil
+		}
+		var wire sourceWire
+		if err := json.Unmarshal(trimmed, &wire); err != nil {
+			return err
+		}
+		switch {
+		case wire.File != "" && wire.Embed != "":
+			return errdefs.Validationf(
+				"config source: file and embed are mutually exclusive")
+		case wire.File != "":
+			*s = Source{kind: SourceFile, path: wire.File}
+			return nil
+		case wire.Embed != "":
+			*s = Source{kind: SourceEmbed, path: wire.Embed}
+			return nil
+		default:
+			return errdefs.Validationf(
+				"config source: file/embed requires a non-empty value")
+		}
 	default:
 		return errdefs.Validationf(
 			"config source: must be a string or an object with file/embed")

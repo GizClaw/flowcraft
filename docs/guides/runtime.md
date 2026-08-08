@@ -145,7 +145,7 @@ Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdk/scheduler/config`, `workspaceconfig` =
 `github.com/GizClaw/flowcraft/sdk/workspace/config`, `inferenceconfig` =
 `github.com/GizClaw/flowcraft/sdk/inference/config`, `memoryconfig` =
-`github.com/GizClaw/flowcraft/sdk/memory/config`, `flowcraftmemory` =
+`flowcraftmemory` =
 `github.com/GizClaw/flowcraft/memory/config`, `flowcraftruntime` =
 `github.com/GizClaw/flowcraft/memory/runtime`, `graphconfig` =
 `github.com/GizClaw/flowcraft/sdk/graph/config`, `sdkconfig` =
@@ -170,12 +170,7 @@ deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
 deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
 deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
-deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
-    "flowcraft",
-    flowcraftmemory.Factory(),
-    sdkconfig.DepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-    sdkconfig.DepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
-))
+deployBuilder.MustRegisterResource(flowcraftmemory.Factory())
 
 tools := tool.NewRegistry()
 delegationFactory, err := delegationruntime.NewFactory(tools)

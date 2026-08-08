@@ -437,6 +437,14 @@ func (b *Builder) RegisterEngine(factory sdkconfig.Factory) error {
 	return b.catalog.Register(factory)
 }
 
+// MustRegisterEngine is RegisterEngine that panics on error — for
+// init-time registration where a failure is a programming bug.
+func (b *Builder) MustRegisterEngine(factory sdkconfig.Factory) {
+	if err := b.RegisterEngine(factory); err != nil {
+		panic(err)
+	}
+}
+
 // Specs returns defensive copies of every registered factory spec in
 // stable kind-then-impl order.
 func (b *Builder) Specs() []sdkconfig.Spec {

@@ -321,7 +321,7 @@ explicit external consumer is dead configuration and fails the build.
 | `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
 | `scheduler.Server`        | `local`         | shared scheduler server         | `sdk/scheduler/config`         |
-| `memory.Assembly`         | app-registered (e.g. `flowcraft`) | memory assembly (`context` / `turn` / `document`) | `sdk/memory/config` + implementation module |
+| `memory.Assembly`         | app-registered (e.g. `flowcraft`) | memory assembly (`context` / `turn` / `document`) | `sdk/memory` + implementation module |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
@@ -995,7 +995,7 @@ warms up its catalog on first use).
 - Per-resource config schemas: `sdk/workspace/config/doc.go`,
   `sdk/sandbox/config/doc.go`, `sdk/inference/config/doc.go`,
   `sdk/tool/config/doc.go`, `sdk/event/config/resource.go`,
-  `sdk/memory/config/doc.go`.
+  `sdk/memory` and the implementation module.
 - Engine contract: `sdk/agent/doc.go`, `sdk/graph/config/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.

@@ -256,7 +256,7 @@ func (s *trackedSchedulerServer) Close() error {
 func newDeployBuilder(t *testing.T, bus any, store any, busErr error) *deploy.Builder {
 	t.Helper()
 	builder := deploy.NewBuilder()
-	builder.RegisterEngine(testEngineFactory{engine: agent.EngineFunc(
+	builder.MustRegisterEngine(testEngineFactory{engine: agent.EngineFunc(
 		func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 			return board, nil
 		},
@@ -1004,7 +1004,7 @@ func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
 	var log []string
 	bus := &trackedBus{MemoryBus: event.NewMemoryBus(), log: &log, mu: &mu}
 	deployBuilder := deploy.NewBuilder()
-	deployBuilder.RegisterEngine(testEngineFactory{engine: agent.EngineFunc(
+	deployBuilder.MustRegisterEngine(testEngineFactory{engine: agent.EngineFunc(
 		func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
 			if err := host.ReportUsage(ctx, inference.Usage{
 				InputTokens:  10,
