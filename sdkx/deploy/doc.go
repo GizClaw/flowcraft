@@ -7,10 +7,10 @@
 // registered impl, so a deployment links only the integrations it
 // actually names — the same opt-in rule sdk/tool/config applies to
 // MCP. Values YAML cannot express arrive through registered
-// factories and sources supplied by the application. Resource
-// factories publish a [ResourceSpec] before construction, allowing
-// Build to validate dependency names, required bindings, whole-resource
-// kinds, and item types before calling [ResourceFactory.New].
+// factories and sources supplied by the application. Factories publish
+// a [config.Spec] before construction, allowing Build to validate
+// dependency names, required bindings, whole-resource kinds, and item
+// types before calling [config.Factory.New].
 //
 // The document is JSON at the protocol level — YAML is accepted as
 // authoring sugar and converted by sdk/config/utils before strict
@@ -46,7 +46,7 @@
 //	    card: {name: 研究员, description: 深度调研}
 //	    tools: [search, fetch]
 //	    engine:
-//	      kind: graph                     # looked up in agent.Registry
+//	      kind: graph                     # looked up in the Builder's catalog
 //	      settings:                       # opaque; the factory validates
 //	        graph: graphs/research.yaml
 //	    deps:                             # keyed by the factory's DepSpec
@@ -165,7 +165,7 @@
 // Some resources hold named items and implement [ItemResolver]: a
 // workspace registry's workspaces, a sandbox registry's runners.
 // Those are addressed as "resource/item". The factory's
-// [ResourceSpec.ItemType] is checked against the consumer's declared
+// [config.Spec.ItemType] is checked against the consumer's declared
 // dep type before ResolveItem is called.
 //
 // Others are single objects — an inference Assembly, a tool
