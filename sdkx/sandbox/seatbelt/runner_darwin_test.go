@@ -34,8 +34,14 @@ func TestRunner_Enforcement(t *testing.T) {
 	if got.DiskCap {
 		t.Error("Seatbelt must not claim disk quotas")
 	}
-	if len(got.NetModes) != 1 || got.NetModes[0] != sandbox.NetDenyAll {
-		t.Errorf("NetModes = %v, want [NetDenyAll]", got.NetModes)
+	wantModes := []sandbox.NetMode{sandbox.NetDenyAll, sandbox.NetAllowList, sandbox.NetProxy}
+	if len(got.NetModes) != len(wantModes) {
+		t.Fatalf("NetModes = %v, want %v", got.NetModes, wantModes)
+	}
+	for i, want := range wantModes {
+		if got.NetModes[i] != want {
+			t.Errorf("NetModes[%d] = %v, want %v", i, got.NetModes[i], want)
+		}
 	}
 }
 
@@ -87,8 +93,8 @@ func TestRunner_UnsupportedPolicies(t *testing.T) {
 		"cpu-without-timeout": {
 			Resources: sandbox.ResourceLimits{CPUMillicores: 100},
 		},
-		"net-allow-list": {
-			Net: sandbox.NetPolicy{Mode: sandbox.NetAllowList},
+		"unknown-net-mode": {
+			Net: sandbox.NetPolicy{Mode: sandbox.NetMode(99)},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -128,5 +134,50 @@ func TestRunner_FilesystemWriteBound(t *testing.T) {
 	}
 	if !strings.Contains(result.Stderr, "Operation not permitted") {
 		t.Logf("Seatbelt rejection stderr differed: %q", result.Stderr)
+	}
+}
+
+func TestBuildEnv_ProxyModeInjectsAndStrips(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://host-proxy:3128")
+	t.Setenv("NO_PROXY", "localhost")
+	t.Setenv("KEEP", "kept")
+	env := buildEnv(sandbox.EnvPolicy{Allow: nil}, 43123)
+
+	got := map[string]string{}
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok {
+			got[key] = value
+		}
+	}
+	for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if got[name] != "http://127.0.0.1:43123" {
+			t.Errorf("%s = %q, want loopback proxy", name, got[name])
+		}
+	}
+	if got["NO_PROXY"] != "" || got["no_proxy"] != "" {
+		t.Errorf("NO_PROXY not stripped: %q %q", got["NO_PROXY"], got["no_proxy"])
+	}
+	if got["KEEP"] != "kept" {
+		t.Errorf("non-proxy env dropped: %v", got)
+	}
+}
+
+func TestBuildEnv_NoProxyModeLeavesEnv(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://host-proxy:3128")
+	t.Setenv("NO_PROXY", "localhost")
+	env := buildEnv(sandbox.EnvPolicy{Allow: nil}, 0)
+	got := map[string]string{}
+	for _, kv := range env {
+		key, value, ok := strings.Cut(kv, "=")
+		if ok {
+			got[key] = value
+		}
+	}
+	if got["HTTP_PROXY"] != "http://host-proxy:3128" {
+		t.Errorf("HTTP_PROXY changed without proxy mode: %q", got["HTTP_PROXY"])
+	}
+	if got["NO_PROXY"] != "localhost" {
+		t.Errorf("NO_PROXY changed without proxy mode: %q", got["NO_PROXY"])
 	}
 }

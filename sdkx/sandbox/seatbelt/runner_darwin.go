@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -80,8 +82,12 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 func (r *Runner) Enforcement() sandbox.Enforcement {
 	caps := sandbox.GroupCapsSupported()
 	return sandbox.Enforcement{
-		EnvAllowList:     true,
-		NetModes:         []sandbox.NetMode{sandbox.NetDenyAll},
+		EnvAllowList: true,
+		NetModes: []sandbox.NetMode{
+			sandbox.NetDenyAll,
+			sandbox.NetAllowList,
+			sandbox.NetProxy,
+		},
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
@@ -117,7 +123,33 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if err != nil {
 		return nil, err
 	}
-	profile, err := buildProfile(r.writable, opts.Net)
+
+	// NetAllowList / NetProxy run through a host-side enforcement proxy
+	// on loopback; the profile opens exactly that port. Proxy mode
+	// forwards to the configured upstream from the host, so the SBPL
+	// rule is the same loopback hole for both modes.
+	proxyMode := opts.Net.Mode == sandbox.NetAllowList || opts.Net.Mode == sandbox.NetProxy
+	var proxy *httpkit.Proxy
+	proxyPort := 0
+	if proxyMode {
+		proxy, err = httpkit.Start(httpkit.ProxyConfig{
+			Mode:        opts.Net.Mode,
+			AllowHosts:  opts.Net.AllowHosts,
+			Upstream:    opts.Net.Proxy,
+			TCPLoopback: true,
+		})
+		if err != nil {
+			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
+		}
+		defer func() { _ = proxy.Close() }()
+		addr, ok := proxy.Addr().(*net.TCPAddr)
+		if !ok {
+			return nil, errdefs.Internalf("seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
+		}
+		proxyPort = addr.Port
+	}
+
+	profile, err := buildProfile(r.writable, opts.Net, proxyPort)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +163,7 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	argv = append(argv, args...)
 	c := exec.CommandContext(ctx, r.binary, argv...)
 	c.Dir = workDir
-	c.Env = buildEnv(opts.Env)
+	c.Env = buildEnv(opts.Env, proxyPort)
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		if c.Process == nil {
@@ -243,7 +275,13 @@ func evalExistingPrefix(path string) (string, error) {
 	return filepath.Join(realParent, filepath.Base(path)), nil
 }
 
-func buildEnv(policy sandbox.EnvPolicy) []string {
+// buildEnv constructs the child environment from the caller's EnvPolicy.
+// When proxyPort is non-zero (NetAllowList / NetProxy), it additionally
+// forces every proxy-aware client onto the enforcement proxy loopback
+// port and strips NO_PROXY so clients cannot opt out into a connection
+// the SBPL profile would deny anyway. These injections override the
+// caller's env (same rule as Env.Inject: sandbox-level policy wins).
+func buildEnv(policy sandbox.EnvPolicy, proxyPort int) []string {
 	values := map[string]string{}
 	switch {
 	case policy.Allow == nil:
@@ -265,6 +303,20 @@ func buildEnv(policy sandbox.EnvPolicy) []string {
 	}
 	for key, value := range policy.Inject {
 		values[key] = value
+	}
+	if proxyPort > 0 {
+		proxy := fmt.Sprintf("http://127.0.0.1:%d", proxyPort)
+		for _, name := range []string{
+			"HTTP_PROXY", "http_proxy",
+			"HTTPS_PROXY", "https_proxy",
+			"ALL_PROXY", "all_proxy",
+		} {
+			values[name] = proxy
+		}
+		delete(values, "NO_PROXY")
+		delete(values, "no_proxy")
+		values["NO_PROXY"] = ""
+		values["no_proxy"] = ""
 	}
 	env := make([]string, 0, len(values))
 	for key, value := range values {

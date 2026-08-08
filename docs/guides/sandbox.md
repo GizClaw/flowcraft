@@ -26,7 +26,7 @@ type Runner interface {
 ```
 
 One method. Concrete runners differ in **where** the work happens
-(local process, nsjail namespace, seatbelt/macOS, container,
+(local process, bubblewrap namespace, seatbelt/macOS, container,
 microVM) but share the same `ExecOptions` surface so a caller can be
 retargeted between backends without changing call sites.
 
@@ -120,7 +120,7 @@ policies you provided.
 | ----------------------- | -------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
 | `LocalRunner`           | unix (process group) | env allow-list, memory + CPU-time group caps, output cap | per-host dev, single-tenant trusted code, fast iteration       |
 | `sdkx/sandbox/seatbelt` | macOS                | env allow-list, file/network confinement                 | macOS production, multi-tenant code                            |
-| `sdkx/sandbox/nsjail`   | Linux                | env allow-list, namespace-level FS/net, rlimits          | Linux production, strong isolation, network policy enforcement |
+| `sdkx/sandbox/bwrap`    | Linux                | env allow-list, namespace-level FS/net, soft CPU/memory caps, network policy (allow_list/proxy) | Linux production, strong isolation, network policy enforcement |
 | Custom                  | any                  | depends                                                  | remote runners, microVM-backed runners, …                      |
 
 The choice is not "which is more secure" — every shipped runner
@@ -206,7 +206,7 @@ sandboxes:
 ```
 
 `local` is the only backend registered by default. Platform backends
-(`seatbelt` on macOS, `nsjail` on Linux) register themselves from their own
+(`seatbelt` on macOS, `bwrap` on Linux) register themselves from their own
 packages; a document naming one without registering it fails the build.
 
 Graph binding:
@@ -252,7 +252,7 @@ suites are in `sdkx/sandbox/<backend>/`.
   `sdk/sandbox/decorator.go`, `sdk/sandbox/approval.go`,
   `sdk/sandbox/enforcement.go`.
 - Backends: `sdkx/sandbox/seatbelt/doc.go`,
-  `sdkx/sandbox/nsjail/doc.go`.
+  `sdkx/sandbox/bwrap/doc.go`.
 - Assembly: `sdk/sandbox/config/doc.go`, the `sandbox.Registry`
   resource in [deploy.md](deploy.md#first-party-impls).
 - Sibling guide: [workspace.md](workspace.md) (policy vs state).

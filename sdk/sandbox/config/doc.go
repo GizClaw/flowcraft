@@ -8,7 +8,7 @@
 //
 // The framework follows sdk/workspace/config: the builder owns a
 // backend factory catalog, the local backend is built in, and platform
-// backends (seatbelt, nsjail, ...) register themselves from their own
+// backends (seatbelt, bubblewrap, ...) register themselves from their own
 // packages with their own settings.
 //
 // The document is JSON at the protocol level; YAML is accepted as

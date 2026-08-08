@@ -1,16 +1,16 @@
 // Package seatbelt implements sdk/sandbox.Runner on top of Apple's
 // sandbox-exec (Seatbelt / SBPL) — the only built-in confinement
-// primitive on macOS. It is the macOS sibling of sdkx/sandbox/nsjail:
+// primitive on macOS. It is the macOS sibling of sdkx/sandbox/bwrap:
 // same policy surface, different enforcement kernel.
 //
 // # Why sdkx
 //
 // sdk defines interfaces and primitives; sdkx ships concrete adapters
 // that integrate with external systems. sandbox-exec is an external
-// binary shipped with macOS, wrapped the same way nsjail is wrapped on
+// binary shipped with macOS, wrapped the same way bubblewrap is wrapped on
 // Linux. The Runner type implements the generic sandbox.Runner
 // interface, so a caller can be retargeted between LocalRunner, this
-// backend, and nsjail without changing call sites.
+// backend, and bwrap without changing call sites.
 //
 // # macOS-only
 //
@@ -29,8 +29,8 @@
 //	Env.Allow / Env.Inject      filtered in Go (c.Env); Seatbelt has no env concept
 //	Net.Mode == NetDefault      no network rules (host posture)
 //	Net.Mode == NetDenyAll      (deny network*)
-//	Net.Mode == NetAllowList    errdefs.NotAvailable (hostname rules need a proxy)
-//	Net.Mode == NetProxy        errdefs.NotAvailable (no redirect primitive)
+//	Net.Mode == NetAllowList    loopback-only profile + host enforcement proxy (hostname allow-list)
+//	Net.Mode == NetProxy        loopback-only profile + host enforcement proxy (upstream)
 //	Resources.MemoryBytes       group watcher (sdk/sandbox.GroupCapsWatcher)
 //	Resources.CPUMillicores     group watcher, cpu-time = Timeout x millicores/1000
 //	Resources.DiskBytes         errdefs.NotAvailable (no quota mechanism)
@@ -46,6 +46,30 @@
 // is the containment posture the local-sandbox PRD
 // calls blast-radius: not total isolation, but an honest boundary
 // around the workspace.
+//
+// # NetAllowList / NetProxy enforcement
+//
+// Both modes run the child under a profile that denies all network
+// except one loopback port, which a host-side enforcement proxy
+// (sdkx/internal/httpkit) listens on. The proxy evaluates the
+// allow-list (NetAllowList) or forwards to the configured upstream
+// (NetProxy); it resolves hostnames on the host, so the child needs no
+// resolver route. The child env is forced onto the proxy loopback
+// (HTTP(S)_PROXY / ALL_PROXY) and NO_PROXY is stripped, so proxy-aware
+// clients use the single enforced egress.
+//
+// The blanket network deny also covers the Mach / AF_SYSTEM sockets
+// macOS needs for TLS and network configuration, so the restricted
+// profile explicitly re-allows the same platform services Codex ships
+// (SecurityServer, trustd, configd, networkd, ...). See
+// writeRestrictedNetwork.
+//
+// Limitations (v1): only proxy-aware clients (HTTP(S)_PROXY) are
+// supported — raw TCP/UDP applications fail closed; there is no UDP
+// proxying; AllowHosts matches hostname suffixes or exact IP literals
+// with all ports allowed. SBPL network rules do not confine unix-domain
+// sockets; the macOS sensitive-UDS surface is small, so this is a
+// documented boundary rather than a broad file-read deny.
 //
 // Note: sandbox-exec is formally deprecated by Apple yet remains
 // functional and is the same primitive Chrome and Anthropic's
