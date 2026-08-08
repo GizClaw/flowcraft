@@ -1,5 +1,5 @@
 // Package config assembles graph agents: it provides the production
-// agent.Factory for sdk/graph and is the graph domain's deployment
+// config.Factory for sdk/graph and is the graph domain's deployment
 // configuration assembly.
 package config
 

@@ -41,6 +41,8 @@ retrieval, runtime orchestration, and voice. Source on
 
 ## Migrations
 
+- [`sdk/v0.5.0`](migrations/v0.5.0.md) — unified runtime, configuration
+  protocol, and sandbox cutover.
 - [`sdk/v0.4.0` + `memory/v0.1.0`](migrations/v0.4.0-memory-split.md) —
   memory-domain packages split into the standalone `memory` module.
 - [`sdk/v0.3.0`](migrations/v0.3.0.md) — breaking-change cutover

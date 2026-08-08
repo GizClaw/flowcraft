@@ -50,7 +50,7 @@ type Document struct {
 // (matched against DepSpec.Type when a whole resource is bound), an
 // implementation selector, that impl's dependencies on other
 // resources, and its opaque settings subtree (strictly decoded by the
-// registered ResourceFactory).
+// registered config.Factory).
 type ResourceEntry struct {
 	Kind string `json:"kind"`
 	Impl string `json:"impl"`
@@ -62,7 +62,7 @@ type ResourceEntry struct {
 
 	// Deps binds factory-declared dependency names to other resources
 	// (or host sources). Build validates these names and required
-	// bindings against ResourceSpec.Deps before calling the factory.
+	// bindings against config.Spec.Deps before calling the factory.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
 	Settings json.RawMessage `json:"settings,omitempty"`
@@ -88,10 +88,11 @@ type AgentEntry struct {
 	// promoted to Run.ToolAllowList by the harness).
 	Tools []string `json:"tools,omitempty"`
 
-	// Engine selects an engine kind from the agent.Registry.
+	// Engine selects an engine kind from the engine factories registered
+	// on the Builder.
 	Engine EngineEntry `json:"engine"`
 
-	// Deps binds EngineSpec-declared dep names to resources or
+	// Deps binds Spec-declared dep names to resources or
 	// sources.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
