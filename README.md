@@ -189,13 +189,41 @@ TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
 ## Documentation
 
 The canonical reference is the per-package `doc.go` files, browsable on
-pkg.go.dev:
+pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 
-- [`docs/`](docs/index.md) — guides for graph, tool, event, workspace, sandbox,
-  inference, deploy, runtime, and memory.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core contracts
-- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — memory implementation
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — adapters and assembly
+- [Graph Runtime](docs/guides/graph.md) — `sdk/graph`: declarative DAG
+  engine, node I/O roles, parallel branches, custom node types.
+- [Tool System](docs/guides/tool.md) — `sdk/tool`: LLM function-calling
+  contract, the Registry / Catalog / Executor split, middleware chain, and
+  the MCP bridge.
+- [Event Bus](docs/guides/event.md) — `sdk/event`: subject-routed
+  publish/subscribe, in-process `MemoryBus`, host capability wiring,
+  backpressure policies.
+- [Workspace](docs/guides/workspace.md) — `sdk/workspace`: per-run
+  filesystem abstraction, backends, capabilities, and the
+  `state vs policy` split vs Sandbox.
+- [Sandbox](docs/guides/sandbox.md) — `sdk/sandbox`: agent execution
+  boundary, env / net / resources policy, runners (local / seatbelt /
+  bwrap), decorators, and approval.
+- [Inference Runtime](docs/guides/inference.md) — unified Generate / Embed /
+  Transcription / Realtime: deployment config, routing, extensions,
+  streaming, media intents, hot reload.
+- [Deployment Assembly](docs/guides/deploy.md) — `sdkx/deploy`: one YAML
+  document + one `Build` call to wire shared resources, named agents,
+  engines, and lifecycle hooks.
+- [Application Runtime](docs/guides/runtime.md) — `sdkx/runtime` +
+  `sdkx/runtime/session`: process-level services and leased, interruptible
+  streaming sessions above a built deployment.
+- [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
+  `sdk/memory` contracts, the `memory/` implementation, and `sdkx/memory`
+  deploy/runtime glue.
+
+Reference material:
+
+- [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
+- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core contracts.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — memory implementation.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — adapters and assembly.
 
 ## Status
 
