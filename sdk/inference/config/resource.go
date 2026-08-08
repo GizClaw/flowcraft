@@ -14,11 +14,6 @@ import (
 // meaningless once separated from the runtime it validated against.
 const ResourceKind = "inference.Assembly"
 
-type deployFactory struct {
-	factories map[string]Factory
-	resolvers map[string]SecretResolver
-}
-
 // NewDeployFactory returns the deployment factory for inference
 // assemblies.
 //
@@ -32,36 +27,29 @@ func NewDeployFactory(
 	factories map[string]Factory,
 	resolvers map[string]SecretResolver,
 ) config.ResourceFactory {
-	return &deployFactory{factories: factories, resolvers: resolvers}
-}
-
-func (*deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{
-		Kind:     ResourceKind,
-		Impl:     "yaml",
-		ItemType: "inference.Runtime",
-	}
-}
-
-func (f *deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	data, err := in.ResolveDocument(ctx)
-	if err != nil {
-		return nil, err
-	}
-	document, err := Parse(data)
-	if err != nil {
-		return nil, errdefs.Validation(err)
-	}
-	builder, err := NewBuilder(f.factories, f.resolvers)
-	if err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"inference config: %w", err))
-	}
-	assembly, err := builder.NewAssembly(ctx, document)
-	if err != nil {
-		return nil, err
-	}
-	// Return a pointer: Assembly is a two-field value, and every consumer
-	// must observe the same Runtime rather than a copy of its wrapper.
-	return &assembly, nil
+	return config.NewDocumentFactory(
+		config.ResourceSpec{
+			Kind:     ResourceKind,
+			Impl:     "yaml",
+			ItemType: "inference.Runtime",
+		},
+		func(ctx context.Context, data []byte, deps map[string]any) (any, error) {
+			document, err := Parse(data)
+			if err != nil {
+				return nil, errdefs.Validation(err)
+			}
+			builder, err := NewBuilder(factories, resolvers)
+			if err != nil {
+				return nil, errdefs.Validation(fmt.Errorf(
+					"inference config: %w", err))
+			}
+			assembly, err := builder.NewAssembly(ctx, document)
+			if err != nil {
+				return nil, err
+			}
+			// Return a pointer: Assembly is a two-field value, and every
+			// consumer must observe the same Runtime rather than a copy.
+			return &assembly, nil
+		},
+	)
 }

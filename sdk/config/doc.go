@@ -46,7 +46,11 @@
 //     used by fields whose inline form is the enclosing structure;
 //   - [Input.Resolve] is how the assembly host injects that resolution
 //     capability into every resource factory ([Input.ResolveSource]
-//     surfaces a missing resolver as a validation error).
+//     surfaces a missing resolver as a validation error);
+//   - [DocumentFactory] is the shared "settings is a module document"
+//     resource factory: it resolves the settings [Source] through
+//     [Input.ResolveDocument] and hands the bytes to a module build
+//     step, so module config packages need no bespoke deploy factory.
 //
 // The hook factories ([PreparerFactory], [ObserverFactory],
 // [RefereeFactory], [CommitterFactory]) complete the protocol: they let

@@ -13,10 +13,6 @@ import (
 // [Registry] is a container (see [Registry.ResolveItem]).
 const ResourceKind = "workspace.Registry"
 
-type deployFactory struct {
-	builder *Builder
-}
-
 // NewDeployFactory returns the deployment factory for workspace
 // registries over the host's builder. Passing a builder is what lets a
 // document use drivers the host registered (object-store backends,
@@ -30,30 +26,22 @@ type deployFactory struct {
 //	wb.RegisterFactory("objstore.s3", s3Factory)
 //	builder.RegisterResource(NewDeployFactory(wb))
 func NewDeployFactory(builder *Builder) config.ResourceFactory {
-	return deployFactory{builder: builder}
-}
-
-func (deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{
-		Kind:     ResourceKind,
-		Impl:     "yaml",
-		ItemType: "workspace.Workspace",
-	}
-}
-
-// New builds a workspace [Registry] owned by the deployment result.
-func (f deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	if f.builder == nil {
-		return nil, errdefs.Validationf(
-			"workspace config: deploy factory builder is nil")
-	}
-	data, err := in.ResolveDocument(ctx)
-	if err != nil {
-		return nil, err
-	}
-	doc, err := Parse(data)
-	if err != nil {
-		return nil, err
-	}
-	return f.builder.Build(ctx, doc)
+	return config.NewDocumentFactory(
+		config.ResourceSpec{
+			Kind:     ResourceKind,
+			Impl:     "yaml",
+			ItemType: "workspace.Workspace",
+		},
+		func(ctx context.Context, data []byte, deps map[string]any) (any, error) {
+			if builder == nil {
+				return nil, errdefs.Validationf(
+					"workspace config: deploy factory builder is nil")
+			}
+			doc, err := Parse(data)
+			if err != nil {
+				return nil, err
+			}
+			return builder.Build(ctx, doc)
+		},
+	)
 }

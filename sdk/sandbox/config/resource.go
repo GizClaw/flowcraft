@@ -21,8 +21,6 @@ const ResourceKind = "sandbox.Registry"
 // ordering in a deployment engine.
 const WorkspacesDep = "workspaces"
 
-type deployFactory struct{}
-
 // NewDeployFactory returns the deployment factory for sandbox
 // registries.
 //
@@ -42,42 +40,34 @@ type deployFactory struct{}
 // built by a host that registers its own impl wrapping [NewBuilder]
 // with an Approver in Deps.
 func NewDeployFactory() config.ResourceFactory {
-	return deployFactory{}
-}
-
-func (deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{
-		Kind: ResourceKind,
-		Impl: "yaml",
-		Deps: []config.ResourceDepSpec{{
-			Name:     WorkspacesDep,
-			Type:     workspaceconfig.ResourceKind,
-			Required: true,
-		}},
-		ItemType: "sandbox.Runner",
-	}
-}
-
-// New builds a sandbox [Registry] owned by the deployment result.
-func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	data, err := in.ResolveDocument(ctx)
-	if err != nil {
-		return nil, err
-	}
-	value, ok := in.Dep(WorkspacesDep)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"sandbox config: dep %q is required", WorkspacesDep)
-	}
-	workspaces, ok := value.(*workspaceconfig.Registry)
-	if !ok {
-		return nil, errdefs.Validationf(
-			"sandbox config: dep %q is %T, want *workspace/config.Registry",
-			WorkspacesDep, value)
-	}
-	doc, err := Parse(data)
-	if err != nil {
-		return nil, err
-	}
-	return NewBuilder(Deps{Workspaces: workspaces}).Build(ctx, doc)
+	return config.NewDocumentFactory(
+		config.ResourceSpec{
+			Kind: ResourceKind,
+			Impl: "yaml",
+			Deps: []config.ResourceDepSpec{{
+				Name:     WorkspacesDep,
+				Type:     workspaceconfig.ResourceKind,
+				Required: true,
+			}},
+			ItemType: "sandbox.Runner",
+		},
+		func(ctx context.Context, data []byte, deps map[string]any) (any, error) {
+			value, ok := deps[WorkspacesDep]
+			if !ok {
+				return nil, errdefs.Validationf(
+					"sandbox config: dep %q is required", WorkspacesDep)
+			}
+			workspaces, ok := value.(*workspaceconfig.Registry)
+			if !ok {
+				return nil, errdefs.Validationf(
+					"sandbox config: dep %q is %T, want *workspace/config.Registry",
+					WorkspacesDep, value)
+			}
+			doc, err := Parse(data)
+			if err != nil {
+				return nil, err
+			}
+			return NewBuilder(Deps{Workspaces: workspaces}).Build(ctx, doc)
+		},
+	)
 }

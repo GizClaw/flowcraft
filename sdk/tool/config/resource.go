@@ -12,10 +12,6 @@ import (
 // so consumers take the whole assembly rather than one item out of it.
 const ResourceKind = "tool.Assembly"
 
-type deployFactory struct {
-	builder *Builder
-}
-
 // NewDeployFactory returns the deployment factory for tool assemblies
 // over the host's builder.
 //
@@ -31,25 +27,18 @@ type deployFactory struct {
 //	mcp.Register(tb)
 //	builder.RegisterResource(config.NewDeployFactory(tb))
 func NewDeployFactory(builder *Builder) config.ResourceFactory {
-	return deployFactory{builder: builder}
-}
-
-func (deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{Kind: ResourceKind, Impl: "yaml"}
-}
-
-func (f deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	if f.builder == nil {
-		return nil, errdefs.Validationf(
-			"tool config: deploy factory builder is nil")
-	}
-	data, err := in.ResolveDocument(ctx)
-	if err != nil {
-		return nil, err
-	}
-	doc, err := Parse(data)
-	if err != nil {
-		return nil, err
-	}
-	return f.builder.Build(ctx, doc)
+	return config.NewDocumentFactory(
+		config.ResourceSpec{Kind: ResourceKind, Impl: "yaml"},
+		func(ctx context.Context, data []byte, deps map[string]any) (any, error) {
+			if builder == nil {
+				return nil, errdefs.Validationf(
+					"tool config: deploy factory builder is nil")
+			}
+			doc, err := Parse(data)
+			if err != nil {
+				return nil, err
+			}
+			return builder.Build(ctx, doc)
+		},
+	)
 }
