@@ -9,16 +9,23 @@ Release PR before their tags are published.
 
 ## Current Published State
 
-| Module | Latest tag | Notes |
-| --- | --- | --- |
-| `sdk` | `sdk/v0.5.0` | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives. |
-| `memory` | `memory/v0.1.0` | First standalone memory-domain release: recall v2, history, knowledge, retrieval, text, and stores. |
-| `sdkx` | `sdkx/v0.4.0` | Provider/adaptor release pinned to `sdk v0.4.0` and `memory v0.1.0`. |
-| `vessel` | `vessel/v0.3.0` | Retired; historical tags remain available, but source and active support have been removed from `main`. |
-| `voice` | `voice/v0.2.0` | Voice pipeline module. |
-| `cmd/vesseld` | `vesseld/v0.1.0` | Retired; historical release artifacts remain available, but no further releases are planned. |
+| Module   | Latest tag      | Notes                                                                                     |
+| -------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `sdk`    | `sdk/v0.5.0`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
+| `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
+| `sdkx`   | `sdkx/v0.4.10`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
+
+_No pending changes._
+
+<!-- releasegate:releases -->
+
+## `sdk/v0.5.0` - 2026-08-08
+
+### Changed
+
+- Breaking cleanup: remove v0.4.x deprecated surfaces and land the unified runtime (engine into agent, llm/embedding/model into inference+message), the config.Factory/Source/Loader build protocol, and bubblewrap sandbox with network enforcement
 
 ### Removed
 
@@ -36,14 +43,6 @@ Release PR before their tags are published.
   `sdk/workspace`. Model-driven file memory is an application concern: build it
   on `sdk/workspace` in application-owned code, or attach a filesystem MCP
   server through `sdkx/tool/mcp`.
-
-<!-- releasegate:releases -->
-
-## `sdk/v0.5.0` - 2026-08-08
-
-### Changed
-
-- Breaking cleanup: remove v0.4.x deprecated surfaces and land the unified runtime (engine into agent, llm/embedding/model into inference+message), the config.Factory/Source/Loader build protocol, and bubblewrap sandbox with network enforcement
 
 ## `sdk/v0.4.0` - 2026-05-30
 
