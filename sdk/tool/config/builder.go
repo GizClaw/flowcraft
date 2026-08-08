@@ -17,7 +17,7 @@ import (
 // spec. Decode it with [DecodeSpec]: unknown fields must be an error so
 // typos in configuration surface at build time, not as silently ignored
 // policy.
-type MiddlewareFactory = sdkconfig.Factory[sdkconfig.Input, tool.Middleware]
+type MiddlewareFactory = sdkconfig.Func[sdkconfig.Input, tool.Middleware]
 
 // Deps carries the application-side dependencies the document cannot
 // express: who approves gated calls and where audit records go. A
@@ -42,7 +42,7 @@ const RegistryDep = "registry"
 type Builder struct {
 	deps            Deps
 	builtins        map[string]tool.Tool
-	middlewares     *sdkconfig.Catalog[sdkconfig.Input, tool.Middleware]
+	middlewares     *sdkconfig.Registry[sdkconfig.Input, tool.Middleware]
 	sourceFactories map[string]SourceFactory
 }
 
@@ -54,7 +54,7 @@ func NewBuilder(deps Deps) *Builder {
 	b := &Builder{
 		deps:            deps,
 		builtins:        make(map[string]tool.Tool),
-		middlewares:     sdkconfig.NewCatalog[sdkconfig.Input, tool.Middleware](),
+		middlewares:     sdkconfig.NewRegistry[sdkconfig.Input, tool.Middleware](),
 		sourceFactories: make(map[string]SourceFactory),
 	}
 	b.registerBuiltins()

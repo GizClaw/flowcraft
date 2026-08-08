@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -101,7 +102,7 @@ func SourceFactory(_ context.Context, in sdkconfig.Input) (toolconfig.Source, er
 // ParseSpec strictly decodes an MCP source spec, rejecting unknown
 // fields so a typo in a server declaration fails at build time instead
 // of silently omitting a server.
-func ParseSpec(settings *sdkconfig.Opaque) (Spec, error) {
+func ParseSpec(settings json.RawMessage) (Spec, error) {
 	spec, err := toolconfig.DecodeSpec[Spec](settings)
 	if err != nil {
 		return Spec{}, fmt.Errorf("mcp: %w", err)

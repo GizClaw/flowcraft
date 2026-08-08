@@ -20,8 +20,8 @@ func Register(b *schedulerconfig.Builder) error {
 		_ context.Context,
 		in sdkconfig.Input,
 	) (sdkscheduler.Server, error) {
-		var settings struct{}
-		if err := in.Settings.Decode(&settings); err != nil {
+		_, err := sdkconfig.DecodeSettings[struct{}](in.Settings)
+		if err != nil {
 			return nil, errdefs.Validationf(
 				"decode local scheduler settings: %v", err)
 		}

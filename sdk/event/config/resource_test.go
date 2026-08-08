@@ -21,7 +21,7 @@ func (*countingObserver) OnDrop(event.SubscriptionID, event.Envelope, event.Drop
 }
 
 func TestDeployFactorySpecs(t *testing.T) {
-	want := sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "memory"}
+	want := sdkconfig.Spec{Kind: ResourceKind, Impl: "memory"}
 	if got := NewMemoryDeployFactory().Spec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
 	}
@@ -31,7 +31,7 @@ func TestMemoryDeployFactoryBuildsDefaultConfiguredAndInjectedBus(t *testing.T) 
 	observer := &countingObserver{}
 	tests := []struct {
 		name          string
-		factory       sdkconfig.ResourceFactory
+		factory       sdkconfig.Factory
 		settings      string
 		wantCacheSize int64
 	}{
@@ -89,14 +89,14 @@ func TestDeployFactoriesRejectUnknownSettings(t *testing.T) {
 	}
 }
 
-func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
 	if raw == "" {
 		return nil
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return out
 }

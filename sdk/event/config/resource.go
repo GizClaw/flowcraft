@@ -31,19 +31,19 @@ type memoryDeployFactory struct {
 // Options inject application-owned dependencies that the document
 // cannot represent, such as an [event.Observer]. Declarative route-cache
 // settings are applied after these options.
-func NewMemoryDeployFactory(options ...event.MemoryBusOption) config.ResourceFactory {
+func NewMemoryDeployFactory(options ...event.MemoryBusOption) config.Factory {
 	return memoryDeployFactory{
 		options: append([]event.MemoryBusOption(nil), options...),
 	}
 }
 
-func (memoryDeployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{Kind: ResourceKind, Impl: "memory"}
+func (memoryDeployFactory) Spec() config.Spec {
+	return config.Spec{Kind: ResourceKind, Impl: "memory"}
 }
 
 func (f memoryDeployFactory) New(_ context.Context, in config.Input) (any, error) {
-	var settings MemorySettings
-	if err := in.Settings.Decode(&settings); err != nil {
+	settings, err := config.DecodeSettings[MemorySettings](in.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"event config: decode memory resource settings: %w", err))
 	}

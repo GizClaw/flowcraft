@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coresandbox "github.com/GizClaw/flowcraft/sdk/sandbox"
 )
@@ -23,8 +24,8 @@ type localSettings struct {
 }
 
 func buildLocal(_ context.Context, input FactoryInput) (coresandbox.Runner, error) {
-	var settings localSettings
-	if err := input.Settings.Decode(&settings); err != nil {
+	settings, err := sdkconfig.DecodeSettings[localSettings](input.Settings)
+	if err != nil {
 		return nil, decodeSettingsError(BackendLocal, err)
 	}
 	var options []coresandbox.Option

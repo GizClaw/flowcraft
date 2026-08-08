@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	sandboxconfig "github.com/GizClaw/flowcraft/sdk/sandbox/config"
@@ -210,8 +211,8 @@ func TestCustomFactoryReceivesRootAndOpaqueSettings(t *testing.T) {
 		type settings struct {
 			Label string `json:"label"`
 		}
-		var value settings
-		if err := input.Settings.Decode(&value); err != nil {
+		value, err := sdkconfig.DecodeSettings[settings](input.Settings)
+		if err != nil {
 			return nil, err
 		}
 		captured.root, captured.label = input.Root, value.Label

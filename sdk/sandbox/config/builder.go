@@ -30,12 +30,12 @@ type FactoryInput struct {
 }
 
 // Factory constructs one backend runner.
-type Factory = sdkconfig.Factory[FactoryInput, coresandbox.Runner]
+type Factory = sdkconfig.Func[FactoryInput, coresandbox.Runner]
 
 // Builder owns an instance-local backend factory catalog.
 type Builder struct {
 	deps     Deps
-	backends *sdkconfig.Catalog[FactoryInput, coresandbox.Runner]
+	backends *sdkconfig.Registry[FactoryInput, coresandbox.Runner]
 }
 
 // NewBuilder creates a builder with the local backend registered.
@@ -44,7 +44,7 @@ type Builder struct {
 func NewBuilder(deps Deps) *Builder {
 	b := &Builder{
 		deps:     deps,
-		backends: sdkconfig.NewCatalog[FactoryInput, coresandbox.Runner](),
+		backends: sdkconfig.NewRegistry[FactoryInput, coresandbox.Runner](),
 	}
 	b.registerBuiltins()
 	return b

@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
+	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	memoryrender "github.com/GizClaw/flowcraft/sdkx/memory/render"
 )
 
@@ -74,10 +75,19 @@ type TurnSettings struct {
 	Channel        string        `json:"channel,omitempty"`
 }
 
-// ContextPreparerFactory constructs memory.context.
-func ContextPreparerFactory(_ context.Context, input sdkconfig.Input) (agent.Preparer, error) {
-	var settings ContextSettings
-	if err := input.Settings.Decode(&settings); err != nil {
+// ContextPreparer implements config.Factory for the memory.context
+// seed hook.
+type ContextPreparer struct{}
+
+// Spec implements config.Factory.
+func (ContextPreparer) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: deploy.HookKindPreparer, Impl: ContextType}
+}
+
+// New implements config.Factory.
+func (ContextPreparer) New(_ context.Context, input sdkconfig.Input) (any, error) {
+	settings, err := sdkconfig.DecodeSettings[ContextSettings](input.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", ContextType, err))
 	}
 	if err := settings.validate(); err != nil {
@@ -136,10 +146,19 @@ func ContextPreparerFactory(_ context.Context, input sdkconfig.Input) (agent.Pre
 	}), nil
 }
 
-// TurnCommitterFactory constructs memory.turn.
-func TurnCommitterFactory(_ context.Context, input sdkconfig.Input) (agent.Committer, error) {
-	var settings TurnSettings
-	if err := input.Settings.Decode(&settings); err != nil {
+// TurnCommitter implements config.Factory for the memory.turn durable
+// finalizer.
+type TurnCommitter struct{}
+
+// Spec implements config.Factory.
+func (TurnCommitter) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: deploy.HookKindCommitter, Impl: TurnType}
+}
+
+// New implements config.Factory.
+func (TurnCommitter) New(_ context.Context, input sdkconfig.Input) (any, error) {
+	settings, err := sdkconfig.DecodeSettings[TurnSettings](input.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", TurnType, err))
 	}
 	if settings.Channel == "" {

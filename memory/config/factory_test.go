@@ -2,23 +2,25 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
-	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/workspace"
 )
 
 func TestFactoryRejectsMissingDeps(t *testing.T) {
 	factory := Factory()
-	if _, err := factory.New(context.Background(), sdkmemory.Input{}); err == nil {
+	if _, err := factory.New(context.Background(), sdkconfig.Input{Resolve: sdkconfig.NewLoader().Load}); err == nil {
 		t.Fatal("New succeeded without deps")
 	} else if !strings.Contains(err.Error(), "inference") {
 		t.Fatalf("missing inference error = %v", err)
 	}
 	runtime, _, _ := testRuntime(t)
-	if _, err := factory.New(context.Background(), sdkmemory.Input{
-		Settings: factorySettings(t),
+	if _, err := factory.New(context.Background(), sdkconfig.Input{
+		Settings: json.RawMessage(factorySettings(t)),
+		Resolve:  sdkconfig.NewLoader().Load,
 		Deps:     map[string]any{"inference": runtime},
 	}); err == nil {
 		t.Fatal("New succeeded without workspace")
@@ -29,7 +31,7 @@ func TestFactoryRejectsMissingDeps(t *testing.T) {
 
 func TestFactoryRejectsWrongDepTypes(t *testing.T) {
 	factory := Factory()
-	if _, err := factory.New(context.Background(), sdkmemory.Input{
+	if _, err := factory.New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{
 			"inference": "not a runtime",
 			"workspace": workspace.NewMemWorkspace(),
@@ -38,8 +40,9 @@ func TestFactoryRejectsWrongDepTypes(t *testing.T) {
 		t.Fatal("New accepted a non-runtime inference dep")
 	}
 	runtime, _, _ := testRuntime(t)
-	if _, err := factory.New(context.Background(), sdkmemory.Input{
-		Settings: factorySettings(t),
+	if _, err := factory.New(context.Background(), sdkconfig.Input{
+		Settings: json.RawMessage(factorySettings(t)),
+		Resolve:  sdkconfig.NewLoader().Load,
 		Deps: map[string]any{
 			"inference": runtime,
 			"workspace": "not a workspace",
@@ -51,8 +54,9 @@ func TestFactoryRejectsWrongDepTypes(t *testing.T) {
 
 func TestFactoryBuildsAssemblyFromDeps(t *testing.T) {
 	runtime, _, _ := testRuntime(t)
-	assembly, err := Factory().New(context.Background(), sdkmemory.Input{
-		Settings: factorySettings(t),
+	assembly, err := Factory().New(context.Background(), sdkconfig.Input{
+		Settings: json.RawMessage(factorySettings(t)),
+		Resolve:  sdkconfig.NewLoader().Load,
 		Deps: map[string]any{
 			"inference": runtime,
 			"workspace": workspace.NewMemWorkspace(),

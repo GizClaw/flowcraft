@@ -57,10 +57,11 @@ func (f EngineFunc) Execute(ctx context.Context, run Run, host Host, board *Boar
 // ---------- Capabilities ----------
 
 // Capabilities describes the optional features an engine kind
-// declares to its host. The declaration lives on [EngineSpec] — it
-// is made once, statically, when the engine kind is registered (see
-// [Factory] / [Registry]), never probed per instance at run time.
-// Hosts read specs to:
+// declares to its host. The declaration is made once, statically,
+// when the engine kind is registered — engine factories expose it
+// through a capability interface that sdkx/deploy and hosts assert —
+// never probed per instance at run time. Hosts read capabilities
+// to:
 //
 //   - validate a deployment spec at Apply time (e.g. a restart
 //     policy requiring resume is rejected when the engine kind does

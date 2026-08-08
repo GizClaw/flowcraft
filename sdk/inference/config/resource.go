@@ -14,11 +14,6 @@ import (
 // meaningless once separated from the runtime it validated against.
 const ResourceKind = "inference.Assembly"
 
-// ResourceSettings is the settings subtree of an inference resource.
-type ResourceSettings struct {
-	config.SubDocument
-}
-
 type deployFactory struct {
 	factories map[string]Factory
 	resolvers map[string]SecretResolver
@@ -36,25 +31,24 @@ type deployFactory struct {
 func NewDeployFactory(
 	factories map[string]Factory,
 	resolvers map[string]SecretResolver,
-) config.ResourceFactory {
+) config.Factory {
 	return &deployFactory{factories: factories, resolvers: resolvers}
 }
 
-func (*deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{
+// Spec implements config.Factory.
+func (*deployFactory) Spec() config.Spec {
+	return config.Spec{
 		Kind:     ResourceKind,
 		Impl:     "yaml",
 		ItemType: "inference.Runtime",
 	}
 }
 
+// New implements config.Factory: the settings subtree is the inference
+// document, resolved through the input's shared loader and parsed into
+// an assembly over the host provider catalog.
 func (f *deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"inference config: decode resource settings: %w", err))
-	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +65,7 @@ func (f *deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Return a pointer: Assembly is a two-field value, and every consumer
-	// must observe the same Runtime rather than a copy of its wrapper.
+	// Return a pointer: Assembly is a two-field value, and every
+	// consumer must observe the same Runtime rather than a copy.
 	return &assembly, nil
 }

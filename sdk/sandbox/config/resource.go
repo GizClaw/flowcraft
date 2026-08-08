@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -22,19 +21,9 @@ const ResourceKind = "sandbox.Registry"
 // ordering in a deployment engine.
 const WorkspacesDep = "workspaces"
 
-// ResourceSettings is the settings subtree of a sandbox resource.
-type ResourceSettings struct {
-	config.SubDocument
-}
-
-type deployFactory struct{}
-
-// NewDeployFactory returns the deployment factory for sandbox
-// registries.
-//
-// The workspace registry arrives through deps rather than settings
-// because it is a live object shared with other consumers, not
-// declarative data:
+// Spec implements config.Factory. The workspace registry arrives
+// through deps rather than settings because it is a live object shared
+// with other consumers, not declarative data:
 //
 //	resources:
 //	  boxes:
@@ -42,20 +31,11 @@ type deployFactory struct{}
 //	    impl: yaml
 //	    deps: {workspaces: files}
 //	    settings: {file: ./sandboxes.yaml}
-//
-// The approval callback stays application-owned: the document cannot
-// express a function, so a document needing gated commands must be
-// built by a host that registers its own impl wrapping [NewBuilder]
-// with an Approver in Deps.
-func NewDeployFactory() config.ResourceFactory {
-	return deployFactory{}
-}
-
-func (deployFactory) Spec() config.ResourceSpec {
-	return config.ResourceSpec{
+func (b *Builder) Spec() config.Spec {
+	return config.Spec{
 		Kind: ResourceKind,
 		Impl: "yaml",
-		Deps: []config.ResourceDepSpec{{
+		Deps: []config.DepSpec{{
 			Name:     WorkspacesDep,
 			Type:     workspaceconfig.ResourceKind,
 			Required: true,
@@ -64,12 +44,13 @@ func (deployFactory) Spec() config.ResourceSpec {
 	}
 }
 
-// New builds a sandbox [Registry] owned by the deployment result.
-func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"sandbox config: decode resource settings: %w", err))
+// New implements config.Factory: it takes the workspace registry from
+// the resolved deps, resolves the sandbox document from settings, and
+// builds over the host builder's backend catalog.
+func (b *Builder) New(ctx context.Context, in config.Input) (any, error) {
+	if b == nil {
+		return nil, errdefs.Validationf(
+			"sandbox config: builder is nil")
 	}
 	value, ok := in.Dep(WorkspacesDep)
 	if !ok {
@@ -82,7 +63,7 @@ func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 			"sandbox config: dep %q is %T, want *workspace/config.Registry",
 			WorkspacesDep, value)
 	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -90,5 +71,9 @@ func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewBuilder(Deps{Workspaces: workspaces}).Build(ctx, doc)
+	run := &Builder{
+		deps:     Deps{Workspaces: workspaces, Approver: b.deps.Approver},
+		backends: b.backends,
+	}
+	return run.Build(ctx, doc)
 }

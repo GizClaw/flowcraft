@@ -1,23 +1,17 @@
 package app
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"path/filepath"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
-	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
-	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
 	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
 	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
-	memoryconfig "github.com/GizClaw/flowcraft/sdk/memory/config"
 	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
 	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
@@ -37,11 +31,11 @@ import (
 )
 
 func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) (*runtimecore.Runtime, error) {
-	engines := agent.NewRegistry()
-	engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(a.dir)))
-	simtools.Register(a.tools, &a.toolCalls)
+	loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(a.dir))
 
-	deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(a.dir))
+	deployBuilder := deploy.NewBuilder(deploy.WithLoader(loader))
+	deployBuilder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+	simtools.Register(a.tools, &a.toolCalls)
 	deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 	schedulerBuilder := schedulerconfig.NewBuilder()
@@ -52,7 +46,7 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 
 	workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: a.dir})
-	deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
+	deployBuilder.MustRegisterResource(workspaceBuilder)
 	deployBuilder.MustRegisterResource(jsrt.NewDeployFactory())
 
 	toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
@@ -61,19 +55,14 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 			toolBuilder.RegisterBuiltin(t)
 		}
 	}
-	deployBuilder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+	deployBuilder.MustRegisterResource(toolBuilder)
 
 	factories := providerFactories()
 	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
 	deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(factories, resolvers))
-	deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
-		"flowcraft",
-		flowcraftmemory.Factory(),
-		sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-		sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
-	))
-	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparerFactory)
-	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitterFactory)
+	deployBuilder.MustRegisterResource(flowcraftmemory.Factory())
+	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparer{})
+	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitter{})
 
 	runtimeBuilder := runtimecore.NewBuilder(deployBuilder)
 	delegationFactory, err := delegationruntime.NewFactory(a.tools)
@@ -108,41 +97,4 @@ func providerFactories() map[string]inferenceconfig.Factory {
 		"bytedance": bytedance.Factory(),
 		"minimax":   minimax.Factory(),
 	}
-}
-
-// absolutizeDeployment rewrites resource sub-document paths to
-// absolute paths rooted at dir. The deployment schema itself is
-// untouched; this is application-side file resolution, which the docs
-// leave to the consumer. Workspace roots resolve against the host
-// builder's BaseDir instead of a document field.
-//
-// YAML is converted to JSON at the parsing boundary by sdk/config/utils;
-// the rewrite then happens on plain JSON values, and the returned bytes
-// are JSON, which deploy.Parse accepts natively.
-func absolutizeDeployment(raw []byte, dir string) ([]byte, error) {
-	jsonData, err := configutils.ToJSON(raw)
-	if err != nil {
-		return nil, err
-	}
-	var document map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(jsonData))
-	decoder.UseNumber()
-	if err := decoder.Decode(&document); err != nil {
-		return nil, err
-	}
-	resources, _ := document["resources"].(map[string]any)
-	for _, entry := range resources {
-		resource, ok := entry.(map[string]any)
-		if !ok {
-			continue
-		}
-		settings, ok := resource["settings"].(map[string]any)
-		if !ok {
-			continue
-		}
-		if file, ok := settings["file"].(string); ok && file != "" && !filepath.IsAbs(file) {
-			settings["file"] = filepath.Join(dir, file)
-		}
-	}
-	return json.Marshal(document)
 }

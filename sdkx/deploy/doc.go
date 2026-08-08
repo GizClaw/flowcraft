@@ -77,12 +77,13 @@
 //
 //	agents:
 //	  researcher:
-//	    file: ./agents/researcher.yaml
+//	    source: {file: ./agents/researcher.yaml}
 //
 // The map key remains the Agent ID; the referenced file starts with
 // version: v1 and then contains the AgentEntry fields directly (no ID).
-// Relative paths resolve against [WithBaseDir]. File and inline fields
-// cannot be mixed in one agent entry.
+// Relative paths resolve against the builder's [config.Loader] base
+// directory; build-time embedded recipes use source: {embed: name}.
+// Source and inline fields cannot be mixed in one agent entry.
 //
 // # Extension kinds are host-supplied
 //

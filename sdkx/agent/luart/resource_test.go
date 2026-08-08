@@ -12,7 +12,7 @@ import (
 )
 
 func TestDeployFactorySpec(t *testing.T) {
-	want := sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
+	want := sdkconfig.Spec{Kind: ResourceKind, Impl: "lua"}
 	if got := NewDeployFactory().Spec(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
 	}
@@ -150,14 +150,14 @@ func TestRuntimeCloseCancelsActiveExec(t *testing.T) {
 	}
 }
 
-func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
 	if raw == "" {
 		return nil
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return out
 }

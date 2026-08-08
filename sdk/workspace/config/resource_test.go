@@ -12,8 +12,8 @@ import (
 )
 
 func TestDeployFactorySpec(t *testing.T) {
-	got := config.NewDeployFactory(config.NewBuilder(config.Deps{})).Spec()
-	want := sdkconfig.ResourceSpec{
+	got := config.NewBuilder(config.Deps{}).Spec()
+	want := sdkconfig.Spec{
 		Kind:     config.ResourceKind,
 		Impl:     "yaml",
 		ItemType: "workspace.Workspace",
@@ -24,13 +24,12 @@ func TestDeployFactorySpec(t *testing.T) {
 }
 
 func TestDeployFactoryNewBuildsRegistryAndRejectsUnknownSettings(t *testing.T) {
-	factory := config.NewDeployFactory(config.NewBuilder(config.Deps{}))
+	factory := config.NewBuilder(config.Deps{})
 	value, err := factory.New(context.Background(), sdkconfig.Input{
-		Settings: settingsOpaque(t, `{
-			"inline": {
-				"version": "v1",
-				"workspaces": {"scratch": {"driver": "memory"}}
-			}
+		Resolve: resolveLiteral(t),
+		Settings: literalSettings(t, `{
+			"version": "v1",
+			"workspaces": {"scratch": {"driver": "memory"}}
 		}`),
 	})
 	if err != nil {
@@ -62,13 +61,12 @@ func TestDeployFactoryUsesHostBuilderDrivers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("RegisterFactory: %v", err)
 	}
-	factory := config.NewDeployFactory(builder)
+	factory := builder
 	value, err := factory.New(context.Background(), sdkconfig.Input{
-		Settings: settingsOpaque(t, `{
-			"inline": {
-				"version": "v1",
-				"workspaces": {"scratch": {"driver": "custom"}}
-			}
+		Resolve: resolveLiteral(t),
+		Settings: literalSettings(t, `{
+			"version": "v1",
+			"workspaces": {"scratch": {"driver": "custom"}}
 		}`),
 	})
 	if err != nil {
@@ -84,17 +82,33 @@ func TestDeployFactoryUsesHostBuilderDrivers(t *testing.T) {
 }
 
 func TestDeployFactoryRejectsNilBuilder(t *testing.T) {
-	factory := config.NewDeployFactory(nil)
+	factory := (*config.Builder)(nil)
 	if _, err := factory.New(context.Background(), sdkconfig.Input{}); err == nil {
 		t.Fatal("New accepted a nil builder")
 	}
 }
 
-func settingsOpaque(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsOpaque(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
-	var opaque sdkconfig.Opaque
+	var opaque json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return opaque
+}
+
+func literalSettings(t *testing.T, doc string) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal literal settings: %v", err)
+	}
+	return json.RawMessage(raw)
+}
+
+func resolveLiteral(t *testing.T) func(context.Context, sdkconfig.Source) ([]byte, error) {
+	t.Helper()
+	return func(ctx context.Context, src sdkconfig.Source) ([]byte, error) {
+		return sdkconfig.NewLoader().Load(ctx, src)
+	}
 }

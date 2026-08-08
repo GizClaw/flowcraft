@@ -12,7 +12,7 @@ deploy/runtime glue.
 | --------------------- | ------------------------------------------------------------------------- | ----------------- |
 | Contract              | `ContextProvider`, `TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope` | `sdk/memory`      |
 | Implementation        | canonical stores, projections, retrieval, worker, lifecycle maintenance   | implementation modules (e.g. `memory/`) |
-| Glue                  | `memory.Assembly` deploy resource, `memory.context` / `memory.turn` hooks, GoTemplate renderer | `sdk/memory/config` + `sdkx/memory` |
+| Glue                  | `memory.Assembly` deploy resource, `memory.context` / `memory.turn` hooks, GoTemplate renderer | `sdk/memory` + `sdkx/memory` |
 
 `sdk/memory` deliberately knows nothing about agents, hooks, or storage
 backends. It defines the capabilities a deployment binds to. Implementations
@@ -117,23 +117,14 @@ escapes recalled text as untrusted reference data. See
 
 ## Deployment
 
-`memory.Assembly` is a first-party deploy resource kind
-(`sdk/memory/config`). There is no generic `memory.New`: each implementation
-exposes its own factory and registers it under its `impl:` name, mirroring
-inference provider factories.
-
-The registration protocol is dependency-neutral. `sdkmemory.Input` carries
-only `Settings` and a generic `Deps` map; the implementation declares the
-resource deps it needs at registration and type-asserts them itself:
+`memory.Assembly` is a first-party deploy resource kind. There is no
+generic `memory.New`: each implementation exposes its own
+`config.Factory` and registers it under its `(kind, impl)` pair,
+mirroring the graph engine:
 
 ```go
 deployBuilder.MustRegisterResource(
-    memoryconfig.NewDeployFactory(
-        "my-memory",
-        myMemory.Factory(),
-        // deps declared by the implementation, e.g.:
-        sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-    ),
+    myMemory.Factory(), // implements config.Factory; Spec declares its deps
 )
 ```
 
@@ -151,7 +142,7 @@ agents:
   researcher:
     engine:
       kind: graph
-      settings: {graph: ./graphs/researcher.json}
+      settings: {graph: {file: ./graphs/researcher.json}}
     deps:
       inference: infer
     prepare:
@@ -290,5 +281,5 @@ same commit/recall/document round trip against your storage.
   `sdk/memory/context.go`, `sdk/memory/turn.go`, `sdk/memory/document.go`,
   `sdk/memory/scope.go`, `sdk/memory/render.go`.
 - Glue: `sdkx/memory/hook/hook.go`, `sdkx/memory/render/gotmpl.go`,
-  `sdk/memory/config/resource.go`.
+  `sdk/memory/assembly.go` and the implementation module.
 - Deploy wiring: [deploy.md](deploy.md) and [runtime.md](runtime.md).

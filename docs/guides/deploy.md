@@ -43,7 +43,7 @@ The application still owns:
 
 | Area        | What it names                              | Who owns its schema or construction              |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
-| `resources` | shared, long-lived objects                 | registered `ResourceFactory` per `(kind, impl)`  |
+| `resources` | shared, long-lived objects                 | registered `config.Factory` per `(kind, impl)`   |
 | `agents`    | named agent instances with engine + hooks  | engine factory + registered hook factories       |
 | `runtime`   | optional application-runtime configuration | preserved opaquely by deploy; strictly decoded by `sdkx/runtime` |
 
@@ -58,7 +58,7 @@ resources:
     }
 agents:
   greeter:
-    engine: { kind: graph, settings: { graph: ./graphs/greeter.json } }
+    engine: { kind: graph, settings: { graph: {file: ./graphs/greeter.json} } }
     deps: { inference: infer }
 ```
 
@@ -117,8 +117,9 @@ into a `Result`. The graph engine is the built-in; custom engines
 register through `agent.NewFactory` on the same registry the
 `Builder` was constructed with.
 
-Each engine publishes its own `EngineSpec`: a list of named deps with
-required types. The document's `agent.deps` is keyed by those names:
+Each engine kind implements `config.Factory` and publishes a
+`config.Spec`: a list of named deps with required types. The
+document's `agent.deps` is keyed by those names:
 
 ```yaml
 agents:
@@ -126,7 +127,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/research.json
+        graph: {file: ./graphs/research.json}
     deps:
       inference: infer # matched against the graph factory's DepSpec
       tools: kit
@@ -153,14 +154,14 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/dispatcher.json
+        graph: {file: ./graphs/dispatcher.json}
     deps:
       tools: tools
     referees:
       - type: delegation_handoff
 
   researcher: # Agent.ID is "researcher"
-    file: ./agents/researcher.agent.yaml
+    source: {file: ./agents/researcher.agent.yaml}
 ```
 
 ```yaml
@@ -173,7 +174,7 @@ tools: [delegate, delegation_status]
 engine:
   kind: graph
   settings:
-    graph: ./graphs/researcher.json
+    graph: {file: ./graphs/researcher.json}
 deps:
   tools: tools
 policy:
@@ -181,11 +182,11 @@ policy:
   artifact_channels: [report]
 ```
 
-`file` and inline fields are mutually exclusive. Agent files require
-their own `version: v1` and reject unknown fields. Relative agent file
-paths are resolved against `deploy.WithBaseDir(configDir)` on the
-`Builder`; paths inside engine settings are interpreted by that engine,
-so configure its base directory separately when required.
+`source` and inline fields are mutually exclusive. Agent files require
+their own `version: v1` and reject unknown fields. Relative paths are
+resolved against the builder's `config.Loader` base directory (or an
+embedded asset when the recipe uses `source: {embed: ...}`); paths
+inside engine settings are interpreted by that engine's loader.
 
 ### Lifecycle hooks
 
@@ -230,7 +231,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/greeter.json
+        graph: {file: ./graphs/greeter.json}
     deps:
       inference: infer
 ```
@@ -255,10 +256,8 @@ import (
 func main() {
     ctx := context.Background()
 
-    engines := agent.NewRegistry()
-    engines.MustRegister(graphconfig.NewFactory())
-
-    builder := deploy.NewBuilder(engines)
+    builder := deploy.NewBuilder()
+    builder.RegisterEngine(graphconfig.NewFactory())
     // Register the inference resource; pass your provider factory and
     // secret resolver maps here instead of nil.
     builder.MustRegisterResource(inferenceconfig.NewDeployFactory(nil, nil))
@@ -298,12 +297,11 @@ resources:
     settings: <impl-owned, strictly decoded>
 ```
 
-- `kind` + `impl` select a `ResourceFactory` registered on the
-  `Builder`.
-- `deps` matches the factory's `ResourceSpec.Deps` (names + required
-  types).
+- `kind` + `impl` select a `config.Factory` registered on the
+  `Builder` (engine kinds register under their kind with an empty impl).
+- `deps` matches the factory's `Spec.Deps` (names + required types).
 - `settings` is opaque to the loader; the factory must call
-  `deploy.DecodeSettings[T]` so unknown keys fail the build.
+  `sdkconfig.DecodeSettings[T]` so unknown keys fail the build.
 - `export: true` lets the application retrieve a value via
   `deploy.ResourceAs[T](result, "<name>")` even if nothing binds it.
 
@@ -323,13 +321,13 @@ explicit external consumer is dead configuration and fails the build.
 | `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
 | `scheduler.Server`        | `local`         | shared scheduler server         | `sdk/scheduler/config`         |
-| `memory.Assembly`         | app-registered (e.g. `flowcraft`) | memory assembly (`context` / `turn` / `document`) | `sdk/memory/config` + implementation module |
+| `memory.Assembly`         | app-registered (e.g. `flowcraft`) | memory assembly (`context` / `turn` / `document`) | `sdk/memory` + implementation module |
 
 Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
 distinct `impl` values.
 
-### Sub-documents: file vs inline
+### Sub-documents: literal, file, or embed
 
 The `workspace`, `sandbox`, `inference`, `tool`, and `memory` resources wrap
 their modules' own settings documents. Their `settings` accept **exactly
@@ -340,21 +338,25 @@ one** source:
 settings:
   file: ./inference.yaml
 
-# Inline form — keep the whole deployment in one file.
+# Content form — keep the whole deployment in one file, as plain YAML.
 settings:
-  inline:
-    version: v1
-    providers:
-      - id: openai
-        driver: openai
-        profiles:
-          - secrets:
-              api_key: { resolver: env, key: OPENAI_API_KEY }
+  version: v1
+  providers:
+    - id: openai
+      driver: openai
+      profiles:
+        - secrets:
+            api_key: { resolver: env, key: OPENAI_API_KEY }
 ```
 
-`file` and `inline` are mutually exclusive. A mistyped key that
-silently fell back to an empty inline document would surface much
-later as a missing ref — that's why exactly-one is enforced.
+A resource `settings` value is a [`config.Source`]: a string or a nested
+object is literal content (the module's own document, parsed with the
+module's own version field and strictness), `{file: ...}` references an
+external file, and `{embed: ...}` references a build-time embedded
+asset. An object containing a `file`/`embed` key is a reference and must
+use exactly those keys; any other object is the document itself. A
+mistyped reference key fails the build instead of silently falling back
+to an empty document.
 The nested document is parsed by the owning module and retains its
 own version field (where the module declares one — the flowcraft
 `memory.yaml` schema deliberately has none) and strictness rules; there is
@@ -362,24 +364,24 @@ no second schema to keep in sync.
 
 ### Custom resources
 
-A `ResourceFactory` is one Go type. Register it once on the `Builder`,
-and it plugs into the document as a `(kind, impl)` pair:
+A custom resource implements `config.Factory`. Register it once on the
+`Builder`, and it plugs into the document as a `(kind, impl)` pair:
 
 ```go
 // sdkconfig is github.com/GizClaw/flowcraft/sdk/config.
 type myFactory struct{ /* config, client, etc. */ }
 
-func (f *myFactory) Spec() sdkconfig.ResourceSpec {
-    return sdkconfig.ResourceSpec{
+func (f *myFactory) Spec() sdkconfig.Spec {
+    return sdkconfig.Spec{
         Kind: "my.Kind", Impl: "default",
-        Deps: []sdkconfig.ResourceDepSpec{
+        Deps: []sdkconfig.DepSpec{
             {Name: "inference", Type: "inference.Assembly", Required: true},
         },
     }
 }
 
 func (f *myFactory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
-    settings, err := deploy.DecodeSettings[mySettings](in.Settings)
+    settings, err := sdkconfig.DecodeSettings[mySettings](in.Settings)
     if err != nil { return nil, err }
     infer, _ := in.Dep("inference")
     return buildMyResource(ctx, settings, infer)
@@ -422,7 +424,7 @@ agents:
   time against the tool catalog).
 - `engine` is opaque to the loader; the registered engine factory
   decodes and validates `settings` strictly.
-- `deps` is keyed by the engine's `EngineSpec`; type mismatches fail
+- `deps` is keyed by the engine's `Spec.Deps`; type mismatches fail
   the build.
 - `policy` is a per-call struct, not a hook. The graph engine reads
   `max_revise`; custom engines can read whichever fields they
@@ -431,8 +433,9 @@ agents:
 ### Engines
 
 The graph engine (`sdk/graph/config`) is the built-in. Its
-settings accept a graph definition by file path, by explicit
-`{file: ...}`, or by `{inline: ...}`:
+`graph` setting is a [`config.Source`]: a plain string is literal
+definition content, `{file: ...}` references a definition file, and
+`{embed: ...}` references a build-time embedded asset:
 
 ```yaml
 engine:
@@ -468,8 +471,9 @@ The graph factory's dep contract:
 | `sandbox`        | `sandbox.Runner`      | scripts need command execution                   |
 | `script_runtime` | `agent.ScriptRuntime` | the graph contains a script node                 |
 
-Custom engines register through `agent.NewFactory` with their own
-`EngineSpec`, then appear in the document as `engine.kind: <name>`.
+Custom engines implement `config.Factory` (kind = engine name,
+empty impl) and register through `Builder.RegisterEngine`; they appear
+in the document as `engine.kind: <name>`.
 
 ## Lifecycle hooks in practice
 
@@ -547,7 +551,7 @@ resources:
     settings: {file: ./memory.yaml}
 agents:
   researcher:
-    engine: {kind: graph, settings: {graph: ./graphs/researcher.json}}
+    engine: {kind: graph, settings: {graph: {file: ./graphs/researcher.json}}}
     deps: {inference: infer}
     prepare:
       - type: memory.context
@@ -626,11 +630,11 @@ directory := delegation.NewDirectory()
 toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
 toolBuilder.RegisterBuiltins(tooldelegation.New(directory)...)
 
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-builder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
-builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+builder := deploy.NewBuilder(deploy.WithLoader(loader))
+builder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+builder.MustRegisterResource(toolBuilder)
 builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 builder.RegisterReferee(
@@ -669,11 +673,10 @@ resources:
     kind: tool.Assembly
     impl: yaml
     settings:
-      inline:
-        version: v1
-        middlewares:
-          - kind: recover
-          - kind: telemetry
+      version: v1
+      middlewares:
+        - kind: recover
+        - kind: telemetry
 
 agents:
   dispatcher:
@@ -684,14 +687,14 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/dispatcher.json
+        graph: {file: ./graphs/dispatcher.json}
     deps:
       tools: tools
     referees:
       - type: delegation_handoff
 
   researcher:
-    file: ./agents/researcher.agent.yaml
+    source: {file: ./agents/researcher.agent.yaml}
 ```
 
 After `Build`, bind and construct the runtime-facing pieces:
@@ -831,10 +834,10 @@ The host owns execution behavior; `Result` owns the bus lifecycle.
 ## Build and run
 
 ```go
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-builder := deploy.NewBuilder(engines)
+builder := deploy.NewBuilder(deploy.WithLoader(loader))
+builder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
 
 // Resources the document references.
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
@@ -904,13 +907,13 @@ already have:
 | You want to add        | Method                                                      | Document surface                      |
 | ---------------------- | ----------------------------------------------------------- | ------------------------------------- |
 | A new kind of resource | `MustRegisterResource`                                      | a new `kind` / `impl` pair            |
-| A new engine           | `agent.NewRegistry().MustRegister(...)`                     | a new `engine.kind`                   |
+| A new engine           | `RegisterEngine`                                           | a new `engine.kind`                   |
 | A new hook kind        | `RegisterPreparer` / `RegisterReferee` / `RegisterCommitter` / `RegisterObserver` | a new `prepare/referees/commit/observe.type` |
 | A host-owned value     | `RegisterSource`                                            | a new `source: <name>` dep ref        |
 
-The four hook factory types are distinct so a factory registered
-against the wrong stage is a compile error — there is no implicit
-"if it has these methods it works":
+Hook factories implement `config.Factory` with a `hook.*` spec kind, so a
+factory registered against the wrong stage is a compile error — there is no
+implicit "if it has these methods it works":
 
 ```go
 b.RegisterPreparer("seed", seedFactory)
@@ -992,7 +995,7 @@ warms up its catalog on first use).
 - Per-resource config schemas: `sdk/workspace/config/doc.go`,
   `sdk/sandbox/config/doc.go`, `sdk/inference/config/doc.go`,
   `sdk/tool/config/doc.go`, `sdk/event/config/resource.go`,
-  `sdk/memory/config/doc.go`.
+  `sdk/memory` and the implementation module.
 - Engine contract: `sdk/agent/doc.go`, `sdk/graph/config/factory.go`.
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.

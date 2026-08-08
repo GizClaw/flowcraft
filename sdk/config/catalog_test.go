@@ -11,14 +11,14 @@ import (
 
 type widget struct{ name string }
 
-func widgetFactory(name string) Factory[Input, *widget] {
+func widgetFactory(name string) Func[Input, *widget] {
 	return func(context.Context, Input) (*widget, error) {
 		return &widget{name: name}, nil
 	}
 }
 
 func TestCatalogRegisterAndBuild(t *testing.T) {
-	catalog := NewCatalog[Input, *widget]()
+	catalog := NewRegistry[Input, *widget]()
 	if err := catalog.Register("a", widgetFactory("a")); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestCatalogRegisterAndBuild(t *testing.T) {
 }
 
 func TestCatalogRegisterRejectsBadInput(t *testing.T) {
-	catalog := NewCatalog[Input, *widget]()
+	catalog := NewRegistry[Input, *widget]()
 	if err := catalog.Register("", widgetFactory("x")); !errdefs.IsValidation(err) {
 		t.Fatalf("empty name error = %v, want Validation", err)
 	}
@@ -54,14 +54,14 @@ func TestCatalogRegisterRejectsBadInput(t *testing.T) {
 }
 
 func TestCatalogBuildMissingFactory(t *testing.T) {
-	catalog := NewCatalog[Input, *widget]()
+	catalog := NewRegistry[Input, *widget]()
 	if _, err := catalog.Build(context.Background(), "missing", Input{}); !errdefs.IsNotFound(err) {
 		t.Fatalf("Build missing error = %v, want NotFound", err)
 	}
 }
 
 func TestCatalogBuildPreservesFactoryErrorClassification(t *testing.T) {
-	catalog := NewCatalog[Input, *widget]()
+	catalog := NewRegistry[Input, *widget]()
 	if err := catalog.Register("bad", func(context.Context, Input) (*widget, error) {
 		return nil, errdefs.NotAvailablef("backend offline")
 	}); err != nil {
@@ -81,7 +81,7 @@ func TestCatalogBuildPreservesFactoryErrorClassification(t *testing.T) {
 }
 
 func TestCatalogBuildRejectsNilOutput(t *testing.T) {
-	catalog := NewCatalog[Input, *widget]()
+	catalog := NewRegistry[Input, *widget]()
 	if err := catalog.Register("nil", func(context.Context, Input) (*widget, error) {
 		return nil, nil
 	}); err != nil {

@@ -31,17 +31,17 @@ type deployFactory struct{}
 
 // NewDeployFactory returns a deployment factory for JavaScript script
 // runtimes.
-func NewDeployFactory() sdkconfig.ResourceFactory {
+func NewDeployFactory() sdkconfig.Factory {
 	return deployFactory{}
 }
 
-func (deployFactory) Spec() sdkconfig.ResourceSpec {
-	return sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "js"}
+func (deployFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: ResourceKind, Impl: "js"}
 }
 
 func (deployFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
+	settings, err := sdkconfig.DecodeSettings[ResourceSettings](in.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"jsrt: decode resource settings: %w", err))
 	}

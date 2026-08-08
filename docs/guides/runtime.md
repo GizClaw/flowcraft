@@ -87,7 +87,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/assistant.json
+        graph: {file: ./graphs/assistant.json}
 
 runtime:
   event_bus: events
@@ -145,7 +145,7 @@ Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdk/scheduler/config`, `workspaceconfig` =
 `github.com/GizClaw/flowcraft/sdk/workspace/config`, `inferenceconfig` =
 `github.com/GizClaw/flowcraft/sdk/inference/config`, `memoryconfig` =
-`github.com/GizClaw/flowcraft/sdk/memory/config`, `flowcraftmemory` =
+`flowcraftmemory` =
 `github.com/GizClaw/flowcraft/memory/config`, `flowcraftruntime` =
 `github.com/GizClaw/flowcraft/memory/runtime`, `graphconfig` =
 `github.com/GizClaw/flowcraft/sdk/graph/config`, `sdkconfig` =
@@ -153,10 +153,10 @@ Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdk/message`.
 
 ```go
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
+deployBuilder := deploy.NewBuilder(deploy.WithLoader(loader))
+deployBuilder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
 deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 schedulerBuilder := schedulerconfig.NewBuilder()
@@ -170,12 +170,7 @@ deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
 deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
 deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
-deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
-    "flowcraft",
-    flowcraftmemory.Factory(),
-    sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-    sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
-))
+deployBuilder.MustRegisterResource(flowcraftmemory.Factory())
 
 tools := tool.NewRegistry()
 delegationFactory, err := delegationruntime.NewFactory(tools)

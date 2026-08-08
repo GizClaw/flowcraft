@@ -32,11 +32,11 @@ type integrationEngineFactory struct {
 	buses      chan event.Bus
 }
 
-func (f *integrationEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: integrationEngineKind}
+func (f *integrationEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: integrationEngineKind}
 }
 
-func (f *integrationEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+func (f *integrationEngineFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	return agent.EngineFunc(func(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
 		bus, ok := agent.EventBusFromHost(host)
 		if !ok || bus == nil {
@@ -101,8 +101,8 @@ type integrationResourceFactory struct {
 	log *lifecycleLog
 }
 
-func (f integrationResourceFactory) Spec() sdkconfig.ResourceSpec {
-	return sdkconfig.ResourceSpec{Kind: integrationResourceKind, Impl: "tracked"}
+func (f integrationResourceFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: integrationResourceKind, Impl: "tracked"}
 }
 
 func (f integrationResourceFactory) New(context.Context, sdkconfig.Input) (any, error) {
@@ -183,15 +183,13 @@ func TestRuntimePublicAPIEndToEnd(t *testing.T) {
 	delivered := make(chan struct{}, 2)
 	identities := make(chan agent.Identity, 1)
 	buses := make(chan event.Bus, 1)
-	engines := agent.NewRegistry()
-	engines.MustRegister(&integrationEngineFactory{
+	log := &lifecycleLog{}
+	deployment := deploy.NewBuilder()
+	deployment.MustRegisterEngine(&integrationEngineFactory{
 		identities: identities,
 		delivered:  delivered,
 		buses:      buses,
 	})
-
-	log := &lifecycleLog{}
-	deployment := deploy.NewBuilder(engines)
 	deployment.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 	deployment.MustRegisterResource(integrationResourceFactory{log: log})
 

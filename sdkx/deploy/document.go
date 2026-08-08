@@ -65,7 +65,7 @@ type ResourceEntry struct {
 	// bindings against ResourceSpec.Deps before calling the factory.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // AgentEntry is one agent's declarative assembly recipe. The map key
@@ -73,7 +73,10 @@ type ResourceEntry struct {
 // to load the recipe during [Builder.Build]; File and the inline fields
 // are mutually exclusive.
 type AgentEntry struct {
-	File string `json:"file,omitempty"`
+	// Source is the recipe location: {"file": "./x.yaml"} or
+	// {"embed": "name"}. Omitted, the entry is inline (the fields
+	// below). A recipe file never references another recipe file.
+	Source *sdkconfig.Ref `json:"source,omitempty"`
 
 	// Card is the declarative subset of agent.AgentCard.
 	Card struct {
@@ -120,7 +123,7 @@ type agentEntrySource uint8
 const (
 	agentEntrySourceDirect agentEntrySource = iota
 	agentEntrySourceInline
-	agentEntrySourceFile
+	agentEntrySourceRef
 )
 
 type agentEntryWire AgentEntry
@@ -134,9 +137,9 @@ func (a *AgentEntry) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return err
 	}
-	hasFile := false
-	if raw, ok := probe["file"]; ok && string(raw) != "null" {
-		hasFile = true
+	hasSource := false
+	if raw, ok := probe["source"]; ok && string(raw) != "null" {
+		hasSource = true
 	}
 	hasInline := false
 	for _, key := range []string{
@@ -156,8 +159,8 @@ func (a *AgentEntry) UnmarshalJSON(data []byte) error {
 	*a = AgentEntry(wire)
 	a.inlineDeclared = hasInline
 	switch {
-	case hasFile:
-		a.source = agentEntrySourceFile
+	case hasSource:
+		a.source = agentEntrySourceRef
 	case hasInline:
 		a.source = agentEntrySourceInline
 	}
@@ -168,8 +171,13 @@ func (a *AgentEntry) UnmarshalJSON(data []byte) error {
 // settings as JSON-decoded data, opaque to the loader — the engine
 // factory decodes and strictly validates it inside New.
 type EngineEntry struct {
-	Kind     string         `json:"kind"`
-	Settings map[string]any `json:"settings,omitempty"`
+	Kind string `json:"kind"`
+
+	// Settings is the engine-kind-owned subtree as raw JSON. It is
+	// opaque to the loader; the engine factory decodes and strictly
+	// validates it inside New (the graph engine's settings carry the
+	// definition Source, script runtime name, and build knobs).
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // DepRef binds one named dependency to a value. Exactly one of
@@ -247,7 +255,7 @@ type PreparerEntry struct {
 	// built.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // ObserverEntry is one read-only lifecycle observer.
@@ -298,7 +306,7 @@ func (d Document) Validate() error {
 		if err := validateAgentSource(a); err != nil {
 			return errdefs.Validation(fmt.Errorf("%s: %w", where, err))
 		}
-		if a.usesFile() {
+		if a.usesSource() {
 			continue
 		}
 		if err := validateAgentEntry(a, where); err != nil {
@@ -308,16 +316,20 @@ func (d Document) Validate() error {
 	return nil
 }
 
-func (a AgentEntry) usesFile() bool {
-	return a.source == agentEntrySourceFile || a.File != ""
+func (a AgentEntry) usesSource() bool {
+	return a.source == agentEntrySourceRef || a.Source != nil
 }
 
 func validateAgentSource(a AgentEntry) error {
-	if (a.source == agentEntrySourceFile || a.File != "") && strings.TrimSpace(a.File) == "" {
-		return fmt.Errorf("file is required")
+	if a.Source != nil {
+		if _, ok := a.Source.File(); !ok {
+			if _, ok := a.Source.Embed(); !ok {
+				return fmt.Errorf("source is required")
+			}
+		}
 	}
-	if a.usesFile() && (a.inlineDeclared || hasInlineAgentValues(a)) {
-		return fmt.Errorf("file and inline agent fields are mutually exclusive")
+	if a.usesSource() && (a.inlineDeclared || hasInlineAgentValues(a)) {
+		return fmt.Errorf("source and inline agent fields are mutually exclusive")
 	}
 	return nil
 }

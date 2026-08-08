@@ -30,8 +30,8 @@ type localSettings struct {
 }
 
 func (b *Builder) buildLocal(_ context.Context, in sdkconfig.Input) (Resource, error) {
-	var value localSettings
-	if err := in.Settings.Decode(&value); err != nil {
+	value, err := sdkconfig.DecodeSettings[localSettings](in.Settings)
+	if err != nil {
 		return Resource{}, errdefs.Validationf(
 			"decode %s settings: %v", DriverLocal, err)
 	}
@@ -53,8 +53,8 @@ func (b *Builder) buildLocal(_ context.Context, in sdkconfig.Input) (Resource, e
 type memorySettings struct{}
 
 func buildMemory(_ context.Context, in sdkconfig.Input) (Resource, error) {
-	var value memorySettings
-	if err := in.Settings.Decode(&value); err != nil {
+	_, err := sdkconfig.DecodeSettings[memorySettings](in.Settings)
+	if err != nil {
 		return Resource{}, errdefs.Validationf(
 			"decode %s settings: %v", DriverMemory, err)
 	}

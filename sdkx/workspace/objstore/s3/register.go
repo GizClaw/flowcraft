@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/sdk/config"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
 	"github.com/GizClaw/flowcraft/sdkx/workspace/objstore"
@@ -25,10 +25,10 @@ type settings struct {
 func Register(b *workspaceconfig.Builder, client Client) error {
 	return b.RegisterFactory(BackendName, func(
 		_ context.Context,
-		in config.Input,
+		in sdkconfig.Input,
 	) (workspaceconfig.Resource, error) {
-		var s settings
-		if err := in.Settings.Decode(&s); err != nil {
+		s, err := sdkconfig.DecodeSettings[settings](in.Settings)
+		if err != nil {
 			return workspaceconfig.Resource{}, errdefs.Validationf(
 				"objstore s3: decode settings: %v", err)
 		}

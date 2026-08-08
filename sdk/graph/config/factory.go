@@ -7,17 +7,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
@@ -40,20 +37,18 @@ const (
 	DepSandbox       = "sandbox"
 	DepScriptRuntime = "script_runtime"
 
-	// MaxDefinitionBytes bounds a graph definition loaded from a file.
-	MaxDefinitionBytes = 1 << 20
-
 	defaultScriptRuntimeName = "js"
 )
-
-// FileLoader loads one graph definition. Implementations must honor ctx.
-type FileLoader func(ctx context.Context, path string) ([]byte, error)
 
 // Option configures a Factory.
 type Option func(*Factory)
 
-// WithFileLoader replaces the default bounded OS file loader.
-func WithFileLoader(loader FileLoader) Option {
+// WithLoader supplies the shared build-time reference loader used to
+// resolve the graph definition and node-config refs. It defaults to a
+// [config.Loader] with baseDir "." and the standard 1 MiB bound; hosts
+// that need embedded assets pass config.NewLoader(config.WithBaseDir(dir),
+// config.WithEmbed(assets)).
+func WithLoader(loader *sdkconfig.Loader) Option {
 	return func(f *Factory) {
 		if loader != nil {
 			f.loader = loader
@@ -61,63 +56,14 @@ func WithFileLoader(loader FileLoader) Option {
 	}
 }
 
-// WithFS loads files from fsys. Paths are slash-normalized and must remain
-// relative to the filesystem root.
-func WithFS(fsys fs.FS) Option {
-	return func(f *Factory) {
-		if fsys == nil {
-			return
-		}
-		f.loader = func(ctx context.Context, path string) ([]byte, error) {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			name := filepath.ToSlash(path)
-			name = strings.TrimPrefix(name, "./")
-			if !fs.ValidPath(name) {
-				return nil, &fs.PathError{Op: "read", Path: path, Err: fs.ErrInvalid}
-			}
-			file, err := fsys.Open(name)
-			if err != nil {
-				return nil, err
-			}
-			defer func() { _ = file.Close() }()
-			if err := requireRegularFile(file, path); err != nil {
-				return nil, err
-			}
-			data, err := readBounded(file)
-			if err != nil {
-				return nil, err
-			}
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			return data, nil
-		}
-	}
-}
-
-// WithBaseDir sets the base directory used to resolve relative graph files.
-func WithBaseDir(dir string) Option {
-	return func(f *Factory) {
-		if dir != "" {
-			f.baseDir = filepath.Clean(dir)
-		}
-	}
-}
-
 // Factory builds independent sdk/graph engines.
 type Factory struct {
-	loader  FileLoader
-	baseDir string
+	loader *sdkconfig.Loader
 }
 
 // NewFactory returns a graph agent factory.
 func NewFactory(options ...Option) *Factory {
-	f := &Factory{
-		loader:  loadOSFile,
-		baseDir: ".",
-	}
+	f := &Factory{loader: sdkconfig.NewLoader()}
 	for _, option := range options {
 		if option != nil {
 			option(f)
@@ -126,16 +72,21 @@ func NewFactory(options ...Option) *Factory {
 	return f
 }
 
-// Spec implements agent.Factory.
-func (*Factory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{
+// resolveLoader returns the factory's loader, or a default one when the
+// host did not supply one.
+func (f *Factory) resolveLoader() *sdkconfig.Loader {
+	if f.loader != nil {
+		return f.loader
+	}
+	return sdkconfig.NewLoader()
+}
+
+// Spec implements config.Factory. Impl is empty: the graph kind has a
+// single implementation.
+func (*Factory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{
 		Kind: Kind,
-		Capabilities: agent.Capabilities{
-			SupportsResume:  true,
-			EmitsCheckpoint: true,
-			EmitsUserPrompt: true,
-		},
-		Deps: []agent.DepSpec{
+		Deps: []sdkconfig.DepSpec{
 			{Name: DepInference, Type: "inference.Assembly"},
 			{Name: DepTools, Type: toolconfig.ResourceKind},
 			{Name: DepWorkspace, Type: "workspace.Workspace"},
@@ -145,28 +96,24 @@ func (*Factory) Spec() agent.EngineSpec {
 	}
 }
 
+// Capabilities reports the graph engine kind's claimed optional
+// features. It is not part of the config protocol — assembly engines
+// that need capability probing assert this interface.
+func (*Factory) Capabilities() agent.Capabilities {
+	return agent.Capabilities{
+		SupportsResume:  true,
+		EmitsCheckpoint: true,
+		EmitsUserPrompt: true,
+	}
+}
+
 type settings struct {
-	Graph             *graphSource  `json:"graph"`
-	ScriptRuntimeName string        `json:"script_runtime_name,omitempty"`
-	Build             buildSettings `json:"build,omitempty"`
-}
-
-type graphSource struct {
-	File   string          `json:"file,omitempty"`
-	Inline json.RawMessage `json:"inline,omitempty"`
-}
-
-func (s *graphSource) UnmarshalJSON(data []byte) error {
-	if len(bytes.TrimSpace(data)) > 0 && bytes.TrimSpace(data)[0] == '"' {
-		return json.Unmarshal(data, &s.File)
-	}
-	type graphSourceWire graphSource
-	var wire graphSourceWire
-	if err := decodeStrictJSON(data, &wire); err != nil {
-		return err
-	}
-	*s = graphSource(wire)
-	return nil
+	// Graph is the graph definition: literal content, {"file": ...}, or
+	// {"embed": ...}. A plain string is literal content — the string
+	// shorthand that previously meant "file path" is gone.
+	Graph             *sdkconfig.Source `json:"graph"`
+	ScriptRuntimeName string            `json:"script_runtime_name,omitempty"`
+	Build             buildSettings     `json:"build,omitempty"`
 }
 
 type buildSettings struct {
@@ -211,12 +158,14 @@ func (d dependencies) validate() error {
 	return nil
 }
 
-// New implements agent.Factory.
-func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, error) {
+// New implements config.Factory: the engine settings subtree is
+// decoded strictly and the graph definition is resolved through the
+// shared loader; bound dependencies arrive in Input.Deps.
+func (f *Factory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
 	if f == nil {
 		return nil, errdefs.Validationf("graph agent factory is nil")
 	}
-	parsed, err := decodeSettings(cfg.Settings)
+	parsed, err := decodeSettings(in.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +173,7 @@ func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, erro
 	if err != nil {
 		return nil, err
 	}
-	deps, err := decodeDependencies(cfg.Deps)
+	deps, err := decodeDependencies(in.Deps)
 	if err != nil {
 		return nil, err
 	}
@@ -284,13 +233,9 @@ func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, erro
 	return coregraph.Build(definition, registry, options...)
 }
 
-func decodeSettings(raw map[string]any) (settings, error) {
+func decodeSettings(raw json.RawMessage) (settings, error) {
 	var out settings
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return out, errdefs.Validation(fmt.Errorf("graph agent settings: encode: %w", err))
-	}
-	if err := decodeStrictJSON(data, &out); err != nil {
+	if err := decodeStrictJSON(raw, &out); err != nil {
 		return out, errdefs.Validation(fmt.Errorf("graph agent settings: %w", err))
 	}
 	if out.Graph == nil {
@@ -299,45 +244,10 @@ func decodeSettings(raw map[string]any) (settings, error) {
 	return out, nil
 }
 
-func (f *Factory) definition(ctx context.Context, source *graphSource) (*coregraph.GraphDefinition, error) {
-	hasFile := source.File != ""
-	hasInline := len(source.Inline) != 0 && !bytes.Equal(bytes.TrimSpace(source.Inline), []byte("null"))
-	if hasFile == hasInline {
-		return nil, errdefs.Validationf("graph agent settings: exactly one of graph.file or graph.inline is required")
-	}
-	var data []byte
-	if hasFile {
-		path, err := f.resolvePath(source.File)
-		if err != nil {
-			return nil, err
-		}
-		loader := f.loader
-		if loader == nil {
-			loader = loadOSFile
-		}
-		data, err = loader(ctx, path)
-		if err != nil {
-			switch {
-			case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-				return nil, errdefs.FromContext(err)
-			case errdefs.HasClassification(err):
-				return nil, fmt.Errorf("graph agent: read definition %q: %w", path, err)
-			case errors.Is(err, fs.ErrNotExist):
-				return nil, errdefs.NotFound(fmt.Errorf("graph agent: read definition %q: %w", path, err))
-			case errors.Is(err, fs.ErrInvalid):
-				return nil, errdefs.Validation(fmt.Errorf("graph agent: read definition %q: %w", path, err))
-			case errors.Is(err, fs.ErrPermission):
-				return nil, errdefs.Forbidden(fmt.Errorf("graph agent: read definition %q: %w", path, err))
-			default:
-				return nil, errdefs.Internal(fmt.Errorf("graph agent: read definition %q: %w", path, err))
-			}
-		}
-	} else {
-		data = source.Inline
-	}
-	if len(data) > MaxDefinitionBytes {
-		return nil, errdefs.Validationf(
-			"graph agent: definition exceeds %d bytes", MaxDefinitionBytes)
+func (f *Factory) definition(ctx context.Context, source *sdkconfig.Source) (*coregraph.GraphDefinition, error) {
+	data, err := f.resolveLoader().Load(ctx, *source)
+	if err != nil {
+		return nil, err
 	}
 	definition, err := utils.Decode[coregraph.GraphDefinition](data)
 	if err != nil {
@@ -366,11 +276,13 @@ func configFileFields(nodeType string) []string {
 	}
 }
 
-// materializeConfigFileRefs resolves structured file references in
-// node configs (e.g. "source": {"file": "scripts/run.js"}) into inline
-// values using the factory's loader and base directory. Plain string
-// values are left untouched; malformed reference objects are rejected
-// so typos surface at build time.
+// materializeConfigFileRefs resolves structured references in node
+// configs (e.g. "source": {"file": "scripts/run.js"} or {"embed": ...})
+// into literal values using the factory's loader. A plain string value
+// is literal content and is left untouched; a structured object is
+// decoded as [config.Source] — so a typo such as {"fiel": ...} or the
+// legacy {"inline": ...} form fails at build time. The kernel stays
+// filesystem-free and only ever sees fully materialized node configs.
 func (f *Factory) materializeConfigFileRefs(ctx context.Context, definition *coregraph.GraphDefinition) error {
 	for index := range definition.Nodes {
 		node := &definition.Nodes[index]
@@ -388,50 +300,15 @@ func (f *Factory) materializeConfigFileRefs(ctx context.Context, definition *cor
 			if !ok || len(raw) == 0 || raw[0] != '{' {
 				continue
 			}
-			var object map[string]json.RawMessage
-			if err := json.Unmarshal(raw, &object); err != nil {
+			var src sdkconfig.Source
+			if err := json.Unmarshal(raw, &src); err != nil {
 				return errdefs.Validationf(
 					"graph agent: node %q config.%s: %v", node.ID, field, err)
 			}
-			if len(object) != 1 || object["file"] == nil {
-				return errdefs.Validationf(
-					"graph agent: node %q config.%s: expected a string or {\"file\": \"...\"}, got %s",
-					node.ID, field, raw)
-			}
-			var ref struct {
-				File string `json:"file"`
-			}
-			if err := json.Unmarshal(raw, &ref); err != nil {
-				return errdefs.Validationf(
-					"graph agent: node %q config.%s: %v", node.ID, field, err)
-			}
-			ref.File = strings.TrimSpace(ref.File)
-			if ref.File == "" {
-				return errdefs.Validationf(
-					"graph agent: node %q config.%s.file must be non-empty", node.ID, field)
-			}
-			path, err := f.resolvePath(ref.File)
+			data, err := f.resolveLoader().Load(ctx, src)
 			if err != nil {
-				return err
-			}
-			loader := f.loader
-			if loader == nil {
-				loader = loadOSFile
-			}
-			data, err := loader(ctx, path)
-			if err != nil {
-				switch {
-				case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-					return errdefs.FromContext(err)
-				case errdefs.HasClassification(err):
-					return err
-				case errors.Is(err, fs.ErrNotExist):
-					return errdefs.NotFound(fmt.Errorf(
-						"graph agent: node %q config.%s file %q: %w", node.ID, field, ref.File, err))
-				default:
-					return errdefs.Internal(fmt.Errorf(
-						"graph agent: node %q config.%s file %q: %w", node.ID, field, ref.File, err))
-				}
+				return fmt.Errorf(
+					"graph agent: node %q config.%s: %w", node.ID, field, err)
 			}
 			content, err := json.Marshal(string(data))
 			if err != nil {
@@ -449,54 +326,6 @@ func (f *Factory) materializeConfigFileRefs(ctx context.Context, definition *cor
 			}
 			node.Config = merged
 		}
-	}
-	return nil
-}
-
-func (f *Factory) resolvePath(name string) (string, error) {
-	clean := filepath.Clean(name)
-	if filepath.IsAbs(clean) {
-		return clean, nil
-	}
-	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", errdefs.Validationf("graph agent: graph.file %q escapes base directory", name)
-	}
-	return filepath.Join(f.baseDir, clean), nil
-}
-
-func loadOSFile(ctx context.Context, path string) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	if err := requireRegularFile(file, path); err != nil {
-		return nil, err
-	}
-	data, err := readBounded(file)
-	if err != nil {
-		return nil, err
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return data, nil
-}
-
-func readBounded(reader io.Reader) ([]byte, error) {
-	return io.ReadAll(io.LimitReader(reader, MaxDefinitionBytes+1))
-}
-
-func requireRegularFile(file fs.File, path string) error {
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return &fs.PathError{Op: "read", Path: path, Err: fs.ErrInvalid}
 	}
 	return nil
 }
@@ -781,4 +610,4 @@ func parseDuration(field, value string) (time.Duration, error) {
 	return duration, nil
 }
 
-var _ agent.Factory = (*Factory)(nil)
+var _ sdkconfig.Factory = (*Factory)(nil)

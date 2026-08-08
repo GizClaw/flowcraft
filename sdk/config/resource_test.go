@@ -7,44 +7,43 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-func TestResourceSpec_Validate(t *testing.T) {
+func TestSpec_Validate(t *testing.T) {
 	tests := []struct {
 		name string
-		spec ResourceSpec
+		spec Spec
 		want string
 	}{
 		{
 			name: "valid",
-			spec: ResourceSpec{
+			spec: Spec{
 				Kind: "k", Impl: "i",
-				Deps: []ResourceDepSpec{{Name: "d", Type: "T"}},
+				Deps: []DepSpec{{Name: "d", Type: "T"}},
 			},
 		},
 		{
 			name: "empty kind",
-			spec: ResourceSpec{Impl: "i"},
+			spec: Spec{Impl: "i"},
 			want: "kind is empty",
 		},
 		{
-			name: "empty impl",
-			spec: ResourceSpec{Kind: "k"},
-			want: "impl is empty",
+			name: "empty impl allowed",
+			spec: Spec{Kind: "k"},
 		},
 		{
 			name: "dep without name",
-			spec: ResourceSpec{Kind: "k", Impl: "i", Deps: []ResourceDepSpec{{Type: "T"}}},
+			spec: Spec{Kind: "k", Impl: "i", Deps: []DepSpec{{Type: "T"}}},
 			want: "name is empty",
 		},
 		{
 			name: "dep without type",
-			spec: ResourceSpec{Kind: "k", Impl: "i", Deps: []ResourceDepSpec{{Name: "d"}}},
+			spec: Spec{Kind: "k", Impl: "i", Deps: []DepSpec{{Name: "d"}}},
 			want: "type is empty",
 		},
 		{
 			name: "duplicate dep",
-			spec: ResourceSpec{
+			spec: Spec{
 				Kind: "k", Impl: "i",
-				Deps: []ResourceDepSpec{
+				Deps: []DepSpec{
 					{Name: "d", Type: "T"},
 					{Name: "d", Type: "T"},
 				},
@@ -71,10 +70,10 @@ func TestResourceSpec_Validate(t *testing.T) {
 	}
 }
 
-func TestResourceSpec_Clone(t *testing.T) {
-	spec := ResourceSpec{
+func TestSpec_Clone(t *testing.T) {
+	spec := Spec{
 		Kind: "k", Impl: "i",
-		Deps: []ResourceDepSpec{{Name: "d", Type: "T"}},
+		Deps: []DepSpec{{Name: "d", Type: "T"}},
 	}
 	clone := spec.Clone()
 	clone.Deps[0].Name = "changed"
@@ -97,14 +96,14 @@ func TestDepAccessors(t *testing.T) {
 	}
 }
 
-func TestResourceFactoryInterface(t *testing.T) {
-	var _ ResourceFactory = staticFactory{}
+func TestFactoryInterface(t *testing.T) {
+	var _ Factory = staticFactory{}
 }
 
 type staticFactory struct{}
 
-func (staticFactory) Spec() ResourceSpec {
-	return ResourceSpec{Kind: "k", Impl: "i"}
+func (staticFactory) Spec() Spec {
+	return Spec{Kind: "k", Impl: "i"}
 }
 
 func (staticFactory) New(context.Context, Input) (any, error) {

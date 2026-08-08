@@ -11,9 +11,8 @@ import (
 )
 
 func TestGraphFactoryJavaScriptDeployment(t *testing.T) {
-	engines := agent.NewRegistry()
-	engines.MustRegister(graphconfig.NewFactory())
-	builder := deploy.NewBuilder(engines)
+	builder := deploy.NewBuilder()
+	builder.MustRegisterEngine(graphconfig.NewFactory())
 	builder.MustRegisterResource(jsrt.NewDeployFactory())
 
 	document, err := deploy.Parse([]byte(`
@@ -29,17 +28,16 @@ agents:
     engine:
       kind: graph
       settings:
-        graph:
-          inline:
-            name: deployed-script
-            entry: run
-            nodes:
-              - id: run
-                type: script
-                config:
-                  runtime: js
-                  source: 'board.setVar("executed", true); signal.done();'
-            edges: []
+        graph: |
+          name: deployed-script
+          entry: run
+          nodes:
+            - id: run
+              type: script
+              config:
+                runtime: js
+                source: 'board.setVar("executed", true); signal.done();'
+          edges: []
     deps:
       script_runtime: js
 `))

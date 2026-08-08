@@ -219,8 +219,8 @@ func TestCustomFactoryAndImmutableRegistry(t *testing.T) {
 		type customSettings struct {
 			Root string `json:"root"`
 		}
-		var s customSettings
-		if err := in.Settings.Decode(&s); err != nil {
+		s, err := sdkconfig.DecodeSettings[customSettings](in.Settings)
+		if err != nil {
 			return config.Resource{}, err
 		}
 		return config.Resource{Workspace: custom, Root: s.Root}, nil

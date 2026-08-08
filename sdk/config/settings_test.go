@@ -2,8 +2,6 @@ package config
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -70,50 +68,5 @@ func TestOpaque_Decode(t *testing.T) {
 	var zero testSettings
 	if err := nilOpaque.Decode(&zero); err != nil || zero.Window != 0 {
 		t.Fatalf("nil Opaque.Decode = (%+v, %v), want zero value", zero, err)
-	}
-}
-
-func TestSubDocument_Inline(t *testing.T) {
-	var o Opaque
-	if err := json.Unmarshal([]byte(`{"version":"v1","items":["a"]}`), &o); err != nil {
-		t.Fatalf("unmarshal opaque: %v", err)
-	}
-	data, err := (SubDocument{Inline: &o}).Bytes()
-	if err != nil {
-		t.Fatalf("SubDocument.Bytes error: %v", err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		t.Fatalf("inline document does not parse: %v", err)
-	}
-	if decoded["version"] != "v1" {
-		t.Fatalf("inline document = %v, want version v1", decoded)
-	}
-}
-
-func TestSubDocument_File(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "sub.json")
-	if err := os.WriteFile(path, []byte(`{"version":"v1"}`), 0o600); err != nil {
-		t.Fatalf("write subdocument: %v", err)
-	}
-	data, err := (SubDocument{File: path}).Bytes()
-	if err != nil {
-		t.Fatalf("SubDocument.Bytes error: %v", err)
-	}
-	if string(data) != `{"version":"v1"}` {
-		t.Fatalf("SubDocument.Bytes = %q, want file contents", data)
-	}
-}
-
-func TestSubDocument_ExactlyOneForm(t *testing.T) {
-	if _, err := (SubDocument{}).Bytes(); err == nil {
-		t.Fatal("empty SubDocument accepted")
-	}
-	var o Opaque
-	if err := json.Unmarshal([]byte(`{"a":1}`), &o); err != nil {
-		t.Fatalf("unmarshal opaque: %v", err)
-	}
-	if _, err := (SubDocument{File: "x.json", Inline: &o}).Bytes(); err == nil {
-		t.Fatal("SubDocument with both file and inline accepted")
 	}
 }

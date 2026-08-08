@@ -1,12 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
 
-	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -22,9 +22,9 @@ type Document struct {
 
 // WorkspaceEntry selects a driver and carries its driver-owned settings.
 type WorkspaceEntry struct {
-	Driver   string            `json:"driver"`
-	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
-	Scope    *Scope            `json:"scope,omitempty"`
+	Driver   string          `json:"driver"`
+	Settings json.RawMessage `json:"settings,omitempty"`
+	Scope    *Scope          `json:"scope,omitempty"`
 }
 
 // Scope configures the policy applied by workspace.NewScopedWorkspace.

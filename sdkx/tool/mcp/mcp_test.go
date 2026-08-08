@@ -645,17 +645,17 @@ func TestClose_Idempotent(t *testing.T) {
 
 // specNode parses a spec body into the opaque settings subtree a config
 // document would hand a source factory.
-func specNode(t *testing.T, body string) *sdkconfig.Opaque {
+func specNode(t *testing.T, body string) json.RawMessage {
 	t.Helper()
 	jsonData, err := utils.ToJSON([]byte(body))
 	if err != nil {
 		t.Fatalf("specNode(%q): %v", body, err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal(jsonData, &out); err != nil {
 		t.Fatalf("specNode(%q): %v", body, err)
 	}
-	return &opaque
+	return out
 }
 
 // TestConfig_ParseSpecAcceptsBothTransports pins the declarative shape

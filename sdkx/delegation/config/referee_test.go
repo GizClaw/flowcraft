@@ -17,17 +17,17 @@ import (
 
 func TestHandoffRefereeFactorySettings(t *testing.T) {
 	factory := delegationconfig.NewHandoffRefereeFactory(&mutableDirectory{})
-	for name, settings := range map[string]*sdkconfig.Opaque{
+	for name, settings := range map[string]json.RawMessage{
 		"omitted": nil,
 		"empty":   settingsNode(t, "{}"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := factory(context.Background(), sdkconfig.Input{Settings: settings}); err != nil {
+			if _, err := factory.New(context.Background(), sdkconfig.Input{Settings: settings}); err != nil {
 				t.Fatalf("factory: %v", err)
 			}
 		})
 	}
-	if _, err := factory(context.Background(), sdkconfig.Input{
+	if _, err := factory.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, "target: billing"),
 	}); !errdefs.IsValidation(err) {
 		t.Fatalf("unknown setting error = %v, want Validation", err)
@@ -36,10 +36,11 @@ func TestHandoffRefereeFactorySettings(t *testing.T) {
 
 func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
 	directory := &mutableDirectory{}
-	referee, err := delegationconfig.NewHandoffRefereeFactory(directory)(
+	refereeValue, err := delegationconfig.NewHandoffRefereeFactory(directory).New(
 		context.Background(),
 		sdkconfig.Input{},
 	)
+	referee := refereeValue.(agent.Referee)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,11 +75,10 @@ func TestHandoffRefereeFactoryCapturesUnboundDirectory(t *testing.T) {
 }
 
 func TestHandoffRefereeCanBeEnabledFromAgentYAML(t *testing.T) {
-	registry := agent.NewRegistry()
-	if err := registry.Register(fakeEngineFactory{}); err != nil {
+	builder := deploy.NewBuilder()
+	if err := builder.RegisterEngine(fakeEngineFactory{}); err != nil {
 		t.Fatal(err)
 	}
-	builder := deploy.NewBuilder(registry)
 	builder.RegisterReferee(
 		delegationconfig.RefereeType,
 		delegationconfig.NewHandoffRefereeFactory(&mutableDirectory{}),
@@ -122,11 +122,11 @@ func (d *mutableDirectory) Get(_ context.Context, id string) (sdkdelegation.Targ
 
 type fakeEngineFactory struct{}
 
-func (fakeEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: "fake"}
+func (fakeEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: "fake"}
 }
 
-func (fakeEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+func (fakeEngineFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	return agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 		return board, nil
 	}), nil
@@ -159,15 +159,15 @@ func successfulToolResult(callID string) message.Message {
 	}
 }
 
-func settingsNode(t *testing.T, input string) *sdkconfig.Opaque {
+func settingsNode(t *testing.T, input string) json.RawMessage {
 	t.Helper()
 	jsonData, err := utils.ToJSON([]byte(input))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal(jsonData, &out); err != nil {
 		t.Fatal(err)
 	}
-	return &opaque
+	return out
 }

@@ -466,13 +466,13 @@ func builtinSource(t *testing.T, names ...string) config.SourceEntry {
 // specJSON builds an opaque spec subtree the way Parse would, so a test
 // constructing a Document by hand exercises the same factory decode
 // path a real document does.
-func specJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func specJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		t.Fatalf("specJSON(%q): %v", raw, err)
 	}
-	return &opaque
+	return out
 }
 
 func TestParse_Sources(t *testing.T) {

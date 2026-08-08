@@ -51,17 +51,17 @@ type memoryDeployFactory struct {
 // Options inject application-owned behavior that the document cannot
 // represent, such as a validator. Declarative settings and the optional
 // event_bus dependency are applied after these options.
-func NewMemoryDeployFactory(options ...kanban.Option) sdkconfig.ResourceFactory {
+func NewMemoryDeployFactory(options ...kanban.Option) sdkconfig.Factory {
 	return memoryDeployFactory{
 		options: slices.Clone(options),
 	}
 }
 
-func (memoryDeployFactory) Spec() sdkconfig.ResourceSpec {
-	return sdkconfig.ResourceSpec{
+func (memoryDeployFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{
 		Kind: ResourceKind,
 		Impl: "kanban-memory",
-		Deps: []sdkconfig.ResourceDepSpec{{
+		Deps: []sdkconfig.DepSpec{{
 			Name: EventBusDep,
 			Type: sdkeventconfig.ResourceKind,
 		}},
@@ -69,8 +69,8 @@ func (memoryDeployFactory) Spec() sdkconfig.ResourceSpec {
 }
 
 func (f memoryDeployFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
-	var settings MemorySettings
-	if err := in.Settings.Decode(&settings); err != nil {
+	settings, err := sdkconfig.DecodeSettings[MemorySettings](in.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"delegation kanban config: decode memory resource settings: %w", err))
 	}
@@ -137,4 +137,4 @@ func isNilBus(bus event.Bus) bool {
 	}
 }
 
-var _ sdkconfig.ResourceFactory = memoryDeployFactory{}
+var _ sdkconfig.Factory = memoryDeployFactory{}

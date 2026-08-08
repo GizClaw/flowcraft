@@ -3,16 +3,16 @@ package config
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -35,17 +35,29 @@ func (r *recordingRuntime) Exec(_ context.Context, _ string, source string, _ *a
 	return &agent.ScriptSignal{Type: "done"}, nil
 }
 
+func settingsJSON(t *testing.T, settings map[string]any) json.RawMessage {
+	t.Helper()
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatalf("marshal settings: %v", err)
+	}
+	return raw
+}
+
+func loaderFor(dir string) *sdkconfig.Loader {
+	return sdkconfig.NewLoader(sdkconfig.WithBaseDir(dir))
+}
+
 func TestFactorySpec(t *testing.T) {
 	spec := NewFactory().Spec()
 	if spec.Kind != Kind {
 		t.Fatalf("kind = %q, want %q", spec.Kind, Kind)
 	}
-	if !spec.Capabilities.SupportsResume ||
-		!spec.Capabilities.EmitsCheckpoint ||
-		!spec.Capabilities.EmitsUserPrompt {
-		t.Fatalf("capabilities = %+v", spec.Capabilities)
+	caps := NewFactory().Capabilities()
+	if !caps.SupportsResume || !caps.EmitsCheckpoint || !caps.EmitsUserPrompt {
+		t.Fatalf("capabilities = %+v", caps)
 	}
-	want := []agent.DepSpec{
+	want := []sdkconfig.DepSpec{
 		{Name: DepInference, Type: "inference.Assembly"},
 		{Name: DepTools, Type: toolconfig.ResourceKind},
 		{Name: DepWorkspace, Type: "workspace.Workspace"},
@@ -59,7 +71,7 @@ func TestFactorySpec(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var roundTrip agent.EngineSpec
+	var roundTrip sdkconfig.Spec
 	if err := json.Unmarshal(data, &roundTrip); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +82,7 @@ func TestFactorySpec(t *testing.T) {
 
 func TestFactoryInlineBuildAndExecute(t *testing.T) {
 	rt := &recordingRuntime{}
-	engine, err := NewFactory().New(context.Background(), agent.Config{
+	engine, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
 		Settings: inlineSettings(map[string]any{
 			"name":  "simple",
@@ -115,9 +127,9 @@ func TestFactoryFileBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
-		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.json"}},
+		Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"file": "graphs/simple.json"}}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -126,11 +138,11 @@ func TestFactoryFileBuild(t *testing.T) {
 		t.Fatalf("engine = %T", engine)
 	}
 
-	if _, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	if _, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
-		Settings: map[string]any{"graph": "graphs/simple.json"},
+		Settings: settingsJSON(t, map[string]any{"graph": string(definitionJSON("script", `{"runtime":"js","source":"ok"}`))}),
 	}); err != nil {
-		t.Fatalf("New with scalar graph path: %v", err)
+		t.Fatalf("New with literal graph content: %v", err)
 	}
 }
 
@@ -154,9 +166,9 @@ edges: []
 		t.Fatal(err)
 	}
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
-		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.yaml"}},
+		Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"file": "graphs/simple.yaml"}}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -166,29 +178,25 @@ edges: []
 	}
 }
 
-func TestFactoryFileBuildFromFS(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "simple.json"),
-		definitionJSON("script", `{"runtime":"js","source":"ok"}`), 0o600); err != nil {
-		t.Fatal(err)
+func TestFactoryFileBuildFromEmbed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"simple.json": {Data: definitionJSON("script", `{"runtime":"js","source":"ok"}`)},
+		"large.json":  {Data: make([]byte, 1<<20+1)},
 	}
-	_, err := NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
+	factory := NewFactory(WithLoader(sdkconfig.NewLoader(sdkconfig.WithEmbed(fsys))))
+	_, err := factory.New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+		Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"embed": "simple.json"}}),
 	})
 	if err != nil {
-		t.Fatalf("New with fs.FS: %v", err)
+		t.Fatalf("New with embed registry: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "large.json"),
-		make([]byte, MaxDefinitionBytes+1), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err = NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
-		Settings: map[string]any{"graph": map[string]any{"file": "large.json"}},
+	_, err = factory.New(context.Background(), sdkconfig.Input{
+		Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"embed": "large.json"}}),
 	})
 	if !errdefs.IsValidation(err) {
-		t.Fatalf("oversized fs.FS error = %v, want Validation", err)
+		t.Fatalf("oversized embed error = %v, want Validation", err)
 	}
 }
 
@@ -243,12 +251,12 @@ func TestFactoryMaterializesConfigFileRefs(t *testing.T) {
 	}
 
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{
 			DepScriptRuntime: agent.ScriptRuntime(rt),
 			DepInference:     &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
 		},
-		Settings: map[string]any{"graph": map[string]any{"file": "graphs/mixed.json"}},
+		Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"file": "graphs/mixed.json"}}),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -273,14 +281,14 @@ func TestFactoryMaterializesConfigFileRefs(t *testing.T) {
 
 func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
 	tests := map[string]map[string]any{
-		"extra key": {
-			"source": map[string]any{"file": "scripts/run.js", "extra": true},
+		"both forms": {
+			"source": map[string]any{"file": "scripts/run.js", "embed": "scripts/run.js"},
 		},
 		"empty file": {
 			"source": map[string]any{"file": "  "},
 		},
-		"wrong object": {
-			"source": map[string]any{"bogus": "x"},
+		"empty embed": {
+			"source": map[string]any{"embed": ""},
 		},
 	}
 	for name, config := range tests {
@@ -293,7 +301,7 @@ func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
 				}},
 				"edges": []any{},
 			}
-			_, err := NewFactory().New(context.Background(), agent.Config{
+			_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 				Settings: inlineSettings(settings),
 			})
@@ -305,7 +313,7 @@ func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
 }
 
 func TestFactoryConfigFileRefsMissingFile(t *testing.T) {
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 		Settings: inlineSettings(map[string]any{
 			"name": "simple", "entry": "node",
@@ -325,27 +333,34 @@ func TestFactoryConfigFileRefsMissingFile(t *testing.T) {
 }
 
 func TestFactoryGraphSourceValidation(t *testing.T) {
+	engineSettings := func(fields map[string]any) json.RawMessage {
+		raw, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
 	tests := []struct {
 		name     string
-		settings map[string]any
+		settings json.RawMessage
 	}{
-		{name: "missing", settings: map[string]any{}},
-		{name: "both", settings: map[string]any{"graph": map[string]any{
+		{name: "missing", settings: json.RawMessage(`{}`)},
+		{name: "both", settings: engineSettings(map[string]any{"graph": map[string]any{
 			"file": "a.json", "inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"}),
-		}}},
-		{name: "unknown settings", settings: map[string]any{
+		}})},
+		{name: "unknown settings", settings: engineSettings(map[string]any{
 			"graph": map[string]any{"inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})},
 			"typo":  true,
-		}},
-		{name: "unknown graph", settings: map[string]any{"graph": map[string]any{
+		})},
+		{name: "unknown graph", settings: engineSettings(map[string]any{"graph": map[string]any{
 			"inline": validDefinition("script", map[string]any{"runtime": "js", "source": "ok"}),
 			"typo":   true,
-		}}},
-		{name: "unknown definition", settings: map[string]any{"graph": map[string]any{"inline": map[string]any{
+		}})},
+		{name: "unknown definition", settings: engineSettings(map[string]any{"graph": map[string]any{"inline": map[string]any{
 			"name": "g", "entry": "n", "nodes": []any{map[string]any{
 				"id": "n", "type": "script", "config": map[string]any{"runtime": "js", "source": "ok"},
 			}}, "edges": []any{}, "typo": true,
-		}}}},
+		}}})},
 		{name: "unknown build", settings: mergeSettings(inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})), map[string]any{
 			"build": map[string]any{"typo": true},
 		})},
@@ -355,7 +370,7 @@ func TestFactoryGraphSourceValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewFactory().New(context.Background(), agent.Config{
+			_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 				Settings: tt.settings,
 			})
@@ -370,9 +385,9 @@ func TestFactoryFileErrors(t *testing.T) {
 	dir := t.TempDir()
 	rt := agent.ScriptRuntime(&recordingRuntime{})
 	newWithFile := func(file string) error {
-		_, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		_, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), sdkconfig.Input{
 			Deps:     map[string]any{DepScriptRuntime: rt},
-			Settings: map[string]any{"graph": map[string]any{"file": file}},
+			Settings: settingsJSON(t, map[string]any{"graph": map[string]any{"file": file}}),
 		})
 		return err
 	}
@@ -380,8 +395,8 @@ func TestFactoryFileErrors(t *testing.T) {
 	if err := newWithFile("missing.json"); !errdefs.IsNotFound(err) {
 		t.Fatalf("missing error = %v, want NotFound", err)
 	}
-	if err := newWithFile("../escape.json"); !errdefs.IsValidation(err) {
-		t.Fatalf("escape error = %v, want Validation", err)
+	if err := newWithFile("../escape.json"); !errdefs.IsForbidden(err) {
+		t.Fatalf("escape error = %v, want Forbidden", err)
 	}
 	if err := newWithFile("."); !errdefs.IsValidation(err) {
 		t.Fatalf("directory error = %v, want Validation", err)
@@ -407,33 +422,12 @@ func TestFactoryFileErrors(t *testing.T) {
 	if err := newWithFile("multi.yaml"); !errdefs.IsValidation(err) {
 		t.Fatalf("multi yaml document error = %v, want Validation", err)
 	}
-	large := make([]byte, MaxDefinitionBytes+1)
+	large := make([]byte, 1<<20+1)
 	if err := os.WriteFile(filepath.Join(dir, "large.json"), large, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := newWithFile("large.json"); !errdefs.IsValidation(err) {
 		t.Fatalf("large error = %v, want Validation", err)
-	}
-}
-
-func TestFactoryLoaderReceivesContext(t *testing.T) {
-	type loaderContextKey struct{}
-	key := loaderContextKey{}
-	ctx := context.WithValue(context.Background(), key, "seen")
-	var gotContext bool
-	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
-		gotContext = ctx.Value(key) == "seen"
-		return definitionJSON("script", `{"runtime":"js","source":"ok"}`), nil
-	}))
-	_, err := factory.New(ctx, agent.Config{
-		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !gotContext {
-		t.Fatal("loader did not receive New context")
 	}
 }
 
@@ -452,7 +446,7 @@ func TestFactoryBuildSettingsValidation(t *testing.T) {
 		{"parallel": map[string]any{"enabled": true, "merge_strategy": "random"}},
 	}
 	for _, build := range tests {
-		_, err := NewFactory().New(context.Background(), agent.Config{
+		_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 			Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 			Settings: mergeSettings(base, map[string]any{"build": build}),
 		})
@@ -461,7 +455,7 @@ func TestFactoryBuildSettingsValidation(t *testing.T) {
 		}
 	}
 
-	engine, err := NewFactory().New(context.Background(), agent.Config{
+	engine, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 		Settings: mergeSettings(base, map[string]any{"build": map[string]any{
 			"max_iterations":          7,
@@ -497,7 +491,7 @@ func TestFactoryConditionalDependencies(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.nodeType, func(t *testing.T) {
-			_, err := NewFactory().New(context.Background(), agent.Config{
+			_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 				Settings: inlineSettings(validDefinition(tt.nodeType, tt.config)),
 			})
 			if !errdefs.IsNotFound(err) {
@@ -509,7 +503,7 @@ func TestFactoryConditionalDependencies(t *testing.T) {
 	// Optional means conditional: a graph without a script node does not
 	// require a script runtime.
 	assembly := &inferenceconfig.Assembly{Runtime: &inference.Runtime{}}
-	if _, err := NewFactory().New(context.Background(), agent.Config{
+	if _, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{DepInference: assembly},
 		Settings: inlineSettings(validDefinition("inference", map[string]any{
 			"model": map[string]any{
@@ -524,7 +518,7 @@ func TestFactoryConditionalDependencies(t *testing.T) {
 func TestFactoryInferenceConditionalDependencies(t *testing.T) {
 	inferenceAssembly := &inferenceconfig.Assembly{Runtime: &inference.Runtime{}}
 
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepInference: inferenceAssembly},
 		Settings: inlineSettings(validDefinition("inference", map[string]any{})),
 	})
@@ -538,7 +532,7 @@ func TestFactoryInferenceConditionalDependencies(t *testing.T) {
 		},
 		"tools": []any{"missing"},
 	}
-	_, err = NewFactory().New(context.Background(), agent.Config{
+	_, err = NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepInference: inferenceAssembly},
 		Settings: inlineSettings(validDefinition("inference", withTools)),
 	})
@@ -551,7 +545,7 @@ func TestFactoryInferenceConditionalDependencies(t *testing.T) {
 		Executor: tool.NewExecutor(registry),
 		Catalog:  registry,
 	}
-	_, err = NewFactory().New(context.Background(), agent.Config{
+	_, err = NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{
 			DepInference: inferenceAssembly,
 			DepTools:     toolAssembly,
@@ -565,7 +559,7 @@ func TestFactoryInferenceConditionalDependencies(t *testing.T) {
 
 func TestFactoryInferenceDependencyScanPreservesBoardReferences(t *testing.T) {
 	registry := tool.NewRegistry()
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{
 			DepInference: &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
 			DepTools: &toolconfig.Assembly{
@@ -594,7 +588,7 @@ func TestFactoryRejectsIncompleteAssemblies(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewFactory().New(context.Background(), agent.Config{
+			_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 				Deps:     deps,
 				Settings: inlineSettings(validDefinition("custom", map[string]any{})),
 			})
@@ -612,7 +606,7 @@ func TestFactoryDependencyTypeAndTypedNil(t *testing.T) {
 		"typed nil":  nilAssembly,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := NewFactory().New(context.Background(), agent.Config{
+			_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 				Deps:     map[string]any{DepInference: value},
 				Settings: inlineSettings(validDefinition("inference", map[string]any{})),
 			})
@@ -623,7 +617,7 @@ func TestFactoryDependencyTypeAndTypedNil(t *testing.T) {
 	}
 
 	var nilRuntime *recordingRuntime
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: nilRuntime},
 		Settings: inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})),
 	})
@@ -631,7 +625,7 @@ func TestFactoryDependencyTypeAndTypedNil(t *testing.T) {
 		t.Fatalf("typed nil runtime error = %v, want Validation", err)
 	}
 
-	_, err = NewFactory().New(context.Background(), agent.Config{
+	_, err = NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{"event_bus": struct{}{}},
 		Settings: inlineSettings(validDefinition("custom", map[string]any{})),
 	})
@@ -642,14 +636,14 @@ func TestFactoryDependencyTypeAndTypedNil(t *testing.T) {
 
 func TestFactoryScriptRuntimeName(t *testing.T) {
 	def := validDefinition("script", map[string]any{"runtime": "lua", "source": "ok"})
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 		Settings: inlineSettings(def),
 	})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("mismatch error = %v, want Validation", err)
 	}
-	if _, err := NewFactory().New(context.Background(), agent.Config{
+	if _, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Deps: map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 		Settings: mergeSettings(inlineSettings(def), map[string]any{
 			"script_runtime_name": "lua",
@@ -660,7 +654,7 @@ func TestFactoryScriptRuntimeName(t *testing.T) {
 }
 
 func TestFactoryUnknownNodeDelegatesToBuild(t *testing.T) {
-	_, err := NewFactory().New(context.Background(), agent.Config{
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
 		Settings: inlineSettings(validDefinition("custom", map[string]any{})),
 	})
 	if !errdefs.IsNotFound(err) {
@@ -678,12 +672,17 @@ func TestFactoryNewRegistryIsolationAndConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			engine, err := factory.New(context.Background(), agent.Config{
+			engineValue, err := factory.New(context.Background(), sdkconfig.Input{
 				Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
 				Settings: inlineSettings(validDefinition("script", map[string]any{"runtime": "js", "source": "ok"})),
 			})
 			if err != nil {
 				errs <- err
+				return
+			}
+			engine, ok := engineValue.(agent.Engine)
+			if !ok {
+				errs <- errdefs.Internalf("New returned %T, want agent.Engine", engineValue)
 				return
 			}
 			engines <- engine
@@ -708,57 +707,16 @@ func TestFactoryNewRegistryIsolationAndConcurrency(t *testing.T) {
 	}
 }
 
-func TestFactoryContextCancellationFromLoader(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
-		return nil, ctx.Err()
-	}))
-	_, err := factory.New(ctx, agent.Config{
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
+func inlineSettings(def map[string]any) json.RawMessage {
+	raw, err := json.Marshal(def)
+	if err != nil {
+		panic(err)
 	}
-	if !errdefs.IsAborted(err) {
-		t.Fatalf("error = %v, want Aborted classification", err)
+	out, err := json.Marshal(map[string]any{"graph": string(raw)})
+	if err != nil {
+		panic(err)
 	}
-}
-
-func TestFactoryPreservesLoaderErrorClassification(t *testing.T) {
-	for name, tc := range map[string]struct {
-		err   error
-		class func(error) bool
-	}{
-		"classified": {
-			err:   errdefs.NotAvailablef("remote definitions unavailable"),
-			class: errdefs.IsNotAvailable,
-		},
-		"permission": {
-			err:   fs.ErrPermission,
-			class: errdefs.IsForbidden,
-		},
-		"other IO": {
-			err:   errors.New("disk failed"),
-			class: errdefs.IsInternal,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			factory := NewFactory(WithFileLoader(func(context.Context, string) ([]byte, error) {
-				return nil, tc.err
-			}))
-			_, err := factory.New(context.Background(), agent.Config{
-				Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-			})
-			if !tc.class(err) {
-				t.Fatalf("error = %v, want expected classification", err)
-			}
-		})
-	}
-}
-
-func inlineSettings(def map[string]any) map[string]any {
-	return map[string]any{"graph": map[string]any{"inline": def}}
+	return out
 }
 
 func validDefinition(nodeType string, config map[string]any) map[string]any {
@@ -769,15 +727,22 @@ func validDefinition(nodeType string, config map[string]any) map[string]any {
 	}
 }
 
-func mergeSettings(base, extra map[string]any) map[string]any {
-	out := make(map[string]any, len(base)+len(extra))
-	for k, v := range base {
-		out[k] = v
+func mergeSettings(base json.RawMessage, extra map[string]any) json.RawMessage {
+	var out map[string]any
+	if err := json.Unmarshal(base, &out); err != nil {
+		panic(err)
+	}
+	if out == nil {
+		out = make(map[string]any)
 	}
 	for k, v := range extra {
 		out[k] = v
 	}
-	return out
+	merged, err := json.Marshal(out)
+	if err != nil {
+		panic(err)
+	}
+	return merged
 }
 
 func definitionJSON(nodeType, config string) []byte {
