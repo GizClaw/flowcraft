@@ -2,8 +2,10 @@ package config
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Input is the universal factory input shared by every extension in
@@ -21,12 +23,43 @@ type Input struct {
 	// Deps holds resolved dependencies keyed by the names used in the
 	// document.
 	Deps map[string]any
+
+	// Resolve materializes a build-time [Source] into bytes — the
+	// shared document-resolution capability injected by the assembly
+	// host. It may be nil; use [Input.ResolveSource] so a missing
+	// resolver becomes a clear validation error instead of a panic.
+	Resolve func(ctx context.Context, src Source) ([]byte, error)
 }
 
 // Dep returns the named dependency.
 func (in Input) Dep(name string) (any, bool) {
 	v, ok := in.Deps[name]
 	return v, ok
+}
+
+// ResolveSource materializes src through the injected resolver. A nil
+// resolver is a validation error: a host that accepts Source-typed
+// settings must provide the resolution capability.
+func (in Input) ResolveSource(ctx context.Context, src Source) ([]byte, error) {
+	if in.Resolve == nil {
+		return nil, errdefs.Validationf(
+			"config: source resolution is not configured; the host must inject Input.Resolve")
+	}
+	return in.Resolve(ctx, src)
+}
+
+// ResolveDocument decodes Settings as a [Source] and materializes it to
+// bytes. It is the single settings-reading helper for resource impls
+// that wrap a module's own document loader: the settings subtree is
+// itself the document (literal string or structured object) or a
+// {file: ...} / {embed: ...} reference.
+func (in Input) ResolveDocument(ctx context.Context) ([]byte, error) {
+	var src Source
+	if err := in.Settings.Decode(&src); err != nil {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"config: decode settings document: %w", err))
+	}
+	return in.ResolveSource(ctx, src)
 }
 
 // ObserverFactory builds one read-only lifecycle hook. Factories MUST

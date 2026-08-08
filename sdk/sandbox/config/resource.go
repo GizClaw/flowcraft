@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -21,11 +20,6 @@ const ResourceKind = "sandbox.Registry"
 // resource to be built after its workspaces — see the topological
 // ordering in a deployment engine.
 const WorkspacesDep = "workspaces"
-
-// ResourceSettings is the settings subtree of a sandbox resource.
-type ResourceSettings struct {
-	config.SubDocument
-}
 
 type deployFactory struct{}
 
@@ -66,10 +60,9 @@ func (deployFactory) Spec() config.ResourceSpec {
 
 // New builds a sandbox [Registry] owned by the deployment result.
 func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"sandbox config: decode resource settings: %w", err))
+	data, err := in.ResolveDocument(ctx)
+	if err != nil {
+		return nil, err
 	}
 	value, ok := in.Dep(WorkspacesDep)
 	if !ok {
@@ -81,10 +74,6 @@ func (deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"sandbox config: dep %q is %T, want *workspace/config.Registry",
 			WorkspacesDep, value)
-	}
-	data, err := settings.Bytes()
-	if err != nil {
-		return nil, err
 	}
 	doc, err := Parse(data)
 	if err != nil {

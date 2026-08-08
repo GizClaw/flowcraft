@@ -87,7 +87,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/assistant.json
+        graph: {file: ./graphs/assistant.json}
 
 runtime:
   event_bus: events
@@ -153,10 +153,12 @@ Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdk/message`.
 
 ```go
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-deployBuilder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
+engines := agent.NewRegistry()
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+
+deployBuilder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
 deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 schedulerBuilder := schedulerconfig.NewBuilder()

@@ -14,11 +14,6 @@ import (
 // meaningless once separated from the runtime it validated against.
 const ResourceKind = "inference.Assembly"
 
-// ResourceSettings is the settings subtree of an inference resource.
-type ResourceSettings struct {
-	config.SubDocument
-}
-
 type deployFactory struct {
 	factories map[string]Factory
 	resolvers map[string]SecretResolver
@@ -49,12 +44,7 @@ func (*deployFactory) Spec() config.ResourceSpec {
 }
 
 func (f *deployFactory) New(ctx context.Context, in config.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"inference config: decode resource settings: %w", err))
-	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}

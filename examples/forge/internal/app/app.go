@@ -68,10 +68,6 @@ func Open(ctx context.Context, workspaceDir string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	raw, err = absolutizeDeployment(raw, workspaceDir)
-	if err != nil {
-		return nil, err
-	}
 	doc, err := deploy.Parse(raw)
 	if err != nil {
 		return nil, err

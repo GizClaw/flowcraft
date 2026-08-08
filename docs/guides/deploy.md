@@ -58,7 +58,7 @@ resources:
     }
 agents:
   greeter:
-    engine: { kind: graph, settings: { graph: ./graphs/greeter.json } }
+    engine: { kind: graph, settings: { graph: {file: ./graphs/greeter.json} } }
     deps: { inference: infer }
 ```
 
@@ -126,7 +126,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/research.json
+        graph: {file: ./graphs/research.json}
     deps:
       inference: infer # matched against the graph factory's DepSpec
       tools: kit
@@ -153,14 +153,14 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/dispatcher.json
+        graph: {file: ./graphs/dispatcher.json}
     deps:
       tools: tools
     referees:
       - type: delegation_handoff
 
   researcher: # Agent.ID is "researcher"
-    file: ./agents/researcher.agent.yaml
+    source: {file: ./agents/researcher.agent.yaml}
 ```
 
 ```yaml
@@ -173,7 +173,7 @@ tools: [delegate, delegation_status]
 engine:
   kind: graph
   settings:
-    graph: ./graphs/researcher.json
+    graph: {file: ./graphs/researcher.json}
 deps:
   tools: tools
 policy:
@@ -181,11 +181,11 @@ policy:
   artifact_channels: [report]
 ```
 
-`file` and inline fields are mutually exclusive. Agent files require
-their own `version: v1` and reject unknown fields. Relative agent file
-paths are resolved against `deploy.WithBaseDir(configDir)` on the
-`Builder`; paths inside engine settings are interpreted by that engine,
-so configure its base directory separately when required.
+`source` and inline fields are mutually exclusive. Agent files require
+their own `version: v1` and reject unknown fields. Relative paths are
+resolved against the builder's `config.Loader` base directory (or an
+embedded asset when the recipe uses `source: {embed: ...}`); paths
+inside engine settings are interpreted by that engine's loader.
 
 ### Lifecycle hooks
 
@@ -230,7 +230,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/greeter.json
+        graph: {file: ./graphs/greeter.json}
     deps:
       inference: infer
 ```
@@ -329,7 +329,7 @@ Script runtimes share a kind because graphs pick one per agent
 (`engine.settings.script_runtime_name`), but JS and Lua register as
 distinct `impl` values.
 
-### Sub-documents: file vs inline
+### Sub-documents: literal, file, or embed
 
 The `workspace`, `sandbox`, `inference`, `tool`, and `memory` resources wrap
 their modules' own settings documents. Their `settings` accept **exactly
@@ -340,21 +340,25 @@ one** source:
 settings:
   file: ./inference.yaml
 
-# Inline form — keep the whole deployment in one file.
+# Content form — keep the whole deployment in one file, as plain YAML.
 settings:
-  inline:
-    version: v1
-    providers:
-      - id: openai
-        driver: openai
-        profiles:
-          - secrets:
-              api_key: { resolver: env, key: OPENAI_API_KEY }
+  version: v1
+  providers:
+    - id: openai
+      driver: openai
+      profiles:
+        - secrets:
+            api_key: { resolver: env, key: OPENAI_API_KEY }
 ```
 
-`file` and `inline` are mutually exclusive. A mistyped key that
-silently fell back to an empty inline document would surface much
-later as a missing ref — that's why exactly-one is enforced.
+A resource `settings` value is a [`config.Source`]: a string or a nested
+object is literal content (the module's own document, parsed with the
+module's own version field and strictness), `{file: ...}` references an
+external file, and `{embed: ...}` references a build-time embedded
+asset. An object containing a `file`/`embed` key is a reference and must
+use exactly those keys; any other object is the document itself. A
+mistyped reference key fails the build instead of silently falling back
+to an empty document.
 The nested document is parsed by the owning module and retains its
 own version field (where the module declares one — the flowcraft
 `memory.yaml` schema deliberately has none) and strictness rules; there is
@@ -431,8 +435,9 @@ agents:
 ### Engines
 
 The graph engine (`sdk/graph/config`) is the built-in. Its
-settings accept a graph definition by file path, by explicit
-`{file: ...}`, or by `{inline: ...}`:
+`graph` setting is a [`config.Source`]: a plain string is literal
+definition content, `{file: ...}` references a definition file, and
+`{embed: ...}` references a build-time embedded asset:
 
 ```yaml
 engine:
@@ -547,7 +552,7 @@ resources:
     settings: {file: ./memory.yaml}
 agents:
   researcher:
-    engine: {kind: graph, settings: {graph: ./graphs/researcher.json}}
+    engine: {kind: graph, settings: {graph: {file: ./graphs/researcher.json}}}
     deps: {inference: infer}
     prepare:
       - type: memory.context
@@ -626,10 +631,12 @@ directory := delegation.NewDirectory()
 toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
 toolBuilder.RegisterBuiltins(tooldelegation.New(directory)...)
 
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-builder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
+engines := agent.NewRegistry()
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+
+builder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
 builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
 builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
@@ -669,11 +676,10 @@ resources:
     kind: tool.Assembly
     impl: yaml
     settings:
-      inline:
-        version: v1
-        middlewares:
-          - kind: recover
-          - kind: telemetry
+      version: v1
+      middlewares:
+        - kind: recover
+        - kind: telemetry
 
 agents:
   dispatcher:
@@ -684,14 +690,14 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/dispatcher.json
+        graph: {file: ./graphs/dispatcher.json}
     deps:
       tools: tools
     referees:
       - type: delegation_handoff
 
   researcher:
-    file: ./agents/researcher.agent.yaml
+    source: {file: ./agents/researcher.agent.yaml}
 ```
 
 After `Build`, bind and construct the runtime-facing pieces:
@@ -831,10 +837,12 @@ The host owns execution behavior; `Result` owns the bus lifecycle.
 ## Build and run
 
 ```go
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithBaseDir(configDir)))
+loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-builder := deploy.NewBuilder(engines)
+engines := agent.NewRegistry()
+engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+
+builder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
 
 // Resources the document references.
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})

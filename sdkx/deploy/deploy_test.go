@@ -651,7 +651,7 @@ func TestParse_AgentFileAndInlineFieldsAreMutuallyExclusive(t *testing.T) {
 version: v1
 agents:
   researcher:
-    file: ./agents/researcher.yaml
+    source: {file: ./agents/researcher.yaml}
     engine: {kind: inline}
 `))
 	if err == nil || !errdefs.IsValidation(err) {
@@ -678,7 +678,7 @@ policy: {max_revise: 2, artifact_channels: [report]}
 version: v1
 agents:
   researcher:
-    file: researcher.yaml
+    source: {file: researcher.yaml}
 `)
 	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
 	if err != nil {
@@ -711,11 +711,11 @@ engine: {kind: inline}
 	doc := parse(t, `
 version: v1
 agents:
-  researcher: {file: researcher.yaml}
+  researcher: {source: {file: researcher.yaml}}
   reviewer:
     card: {name: Reviewer}
     engine: {kind: inline}
-  writer: {file: writer.yaml}
+  writer: {source: {file: writer.yaml}}
 `)
 	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
 	if err != nil {
@@ -739,7 +739,7 @@ engine: {kind: inline}
 	doc := parse(t, `
 version: v1
 agents:
-  researcher: {file: agents/researcher.yaml}
+  researcher: {source: {file: agents/researcher.yaml}}
 `)
 	result, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
 	if err != nil {
@@ -756,7 +756,7 @@ func TestBuild_MissingAgentFileIsNotFound(t *testing.T) {
 	doc := parse(t, `
 version: v1
 agents:
-  researcher: {file: agents/missing.yaml}
+  researcher: {source: {file: agents/missing.yaml}}
 `)
 	_, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
 	if err == nil || !errdefs.IsNotFound(err) {
@@ -772,7 +772,7 @@ func TestBuild_RejectsProgrammaticWhitespaceAgentFile(t *testing.T) {
 	doc := deploy.Document{
 		Version: deploy.VersionV1,
 		Agents: map[string]deploy.AgentEntry{
-			"researcher": {File: "   "},
+			"researcher": {Source: &sdkconfig.Ref{}},
 		},
 	}
 	_, err := agentFileBuilder(t).Build(context.Background(), doc)
@@ -780,7 +780,7 @@ func TestBuild_RejectsProgrammaticWhitespaceAgentFile(t *testing.T) {
 		t.Fatalf("Build error = %v, want validation", err)
 	}
 	if !strings.Contains(err.Error(), `agents["researcher"]`) ||
-		!strings.Contains(err.Error(), "file is required") {
+		!strings.Contains(err.Error(), "source is required") {
 		t.Fatalf("Build error = %v, want agent and file validation context", err)
 	}
 }
@@ -815,7 +815,7 @@ engine: {kind: inline}
 			doc := parse(t, `
 version: v1
 agents:
-  a: {file: agent.yaml}
+  a: {source: {file: agent.yaml}}
 `)
 			_, err := agentFileBuilder(t, deploy.WithBaseDir(dir)).Build(context.Background(), doc)
 			if err == nil || !errdefs.IsValidation(err) {

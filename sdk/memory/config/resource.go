@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -12,12 +11,6 @@ import (
 // ResourceKind is the deployment resource category for memory
 // assemblies.
 const ResourceKind = "memory.Assembly"
-
-// ResourceSettings is the settings subtree of a memory resource: where
-// its implementation-owned sub-document lives.
-type ResourceSettings struct {
-	sdkconfig.SubDocument
-}
 
 type deployFactory struct {
 	impl    string
@@ -66,12 +59,7 @@ func (f *deployFactory) New(ctx context.Context, in sdkconfig.Input) (any, error
 		return nil, errdefs.Validationf(
 			"memory config: deploy factory has no implementation factory")
 	}
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"memory config: decode resource settings: %w", err))
-	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}

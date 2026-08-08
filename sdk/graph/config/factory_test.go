@@ -3,16 +3,16 @@ package config
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/fstest"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coregraph "github.com/GizClaw/flowcraft/sdk/graph"
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -33,6 +33,10 @@ func (r *recordingRuntime) Exec(_ context.Context, _ string, source string, _ *a
 	r.calls.Add(1)
 	r.src = source
 	return &agent.ScriptSignal{Type: "done"}, nil
+}
+
+func loaderFor(dir string) *sdkconfig.Loader {
+	return sdkconfig.NewLoader(sdkconfig.WithBaseDir(dir))
 }
 
 func TestFactorySpec(t *testing.T) {
@@ -115,7 +119,7 @@ func TestFactoryFileBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), agent.Config{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
 		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.json"}},
 	})
@@ -126,11 +130,11 @@ func TestFactoryFileBuild(t *testing.T) {
 		t.Fatalf("engine = %T", engine)
 	}
 
-	if _, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	if _, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), agent.Config{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
-		Settings: map[string]any{"graph": "graphs/simple.json"},
+		Settings: map[string]any{"graph": string(definitionJSON("script", `{"runtime":"js","source":"ok"}`))},
 	}); err != nil {
-		t.Fatalf("New with scalar graph path: %v", err)
+		t.Fatalf("New with literal graph content: %v", err)
 	}
 }
 
@@ -154,7 +158,7 @@ edges: []
 		t.Fatal(err)
 	}
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), agent.Config{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(rt)},
 		Settings: map[string]any{"graph": map[string]any{"file": "graphs/simple.yaml"}},
 	})
@@ -166,29 +170,25 @@ edges: []
 	}
 }
 
-func TestFactoryFileBuildFromFS(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "simple.json"),
-		definitionJSON("script", `{"runtime":"js","source":"ok"}`), 0o600); err != nil {
-		t.Fatal(err)
+func TestFactoryFileBuildFromEmbed(t *testing.T) {
+	fsys := fstest.MapFS{
+		"simple.json": {Data: definitionJSON("script", `{"runtime":"js","source":"ok"}`)},
+		"large.json":  {Data: make([]byte, 1<<20+1)},
 	}
-	_, err := NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
+	factory := NewFactory(WithLoader(sdkconfig.NewLoader(sdkconfig.WithEmbed(fsys))))
+	_, err := factory.New(context.Background(), agent.Config{
 		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
+		Settings: map[string]any{"graph": map[string]any{"embed": "simple.json"}},
 	})
 	if err != nil {
-		t.Fatalf("New with fs.FS: %v", err)
+		t.Fatalf("New with embed registry: %v", err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "large.json"),
-		make([]byte, MaxDefinitionBytes+1), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err = NewFactory(WithFS(os.DirFS(dir))).New(context.Background(), agent.Config{
-		Settings: map[string]any{"graph": map[string]any{"file": "large.json"}},
+	_, err = factory.New(context.Background(), agent.Config{
+		Settings: map[string]any{"graph": map[string]any{"embed": "large.json"}},
 	})
 	if !errdefs.IsValidation(err) {
-		t.Fatalf("oversized fs.FS error = %v, want Validation", err)
+		t.Fatalf("oversized embed error = %v, want Validation", err)
 	}
 }
 
@@ -243,7 +243,7 @@ func TestFactoryMaterializesConfigFileRefs(t *testing.T) {
 	}
 
 	rt := &recordingRuntime{}
-	engine, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+	engine, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), agent.Config{
 		Deps: map[string]any{
 			DepScriptRuntime: agent.ScriptRuntime(rt),
 			DepInference:     &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
@@ -280,7 +280,9 @@ func TestFactoryConfigFileRefsRejectMalformed(t *testing.T) {
 			"source": map[string]any{"file": "  "},
 		},
 		"wrong object": {
-			"source": map[string]any{"bogus": "x"},
+			// a "file" key turns this into a reference, so extra keys are
+			// a decode error rather than content
+			"source": map[string]any{"file": "scripts/run.js", "bogus": "x"},
 		},
 	}
 	for name, config := range tests {
@@ -370,7 +372,7 @@ func TestFactoryFileErrors(t *testing.T) {
 	dir := t.TempDir()
 	rt := agent.ScriptRuntime(&recordingRuntime{})
 	newWithFile := func(file string) error {
-		_, err := NewFactory(WithBaseDir(dir)).New(context.Background(), agent.Config{
+		_, err := NewFactory(WithLoader(loaderFor(dir))).New(context.Background(), agent.Config{
 			Deps:     map[string]any{DepScriptRuntime: rt},
 			Settings: map[string]any{"graph": map[string]any{"file": file}},
 		})
@@ -380,8 +382,8 @@ func TestFactoryFileErrors(t *testing.T) {
 	if err := newWithFile("missing.json"); !errdefs.IsNotFound(err) {
 		t.Fatalf("missing error = %v, want NotFound", err)
 	}
-	if err := newWithFile("../escape.json"); !errdefs.IsValidation(err) {
-		t.Fatalf("escape error = %v, want Validation", err)
+	if err := newWithFile("../escape.json"); !errdefs.IsForbidden(err) {
+		t.Fatalf("escape error = %v, want Forbidden", err)
 	}
 	if err := newWithFile("."); !errdefs.IsValidation(err) {
 		t.Fatalf("directory error = %v, want Validation", err)
@@ -407,33 +409,12 @@ func TestFactoryFileErrors(t *testing.T) {
 	if err := newWithFile("multi.yaml"); !errdefs.IsValidation(err) {
 		t.Fatalf("multi yaml document error = %v, want Validation", err)
 	}
-	large := make([]byte, MaxDefinitionBytes+1)
+	large := make([]byte, 1<<20+1)
 	if err := os.WriteFile(filepath.Join(dir, "large.json"), large, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := newWithFile("large.json"); !errdefs.IsValidation(err) {
 		t.Fatalf("large error = %v, want Validation", err)
-	}
-}
-
-func TestFactoryLoaderReceivesContext(t *testing.T) {
-	type loaderContextKey struct{}
-	key := loaderContextKey{}
-	ctx := context.WithValue(context.Background(), key, "seen")
-	var gotContext bool
-	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
-		gotContext = ctx.Value(key) == "seen"
-		return definitionJSON("script", `{"runtime":"js","source":"ok"}`), nil
-	}))
-	_, err := factory.New(ctx, agent.Config{
-		Deps:     map[string]any{DepScriptRuntime: agent.ScriptRuntime(&recordingRuntime{})},
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !gotContext {
-		t.Fatal("loader did not receive New context")
 	}
 }
 
@@ -708,57 +689,12 @@ func TestFactoryNewRegistryIsolationAndConcurrency(t *testing.T) {
 	}
 }
 
-func TestFactoryContextCancellationFromLoader(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	factory := NewFactory(WithFileLoader(func(ctx context.Context, _ string) ([]byte, error) {
-		return nil, ctx.Err()
-	}))
-	_, err := factory.New(ctx, agent.Config{
-		Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("error = %v, want context.Canceled", err)
-	}
-	if !errdefs.IsAborted(err) {
-		t.Fatalf("error = %v, want Aborted classification", err)
-	}
-}
-
-func TestFactoryPreservesLoaderErrorClassification(t *testing.T) {
-	for name, tc := range map[string]struct {
-		err   error
-		class func(error) bool
-	}{
-		"classified": {
-			err:   errdefs.NotAvailablef("remote definitions unavailable"),
-			class: errdefs.IsNotAvailable,
-		},
-		"permission": {
-			err:   fs.ErrPermission,
-			class: errdefs.IsForbidden,
-		},
-		"other IO": {
-			err:   errors.New("disk failed"),
-			class: errdefs.IsInternal,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			factory := NewFactory(WithFileLoader(func(context.Context, string) ([]byte, error) {
-				return nil, tc.err
-			}))
-			_, err := factory.New(context.Background(), agent.Config{
-				Settings: map[string]any{"graph": map[string]any{"file": "simple.json"}},
-			})
-			if !tc.class(err) {
-				t.Fatalf("error = %v, want expected classification", err)
-			}
-		})
-	}
-}
-
 func inlineSettings(def map[string]any) map[string]any {
-	return map[string]any{"graph": map[string]any{"inline": def}}
+	raw, err := json.Marshal(def)
+	if err != nil {
+		panic(err)
+	}
+	return map[string]any{"graph": string(raw)}
 }
 
 func validDefinition(nodeType string, config map[string]any) map[string]any {

@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -12,12 +11,6 @@ import (
 // The bound value is an *Assembly: tools are selected per call by name,
 // so consumers take the whole assembly rather than one item out of it.
 const ResourceKind = "tool.Assembly"
-
-// ResourceSettings is the settings subtree of a tool resource: where
-// its policy sub-document lives.
-type ResourceSettings struct {
-	config.SubDocument
-}
 
 type deployFactory struct {
 	builder *Builder
@@ -50,12 +43,7 @@ func (f deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"tool config: deploy factory builder is nil")
 	}
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"tool config: decode resource settings: %w", err))
-	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}

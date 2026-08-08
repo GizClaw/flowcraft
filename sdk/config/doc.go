@@ -36,8 +36,17 @@
 //   - [DecodeSettings] decodes an opaque subtree into a typed value with
 //     unknown fields rejected, so a configuration typo fails the build
 //     instead of silently dropping policy;
-//   - [SubDocument] is the common "file or inline" envelope used by
-//     resource impls that wrap a module's own document loader.
+//   - [Source] is the "content or reference" document type: a plain
+//     string is literal content, while {"file": ...} / {"embed": ...}
+//     reference an external file or a build-time embedded asset;
+//   - [Loader] resolves a [Source] or [Ref] into bytes at build time,
+//     applying path constraints, a size bound, and error classification
+//     in one place;
+//   - [Ref] is the "location, not content" reference (file / embed)
+//     used by fields whose inline form is the enclosing structure;
+//   - [Input.Resolve] is how the assembly host injects that resolution
+//     capability into every resource factory ([Input.ResolveSource]
+//     surfaces a missing resolver as a validation error).
 //
 // The hook factories ([PreparerFactory], [ObserverFactory],
 // [RefereeFactory], [CommitterFactory]) complete the protocol: they let

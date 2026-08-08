@@ -57,11 +57,10 @@ func TestDeployFactoryNewPassesDepsAndSettings(t *testing.T) {
 	ws := workspace.NewMemWorkspace()
 	runtime := (&inferencetest.GenerateFake{}).Runtime(t)
 	value, err := factory.New(context.Background(), sdkconfig.Input{
-		Settings: settingsJSON(t, `{
-			"inline": {
-				"version": "v1",
-				"chunk": {"max_runes": 1600}
-			}
+		Resolve: resolveLiteral(t),
+		Settings: literalSettings(t, `{
+			"version": "v1",
+			"chunk": {"max_runes": 1600}
 		}`),
 		Deps: map[string]any{
 			"workspace": ws,
@@ -113,4 +112,24 @@ func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
 	return &opaque
+}
+
+func literalSettings(t *testing.T, doc string) *sdkconfig.Opaque {
+	t.Helper()
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal literal settings: %v", err)
+	}
+	var opaque sdkconfig.Opaque
+	if err := json.Unmarshal(raw, &opaque); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	return &opaque
+}
+
+func resolveLiteral(t *testing.T) func(context.Context, sdkconfig.Source) ([]byte, error) {
+	t.Helper()
+	return func(ctx context.Context, src sdkconfig.Source) ([]byte, error) {
+		return sdkconfig.NewLoader().Load(ctx, src)
+	}
 }

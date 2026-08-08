@@ -123,7 +123,7 @@ agents:
     referees:
       - type: delegation_handoff
   worker:
-    file: worker.agent.yaml
+    source: {file: worker.agent.yaml}
 `))
 	if err != nil {
 		t.Fatalf("parse deployment: %v", err)

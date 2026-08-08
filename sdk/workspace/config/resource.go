@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -13,14 +12,6 @@ import (
 // spelled "name/item" binds one workspace.Workspace out of it, because
 // [Registry] is a container (see [Registry.ResolveItem]).
 const ResourceKind = "workspace.Registry"
-
-// ResourceSettings is the settings subtree of a workspace resource.
-// It only says where the sub-document lives; relative local-driver
-// roots resolve against the host builder's Deps.BaseDir, which the
-// document does not restate.
-type ResourceSettings struct {
-	config.SubDocument
-}
 
 type deployFactory struct {
 	builder *Builder
@@ -56,12 +47,7 @@ func (f deployFactory) New(ctx context.Context, in config.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"workspace config: deploy factory builder is nil")
 	}
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
-		return nil, errdefs.Validation(fmt.Errorf(
-			"workspace config: decode resource settings: %w", err))
-	}
-	data, err := settings.Bytes()
+	data, err := in.ResolveDocument(ctx)
 	if err != nil {
 		return nil, err
 	}

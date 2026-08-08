@@ -165,7 +165,7 @@ agents:
     engine:
       kind: graph
       settings:
-        graph: ./graphs/research.json
+        graph: {file: ./graphs/research.json}
     deps:
       workspace: workspaces/project
       sandbox: sandboxes/coding

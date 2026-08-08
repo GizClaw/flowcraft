@@ -6,9 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"reflect"
 	"slices"
 	"sort"
@@ -326,6 +323,7 @@ func (r *Result) fail(err error) error {
 type Builder struct {
 	engines    *agent.Registry
 	baseDir    string
+	loader     *sdkconfig.Loader
 	sources    map[string]sdkconfig.SourceFunc
 	resources  map[resourceKey]registeredResource
 	preparers  map[string]sdkconfig.PreparerFactory
@@ -337,12 +335,34 @@ type Builder struct {
 // BuilderOption configures a Builder.
 type BuilderOption func(*Builder)
 
-// WithBaseDir sets the directory used to resolve relative agent file
-// paths. Absolute paths are used unchanged.
+// WithBaseDir sets the directory the builder's default [config.Loader]
+// resolves file references against. It is ignored when [WithLoader]
+// supplies an explicit loader.
 func WithBaseDir(dir string) BuilderOption {
 	return func(b *Builder) {
 		b.baseDir = dir
 	}
+}
+
+// WithLoader supplies the shared build-time reference loader used for
+// agent recipe refs and injected into every factory [config.Input] as
+// [config.Input.Resolve]. Hosts that need embedded assets construct it
+// with config.NewLoader(config.WithBaseDir(dir), config.WithEmbed(assets)).
+func WithLoader(loader *sdkconfig.Loader) BuilderOption {
+	return func(b *Builder) {
+		if loader != nil {
+			b.loader = loader
+		}
+	}
+}
+
+// resolveLoader returns the builder's loader, or a default one rooted
+// at baseDir when the host did not supply one.
+func (b *Builder) resolveLoader() *sdkconfig.Loader {
+	if b.loader != nil {
+		return b.loader
+	}
+	return sdkconfig.NewLoader(sdkconfig.WithBaseDir(b.baseDir))
 }
 
 type resourceKey struct {
@@ -507,7 +527,7 @@ func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) 
 				name, sortedKeys(doc.Resources))
 		}
 	}
-	agents, err := b.loadAgents(doc.Agents)
+	agents, err := b.loadAgents(ctx, doc.Agents)
 	if err != nil {
 		return nil, err
 	}
@@ -557,6 +577,7 @@ func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) 
 		v, err := registered.factory.New(ctx, sdkconfig.Input{
 			Settings: entry.Settings,
 			Deps:     deps,
+			Resolve:  b.resolveLoader().Load,
 		})
 		if err != nil {
 			return nil, res.fail(fmt.Errorf(
@@ -594,30 +615,23 @@ func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) 
 	return res, nil
 }
 
-func (b *Builder) loadAgents(entries map[string]AgentEntry) (map[string]AgentEntry, error) {
+func (b *Builder) loadAgents(ctx context.Context, entries map[string]AgentEntry) (map[string]AgentEntry, error) {
 	agents := make(map[string]AgentEntry, len(entries))
 	for _, id := range sortedKeys(entries) {
 		source := entries[id]
-		if !source.usesFile() {
+		if !source.usesSource() {
 			agents[id] = source
 			continue
 		}
 
-		path := source.File
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(b.baseDir, path)
-		}
-		data, err := os.ReadFile(path)
+		data, err := b.resolveLoader().Resolve(ctx, *source.Source)
 		if err != nil {
-			wrapped := fmt.Errorf(
-				"deploy config agents[%q] file %q: read: %w", id, path, err)
-			if errors.Is(err, fs.ErrNotExist) {
-				return nil, errdefs.NotFound(wrapped)
-			}
-			return nil, errdefs.Validation(wrapped)
+			return nil, fmt.Errorf(
+				"deploy config agents[%q] %s: %w",
+				id, describeRef(*source.Source), err)
 		}
 
-		where := fmt.Sprintf("deploy config agents[%q] file %q", id, path)
+		where := fmt.Sprintf("deploy config agents[%q] %s", id, describeRef(*source.Source))
 		entry, err := parseAgentFile(data)
 		if err != nil {
 			return nil, errdefs.Validation(fmt.Errorf("%s: %w", where, err))
@@ -628,6 +642,17 @@ func (b *Builder) loadAgents(entries map[string]AgentEntry) (map[string]AgentEnt
 		agents[id] = entry
 	}
 	return agents, nil
+}
+
+// describeRef renders a recipe ref for error messages.
+func describeRef(r sdkconfig.Ref) string {
+	if path, ok := r.File(); ok {
+		return fmt.Sprintf("file %q", path)
+	}
+	if name, ok := r.Embed(); ok {
+		return fmt.Sprintf("embed %q", name)
+	}
+	return "ref"
 }
 
 func parseAgentFile(data []byte) (AgentEntry, error) {
@@ -650,9 +675,9 @@ func parseAgentFile(data []byte) (AgentEntry, error) {
 			"agent config version %q is not supported (want %q)",
 			version, VersionV1)
 	}
-	if _, ok := probe["file"]; ok {
+	if _, ok := probe["source"]; ok {
 		return AgentEntry{}, fmt.Errorf(
-			"decode agent document: field file is not allowed in an agent file")
+			"decode agent document: field source is not allowed in an agent file")
 	}
 	delete(probe, "version")
 	body, err := json.Marshal(probe)
@@ -1046,7 +1071,11 @@ func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources m
 	if err != nil {
 		return sdkconfig.Input{}, err
 	}
-	return sdkconfig.Input{Settings: h.Settings, Deps: deps}, nil
+	return sdkconfig.Input{
+		Settings: h.Settings,
+		Deps:     deps,
+		Resolve:  b.resolveLoader().Load,
+	}, nil
 }
 
 func depNames(specs []agent.DepSpec) []string {

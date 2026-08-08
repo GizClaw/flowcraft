@@ -90,7 +90,7 @@ func main() {
 
     // 2. Load a graph definition. The kernel's wire form is JSON; if you
     //    unmarshal yourself, feed it JSON. The deploy factory also accepts
-    //    YAML for graph.file / graph.inline and converts it before Build.
+    //    YAML for literal / {file} / {embed} graph forms and converts it before Build.
     data, err := os.ReadFile("graphs/greeter.json")
     if err != nil { panic(err) }
     var def graph.GraphDefinition
@@ -139,8 +139,9 @@ func must(err error) {
 ```
 
 The wire form is JSON; when a graph is loaded through `sdk/graph/config`
-(e.g. `engine.settings.graph` in a deployment), `graph.file` and
-`graph.inline` also accept YAML, which the loader converts to JSON with
+(e.g. `engine.settings.graph` in a deployment), the graph is a
+[`config.Source`]: literal content, `{file: ...}`, or `{embed: ...}`,
+all accepting YAML, which the loader converts to JSON with
 `sdk/config/utils` before `Build` sees the definition.
 
 The build step validates the definition against the registry, compiles edge
@@ -244,8 +245,9 @@ kind in deployment documents. It wires the standard node factories
 | `script_runtime` | `agent.ScriptRuntime` | graph contains a script node                 |
 
 See [deploy.md](deploy.md#engines) for the engine settings schema, graph
-definition forms (scalar / `file` / `inline`), and full configuration
-options. The factory loads graph files itself (`WithBaseDir`, 1 MiB cap) —
+definition forms (literal / `{file: ...}` / `{embed: ...}`), and full
+configuration options. The factory resolves definitions through a
+shared `config.Loader` (`WithLoader`, 1 MiB default cap) —
 `graph.ParseDefinitionFile` does not exist.
 
 ## Testing

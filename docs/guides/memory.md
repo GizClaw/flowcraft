@@ -151,7 +151,7 @@ agents:
   researcher:
     engine:
       kind: graph
-      settings: {graph: ./graphs/researcher.json}
+      settings: {graph: {file: ./graphs/researcher.json}}
     deps:
       inference: infer
     prepare:
