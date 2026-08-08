@@ -70,10 +70,7 @@ jobs:
           TAGS_JSON: ${{ steps.plan.outputs.tags }}
         run: |
           set -euo pipefail
-          (
-            cd tools/releasegate
-            GOWORK=off go run . changelog --repo ../.. --write
-          )
+          make release-changelog
           if git diff --quiet -- CHANGELOG.md; then
             while read -r tag; do
               heading_line=$(awk -v heading="## \`$tag\` -" \
