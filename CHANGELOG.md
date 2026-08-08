@@ -13,13 +13,19 @@ Release PR before their tags are published.
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
 | `sdk`    | `sdk/v0.5.0`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.4.10`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.0`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdkx/v0.5.0` - 2026-08-08
+
+### Changed
+
+- sdkx v0.5.0: unify provider adapters under sdkx/inference, land deploy/runtime/scheduler/delegation and A2A assembly, swap nsjail for bubblewrap, and remove the legacy 0.4.x surfaces
 
 ## `sdk/v0.5.0` - 2026-08-08
 
@@ -156,19 +162,6 @@ General availability of the standalone daemon.
   secret providers, and TLS resolver helpers landed after `vesseld/v0.1.0`.
   These are documented in current README/examples and will be captured by the
   next daemon binary release tag.
-
-## `sdkx/v0.3.x` - 2026-05-09 to 2026-05-17
-
-Provider-adapter line paired with `sdk/v0.3.x`.
-
-### Highlights
-
-- Moved tool implementations for history, knowledge, and kanban into
-  `sdkx/tool/...` while keeping public signatures stable for migrated callers.
-- Added prompt-cache routing/markers and cache-token normalization for supported
-  providers.
-- Added nsjail sandbox backend and provider-name telemetry overrides.
-- Removed `sdkx/knowledge/watcher` alongside the SDK knowledge watcher cleanup.
 
 ## `vessel/v0.1.0` - 2026-05-11
 
