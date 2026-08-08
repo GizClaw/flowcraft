@@ -1,4 +1,4 @@
-package nsjail
+package bwrap
 
 // RunnerOption configures a Runner at construction time.
 type RunnerOption func(*runnerConfig)
@@ -8,13 +8,13 @@ type RunnerOption func(*runnerConfig)
 // type-check on every OS even though Runner itself is Linux-only.
 type runnerConfig struct {
 	binFrom  string   // raw value supplied to WithBinary, "" if defaulted
-	extra    []string // extra nsjail flags injected before the "--" separator
+	extra    []string // extra bwrap flags injected before the "--" separator
 	writable []string // additional explicitly writable host paths
 }
 
-// WithBinary overrides the nsjail binary path. By default the Runner
-// uses exec.LookPath("nsjail"); set this for hermetic builds where
-// nsjail lives in a vendored directory.
+// WithBinary overrides the bwrap binary path. By default the Runner
+// uses exec.LookPath("bwrap"); set this for hermetic builds where
+// bwrap lives in a vendored directory.
 func WithBinary(path string) RunnerOption {
 	return func(c *runnerConfig) {
 		c.binFrom = path
@@ -25,8 +25,11 @@ func WithBinary(path string) RunnerOption {
 // flag list and the "--" separator that precedes the command. Use
 // sparingly: per-policy flags are owned by sandbox.ExecOptions.
 //
-// Flags that can weaken the mount boundary (--rw, --chroot, mount /
-// bind-mount options, or --disable_clone_newns) are rejected by New.
+// Flags that can weaken the boundary are rejected by New. That
+// includes every mount / env / net / namespace / workdir / seccomp
+// option bwrap exposes, so the escape hatch cannot downgrade any
+// policy dimension the Runner promises to enforce. Extras are also
+// emitted before the policy flags so policy flags always win.
 // Use [WithWritablePaths] for intentional write exceptions.
 func WithExtraFlags(flags ...string) RunnerOption {
 	return func(c *runnerConfig) {

@@ -1,7 +1,10 @@
 // Package httpkit carries the HTTP conveniences the hand-rolled provider
 // clients (qwen, minimax, kimi, bytedance) use: a tuned connection-pooling
-// transport, a bounded retry RoundTripper for transient failures, and an
-// option-driven client builder that hardens HTTP/1.1, HTTP/2, or HTTP/3.
+// transport, a bounded retry RoundTripper for transient failures, an
+// option-driven client builder that hardens HTTP/1.1, HTTP/2, or HTTP/3,
+// and the host-side sandbox enforcement proxy (netproxy.go) that turns
+// sandbox.NetAllowList / sandbox.NetProxy into a single enforced egress
+// for the bwrap backend.
 package httpkit
 
 import (

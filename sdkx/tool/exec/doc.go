@@ -77,6 +77,6 @@
 //
 // The same sandbox can be shared with the script-engine shell
 // bridge, host-application sandbox resources, and any
-// future sdkx/sandbox/{nsjail,container,microvm} backend without
+// future sdkx/sandbox/{bwrap,container,microvm} backend without
 // changing this tool's call site.
 package exec

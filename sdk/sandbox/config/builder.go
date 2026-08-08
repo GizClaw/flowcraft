@@ -39,7 +39,7 @@ type Builder struct {
 }
 
 // NewBuilder creates a builder with the local backend registered.
-// Platform backends (seatbelt, nsjail, ...) register themselves from
+// Platform backends (seatbelt, bubblewrap, ...) register themselves from
 // their own packages.
 func NewBuilder(deps Deps) *Builder {
 	b := &Builder{

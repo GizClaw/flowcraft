@@ -1,6 +1,6 @@
 //go:build !linux
 
-package nsjail
+package bwrap
 
 import (
 	"context"

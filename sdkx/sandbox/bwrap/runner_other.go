@@ -1,6 +1,6 @@
 //go:build !linux
 
-package nsjail
+package bwrap
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 )
 
-// Runner is the non-Linux stub of the nsjail backend. It exists so
+// Runner is the non-Linux stub of the bubblewrap backend. It exists so
 // non-Linux developers can import this package for type references
 // (interfaces, option functions, tests for translation helpers)
 // without build-tag gymnastics; instantiating one is intentionally
@@ -17,7 +17,7 @@ import (
 type Runner struct{}
 
 // New always returns errdefs.NotAvailable on non-Linux platforms.
-// nsjail uses Linux-specific namespace and cgroup primitives that
+// bubblewrap uses Linux-specific namespace and mount primitives that
 // have no counterpart on macOS or Windows. Callers that need a
 // portable fallback should select sandbox.LocalRunner explicitly.
 func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
@@ -26,7 +26,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 	_ = rootDir
 	_ = opts
 	return nil, errdefs.NotAvailablef(
-		"nsjail: backend requires Linux; not available on this platform")
+		"bwrap: backend requires Linux; not available on this platform")
 }
 
 // Exec is unreachable because New never returns a non-nil Runner on
@@ -34,7 +34,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 // in type assertions written by portable code.
 func (*Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox.ExecOptions) (*sandbox.ExecResult, error) {
 	_, _, _, _ = ctx, cmd, args, opts
-	return nil, errdefs.NotAvailablef("nsjail: not available on this platform")
+	return nil, errdefs.NotAvailablef("bwrap: not available on this platform")
 }
 
 // Enforcement reports no capabilities on unsupported platforms.

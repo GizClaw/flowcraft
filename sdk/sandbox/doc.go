@@ -5,8 +5,9 @@
 //
 // The package centres on the Runner interface, a single Exec call that
 // turns a command + arguments + ExecOptions into an ExecResult. Concrete
-// runners differ in *where* the work happens (local process, nsjail
-// namespace, container, microVM) but share the same policy surface so a
+// runners differ in *where* the work happens (local process,
+// bubblewrap namespace, container, microVM) but share the same policy
+// surface so a
 // caller can be retargeted between backends without changing call sites.
 //
 // ExecOptions carries three policy groups beyond the obvious WorkDir /
@@ -30,7 +31,7 @@
 // enforcement but not filesystem or network confinement. Concrete
 // sdkx backends add those OS-level boundaries:
 //
-//	                         LocalRunner  seatbelt/macOS  nsjail/Linux
+//	                         LocalRunner  seatbelt/macOS  bubblewrap/Linux
 //	Env allow-list               yes           yes             yes
 //	Filesystem write bounds       no           yes             yes
 //	NetDenyAll                     no           yes             yes

@@ -1,6 +1,6 @@
 //go:build linux
 
-package nsjail
+package bwrap
 
 import (
 	"context"
@@ -12,24 +12,25 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
+	"github.com/GizClaw/flowcraft/sdkx/sandbox/bwrap/internal/bridge"
 )
 
-// fakeNsjail writes a tiny shell script that mimics nsjail's argv
+// fakeBwrap writes a tiny shell script that mimics bwrap's argv
 // contract: everything up to "--" is its own flags, everything after
 // is "cmd args...". The script prints the parsed argv as JSON-like
 // lines so tests can assert the translation without depending on a
-// real nsjail binary.
-func fakeNsjail(t *testing.T, script string) string {
+// real bwrap binary.
+func fakeBwrap(t *testing.T, script string) string {
 	t.Helper()
 	dir := t.TempDir()
-	path := filepath.Join(dir, "nsjail")
+	path := filepath.Join(dir, "bwrap")
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake nsjail: %v", err)
+		t.Fatalf("write fake bwrap: %v", err)
 	}
 	return path
 }
 
-// echoNsjail returns a fake nsjail that re-emits its own argv on
+// echoScript returns a fake bwrap that re-emits its own argv on
 // stdout, one per line, prefixed with "ARG:", and the post-"--"
 // command's name on stderr. This makes both translation and
 // command-pass-through observable in ExecResult.
@@ -51,7 +52,7 @@ exit 0
 `
 
 func TestNew_BinaryNotFound(t *testing.T) {
-	_, err := New(t.TempDir(), WithBinary("/no/such/nsjail/binary"))
+	_, err := New(t.TempDir(), WithBinary("/no/such/bwrap/binary"))
 	if err == nil {
 		t.Fatalf("expected error for missing binary")
 	}
@@ -61,7 +62,7 @@ func TestNew_BinaryNotFound(t *testing.T) {
 }
 
 func TestRunner_EnforcementIncludesFilesystemBounds(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+	bin := fakeBwrap(t, echoScript)
 	r, err := New(t.TempDir(), WithBinary(bin))
 	if err != nil {
 		t.Fatal(err)
@@ -73,20 +74,15 @@ func TestRunner_EnforcementIncludesFilesystemBounds(t *testing.T) {
 }
 
 func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+	bin := fakeBwrap(t, echoScript)
 	root := t.TempDir()
 	r, err := New(root, WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	res, err := r.Exec(context.Background(), "/bin/echo", []string{"hello"}, sandbox.ExecOptions{
-		Timeout: 2 * time.Second,
-		Env:     sandbox.EnvPolicy{Allow: []string{}}, // drop host env
-		Net:     sandbox.NetPolicy{Mode: sandbox.NetDenyAll},
-		Resources: sandbox.ResourceLimits{
-			CPUMillicores: 250,
-			MemoryBytes:   128 << 20,
-		},
+		Env: sandbox.EnvPolicy{Allow: []string{}}, // drop host env
+		Net: sandbox.NetPolicy{Mode: sandbox.NetDenyAll},
 	})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
@@ -96,18 +92,17 @@ func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
 	}
 	stdout := res.Stdout
 	for _, want := range []string{
-		"ARG:-Mo",
-		"ARG:--quiet",
-		"ARG:--chroot",
-		"ARG:--tmpfsmount",
+		"ARG:--die-with-parent",
+		"ARG:--unshare-pid",
+		"ARG:--clearenv",
+		"ARG:--unshare-net",
+		"ARG:--ro-bind",
+		"ARG:--tmpfs",
 		"ARG:/tmp",
-		"ARG:--bindmount",
+		"ARG:--bind",
 		"ARG:" + root,
-		"ARG:--time_limit",
-		"ARG:--cgroup_cpu_ms_per_sec",
-		"ARG:250",
-		"ARG:--cgroup_mem_max",
-		"ARG:" + itoa(128<<20),
+		"ARG:--proc",
+		"ARG:--dev",
 	} {
 		if !strings.Contains(stdout, want+"\n") && !strings.HasSuffix(stdout, want) {
 			t.Errorf("missing %q in stdout:\n%s", want, stdout)
@@ -116,23 +111,124 @@ func TestRunner_Exec_FlagsAndCmdPassThrough(t *testing.T) {
 	if !strings.Contains(res.Stderr, "CMD:/bin/echo") {
 		t.Errorf("expected CMD:/bin/echo in stderr, got %q", res.Stderr)
 	}
-	// NetDenyAll must NOT add --disable_clone_newnet.
-	if strings.Contains(stdout, "ARG:--disable_clone_newnet\n") {
-		t.Errorf("NetDenyAll leaked --disable_clone_newnet:\n%s", stdout)
+	// NetDenyAll must NOT add --share-net.
+	if strings.Contains(stdout, "ARG:--share-net\n") {
+		t.Errorf("NetDenyAll leaked --share-net:\n%s", stdout)
 	}
-	if strings.Contains(stdout, "ARG:--disable_clone_newns\n") {
-		t.Errorf("filesystem mount namespace was disabled:\n%s", stdout)
+	// Env must not leak host vars under Allow=[].
+	if strings.Contains(stdout, "ARG:--setenv\n") {
+		t.Errorf("Allow=[] leaked --setenv entries:\n%s", stdout)
 	}
 }
 
-func TestRunner_Exec_NetAllowListRejected(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+func TestRunner_Exec_NetAllowListWiresBridge(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Net: sandbox.NetPolicy{Mode: sandbox.NetAllowList, AllowHosts: []string{"example.com"}},
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	stdout := res.Stdout
+	for _, want := range []string{
+		"ARG:--unshare-net",
+		"ARG:--tmpfs",
+		"ARG:/run",
+		"ARG:--bind",
+		"ARG:/run/flowcraft-proxy.sock",
+		"ARG:--ro-bind",
+	} {
+		if !strings.Contains(stdout, want+"\n") && !strings.HasSuffix(stdout, want) {
+			t.Errorf("missing %q in stdout:\n%s", want, stdout)
+		}
+	}
+	// The bridge is the running executable re-executed with the
+	// reserved marker, not a separate binary.
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	if !strings.Contains(res.Stderr, "CMD:"+exe+"\n") {
+		t.Errorf("expected the host executable as the bridge command, stderr=%q", res.Stderr)
+	}
+	if !strings.Contains(stdout, "ARG:"+bridge.Marker+"\n") {
+		t.Errorf("expected bridge marker after the executable, stdout=%q", stdout)
+	}
+	if !strings.Contains(res.Stderr, "CMD:/bin/true\n") {
+		t.Errorf("expected the real command to pass through the bridge, stderr=%q", res.Stderr)
+	}
+}
+
+func TestRunner_Exec_NetProxyWiresBridge(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	res, err := r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Net: sandbox.NetPolicy{Mode: sandbox.NetProxy, Proxy: "http://127.0.0.1:9999"},
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	if !strings.Contains(res.Stderr, "CMD:"+exe+"\n") {
+		t.Errorf("expected the host executable as the bridge command, stderr=%q", res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "ARG:"+bridge.Marker+"\n") {
+		t.Errorf("expected bridge marker after the executable, stdout=%q", res.Stdout)
+	}
+}
+
+func TestRunner_EnforcementListsNetworkModes(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	enforcement := r.Enforcement()
+	for _, want := range []sandbox.NetMode{sandbox.NetDenyAll, sandbox.NetAllowList, sandbox.NetProxy} {
+		found := false
+		for _, mode := range enforcement.NetModes {
+			if mode == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Enforcement().NetModes missing %d: %v", int(want), enforcement.NetModes)
+		}
+	}
+}
+
+func TestRunner_Exec_DiskBytesRejected(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
 	r, err := New(t.TempDir(), WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	_, err = r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
-		Net: sandbox.NetPolicy{Mode: sandbox.NetAllowList, AllowHosts: []string{"example.com"}},
+		Resources: sandbox.ResourceLimits{DiskBytes: 1 << 20},
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Errorf("expected NotAvailable, got %v", err)
+	}
+}
+
+func TestRunner_Exec_CPUMillicoresRequiresTimeout(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Resources: sandbox.ResourceLimits{CPUMillicores: 500},
 	})
 	if err == nil || !errdefs.IsNotAvailable(err) {
 		t.Errorf("expected NotAvailable, got %v", err)
@@ -143,7 +239,7 @@ func TestRunner_Exec_PropagatesNonZeroExit(t *testing.T) {
 	failScript := `#!/bin/sh
 exit 7
 `
-	bin := fakeNsjail(t, failScript)
+	bin := fakeBwrap(t, failScript)
 	r, err := New(t.TempDir(), WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -158,8 +254,8 @@ exit 7
 }
 
 func TestRunner_Exec_HonoursStdin(t *testing.T) {
-	// Fake nsjail that echoes its stdin to its stdout.
-	bin := fakeNsjail(t, `#!/bin/sh
+	// Fake bwrap that echoes its stdin to its stdout.
+	bin := fakeBwrap(t, `#!/bin/sh
 cat
 exit 0
 `)
@@ -179,7 +275,7 @@ exit 0
 }
 
 func TestRunner_Exec_TruncatesOutput(t *testing.T) {
-	bin := fakeNsjail(t, `#!/bin/sh
+	bin := fakeBwrap(t, `#!/bin/sh
 # Print 4096 'a' bytes then exit.
 printf '%4096s' "" | tr ' ' 'a'
 exit 0
@@ -200,7 +296,7 @@ exit 0
 }
 
 func TestRunner_Exec_WorkDirEscapeRejected(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+	bin := fakeBwrap(t, echoScript)
 	root := t.TempDir()
 	r, err := New(root, WithBinary(bin))
 	if err != nil {
@@ -215,8 +311,8 @@ func TestRunner_Exec_WorkDirEscapeRejected(t *testing.T) {
 }
 
 func TestRunner_Exec_ExtraFlagsPropagated(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
-	r, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags("--log_level", "WARNING"))
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags("--level-prefix"))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -224,23 +320,19 @@ func TestRunner_Exec_ExtraFlagsPropagated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
-	if !strings.Contains(res.Stdout, "ARG:--log_level") || !strings.Contains(res.Stdout, "ARG:WARNING") {
+	if !strings.Contains(res.Stdout, "ARG:--level-prefix\n") {
 		t.Errorf("extra flags not propagated, stdout=%q", res.Stdout)
 	}
 }
 
-func TestNew_RejectsFilesystemWeakeningExtraFlags(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+func TestNew_RejectsWeakeningExtraFlags(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
 	for _, flag := range []string{
-		"--disable_clone_newns",
-		"--rw",
-		"--chroot=/",
-		"--bindmount",
-		"--bindmount_ro",
-		"--tmpfsmount",
-		"--mount",
-		"--config",
-		"-B/foo:/bar",
+		"--ro-bind", "--bind", "--tmpfs", "--proc", "--dev",
+		"--clearenv", "--setenv", "--unsetenv",
+		"--share-net", "--unshare-net", "--unshare-all", "--unshare-pid",
+		"--chdir", "--seccomp", "--cap-drop", "--new-session", "--args",
+		"--ro-bind=/x:/y", "--setenv=PATH=/x",
 	} {
 		t.Run(strings.TrimLeft(flag, "-"), func(t *testing.T) {
 			_, err := New(t.TempDir(), WithBinary(bin), WithExtraFlags(flag))
@@ -252,7 +344,7 @@ func TestNew_RejectsFilesystemWeakeningExtraFlags(t *testing.T) {
 }
 
 func TestRunner_WithWritablePaths(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+	bin := fakeBwrap(t, echoScript)
 	cache := t.TempDir()
 	r, err := New(t.TempDir(), WithBinary(bin), WithWritablePaths(cache))
 	if err != nil {
@@ -262,13 +354,13 @@ func TestRunner_WithWritablePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(res.Stdout, "ARG:--bindmount\nARG:"+cache+"\n") {
+	if !strings.Contains(res.Stdout, "ARG:--bind\nARG:"+cache+"\n") {
 		t.Errorf("writable path not emitted as bind mount: %q", res.Stdout)
 	}
 }
 
 func TestRunner_Exec_ContextCancelled(t *testing.T) {
-	bin := fakeNsjail(t, `#!/bin/sh
+	bin := fakeBwrap(t, `#!/bin/sh
 sleep 5
 exit 0
 `)
@@ -288,7 +380,7 @@ exit 0
 }
 
 func TestRunner_Exec_EmptyCommandRejected(t *testing.T) {
-	bin := fakeNsjail(t, echoScript)
+	bin := fakeBwrap(t, echoScript)
 	r, err := New(t.TempDir(), WithBinary(bin))
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -297,27 +389,4 @@ func TestRunner_Exec_EmptyCommandRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected validation error for empty command")
 	}
-}
-
-func itoa(n int64) string {
-	const digits = "0123456789"
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = digits[n%10]
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

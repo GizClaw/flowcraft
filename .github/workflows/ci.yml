@@ -208,14 +208,14 @@ jobs:
         run: go test -count=1 -race ./...
         working-directory: sdkx
 
-  test-sdkx-nsjail-integration:
-    name: Integration sdkx/sandbox/nsjail
+  test-sdkx-bwrap-integration:
+    name: Integration sdkx/sandbox/bwrap
     needs: detect
-    # nsjail backend lives in sdkx and depends on sdk/sandbox; rerun
+    # bwrap backend lives in sdkx and depends on sdk/sandbox; rerun
     # whenever either module's source changes (or CI itself changes).
-    # The job installs the nsjail binary and runs the
-    # integration_nsjail-tagged tests, which never run in the default
-    # test-sdkx lane (the build tag keeps them out).
+    # The job installs bubblewrap and runs the integration_bwrap-tagged
+    # tests, which never run in the default test-sdkx lane (the build
+    # tag keeps them out).
     if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -223,43 +223,23 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      - name: Install nsjail
-        # Ubuntu 24.04 (noble) dropped the nsjail package from
-        # universe, so we build from source. The compile takes ~30s
-        # on a GitHub-hosted runner — cheap enough to do every run
-        # given how rarely this job triggers (sdk/sdkx changes only).
+      - name: Install bubblewrap
+        # bubblewrap is packaged in Ubuntu (universe), so this is a
+        # single apt install — no source build, no sudo shim. GitHub
+        # hosted runners allow unprivileged user namespaces, which is
+        # all bwrap needs for its mount / net namespaces.
         run: |
           set -euo pipefail
-          if command -v nsjail >/dev/null 2>&1; then
-            echo "nsjail already present: $(command -v nsjail)"
-            nsjail --help 2>&1 | head -3 || true
+          if command -v bwrap >/dev/null 2>&1; then
+            echo "bwrap already present: $(command -v bwrap)"
+            bwrap --version
             exit 0
           fi
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config \
-            libcap-dev libprotobuf-dev protobuf-compiler \
-            libnl-3-dev libnl-route-3-dev \
-            bison flex
-          git clone --depth 1 https://github.com/google/nsjail.git /tmp/nsjail
-          make -C /tmp/nsjail -j"$(nproc)"
-          sudo install -m 0755 /tmp/nsjail/nsjail /usr/local/bin/nsjail
-          sudo mv /usr/local/bin/nsjail /usr/local/bin/nsjail-real
-          sudo tee /usr/local/bin/nsjail >/dev/null <<'EOF'
-          #!/bin/sh
-          # GitHub-hosted runners deny unprivileged mount-namespace setup, so
-          # run the real binary through passwordless sudo in this CI lane.
-          exec sudo -n /usr/local/bin/nsjail-real "$@"
-          EOF
-          sudo chmod 0755 /usr/local/bin/nsjail
-          nsjail --help 2>&1 | head -3 || true
-          which nsjail
+          sudo apt-get install -y --no-install-recommends bubblewrap
+          bwrap --version
       - name: Test
-        env:
-          # Keep sandbox roots out of /tmp: nsjail's private tmpfs
-          # conflicts with bind-mounting sources that live under /tmp.
-          TMPDIR: ${{ runner.temp }}
-        run: go test -tags=integration_nsjail -count=1 -timeout 180s ./sandbox/nsjail/...
+        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./sandbox/bwrap/...
         working-directory: sdkx
 
   # Gate job: single required status check for branch protection.
@@ -267,7 +247,7 @@ jobs:
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, lint-golangci, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-nsjail-integration]
+    needs: [detect, release-intent, lint, lint-golangci, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-bwrap-integration]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -284,7 +264,7 @@ jobs:
             "${{ needs.test-memory.result }}" \
             "${{ needs.test-eval.result }}" \
             "${{ needs.test-sdkx.result }}" \
-            "${{ needs.test-sdkx-nsjail-integration.result }}" \
+            "${{ needs.test-sdkx-bwrap-integration.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

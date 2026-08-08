@@ -78,7 +78,7 @@ const (
 	// mode; sandboxed backends interpret it as "no policy applied".
 	NetDefault NetMode = iota
 	// NetDenyAll forbids any outbound connection. Requires a sandboxing
-	// backend (nsjail / container / microvm) to enforce.
+	// backend (bubblewrap / container / microvm) to enforce.
 	NetDenyAll
 	// NetAllowList permits only destinations listed in AllowHosts.
 	// Requires a sandboxing backend.

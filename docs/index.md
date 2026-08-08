@@ -28,7 +28,7 @@ retrieval, runtime orchestration, and voice. Source on
   `state vs policy` split vs Sandbox.
 - [Sandbox](guides/sandbox.md) — `sdk/sandbox`: agent execution
   boundary, env / net / resources policy, runners (local /
-  seatbelt / nsjail), decorators and approval.
+  seatbelt / bwrap), decorators and approval.
 
 ### Assembly
 
