@@ -461,6 +461,31 @@ func TestChangelogCLIPrintCheckAndWrite(t *testing.T) {
 	}
 }
 
+func TestChangelogUpdatesPaddedPublishedStateRow(t *testing.T) {
+	before := "# Changelog\n\n" +
+		"## Current Published State\n\n" +
+		"| Module   | Latest tag      | Notes\n" +
+		"| -------- | --------------- | ----------------------------------------------------------------------------------------- |\n" +
+		"| `sdk`    | `sdk/v0.5.0`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |\n" +
+		"| `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |\n" +
+		"| `sdkx`   | `sdkx/v0.4.10`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |\n" +
+		"\n## [Unreleased]\n"
+	got, err := updatePublishedState(before, []ModulePlan{{Module: "sdkx", Tag: "sdkx/v0.5.0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSdkx := "| `sdkx`   | `sdkx/v0.5.0`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |"
+	if !strings.Contains(got, wantSdkx) {
+		t.Fatalf("padded sdkx row not updated with padding preserved:\n%s", got)
+	}
+	if !strings.Contains(got, "| `sdk`    | `sdk/v0.5.0`    |") {
+		t.Fatalf("unrelated sdk row changed:\n%s", got)
+	}
+	if !strings.Contains(got, "| `memory` | `memory/v0.1.7` |") {
+		t.Fatalf("unrelated memory row changed:\n%s", got)
+	}
+}
+
 func TestChangelogOnlyUpdatesActiveModuleRows(t *testing.T) {
 	repo := changelogRepo(t, "sdk", "1.0.0")
 	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")
