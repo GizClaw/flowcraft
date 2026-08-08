@@ -318,6 +318,7 @@ explicit external consumer is dead configuration and fails the build.
 | `tool.Assembly`           | `yaml`          | catalog + executor              | `sdk/tool/config`              |
 | `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/jsrt`               |
 | `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
+| `agent.Engine`            | `a2a`           | A2A remote-proxy engine (0.3 + 1.0, JSON-RPC + gRPC) | `sdkx/agent/a2a/config`          |
 | `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |
 | `scheduler.Server`        | `local`         | shared scheduler server         | `sdk/scheduler/config`         |
@@ -997,6 +998,8 @@ warms up its catalog on first use).
   `sdk/tool/config/doc.go`, `sdk/event/config/resource.go`,
   `sdk/memory` and the implementation module.
 - Engine contract: `sdk/agent/doc.go`, `sdk/graph/config/factory.go`.
+- A2A remote-proxy engine: `sdkx/agent/a2a/doc.go`,
+  `sdkx/agent/a2a/config/factory.go` (engine kind `a2a`).
 - Delegation contracts and local runtime: `sdk/delegation/doc.go`,
   `sdkx/delegation/doc.go`, `sdkx/tool/delegation/doc.go`.
 - Lifecycle hooks: `sdk/agent/doc.go` (`Preparer`, `Referee`,
