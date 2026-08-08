@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -591,19 +592,23 @@ func updatePublishedState(changelog string, modules []ModulePlan) (string, error
 	updated := make(map[string]bool, len(tags))
 	for index := tableStart; index < tableEnd; index++ {
 		line := lines[index]
-		for module, tag := range tags {
-			prefix := "| `" + module + "` |"
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			cells := strings.Split(line, "|")
-			if len(cells) < 5 {
-				return "", fmt.Errorf("invalid Current Published State row for module %s", module)
-			}
-			cells[2] = " `" + tag + "` "
-			lines[index] = strings.Join(cells, "|")
-			updated[module] = true
+		cells := strings.Split(line, "|")
+		if len(cells) < 3 {
+			continue
 		}
+		module := strings.Trim(strings.TrimSpace(cells[1]), "`")
+		tag, ok := tags[module]
+		if !ok {
+			continue
+		}
+		oldRe := regexp.MustCompile("`" + regexp.QuoteMeta(module) +
+			"/v[0-9]+\\.[0-9]+\\.[0-9]+`")
+		old := oldRe.FindString(cells[2])
+		if old == "" {
+			return "", fmt.Errorf("Current Published State row for module %s has no version cell", module)
+		}
+		lines[index] = strings.Replace(line, old, "`"+tag+"`", 1)
+		updated[module] = true
 	}
 	for module := range tags {
 		if !updated[module] {
