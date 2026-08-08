@@ -11,7 +11,7 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `sdk` | `sdk/v0.4.0` | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives. |
+| `sdk` | `sdk/v0.5.0` | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives. |
 | `memory` | `memory/v0.1.0` | First standalone memory-domain release: recall v2, history, knowledge, retrieval, text, and stores. |
 | `sdkx` | `sdkx/v0.4.0` | Provider/adaptor release pinned to `sdk v0.4.0` and `memory v0.1.0`. |
 | `vessel` | `vessel/v0.3.0` | Retired; historical tags remain available, but source and active support have been removed from `main`. |
@@ -38,6 +38,12 @@ Release PR before their tags are published.
   server through `sdkx/tool/mcp`.
 
 <!-- releasegate:releases -->
+
+## `sdk/v0.5.0` - 2026-08-08
+
+### Changed
+
+- Breaking cleanup: remove v0.4.x deprecated surfaces and land the unified runtime (engine into agent, llm/embedding/model into inference+message), the config.Factory/Source/Loader build protocol, and bubblewrap sandbox with network enforcement
 
 ## `sdk/v0.4.0` - 2026-05-30
 
@@ -151,25 +157,6 @@ General availability of the standalone daemon.
   secret providers, and TLS resolver helpers landed after `vesseld/v0.1.0`.
   These are documented in current README/examples and will be captured by the
   next daemon binary release tag.
-
-## `sdk/v0.3.x` - 2026-05-09 to 2026-05-17
-
-The v0.3 line closed the v0.2 deprecation window and cleaned up the SDK runtime
-surface. See [`docs/migrations/v0.3.0.md`](docs/migrations/v0.3.0.md) for the
-full removed-symbol table and migration recipe.
-
-### Highlights
-
-- Removed `sdk/workflow`, workflow/graph adapters, round helper families, and
-  legacy graph/runtime shims.
-- Converged graph execution on `engine.Engine`, typed message channels, and
-  explicit board channel names.
-- Removed legacy `sdk/knowledge`, `sdk/history`, and `sdk/retrieval`
-  compatibility surfaces that had been deprecated through v0.2.
-- Added runtime metadata, host dependencies, tool registry/allow-list plumbing,
-  cached-token usage fields, and telemetry attributes/counters.
-- Fixed scriptnode bindings, required message-output validation, provider error
-  classification, nil upstream responses, and eval module dependency drift.
 
 ## `sdkx/v0.3.x` - 2026-05-09 to 2026-05-17
 
