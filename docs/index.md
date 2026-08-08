@@ -41,11 +41,10 @@ retrieval, runtime orchestration, and voice. Source on
 
 ## Migrations
 
-- [`sdk/v0.5.0`](migrations/v0.5.0.md) — unified runtime, configuration
-  protocol, and sandbox cutover.
-- [`sdkx/v0.5.0`](migrations/sdkx-v0.5.0.md) — unified provider adapters,
-  deploy/runtime assembly, bubblewrap sandbox, and the A2A remote-proxy
-  engine.
+- [`sdk/v0.5.0` + `sdkx/v0.5.0`](migrations/v0.5.0.md) — unified runtime,
+  configuration protocol, sandbox cutover, and the coordinated sdkx
+  provider/adapter rebuild (inference providers, deploy/runtime assembly,
+  bubblewrap sandbox, A2A remote-proxy engine).
 - [`sdk/v0.4.0` + `memory/v0.1.0`](migrations/v0.4.0-memory-split.md) —
   memory-domain packages split into the standalone `memory` module.
 - [`sdk/v0.3.0`](migrations/v0.3.0.md) — breaking-change cutover
