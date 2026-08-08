@@ -28,17 +28,17 @@ type deployFactory struct{}
 //
 // The returned runtime implements io.Closer, so an assembly result owns
 // and closes its VM pool.
-func NewDeployFactory() sdkconfig.ResourceFactory {
+func NewDeployFactory() sdkconfig.Factory {
 	return deployFactory{}
 }
 
-func (deployFactory) Spec() sdkconfig.ResourceSpec {
-	return sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: "lua"}
+func (deployFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: ResourceKind, Impl: "lua"}
 }
 
 func (deployFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
-	var settings ResourceSettings
-	if err := in.Settings.Decode(&settings); err != nil {
+	settings, err := sdkconfig.DecodeSettings[ResourceSettings](in.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"luart: decode resource settings: %w", err))
 	}

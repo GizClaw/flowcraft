@@ -14,11 +14,11 @@ import (
 )
 
 func TestDeployFactorySpec(t *testing.T) {
-	got := sandboxconfig.NewDeployFactory().Spec()
-	want := sdkconfig.ResourceSpec{
+	got := sandboxconfig.NewBuilder(sandboxconfig.Deps{}).Spec()
+	want := sdkconfig.Spec{
 		Kind: sandboxconfig.ResourceKind,
 		Impl: "yaml",
-		Deps: []sdkconfig.ResourceDepSpec{{
+		Deps: []sdkconfig.DepSpec{{
 			Name:     sandboxconfig.WorkspacesDep,
 			Type:     workspaceconfig.ResourceKind,
 			Required: true,
@@ -34,8 +34,7 @@ func TestDeployFactorySpec(t *testing.T) {
 // the sandbox resource reaches its workspaces through deps, and one
 // runner can be resolved out of the built sandbox registry.
 func TestRegistriesWireTogether(t *testing.T) {
-	workspaceFactory := workspaceconfig.NewDeployFactory(
-		workspaceconfig.NewBuilder(workspaceconfig.Deps{}))
+	workspaceFactory := workspaceconfig.NewBuilder(workspaceconfig.Deps{})
 	wsValue, err := workspaceFactory.New(context.Background(), sdkconfig.Input{
 		Resolve: resolveLiteral(t),
 		Settings: literalSettings(t, `{
@@ -50,7 +49,7 @@ func TestRegistriesWireTogether(t *testing.T) {
 	}
 	workspaces := wsValue.(*workspaceconfig.Registry)
 
-	sandboxFactory := sandboxconfig.NewDeployFactory()
+	sandboxFactory := sandboxconfig.NewBuilder(sandboxconfig.Deps{})
 	boxValue, err := sandboxFactory.New(context.Background(), sdkconfig.Input{
 		Resolve: resolveLiteral(t),
 		Settings: literalSettings(t, `{
@@ -77,7 +76,7 @@ func TestRegistriesWireTogether(t *testing.T) {
 }
 
 func TestDeployFactoryNewRejectsInvalidDependenciesAndSettings(t *testing.T) {
-	factory := sandboxconfig.NewDeployFactory()
+	factory := sandboxconfig.NewBuilder(sandboxconfig.Deps{})
 	settings := literalSettings(t, `{"version": "v1", "sandboxes": {}}`)
 	for name, deps := range map[string]map[string]any{
 		"missing": nil,
@@ -106,26 +105,22 @@ func TestDeployFactoryNewRejectsInvalidDependenciesAndSettings(t *testing.T) {
 	}
 }
 
-func settingsOpaque(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsOpaque(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
-	var opaque sdkconfig.Opaque
+	var opaque json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return opaque
 }
 
-func literalSettings(t *testing.T, doc string) *sdkconfig.Opaque {
+func literalSettings(t *testing.T, doc string) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal literal settings: %v", err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(raw, &opaque); err != nil {
-		t.Fatalf("unmarshal settings: %v", err)
-	}
-	return &opaque
+	return json.RawMessage(raw)
 }
 
 func resolveLiteral(t *testing.T) func(context.Context, sdkconfig.Source) ([]byte, error) {

@@ -17,7 +17,7 @@ const (
 )
 
 func (b *Builder) registerBuiltins() {
-	b.referees[AfterDiscardOnInterrupt] = buildDiscardOnInterrupt
+	b.MustRegisterFactory(discardOnInterruptFactory{})
 }
 
 type discardSettings struct {
@@ -25,9 +25,20 @@ type discardSettings struct {
 	Causes []string `json:"causes"`
 }
 
-func buildDiscardOnInterrupt(_ context.Context, in sdkconfig.Input) (agent.Referee, error) {
-	var s discardSettings
-	if err := in.Settings.Decode(&s); err != nil {
+// discardOnInterruptFactory implements config.Factory for the built-in
+// discard-on-interrupt referee.
+type discardOnInterruptFactory struct{}
+
+// Spec implements config.Factory.
+func (discardOnInterruptFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: HookKindReferee, Impl: AfterDiscardOnInterrupt}
+}
+
+// New implements config.Factory: settings.causes names the interrupt
+// causes that discard the committed result.
+func (discardOnInterruptFactory) New(_ context.Context, in sdkconfig.Input) (any, error) {
+	s, err := sdkconfig.DecodeSettings[discardSettings](in.Settings)
+	if err != nil {
 		return nil, fmt.Errorf("decode %s settings: %w", AfterDiscardOnInterrupt, err)
 	}
 	if len(s.Causes) == 0 {

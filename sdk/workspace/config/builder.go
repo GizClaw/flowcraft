@@ -34,12 +34,12 @@ type Resource struct {
 // Factory constructs one workspace from its driver-owned settings. A
 // custom implementation decodes its own configuration from
 // [sdkconfig.Input.Settings].
-type Factory = sdkconfig.Factory[sdkconfig.Input, Resource]
+type Factory = sdkconfig.Func[sdkconfig.Input, Resource]
 
 // Builder owns an instance-local driver catalog.
 type Builder struct {
 	deps    Deps
-	catalog *sdkconfig.Catalog[sdkconfig.Input, Resource]
+	catalog *sdkconfig.Registry[sdkconfig.Input, Resource]
 }
 
 // NewBuilder creates a builder with the local and memory drivers
@@ -47,7 +47,7 @@ type Builder struct {
 func NewBuilder(deps Deps) *Builder {
 	b := &Builder{
 		deps:    deps,
-		catalog: sdkconfig.NewCatalog[sdkconfig.Input, Resource](),
+		catalog: sdkconfig.NewRegistry[sdkconfig.Input, Resource](),
 	}
 	b.registerBuiltins()
 	return b

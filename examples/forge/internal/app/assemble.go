@@ -7,7 +7,6 @@ import (
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
 	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
-	"github.com/GizClaw/flowcraft/sdk/agent"
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
@@ -33,12 +32,11 @@ import (
 )
 
 func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) (*runtimecore.Runtime, error) {
-	engines := agent.NewRegistry()
 	loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(a.dir))
-	engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
-	simtools.Register(a.tools, &a.toolCalls)
 
-	deployBuilder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
+	deployBuilder := deploy.NewBuilder(deploy.WithLoader(loader))
+	deployBuilder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+	simtools.Register(a.tools, &a.toolCalls)
 	deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 	schedulerBuilder := schedulerconfig.NewBuilder()
@@ -49,7 +47,7 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 
 	workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: a.dir})
-	deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
+	deployBuilder.MustRegisterResource(workspaceBuilder)
 	deployBuilder.MustRegisterResource(jsrt.NewDeployFactory())
 
 	toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
@@ -58,7 +56,7 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 			toolBuilder.RegisterBuiltin(t)
 		}
 	}
-	deployBuilder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+	deployBuilder.MustRegisterResource(toolBuilder)
 
 	factories := providerFactories()
 	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
@@ -66,11 +64,11 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
 		"flowcraft",
 		flowcraftmemory.Factory(),
-		sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-		sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
+		sdkconfig.DepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+		sdkconfig.DepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
 	))
-	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparerFactory)
-	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitterFactory)
+	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparer{})
+	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitter{})
 
 	runtimeBuilder := runtimecore.NewBuilder(deployBuilder)
 	delegationFactory, err := delegationruntime.NewFactory(a.tools)

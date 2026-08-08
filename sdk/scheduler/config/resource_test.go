@@ -40,7 +40,7 @@ func TestDeployFactorySpec(t *testing.T) {
 		t.Fatalf("RegisterFactory: %v", err)
 	}
 	got := schedulerconfig.NewDeployFactory("fake", builder).Spec()
-	want := sdkconfig.ResourceSpec{Kind: schedulerconfig.ResourceKind, Impl: "fake"}
+	want := sdkconfig.Spec{Kind: schedulerconfig.ResourceKind, Impl: "fake"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
 	}

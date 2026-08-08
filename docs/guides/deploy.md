@@ -43,7 +43,7 @@ The application still owns:
 
 | Area        | What it names                              | Who owns its schema or construction              |
 | ----------- | ------------------------------------------ | ------------------------------------------------ |
-| `resources` | shared, long-lived objects                 | registered `ResourceFactory` per `(kind, impl)`  |
+| `resources` | shared, long-lived objects                 | registered `config.Factory` per `(kind, impl)`   |
 | `agents`    | named agent instances with engine + hooks  | engine factory + registered hook factories       |
 | `runtime`   | optional application-runtime configuration | preserved opaquely by deploy; strictly decoded by `sdkx/runtime` |
 
@@ -117,8 +117,9 @@ into a `Result`. The graph engine is the built-in; custom engines
 register through `agent.NewFactory` on the same registry the
 `Builder` was constructed with.
 
-Each engine publishes its own `EngineSpec`: a list of named deps with
-required types. The document's `agent.deps` is keyed by those names:
+Each engine kind implements `config.Factory` and publishes a
+`config.Spec`: a list of named deps with required types. The
+document's `agent.deps` is keyed by those names:
 
 ```yaml
 agents:
@@ -255,10 +256,8 @@ import (
 func main() {
     ctx := context.Background()
 
-    engines := agent.NewRegistry()
-    engines.MustRegister(graphconfig.NewFactory())
-
-    builder := deploy.NewBuilder(engines)
+    builder := deploy.NewBuilder()
+    builder.RegisterEngine(graphconfig.NewFactory())
     // Register the inference resource; pass your provider factory and
     // secret resolver maps here instead of nil.
     builder.MustRegisterResource(inferenceconfig.NewDeployFactory(nil, nil))
@@ -298,12 +297,11 @@ resources:
     settings: <impl-owned, strictly decoded>
 ```
 
-- `kind` + `impl` select a `ResourceFactory` registered on the
-  `Builder`.
-- `deps` matches the factory's `ResourceSpec.Deps` (names + required
-  types).
+- `kind` + `impl` select a `config.Factory` registered on the
+  `Builder` (engine kinds register under their kind with an empty impl).
+- `deps` matches the factory's `Spec.Deps` (names + required types).
 - `settings` is opaque to the loader; the factory must call
-  `deploy.DecodeSettings[T]` so unknown keys fail the build.
+  `sdkconfig.DecodeSettings[T]` so unknown keys fail the build.
 - `export: true` lets the application retrieve a value via
   `deploy.ResourceAs[T](result, "<name>")` even if nothing binds it.
 
@@ -366,24 +364,24 @@ no second schema to keep in sync.
 
 ### Custom resources
 
-A `ResourceFactory` is one Go type. Register it once on the `Builder`,
-and it plugs into the document as a `(kind, impl)` pair:
+A custom resource implements `config.Factory`. Register it once on the
+`Builder`, and it plugs into the document as a `(kind, impl)` pair:
 
 ```go
 // sdkconfig is github.com/GizClaw/flowcraft/sdk/config.
 type myFactory struct{ /* config, client, etc. */ }
 
-func (f *myFactory) Spec() sdkconfig.ResourceSpec {
-    return sdkconfig.ResourceSpec{
+func (f *myFactory) Spec() sdkconfig.Spec {
+    return sdkconfig.Spec{
         Kind: "my.Kind", Impl: "default",
-        Deps: []sdkconfig.ResourceDepSpec{
+        Deps: []sdkconfig.DepSpec{
             {Name: "inference", Type: "inference.Assembly", Required: true},
         },
     }
 }
 
 func (f *myFactory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
-    settings, err := deploy.DecodeSettings[mySettings](in.Settings)
+    settings, err := sdkconfig.DecodeSettings[mySettings](in.Settings)
     if err != nil { return nil, err }
     infer, _ := in.Dep("inference")
     return buildMyResource(ctx, settings, infer)
@@ -426,7 +424,7 @@ agents:
   time against the tool catalog).
 - `engine` is opaque to the loader; the registered engine factory
   decodes and validates `settings` strictly.
-- `deps` is keyed by the engine's `EngineSpec`; type mismatches fail
+- `deps` is keyed by the engine's `Spec.Deps`; type mismatches fail
   the build.
 - `policy` is a per-call struct, not a hook. The graph engine reads
   `max_revise`; custom engines can read whichever fields they
@@ -473,8 +471,9 @@ The graph factory's dep contract:
 | `sandbox`        | `sandbox.Runner`      | scripts need command execution                   |
 | `script_runtime` | `agent.ScriptRuntime` | the graph contains a script node                 |
 
-Custom engines register through `agent.NewFactory` with their own
-`EngineSpec`, then appear in the document as `engine.kind: <name>`.
+Custom engines implement `config.Factory` (kind = engine name,
+empty impl) and register through `Builder.RegisterEngine`; they appear
+in the document as `engine.kind: <name>`.
 
 ## Lifecycle hooks in practice
 
@@ -633,11 +632,9 @@ toolBuilder.RegisterBuiltins(tooldelegation.New(directory)...)
 
 loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
-
-builder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
-builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
+builder := deploy.NewBuilder(deploy.WithLoader(loader))
+builder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
+builder.MustRegisterResource(toolBuilder)
 builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 builder.RegisterReferee(
@@ -839,10 +836,8 @@ The host owns execution behavior; `Result` owns the bus lifecycle.
 ```go
 loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
-
-builder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
+builder := deploy.NewBuilder(deploy.WithLoader(loader))
+builder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
 
 // Resources the document references.
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
@@ -912,13 +907,13 @@ already have:
 | You want to add        | Method                                                      | Document surface                      |
 | ---------------------- | ----------------------------------------------------------- | ------------------------------------- |
 | A new kind of resource | `MustRegisterResource`                                      | a new `kind` / `impl` pair            |
-| A new engine           | `agent.NewRegistry().MustRegister(...)`                     | a new `engine.kind`                   |
+| A new engine           | `RegisterEngine`                                           | a new `engine.kind`                   |
 | A new hook kind        | `RegisterPreparer` / `RegisterReferee` / `RegisterCommitter` / `RegisterObserver` | a new `prepare/referees/commit/observe.type` |
 | A host-owned value     | `RegisterSource`                                            | a new `source: <name>` dep ref        |
 
-The four hook factory types are distinct so a factory registered
-against the wrong stage is a compile error — there is no implicit
-"if it has these methods it works":
+Hook factories implement `config.Factory` with a `hook.*` spec kind, so a
+factory registered against the wrong stage is a compile error — there is no
+implicit "if it has these methods it works":
 
 ```go
 b.RegisterPreparer("seed", seedFactory)

@@ -2,23 +2,23 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// Input is the universal factory input shared by every extension in
-// the config protocol: the extension's opaque settings subtree plus
-// already-built dependencies.
+// Input is the universal factory input: the factory-owned settings
+// subtree as raw JSON plus already-built dependencies. It is shared by
+// every [Factory] in the config protocol.
 //
-// Extensions decode their own settings with [Opaque.Decode] (or
-// [DecodeSettings]) and type-assert dependency values themselves. The
-// envelope never interprets either half.
+// Factories decode Settings with [DecodeSettings] (strict decoding, so
+// unknown keys fail the build) and type-assert dependency values
+// themselves. The envelope never interprets either half.
 type Input struct {
-	// Settings is the extension-owned subtree. Decode it so unknown
-	// keys fail the build.
-	Settings *Opaque
+	// Settings is the factory-owned subtree, strictly decoded by the
+	// factory inside New.
+	Settings json.RawMessage
 
 	// Deps holds resolved dependencies keyed by the names used in the
 	// document.
@@ -49,29 +49,14 @@ func (in Input) ResolveSource(ctx context.Context, src Source) ([]byte, error) {
 }
 
 // ResolveDocument decodes Settings as a [Source] and materializes it to
-// bytes. It is the single settings-reading helper for resource impls
-// that wrap a module's own document loader: the settings subtree is
-// itself the document (literal string or structured object) or a
-// {file: ...} / {embed: ...} reference.
+// bytes. It is the standard way for a factory whose settings subtree
+// is itself a module-owned document (literal string, structured
+// content, or {file: ...} / {embed: ...}) to obtain that document.
 func (in Input) ResolveDocument(ctx context.Context) ([]byte, error) {
-	var src Source
-	if err := in.Settings.Decode(&src); err != nil {
+	src, err := DecodeSettings[Source](in.Settings)
+	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"config: decode settings document: %w", err))
 	}
 	return in.ResolveSource(ctx, src)
 }
-
-// ObserverFactory builds one read-only lifecycle hook. Factories MUST
-// decode settings strictly (see [DecodeSettings]) so a typo in YAML
-// fails the build rather than silently dropping policy.
-type ObserverFactory func(ctx context.Context, in Input) (agent.Observer, error)
-
-// PreparerFactory builds the [agent.Preparer] seed hook.
-type PreparerFactory func(ctx context.Context, in Input) (agent.Preparer, error)
-
-// RefereeFactory builds one [agent.Referee] decision hook.
-type RefereeFactory func(ctx context.Context, in Input) (agent.Referee, error)
-
-// CommitterFactory builds one [agent.Committer] durable finalizer.
-type CommitterFactory func(ctx context.Context, in Input) (agent.Committer, error)

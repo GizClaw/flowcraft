@@ -18,10 +18,10 @@ import (
 )
 
 func TestMemoryDeployFactorySpec(t *testing.T) {
-	want := sdkconfig.ResourceSpec{
+	want := sdkconfig.Spec{
 		Kind: ResourceKind,
 		Impl: "kanban-memory",
-		Deps: []sdkconfig.ResourceDepSpec{{
+		Deps: []sdkconfig.DepSpec{{
 			Name: EventBusDep,
 			Type: sdkeventconfig.ResourceKind,
 		}},
@@ -211,14 +211,14 @@ func asyncRequest(input string) delegation.AsyncRequest {
 	}
 }
 
-func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
 	if raw == "" {
 		return nil
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return out
 }

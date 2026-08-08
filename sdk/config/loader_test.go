@@ -231,7 +231,7 @@ func TestInput_ResolveDocument(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"version":"v1"}`), &o); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	in := Input{Settings: &o, Resolve: NewLoader().Load}
+	in := Input{Settings: json.RawMessage(o), Resolve: NewLoader().Load}
 	data, err := in.ResolveDocument(context.Background())
 	if err != nil {
 		t.Fatalf("ResolveDocument: %v", err)

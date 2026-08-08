@@ -11,10 +11,8 @@ import (
 )
 
 func TestDeployFactorySpec(t *testing.T) {
-	got := config.NewDeployFactory(
-		config.NewBuilder(config.Deps{}),
-	).Spec()
-	want := sdkconfig.ResourceSpec{
+	got := config.NewBuilder(config.Deps{}).Spec()
+	want := sdkconfig.Spec{
 		Kind: config.ResourceKind,
 		Impl: "yaml",
 	}
@@ -24,9 +22,7 @@ func TestDeployFactorySpec(t *testing.T) {
 }
 
 func TestDeployFactoryNewBuildsAssemblyAndRejectsInvalidInput(t *testing.T) {
-	factory := config.NewDeployFactory(
-		config.NewBuilder(config.Deps{}),
-	)
+	factory := config.NewBuilder(config.Deps{})
 	value, err := factory.New(context.Background(), sdkconfig.Input{
 		Resolve:  resolveLiteral(t),
 		Settings: literalSettings(t, `{"version":"v1"}`),
@@ -43,7 +39,7 @@ func TestDeployFactoryNewBuildsAssemblyAndRejectsInvalidInput(t *testing.T) {
 	}); err == nil {
 		t.Fatal("New accepted an unknown resource setting")
 	}
-	if _, err := config.NewDeployFactory(nil).New(
+	if _, err := (*config.Builder)(nil).New(
 		context.Background(),
 		sdkconfig.Input{},
 	); err == nil {
@@ -51,26 +47,22 @@ func TestDeployFactoryNewBuildsAssemblyAndRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
-	var opaque sdkconfig.Opaque
+	var opaque json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return opaque
 }
 
-func literalSettings(t *testing.T, doc string) *sdkconfig.Opaque {
+func literalSettings(t *testing.T, doc string) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal literal settings: %v", err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(raw, &opaque); err != nil {
-		t.Fatalf("unmarshal settings: %v", err)
-	}
-	return &opaque
+	return json.RawMessage(raw)
 }
 
 func resolveLiteral(t *testing.T) func(context.Context, sdkconfig.Source) ([]byte, error) {

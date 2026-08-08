@@ -26,22 +26,22 @@ type testEngineFactory struct {
 	engine agent.Engine
 }
 
-func (f testEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: "test"}
+func (f testEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: "test"}
 }
 
-func (f testEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+func (f testEngineFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	return f.engine, nil
 }
 
 type testResourceFactory struct {
-	spec  sdkconfig.ResourceSpec
+	spec  sdkconfig.Spec
 	value any
 	err   error
 	calls *int
 }
 
-func (f testResourceFactory) Spec() sdkconfig.ResourceSpec { return f.spec }
+func (f testResourceFactory) Spec() sdkconfig.Spec { return f.spec }
 func (f testResourceFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	if f.calls != nil {
 		*f.calls++
@@ -255,22 +255,21 @@ func (s *trackedSchedulerServer) Close() error {
 
 func newDeployBuilder(t *testing.T, bus any, store any, busErr error) *deploy.Builder {
 	t.Helper()
-	registry := agent.NewRegistry()
-	registry.MustRegister(testEngineFactory{engine: agent.EngineFunc(
+	builder := deploy.NewBuilder()
+	builder.RegisterEngine(testEngineFactory{engine: agent.EngineFunc(
 		func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 			return board, nil
 		},
 	)})
-	builder := deploy.NewBuilder(registry)
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  sdkconfig.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
+		spec:  sdkconfig.Spec{Kind: eventBusResourceKind, Impl: "test"},
 		value: bus,
 		err:   busErr,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  sdkconfig.ResourceSpec{Kind: "test.Store", Impl: "test"},
+		spec:  sdkconfig.Spec{Kind: "test.Store", Impl: "test"},
 		value: store,
 	}); err != nil {
 		t.Fatal(err)
@@ -281,7 +280,7 @@ func newDeployBuilder(t *testing.T, bus any, store any, busErr error) *deploy.Bu
 func registerSchedulerResource(t *testing.T, builder *deploy.Builder, value any) {
 	t.Helper()
 	if err := builder.RegisterResource(testResourceFactory{
-		spec:  sdkconfig.ResourceSpec{Kind: schedulerconfig.ResourceKind, Impl: "test"},
+		spec:  sdkconfig.Spec{Kind: schedulerconfig.ResourceKind, Impl: "test"},
 		value: value,
 	}); err != nil {
 		t.Fatal(err)
@@ -662,7 +661,7 @@ func TestBuildRejectsDeployResourceDependingOnRuntimeSchedulerBeforeBuild(t *tes
 	)
 	schedulerCalls := 0
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: sdkconfig.ResourceSpec{
+		spec: sdkconfig.Spec{
 			Kind: schedulerconfig.ResourceKind,
 			Impl: "test",
 		},
@@ -673,10 +672,10 @@ func TestBuildRejectsDeployResourceDependingOnRuntimeSchedulerBeforeBuild(t *tes
 	}
 	consumerCalls := 0
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: sdkconfig.ResourceSpec{
+		spec: sdkconfig.Spec{
 			Kind: "test.Consumer",
 			Impl: "test",
-			Deps: []sdkconfig.ResourceDepSpec{{
+			Deps: []sdkconfig.DepSpec{{
 				Name: "scheduler", Type: schedulerconfig.ResourceKind, Required: true,
 			}},
 		},
@@ -720,10 +719,10 @@ func TestRuntimeSchedulerMayDependOnOtherDeployResource(t *testing.T) {
 		nil,
 	)
 	if err := deployment.RegisterResource(testResourceFactory{
-		spec: sdkconfig.ResourceSpec{
+		spec: sdkconfig.Spec{
 			Kind: schedulerconfig.ResourceKind,
 			Impl: "test",
-			Deps: []sdkconfig.ResourceDepSpec{{
+			Deps: []sdkconfig.DepSpec{{
 				Name: "store", Type: "test.Store", Required: true,
 			}},
 		},
@@ -1004,8 +1003,8 @@ func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
 	var mu sync.Mutex
 	var log []string
 	bus := &trackedBus{MemoryBus: event.NewMemoryBus(), log: &log, mu: &mu}
-	registry := agent.NewRegistry()
-	registry.MustRegister(testEngineFactory{engine: agent.EngineFunc(
+	deployBuilder := deploy.NewBuilder()
+	deployBuilder.RegisterEngine(testEngineFactory{engine: agent.EngineFunc(
 		func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
 			if err := host.ReportUsage(ctx, inference.Usage{
 				InputTokens:  10,
@@ -1017,15 +1016,14 @@ func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
 			return board, nil
 		},
 	)})
-	deployBuilder := deploy.NewBuilder(registry)
 	if err := deployBuilder.RegisterResource(testResourceFactory{
-		spec:  sdkconfig.ResourceSpec{Kind: eventBusResourceKind, Impl: "test"},
+		spec:  sdkconfig.Spec{Kind: eventBusResourceKind, Impl: "test"},
 		value: bus,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := deployBuilder.RegisterResource(testResourceFactory{
-		spec:  sdkconfig.ResourceSpec{Kind: "test.Store", Impl: "test"},
+		spec:  sdkconfig.Spec{Kind: "test.Store", Impl: "test"},
 		value: &struct{}{},
 	}); err != nil {
 		t.Fatal(err)

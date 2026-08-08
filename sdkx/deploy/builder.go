@@ -41,7 +41,7 @@ func (i *Instance) Execute(ctx context.Context, req agent.Request, opts ...agent
 // builtResource is the internal build-time view of one shared
 // resource: the constructed value plus its complete static spec.
 type builtResource struct {
-	spec  sdkconfig.ResourceSpec
+	spec  sdkconfig.Spec
 	value any
 }
 
@@ -308,29 +308,35 @@ func (r *Result) fail(err error) error {
 	return errors.Join(err, r.Close())
 }
 
-// Builder turns validated Documents into a Result. It binds:
+// Builder turns validated Documents into a Result. It keeps every
+// build step — resources, engine kinds, and lifecycle hooks — in one
+// [config.Catalog] keyed by (Kind, Impl):
 //
-//   - an [agent.Registry] of engine factories (engine.kind lookup);
-//   - named resource (kind, impl) factories — how a resources
-//     entry becomes a shared instance;
-//   - named dep SOURCES — how a host-owned instance enters;
-//   - named hook factories.
+//   - resources: (kind, impl) from the document's resource entries;
+//   - engine kinds: (engine kind, "") — an engine kind has a single
+//     implementation, so its Spec leaves Impl empty;
+//   - hooks: (hook.prepare | hook.observe | hook.referee |
+//     hook.commit, type) — the document's hook type is the impl.
 //
 // No global registration: two Builders in one process stay
 // independent. The Builder imports no module config package; each
-// module plugs itself in as an impl, so a deployment links only the
+// module plugs itself in as a factory, so a deployment links only the
 // integrations it actually names.
 type Builder struct {
-	engines    *agent.Registry
-	baseDir    string
-	loader     *sdkconfig.Loader
-	sources    map[string]sdkconfig.SourceFunc
-	resources  map[resourceKey]registeredResource
-	preparers  map[string]sdkconfig.PreparerFactory
-	observers  map[string]sdkconfig.ObserverFactory
-	referees   map[string]sdkconfig.RefereeFactory
-	committers map[string]sdkconfig.CommitterFactory
+	catalog *sdkconfig.Catalog
+	sources map[string]sdkconfig.SourceFunc
+	baseDir string
+	loader  *sdkconfig.Loader
 }
+
+// Hook kinds are the Spec kinds lifecycle-hook factories register
+// under; the document's hook type becomes the impl.
+const (
+	HookKindPreparer  = "hook.prepare"
+	HookKindObserver  = "hook.observe"
+	HookKindReferee   = "hook.referee"
+	HookKindCommitter = "hook.commit"
+)
 
 // BuilderOption configures a Builder.
 type BuilderOption func(*Builder)
@@ -365,32 +371,13 @@ func (b *Builder) resolveLoader() *sdkconfig.Loader {
 	return sdkconfig.NewLoader(sdkconfig.WithBaseDir(b.baseDir))
 }
 
-type resourceKey struct {
-	kind string
-	impl string
-}
-
-type registeredResource struct {
-	spec    sdkconfig.ResourceSpec
-	factory sdkconfig.ResourceFactory
-}
-
-// NewBuilder returns a Builder over the given engine registry with
-// the built-in referee factories registered. Options may configure
-// loading behavior such as [WithBaseDir]. A nil registry panics — a
-// Builder without engine kinds cannot assemble anything.
-func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
-	if engines == nil {
-		panic("deploy.NewBuilder: engine registry is nil")
-	}
+// NewBuilder returns a Builder with the built-in referee factory
+// registered. Options may configure loading behavior such as
+// [WithBaseDir] / [WithLoader].
+func NewBuilder(opts ...BuilderOption) *Builder {
 	b := &Builder{
-		engines:    engines,
-		sources:    make(map[string]sdkconfig.SourceFunc),
-		resources:  make(map[resourceKey]registeredResource),
-		preparers:  make(map[string]sdkconfig.PreparerFactory),
-		observers:  make(map[string]sdkconfig.ObserverFactory),
-		referees:   make(map[string]sdkconfig.RefereeFactory),
-		committers: make(map[string]sdkconfig.CommitterFactory),
+		catalog: sdkconfig.NewCatalog(),
+		sources: make(map[string]sdkconfig.SourceFunc),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -401,46 +388,59 @@ func NewBuilder(engines *agent.Registry, opts ...BuilderOption) *Builder {
 	return b
 }
 
-// RegisterResource registers factory by its (kind, impl) pair.
-func (b *Builder) RegisterResource(factory sdkconfig.ResourceFactory) error {
+// RegisterFactory adds any build step — resource, engine kind, or
+// hook factory — to the unified catalog under its Spec's (Kind, Impl).
+func (b *Builder) RegisterFactory(factory sdkconfig.Factory) error {
+	return b.catalog.Register(factory)
+}
+
+// MustRegisterFactory is RegisterFactory that panics on error.
+func (b *Builder) MustRegisterFactory(factory sdkconfig.Factory) {
+	if err := b.RegisterFactory(factory); err != nil {
+		panic(err)
+	}
+}
+
+// RegisterResource registers a resource factory by its (kind, impl)
+// pair. A resource factory must declare a non-empty impl.
+func (b *Builder) RegisterResource(factory sdkconfig.Factory) error {
 	if isNil(factory) {
 		return errdefs.Validationf("deploy.Builder: nil resource factory")
 	}
-	spec := factory.Spec().Clone()
-	if err := spec.Validate(); err != nil {
-		return err
-	}
-	key := resourceKey{spec.Kind, spec.Impl}
-	if _, dup := b.resources[key]; dup {
+	if factory.Spec().Impl == "" {
 		return errdefs.Validationf(
-			"deploy.Builder: resource kind %q impl %q already registered",
-			spec.Kind, spec.Impl)
+			"deploy.Builder: resource factory %q must declare an impl",
+			factory.Spec().Kind)
 	}
-	b.resources[key] = registeredResource{spec: spec, factory: factory}
-	return nil
+	return b.catalog.Register(factory)
 }
 
 // MustRegisterResource is RegisterResource that panics on error.
-func (b *Builder) MustRegisterResource(factory sdkconfig.ResourceFactory) {
+func (b *Builder) MustRegisterResource(factory sdkconfig.Factory) {
 	if err := b.RegisterResource(factory); err != nil {
 		panic(err)
 	}
 }
 
-// ResourceSpecs returns defensive copies of all registered resource
-// specs in stable kind-then-impl order.
-func (b *Builder) ResourceSpecs() []sdkconfig.ResourceSpec {
-	out := make([]sdkconfig.ResourceSpec, 0, len(b.resources))
-	for _, registered := range b.resources {
-		out = append(out, registered.spec.Clone())
+// RegisterEngine registers an engine-kind factory under (kind, "").
+// An engine kind has a single implementation, so its Spec must leave
+// Impl empty.
+func (b *Builder) RegisterEngine(factory sdkconfig.Factory) error {
+	if isNil(factory) {
+		return errdefs.Validationf("deploy.Builder: nil engine factory")
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Kind == out[j].Kind {
-			return out[i].Impl < out[j].Impl
-		}
-		return out[i].Kind < out[j].Kind
-	})
-	return out
+	if factory.Spec().Impl != "" {
+		return errdefs.Validationf(
+			"deploy.Builder: engine factory %q must leave impl empty",
+			factory.Spec().Kind)
+	}
+	return b.catalog.Register(factory)
+}
+
+// Specs returns defensive copies of every registered factory spec in
+// stable kind-then-impl order.
+func (b *Builder) Specs() []sdkconfig.Spec {
+	return b.catalog.Specs()
 }
 
 // RegisterSource adds (or replaces) the resolver for a dep source
@@ -455,48 +455,44 @@ func (b *Builder) RegisterSource(name string, fn sdkconfig.SourceFunc) {
 	b.sources[name] = fn
 }
 
-// RegisterObserver adds (or replaces) a lifecycle hook factory.
-func (b *Builder) RegisterObserver(typ string, fn sdkconfig.ObserverFactory) {
-	if typ == "" {
-		panic("deploy.RegisterObserver: type is empty")
-	}
-	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterObserver: factory for type %q is nil", typ))
-	}
-	b.observers[typ] = fn
+// RegisterObserver adds (or replaces) a lifecycle observer factory.
+func (b *Builder) RegisterObserver(typ string, factory sdkconfig.Factory) {
+	b.registerHook(HookKindObserver, typ, factory)
 }
 
 // RegisterPreparer adds (or replaces) a seed hook factory.
-func (b *Builder) RegisterPreparer(typ string, fn sdkconfig.PreparerFactory) {
-	if typ == "" {
-		panic("deploy.RegisterPreparer: type is empty")
-	}
-	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterPreparer: factory for type %q is nil", typ))
-	}
-	b.preparers[typ] = fn
+func (b *Builder) RegisterPreparer(typ string, factory sdkconfig.Factory) {
+	b.registerHook(HookKindPreparer, typ, factory)
 }
 
 // RegisterReferee adds (or replaces) a decision hook factory.
-func (b *Builder) RegisterReferee(typ string, fn sdkconfig.RefereeFactory) {
-	if typ == "" {
-		panic("deploy.RegisterReferee: type is empty")
-	}
-	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterReferee: factory for type %q is nil", typ))
-	}
-	b.referees[typ] = fn
+func (b *Builder) RegisterReferee(typ string, factory sdkconfig.Factory) {
+	b.registerHook(HookKindReferee, typ, factory)
 }
 
 // RegisterCommitter adds (or replaces) a durable finalizer factory.
-func (b *Builder) RegisterCommitter(typ string, fn sdkconfig.CommitterFactory) {
+func (b *Builder) RegisterCommitter(typ string, factory sdkconfig.Factory) {
+	b.registerHook(HookKindCommitter, typ, factory)
+}
+
+// registerHook adds a lifecycle hook factory under (kind, typ),
+// verifying its Spec declares exactly that key.
+func (b *Builder) registerHook(kind, typ string, factory sdkconfig.Factory) {
 	if typ == "" {
-		panic("deploy.RegisterCommitter: type is empty")
+		panic("deploy.RegisterHook: type is empty")
 	}
-	if fn == nil {
-		panic(fmt.Sprintf("deploy.RegisterCommitter: factory for type %q is nil", typ))
+	if factory == nil {
+		panic(fmt.Sprintf("deploy: hook factory for type %q is nil", typ))
 	}
-	b.committers[typ] = fn
+	spec := factory.Spec()
+	if spec.Kind != kind || spec.Impl != typ {
+		panic(fmt.Sprintf(
+			"deploy: hook factory spec is %s/%s, want %s/%s",
+			spec.Kind, spec.Impl, kind, typ))
+	}
+	if err := b.catalog.Register(factory); err != nil {
+		panic(err)
+	}
 }
 
 // Build assembles the resource area and every agent in doc.
@@ -562,19 +558,19 @@ func (b *Builder) Build(ctx context.Context, doc Document, opts ...BuildOption) 
 
 	for _, name := range order {
 		entry := doc.Resources[name]
-		registered, ok := b.resources[resourceKey{entry.Kind, entry.Impl}]
+		factory, ok := b.catalog.Lookup(entry.Kind, entry.Impl)
 		if !ok {
 			return nil, res.fail(errdefs.NotFound(fmt.Errorf(
 				"deploy config resources[%q]: no constructor registered for kind %q impl %q",
 				name, entry.Kind, entry.Impl)))
 		}
-		spec := registered.spec
+		spec := factory.Spec().Clone()
 		where := fmt.Sprintf("deploy config resources[%q]", name)
 		deps, err := b.resolveResourceDeps(ctx, spec, entry.Deps, built, used, where)
 		if err != nil {
 			return nil, res.fail(err)
 		}
-		v, err := registered.factory.New(ctx, sdkconfig.Input{
+		v, err := factory.New(ctx, sdkconfig.Input{
 			Settings: entry.Settings,
 			Deps:     deps,
 			Resolve:  b.resolveLoader().Load,
@@ -745,24 +741,31 @@ func resourceOrder(entries map[string]ResourceEntry) ([]string, error) {
 }
 
 func (b *Builder) buildOne(ctx context.Context, id string, entry AgentEntry, resources map[string]builtResource, used map[string]bool) (*Instance, error) {
-	factory, ok := b.engines.Lookup(entry.Engine.Kind)
+	factory, ok := b.catalog.Lookup(entry.Engine.Kind, "")
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"deploy config agents[%q]: engine kind %q is not registered", id, entry.Engine.Kind))
 	}
 
-	spec := factory.Spec()
+	spec := factory.Spec().Clone()
 	deps, err := b.resolveDeps(ctx, id, spec, entry.Deps, resources, used)
 	if err != nil {
 		return nil, err
 	}
 
-	eng, err := factory.New(ctx, agent.Config{
+	engValue, err := factory.New(ctx, sdkconfig.Input{
 		Deps:     deps,
 		Settings: entry.Engine.Settings,
+		Resolve:  b.resolveLoader().Load,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("deploy config agents[%q]: engine %q build: %w", id, entry.Engine.Kind, err)
+	}
+	eng, ok := engValue.(agent.Engine)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"deploy config agents[%q]: engine %q factory returned %T, want agent.Engine",
+			id, entry.Engine.Kind, engValue)
 	}
 
 	inst := &Instance{
@@ -817,8 +820,8 @@ func (b *Builder) buildOne(ctx context.Context, id string, entry AgentEntry, res
 // resolveDeps binds every engine dep and validates the result against
 // the factory's DepSpec list: unknown dep names and missing required
 // deps are build errors.
-func (b *Builder) resolveDeps(ctx context.Context, id string, spec agent.EngineSpec, refs map[string]DepRef, resources map[string]builtResource, used map[string]bool) (map[string]any, error) {
-	declared := make(map[string]agent.DepSpec, len(spec.Deps))
+func (b *Builder) resolveDeps(ctx context.Context, id string, spec sdkconfig.Spec, refs map[string]DepRef, resources map[string]builtResource, used map[string]bool) (map[string]any, error) {
+	declared := make(map[string]sdkconfig.DepSpec, len(spec.Deps))
 	for _, ds := range spec.Deps {
 		declared[ds.Name] = ds
 	}
@@ -855,13 +858,13 @@ func (b *Builder) resolveDeps(ctx context.Context, id string, spec agent.EngineS
 // spec and resolves each declared binding.
 func (b *Builder) resolveResourceDeps(
 	ctx context.Context,
-	spec sdkconfig.ResourceSpec,
+	spec sdkconfig.Spec,
 	refs map[string]DepRef,
 	resources map[string]builtResource,
 	used map[string]bool,
 	where string,
 ) (map[string]any, error) {
-	declared := make(map[string]sdkconfig.ResourceDepSpec, len(spec.Deps))
+	declared := make(map[string]sdkconfig.DepSpec, len(spec.Deps))
 	for _, ds := range spec.Deps {
 		declared[ds.Name] = ds
 	}
@@ -872,7 +875,7 @@ func (b *Builder) resolveResourceDeps(
 		if !ok {
 			return nil, errdefs.Validation(fmt.Errorf(
 				"%s.deps[%q]: resource %s/%s declares no such dep (declared: %v)",
-				where, name, spec.Kind, spec.Impl, resourceDepNames(spec.Deps)))
+				where, name, spec.Kind, spec.Impl, depNames(spec.Deps)))
 		}
 		v, err := b.resolveRef(ctx, name, refs[name], ds.Type, resources, used, where)
 		if err != nil {
@@ -984,7 +987,7 @@ func resolveResourceRef(name string, ref DepRef, wantType string, resources map[
 
 func (b *Builder) buildObserver(ctx context.Context, id string, idx int, h ObserverEntry, resources map[string]builtResource, used map[string]bool) (agent.Observer, error) {
 	where := fmt.Sprintf("deploy config agents[%q].observe[%d]", id, idx)
-	fn, ok := b.observers[h.Type]
+	factory, ok := b.catalog.Lookup(HookKindObserver, h.Type)
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: hook type %q is not registered", where, h.Type))
@@ -993,19 +996,22 @@ func (b *Builder) buildObserver(ctx context.Context, id string, idx int, h Obser
 	if err != nil {
 		return nil, err
 	}
-	hook, err := fn(ctx, in)
+	hookValue, err := factory.New(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("%s (%q): %w", where, h.Type, err)
 	}
-	if hook == nil {
-		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
+	hook, ok := hookValue.(agent.Observer)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"%s: factory for %q returned %T, want agent.Observer",
+			where, h.Type, hookValue)
 	}
 	return hook, nil
 }
 
 func (b *Builder) buildPreparer(ctx context.Context, id string, idx int, h PreparerEntry, resources map[string]builtResource, used map[string]bool) (agent.Preparer, error) {
 	where := fmt.Sprintf("deploy config agents[%q].prepare", id)
-	fn, ok := b.preparers[h.Type]
+	factory, ok := b.catalog.Lookup(HookKindPreparer, h.Type)
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: type %q is not registered", where, h.Type))
@@ -1014,19 +1020,22 @@ func (b *Builder) buildPreparer(ctx context.Context, id string, idx int, h Prepa
 	if err != nil {
 		return nil, err
 	}
-	before, err := fn(ctx, in)
+	beforeValue, err := factory.New(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("%s (%q): %w", where, h.Type, err)
 	}
-	if before == nil {
-		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
+	before, ok := beforeValue.(agent.Preparer)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"%s: factory for %q returned %T, want agent.Preparer",
+			where, h.Type, beforeValue)
 	}
 	return before, nil
 }
 
 func (b *Builder) buildReferee(ctx context.Context, id string, idx int, h RefereeEntry, resources map[string]builtResource, used map[string]bool) (agent.Referee, error) {
 	where := fmt.Sprintf("deploy config agents[%q].referees[%d]", id, idx)
-	fn, ok := b.referees[h.Type]
+	factory, ok := b.catalog.Lookup(HookKindReferee, h.Type)
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: type %q is not registered", where, h.Type))
@@ -1035,19 +1044,22 @@ func (b *Builder) buildReferee(ctx context.Context, id string, idx int, h Refere
 	if err != nil {
 		return nil, err
 	}
-	after, err := fn(ctx, in)
+	afterValue, err := factory.New(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("%s (%q): %w", where, h.Type, err)
 	}
-	if after == nil {
-		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
+	after, ok := afterValue.(agent.Referee)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"%s: factory for %q returned %T, want agent.Referee",
+			where, h.Type, afterValue)
 	}
 	return after, nil
 }
 
 func (b *Builder) buildCommitter(ctx context.Context, id string, idx int, h CommitterEntry, resources map[string]builtResource, used map[string]bool) (agent.Committer, error) {
 	where := fmt.Sprintf("deploy config agents[%q].commit[%d]", id, idx)
-	fn, ok := b.committers[h.Type]
+	factory, ok := b.catalog.Lookup(HookKindCommitter, h.Type)
 	if !ok {
 		return nil, errdefs.NotFound(fmt.Errorf(
 			"%s: type %q is not registered", where, h.Type))
@@ -1056,12 +1068,15 @@ func (b *Builder) buildCommitter(ctx context.Context, id string, idx int, h Comm
 	if err != nil {
 		return nil, err
 	}
-	committer, err := fn(ctx, in)
+	committerValue, err := factory.New(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("%s (%q): %w", where, h.Type, err)
 	}
-	if isNil(committer) {
-		return nil, errdefs.Internalf("%s: factory for %q returned nil", where, h.Type)
+	committer, ok := committerValue.(agent.Committer)
+	if !ok || isNil(committer) {
+		return nil, errdefs.Internalf(
+			"%s: factory for %q returned %T, want non-nil agent.Committer",
+			where, h.Type, committerValue)
 	}
 	return committer, nil
 }
@@ -1078,15 +1093,7 @@ func (b *Builder) factoryInput(ctx context.Context, h PreparerEntry, resources m
 	}, nil
 }
 
-func depNames(specs []agent.DepSpec) []string {
-	out := make([]string, len(specs))
-	for i, ds := range specs {
-		out[i] = ds.Name
-	}
-	return out
-}
-
-func resourceDepNames(specs []sdkconfig.ResourceDepSpec) []string {
+func depNames(specs []sdkconfig.DepSpec) []string {
 	out := make([]string, len(specs))
 	for i, ds := range specs {
 		out[i] = ds.Name

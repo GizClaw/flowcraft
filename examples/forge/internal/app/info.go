@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	memoryhook "github.com/GizClaw/flowcraft/sdkx/memory/hook"
@@ -54,7 +55,11 @@ func inspectDocument(workspaceDir string, doc deploy.Document) (Info, error) {
 				} `json:"budget"`
 			}
 			if preparer.Settings != nil {
-				_ = preparer.Settings.Decode(&settings)
+				settings, _ = sdkconfig.DecodeSettings[struct {
+					Budget struct {
+						MaxItems int `json:"max_items"`
+					} `json:"budget"`
+				}](preparer.Settings)
 			}
 			info.MemoryTopK = settings.Budget.MaxItems
 			break

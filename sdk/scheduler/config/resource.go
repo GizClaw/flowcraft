@@ -14,17 +14,17 @@ import (
 const ResourceKind = "scheduler.Server"
 
 // ServerFactory builds one scheduler server from deployment input.
-type ServerFactory = sdkconfig.Factory[sdkconfig.Input, sdkscheduler.Server]
+type ServerFactory = sdkconfig.Func[sdkconfig.Input, sdkscheduler.Server]
 
 // Builder owns an instance-local catalog of server implementations.
 type Builder struct {
-	servers *sdkconfig.Catalog[sdkconfig.Input, sdkscheduler.Server]
+	servers *sdkconfig.Registry[sdkconfig.Input, sdkscheduler.Server]
 }
 
 // NewBuilder returns an empty server catalog.
 func NewBuilder() *Builder {
 	return &Builder{
-		servers: sdkconfig.NewCatalog[sdkconfig.Input, sdkscheduler.Server](),
+		servers: sdkconfig.NewRegistry[sdkconfig.Input, sdkscheduler.Server](),
 	}
 }
 
@@ -48,12 +48,12 @@ type deployFactory struct {
 // NewDeployFactory returns the deployment factory for one scheduler
 // server implementation. impl is the name used in the deployment
 // document's resource entry and must be registered on builder.
-func NewDeployFactory(impl string, builder *Builder) sdkconfig.ResourceFactory {
+func NewDeployFactory(impl string, builder *Builder) sdkconfig.Factory {
 	return deployFactory{impl: impl, builder: builder}
 }
 
-func (f deployFactory) Spec() sdkconfig.ResourceSpec {
-	return sdkconfig.ResourceSpec{Kind: ResourceKind, Impl: f.impl}
+func (f deployFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: ResourceKind, Impl: f.impl}
 }
 
 // New builds one unstarted scheduler server through the registered

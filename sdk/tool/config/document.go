@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
@@ -28,8 +29,8 @@ type Document struct {
 // spec. Spec stays an undecoded JSON subtree so each factory decodes
 // exactly the fields it owns, strictly.
 type MiddlewareEntry struct {
-	Kind string            `json:"kind"`
-	Spec *sdkconfig.Opaque `json:"spec,omitempty"`
+	Kind string          `json:"kind"`
+	Spec json.RawMessage `json:"spec,omitempty"`
 }
 
 // Validate checks the document's own invariants. Factory-level spec
@@ -90,12 +91,14 @@ func Parse(data []byte) (Document, error) {
 // A nil or empty spec is an error: a factory calling DecodeSpec has
 // fields it needs. Kinds that take no spec reject one explicitly
 // instead.
-func DecodeSpec[T any](spec *sdkconfig.Opaque) (T, error) {
+func DecodeSpec[T any](spec json.RawMessage) (T, error) {
 	var out T
-	if spec == nil || len(*spec) == 0 {
+	if len(spec) == 0 {
 		return out, errdefs.Validation(fmt.Errorf("spec is required"))
 	}
-	if err := spec.Decode(&out); err != nil {
+	var err error
+	out, err = sdkconfig.DecodeSettings[T](spec)
+	if err != nil {
 		return out, errdefs.Validation(fmt.Errorf("invalid spec: %w", err))
 	}
 	return out, nil
@@ -104,11 +107,11 @@ func DecodeSpec[T any](spec *sdkconfig.Opaque) (T, error) {
 // isEmptySpec reports whether a spec carries no content, which is how a
 // "takes no spec" kind distinguishes an absent spec from one an author
 // wrote by mistake.
-func isEmptySpec(spec *sdkconfig.Opaque) bool {
-	if spec == nil || len(*spec) == 0 {
+func isEmptySpec(spec json.RawMessage) bool {
+	if len(spec) == 0 {
 		return true
 	}
-	trimmed := bytes.TrimSpace([]byte(*spec))
+	trimmed := bytes.TrimSpace(spec)
 	return bytes.Equal(trimmed, []byte("{}")) ||
 		bytes.Equal(trimmed, []byte("[]")) ||
 		bytes.Equal(trimmed, []byte("null"))

@@ -132,7 +132,7 @@ deployBuilder.MustRegisterResource(
         "my-memory",
         myMemory.Factory(),
         // deps declared by the implementation, e.g.:
-        sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+        sdkconfig.DepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
     ),
 )
 ```

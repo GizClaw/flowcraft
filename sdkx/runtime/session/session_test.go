@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"errors"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -45,11 +46,11 @@ func (f sessionRefereeFunc) After(
 	return f(ctx, id, request, result)
 }
 
-func (f sessionEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: "session-revise-test"}
+func (f sessionEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: "session-revise-test"}
 }
 
-func (f sessionEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+func (f sessionEngineFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	return f.engine, nil
 }
 
@@ -136,11 +137,10 @@ func revisingInstance(
 	committers ...agent.Committer,
 ) *deploy.Instance {
 	t.Helper()
-	registry := agent.NewRegistry()
-	if err := registry.Register(sessionEngineFactory{engine: withRunEnd(engine)}); err != nil {
+	builder := deploy.NewBuilder()
+	if err := builder.RegisterEngine(sessionEngineFactory{engine: withRunEnd(engine)}); err != nil {
 		t.Fatal(err)
 	}
-	builder := deploy.NewBuilder(registry)
 	entry := deploy.AgentEntry{
 		Engine: deploy.EngineEntry{Kind: "session-revise-test"},
 	}

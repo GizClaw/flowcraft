@@ -13,7 +13,7 @@ import (
 
 func TestDeployFactorySpec(t *testing.T) {
 	got := inferenceconfig.NewDeployFactory(nil, nil).Spec()
-	want := sdkconfig.ResourceSpec{
+	want := sdkconfig.Spec{
 		Kind:     inferenceconfig.ResourceKind,
 		Impl:     "yaml",
 		ItemType: "inference.Runtime",
@@ -78,26 +78,22 @@ func TestDeployFactoryNewBuildsAssemblyAndRejectsUnknownSettings(t *testing.T) {
 	}
 }
 
-func settingsJSON(t *testing.T, raw string) *sdkconfig.Opaque {
+func settingsJSON(t *testing.T, raw string) json.RawMessage {
 	t.Helper()
-	var opaque sdkconfig.Opaque
+	var opaque json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &opaque); err != nil {
 		t.Fatalf("unmarshal settings: %v", err)
 	}
-	return &opaque
+	return opaque
 }
 
-func literalSettings(t *testing.T, doc string) *sdkconfig.Opaque {
+func literalSettings(t *testing.T, doc string) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(doc)
 	if err != nil {
 		t.Fatalf("marshal literal settings: %v", err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(raw, &opaque); err != nil {
-		t.Fatalf("unmarshal settings: %v", err)
-	}
-	return &opaque
+	return json.RawMessage(raw)
 }
 
 func resolveLiteral(t *testing.T) func(context.Context, sdkconfig.Source) ([]byte, error) {

@@ -3,6 +3,7 @@ package nsjail
 import (
 	"context"
 	"fmt"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	coresandbox "github.com/GizClaw/flowcraft/sdk/sandbox"
@@ -27,8 +28,8 @@ func Register(b *sandboxconfig.Builder) error {
 		_ context.Context,
 		in sandboxconfig.FactoryInput,
 	) (coresandbox.Runner, error) {
-		var s settings
-		if err := in.Settings.Decode(&s); err != nil {
+		s, err := sdkconfig.DecodeSettings[settings](in.Settings)
+		if err != nil {
 			return nil, errdefs.Validationf(
 				"decode nsjail settings: %v", err)
 		}

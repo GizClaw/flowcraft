@@ -81,22 +81,29 @@ func (f *Factory) resolveLoader() *sdkconfig.Loader {
 	return sdkconfig.NewLoader()
 }
 
-// Spec implements agent.Factory.
-func (*Factory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{
+// Spec implements config.Factory. Impl is empty: the graph kind has a
+// single implementation.
+func (*Factory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{
 		Kind: Kind,
-		Capabilities: agent.Capabilities{
-			SupportsResume:  true,
-			EmitsCheckpoint: true,
-			EmitsUserPrompt: true,
-		},
-		Deps: []agent.DepSpec{
+		Deps: []sdkconfig.DepSpec{
 			{Name: DepInference, Type: "inference.Assembly"},
 			{Name: DepTools, Type: toolconfig.ResourceKind},
 			{Name: DepWorkspace, Type: "workspace.Workspace"},
 			{Name: DepSandbox, Type: "sandbox.Runner"},
 			{Name: DepScriptRuntime, Type: "agent.ScriptRuntime"},
 		},
+	}
+}
+
+// Capabilities reports the graph engine kind's claimed optional
+// features. It is not part of the config protocol — assembly engines
+// that need capability probing assert this interface.
+func (*Factory) Capabilities() agent.Capabilities {
+	return agent.Capabilities{
+		SupportsResume:  true,
+		EmitsCheckpoint: true,
+		EmitsUserPrompt: true,
 	}
 }
 
@@ -151,12 +158,14 @@ func (d dependencies) validate() error {
 	return nil
 }
 
-// New implements agent.Factory.
-func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, error) {
+// New implements config.Factory: the engine settings subtree is
+// decoded strictly and the graph definition is resolved through the
+// shared loader; bound dependencies arrive in Input.Deps.
+func (f *Factory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
 	if f == nil {
 		return nil, errdefs.Validationf("graph agent factory is nil")
 	}
-	parsed, err := decodeSettings(cfg.Settings)
+	parsed, err := decodeSettings(in.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +173,7 @@ func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, erro
 	if err != nil {
 		return nil, err
 	}
-	deps, err := decodeDependencies(cfg.Deps)
+	deps, err := decodeDependencies(in.Deps)
 	if err != nil {
 		return nil, err
 	}
@@ -224,13 +233,9 @@ func (f *Factory) New(ctx context.Context, cfg agent.Config) (agent.Engine, erro
 	return coregraph.Build(definition, registry, options...)
 }
 
-func decodeSettings(raw map[string]any) (settings, error) {
+func decodeSettings(raw json.RawMessage) (settings, error) {
 	var out settings
-	data, err := json.Marshal(raw)
-	if err != nil {
-		return out, errdefs.Validation(fmt.Errorf("graph agent settings: encode: %w", err))
-	}
-	if err := decodeStrictJSON(data, &out); err != nil {
+	if err := decodeStrictJSON(raw, &out); err != nil {
 		return out, errdefs.Validation(fmt.Errorf("graph agent settings: %w", err))
 	}
 	if out.Graph == nil {
@@ -605,4 +610,4 @@ func parseDuration(field, value string) (time.Duration, error) {
 	return duration, nil
 }
 
-var _ agent.Factory = (*Factory)(nil)
+var _ sdkconfig.Factory = (*Factory)(nil)

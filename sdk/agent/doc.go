@@ -90,21 +90,23 @@
 // are fresh runs, not checkpoint replays. [LoadAndResume] packages
 // the load-checkpoint-then-execute dance for hosts.
 //
-// # Engine assembly: specs, factories, registries
+// # Engine assembly
 //
-// Engines are wired at ASSEMBLY time, not per run. Each engine kind
-// ships a [Factory] whose [EngineSpec] statically declares its
-// [Capabilities] and named [DepSpec] dependencies; hosts register
-// factories in a [Registry] and read specs to validate deployments
-// before any engine instance exists. There is deliberately no
-// per-run dependency bag on [Run] — the only per-run policy gate is
-// the typed [Run.ToolAllowList], promoted from [Agent.Tools] (or
-// overridden via [WithToolAllowList]).
+// Engines are wired at ASSEMBLY time, not per run. An engine kind
+// implements the config protocol ([config.Factory]) with its static
+// dependency declaration on the spec and optional [Capabilities]
+// exposed through a capability interface; sdkx/deploy registers
+// engine factories alongside resource and hook factories in one
+// [config.Catalog] and validates deployments before any engine
+// instance exists. There is deliberately no per-run dependency bag
+// on [Run] — the only per-run policy gate is the typed
+// [Run.ToolAllowList], promoted from [Agent.Tools] (or overridden
+// via [WithToolAllowList]).
 //
-// This package contains no YAML loader: serialisable spec types
-// carry yaml/json tags, and the config-driven assembly of agents
-// (YAML → Factory → Engine) lives in sdkx/deploy, which also builds
-// the shared resources an engine's deps bind to.
+// This package contains no YAML loader and no config protocol
+// dependency: the config-driven assembly of agents (YAML → Factory →
+// Engine) lives in sdkx/deploy, which also builds the shared
+// resources an engine's deps bind to.
 //
 // # Allowed dependencies
 //

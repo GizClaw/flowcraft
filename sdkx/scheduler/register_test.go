@@ -33,14 +33,14 @@ func TestRegisterRejectsSettings(t *testing.T) {
 	if err := scheduler.Register(builder); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	var settings sdkconfig.Opaque
+	var settings json.RawMessage
 	if err := json.Unmarshal([]byte(`{"x":1}`), &settings); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := schedulerconfig.NewDeployFactory(
 		scheduler.BackendName,
 		builder,
-	).New(context.Background(), sdkconfig.Input{Settings: &settings}); err == nil {
+	).New(context.Background(), sdkconfig.Input{Settings: settings}); err == nil {
 		t.Fatal("local scheduler accepted settings")
 	}
 }

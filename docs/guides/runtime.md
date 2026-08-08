@@ -155,10 +155,8 @@ Aliases used below: `sdkscheduler` =
 ```go
 loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(configDir))
 
-engines := agent.NewRegistry()
-engines.MustRegister(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
-
-deployBuilder := deploy.NewBuilder(engines, deploy.WithLoader(loader))
+deployBuilder := deploy.NewBuilder(deploy.WithLoader(loader))
+deployBuilder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
 deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 
 schedulerBuilder := schedulerconfig.NewBuilder()
@@ -175,8 +173,8 @@ deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFact
 deployBuilder.MustRegisterResource(memoryconfig.NewDeployFactory(
     "flowcraft",
     flowcraftmemory.Factory(),
-    sdkconfig.ResourceDepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
-    sdkconfig.ResourceDepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
+    sdkconfig.DepSpec{Name: "inference", Type: "inference.Runtime", Required: true},
+    sdkconfig.DepSpec{Name: "workspace", Type: "workspace.Workspace", Required: true},
 ))
 
 tools := tool.NewRegistry()

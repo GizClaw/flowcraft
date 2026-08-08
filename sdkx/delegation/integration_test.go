@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,13 +25,18 @@ import (
 
 type integrationEngineFactory struct{}
 
-func (integrationEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: "integration"}
+func (integrationEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: "integration"}
 }
 
-func (integrationEngineFactory) New(_ context.Context, config agent.Config) (agent.Engine, error) {
-	behavior, _ := config.Setting("behavior")
-	switch behavior {
+func (integrationEngineFactory) New(_ context.Context, config sdkconfig.Input) (any, error) {
+	settings, err := sdkconfig.DecodeSettings[struct {
+		Behavior string `json:"behavior"`
+	}](config.Settings)
+	if err != nil {
+		return nil, err
+	}
+	switch settings.Behavior {
 	case "complete":
 		return agent.EngineFunc(func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
 			if err := host.Publish(ctx, event.Envelope{}); err != nil {
@@ -59,7 +65,7 @@ func (integrationEngineFactory) New(_ context.Context, config agent.Config) (age
 			return board, nil
 		}), nil
 	default:
-		return nil, fmt.Errorf("unknown integration behavior %q", behavior)
+		return nil, fmt.Errorf("unknown integration behavior %q", settings.Behavior)
 	}
 }
 
@@ -131,9 +137,8 @@ agents:
 
 	directory := delegation.NewDirectory()
 	delegationTools := tooldelegation.New(directory)
-	engines := agent.NewRegistry()
-	engines.MustRegister(integrationEngineFactory{})
-	builder := deploy.NewBuilder(engines, deploy.WithBaseDir(configDir))
+	builder := deploy.NewBuilder(deploy.WithBaseDir(configDir))
+	builder.RegisterEngine(integrationEngineFactory{})
 	builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 	builder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 	builder.RegisterReferee(

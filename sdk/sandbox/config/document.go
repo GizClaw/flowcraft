@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"time"
 
-	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/config/utils"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
@@ -30,12 +29,12 @@ type Document struct {
 
 // SandboxEntry binds a backend to a host-rooted workspace.
 type SandboxEntry struct {
-	Backend         string            `json:"backend"`
-	Workspace       string            `json:"workspace"`
-	Settings        *sdkconfig.Opaque `json:"settings,omitempty"`
-	Defaults        Defaults          `json:"defaults,omitempty"`
-	AllowedCommands []string          `json:"allowed_commands,omitempty"`
-	Approval        *ApprovalConfig   `json:"approval,omitempty"`
+	Backend         string          `json:"backend"`
+	Workspace       string          `json:"workspace"`
+	Settings        json.RawMessage `json:"settings,omitempty"`
+	Defaults        Defaults        `json:"defaults,omitempty"`
+	AllowedCommands []string        `json:"allowed_commands,omitempty"`
+	Approval        *ApprovalConfig `json:"approval,omitempty"`
 }
 
 // Duration is a duration string such as "30s" or "2m".

@@ -65,7 +65,7 @@ func newFakeAssembly(t *testing.T) (sdkmemory.Assembly, *contextProvider, *turnS
 
 func TestContextPreparerClonesBoardAndUsesRequest(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+	preparerValue, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   current_message: true
@@ -81,6 +81,7 @@ output: recalled
 `),
 		Deps: map[string]any{depName: assembly},
 	})
+	preparer := preparerValue.(agent.Preparer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ output: recalled
 
 func TestContextPreparerRendersDefaultGoTemplateToContent(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+	preparerValue, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -128,6 +129,7 @@ render:
 	if err != nil {
 		t.Fatal(err)
 	}
+	preparer := preparerValue.(agent.Preparer)
 	previous := agent.NewBoard()
 	next, err := preparer.Before(context.Background(), agent.Identity{RunID: "run"}, &agent.Request{}, previous)
 	if err != nil {
@@ -151,7 +153,7 @@ render:
 
 func TestContextPreparerRendersCustomGoTemplate(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+	preparerValue, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -168,6 +170,7 @@ render:
 	if err != nil {
 		t.Fatal(err)
 	}
+	preparer := preparerValue.(agent.Preparer)
 	next, err := preparer.Before(context.Background(), agent.Identity{}, &agent.Request{}, agent.NewBoard())
 	if err != nil {
 		t.Fatal(err)
@@ -211,7 +214,7 @@ func TestCloneItemsOwnsMutableData(t *testing.T) {
 
 func TestContextPreparerSupportsRecentOnly(t *testing.T) {
 	assembly, provider, _ := newFakeAssembly(t)
-	preparer, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+	preparerValue, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   recent_only: true
@@ -227,6 +230,7 @@ output: recalled
 	if err != nil {
 		t.Fatal(err)
 	}
+	preparer := preparerValue.(agent.Preparer)
 	_, err = preparer.Before(context.Background(), agent.Identity{}, &agent.Request{}, agent.NewBoard())
 	if err != nil {
 		t.Fatal(err)
@@ -239,7 +243,7 @@ output: recalled
 
 func TestTurnCommitterUsesRunIDAndChannel(t *testing.T) {
 	assembly, _, sink := newFakeAssembly(t)
-	committer, err := TurnCommitterFactory(context.Background(), sdkconfig.Input{
+	committerValue, err := TurnCommitter{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 scope:
   runtime_id: memory
@@ -250,6 +254,7 @@ scope:
 	if err != nil {
 		t.Fatal(err)
 	}
+	committer := committerValue.(agent.Committer)
 	board := agent.NewBoard()
 	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "hello"))
 	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleAssistant, "world"))
@@ -280,7 +285,7 @@ scope:
 
 func TestHookValidationRejectsAmbiguousQuery(t *testing.T) {
 	assembly, _, _ := newFakeAssembly(t)
-	_, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+	_, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 		Settings: settingsNode(t, `
 query:
   literal: alpha
@@ -327,7 +332,7 @@ render: {output: memory_content, arbitrary: {}}
 `,
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := ContextPreparerFactory(context.Background(), sdkconfig.Input{
+			_, err := ContextPreparer{}.New(context.Background(), sdkconfig.Input{
 				Settings: settingsNode(t, source), Deps: map[string]any{depName: assembly},
 			})
 			if err == nil || !errdefs.IsValidation(err) {
@@ -337,17 +342,17 @@ render: {output: memory_content, arbitrary: {}}
 	}
 }
 
-func settingsNode(t *testing.T, source string) *sdkconfig.Opaque {
+func settingsNode(t *testing.T, source string) json.RawMessage {
 	t.Helper()
 	jsonData, err := utils.ToJSON([]byte(source))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var opaque sdkconfig.Opaque
-	if err := json.Unmarshal(jsonData, &opaque); err != nil {
+	var out json.RawMessage
+	if err := json.Unmarshal(jsonData, &out); err != nil {
 		t.Fatal(err)
 	}
-	return &opaque
+	return out
 }
 
 func boardValue(board *agent.Board, key string) any {

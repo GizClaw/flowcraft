@@ -11,9 +11,8 @@ import (
 )
 
 func TestGraphFactoryJavaScriptDeployment(t *testing.T) {
-	engines := agent.NewRegistry()
-	engines.MustRegister(graphconfig.NewFactory())
-	builder := deploy.NewBuilder(engines)
+	builder := deploy.NewBuilder()
+	builder.RegisterEngine(graphconfig.NewFactory())
 	builder.MustRegisterResource(jsrt.NewDeployFactory())
 
 	document, err := deploy.Parse([]byte(`

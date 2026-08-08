@@ -65,7 +65,7 @@ type ResourceEntry struct {
 	// bindings against ResourceSpec.Deps before calling the factory.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // AgentEntry is one agent's declarative assembly recipe. The map key
@@ -171,8 +171,13 @@ func (a *AgentEntry) UnmarshalJSON(data []byte) error {
 // settings as JSON-decoded data, opaque to the loader — the engine
 // factory decodes and strictly validates it inside New.
 type EngineEntry struct {
-	Kind     string         `json:"kind"`
-	Settings map[string]any `json:"settings,omitempty"`
+	Kind string `json:"kind"`
+
+	// Settings is the engine-kind-owned subtree as raw JSON. It is
+	// opaque to the loader; the engine factory decodes and strictly
+	// validates it inside New (the graph engine's settings carry the
+	// definition Source, script runtime name, and build knobs).
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // DepRef binds one named dependency to a value. Exactly one of
@@ -250,7 +255,7 @@ type PreparerEntry struct {
 	// built.
 	Deps map[string]DepRef `json:"deps,omitempty"`
 
-	Settings *sdkconfig.Opaque `json:"settings,omitempty"`
+	Settings json.RawMessage `json:"settings,omitempty"`
 }
 
 // ObserverEntry is one read-only lifecycle observer.

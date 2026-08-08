@@ -3,6 +3,7 @@ package delegation
 import (
 	"context"
 	"errors"
+	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"reflect"
 	"strconv"
 	"strings"
@@ -23,18 +24,18 @@ type testEngineFactory struct {
 	engine agent.Engine
 }
 
-func (f testEngineFactory) Spec() agent.EngineSpec {
-	return agent.EngineSpec{Kind: "local-delegation-test"}
+func (f testEngineFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{Kind: "local-delegation-test"}
 }
 
-func (f testEngineFactory) New(context.Context, agent.Config) (agent.Engine, error) {
+func (f testEngineFactory) New(context.Context, sdkconfig.Input) (any, error) {
 	return f.engine, nil
 }
 
 func buildResult(t *testing.T, engine agent.Engine) *deploy.Result {
 	t.Helper()
-	registry := agent.NewRegistry()
-	if err := registry.Register(testEngineFactory{engine: engine}); err != nil {
+	builder := deploy.NewBuilder()
+	if err := builder.RegisterEngine(testEngineFactory{engine: engine}); err != nil {
 		t.Fatal(err)
 	}
 	document, err := deploy.Parse([]byte(`
@@ -50,7 +51,7 @@ agents:
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := deploy.NewBuilder(registry).Build(context.Background(), document)
+	result, err := builder.Build(context.Background(), document)
 	if err != nil {
 		t.Fatal(err)
 	}

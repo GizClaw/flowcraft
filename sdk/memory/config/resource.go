@@ -12,6 +12,12 @@ import (
 // assemblies.
 const ResourceKind = "memory.Assembly"
 
+type deployFactory struct {
+	impl    string
+	factory sdkmemory.Factory
+	deps    []sdkconfig.DepSpec
+}
+
 // NewDeployFactory returns a deployment factory for one memory
 // implementation. The implementation is addressed in documents as the
 // resource's impl, e.g.:
@@ -30,24 +36,39 @@ const ResourceKind = "memory.Assembly"
 func NewDeployFactory(
 	impl string,
 	factory sdkmemory.Factory,
-	deps ...sdkconfig.ResourceDepSpec,
-) sdkconfig.ResourceFactory {
-	return sdkconfig.NewDocumentFactory(
-		sdkconfig.ResourceSpec{
-			Kind:     ResourceKind,
-			Impl:     impl,
-			ItemType: "memory.System",
-			Deps:     deps,
-		},
-		func(ctx context.Context, data []byte, deps map[string]any) (any, error) {
-			if factory == nil {
-				return nil, errdefs.Validationf(
-					"memory config: deploy factory has no implementation factory")
-			}
-			return factory.New(ctx, sdkmemory.Input{
-				Settings: data,
-				Deps:     deps,
-			})
-		},
-	)
+	deps ...sdkconfig.DepSpec,
+) sdkconfig.Factory {
+	return &deployFactory{
+		impl:    impl,
+		factory: factory,
+		deps:    deps,
+	}
+}
+
+// Spec implements config.Factory.
+func (f *deployFactory) Spec() sdkconfig.Spec {
+	return sdkconfig.Spec{
+		Kind:     ResourceKind,
+		Impl:     f.impl,
+		ItemType: "memory.System",
+		Deps:     f.deps,
+	}
+}
+
+// New implements config.Factory: the settings subtree is the memory
+// document, resolved through the input's shared loader and handed to
+// the implementation factory.
+func (f *deployFactory) New(ctx context.Context, in sdkconfig.Input) (any, error) {
+	if f.factory == nil {
+		return nil, errdefs.Validationf(
+			"memory config: deploy factory has no implementation factory")
+	}
+	data, err := in.ResolveDocument(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return f.factory.New(ctx, sdkmemory.Input{
+		Settings: data,
+		Deps:     in.Deps,
+	})
 }

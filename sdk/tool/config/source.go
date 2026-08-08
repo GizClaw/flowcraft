@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 
@@ -51,8 +52,8 @@ type SourceFactory func(ctx context.Context, in sdkconfig.Input) (Source, error)
 // kind plus its opaque spec. Spec stays an undecoded JSON subtree so
 // each factory owns its own schema.
 type SourceEntry struct {
-	Kind string            `json:"kind"`
-	Spec *sdkconfig.Opaque `json:"spec,omitempty"`
+	Kind string          `json:"kind"`
+	Spec json.RawMessage `json:"spec,omitempty"`
 }
 
 // RegisterSourceFactory adds (or replaces) a factory for kind. Empty
