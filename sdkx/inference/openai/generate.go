@@ -32,6 +32,11 @@ type generateWire struct {
 	tools       []wireTool
 	toolChoice  *wireToolChoice
 	stream      bool
+	// includeReasoning asks the Responses API to attach the encrypted
+	// reasoning payload. Only reasoning models can carry it; Azure rejects
+	// the include on plain chat models, so it must follow the capability
+	// declaration instead of being unconditional.
+	includeReasoning bool
 }
 
 type wireItemKind string
@@ -293,8 +298,9 @@ func compileGenerate(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := generateWire{
-			model:  model,
-			stream: shape == inference.GenerateExecutionStream,
+			model:            model,
+			stream:           shape == inference.GenerateExecutionStream,
+			includeReasoning: entry.reasoning,
 		}
 
 		// Context messages → items. System stays a native system-role item;

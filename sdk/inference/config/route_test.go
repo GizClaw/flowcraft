@@ -259,6 +259,13 @@ func TestBuilderNewAssembly(t *testing.T) {
 		if assembly.Runtime == nil || assembly.Router == nil {
 			t.Fatalf("assembly = %+v, want runtime and router", assembly)
 		}
+		if assembly.Policy == nil || len(assembly.Policy.Generate) != 1 ||
+			len(assembly.Policy.Generate[0].Targets) != 1 ||
+			assembly.Policy.Generate[0].Targets[0].Model != (inference.ModelRef{
+				ID: inference.ModelID{Provider: "fake", Name: "model"},
+			}) {
+			t.Fatalf("assembly policy = %+v", assembly.Policy)
+		}
 		response, trace, err := assembly.Router.Generate(
 			t.Context(),
 			inference.GenerateRequest{

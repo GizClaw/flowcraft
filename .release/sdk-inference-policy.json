@@ -1,0 +1,9 @@
+{
+  "summary": "Expose an owned route policy clone on the inference config Assembly",
+  "releases": [
+    {
+      "module": "sdk",
+      "bump": "patch"
+    }
+  ]
+}

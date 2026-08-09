@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/sdkx
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/sdk v0.5.0
+require github.com/GizClaw/flowcraft/sdk v0.5.1
 
 require (
 	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb

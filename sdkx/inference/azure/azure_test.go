@@ -154,14 +154,14 @@ func azureModel(name string) inference.ModelRef {
 }
 
 // TestGenerateEndToEnd drives the kernel generate driver against a captured
-// server and pins the Azure request shape: the deployment-scoped path plus
-// the api-version query and api-key header.
+// server and pins the Azure request shape: the deployment-less Responses
+// path plus the api-version query and api-key header.
 func TestGenerateEndToEnd(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter,
 		r *http.Request,
 	) {
-		if r.URL.Path != "/openai/deployments/chat-1/responses" {
+		if r.URL.Path != "/openai/responses" {
 			t.Errorf("path = %q", r.URL.Path)
 		}
 		if r.URL.Query().Get("api-version") != DefaultAPIVersion {

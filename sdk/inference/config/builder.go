@@ -205,6 +205,11 @@ type Assembly struct {
 	// Router is nil when the document has no route section; callers then
 	// address exact models through Runtime directly.
 	Router *route.Router
+	// Policy is the route policy the Router was built from, or nil when the
+	// document has no route section. It is an owned copy, so consumers can
+	// inspect targets (for example to derive policy digests or validate
+	// stable embedding identities) without mutating the document.
+	Policy *route.Policy
 }
 
 // ResolveItem exposes the exact inference runtime as "runtime" while
@@ -235,6 +240,8 @@ func (b *Builder) NewAssembly(
 	}
 	assembly := Assembly{Runtime: runtime}
 	if document.Route != nil {
+		clonedPolicy := document.Route.Clone()
+		assembly.Policy = &clonedPolicy
 		options, err := document.Route.Options()
 		if err != nil {
 			return Assembly{}, fmt.Errorf("build route options: %w", err)

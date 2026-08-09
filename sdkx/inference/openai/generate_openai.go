@@ -66,13 +66,15 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 	params := responses.ResponseNewParams{
 		Model: wire.model,
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: items},
-		// Reasoning traces are worthless to consumers without their
-		// encrypted payload: without it the reasoning cannot round-trip
-		// into later context, which breaks agent loops silently. The
-		// include flag costs nothing on non-reasoning models.
-		Include: []responses.ResponseIncludable{
+	}
+	// Reasoning traces are worthless to consumers without their encrypted
+	// payload: without it the reasoning cannot round-trip into later
+	// context, which breaks agent loops silently. Only reasoning models
+	// accept the include; Azure rejects it on plain chat deployments.
+	if wire.includeReasoning {
+		params.Include = []responses.ResponseIncludable{
 			responses.ResponseIncludableReasoningEncryptedContent,
-		},
+		}
 	}
 	if wire.maxTokens != nil {
 		params.MaxOutputTokens = param.NewOpt(*wire.maxTokens)

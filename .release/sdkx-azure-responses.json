@@ -1,0 +1,9 @@
+{
+  "summary": "Use the deployment-less Azure Responses path and gate reasoning includes on model capability",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}
