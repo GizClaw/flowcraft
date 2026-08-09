@@ -178,17 +178,17 @@ jobs:
 
       - name: Prepare isolated module file
         id: modfile
+        working-directory: ${{ matrix.release.dir }}
         env:
           MODULE: ${{ matrix.release.module }}
-          MODULE_DIR: ${{ matrix.release.dir }}
           RELEASES_JSON: ${{ needs.plan.outputs.modules }}
         run: |
           set -euo pipefail
           modfile="$RUNNER_TEMP/${MODULE}.mod"
           sumfile="$RUNNER_TEMP/${MODULE}.sum"
-          cp "$MODULE_DIR/go.mod" "$modfile"
-          if [ -f "$MODULE_DIR/go.sum" ]; then
-            cp "$MODULE_DIR/go.sum" "$sumfile"
+          cp go.mod "$modfile"
+          if [ -f go.sum ]; then
+            cp go.sum "$sumfile"
           else
             : > "$sumfile"
           fi
