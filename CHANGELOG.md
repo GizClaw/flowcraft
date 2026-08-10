@@ -13,13 +13,19 @@ Release PR before their tags are published.
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
 | `sdk`    | `sdk/v0.5.1`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.1`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.2`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdkx/v0.5.2` - 2026-08-10
+
+### Changed
+
+- Lower message DataPart to text in generate and embed compilers across sdkx providers
 
 ## `sdk/v0.5.1` - 2026-08-09
 
