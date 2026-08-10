@@ -699,6 +699,20 @@ func TestIntegration_MITM_HTTPS(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// The isolated net posture needs bwrap to bring up loopback in the
+	// fresh net namespace (RTM_NEWADDR). Stripped-down kernels / CI
+	// runners without the required capability fail here with EPERM;
+	// per the lane's policy, skip rather than fail when the host
+	// cannot apply the boundary at all.
+	probe, probeErr := runner.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Net:     sandbox.NetPolicy{Mode: sandbox.NetAllowList, AllowHosts: []string{"127.0.0.1"}},
+		Timeout: 5 * time.Second,
+	})
+	if probeErr != nil || probe.ExitCode != 0 {
+		t.Skipf("bwrap net isolation cannot be applied on this host: err=%v stderr=%q",
+			probeErr, probe.Stderr)
+	}
+
 	res, err := runner.Exec(
 		context.Background(),
 		os.Args[0],

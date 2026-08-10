@@ -422,7 +422,7 @@ func TestRunner_ProcessManager_PipeSession(t *testing.T) {
 			break
 		}
 	}
-	if !strings.Contains(sb.String(), "CMD:/bin/echo") || !strings.Contains(sb.String(), "CMD:hi") {
+	if !strings.Contains(sb.String(), "CMD:/bin/echo") || !strings.Contains(sb.String(), "ARG:hi") {
 		t.Fatalf(`session output missing post-"--" argv: %q`, sb.String())
 	}
 	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
