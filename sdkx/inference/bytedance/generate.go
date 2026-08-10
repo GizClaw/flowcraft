@@ -118,13 +118,15 @@ type wireToolChoice struct {
 // ---------------------------------------------------------------------------
 
 type generateRaw struct {
-	id           string
-	reasonings   []rawReasoning // reasoning items in output order
-	texts        []string       // output_text items in order
-	toolCalls    []rawToolCall
-	finish       inference.FinishReason
-	usage        rawUsage
-	failedReason string // non-empty when the provider reported failure
+	id             string
+	reasonings     []rawReasoning // reasoning items in output order
+	texts          []string       // output_text items in order
+	toolCalls      []rawToolCall
+	webSearchCalls []inference.WebSearchCall
+	citations      []inference.Citation
+	finish         inference.FinishReason
+	usage          rawUsage
+	failedReason   string // non-empty when the provider reported failure
 }
 
 // rawReasoning lowers one reasoning item: joined summary text and the item
@@ -152,14 +154,15 @@ type rawUsage struct {
 // canonical part indices (it is the stateful stage) so the decoder function
 // stays pure and concurrency-safe.
 type streamRaw struct {
-	kind       streamRawKind
-	part       int    // canonical part index (text / tool / reasoning kinds)
-	text       string // text / summary delta
-	id         string // terminal reasoning item id
-	responseID string // response id from the terminal event
-	tool       streamRawTool
-	usage      *rawUsage
-	finish     inference.FinishReason
+	kind            streamRawKind
+	part            int    // canonical part index (text / tool / reasoning kinds)
+	text            string // text / summary delta
+	id              string // terminal reasoning item id
+	responseID      string // response id from the terminal event
+	tool            streamRawTool
+	usage           *rawUsage
+	finish          inference.FinishReason
+	providerOutputs inference.ProviderOutputs
 }
 
 type streamRawKind int
@@ -168,6 +171,7 @@ const (
 	streamRawText streamRawKind = iota
 	streamRawToolFragment
 	streamRawReasoning
+	streamRawProviderOutput
 	streamRawFinish
 )
 

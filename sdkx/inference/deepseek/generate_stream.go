@@ -7,8 +7,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 
-	openaigo "github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/ssestream"
+	openaigo "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 )
 
 // chatStream adapts the SDK's SSE stream to the provider stream contract.

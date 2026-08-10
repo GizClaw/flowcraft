@@ -25,6 +25,10 @@ type responsesStream struct {
 	nextPart int
 	finished bool
 	sawTools bool
+
+	// webSearchOutput is the cumulative provider output snapshot for the
+	// hosted web_search tool.
+	webSearchOutput WebSearchOutput
 }
 
 type streamPart struct {
@@ -135,6 +139,10 @@ func (s *responsesStream) apply(
 			}
 			return streamRaw{}, false, nil
 		}
+		if call := item.GetItem().GetFunctionWebSearch(); call != nil {
+			s.addWebSearchCall(arkWebSearchCall(call))
+			return streamRaw{}, false, nil
+		}
 		call := item.GetItem().GetFunctionToolCall()
 		if call == nil {
 			return streamRaw{}, false, nil
@@ -148,32 +156,36 @@ func (s *responsesStream) apply(
 	}
 	if done := event.GetItemDone(); done != nil {
 		reasoning := done.GetItem().GetReasoning()
-		if reasoning == nil {
-			return streamRaw{}, false, nil
+		if reasoning != nil {
+			// item.done is the reasoning terminal: it carries the full summary
+			// when no text deltas streamed, plus the item id.
+			part := s.registerPart(done.GetOutputIndex(), false)
+			part.reasoning = true
+			if reasoning.GetId() != "" {
+				part.id = reasoning.GetId()
+			}
+			text := ""
+			if !part.sawSummary {
+				text = reasoningSummaryText(reasoning.GetSummary())
+			}
+			if text == "" && !part.sawSummary {
+				// Nothing visible ever streamed: an id-only terminal would
+				// accumulate into an empty reasoning part, which the canonical
+				// contract rejects.
+				return streamRaw{}, false, nil
+			}
+			return streamRaw{
+				kind: streamRawReasoning,
+				part: part.index,
+				text: text,
+				id:   part.id,
+			}, true, nil
 		}
-		// item.done is the reasoning terminal: it carries the full summary
-		// when no text deltas streamed, plus the item id.
-		part := s.registerPart(done.GetOutputIndex(), false)
-		part.reasoning = true
-		if reasoning.GetId() != "" {
-			part.id = reasoning.GetId()
+		if call := done.GetItem().GetFunctionWebSearch(); call != nil {
+			s.addWebSearchCall(arkWebSearchCall(call))
+			return s.webSearchSnapshot()
 		}
-		text := ""
-		if !part.sawSummary {
-			text = reasoningSummaryText(reasoning.GetSummary())
-		}
-		if text == "" && !part.sawSummary {
-			// Nothing visible ever streamed: an id-only terminal would
-			// accumulate into an empty reasoning part, which the canonical
-			// contract rejects.
-			return streamRaw{}, false, nil
-		}
-		return streamRaw{
-			kind: streamRawReasoning,
-			part: part.index,
-			text: text,
-			id:   part.id,
-		}, true, nil
+		return streamRaw{}, false, nil
 	}
 	if text := event.GetText(); text != nil {
 		if text.GetType() != arkresponses.EventType_response_output_text_delta {
@@ -230,6 +242,14 @@ func (s *responsesStream) apply(
 		}
 		return streamRaw{}, false, nil
 	}
+	if annotation := event.GetResponseAnnotationAdded(); annotation != nil {
+		citation := arkAnnotationCitation(annotation.GetAnnotation())
+		if citation.URL == "" {
+			return streamRaw{}, false, nil
+		}
+		s.addCitation(citation)
+		return s.webSearchSnapshot()
+	}
 	// Reasoning part markers, web-search lifecycle, and transcription
 	// events are bookkeeping for this operation's output.
 	return streamRaw{}, false, nil
@@ -282,12 +302,80 @@ func (s *responsesStream) finishEvent(
 	}
 	s.finished = true
 	usage := arkUsage(response.GetUsage())
-	return streamRaw{
+	raw := streamRaw{
 		kind:       streamRawFinish,
 		usage:      &usage,
 		finish:     finish,
 		responseID: response.GetId(),
-	}, nil
+	}
+	if len(s.webSearchOutput.Calls) > 0 || len(s.webSearchOutput.Citations) > 0 {
+		raw.providerOutputs = inference.ProviderOutputs{
+			&WebSearchOutput{
+				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
+				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
+			},
+		}
+	}
+	return raw, nil
+}
+
+func (s *responsesStream) addWebSearchCall(call inference.WebSearchCall) {
+	for i := range s.webSearchOutput.Calls {
+		if s.webSearchOutput.Calls[i].ID != call.ID {
+			continue
+		}
+		if call.Status != "" {
+			s.webSearchOutput.Calls[i].Status = call.Status
+		}
+		if call.Action != "" {
+			s.webSearchOutput.Calls[i].Action = call.Action
+		}
+		if len(call.Queries) > 0 {
+			s.webSearchOutput.Calls[i].Queries = call.Queries
+		}
+		if len(call.Sources) > 0 {
+			s.webSearchOutput.Calls[i].Sources = call.Sources
+		}
+		return
+	}
+	s.webSearchOutput.Calls = append(s.webSearchOutput.Calls, call)
+}
+
+func (s *responsesStream) addCitation(citation inference.Citation) {
+	for i := range s.webSearchOutput.Citations {
+		existing := s.webSearchOutput.Citations[i]
+		if existing.URL == citation.URL {
+			return
+		}
+	}
+	s.webSearchOutput.Citations = append(s.webSearchOutput.Citations, citation)
+}
+
+func (s *responsesStream) webSearchSnapshot() (streamRaw, bool, error) {
+	if len(s.webSearchOutput.Calls) == 0 && len(s.webSearchOutput.Citations) == 0 {
+		return streamRaw{}, false, nil
+	}
+	return streamRaw{
+		kind: streamRawProviderOutput,
+		providerOutputs: inference.ProviderOutputs{
+			&WebSearchOutput{
+				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
+				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
+			},
+		},
+	}, true, nil
+}
+
+func arkAnnotationCitation(annotation *arkresponses.Annotation) inference.Citation {
+	if annotation == nil {
+		return inference.Citation{}
+	}
+	return inference.Citation{
+		URL:         annotation.GetUrl(),
+		Title:       annotation.GetTitle(),
+		SiteName:    annotation.GetSiteName(),
+		PublishTime: annotation.GetPublishTime(),
+	}
 }
 
 func arkIncompleteFinish(reason string) inference.FinishReason {
@@ -329,10 +417,15 @@ func decodeGenerateStream(
 				ID:   raw.id,
 			},
 		}, nil
+	case streamRawProviderOutput:
+		return inference.GenerateStreamEvent{
+			ProviderOutputs: raw.providerOutputs.Clone(),
+		}, nil
 	case streamRawFinish:
 		event := inference.GenerateStreamEvent{
-			FinishReason: raw.finish,
-			ResponseID:   raw.responseID,
+			FinishReason:    raw.finish,
+			ResponseID:      raw.responseID,
+			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)

@@ -10,7 +10,7 @@ package openai
 import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 
-	openaigo "github.com/openai/openai-go"
+	openaigo "github.com/openai/openai-go/v3"
 )
 
 // Capabilities declares what one externally managed deployment accepts.

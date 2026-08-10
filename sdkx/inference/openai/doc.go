@@ -12,6 +12,9 @@
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always
 //     includes reasoning.encrypted_content so round-trips stay possible.
+//     GenerateOptions.WebSearch attaches OpenAI's hosted web_search tool;
+//     web_search_call items and url_citation annotations surface on
+//     GenerateResponse.ProviderOutputs (never inside Message).
 //   - Generate ImageIntent: Images API (gpt-image models).
 //   - Generate AudioIntent: speech API (gpt-4o-mini-tts and friends).
 //   - Embed: embeddings API (text-embedding-3 family).

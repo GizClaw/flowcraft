@@ -10,8 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/message/media"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 )
 
 // Speech synthesis runs on the audio speech endpoint. The request's text is
@@ -215,7 +215,9 @@ func ttsParams(wire ttsWire) openai.AudioSpeechNewParams {
 	params := openai.AudioSpeechNewParams{
 		Model: wire.model,
 		Input: wire.text,
-		Voice: openai.AudioSpeechNewParamsVoice(wire.voice),
+		Voice: openai.AudioSpeechNewParamsVoiceUnion{
+			OfAudioSpeechNewsVoiceString2: openai.String(wire.voice),
+		},
 	}
 	if wire.format != "" {
 		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormat(wire.format)

@@ -6,9 +6,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
-	openaigo "github.com/openai/openai-go"
-	"github.com/openai/openai-go/azure"
-	"github.com/openai/openai-go/option"
+	openaigo "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/azure"
+	"github.com/openai/openai-go/v3/option"
 )
 
 // SecretAPIKey is the Azure OpenAI resource key secret id.

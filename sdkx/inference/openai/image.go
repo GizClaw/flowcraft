@@ -10,8 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/message/media"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 )
 
 // Image generation runs on the images endpoint (gpt-image). The prompt is

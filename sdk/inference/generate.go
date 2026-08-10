@@ -606,12 +606,17 @@ type GenerateResponse struct {
 	FinishReason FinishReason    `json:"finish_reason"`
 	Usage        Usage           `json:"usage"`
 	Metadata     Metadata        `json:"metadata"`
+	// ProviderOutputs carries provider-owned structured output that is not
+	// part of Message. It is never fed back into a model request implicitly;
+	// only Message becomes conversation context.
+	ProviderOutputs ProviderOutputs `json:"provider_outputs,omitempty"`
 }
 
 func (r GenerateResponse) Clone() GenerateResponse {
 	r.Message = r.Message.Clone()
 	r.Usage = r.Usage.Clone()
 	r.Metadata.Decisions = append([]Decision(nil), r.Metadata.Decisions...)
+	r.ProviderOutputs = r.ProviderOutputs.Clone()
 	return r
 }
 
@@ -630,6 +635,9 @@ func (r GenerateResponse) Validate() error {
 		return err
 	}
 	if err := r.Usage.Validate(); err != nil {
+		return err
+	}
+	if err := r.ProviderOutputs.Validate(); err != nil {
 		return err
 	}
 	hasToolCalls := r.Message.HasToolCalls()

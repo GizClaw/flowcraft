@@ -3,15 +3,12 @@ package openai
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message/media"
-	"github.com/GizClaw/flowcraft/sdk/telemetry"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-	otellog "go.opentelemetry.io/otel/log"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
 )
 
 // Transcription runs on the audio transcriptions endpoint, unary only: the
@@ -146,62 +143,32 @@ func transportTranscription(
 		raw := sttRaw{
 			text:          response.Text,
 			requestedLang: wire.language,
-			usage: sttUsage{
-				inputTokens:    response.Usage.InputTokens,
-				outputTokens:   response.Usage.OutputTokens,
+		}
+		switch response.Usage.Type {
+		case "tokens":
+			raw.usage = sttUsage{
+				inputTokens:  response.Usage.InputTokens,
+				outputTokens: response.Usage.OutputTokens,
+			}
+		case "duration":
+			raw.usage = sttUsage{
 				durationMillis: int64(response.Usage.Seconds * 1000),
-			},
+			}
 		}
 		if wire.timestamps {
-			// verbose_json fields sit outside the SDK's typed struct. Extras
-			// are tracked by map presence: respjson marks them unset even
-			// though their raw payload is present.
-			extra := response.JSON.ExtraFields
-			if field, ok := extra["language"]; ok {
-				// Language defaults to the SDK's empty value on parse
-				// failure; surface the malformed payload so a server-
-				// side change to the verbose_json shape is visible.
-				if err := json.Unmarshal([]byte(field.Raw()), &raw.language); err != nil {
-					telemetry.WarnErr(ctx, "openai stt: parse verbose_json.language", err,
-						otellog.String("provider", "openai"),
-						otellog.String("field", "language"))
-				}
-			}
-			if field, ok := extra["duration"]; ok {
-				var seconds float64
-				if err := json.Unmarshal([]byte(field.Raw()), &seconds); err == nil {
-					raw.durationMillis = int64(seconds * 1000)
-				}
-			}
-			if field, ok := extra["segments"]; ok {
-				raw.segments = parseSTTSegments(field.Raw())
+			verbose := response.AsTranscriptionVerbose()
+			raw.language = verbose.Language
+			raw.durationMillis = int64(verbose.Duration * 1000)
+			for _, segment := range verbose.Segments {
+				raw.segments = append(raw.segments, sttSegment{
+					text:        segment.Text,
+					startMillis: int64(segment.Start * 1000),
+					endMillis:   int64(segment.End * 1000),
+				})
 			}
 		}
 		return raw, nil
 	}
-}
-
-// parseSTTSegments lowers verbose_json segments to the provider-owned shape.
-// Malformed payloads degrade to no segments rather than failing the decode:
-// the transcript text remains truthful.
-func parseSTTSegments(raw string) []sttSegment {
-	var entries []struct {
-		Text  string  `json:"text"`
-		Start float64 `json:"start"`
-		End   float64 `json:"end"`
-	}
-	if err := json.Unmarshal([]byte(raw), &entries); err != nil {
-		return nil
-	}
-	segments := make([]sttSegment, 0, len(entries))
-	for _, entry := range entries {
-		segments = append(segments, sttSegment{
-			text:        entry.Text,
-			startMillis: int64(entry.Start * 1000),
-			endMillis:   int64(entry.End * 1000),
-		})
-	}
-	return segments
 }
 
 func decodeTranscription(

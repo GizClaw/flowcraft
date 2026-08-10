@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
-	"github.com/openai/openai-go"
+	"github.com/openai/openai-go/v3"
 )
 
 // classifyError normalizes any error returned by the OpenAI SDK or the

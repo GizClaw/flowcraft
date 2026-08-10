@@ -8,9 +8,9 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
 
-	openaigo "github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
-	"github.com/openai/openai-go/packages/respjson"
+	openaigo "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/packages/respjson"
 )
 
 // wireToParams converts the wire model into openai-go chat completion
@@ -37,11 +37,13 @@ func wireToParams(wire generateWire) (openaigo.ChatCompletionNewParams, []option
 		}
 	}
 	for _, definition := range wire.tools {
-		params.Tools = append(params.Tools, openaigo.ChatCompletionToolParam{
-			Function: openaigo.FunctionDefinitionParam{
-				Name:        definition.name,
-				Description: openaigo.String(definition.description),
-				Parameters:  openaigo.FunctionParameters(jsonMap(definition.parameters)),
+		params.Tools = append(params.Tools, openaigo.ChatCompletionToolUnionParam{
+			OfFunction: &openaigo.ChatCompletionFunctionToolParam{
+				Function: openaigo.FunctionDefinitionParam{
+					Name:        definition.name,
+					Description: openaigo.String(definition.description),
+					Parameters:  openaigo.FunctionParameters(jsonMap(definition.parameters)),
+				},
 			},
 		})
 	}
@@ -53,7 +55,7 @@ func wireToParams(wire generateWire) (openaigo.ChatCompletionNewParams, []option
 			}
 		case "named":
 			params.ToolChoice = openaigo.ChatCompletionToolChoiceOptionUnionParam{
-				OfChatCompletionNamedToolChoice: &openaigo.ChatCompletionNamedToolChoiceParam{
+				OfFunctionToolChoice: &openaigo.ChatCompletionNamedToolChoiceParam{
 					Function: openaigo.ChatCompletionNamedToolChoiceFunctionParam{Name: choice.name},
 				},
 			}
@@ -93,11 +95,13 @@ func wireMessagesToParams(messages []wireMessage) []openaigo.ChatCompletionMessa
 				assistant.Content.OfString = openaigo.String(message.text)
 			}
 			for _, call := range message.toolCalls {
-				assistant.ToolCalls = append(assistant.ToolCalls, openaigo.ChatCompletionMessageToolCallParam{
-					ID: call.id,
-					Function: openaigo.ChatCompletionMessageToolCallFunctionParam{
-						Name:      call.name,
-						Arguments: string(call.args),
+				assistant.ToolCalls = append(assistant.ToolCalls, openaigo.ChatCompletionMessageToolCallUnionParam{
+					OfFunction: &openaigo.ChatCompletionMessageFunctionToolCallParam{
+						ID: call.id,
+						Function: openaigo.ChatCompletionMessageFunctionToolCallFunctionParam{
+							Name:      call.name,
+							Arguments: string(call.args),
+						},
 					},
 				})
 			}
@@ -152,10 +156,11 @@ func completionToRaw(response *openaigo.ChatCompletion) (generateRaw, error) {
 		usage:     usageToRaw(response.Usage),
 	}
 	for _, call := range choice.Message.ToolCalls {
+		function := call.AsFunction()
 		raw.toolCalls = append(raw.toolCalls, rawToolCall{
-			id:   call.ID,
-			name: call.Function.Name,
-			args: call.Function.Arguments,
+			id:   function.ID,
+			name: function.Function.Name,
+			args: function.Function.Arguments,
 		})
 	}
 	return raw, nil

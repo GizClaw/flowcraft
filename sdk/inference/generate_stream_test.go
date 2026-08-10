@@ -201,7 +201,9 @@ func TestGenerateStreamRejectsInvalidEventBeforeExposure(t *testing.T) {
 			if !IsKind(err, InvalidProviderResponse) {
 				t.Fatalf("Next event/error = %+v/%v, want zero event and InvalidProviderResponse", event, err)
 			}
-			if event != (GenerateStreamEvent{}) {
+			if event.PartIndex != 0 || event.Delta != nil || event.Usage != nil ||
+				event.FinishReason != "" || len(event.ProviderOutputs) != 0 ||
+				event.RequestID != "" || event.ResponseID != "" {
 				t.Fatalf("Next exposed invalid event: %+v", event)
 			}
 		})
