@@ -230,11 +230,17 @@ func (s *session) Resize(_ context.Context, rows, cols int) error {
 	}
 	s.mu.Lock()
 	ptmx := s.ptmx
-	s.mu.Unlock()
 	if ptmx == nil {
+		s.mu.Unlock()
 		return errdefs.NotAvailablef("sandbox: Resize requires a TTY session")
 	}
-	return pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	// Setsize uses Fd(), which is not safe against a concurrent Close
+	// (reap / Close nil the field under the same lock, then close the
+	// fd outside it). Holding the lock across the ioctl serializes the
+	// two paths.
+	err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
+	s.mu.Unlock()
+	return err
 }
 
 func (s *session) Terminate(ctx context.Context) error {
@@ -362,11 +368,19 @@ func (s *session) Close() error {
 		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
 		<-s.done
 	}
-	if s.ptmx != nil {
-		_ = s.ptmx.Close()
+	s.mu.Lock()
+	ptmx := s.ptmx
+	s.ptmx = nil
+	s.mu.Unlock()
+	if ptmx != nil {
+		_ = ptmx.Close()
 	}
-	if s.stdin != nil && s.stdin != s.ptmx {
-		_ = s.stdin.Close()
+	s.mu.Lock()
+	stdin := s.stdin
+	s.stdin = nil
+	s.mu.Unlock()
+	if stdin != nil && stdin != ptmx {
+		_ = stdin.Close()
 	}
 	s.out.close()
 	return nil
@@ -429,8 +443,12 @@ func (s *session) reap() {
 	if s.watcher != nil {
 		s.watcher.Stop()
 	}
-	if s.ptmx != nil {
-		_ = s.ptmx.Close()
+	s.mu.Lock()
+	ptmx := s.ptmx
+	s.ptmx = nil
+	s.mu.Unlock()
+	if ptmx != nil {
+		_ = ptmx.Close()
 	}
 	// The pty copier may still hold bytes read before the child's last
 	// write flushed; wait for it so EOF is never reported early.
