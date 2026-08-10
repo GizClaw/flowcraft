@@ -6,7 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
-	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
+	"github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
 )
 
 func TestExprBridge(t *testing.T) {

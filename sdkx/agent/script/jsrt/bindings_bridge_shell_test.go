@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
-	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
+	"github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
 )
 
 // fakeCommandRunner is a sandbox.Runner stub that returns canned output
