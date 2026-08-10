@@ -9,8 +9,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/agent/bindings"
-	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
-	"github.com/GizClaw/flowcraft/sdkx/agent/luart"
+	"github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
+	"github.com/GizClaw/flowcraft/sdkx/agent/script/luart"
 )
 
 // RuntimeBinding is normally wired by the script node, not user code,

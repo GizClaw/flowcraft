@@ -316,8 +316,8 @@ explicit external consumer is dead configuration and fails the build.
 | `sandbox.Registry`        | `yaml`          | sandbox container               | `sdk/sandbox/config`            |
 | `inference.Assembly`      | `yaml`          | runtime (+ optional router)     | `sdk/inference/config`    |
 | `tool.Assembly`           | `yaml`          | catalog + executor              | `sdk/tool/config`              |
-| `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/jsrt`               |
-| `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/luart`              |
+| `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/script/jsrt`        |
+| `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/script/luart`       |
 | `agent.Engine`            | `a2a`           | A2A remote-proxy engine (0.3 + 1.0, JSON-RPC + gRPC) | `sdkx/agent/a2a/config`          |
 | `event.Bus`               | `memory`        | in-process bus                  | `sdk/event/config`             |
 | `delegation.AsyncBackend` | `kanban-memory` | asynchronous delegation backend | `sdkx/delegation/kanban/config` |

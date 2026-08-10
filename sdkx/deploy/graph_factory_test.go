@@ -6,7 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
-	"github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
+	"github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 

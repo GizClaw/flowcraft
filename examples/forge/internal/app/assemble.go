@@ -13,7 +13,7 @@ import (
 	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
 	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
-	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/jsrt"
+	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
 	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/inference/azure"

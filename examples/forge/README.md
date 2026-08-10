@@ -122,7 +122,7 @@ its own labelled block, and tool invocations appear as separate
 - `sdkx/deploy` + `sdkx/runtime` assemble the runtime from `deploy.yaml`;
   `sdkx/runtime/session` drives turns and streams deltas to sinks.
 - The graph engine is `sdk/graph`, with script nodes running on the bundled JS
-  runtime (`sdkx/agent/jsrt`).
+  runtime (`sdkx/agent/script/jsrt`).
 - Simulated tools are Go values registered from `internal/simtools`.
 - `WithHostFactory` wraps the session host so every LLM call's token usage is
   mirrored onto the app for TUI display.

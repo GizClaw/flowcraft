@@ -102,7 +102,7 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 - `sdkx/deploy` + `sdkx/runtime` 从 `deploy.yaml` 装配 runtime;
   `sdkx/runtime/session` 驱动对话并把流增量发给 sink。
 - graph 引擎是 `sdk/graph`,script 节点跑在自带的 JS runtime
-  (`sdkx/agent/jsrt`)上。
+  (`sdkx/agent/script/jsrt`)上。
 - 模拟工具是 `internal/simtools` 注册的 Go 值。
 - `WithHostFactory` 包住 session host,把每次 LLM 调用的 token 用量镜像到
   应用侧,供 TUI 展示。
