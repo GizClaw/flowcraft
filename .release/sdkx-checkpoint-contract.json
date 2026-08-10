@@ -1,0 +1,9 @@
+{
+  "summary": "Add configurable SQLite and workspace agent checkpoint stores (deploy resources + runtime checkpoint_store wiring), session-level end-to-end resume, and align A2A resume admission with the hardened agent checkpoint contract (shared Validate, strict exec-id matching)",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}

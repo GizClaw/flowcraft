@@ -15,8 +15,9 @@ import (
 // times: all per-run state lives on the board passed to Execute, never
 // on the Graph.
 type Graph struct {
-	name  string
-	entry string
+	name        string
+	specVersion string
+	entry       string
 
 	nodes map[string]*nodeSlot
 	order []string // definition order, for deterministic waves
@@ -103,8 +104,14 @@ func Build(def *GraphDefinition, reg *Registry, opts ...BuildOption) (*Graph, er
 		return nil, err
 	}
 
+	specVersion := def.Name
+	if def.Version != "" {
+		specVersion = def.Version
+	}
+
 	g := &Graph{
 		name:                 def.Name,
+		specVersion:          specVersion,
 		entry:                def.Entry,
 		nodes:                make(map[string]*nodeSlot, len(def.Nodes)),
 		edges:                make(map[string][]Edge, len(def.Edges)),

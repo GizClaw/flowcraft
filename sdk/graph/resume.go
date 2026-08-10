@@ -14,6 +14,11 @@ import (
 // produced by Execute's per-wave stamping. The ExecID-vs-run-id check
 // happens in Execute, where the run id is available.
 func (g *Graph) CanResume(cp agent.Checkpoint) error {
+	if cp.SpecVersion != "" && cp.SpecVersion != g.specVersion {
+		return errdefs.NotAvailablef(
+			"graph %q: checkpoint spec version %q does not match current graph spec %q",
+			g.name, cp.SpecVersion, g.specVersion)
+	}
 	if len(cp.Steps) == 0 {
 		return errdefs.Validationf("graph %q: checkpoint has no position marker", g.name)
 	}

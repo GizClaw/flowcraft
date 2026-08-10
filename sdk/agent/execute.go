@@ -1169,7 +1169,10 @@ func LoadAndResume(
 	// before launching Execute. Engines that do not implement
 	// Resumer skip the probe and rely on their own Execute-time
 	// handling per the [Run.ResumeFrom] contract.
-	if cp.ExecID != "" && cp.ExecID != run.RunID {
+	if err := cp.Validate(); err != nil {
+		return board, fmt.Errorf("agent.LoadAndResume: checkpoint %s: %w", run.RunID, err)
+	}
+	if cp.ExecID != run.RunID {
 		return board, errdefs.Validation(fmt.Errorf(
 			"agent.LoadAndResume: checkpoint exec_id %q does not match run %q",
 			cp.ExecID, run.RunID,

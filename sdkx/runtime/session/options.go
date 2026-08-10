@@ -3,6 +3,7 @@ package session
 import (
 	"time"
 
+	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
@@ -18,6 +19,8 @@ type managerOptions struct {
 	sinkBuffer        int
 	speculativeEvents int
 	speculativeBytes  int
+	checkpoints       agent.CheckpointStore
+	resume            bool
 }
 
 // WithSinkBufferSize sets the queue size used when SinkSpec.QueueSize is zero.
@@ -53,6 +56,28 @@ func WithIdleTimeout(timeout time.Duration) ManagerOption {
 			return errdefs.Validationf("runtime session: idle timeout must be positive")
 		}
 		options.idleTimeout = timeout
+		return nil
+	}
+}
+
+// WithCheckpointStore wires the store used for end-to-end resume. It
+// is required when [WithResume] is enabled.
+func WithCheckpointStore(store agent.CheckpointStore) ManagerOption {
+	return func(options *managerOptions) error {
+		if isNil(store) {
+			return errdefs.Validationf("runtime session: checkpoint store is required")
+		}
+		options.checkpoints = store
+		return nil
+	}
+}
+
+// WithResume enables session-level resume: each session key maps to a
+// stable run id, checkpoints are loaded before Start, and committed
+// checkpoints are deleted after completion.
+func WithResume(enable bool) ManagerOption {
+	return func(options *managerOptions) error {
+		options.resume = enable
 		return nil
 	}
 }

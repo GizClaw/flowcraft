@@ -28,9 +28,17 @@ const END = "__end__"
 // config field names, condition syntax, I/O role resolution — happen
 // in [Build], which has access to the [Registry].
 type GraphDefinition struct {
-	// Name identifies the graph. It is recorded in checkpoints as the
-	// spec version marker and appears in error messages.
+	// Name identifies the graph and appears in error messages. When
+	// Version is empty, Name is also recorded in checkpoints as the
+	// spec version marker.
 	Name string `json:"name"`
+
+	// Version optionally marks the graph's spec version. It is
+	// recorded in checkpoints and compared on resume; bump it when
+	// node semantics change so old checkpoints are not silently
+	// replayed against a different definition. Empty means "no
+	// explicit version" and falls back to Name.
+	Version string `json:"version,omitempty"`
 
 	// Entry is the id of the node where a fresh run starts.
 	Entry string `json:"entry"`

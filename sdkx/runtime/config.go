@@ -21,8 +21,17 @@ const (
 
 // Config is the strictly decoded deploy.Document.Runtime subtree.
 type Config struct {
-	EventBus     string
-	Scheduler    string
+	// EventBus names the deployment resource providing event.Bus.
+	EventBus string
+
+	// Scheduler names the deployment resource providing
+	// scheduler.Server; empty disables the scheduler.
+	Scheduler string
+
+	// CheckpointStore names the deployment resource providing
+	// agent.CheckpointStore; empty keeps checkpoints as a host no-op.
+	CheckpointStore string
+
 	Sessions     SessionConfig
 	Integrations []IntegrationConfig
 }
@@ -33,6 +42,7 @@ type SessionConfig struct {
 	SinkBuffer              int
 	SpeculativeBufferEvents int
 	SpeculativeBufferBytes  int
+	Resume                  bool
 }
 
 // IntegrationConfig configures one independently prepared integration.
@@ -44,10 +54,11 @@ type IntegrationConfig struct {
 }
 
 type configWire struct {
-	EventBus  string                  `json:"event_bus"`
-	Scheduler string                  `json:"scheduler,omitempty"`
-	Sessions  sessionConfigWire       `json:"sessions,omitempty"`
-	Items     []integrationConfigWire `json:"integrations,omitempty"`
+	EventBus        string                  `json:"event_bus"`
+	Scheduler       string                  `json:"scheduler,omitempty"`
+	CheckpointStore string                  `json:"checkpoint_store,omitempty"`
+	Sessions        sessionConfigWire       `json:"sessions,omitempty"`
+	Items           []integrationConfigWire `json:"integrations,omitempty"`
 }
 
 type sessionConfigWire struct {
@@ -55,6 +66,7 @@ type sessionConfigWire struct {
 	SinkBuffer              *int    `json:"sink_buffer,omitempty"`
 	SpeculativeBufferEvents *int    `json:"speculative_buffer_events,omitempty"`
 	SpeculativeBufferBytes  *int    `json:"speculative_buffer_bytes,omitempty"`
+	Resume                  *bool   `json:"resume,omitempty"`
 }
 
 type integrationConfigWire struct {
@@ -74,13 +86,15 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		return Config{}, errdefs.Validation(fmt.Errorf("runtime config: decode: %w", err))
 	}
 	cfg := Config{
-		EventBus:  strings.TrimSpace(wire.EventBus),
-		Scheduler: strings.TrimSpace(wire.Scheduler),
+		EventBus:        strings.TrimSpace(wire.EventBus),
+		Scheduler:       strings.TrimSpace(wire.Scheduler),
+		CheckpointStore: strings.TrimSpace(wire.CheckpointStore),
 		Sessions: SessionConfig{
 			IdleTimeout:             defaultIdleTimeout,
 			SinkBuffer:              defaultSinkBuffer,
 			SpeculativeBufferEvents: defaultSpeculativeBufferEvents,
 			SpeculativeBufferBytes:  defaultSpeculativeBufferBytes,
+			Resume:                  false,
 		},
 		Integrations: make([]IntegrationConfig, len(wire.Items)),
 	}
@@ -119,6 +133,13 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.speculative_buffer_bytes must be positive")
 		}
 		cfg.Sessions.SpeculativeBufferBytes = *wire.Sessions.SpeculativeBufferBytes
+	}
+	if wire.Sessions.Resume != nil {
+		cfg.Sessions.Resume = *wire.Sessions.Resume
+	}
+	if cfg.Sessions.Resume && cfg.CheckpointStore == "" {
+		return Config{}, errdefs.Validationf(
+			"runtime config: sessions.resume requires checkpoint_store")
 	}
 
 	seenNames := make(map[string]struct{}, len(wire.Items))
