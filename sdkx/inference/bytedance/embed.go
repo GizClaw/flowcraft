@@ -3,6 +3,7 @@ package bytedance
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
@@ -69,11 +70,29 @@ func compileEmbed(
 			)
 		}
 		for _, item := range request.Items {
-			inputs := make([]embedInput, 0, len(item.Content.Parts))
+			var text strings.Builder
+			textParts := 0
+			var inputs []embedInput
+			flushText := func() {
+				if text.Len() == 0 {
+					return
+				}
+				inputs = append(inputs, embedInput{kind: "text", text: text.String()})
+				text.Reset()
+			}
 			for _, part := range item.Content.Parts {
 				switch value := part.(type) {
 				case message.TextPart:
-					inputs = append(inputs, embedInput{kind: "text", text: value.Text})
+					textParts++
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(value.Text)
+				case message.DataPart:
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(string(value.Value))
 				case message.ImagePart:
 					if !entry.imageInput {
 						ledger.reject(
@@ -82,12 +101,13 @@ func compileEmbed(
 						)
 						continue
 					}
+					flushText()
 					inputs = append(inputs, embedInput{
 						kind: "image",
 						uri:  sourceURI(value.Source),
 					})
 				case message.AudioPart, message.VideoPart,
-					message.FilePart, message.DataPart,
+					message.FilePart,
 					message.ToolCallPart, message.ToolResultPart:
 					ledger.reject(
 						embedPartFields[part.Kind()],
@@ -95,6 +115,7 @@ func compileEmbed(
 					)
 				}
 			}
+			flushText()
 			if len(inputs) == 0 {
 				continue
 			}
@@ -104,7 +125,7 @@ func compileEmbed(
 			}
 			// The text endpoint embeds one string per item; a multi-part item
 			// cannot be represented without silently concatenating parts.
-			if len(inputs) > 1 {
+			if textParts > 1 || len(inputs) > 1 {
 				ledger.reject(
 					inference.FieldEmbedItemMultiPart,
 					"text embedding accepts one text part per item",

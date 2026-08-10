@@ -63,15 +63,6 @@ func workspaceInspectCmd(args []string) error {
 	fmt.Fprintf(&out, "workspace: %s\n", filepath.Clean(*workspaceDir))
 	fmt.Fprintf(&out, "agent: %s (%s)\n", info.AgentID, info.AgentName)
 	fmt.Fprintf(&out, "context: %s\n", info.ContextID)
-	if info.GenerateModel != "" {
-		fmt.Fprintf(&out, "generate_model: %s\n", info.GenerateModel)
-	}
-	fmt.Fprintf(&out, "memory_enabled: %t\n", info.MemoryEnabled)
-	if info.MemoryEnabled {
-		fmt.Fprintf(&out, "memory_scope: runtime=%s user=%s agent=%s\n",
-			info.MemoryScope.RuntimeID, info.MemoryScope.UserID, info.MemoryScope.AgentID)
-		fmt.Fprintf(&out, "memory_recall_top_k: %d\n", info.MemoryTopK)
-	}
 	fmt.Print(out.String())
 	return nil
 }

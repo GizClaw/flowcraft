@@ -382,7 +382,10 @@ func compileMessage(
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+			content = append(content, wireContent{
+				kind: wireContentText,
+				text: "\n" + string(value.Value) + "\n",
+			})
 		case message.ToolCallPart:
 			flush()
 			wire.items = append(wire.items, wireItem{

@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
-	flowcraftmemory "github.com/GizClaw/flowcraft/memory/config"
-	flowcraftruntime "github.com/GizClaw/flowcraft/memory/runtime"
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
 	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
@@ -24,7 +22,6 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/inference/minimax"
 	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
 	"github.com/GizClaw/flowcraft/sdkx/inference/qwen"
-	memoryhook "github.com/GizClaw/flowcraft/sdkx/memory/hook"
 	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
 	delegationruntime "github.com/GizClaw/flowcraft/sdkx/runtime/integration/delegation"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
@@ -60,9 +57,6 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 	factories := providerFactories()
 	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
 	deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(factories, resolvers))
-	deployBuilder.MustRegisterResource(flowcraftmemory.Factory())
-	deployBuilder.RegisterPreparer(memoryhook.ContextType, memoryhook.ContextPreparer{})
-	deployBuilder.RegisterCommitter(memoryhook.TurnType, memoryhook.TurnCommitter{})
 
 	runtimeBuilder := runtimecore.NewBuilder(deployBuilder)
 	delegationFactory, err := delegationruntime.NewFactory(a.tools)
@@ -70,12 +64,6 @@ func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) 
 		return nil, err
 	}
 	if err := runtimeBuilder.RegisterIntegration(delegationFactory); err != nil {
-		return nil, err
-	}
-	if err := runtimeBuilder.RegisterIntegration(flowcraftruntime.NewFactory()); err != nil {
-		return nil, err
-	}
-	if err := runtimeBuilder.RegisterIntegration(&debugIntegrationFactory{app: a}); err != nil {
 		return nil, err
 	}
 	if err := runtimeBuilder.WithHostFactory(usageHostDecorator(a)); err != nil {
