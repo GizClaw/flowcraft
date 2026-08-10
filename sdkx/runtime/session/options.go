@@ -21,6 +21,7 @@ type managerOptions struct {
 	speculativeBytes  int
 	checkpoints       agent.CheckpointStore
 	resume            bool
+	observer          SessionObserver
 }
 
 // WithSinkBufferSize sets the queue size used when SinkSpec.QueueSize is zero.
@@ -42,6 +43,19 @@ func WithSpeculativeBufferLimits(events, bytes int) ManagerOption {
 		}
 		options.speculativeEvents = events
 		options.speculativeBytes = bytes
+		return nil
+	}
+}
+
+// WithSessionObserver attaches a session-level lifecycle observer to every
+// Session created by this Manager. See SessionObserver for the callback
+// contract.
+func WithSessionObserver(observer SessionObserver) ManagerOption {
+	return func(options *managerOptions) error {
+		if isNil(observer) {
+			return errdefs.Validationf("runtime session: session observer is required")
+		}
+		options.observer = observer
 		return nil
 	}
 }

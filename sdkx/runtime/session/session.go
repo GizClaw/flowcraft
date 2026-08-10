@@ -43,6 +43,7 @@ type Session struct {
 	active         *Turn
 	closing        bool
 	activityNotify func(*Session)
+	observer       SessionObserver
 	closeOnce      sync.Once
 	closeErr       error
 }
@@ -58,6 +59,7 @@ func newSession(
 	checkpoints agent.CheckpointStore,
 	resume bool,
 	activityNotify func(*Session),
+	observer SessionObserver,
 ) *Session {
 	return &Session{
 		key:               key,
@@ -70,6 +72,7 @@ func newSession(
 		checkpoints:       checkpoints,
 		resume:            resume,
 		activityNotify:    activityNotify,
+		observer:          observer,
 	}
 }
 
@@ -103,7 +106,12 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	}
 
 	s.startMu.Lock()
-	defer s.startMu.Unlock()
+	startLocked := true
+	defer func() {
+		if startLocked {
+			s.startMu.Unlock()
+		}
+	}()
 
 	s.mu.Lock()
 	if s.closing {
@@ -223,6 +231,9 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	s.mu.Unlock()
 	activityHeld = false
 
+	startLocked = false
+	s.startMu.Unlock()
+	s.notifySessionStarted(turn)
 	go turn.execute(s.instance, request)
 	return turn, nil
 }
@@ -393,24 +404,58 @@ func (s *Session) close() error {
 			}
 		}
 		s.startMu.Unlock()
+		s.notifySessionClosed(s.closeErr)
 	})
 	return s.closeErr
 }
 
 func (s *Session) beginClose() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.closing = true
-	s.mu.Unlock()
+	s.notifySessionClosing(s.markClosing())
 }
 
-func (s *Session) turnFinished(turn *Turn) {
+// markClosing transitions the Session to the closing state exactly once.
+func (s *Session) markClosing() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return false
+	}
+	s.closing = true
+	return true
+}
+
+func (s *Session) notifySessionClosing(first bool) {
+	if !first || s == nil || s.observer == nil {
+		return
+	}
+	s.observer.OnSessionClosing(s)
+}
+
+func (s *Session) notifySessionClosed(err error) {
+	if s == nil || s.observer == nil {
+		return
+	}
+	s.observer.OnSessionClosed(s, err)
+}
+
+func (s *Session) notifySessionStarted(turn *Turn) {
+	if s == nil || s.observer == nil {
+		return
+	}
+	s.observer.OnSessionStarted(s, turn)
+}
+
+func (s *Session) turnFinished(turn *Turn, result *agent.Result, err error) {
 	s.mu.Lock()
 	if s.active == turn {
 		s.active = nil
 	}
 	s.mu.Unlock()
 	s.changeActivity(activityTurn, -1)
+	if s.observer != nil {
+		s.observer.OnTurnFinished(s, turn, result, err)
+	}
 }

@@ -38,6 +38,7 @@ type Manager struct {
 	speculativeBytes  int
 	checkpoints       agent.CheckpointStore
 	resume            bool
+	observer          SessionObserver
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -96,6 +97,7 @@ func NewManager(
 		speculativeBytes:  opts.speculativeBytes,
 		checkpoints:       opts.checkpoints,
 		resume:            opts.resume,
+		observer:          opts.observer,
 		entries:           make(map[Key]*managerEntry),
 	}, nil
 }
@@ -152,7 +154,8 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 		m.checkpoints, m.resume,
 		func(changed *Session) {
 			m.activityChanged(key, changed)
-		})
+		},
+		m.observer)
 	m.entries[key] = &managerEntry{session: session, leases: 1}
 	return newLease(m, key, session), nil
 }
@@ -235,6 +238,7 @@ func (m *Manager) Close() error {
 		m.mu.Lock()
 		m.closed = true
 		sessions := make([]*Session, 0, len(m.entries))
+		closing := make([]*Session, 0, len(m.entries))
 		for key, entry := range m.entries {
 			entry.idleGeneration++
 			if entry.timer != nil {
@@ -242,10 +246,16 @@ func (m *Manager) Close() error {
 				entry.timer = nil
 			}
 			sessions = append(sessions, entry.session)
-			entry.session.beginClose()
+			if entry.session.markClosing() {
+				closing = append(closing, entry.session)
+			}
 			delete(m.entries, key)
 		}
 		m.mu.Unlock()
+
+		for _, session := range closing {
+			session.notifySessionClosing(true)
+		}
 
 		var closeErrors []error
 		for _, session := range sessions {
