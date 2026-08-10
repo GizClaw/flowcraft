@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
@@ -134,24 +135,39 @@ func compileEmbedText(
 		return
 	}
 	for _, item := range request.Items {
-		if len(item.Content.Parts) > 1 {
+		var text strings.Builder
+		textParts := 0
+		for _, part := range item.Content.Parts {
+			switch value := part.(type) {
+			case message.TextPart:
+				textParts++
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(value.Text)
+			case message.DataPart:
+				if text.Len() > 0 {
+					text.WriteString("\n")
+				}
+				text.WriteString(string(value.Value))
+			default:
+				ledger.reject(
+					embedPartFields[part.Kind()],
+					"model embeds text only",
+				)
+			}
+		}
+		if textParts > 1 {
 			ledger.reject(
 				inference.FieldEmbedItemMultiPart,
 				"text embedding accepts one text part per item",
 			)
 			continue
 		}
-		for _, part := range item.Content.Parts {
-			text, ok := part.(message.TextPart)
-			if !ok {
-				ledger.reject(
-					embedPartFields[part.Kind()],
-					"model embeds text only",
-				)
-				continue
-			}
-			wire.Texts = append(wire.Texts, text.Text)
+		if text.Len() == 0 && textParts == 0 {
+			continue
 		}
+		wire.Texts = append(wire.Texts, text.String())
 	}
 }
 
@@ -185,6 +201,9 @@ func compileEmbedMultimodal(
 					continue
 				}
 				contents = append(contents, embedContent{Video: value})
+			case message.DataPart:
+				data := "\n" + string(typed.Value) + "\n"
+				contents = append(contents, embedContent{Text: &data})
 			default:
 				ledger.reject(
 					embedPartFields[part.Kind()],

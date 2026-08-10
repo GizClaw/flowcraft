@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -205,6 +206,55 @@ func TestEmbedRejections(t *testing.T) {
 				t.Fatalf("transport ran %d times", len(capture.bodies))
 			}
 		})
+	}
+}
+
+func TestEmbedDataPartLowersToText(t *testing.T) {
+	data := message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	}
+
+	textCompiled, err := compileEmbed("doubao-embedding-large", catalog["doubao-embedding-large"])(
+		context.Background(), embedModel("doubao-embedding-large"),
+		inference.EmbedRequest{Items: []inference.EmbedItem{{
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "caption"},
+				data,
+			}},
+		}}},
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(textCompiled.Wire.texts) != 1 ||
+		!strings.Contains(textCompiled.Wire.texts[0], `{"k":1}`) {
+		t.Fatalf("wire texts = %+v", textCompiled.Wire.texts)
+	}
+
+	image, err := media.NewImageURL("https://example.com/i.png", "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mmCompiled, err := compileEmbed("doubao-embedding-vision", catalog["doubao-embedding-vision"])(
+		context.Background(), embedModel("doubao-embedding-vision"),
+		inference.EmbedRequest{Items: []inference.EmbedItem{{
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "caption"},
+				data,
+				message.ImagePart{Source: image},
+			}},
+		}}},
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(mmCompiled.Wire.items) != 1 || len(mmCompiled.Wire.items[0]) != 2 {
+		t.Fatalf("wire items = %+v", mmCompiled.Wire.items)
+	}
+	inputs := mmCompiled.Wire.items[0]
+	if !strings.Contains(inputs[0].text, `{"k":1}`) || inputs[1].kind != "image" {
+		t.Fatalf("wire inputs = %+v", inputs)
 	}
 }
 

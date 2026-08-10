@@ -1,6 +1,5 @@
 // Package tui implements the bubbletea interface for forge: a raid /
-// workspace selector and the three-panel chat TUI (recall, chat,
-// workspace).
+// workspace selector and the two-panel chat TUI (chat, workspace).
 package tui
 
 import (
@@ -11,7 +10,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/event"
-	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
@@ -22,11 +20,6 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
-)
-
-const (
-	focusChat = iota
-	focusRecall
 )
 
 // Item is one selector option.
@@ -134,11 +127,6 @@ type chatMessage struct {
 	Text   string
 }
 
-type recallResult struct {
-	Query string
-	Hits  []string
-}
-
 type eventMsg struct {
 	delta  *agent.StreamDeltaPayload
 	nodeID string
@@ -148,21 +136,18 @@ type eventMsg struct {
 
 type quitDisarmMsg struct{}
 
-// Model is the three-panel TUI.
+// Model is the two-panel TUI.
 type Model struct {
 	app           *app.App
 	workspacePath string
 	messages      []chatMessage
-	recall        recallResult
 	status        string
 	err           string
 	running       bool
 	eventCh       <-chan eventMsg
-	focus         int
 	width         int
 	height        int
 	chatInput     textinput.Model
-	recallInput   textinput.Model
 	chatViewport  viewport.Model
 	chatSpinner   spinner.Model
 	quitArmed     bool
@@ -178,10 +163,6 @@ func NewModel(a *app.App, workspacePath string) Model {
 	chat.Prompt = "> "
 	chat.CharLimit = 4000
 	chat.Focus()
-	recall := textinput.New()
-	recall.Placeholder = "recall query"
-	recall.Prompt = "? "
-	recall.CharLimit = 1000
 	chatViewport := viewport.New(0, 0)
 	chatViewport.MouseWheelEnabled = true
 	chatViewport.KeyMap = viewport.KeyMap{
@@ -203,7 +184,6 @@ func NewModel(a *app.App, workspacePath string) Model {
 		workspacePath: workspacePath,
 		status:        "ready",
 		chatInput:     chat,
-		recallInput:   recall,
 		chatViewport:  chatViewport,
 		chatSpinner:   chatSpinner,
 	}
@@ -248,36 +228,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			})
 		case "esc":
 			m.quitArmed = false
-			if m.focus == focusChat {
-				m.chatInput.SetValue("")
-			} else {
-				m.recallInput.SetValue("")
-			}
-			return m, nil
-		case "tab":
-			m.quitArmed = false
-			if m.focus == focusChat {
-				m.focus = focusRecall
-				m.chatInput.Blur()
-				m.recallInput.Focus()
-			} else {
-				m.focus = focusChat
-				m.recallInput.Blur()
-				if m.running {
-					m.chatInput.Blur()
-				} else {
-					m.chatInput.Focus()
-				}
-			}
+			m.chatInput.SetValue("")
 			return m, nil
 		}
 		m.quitArmed = false
-		if m.focus == focusChat {
-			var cmd tea.Cmd
-			m.chatViewport, cmd = m.chatViewport.Update(msg)
-			if cmd != nil {
-				return m, cmd
-			}
+		var cmd tea.Cmd
+		m.chatViewport, cmd = m.chatViewport.Update(msg)
+		if cmd != nil {
+			return m, cmd
 		}
 	case eventMsg:
 		if msg.done {
@@ -310,39 +268,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, pollCmd(m.eventCh)
-	case recallMsg:
-		if msg.err != nil {
-			m.err = msg.err.Error()
-			m.status = "error"
-			return m, nil
-		}
-		m.recall = msg.result
-		if len(msg.result.Hits) == 0 {
-			m.status = "recall: no hits"
-		} else {
-			m.status = fmt.Sprintf("recall: %d hits", len(msg.result.Hits))
-		}
-		return m, nil
 	}
 	var cmd tea.Cmd
-	if m.focus == focusRecall {
-		m.recallInput, cmd = m.recallInput.Update(msg)
-	} else {
-		m.chatInput, cmd = m.chatInput.Update(msg)
-	}
+	m.chatInput, cmd = m.chatInput.Update(msg)
 	return m, cmd
 }
 
 func (m Model) View() string {
 	width, _, bodyHeight, midW := m.panelLayout()
 	top := topStyle.Width(width - 2).MaxWidth(width - 2).Render(m.topLine())
-	leftW := maxInt(24, width/4)
 	rightW := maxInt(26, width/4)
-	left := panelStyle.Width(leftW).Height(bodyHeight).Render(m.recallView(leftW, bodyHeight))
 	mid := panelStyle.Width(midW).Height(bodyHeight).Render(m.chatView(midW, bodyHeight))
 	right := panelStyle.Width(rightW).Height(bodyHeight).Render(m.debugView(rightW, bodyHeight))
-	return top + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, left, mid, right) + "\n" +
-		helpStyle.Render("tab focus  enter submit  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
+	return top + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, mid, right) + "\n" +
+		helpStyle.Render("enter submit  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
 }
 
 func (m Model) topLine() string {
@@ -355,30 +294,8 @@ func (m Model) topLine() string {
 		info.AgentName, info.ContextID, status)
 }
 
-func (m Model) recallView(width, height int) string {
-	title := "Recall"
-	if m.focus == focusRecall {
-		title += " *"
-	}
-	lines := []string{panelTitleStyle.Render(title), m.recallInput.View(), ""}
-	if m.recall.Query == "" {
-		lines = append(lines, "Enter a query.")
-	} else if len(m.recall.Hits) == 0 {
-		lines = append(lines, fmt.Sprintf("No recall hits for %q.", m.recall.Query))
-	} else {
-		lines = append(lines, fmt.Sprintf("%d hits for %q:", len(m.recall.Hits), m.recall.Query), "")
-		for _, hit := range m.recall.Hits {
-			lines = append(lines, wrapLine(hit, width-4)...)
-		}
-	}
-	return strings.Join(trimLines(lines, height), "\n")
-}
-
 func (m Model) chatView(width, height int) string {
 	title := "Chat"
-	if m.focus == focusChat {
-		title += " *"
-	}
 	vp := m.chatViewportFor(width, height)
 	lines := []string{panelTitleStyle.Render(title), vp.View()}
 	if m.err != "" {
@@ -447,12 +364,7 @@ func (m Model) debugView(width, height int) string {
 		panelTitleStyle.Render("Workspace"),
 		"path: " + m.workspacePath,
 		"agent: " + info.AgentName,
-		"generate: " + info.GenerateModel,
 		"context: " + info.ContextID,
-		"",
-		panelTitleStyle.Render("Memory"),
-		fmt.Sprintf("enabled: %t", info.MemoryEnabled),
-		"top_k: " + fmt.Sprint(info.MemoryTopK),
 	}
 	return strings.Join(trimLines(wrapLines(lines, width-4), height), "\n")
 }
@@ -493,15 +405,6 @@ func (m *Model) appendTool(kind, name, detail string) {
 
 func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	m.quitArmed = false
-	if m.focus == focusRecall {
-		query := strings.TrimSpace(m.recallInput.Value())
-		if query == "" {
-			return m, nil
-		}
-		m.recall.Query = query
-		m.status = "recalling"
-		return m, recallCmd(m.app, query)
-	}
 	text := strings.TrimSpace(m.chatInput.Value())
 	if text == "" || m.running {
 		return m, nil
@@ -533,9 +436,8 @@ func (m Model) panelLayout() (width, height, bodyHeight, midW int) {
 	if bodyHeight < 12 {
 		bodyHeight = 12
 	}
-	leftW := maxInt(24, width/4)
 	rightW := maxInt(26, width/4)
-	midW = maxInt(32, width-leftW-rightW-6)
+	midW = maxInt(32, width-rightW-6)
 	return width, height, bodyHeight, midW
 }
 
@@ -545,9 +447,7 @@ func (m *Model) syncChatViewport(width, height int) {
 
 func (m *Model) afterRun() tea.Cmd {
 	var cmds []tea.Cmd
-	if m.focus == focusChat {
-		cmds = append(cmds, m.chatInput.Focus())
-	}
+	cmds = append(cmds, m.chatInput.Focus())
 	_, _, bodyHeight, midW := m.panelLayout()
 	m.syncChatViewport(midW, bodyHeight)
 	return tea.Batch(cmds...)
@@ -595,33 +495,6 @@ func pollCmd(ch <-chan eventMsg) tea.Cmd {
 			return eventMsg{done: true}
 		}
 		return msg
-	}
-}
-
-type recallMsg struct {
-	result recallResult
-	err    error
-}
-
-func recallCmd(a *app.App, query string) tea.Cmd {
-	return func() tea.Msg {
-		if a.Memory() == nil {
-			return recallMsg{result: recallResult{Query: query}}
-		}
-		info := a.Info()
-		result, err := a.Memory().Context(context.Background(), sdkmemory.ContextRequest{
-			Scope:  sdkmemory.Scope{RuntimeID: info.MemoryScope.RuntimeID, UserID: info.MemoryScope.UserID, AgentID: info.MemoryScope.AgentID},
-			Query:  query,
-			Budget: sdkmemory.Budget{MaxItems: info.MemoryTopK},
-		})
-		if err != nil {
-			return recallMsg{err: err}
-		}
-		hits := make([]string, 0, len(result.Items))
-		for _, item := range result.Items {
-			hits = append(hits, strings.TrimSpace(item.Content.Text()))
-		}
-		return recallMsg{result: recallResult{Query: query, Hits: hits}}
 	}
 }
 

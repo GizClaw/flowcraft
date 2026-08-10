@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
-	sdkmemory "github.com/GizClaw/flowcraft/sdk/memory"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
@@ -22,15 +21,12 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
 
-// App owns one built runtime plus the memory System captured via the
-// forge.debug integration (the Runtime API does not expose the
-// deployment result).
+// App owns one built runtime.
 type App struct {
 	info            Info
 	dir             string
 	rt              *runtimecore.Runtime
 	tools           *tool.Registry
-	memory          sdkmemory.ContextProvider
 	toolCalls       atomic.Int64
 	usageIn         atomic.Int64
 	usageOut        atomic.Int64
@@ -44,21 +40,10 @@ type App struct {
 // Info is the small metadata read out of the native documents for
 // inspection and TUI display.
 type Info struct {
-	AgentID       string
-	AgentName     string
-	ContextID     string
-	GenerateModel string
-	MemoryEnabled bool
-	MemoryScope   Scope
-	MemoryTopK    int
-	Speakers      map[string]string
-}
-
-// Scope mirrors the memory scope seed in memory.yaml.
-type Scope struct {
-	RuntimeID string
-	UserID    string
 	AgentID   string
+	AgentName string
+	ContextID string
+	Speakers  map[string]string
 }
 
 // Open parses deploy.yaml from the workspace and assembles the
@@ -102,15 +87,6 @@ func (a *App) Info() Info {
 		return Info{}
 	}
 	return a.info
-}
-
-// Memory returns the deployed memory context provider, nil when
-// disabled.
-func (a *App) Memory() sdkmemory.ContextProvider {
-	if a == nil {
-		return nil
-	}
-	return a.memory
 }
 
 // SpeakerLabel returns the user-facing label for a graph node id from
@@ -170,15 +146,6 @@ func (a *App) Describe() string {
 	fmt.Fprintf(&out, "workspace: %s\n", a.dir)
 	fmt.Fprintf(&out, "agent: %s (%s)\n", info.AgentID, info.AgentName)
 	fmt.Fprintf(&out, "context: %s\n", info.ContextID)
-	if info.GenerateModel != "" {
-		fmt.Fprintf(&out, "generate_model: %s\n", info.GenerateModel)
-	}
-	fmt.Fprintf(&out, "memory_enabled: %t\n", info.MemoryEnabled)
-	if info.MemoryEnabled {
-		fmt.Fprintf(&out, "memory_scope: runtime=%s user=%s agent=%s\n",
-			info.MemoryScope.RuntimeID, info.MemoryScope.UserID, info.MemoryScope.AgentID)
-		fmt.Fprintf(&out, "memory_recall_top_k: %d\n", info.MemoryTopK)
-	}
 	return out.String()
 }
 

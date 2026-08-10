@@ -36,7 +36,7 @@ go run . workspace inspect --workspace ./workspace
 - `forge workspace create --config <raid> --workspace <dir>` — copy a raid
   scenario into a workspace.
 - `forge workspace inspect --workspace <dir>` — print workspace metadata
-  (agent, model, memory settings).
+  (agent and workspace settings).
 - `forge config raid|persona|test list` — list available scenarios and tests.
 - `forge tui new` / `forge tui resume` — open the interactive TUI over a
   workspace.
@@ -67,9 +67,6 @@ Each `scenarios/raids/<name>/` is a complete workspace template:
   `{"file": ...}`).
 - `speakers.yaml` — optional user-facing labels per graph node; the TUI and
   test logs render each node's output under its label (e.g. `[主持人]`).
-
-A scenario may additionally deploy `memory.yaml` and wire the
-`memory.context` / `memory.turn` hooks to enable long-term memory.
 
 ### Tests
 
@@ -102,10 +99,8 @@ with a clear message.
 
 ## TUI
 
-`forge tui new` opens a three-panel TUI:
+`forge tui new` opens a two-panel TUI:
 
-- **Recall** — memory queries (only meaningful when the workspace deploys
-  memory).
 - **Chat** — send turns and watch streamed output.
 - **Workspace** — workspace metadata and token usage.
 
@@ -128,9 +123,6 @@ its own labelled block, and tool invocations appear as separate
   `sdkx/runtime/session` drives turns and streams deltas to sinks.
 - The graph engine is `sdk/graph`, with script nodes running on the bundled JS
   runtime (`sdkx/agent/jsrt`).
-- Memory hooks and the `flowcraft` memory implementation are registered, but a
-  scenario only enables memory by deploying `memory.yaml` and declaring the
-  hooks on its agent.
 - Simulated tools are Go values registered from `internal/simtools`.
 - `WithHostFactory` wraps the session host so every LLM call's token usage is
   mirrored onto the app for TUI display.

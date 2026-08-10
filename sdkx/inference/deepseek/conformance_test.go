@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -147,22 +148,6 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-				Name: "data part has no representation",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						message.DataPart{
-							MediaType: "application/vnd.example",
-							Value:     json.RawMessage(`{"k":1}`),
-						},
-					)
-					return request
-				},
-				Field: inference.FieldGenerateInputData,
-				Kind:  inference.UnsupportedFeature,
-			},
-			{
 				Name: "reasoning is assistant-only",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
@@ -218,6 +203,25 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("deepseek-v4-pro", catalog["deepseek-v4-pro"])(
+		context.Background(), generateModel("deepseek-v4-pro"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Wire.messages) != 1 ||
+		!strings.Contains(compiled.Wire.messages[0].text, `{"k":1}`) {
+		t.Fatalf("wire messages = %+v", compiled.Wire.messages)
+	}
 }
 
 // The capability matrix also needs a bare model: a custom declaration

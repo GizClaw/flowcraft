@@ -2,6 +2,7 @@ package qwen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -368,6 +369,63 @@ func TestEmbedRejectsForeignExtension(t *testing.T) {
 	)
 	if !inference.IsKind(err, inference.InvalidExtension) {
 		t.Fatalf("error = %v, want invalid_extension", err)
+	}
+}
+
+func TestEmbedDataPartLowersToText(t *testing.T) {
+	request := inference.EmbedRequest{Items: []inference.EmbedItem{{
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "caption"},
+			message.DataPart{
+				MediaType: "application/vnd.example",
+				Value:     json.RawMessage(`{"k":1}`),
+			},
+		}},
+	}}}
+	compiled, err := compileEmbed("text-embedding-v4", catalog["text-embedding-v4"])(
+		context.Background(), qwenModel("text-embedding-v4"), request,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Wire.Texts) != 1 ||
+		!strings.Contains(compiled.Wire.Texts[0], `{"k":1}`) {
+		t.Fatalf("wire texts = %+v", compiled.Wire.Texts)
+	}
+}
+
+func TestMultimodalEmbedDataPartLowersToText(t *testing.T) {
+	image, err := media.NewImageURL("https://example.com/cat.png", "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := inference.EmbedRequest{Items: []inference.EmbedItem{{
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "caption"},
+			message.DataPart{
+				MediaType: "application/vnd.example",
+				Value:     json.RawMessage(`{"k":1}`),
+			},
+			message.ImagePart{Source: image},
+		}},
+	}}}
+	compiled, err := compileEmbed("qwen3-vl-embedding", catalog["qwen3-vl-embedding"])(
+		context.Background(), qwenModel("qwen3-vl-embedding"), request,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if compiled.Wire.Shape != embedShapeFusion || len(compiled.Wire.Items) != 1 {
+		t.Fatalf("wire = %+v", compiled.Wire)
+	}
+	found := false
+	for _, content := range compiled.Wire.Items[0] {
+		if content.Text != nil && strings.Contains(*content.Text, `{"k":1}`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("wire contents = %+v", compiled.Wire.Items[0])
 	}
 }
 

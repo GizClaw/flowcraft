@@ -1,0 +1,9 @@
+{
+  "summary": "Lower message DataPart to text in generate and embed compilers across sdkx providers",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}

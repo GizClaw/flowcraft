@@ -1,8 +1,11 @@
 package qwen
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -92,4 +95,23 @@ func TestConformanceGenerateCompileParity(t *testing.T) {
 		Unary:   ops.Unary,
 		Stream:  ops.Stream,
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("qwen-plus", catalog["qwen-plus"])(
+		context.Background(), qwenModel("qwen-plus"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Wire.Messages) != 1 ||
+		!strings.Contains(compiled.Wire.Messages[0].Text, `{"k":1}`) {
+		t.Fatalf("wire messages = %+v", compiled.Wire.Messages)
+	}
 }

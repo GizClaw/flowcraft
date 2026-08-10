@@ -242,6 +242,8 @@ func compileSystemMessage(wire *generateWire, parts []message.Part, ledger *ledg
 		switch value := part.(type) {
 		case message.TextPart:
 			text.WriteString(value.Text)
+		case message.DataPart:
+			text.WriteString("\n" + string(value.Value) + "\n")
 		default:
 			ledger.reject(contextPartFields[part.Kind()], "system messages carry text only")
 		}
@@ -280,7 +282,7 @@ func compileMessage(
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+			text.WriteString("\n" + string(value.Value) + "\n")
 		case message.ToolCallPart:
 			toolCalls = append(toolCalls, wireToolCall{
 				id:   value.Call.ID,

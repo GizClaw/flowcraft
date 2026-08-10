@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -175,22 +176,6 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-				Name: "data part has no representation",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						message.DataPart{
-							MediaType: "application/vnd.example",
-							Value:     json.RawMessage(`{"k":1}`),
-						},
-					)
-					return request
-				},
-				Field: inference.FieldGenerateInputData,
-				Kind:  inference.UnsupportedFeature,
-			},
-			{
 				Name: "video intent has no surface",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
@@ -248,6 +233,32 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+		context.Background(), openaiModel("gpt-5.6-sol"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	var texts []string
+	for _, item := range compiled.Wire.items {
+		for _, content := range item.content {
+			if content.kind == wireContentText {
+				texts = append(texts, content.text)
+			}
+		}
+	}
+	if !strings.Contains(strings.Join(texts, ""), `{"k":1}`) {
+		t.Fatalf("wire texts = %q", texts)
+	}
 }
 
 // The capability matrix also needs a bare model: a custom declaration with
@@ -429,6 +440,28 @@ func TestConformanceEmbedCompiler(t *testing.T) {
 	}
 	if compiled.Wire.dimensions == nil || *compiled.Wire.dimensions != 512 {
 		t.Fatalf("wire dimensions = %v", compiled.Wire.dimensions)
+	}
+}
+
+func TestConformanceEmbedDataPartLowersToText(t *testing.T) {
+	request := inference.EmbedRequest{Items: []inference.EmbedItem{{
+		Content: message.Content{Parts: []message.Part{
+			message.TextPart{Text: "hi"},
+			message.DataPart{
+				MediaType: "application/vnd.example",
+				Value:     json.RawMessage(`{"k":1}`),
+			},
+		}},
+	}}}
+	compiled, err := compileEmbed("text-embedding-3-large", catalog["text-embedding-3-large"])(
+		context.Background(), openaiModel("text-embedding-3-large"), request,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Wire.texts) != 1 ||
+		!strings.Contains(compiled.Wire.texts[0], `{"k":1}`) {
+		t.Fatalf("wire texts = %+v", compiled.Wire.texts)
 	}
 }
 

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
@@ -12,8 +13,9 @@ import (
 )
 
 // Embed has one native shape: the batched text embeddings endpoint. The wire
-// carries one string per canonical item; multi-part items cannot be
-// represented without silently concatenating parts, so they are rejected.
+// carries one string per canonical item; text and data parts fuse into that
+// string (data lowers to its JSON text), while any other part kind is
+// rejected.
 
 type embedWire struct {
 	model      string
@@ -58,13 +60,21 @@ func compileEmbed(
 			)
 		}
 		for _, item := range request.Items {
-			text := ""
-			parts := 0
+			var text strings.Builder
+			textParts := 0
 			for _, part := range item.Content.Parts {
 				switch value := part.(type) {
 				case message.TextPart:
-					text = value.Text
-					parts++
+					textParts++
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(value.Text)
+				case message.DataPart:
+					if text.Len() > 0 {
+						text.WriteString("\n")
+					}
+					text.WriteString(string(value.Value))
 				default:
 					ledger.reject(
 						embedPartFields[part.Kind()],
@@ -72,17 +82,17 @@ func compileEmbed(
 					)
 				}
 			}
-			if parts == 0 {
+			if text.Len() == 0 && textParts == 0 {
 				continue
 			}
-			if parts > 1 {
+			if textParts > 1 {
 				ledger.reject(
 					inference.FieldEmbedItemMultiPart,
 					"text embedding accepts one text part per item",
 				)
 				continue
 			}
-			wire.texts = append(wire.texts, text)
+			wire.texts = append(wire.texts, text.String())
 		}
 		for _, field := range request.Extensions.ActiveFields() {
 			ledger.reject(field, "openai embed supports no extensions")

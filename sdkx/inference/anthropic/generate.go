@@ -388,14 +388,17 @@ func compileSystem(
 	ledger *ledger,
 ) {
 	for _, part := range parts {
-		if value, ok := part.(message.TextPart); ok {
+		switch value := part.(type) {
+		case message.TextPart:
 			wire.system = append(wire.system, value.Text)
-			continue
+		case message.DataPart:
+			wire.system = append(wire.system, "\n"+string(value.Value)+"\n")
+		default:
+			ledger.reject(
+				fields[part.Kind()],
+				"system blocks carry text only",
+			)
 		}
-		ledger.reject(
-			fields[part.Kind()],
-			"system blocks carry text only",
-		)
 	}
 }
 
@@ -426,7 +429,10 @@ func compileMessage(
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+			wire.appendBlock(role, wireBlock{
+				kind: wireBlockText,
+				text: "\n" + string(value.Value) + "\n",
+			})
 		case message.ToolCallPart:
 			wire.appendBlock("assistant", wireBlock{
 				kind:   wireBlockToolUse,

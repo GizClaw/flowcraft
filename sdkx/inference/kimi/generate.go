@@ -281,6 +281,8 @@ func compileSystemMessage(parts []message.Part, ledger *ledger) wireMessage {
 		switch value := part.(type) {
 		case message.TextPart:
 			text.WriteString(value.Text)
+		case message.DataPart:
+			text.WriteString("\n" + string(value.Value) + "\n")
 		default:
 			ledger.reject(contextPartFields[part.Kind()], "system messages carry text only")
 		}
@@ -354,7 +356,7 @@ func compileTurnMessage(
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+			appendText("\n" + string(value.Value) + "\n")
 		case message.ToolCallPart:
 			if role != "assistant" {
 				ledger.reject(fields[message.PartToolCall], "tool calls belong to assistant context")

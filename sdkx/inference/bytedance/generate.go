@@ -326,15 +326,17 @@ func compileGenerate(
 			switch turn.Role {
 			case message.RoleSystem:
 				for _, part := range turn.Content.Parts {
-					text, ok := part.(message.TextPart)
-					if !ok {
+					switch value := part.(type) {
+					case message.TextPart:
+						system = append(system, value.Text)
+					case message.DataPart:
+						system = append(system, "\n"+string(value.Value)+"\n")
+					default:
 						ledger.reject(
 							contextPartFields[part.Kind()],
 							"system messages carry text only on the Responses API",
 						)
-						continue
 					}
-					system = append(system, text.Text)
 				}
 			case message.RoleTool:
 				compileToolResults(&wire, turn.Content.Parts, contextPartFields, ledger)
@@ -461,7 +463,10 @@ func compileMessage(
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			ledger.reject(fields[message.PartData], "opaque data parts have no native representation")
+			content = append(content, wireContent{
+				kind: wireContentText,
+				text: "\n" + string(value.Value) + "\n",
+			})
 		case message.ToolCallPart:
 			flush()
 			wire.items = append(wire.items, wireItem{

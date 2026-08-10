@@ -276,22 +276,6 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-				Name: "data part has no representation",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						message.DataPart{
-							MediaType: "application/vnd.example",
-							Value:     json.RawMessage(`{"k":1}`),
-						},
-					)
-					return request
-				},
-				Field: inference.FieldGenerateInputData,
-				Kind:  inference.UnsupportedFeature,
-			},
-			{
 				Name: "reasoning is assistant-only",
 				Request: func() inference.GenerateRequest {
 					request := simpleTextRequest("hi")
@@ -333,6 +317,32 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"])(
+		context.Background(), generateModel("doubao-seed-2-1-pro"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	var texts []string
+	for _, item := range compiled.Wire.items {
+		for _, content := range item.content {
+			if content.kind == wireContentText {
+				texts = append(texts, content.text)
+			}
+		}
+	}
+	if !strings.Contains(strings.Join(texts, ""), `{"k":1}`) {
+		t.Fatalf("wire texts = %q", texts)
+	}
 }
 
 // The capability matrix also needs a bare model: a custom declaration with

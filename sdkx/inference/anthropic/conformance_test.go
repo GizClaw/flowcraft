@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -190,22 +191,6 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
 			{
-				Name: "data part has no representation",
-				Request: func() inference.GenerateRequest {
-					request := simpleTextRequest("hi")
-					request.Input.Content.Parts = append(
-						request.Input.Content.Parts,
-						message.DataPart{
-							MediaType: "application/vnd.example",
-							Value:     json.RawMessage(`{"k":1}`),
-						},
-					)
-					return request
-				},
-				Field: inference.FieldGenerateInputData,
-				Kind:  inference.UnsupportedFeature,
-			},
-			{
 				Name: "audio part has no surface",
 				Request: func() inference.GenerateRequest {
 					clip, err := media.NewAudioBytes([]byte{1, 2}, "audio/wav")
@@ -290,6 +275,32 @@ func TestConformanceGenerateCompiler(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"])(
+		context.Background(), claudeModel("claude-sonnet-5"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	found := false
+	for _, wireMessage := range compiled.Wire.messages {
+		for _, block := range wireMessage.blocks {
+			if block.kind == wireBlockText && strings.Contains(block.text, `{"k":1}`) {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("wire messages = %+v", compiled.Wire.messages)
+	}
 }
 
 // A custom bare declaration must reject vision and reasoning channels.

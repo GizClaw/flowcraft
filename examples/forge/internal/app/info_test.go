@@ -15,30 +15,6 @@ func TestDecodeSpeakers(t *testing.T) {
 	}
 }
 
-func TestDecodeMemorySettingsUsesJSONKeys(t *testing.T) {
-	raw := []byte(`
-generate: {provider: fake, name: echo}
-scopes:
-  - runtime_id: prod
-    user_id: u1
-    agent_id: a1
-`)
-	settings, err := decodeMemorySettings(raw)
-	if err != nil {
-		t.Fatalf("decodeMemorySettings: %v", err)
-	}
-	if settings.Generate.Provider != "fake" || settings.Generate.Name != "echo" {
-		t.Fatalf("generate = %+v", settings.Generate)
-	}
-	if len(settings.Scopes) != 1 {
-		t.Fatalf("scopes = %+v, want one entry", settings.Scopes)
-	}
-	scope := settings.Scopes[0]
-	if scope.RuntimeID != "prod" || scope.UserID != "u1" || scope.AgentID != "a1" {
-		t.Fatalf("scope = %+v", scope)
-	}
-}
-
 func TestDecodeInferenceCredentialsIgnoresProviderFields(t *testing.T) {
 	raw := []byte(`
 version: v1

@@ -53,9 +53,6 @@ go run . workspace inspect --workspace ./workspace
 - `graphs/assistant.yaml` — graph 定义,同目录下有 `scripts/` 和 `prompts/`(脚本源和 system prompt 通过 `{"file": ...}` 引用)。
 - `speakers.yaml` — 可选的每个 graph 节点的用户可见标签;TUI 和测试日志会以 `[主持人]` 这样的标签渲染每个节点的输出。
 
-场景还可以部署 `memory.yaml` 并在 agent 上挂 `memory.context` / `memory.turn`
-hook 来启用长期记忆。
-
 ### 测试
 
 `scenarios/tests/<raid>/<name>.yaml` 定义一条脚本化测试:
@@ -85,9 +82,8 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 
 ## TUI
 
-`forge tui new` 打开三栏 TUI:
+`forge tui new` 打开两栏 TUI:
 
-- **Recall** — 记忆查询(只有工作区部署了 memory 才有意义)。
 - **Chat** — 发送对话并查看流式输出。
 - **Workspace** — 工作区元信息和 token 用量。
 
@@ -107,8 +103,6 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
   `sdkx/runtime/session` 驱动对话并把流增量发给 sink。
 - graph 引擎是 `sdk/graph`,script 节点跑在自带的 JS runtime
   (`sdkx/agent/jsrt`)上。
-- memory hook 和 `flowcraft` memory 实现已注册,但场景只有部署 `memory.yaml`
-  并在 agent 上声明 hook 才会启用记忆。
 - 模拟工具是 `internal/simtools` 注册的 Go 值。
 - `WithHostFactory` 包住 session host,把每次 LLM 调用的 token 用量镜像到
   应用侧,供 TUI 展示。

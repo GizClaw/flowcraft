@@ -2,8 +2,10 @@ package kimi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/inference"
@@ -115,4 +117,23 @@ func TestConformanceCompilerRejections(t *testing.T) {
 			}
 		},
 	})
+}
+
+func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Input.Content.Parts = append(request.Input.Content.Parts, message.DataPart{
+		MediaType: "application/vnd.example",
+		Value:     json.RawMessage(`{"k":1}`),
+	})
+	compiled, err := compileGenerate("kimi-k3", catalog["kimi-k3"])(
+		context.Background(), kimiModel("kimi-k3"), request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	if len(compiled.Wire.Messages) != 1 ||
+		!strings.Contains(compiled.Wire.Messages[0].Text, `{"k":1}`) {
+		t.Fatalf("wire messages = %+v", compiled.Wire.Messages)
+	}
 }

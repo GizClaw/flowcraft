@@ -239,19 +239,22 @@ func (c *compiler) messages(request inference.GenerateRequest) {
 	))
 }
 
-// contextSystem compiles system context. Only text parts carry; any other
-// part kind rejects.
+// contextSystem compiles system context. Text and data parts carry (data
+// lowers to text); any other part kind rejects.
 func (c *compiler) contextSystem(parts []message.Part) {
 	var texts []string
 	for _, part := range parts {
-		if text, ok := part.(message.TextPart); ok {
-			texts = append(texts, text.Text)
-			continue
+		switch value := part.(type) {
+		case message.TextPart:
+			texts = append(texts, value.Text)
+		case message.DataPart:
+			texts = append(texts, "\n"+string(value.Value)+"\n")
+		default:
+			c.ledger.reject(
+				contextPartFields[part.Kind()],
+				fmt.Sprintf("system context cannot carry %s parts", part.Kind()),
+			)
 		}
-		c.ledger.reject(
-			contextPartFields[part.Kind()],
-			fmt.Sprintf("system context cannot carry %s parts", part.Kind()),
-		)
 	}
 	if len(texts) > 0 {
 		c.wire.Messages = append(c.wire.Messages, wireMessage{
@@ -301,6 +304,10 @@ func (c *compiler) userMessage(
 				continue
 			}
 			items = append(items, wireContentItem{Video: value})
+		case message.DataPart:
+			data := "\n" + string(typed.Value) + "\n"
+			texts = append(texts, data)
+			items = append(items, wireContentItem{Text: &data})
 		default:
 			if _, known := partFields[part.Kind()]; !known {
 				continue
@@ -362,6 +369,8 @@ func (c *compiler) assistantMessage(
 			})
 		case message.ReasoningPart:
 			reasoning = append(reasoning, typed.Text)
+		case message.DataPart:
+			texts = append(texts, "\n"+string(typed.Value)+"\n")
 		default:
 			if _, known := partFields[part.Kind()]; !known {
 				continue
