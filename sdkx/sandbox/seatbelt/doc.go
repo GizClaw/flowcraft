@@ -75,4 +75,12 @@
 // functional and is the same primitive Chrome and Anthropic's
 // sandbox-runtime rely on. A future Virtualization.framework backend
 // can supersede this package without changing the Runner seam.
+//
+// # Interactive sessions
+//
+// Runner also implements sandbox.ProcessManager: sessions run inside
+// the same generated SBPL profile as Exec (including the enforcement
+// proxy for NetAllowList / NetProxy, which lives as long as the
+// session). Stdio is either a pty (TTY: true) or tagged pipes, with
+// the seq-cursor replay contract defined in sdk/sandbox.
 package seatbelt

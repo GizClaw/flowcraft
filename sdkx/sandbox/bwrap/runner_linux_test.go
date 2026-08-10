@@ -390,3 +390,97 @@ func TestRunner_Exec_EmptyCommandRejected(t *testing.T) {
 		t.Fatalf("expected validation error for empty command")
 	}
 }
+
+func TestRunner_ProcessManager_PipeSession(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "CMD:/bin/echo") || !strings.Contains(sb.String(), "CMD:hi") {
+		t.Fatalf(`session output missing post-"--" argv: %q`, sb.String())
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestRunner_ProcessManager_TTYSession(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "CMD:/bin/echo") {
+		t.Fatalf("TTY session output missing argv: %q", sb.String())
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestRunner_ProcessManager_PolicyRejected(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/true"},
+		Opts: sandbox.ExecOptions{Resources: sandbox.ResourceLimits{DiskBytes: 1}},
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("disk-limit Start = %v, want NotAvailable", err)
+	}
+}

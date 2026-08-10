@@ -43,4 +43,18 @@
 // command-name gate, and WithApproval adds a fail-closed human decision
 // tripwire. The recommended local composition lives in
 // sdkx/sandbox.ComposeLocal.
+//
+// # Long-running sessions
+//
+// Runners may additionally implement ProcessManager (discovered with
+// ProcessManagerOf) to spawn interactive or streaming processes under
+// the same ExecOptions policy. Policy is fixed once at Start — env,
+// network posture, resource caps, and approval are never re-negotiated
+// per Read/Write. Output is a byte-cursor log: Read(afterSeq) replays
+// from any retained position, bounded by Resources.MaxOutputBytes, so
+// a reconnecting client resumes without re-running the process.
+// Backends without the capability (or without a pty) return
+// errdefs.NotAvailable rather than silently downgrading to Exec. The
+// decorators implement ProcessManager as well, so interactive sessions
+// cannot bypass the defaults / approval / allow-list chain.
 package sandbox

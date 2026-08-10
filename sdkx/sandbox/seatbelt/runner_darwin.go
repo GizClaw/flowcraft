@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ type Runner struct {
 	binary           string
 	writable         []string
 	defaultMaxOutput int64
+	processes        sandbox.ProcessManager
 }
 
 // New constructs a Seatbelt Runner rooted at rootDir.
@@ -66,12 +68,14 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		writable = append(writable, resolved)
 	}
 
-	return &Runner{
+	runner := &Runner{
 		rootDir:          root,
 		binary:           binary,
 		writable:         dedupe(writable),
 		defaultMaxOutput: defaultMaxOutputBytes,
-	}, nil
+	}
+	runner.processes = sandbox.NewProcessRegistry(runner.spawnProcess)
+	return runner, nil
 }
 
 // Enforcement reports the policy dimensions Seatbelt plus the shared
@@ -99,24 +103,8 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if cmd == "" {
 		return nil, errdefs.Validationf("seatbelt: empty command")
 	}
-	if opts.Resources.DiskBytes != 0 {
-		return nil, errdefs.NotAvailablef(
-			"seatbelt: disk limits not supported (no quota mechanism)",
-		)
-	}
-	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
-		return nil, errdefs.NotAvailablef(
-			"seatbelt: CPUMillicores requires a per-call Timeout to derive a cpu-time cap",
-		)
-	}
-	// Memory and cpu caps ride on the shared sampling watcher, not on
-	// the Seatbelt profile. Where that watcher cannot sample, honouring
-	// the call would run the child with no cap at all, so reject it
-	// instead of pretending.
-	if (opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0) && !sandbox.GroupCapsSupported() {
-		return nil, errdefs.NotAvailablef(
-			"seatbelt: resource limits require process-group sampling, which is unavailable here",
-		)
+	if err := sandbox.ValidateExecPolicy(opts); err != nil {
+		return nil, err
 	}
 
 	workDir, err := r.resolveWorkDir(opts.WorkDir)
@@ -223,6 +211,121 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		return result, classifyStartError(cmd, runErr)
 	}
 	return result, nil
+}
+
+// Start implements sandbox.ProcessManager. The session runs inside the
+// same generated Seatbelt profile as Exec; the enforcement proxy, when
+// NetAllowList / NetProxy needs one, is owned by the session and closed
+// when the session exits or is closed.
+func (r *Runner) Start(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	return r.processes.Start(ctx, spec)
+}
+
+// List implements sandbox.ProcessManager.
+func (r *Runner) List(ctx context.Context) ([]sandbox.ProcessInfo, error) {
+	return r.processes.List(ctx)
+}
+
+// Terminate implements sandbox.ProcessManager.
+func (r *Runner) Terminate(ctx context.Context, id string) error {
+	return r.processes.Terminate(ctx, id)
+}
+
+// spawnProcess is the Runner's sandbox.ProcessStarter. It mirrors Exec:
+// same policy validation, same profile, same proxy wiring — but the
+// stdio is owned by the shared session implementation instead of being
+// captured into an ExecResult.
+func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	if len(spec.Argv) == 0 {
+		return nil, errdefs.Validationf("seatbelt: empty command")
+	}
+	if err := sandbox.ValidateExecPolicy(spec.Opts); err != nil {
+		return nil, err
+	}
+
+	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyMode := spec.Opts.Net.Mode == sandbox.NetAllowList || spec.Opts.Net.Mode == sandbox.NetProxy
+	var proxy *httpkit.Proxy
+	proxyPort := 0
+	if proxyMode {
+		proxy, err = httpkit.Start(httpkit.ProxyConfig{
+			Mode:        spec.Opts.Net.Mode,
+			AllowHosts:  spec.Opts.Net.AllowHosts,
+			Upstream:    spec.Opts.Net.Proxy,
+			TCPLoopback: true,
+		})
+		if err != nil {
+			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
+		}
+		addr, ok := proxy.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf("seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
+		}
+		proxyPort = addr.Port
+	}
+
+	profile, err := buildProfile(r.writable, spec.Opts.Net, proxyPort)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		return nil, err
+	}
+
+	argv := []string{"-p", profile, spec.Argv[0]}
+	argv = append(argv, spec.Argv[1:]...)
+	c := exec.Command(r.binary, argv...)
+	c.Dir = workDir
+	c.Env = buildEnv(spec.Opts.Env, proxyPort)
+
+	maxOut := spec.Opts.Resources.MaxOutputBytes
+	if maxOut <= 0 {
+		maxOut = r.defaultMaxOutput
+	}
+	if maxOut <= 0 {
+		maxOut = math.MaxInt64
+	}
+	spec.Opts.Resources.MaxOutputBytes = maxOut
+
+	proc, err := sandbox.StartSession(ctx, c, spec.Opts, spec.TTY, spec.Rows, spec.Cols)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		return nil, err
+	}
+	if proxy != nil {
+		cleanup := &sessionCleanup{cleanup: func() { _ = proxy.Close() }}
+		go func() {
+			_, _ = proc.Wait(context.Background())
+			cleanup.once.Do(cleanup.cleanup)
+		}()
+		return &sessionProcess{Process: proc, cleanup: cleanup}, nil
+	}
+	return proc, nil
+}
+
+// sessionProcess keeps a sandbox.Process's side resources (the
+// enforcement proxy) alive for exactly as long as the session.
+type sessionProcess struct {
+	sandbox.Process
+	cleanup *sessionCleanup
+}
+
+func (p *sessionProcess) Close() error {
+	err := p.Process.Close()
+	p.cleanup.once.Do(p.cleanup.cleanup)
+	return err
+}
+
+type sessionCleanup struct {
+	once    sync.Once
+	cleanup func()
 }
 
 func (r *Runner) resolveWorkDir(dir string) (string, error) {

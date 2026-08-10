@@ -60,6 +60,9 @@ func DefaultLocalPolicy(root string, approval ApprovalFunc, sensitiveCommands ..
 // ComposeLocal adds no writable paths and never modifies backend
 // enforcement. Seatbelt callers should use seatbelt.WithWritablePaths
 // when constructing the backend for dedicated temp/cache directories.
+// When backend implements ProcessManager, the returned Runner forwards
+// it through the same decorators (defaults merge, approval, allow-list)
+// so interactive sessions stay inside the composed policy.
 func ComposeLocal(backend Runner, policy LocalPolicy) Runner {
 	runner := backend
 	if policy.AllowedCommands != nil {

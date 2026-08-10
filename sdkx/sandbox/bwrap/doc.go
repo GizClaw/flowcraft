@@ -134,4 +134,12 @@
 // The result is a Runner whose Net / Resources policy is fixed by
 // WithDefaults, whose commands are gated by AllowCommands, and whose
 // Exec actually runs inside an isolated namespace.
+//
+// # Interactive sessions
+//
+// Runner also implements sandbox.ProcessManager: sessions run inside
+// the same bwrap invocation as Exec (same flags, same in-netns bridge
+// for NetAllowList / NetProxy, with the host proxy owned by the
+// session). Stdio is either a pty (TTY: true) or tagged pipes, with
+// the seq-cursor replay contract defined in sdk/sandbox.
 package bwrap

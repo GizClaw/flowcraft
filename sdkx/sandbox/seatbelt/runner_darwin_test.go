@@ -137,6 +137,112 @@ func TestRunner_FilesystemWriteBound(t *testing.T) {
 	}
 }
 
+func TestRunner_ProcessManager_PipeSession(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/sh", "-c", "printf OUT; printf ERR >&2; exit 7"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var stdout, stderr strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			switch ch.Stream {
+			case sandbox.ProcessStreamStdout:
+				stdout.Write(ch.Data)
+			case sandbox.ProcessStreamStderr:
+				stderr.Write(ch.Data)
+			}
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if stdout.String() != "OUT" || stderr.String() != "ERR" {
+		t.Fatalf("stdout=%q stderr=%q, want OUT/ERR", stdout.String(), stderr.String())
+	}
+	exit, err := proc.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 7 || exit.Reason != sandbox.ProcessExited {
+		t.Fatalf("exit = %+v, want exited(7)", exit)
+	}
+}
+
+func TestRunner_ProcessManager_TTYSession(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/sh"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := proc.Write(ctx, []byte("printf ok\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	var sb strings.Builder
+	var seq int64
+	for !strings.Contains(sb.String(), "ok") {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "ok") {
+		t.Fatalf("TTY output missing 'ok': %q", sb.String())
+	}
+	if err := proc.Write(ctx, []byte("exit\n")); err != nil {
+		t.Fatalf("Write exit: %v", err)
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestRunner_ProcessManager_PolicyRejected(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/usr/bin/true"},
+		Opts: sandbox.ExecOptions{Resources: sandbox.ResourceLimits{DiskBytes: 1}},
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("disk-limit Start = %v, want NotAvailable", err)
+	}
+}
+
 func TestBuildEnv_ProxyModeInjectsAndStrips(t *testing.T) {
 	t.Setenv("HTTP_PROXY", "http://host-proxy:3128")
 	t.Setenv("NO_PROXY", "localhost")

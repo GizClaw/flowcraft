@@ -155,6 +155,57 @@ the defaults and always win; `WorkDir` / `Stdin` fall back to defaults when
 unset; `Timeout` takes the smaller of the two; `Env.Inject` is a union with
 the caller winning on key collision.
 
+## Interactive and streaming sessions (`ProcessManager`)
+
+`Runner.Exec` is one-shot: it captures output and returns. For
+interactive shells, TUIs, or long-running processes that need to be
+driven and resumed, a runner may additionally implement
+`ProcessManager`:
+
+```go
+type ProcessManager interface {
+    Start(ctx context.Context, spec ProcessSpec) (Process, error)
+    List(ctx context.Context) ([]ProcessInfo, error)
+    Terminate(ctx context.Context, id string) error
+}
+```
+
+`ProcessSpec` reuses the same `ExecOptions` policy surface as `Exec`
+(`WorkDir`, `Env`, `Net`, `Resources`, `Timeout`) plus `Argv`, an
+optional caller-chosen `ID`, and `TTY`. There is no second env source:
+the process environment comes exclusively from `ExecOptions.Env`.
+Discover the capability with `ProcessManagerOf(r)` — the same
+conservative pattern as `EnforcementOf`; a runner that cannot spawn
+sessions fails `Start` with `errdefs.NotAvailable`, never by silently
+running a one-shot exec.
+
+Output is an append-only, byte-cursor log. Each `Read(ctx, afterSeq,
+maxBytes)` returns at most `maxBytes` bytes starting after the cursor,
+plus the next cursor and an `EOF` flag; a disconnected client resumes
+by reconnecting and reading from its last `NextSeq`. The log is bounded
+by `Resources.MaxOutputBytes` — when old output has been trimmed, reads
+that point into the gap fail with `ErrSequenceGap` instead of returning
+misleading partial data. TTY sessions merge stdout/stderr into one
+`ProcessStreamTTY` stream; pipe sessions carry separate
+`ProcessStreamStdout` / `ProcessStreamStderr` chunks.
+
+Policy is fixed once at `Start`: `Read` / `Write` / `Resize` never
+re-negotiate env, network, or resource caps. The decorators forward the
+capability with the same semantics as `Exec`:
+
+- `WithDefaults` merges `spec.Opts` through the security-biased merge.
+- `WithApproval` runs the predicate chain against `Argv[0]` and
+  surfaces `TTY=true` on the `ExecRequest`, so the approver sees it is
+  authorising a persistent command channel rather than one command.
+- `AllowCommands` gates `Argv[0]`; note that it cannot police input
+  typed inside an interactive shell afterwards — an approved
+  interactive session is an all-or-nothing command channel.
+
+`LocalRunner` (pipe or pty), `seatbelt`, and `bwrap` implement
+`ProcessManager`; the sandboxed backends run the session inside the
+same profile / namespace as `Exec`, including net enforcement and the
+host-side proxy for `allow_list` / `proxy` modes.
+
 ## Workspace vs Sandbox
 
 |             | Workspace                            | Sandbox                             |
