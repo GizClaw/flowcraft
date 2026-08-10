@@ -138,7 +138,11 @@ func (c *Catalog) Require(names ...string) {
 }
 
 // Select marks names as selected for the policy's retention rounds.
-// tool_search calls this for its select argument.
+// Selection carries an implicit load contract: a selected tool must be
+// loaded before the next Definitions call, otherwise the model would
+// see its placeholder schema. tool_search enforces this by loading each
+// name before selecting; direct callers (hosts) are responsible for
+// preloading via EnsureLoaded.
 func (c *Catalog) Select(names ...string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -285,6 +289,9 @@ func (c *Catalog) EnsureLoaded(ctx context.Context, names ...string) error {
 				}
 				continue
 			}
+			// A concrete tool needs no loading; it is loaded by
+			// definition, so selection is safe.
+			continue
 		}
 		errs = append(errs, errdefs.NotFoundf(
 			"dynamic: no deferred loader for tool %q", name))

@@ -3,11 +3,13 @@ package dynamic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 )
 
@@ -71,6 +73,82 @@ func TestSearchTool_RejectsBadInput(t *testing.T) {
 	}
 	if _, err := NewSearchTool().Execute(ctx, `not json`); !errdefs.IsValidation(err) {
 		t.Errorf("bad json = %v, want Validation", err)
+	}
+}
+
+func TestSearchTool_SelectLoadsRealSchemaForNextRound(t *testing.T) {
+	reg := sdktool.NewRegistry()
+	c := New(reg, WithDefaultExposure(ExposureDeferred), WithSelectedRetention(3))
+	t.Cleanup(func() { _ = c.Close() })
+
+	if err := c.RegisterProxy("deferred_tool", func(_ context.Context) (sdktool.Tool, error) {
+		return sdktool.FuncTool(
+			message.DefineSchema("deferred_tool", "alpha shared real description",
+				message.ToolProperty("path", "string", "file path"),
+			).Required("path").Build(),
+			func(_ context.Context, _ string) (string, error) { return "ok", nil },
+		), nil
+	}, ExposureDeferred); err != nil {
+		t.Fatalf("RegisterProxy: %v", err)
+	}
+
+	ctx := WithCatalog(context.Background(), c)
+	raw, err := NewSearchTool().Execute(ctx,
+		`{"query":"alpha","select":["deferred_tool"]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		Selected []string `json:"selected"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, raw)
+	}
+	if len(result.Selected) != 1 || result.Selected[0] != "deferred_tool" {
+		t.Fatalf("selected = %v, want [deferred_tool]", result.Selected)
+	}
+
+	// Round N+1: the real definition, not the LazyTool placeholder.
+	defs := c.Definitions()
+	if len(defs) != 1 {
+		t.Fatalf("Definitions = %v, want the selected tool", names(defs))
+	}
+	if defs[0].Description != "alpha shared real description" {
+		t.Errorf("next-round description = %q, want real description", defs[0].Description)
+	}
+	if !strings.Contains(string(defs[0].InputSchema), "path") {
+		t.Errorf("next-round schema = %s, want the loaded tool's real schema", defs[0].InputSchema)
+	}
+}
+
+func TestSearchTool_SelectSkipsUnloadableTool(t *testing.T) {
+	reg := sdktool.NewRegistry()
+	c := New(reg, WithDefaultExposure(ExposureDeferred), WithSelectedRetention(3))
+	t.Cleanup(func() { _ = c.Close() })
+
+	if err := c.RegisterProxy("down", func(context.Context) (sdktool.Tool, error) {
+		return nil, errors.New("server unreachable")
+	}, ExposureDeferred, WithRetryPolicy(RetryPolicy{Attempts: 1, BaseDelay: 0})); err != nil {
+		t.Fatalf("RegisterProxy: %v", err)
+	}
+
+	ctx := WithCatalog(context.Background(), c)
+	raw, err := NewSearchTool().Execute(ctx,
+		`{"query":"server unreachable","select":["down"]}`)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var result struct {
+		Selected []string `json:"selected"`
+	}
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, raw)
+	}
+	if len(result.Selected) != 0 {
+		t.Fatalf("selected = %v, want empty for unloadable tool", result.Selected)
+	}
+	if got := names(c.Definitions()); len(got) != 0 {
+		t.Errorf("unloadable tool was selected: %v", got)
 	}
 }
 

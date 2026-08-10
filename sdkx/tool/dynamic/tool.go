@@ -44,7 +44,8 @@ func (SearchTool) Definition() message.Definition {
 		ToolName,
 		"Search the available tool catalog for tools relevant to the current task. "+
 			"Use select to make the named tools visible to the model starting from the next round; "+
-			"selected tools remain available for the configured number of rounds.",
+			"selected tools are loaded immediately so the next round sees their real schemas, "+
+			"and remain available for the configured number of rounds.",
 		message.ToolProperty("query", "string",
 			"natural-language or keyword query describing the capability to find"),
 		message.ToolPropertyWithDefault("limit", "integer",
@@ -62,8 +63,9 @@ type searchArgs struct {
 }
 
 type searchResult struct {
-	Query string      `json:"query"`
-	Hits  []SearchHit `json:"hits"`
+	Query    string      `json:"query"`
+	Hits     []SearchHit `json:"hits"`
+	Selected []string    `json:"selected,omitempty"`
 }
 
 // Execute parses the query, triggers a catalog load, ranks hits, and
@@ -85,8 +87,16 @@ func (SearchTool) Execute(ctx context.Context, arguments string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if len(args.Select) > 0 {
-		catalog.Select(args.Select...)
+	selected := make([]string, 0, len(args.Select))
+	for _, name := range args.Select {
+		// Selected tools must be loaded: round N+1 shows the real
+		// definition, never the LazyTool placeholder. A tool that
+		// cannot load is simply not selected.
+		if err := catalog.EnsureLoaded(ctx, name); err != nil {
+			continue
+		}
+		catalog.Select(name)
+		selected = append(selected, name)
 	}
-	return compactJSON(searchResult{Query: args.Query, Hits: hits})
+	return compactJSON(searchResult{Query: args.Query, Hits: hits, Selected: selected})
 }
