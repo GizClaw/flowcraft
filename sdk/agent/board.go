@@ -258,6 +258,25 @@ func (b *Board) Snapshot() *BoardSnapshot {
 	}
 }
 
+// Clone returns an independent deep copy of the snapshot. Use it when
+// retaining a snapshot after the producing board mutates further, or
+// when a checkpoint store needs caller-owned copies on Save/Load.
+func (s *BoardSnapshot) Clone() *BoardSnapshot {
+	if s == nil {
+		return nil
+	}
+	out := &BoardSnapshot{
+		Vars: deepCopyVars(s.Vars),
+	}
+	if len(s.Channels) > 0 {
+		out.Channels = make(map[string][]message.Message, len(s.Channels))
+		for name, msgs := range s.Channels {
+			out.Channels[name] = message.CloneMessages(msgs)
+		}
+	}
+	return out
+}
+
 // RestoreBoard reconstructs a Board from a snapshot. Passing nil
 // returns a fresh empty board so resume code can use this
 // unconditionally.

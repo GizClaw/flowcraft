@@ -114,7 +114,10 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 	frontier := []string{g.entry}
 	iterations := 0
 	if cp := run.ResumeFrom; cp != nil {
-		if cp.ExecID != "" && cp.ExecID != run.RunID {
+		if err := cp.Validate(); err != nil {
+			return retBoard, err
+		}
+		if cp.ExecID != run.RunID {
 			return retBoard, errdefs.Validationf(
 				"graph %q: checkpoint exec id %q does not match run id %q (forking requires a fresh run)",
 				g.name, cp.ExecID, run.RunID)
@@ -631,7 +634,7 @@ func (g *Graph) stampCheckpoint(ctx context.Context, host agent.Host, run agent.
 		Attributes:        run.Attributes,
 		Timestamp:         time.Now(),
 		OriginalStartedAt: startedAt,
-		SpecVersion:       g.name,
+		SpecVersion:       g.specVersion,
 	}); err != nil {
 		telemetry.WarnErr(ctx, "graph: checkpoint write failed", err,
 			otellog.String(telemetry.AttrGraphName, g.name),

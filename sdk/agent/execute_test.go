@@ -1726,13 +1726,17 @@ type memStore struct {
 }
 
 func (m *memStore) Save(_ context.Context, cp agent.Checkpoint) error {
-	cp2 := cp
+	cp2 := cp.Clone()
 	m.cp = &cp2
 	return nil
 }
 
 func (m *memStore) Load(_ context.Context, _ string) (*agent.Checkpoint, error) {
-	return m.cp, nil
+	if m.cp == nil {
+		return nil, nil
+	}
+	cp := m.cp.Clone()
+	return &cp, nil
 }
 
 func TestIsResumable(t *testing.T) {
@@ -1796,6 +1800,7 @@ func TestLoadAndResume_ResumePathPopulatesContext(t *testing.T) {
 	store := &memStore{cp: &agent.Checkpoint{
 		ExecID:    "r1",
 		Steps:     []string{"node-3"},
+		Board:     agent.NewBoard().Snapshot(),
 		Timestamp: cpAt,
 	}}
 
@@ -1831,6 +1836,7 @@ func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
 	store := &memStore{cp: &agent.Checkpoint{
 		ExecID:            "r1",
 		Steps:             []string{"step"},
+		Board:             agent.NewBoard().Snapshot(),
 		Timestamp:         time.Now().Add(-time.Hour),
 		OriginalStartedAt: originalStart,
 	}}
@@ -1854,6 +1860,7 @@ func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
 		oldCp := &agent.Checkpoint{
 			ExecID:    "r1",
 			Steps:     []string{"step"},
+			Board:     agent.NewBoard().Snapshot(),
 			Timestamp: time.Now().Add(-time.Hour),
 		}
 		oldStore := &memStore{cp: oldCp}
@@ -1874,7 +1881,10 @@ func TestLoadAndResume_PrefersCheckpointOriginalStartedAt(t *testing.T) {
 
 func TestLoadAndResume_RejectsExecIDMismatch(t *testing.T) {
 	eng := &stubEngine{}
-	store := &memStore{cp: &agent.Checkpoint{ExecID: "other"}}
+	store := &memStore{cp: &agent.Checkpoint{
+		ExecID: "other",
+		Board:  agent.NewBoard().Snapshot(),
+	}}
 
 	_, err := agent.LoadAndResume(context.Background(), eng, agent.NoopHost{}, store,
 		agent.Run{Identity: agent.Identity{RunID: "r1"}}, nil)
@@ -1886,12 +1896,31 @@ func TestLoadAndResume_RejectsExecIDMismatch(t *testing.T) {
 	}
 }
 
+func TestLoadAndResume_RejectsEmptyExecID(t *testing.T) {
+	eng := &stubEngine{}
+	store := &memStore{cp: &agent.Checkpoint{
+		Board: agent.NewBoard().Snapshot(),
+	}}
+
+	_, err := agent.LoadAndResume(context.Background(), eng, agent.NoopHost{}, store,
+		agent.Run{Identity: agent.Identity{RunID: "r1"}}, nil)
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("want Validation error for empty exec_id, got %v", err)
+	}
+	if eng.executions != 0 {
+		t.Fatal("must not call Execute on empty exec_id")
+	}
+}
+
 func TestLoadAndResume_HonoursResumerCanResume(t *testing.T) {
 	wantErr := errdefs.NotAvailable(errors.New("incompatible engine version"))
 	eng := &resumerEngine{}
 	eng.canResume = func(_ agent.Checkpoint) error { return wantErr }
 
-	store := &memStore{cp: &agent.Checkpoint{ExecID: "r1"}}
+	store := &memStore{cp: &agent.Checkpoint{
+		ExecID: "r1",
+		Board:  agent.NewBoard().Snapshot(),
+	}}
 
 	_, err := agent.LoadAndResume(context.Background(), eng, agent.NoopHost{}, store,
 		agent.Run{Identity: agent.Identity{RunID: "r1"}}, nil)

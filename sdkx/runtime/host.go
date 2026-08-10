@@ -10,14 +10,22 @@ import (
 )
 
 type baseHostFactory struct {
-	bus event.Bus
+	bus         event.Bus
+	checkpoints agent.CheckpointStore
 }
 
-func newBaseHostFactory(bus event.Bus) (session.HostFactory, error) {
+func newBaseHostFactory(bus event.Bus, checkpoints ...agent.CheckpointStore) (session.HostFactory, error) {
 	if isNil(bus) {
 		return nil, errdefs.Validationf("runtime host: event bus is required")
 	}
-	return &baseHostFactory{bus: bus}, nil
+	var store agent.CheckpointStore
+	for _, candidate := range checkpoints {
+		if !isNil(candidate) {
+			store = candidate
+			break
+		}
+	}
+	return &baseHostFactory{bus: bus, checkpoints: store}, nil
 }
 
 func (f *baseHostFactory) NewHost(_ context.Context, request session.HostRequest) (agent.Host, error) {
@@ -28,18 +36,20 @@ func (f *baseHostFactory) NewHost(_ context.Context, request session.HostRequest
 		return nil, err
 	}
 	return &baseHost{
-		bus:        f.bus,
-		interrupts: request.Interrupts,
-		askUser:    request.AskUser,
+		bus:         f.bus,
+		checkpoints: f.checkpoints,
+		interrupts:  request.Interrupts,
+		askUser:     request.AskUser,
 	}, nil
 }
 
 type baseHost struct {
 	agent.NoopHost
 
-	bus        event.Bus
-	interrupts <-chan agent.Interrupt
-	askUser    session.AskUserFunc
+	bus         event.Bus
+	checkpoints agent.CheckpointStore
+	interrupts  <-chan agent.Interrupt
+	askUser     session.AskUserFunc
 }
 
 func (h *baseHost) Publish(ctx context.Context, envelope event.Envelope) error {
@@ -52,10 +62,20 @@ func (h *baseHost) AskUser(ctx context.Context, prompt agent.UserPrompt) (agent.
 	return h.askUser(ctx, prompt)
 }
 
+// Checkpoint persists cp through the configured CheckpointStore, or
+// drops it when no store is configured (the NoopHost default).
+func (h *baseHost) Checkpoint(ctx context.Context, cp agent.Checkpoint) error {
+	if h.checkpoints == nil {
+		return nil
+	}
+	return h.checkpoints.Save(ctx, cp)
+}
+
 // EventBus returns the borrowed deployment bus used by Publish.
 func (h *baseHost) EventBus() event.Bus { return h.bus }
 
 var (
 	_ agent.Host             = (*baseHost)(nil)
+	_ agent.Checkpointer     = (*baseHost)(nil)
 	_ agent.EventBusProvider = (*baseHost)(nil)
 )

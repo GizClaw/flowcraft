@@ -36,6 +36,8 @@ type Manager struct {
 	sinkBuffer        int
 	speculativeEvents int
 	speculativeBytes  int
+	checkpoints       agent.CheckpointStore
+	resume            bool
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -74,6 +76,16 @@ func NewManager(
 			return nil, err
 		}
 	}
+	if opts.resume {
+		if isNil(opts.checkpoints) {
+			return nil, errdefs.Validationf(
+				"runtime session: resume requires a checkpoint store")
+		}
+		if _, ok := opts.checkpoints.(agent.CheckpointDeleter); !ok {
+			return nil, errdefs.Validationf(
+				"runtime session: resume requires a checkpoint store that implements CheckpointDeleter")
+		}
+	}
 	return &Manager{
 		resolver:          resolver,
 		hostFactory:       hostFactory,
@@ -82,6 +94,8 @@ func NewManager(
 		sinkBuffer:        opts.sinkBuffer,
 		speculativeEvents: opts.speculativeEvents,
 		speculativeBytes:  opts.speculativeBytes,
+		checkpoints:       opts.checkpoints,
+		resume:            opts.resume,
 		entries:           make(map[Key]*managerEntry),
 	}, nil
 }
@@ -135,6 +149,7 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	session := newSession(
 		key, instance, m.hostFactory, m.router, m.sinkBuffer,
 		m.speculativeEvents, m.speculativeBytes,
+		m.checkpoints, m.resume,
 		func(changed *Session) {
 			m.activityChanged(key, changed)
 		})

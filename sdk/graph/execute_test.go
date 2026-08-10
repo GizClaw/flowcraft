@@ -262,8 +262,9 @@ func TestExecuteHandlerErrorPropagates(t *testing.T) {
 func TestExecuteCheckpointsStamped(t *testing.T) {
 	reg := newTestRegistry(t)
 	g := mustBuild(t, &GraphDefinition{
-		Name:  "g",
-		Entry: "a",
+		Name:    "g",
+		Version: "v7",
+		Entry:   "a",
 		Nodes: []NodeDefinition{
 			{ID: "a", Type: "echo", Config: []byte(`{"set_var": "x", "set_val": 1}`)},
 			{ID: "b", Type: "echo"},
@@ -282,6 +283,9 @@ func TestExecuteCheckpointsStamped(t *testing.T) {
 	last := host.cps[len(host.cps)-1]
 	if len(last.Steps) != 1 || last.Steps[0] != "b" || last.Iteration != 2 || last.Board == nil {
 		t.Fatalf("last checkpoint = %+v", last)
+	}
+	if last.SpecVersion != "v7" {
+		t.Fatalf("last checkpoint SpecVersion = %q, want v7", last.SpecVersion)
 	}
 	if v := last.Board.Vars["x"]; v != float64(1) {
 		t.Fatalf("checkpoint board lost var: %v", v)
@@ -345,6 +349,65 @@ func TestExecuteResumeRejectsForeignCheckpoint(t *testing.T) {
 
 	if err := g.CanResume(agent.Checkpoint{Steps: []string{"ghost"}, Board: &agent.BoardSnapshot{}}); !errdefs.IsValidation(err) {
 		t.Fatalf("unknown checkpoint node accepted: %v", err)
+	}
+}
+
+func TestExecuteResumeRejectsEmptyExecID(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+	}, reg)
+
+	run := testRun()
+	run.ResumeFrom = &agent.Checkpoint{
+		Steps: []string{"a"},
+		Board: &agent.BoardSnapshot{Vars: map[string]any{}},
+	}
+	_, err := g.Execute(context.Background(), run, agent.NoopHost{}, agent.NewBoard())
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("expected validation error for empty exec id, got %v", err)
+	}
+}
+
+func TestGraphCanResume_SpecVersionMismatch(t *testing.T) {
+	reg := newTestRegistry(t)
+	g := mustBuild(t, &GraphDefinition{
+		Name:  "g",
+		Entry: "a",
+		Nodes: []NodeDefinition{{ID: "a", Type: "echo"}},
+	}, reg)
+
+	valid := agent.Checkpoint{
+		Steps: []string{"a"},
+		Board: &agent.BoardSnapshot{Vars: map[string]any{}},
+	}
+	if err := g.CanResume(valid); err != nil {
+		t.Fatalf("empty SpecVersion must skip drift check: %v", err)
+	}
+
+	mismatch := valid
+	mismatch.SpecVersion = "other-graph"
+	if err := g.CanResume(mismatch); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("SpecVersion mismatch = %v, want NotAvailable", err)
+	}
+
+	versioned := mustBuild(t, &GraphDefinition{
+		Name:    "g",
+		Version: "v2",
+		Entry:   "a",
+		Nodes:   []NodeDefinition{{ID: "a", Type: "echo"}},
+	}, reg)
+	old := valid
+	old.SpecVersion = "v1"
+	if err := versioned.CanResume(old); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("stale Version = %v, want NotAvailable", err)
+	}
+	current := valid
+	current.SpecVersion = "v2"
+	if err := versioned.CanResume(current); err != nil {
+		t.Fatalf("matching Version rejected: %v", err)
 	}
 }
 

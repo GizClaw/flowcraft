@@ -3,7 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"maps"
+	"slices"
 	"time"
+
+	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
 // Checkpoint is the engine-agnostic persistence record produced at a
@@ -69,9 +74,10 @@ type Checkpoint struct {
 
 	// SpecVersion identifies the engine's spec / definition version
 	// at the time the checkpoint was produced. The format is
-	// engine-defined: graph runner uses the [GraphMeta.Version]
-	// string; a script engine could store a content hash; a host
-	// application could compose a spec document version.
+	// engine-defined: graph runner uses the graph definition's
+	// Version (falling back to its Name when Version is empty); a
+	// script engine could store a content hash; a host application
+	// could compose a spec document version.
 	//
 	// CanResume implementations compare this against the engine's
 	// current version: a mismatch means the underlying spec has
@@ -89,12 +95,51 @@ type Checkpoint struct {
 	SpecVersion string `json:"spec_version,omitempty"`
 }
 
+// Validate checks the envelope invariants every engine and every
+// durable store can rely on. Engine-specific fields (Steps,
+// Iteration, Payload shape, SpecVersion) are intentionally left to
+// the engine's own [Resumer] implementation so engines can keep
+// minimal or strict admission policies.
+func (cp Checkpoint) Validate() error {
+	if cp.ExecID == "" {
+		return errdefs.Validation(errors.New("agent checkpoint: exec_id is required"))
+	}
+	if cp.Board == nil {
+		return errdefs.Validation(errors.New("agent checkpoint: board is required"))
+	}
+	if len(cp.Payload) > 0 && !json.Valid(cp.Payload) {
+		return errdefs.Validation(errors.New("agent checkpoint: payload is not valid JSON"))
+	}
+	return nil
+}
+
+// Clone returns an independent deep copy of cp. Stores should clone
+// on Save (the caller keeps ownership of cp) and again on Load (the
+// returned record is owned by the caller), so concurrent callers can
+// never observe each other's mutations.
+func (cp Checkpoint) Clone() Checkpoint {
+	out := cp
+	out.Steps = slices.Clone(cp.Steps)
+	if cp.Board != nil {
+		out.Board = cp.Board.Clone()
+	}
+	out.Payload = slices.Clone(cp.Payload)
+	out.Attributes = maps.Clone(cp.Attributes)
+	return out
+}
+
 // CheckpointStore is the host-side persistence contract. The host's
 // [Checkpointer.Checkpoint] implementation typically delegates to a
 // CheckpointStore. The interface is intentionally narrow: Save
 // persists; Load returns the most-recent persisted record for the
-// given exec id, or (nil, nil) if absent. All methods must be safe
-// for concurrent use.
+// given exec id, or (nil, nil) if absent.
+//
+// Save must atomically replace the record for cp.ExecID; when two
+// Save calls for the same exec id overlap, the later call wins. The
+// store must treat cp as caller-owned and deep-copy before
+// persisting. Load must return a caller-owned copy: mutating the
+// returned checkpoint must not affect the store or other Load
+// results. All methods must be safe for concurrent use.
 type CheckpointStore interface {
 	Save(ctx context.Context, cp Checkpoint) error
 	Load(ctx context.Context, execID string) (*Checkpoint, error)
@@ -103,7 +148,8 @@ type CheckpointStore interface {
 // CheckpointLister optionally extends [CheckpointStore] with the
 // ability to enumerate persisted exec ids. Stores that support
 // listing satisfy this interface; agent-level resume / dashboard
-// code can type-assert to it.
+// code can type-assert to it. Implementations must be safe for
+// concurrent use. The returned slice is caller-owned.
 type CheckpointLister interface {
 	List(ctx context.Context) ([]string, error)
 }
@@ -111,7 +157,7 @@ type CheckpointLister interface {
 // CheckpointDeleter optionally extends [CheckpointStore] with the
 // ability to delete a single execution's checkpoints. Used by the
 // host when a run completes successfully and its checkpoints are no
-// longer needed.
+// longer needed. Implementations must be safe for concurrent use.
 type CheckpointDeleter interface {
 	Delete(ctx context.Context, execID string) error
 }

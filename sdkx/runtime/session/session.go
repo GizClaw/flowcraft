@@ -2,8 +2,12 @@ package session
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -28,6 +32,8 @@ type Session struct {
 	sinkBuffer        int
 	speculativeEvents int
 	speculativeBytes  int
+	checkpoints       agent.CheckpointStore
+	resume            bool
 
 	startMu        sync.Mutex
 	mu             sync.Mutex
@@ -49,6 +55,8 @@ func newSession(
 	sinkBuffer int,
 	speculativeEvents int,
 	speculativeBytes int,
+	checkpoints agent.CheckpointStore,
+	resume bool,
 	activityNotify func(*Session),
 ) *Session {
 	return &Session{
@@ -59,6 +67,8 @@ func newSession(
 		sinkBuffer:        sinkBuffer,
 		speculativeEvents: speculativeEvents,
 		speculativeBytes:  speculativeBytes,
+		checkpoints:       checkpoints,
+		resume:            resume,
 		activityNotify:    activityNotify,
 	}
 }
@@ -117,13 +127,19 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 		return nil, errdefs.FromContext(err)
 	}
 
-	runID, err := randomID()
+	runID, err := s.nextRunID()
+	if err != nil {
+		return nil, err
+	}
+	resumeFrom, resumeCtx, err := s.loadResume(ctx, runID)
 	if err != nil {
 		return nil, err
 	}
 	request.ContextID = s.key.ContextID
 	request.RunID = runID
 	turn := newTurn(s, runID, ctx)
+	turn.resumeFrom = resumeFrom
+	turn.resumeCtx = resumeCtx
 	hostRequest := HostRequest{
 		Key:        s.key,
 		RunID:      runID,
@@ -209,6 +225,82 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 
 	go turn.execute(s.instance, request)
 	return turn, nil
+}
+
+// nextRunID returns the stable run id for the session key when resume
+// is enabled, otherwise a fresh random id.
+func (s *Session) nextRunID() (string, error) {
+	if s.resume {
+		return stableRunID(s.key), nil
+	}
+	return randomID()
+}
+
+// loadResume loads the checkpoint for runID when resume is enabled.
+// It returns nil, nil for a fresh start. A checkpoint whose engine
+// cannot resume is a configuration error, not a silent fresh run.
+func (s *Session) loadResume(
+	ctx context.Context,
+	runID string,
+) (*agent.Checkpoint, *agent.ResumeContext, error) {
+	if !s.resume || s.checkpoints == nil {
+		return nil, nil, nil
+	}
+	cp, err := s.checkpoints.Load(ctx, runID)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"runtime session: load checkpoint %s: %w", runID, err)
+	}
+	if cp == nil {
+		return nil, nil, nil
+	}
+	if !agent.IsResumable(s.instance.Engine) {
+		return nil, nil, errdefs.NotAvailablef(
+			"runtime session: engine %T does not support resume but checkpoint %s exists",
+			s.instance.Engine, runID)
+	}
+	if resumer, ok := agent.AsResumer(s.instance.Engine); ok {
+		if err := resumer.CanResume(*cp); err != nil {
+			return nil, nil, fmt.Errorf(
+				"runtime session: checkpoint %s is not resumable: %w", runID, err)
+		}
+	}
+	startedAt := cp.OriginalStartedAt
+	if startedAt.IsZero() {
+		startedAt = time.Now()
+	}
+	resumeCtx := agent.ResumeContext{
+		Attempt:      2,
+		StartedAt:    startedAt,
+		Signal:       "session",
+		CheckpointAt: cp.Timestamp,
+	}
+	return cp, &resumeCtx, nil
+}
+
+// cleanupCheckpoint removes a committed run's checkpoint so the next
+// turn starts fresh. Interrupted, failed, and canceled runs keep
+// theirs. Deletion is best-effort.
+func (s *Session) cleanupCheckpoint(runID string, result *agent.Result) {
+	if s == nil || !s.resume || s.checkpoints == nil ||
+		result == nil || !result.Committed {
+		return
+	}
+	deleter, ok := s.checkpoints.(agent.CheckpointDeleter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	_ = deleter.Delete(ctx, runID)
+}
+
+// stableRunID derives the logical run id for one session key. It is
+// stable across process restarts so resume can find the checkpoint.
+func stableRunID(key Key) string {
+	sum := sha256.Sum256([]byte(key.AgentID + "\x00" + key.ContextID))
+	return "run-" + hex.EncodeToString(sum[:16])
 }
 
 // Key returns this Session's immutable identity.

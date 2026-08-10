@@ -23,15 +23,16 @@ func parseRuntimeDocument(t *testing.T, runtimeYAML string) deploy.Document {
 
 func TestDecodeConfigStrictAndValidated(t *testing.T) {
 	t.Run("valid", func(t *testing.T) {
-		doc := parseRuntimeDocument(t, "  event_bus: events\n  scheduler: ' shared-scheduler '\n  sessions:\n    idle_timeout: 30s\n    sink_buffer: 17\n    speculative_buffer_events: 23\n    speculative_buffer_bytes: 4096\n  integrations:\n    - name: one\n      kind: test.kind\n      deps: {store: data}\n      settings: {answer: 42}\n")
+		doc := parseRuntimeDocument(t, "  event_bus: events\n  checkpoint_store: cps\n  scheduler: ' shared-scheduler '\n  sessions:\n    idle_timeout: 30s\n    sink_buffer: 17\n    speculative_buffer_events: 23\n    speculative_buffer_bytes: 4096\n    resume: true\n  integrations:\n    - name: one\n      kind: test.kind\n      deps: {store: data}\n      settings: {answer: 42}\n")
 		cfg, err := DecodeConfig(doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
-		if cfg.EventBus != "events" || cfg.Scheduler != "shared-scheduler" ||
+		if cfg.EventBus != "events" || cfg.CheckpointStore != "cps" ||
+			cfg.Scheduler != "shared-scheduler" ||
 			cfg.Sessions.IdleTimeout != 30*time.Second || cfg.Sessions.SinkBuffer != 17 ||
 			cfg.Sessions.SpeculativeBufferEvents != 23 ||
-			cfg.Sessions.SpeculativeBufferBytes != 4096 {
+			cfg.Sessions.SpeculativeBufferBytes != 4096 || !cfg.Sessions.Resume {
 			t.Fatalf("unexpected config: %#v", cfg)
 		}
 		if len(cfg.Integrations) != 1 || cfg.Integrations[0].Settings == nil {
@@ -50,6 +51,17 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 		}
 	})
 
+	t.Run("blank checkpoint store is disabled", func(t *testing.T) {
+		doc := parseRuntimeDocument(t, "  event_bus: events\n  checkpoint_store: '   '\n")
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if cfg.CheckpointStore != "" {
+			t.Fatalf("CheckpointStore = %q, want empty", cfg.CheckpointStore)
+		}
+	})
+
 	for name, runtimeYAML := range map[string]string{
 		"absent":                 "",
 		"empty":                  "  {}\n",
@@ -60,6 +72,7 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 		"bad sink buffer":        "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
 		"bad speculative events": "  event_bus: events\n  sessions: {speculative_buffer_events: 0}\n",
 		"bad speculative bytes":  "  event_bus: events\n  sessions: {speculative_buffer_bytes: -1}\n",
+		"resume without store":   "  event_bus: events\n  sessions: {resume: true}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var doc deploy.Document

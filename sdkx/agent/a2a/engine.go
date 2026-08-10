@@ -698,15 +698,12 @@ type resumePayload struct {
 }
 
 // CanResume implements [agent.Resumer]. It is a cheap, local-only probe:
-// the payload must decode and name a task, the board must be present, and
-// the exec id must be non-empty. Whether the remote task is still live is a
-// runtime fact checked during Execute.
+// the checkpoint envelope must validate and the payload must decode and
+// name a task. Whether the remote task is still live is a runtime fact
+// checked during Execute.
 func (e *Engine) CanResume(cp agent.Checkpoint) error {
-	if cp.ExecID == "" {
-		return errdefs.Validationf("a2a: checkpoint has no exec id")
-	}
-	if cp.Board == nil {
-		return errdefs.Validationf("a2a: checkpoint carries no board state")
+	if err := cp.Validate(); err != nil {
+		return err
 	}
 	if len(cp.Payload) == 0 {
 		return errdefs.Validationf("a2a: checkpoint carries no engine payload")
@@ -725,13 +722,14 @@ func (e *Engine) CanResume(cp agent.Checkpoint) error {
 // restored from the checkpoint and the engine subscribes (streaming) or
 // polls (non-streaming) until the task reaches a terminal state.
 func (x *executor) resume(ctx context.Context, cp *agent.Checkpoint) error {
-	if cp.ExecID != "" && cp.ExecID != x.run.RunID {
+	if err := cp.Validate(); err != nil {
+		return err
+	}
+	if cp.ExecID != x.run.RunID {
 		return errdefs.Validationf("a2a: checkpoint exec id %q != run id %q (forking requires a fresh run)",
 			cp.ExecID, x.run.RunID)
 	}
-	if cp.Board != nil {
-		x.board.RestoreFrom(cp.Board)
-	}
+	x.board.RestoreFrom(cp.Board)
 	var p resumePayload
 	if err := json.Unmarshal(cp.Payload, &p); err != nil {
 		return errdefs.Validationf("a2a: checkpoint payload: %v", err)

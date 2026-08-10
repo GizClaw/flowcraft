@@ -17,7 +17,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
 
-const eventBusResourceKind = "event.Bus"
+const (
+	eventBusResourceKind        = "event.Bus"
+	checkpointStoreResourceKind = "agent.CheckpointStore"
+)
 
 type registeredIntegration struct {
 	spec    IntegrationSpec
@@ -181,7 +184,11 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	if err != nil {
 		return nil, fail(err)
 	}
-	baseHostFactory, err := newBaseHostFactory(bus)
+	checkpoints, err := resolveCheckpointStore(doc, result, cfg.CheckpointStore)
+	if err != nil {
+		return nil, fail(err)
+	}
+	baseHostFactory, err := newBaseHostFactory(bus, checkpoints)
 	if err != nil {
 		return nil, fail(err)
 	}
@@ -237,17 +244,21 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		agent.WithStreamSubOptions(event.WithBackpressure(event.Block)),
 	)
 	owned.router = router
-	manager, err := session.NewManager(
-		result,
-		hostFactory,
-		router,
+	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
 		session.WithSpeculativeBufferLimits(
 			cfg.Sessions.SpeculativeBufferEvents,
 			cfg.Sessions.SpeculativeBufferBytes,
 		),
-	)
+	}
+	if checkpoints != nil {
+		managerOptions = append(managerOptions,
+			session.WithCheckpointStore(checkpoints),
+			session.WithResume(cfg.Sessions.Resume),
+		)
+	}
+	manager, err := session.NewManager(result, hostFactory, router, managerOptions...)
 	if err != nil {
 		return nil, fail(fmt.Errorf("runtime create session manager: %w", err))
 	}
@@ -285,9 +296,23 @@ func resolveCatalog(
 			"runtime config event_bus %q has kind %q, want %q",
 			cfg.EventBus, eventEntry.Kind, eventBusResourceKind)
 	}
+	external := []string{cfg.EventBus}
+	if cfg.CheckpointStore != "" {
+		checkpointEntry, exists := doc.Resources[cfg.CheckpointStore]
+		if !exists {
+			return nil, nil, errdefs.NotFoundf(
+				"runtime config checkpoint_store %q: resource is not defined",
+				cfg.CheckpointStore)
+		}
+		if checkpointEntry.Kind != checkpointStoreResourceKind {
+			return nil, nil, errdefs.Validationf(
+				"runtime config checkpoint_store %q has kind %q, want %q",
+				cfg.CheckpointStore, checkpointEntry.Kind, checkpointStoreResourceKind)
+		}
+		external = append(external, cfg.CheckpointStore)
+	}
 
 	resolved := make([]registeredIntegration, len(cfg.Integrations))
-	external := []string{cfg.EventBus}
 	if cfg.Scheduler != "" {
 		schedulerEntry, exists := doc.Resources[cfg.Scheduler]
 		if !exists {
@@ -407,6 +432,41 @@ func resolveEventBus(
 			"runtime event bus resource %q is nil", name)
 	}
 	return bus, nil
+}
+
+func resolveCheckpointStore(
+	doc deploy.Document,
+	result *deploy.Result,
+	name string,
+) (agent.CheckpointStore, error) {
+	if name == "" {
+		return nil, nil
+	}
+	entry, ok := doc.Resources[name]
+	if !ok {
+		return nil, errdefs.NotFoundf(
+			"runtime checkpoint store resource %q is not defined", name)
+	}
+	if entry.Kind != checkpointStoreResourceKind {
+		return nil, errdefs.Validationf(
+			"runtime checkpoint store resource %q has kind %q, want %q",
+			name, entry.Kind, checkpointStoreResourceKind)
+	}
+	value, err := result.Resource(name)
+	if err != nil {
+		return nil, fmt.Errorf("runtime resolve checkpoint store %q: %w", name, err)
+	}
+	store, ok := value.(agent.CheckpointStore)
+	if !ok {
+		return nil, errdefs.Validationf(
+			"runtime checkpoint store resource %q has Go type %T, want %v",
+			name, value, reflect.TypeFor[agent.CheckpointStore]())
+	}
+	if isNil(store) {
+		return nil, errdefs.Internalf(
+			"runtime checkpoint store resource %q is nil", name)
+	}
+	return store, nil
 }
 
 func resolveScheduler(

@@ -20,6 +20,9 @@ type Turn struct {
 	runCtx  context.Context
 	cancel  context.CancelFunc
 
+	resumeFrom *agent.Checkpoint
+	resumeCtx  *agent.ResumeContext
+
 	interrupts chan agent.Interrupt
 	done       chan struct{}
 
@@ -180,6 +183,9 @@ func (t *Turn) terminalResult() (*agent.Result, error) {
 
 func (t *Turn) execute(instance *deploy.Instance, request agent.Request) {
 	options := []agent.ExecuteOption{agent.WithHost(t.host), agent.WithObserver(t)}
+	if t.resumeFrom != nil {
+		options = append(options, agent.WithResumeFrom(t.resumeFrom))
+	}
 	t.mu.Lock()
 	hasAuthority := t.authorityID != ""
 	t.mu.Unlock()
@@ -189,7 +195,11 @@ func (t *Turn) execute(instance *deploy.Instance, request agent.Request) {
 			agent.WithCommitViewProvider(t),
 		)
 	}
-	result, err := instance.Execute(t.runCtx, request, options...)
+	execCtx := t.runCtx
+	if t.resumeCtx != nil {
+		execCtx = agent.WithResumeContext(t.runCtx, *t.resumeCtx)
+	}
+	result, err := instance.Execute(execCtx, request, options...)
 	t.finish(result, err)
 }
 
@@ -237,6 +247,9 @@ func (t *Turn) finish(result *agent.Result, err error) {
 	}
 	if detachCoordinator != nil {
 		detachCoordinator()
+	}
+	if t.session != nil {
+		t.session.cleanupCheckpoint(t.runID, result)
 	}
 	t.session.turnFinished(t)
 
