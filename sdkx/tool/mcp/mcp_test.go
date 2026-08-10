@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdkx/tool/dynamic"
 	"github.com/GizClaw/flowcraft/sdkx/tool/mcp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -67,6 +68,21 @@ func (ts *testServer) addTool(name, description string, schema any, ann *mcpsdk.
 		InputSchema: schema,
 		Annotations: ann,
 	}, handler)
+}
+
+func (ts *testServer) addResource(uri, name, description, mimeType, text string) {
+	ts.server.AddResource(&mcpsdk.Resource{
+		URI:         uri,
+		Name:        name,
+		Description: description,
+		MIMEType:    mimeType,
+	}, func(_ context.Context, _ *mcpsdk.ReadResourceRequest) (*mcpsdk.ReadResourceResult, error) {
+		return &mcpsdk.ReadResourceResult{
+			Contents: []*mcpsdk.ResourceContents{
+				{URI: uri, MIMEType: mimeType, Text: text},
+			},
+		}, nil
+	})
 }
 
 func textResult(text string) mcpsdk.ToolHandler {
@@ -722,11 +738,335 @@ func TestConfig_ParseSpecRejectsBadInput(t *testing.T) {
 		{"stdio with url", `{"servers":[{"name":"x","transport":"stdio","command":"x","url":"http://x"}]}`},
 		{"http with command", `{"servers":[{"name":"x","transport":"http","url":"http://x","command":"y"}]}`},
 		{"bad scope", `{"servers":[{"name":"x","transport":"stdio","command":"x","scope":"secret"}]}`},
+		{"bad exposure", `{"servers":[{"name":"x","transport":"stdio","command":"x","exposure":"secret"}]}`},
+		{"bad tool exposure", `{"servers":[{"name":"x","transport":"stdio","command":"x","tools":{"read_file":"secret"}}]}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := mcp.ParseSpec(specNode(t, tc.raw)); err == nil {
 				t.Errorf("ParseSpec(%q) succeeded, want error", tc.name)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred attach + exposure
+// ---------------------------------------------------------------------------
+
+func TestAddServer_DeferredRegistersDeclaredProxyWithoutConnecting(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addTool("read_file", "Read a file", objectSchema(), nil, textResult("contents"))
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithDeferred(true),
+		mcp.WithTools(map[string]dynamic.Exposure{"read_file": dynamic.ExposureDeferred}),
+	)
+	if err != nil {
+		t.Fatalf("AddServer(deferred): %v", err)
+	}
+
+	tool, ok := reg.Get("filesystem__read_file")
+	if !ok {
+		t.Fatalf("declared proxy missing from registry; have %v", reg.Names())
+	}
+	lazy, isLazy := tool.(*dynamic.LazyTool)
+	if !isLazy {
+		t.Fatalf("declared tool type = %T, want *dynamic.LazyTool", tool)
+	}
+	if def := lazy.Definition(); def.Name != "filesystem__read_file" ||
+		!strings.Contains(def.Description, "deferred") {
+		t.Errorf("placeholder definition = %+v", def)
+	}
+	if got := src.ToolNames("filesystem"); len(got) != 1 || got[0] != "filesystem__read_file" {
+		t.Errorf("ToolNames = %v, want the declared proxy", got)
+	}
+	if reg.Len() != 1 {
+		t.Errorf("registry Len = %d, want only the declared proxy", reg.Len())
+	}
+
+	// Serve the server side, then load; the proxy is replaced by the
+	// real adapted tool and stays callable.
+	ts.serve(t)
+	if err := src.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh(deferred): %v", err)
+	}
+	tool, ok = reg.Get("filesystem__read_file")
+	if !ok {
+		t.Fatal("tool missing after load")
+	}
+	if _, isLazy := tool.(*dynamic.LazyTool); isLazy {
+		t.Fatal("tool is still a proxy after load, want adapted tool")
+	}
+	res, err := tool.Execute(t.Context(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute after load: %v", err)
+	}
+	if res != "contents" {
+		t.Errorf("Execute = %q, want contents", res)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAddServer_DeferredExecutesThroughProxy(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addTool("read_file", "Read a file", objectSchema(), nil, textResult("mcp-content"))
+	ts.serve(t)
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithDeferred(true),
+		mcp.WithTools(map[string]dynamic.Exposure{"read_file": dynamic.ExposureDeferred}),
+	); err != nil {
+		t.Fatalf("AddServer(deferred): %v", err)
+	}
+
+	tool, ok := reg.Get("filesystem__read_file")
+	if !ok {
+		t.Fatal("declared proxy missing")
+	}
+	res, err := tool.Execute(t.Context(), `{}`)
+	if err != nil {
+		t.Fatalf("Execute through proxy: %v", err)
+	}
+	if res != "mcp-content" {
+		t.Errorf("Execute = %q, want mcp-content", res)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAddServer_DeferredExposureWithDynamicCatalog(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addTool("read_file", "Read a file", objectSchema(), nil, textResult("x"))
+	ts.addTool("write_file", "Write a file", objectSchema(), nil, textResult("x"))
+
+	reg := sdktool.NewRegistry()
+	dyn := dynamic.New(reg)
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+	t.Cleanup(func() { _ = dyn.Close() })
+
+	err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithDeferred(true),
+		mcp.WithDynamicCatalog(dyn),
+		mcp.WithExposure(dynamic.ExposureDeferred),
+		mcp.WithTools(map[string]dynamic.Exposure{
+			"read_file": dynamic.ExposureAlways,
+		}),
+	)
+	if err != nil {
+		t.Fatalf("AddServer(deferred): %v", err)
+	}
+
+	// read_file is always-visible even as a placeholder; write_file
+	// stays deferred and hidden until selected.
+	defs := dyn.Definitions()
+	if len(defs) != 1 || defs[0].Name != "filesystem__read_file" {
+		t.Fatalf("dynamic Definitions = %v, want only read_file placeholder", defs)
+	}
+
+	ts.serve(t)
+	if err := src.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	defs = dyn.Definitions()
+	if len(defs) != 1 || defs[0].Name != "filesystem__read_file" {
+		t.Fatalf("dynamic Definitions after load = %v", defs)
+	}
+	if defs[0].Description != "Read a file" {
+		t.Errorf("loaded description = %q, want real description", defs[0].Description)
+	}
+
+	dyn.Select("filesystem__write_file")
+	got := make([]string, 0, 2)
+	for _, d := range dyn.Definitions() {
+		got = append(got, d.Name)
+	}
+	want := []string{"filesystem__read_file", "filesystem__write_file"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Definitions after select = %v, want %v", got, want)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAddServer_DeferredRejectsInvalidExposure(t *testing.T) {
+	src := mcp.NewSource(sdktool.NewRegistry())
+	t.Cleanup(func() { _ = src.Close() })
+	err := src.AddServer(t.Context(), "fs", &mcpsdk.CommandTransport{},
+		mcp.WithDeferred(true),
+		mcp.WithTools(map[string]dynamic.Exposure{"x": dynamic.Exposure("bogus")}),
+	)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("AddServer = %v, want Validation", err)
+	}
+}
+
+func TestAddServer_DeferredOwnershipConflict(t *testing.T) {
+	first := newTestServer(t, "a")
+	first.addTool("read", "Read A", objectSchema(), nil, textResult("a"))
+	second := newTestServer(t, "b")
+	second.addTool("read", "Read B", objectSchema(), nil, textResult("b"))
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	tools := map[string]dynamic.Exposure{"read": dynamic.ExposureDeferred}
+	if err := src.AddServer(t.Context(), "alpha", first.transport,
+		mcp.WithDeferred(true), mcp.WithPrefix("shared__"), mcp.WithTools(tools)); err != nil {
+		t.Fatalf("AddServer alpha: %v", err)
+	}
+	err := src.AddServer(t.Context(), "beta", second.transport,
+		mcp.WithDeferred(true), mcp.WithPrefix("shared__"), mcp.WithTools(tools))
+	if err == nil || !errdefs.IsConflict(err) {
+		t.Fatalf("AddServer beta = %v, want Conflict", err)
+	}
+	if got := src.Servers(); len(got) != 1 || got[0] != "alpha" {
+		t.Fatalf("attached servers = %v, want only alpha", got)
+	}
+}
+
+func TestApplyExposures_SyncServer(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addTool("read_file", "Read a file", objectSchema(), nil, textResult("x"))
+	ts.addTool("write_file", "Write a file", objectSchema(), nil, textResult("x"))
+	ts.serve(t)
+
+	reg := sdktool.NewRegistry()
+	dyn := dynamic.New(reg)
+	t.Cleanup(func() { _ = dyn.Close() })
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithExposure(dynamic.ExposureAlways),
+		mcp.WithTools(map[string]dynamic.Exposure{"read_file": dynamic.ExposureHidden}),
+	); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	if err := src.ApplyExposures(dyn); err != nil {
+		t.Fatalf("ApplyExposures: %v", err)
+	}
+	got := make([]string, 0, 1)
+	for _, d := range dyn.Definitions() {
+		got = append(got, d.Name)
+	}
+	if len(got) != 1 || got[0] != "filesystem__write_file" {
+		t.Errorf("Definitions = %v, want only write_file (read_file hidden)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resources bridge
+// ---------------------------------------------------------------------------
+
+func TestAddServer_ResourcesBridge(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addTool("read_file", "Read a file", objectSchema(), nil, textResult("x"))
+	ts.addResource("file:///tmp/a.txt", "a.txt", "A text file", "text/plain", "hello")
+	ts.serve(t)
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithResources(true)); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	for _, name := range []string{
+		"filesystem__list_resources",
+		"filesystem__read_resource",
+	} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("resource bridge tool %q missing; have %v", name, reg.Names())
+		}
+	}
+
+	list, _ := reg.Get("filesystem__list_resources")
+	raw, err := list.Execute(t.Context(), `{}`)
+	if err != nil {
+		t.Fatalf("list resources: %v", err)
+	}
+	if !strings.Contains(raw, "file:///tmp/a.txt") ||
+		!strings.Contains(raw, "A text file") {
+		t.Errorf("list output = %s, want resource metadata", raw)
+	}
+
+	read, _ := reg.Get("filesystem__read_resource")
+	raw, err = read.Execute(t.Context(), `{"uri":"file:///tmp/a.txt"}`)
+	if err != nil {
+		t.Fatalf("read resource: %v", err)
+	}
+	if !strings.Contains(raw, "hello") {
+		t.Errorf("read output = %s, want resource text", raw)
+	}
+
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestAddServer_DeferredResourcesBridgeLoadsOnRefresh(t *testing.T) {
+	ts := newTestServer(t, "fs")
+	ts.addResource("file:///tmp/a.txt", "a.txt", "A text file", "text/plain", "hello")
+	ts.serve(t)
+
+	reg := sdktool.NewRegistry()
+	src := mcp.NewSource(reg)
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(t.Context(), "filesystem", ts.transport,
+		mcp.WithDeferred(true), mcp.WithResources(true)); err != nil {
+		t.Fatalf("AddServer(deferred): %v", err)
+	}
+	if _, ok := reg.Get("filesystem__list_resources"); ok {
+		t.Fatal("resource bridge tools must not register before the deferred load")
+	}
+	if err := src.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	read, ok := reg.Get("filesystem__read_resource")
+	if !ok {
+		t.Fatalf("resource bridge missing after load; have %v", reg.Names())
+	}
+	raw, err := read.Execute(t.Context(), `{"uri":"file:///tmp/a.txt"}`)
+	if err != nil {
+		t.Fatalf("read resource: %v", err)
+	}
+	if !strings.Contains(raw, "hello") {
+		t.Errorf("read output = %s, want resource text", raw)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+}
+
+func TestConfig_ParseSpecAcceptsResources(t *testing.T) {
+	spec, err := mcp.ParseSpec(specNode(t, `{
+		"servers": [{
+			"name": "x",
+			"transport": "stdio",
+			"command": "x",
+			"resources": true
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseSpec: %v", err)
+	}
+	if len(spec.Servers) != 1 || !spec.Servers[0].Resources {
+		t.Errorf("parsed spec = %+v, want resources enabled", spec.Servers)
 	}
 }

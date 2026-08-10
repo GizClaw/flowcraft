@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/agent"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 )
 
@@ -34,6 +36,7 @@ type Session struct {
 	speculativeBytes  int
 	checkpoints       agent.CheckpointStore
 	resume            bool
+	catalogProvider   CatalogProvider
 
 	startMu        sync.Mutex
 	mu             sync.Mutex
@@ -42,6 +45,7 @@ type Session struct {
 	attachedSinks  int
 	active         *Turn
 	closing        bool
+	catalog        sdktool.Catalog
 	activityNotify func(*Session)
 	observer       SessionObserver
 	closeOnce      sync.Once
@@ -58,6 +62,7 @@ func newSession(
 	speculativeBytes int,
 	checkpoints agent.CheckpointStore,
 	resume bool,
+	catalogProvider CatalogProvider,
 	activityNotify func(*Session),
 	observer SessionObserver,
 ) *Session {
@@ -71,6 +76,7 @@ func newSession(
 		speculativeBytes:  speculativeBytes,
 		checkpoints:       checkpoints,
 		resume:            resume,
+		catalogProvider:   catalogProvider,
 		activityNotify:    activityNotify,
 		observer:          observer,
 	}
@@ -148,6 +154,14 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	turn := newTurn(s, runID, ctx)
 	turn.resumeFrom = resumeFrom
 	turn.resumeCtx = resumeCtx
+	catalog, err := s.catalogFor(ctx)
+	if err != nil {
+		turn.cancel()
+		return nil, err
+	}
+	if catalog != nil {
+		turn.runCtx = sdktool.WithCatalogOnContext(turn.runCtx, catalog)
+	}
 	hostRequest := HostRequest{
 		Key:        s.key,
 		RunID:      runID,
@@ -404,9 +418,65 @@ func (s *Session) close() error {
 			}
 		}
 		s.startMu.Unlock()
+		s.closeCatalog()
 		s.notifySessionClosed(s.closeErr)
 	})
 	return s.closeErr
+}
+
+// catalogFor returns the session catalog, creating it once via the
+// provider on the first Start. Start is serialized by startMu, so the
+// creation path is race-free; the defensive branch handles a provider
+// shared with code paths outside this Session.
+func (s *Session) catalogFor(ctx context.Context) (sdktool.Catalog, error) {
+	s.mu.Lock()
+	catalog := s.catalog
+	s.mu.Unlock()
+	if catalog != nil {
+		return catalog, nil
+	}
+	if s.catalogProvider == nil {
+		return nil, nil
+	}
+	catalog, err := s.catalogProvider.NewCatalog(ctx, s.instance)
+	if err != nil {
+		return nil, err
+	}
+	if catalog == nil {
+		return nil, errdefs.Internalf(
+			"runtime session: CatalogProvider returned a nil catalog")
+	}
+	s.mu.Lock()
+	if s.catalog == nil {
+		s.catalog = catalog
+	} else {
+		if closer, ok := catalog.(io.Closer); ok {
+			_ = closer.Close()
+		}
+		catalog = s.catalog
+	}
+	s.mu.Unlock()
+	return catalog, nil
+}
+
+// closeCatalog closes the session catalog exactly once, after any
+// active turn has been awaited. A close error is folded into the
+// session's close error when none is set yet.
+func (s *Session) closeCatalog() {
+	s.mu.Lock()
+	catalog := s.catalog
+	s.catalog = nil
+	s.mu.Unlock()
+	if catalog == nil {
+		return
+	}
+	closer, ok := catalog.(io.Closer)
+	if !ok {
+		return
+	}
+	if err := closer.Close(); err != nil && s.closeErr == nil {
+		s.closeErr = err
+	}
 }
 
 func (s *Session) beginClose() {

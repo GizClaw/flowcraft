@@ -1,6 +1,7 @@
 package nodes
 
 import (
+	"context"
 	"errors"
 	"io"
 
@@ -51,6 +52,13 @@ type InferenceConfig struct {
 
 	// Tools names the catalog tools the model may call this turn.
 	Tools []string `json:"tools,omitempty"`
+	// AllTools sends the catalog's entire visible set instead of only
+	// the named Tools. The node stays catalog-agnostic: whatever
+	// Definitions returns (a dynamic injection view, a filtered view,
+	// the plain registry) is what the model sees. When Tools is also
+	// set, the names are declared to the catalog as RequiredByName via
+	// an optional interface and must still exist.
+	AllTools bool `json:"all_tools,omitempty"`
 	// The remaining knobs ride the text intent verbatim.
 	ToolChoice       *inference.ToolChoice     `json:"tool_choice,omitempty"`
 	Temperature      *float64                  `json:"temperature,omitempty"`
@@ -113,7 +121,7 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 	if channel == "" {
 		channel = agent.MainChannel
 	}
-	req, err := buildGenerateRequest(board, channel, cfg, deps)
+	req, err := buildGenerateRequest(ec, board, channel, cfg, deps)
 	if err != nil {
 		return err
 	}
@@ -121,6 +129,13 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 	resp, err := executeGenerate(ec, board, cfg, deps, req)
 	if err != nil {
 		return err
+	}
+	if len(cfg.Tools) > 0 || cfg.AllTools {
+		if catalog := roundCatalog(ec.Context, cfg, deps); catalog != nil {
+			if advancer, ok := catalog.(roundAdvancer); ok {
+				advancer.AdvanceTurn()
+			}
+		}
 	}
 
 	for _, part := range resp.Message.Content.Parts {
@@ -161,7 +176,7 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 // buildGenerateRequest splits the channel tail into context + current
 // input — the exact shape GenerateRequest demands — and attaches the
 // configured text intent and extensions.
-func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfig, deps InferenceNodeDeps) (inference.GenerateRequest, error) {
+func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, deps InferenceNodeDeps) (inference.GenerateRequest, error) {
 	var req inference.GenerateRequest
 	messages := board.Channel(channel)
 	if len(messages) == 0 {
@@ -196,8 +211,8 @@ func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfi
 		ReasoningEnabled: cfg.ReasoningEnabled,
 		ReasoningEffort:  cfg.ReasoningEffort,
 	}
-	if len(cfg.Tools) > 0 {
-		definitions, err := toolDefinitions(cfg.Tools, deps.Catalog)
+	if len(cfg.Tools) > 0 || cfg.AllTools {
+		definitions, err := toolDefinitions(ec.Context, cfg.Tools, deps.Catalog, cfg.AllTools)
 		if err != nil {
 			return req, err
 		}
@@ -222,10 +237,47 @@ func buildGenerateRequest(board *agent.Board, channel string, cfg InferenceConfi
 	}, nil
 }
 
-func toolDefinitions(names []string, catalog tool.Catalog) ([]message.Definition, error) {
+func toolDefinitions(ctx context.Context, names []string, catalog tool.Catalog, allTools bool) ([]message.Definition, error) {
 	if catalog == nil {
 		return nil, errdefs.Validationf("inference node: tools configured but no tool catalog wired")
 	}
+	if allTools {
+		if override, ok := tool.CatalogFromContext(ctx); ok {
+			catalog = override
+		}
+		return resolveAllTools(names, catalog)
+	}
+	return resolveExplicitTools(names, catalog)
+}
+
+// requiredCatalog is implemented by catalogs that accept RequiredByName
+// declarations. The inference node never assumes one: it is an optional
+// contract a catalog (like the dynamic injection view) may implement.
+type requiredCatalog interface {
+	Require(names ...string)
+}
+
+// roundAdvancer is the optional per-round lifecycle contract: a
+// session-scoped catalog advances its Selected retention once per
+// inference node invocation, which is the correct granularity for M
+// rounds (a single user turn may contain several rounds).
+type roundAdvancer interface {
+	AdvanceTurn()
+}
+
+// roundCatalog resolves the catalog this round's request was built
+// from: the context override for all_tools mode, otherwise the bound
+// dependency.
+func roundCatalog(ctx context.Context, cfg InferenceConfig, deps InferenceNodeDeps) tool.Catalog {
+	if cfg.AllTools {
+		if override, ok := tool.CatalogFromContext(ctx); ok {
+			return override
+		}
+	}
+	return deps.Catalog
+}
+
+func resolveExplicitTools(names []string, catalog tool.Catalog) ([]message.Definition, error) {
 	available := make(map[string]message.Definition)
 	for _, def := range catalog.Definitions() {
 		available[def.Name] = def
@@ -237,6 +289,26 @@ func toolDefinitions(names []string, catalog tool.Catalog) ([]message.Definition
 			return nil, errdefs.Validationf("inference node: unknown tool %q", name)
 		}
 		definitions[i] = def
+	}
+	return definitions, nil
+}
+
+func resolveAllTools(names []string, catalog tool.Catalog) ([]message.Definition, error) {
+	if rc, ok := catalog.(requiredCatalog); ok {
+		rc.Require(names...)
+	}
+	definitions := catalog.Definitions()
+	if len(names) == 0 {
+		return definitions, nil
+	}
+	available := make(map[string]struct{}, len(definitions))
+	for _, def := range definitions {
+		available[def.Name] = struct{}{}
+	}
+	for _, name := range names {
+		if _, ok := available[name]; !ok {
+			return nil, errdefs.Validationf("inference node: unknown tool %q", name)
+		}
 	}
 	return definitions, nil
 }

@@ -8,8 +8,11 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
+	"github.com/GizClaw/flowcraft/sdk/message"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
+	"github.com/GizClaw/flowcraft/sdkx/tool/dynamic"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/sync/singleflight"
 )
 
 // DefaultPrefixSeparator joins a server name to a tool name when
@@ -78,10 +81,29 @@ type server struct {
 	scope     string
 	prefix    string
 	transport mcpsdk.Transport
+	deferred  bool
+	exposure  dynamic.Exposure
+	// tools maps server-side tool names to exposure overrides.
+	tools map[string]dynamic.Exposure
+	// toolExposure maps qualified registry names to their per-tool
+	// exposure; names without an entry use the server-level exposure.
+	toolExposure map[string]dynamic.Exposure
+	dynamicCat   *dynamic.Catalog
+	clientName   string
+	clientVer    string
+	clientOpts   *mcpsdk.ClientOptions
+	onListError  func(server string, err error)
+	resources    bool
+	// resourceTools tracks qualified names registered by the resource
+	// bridge, so a server-side tool with the same name is never
+	// shadowed by the bridge.
+	resourceTools map[string]struct{}
 
 	mu         sync.Mutex
 	session    *mcpsdk.ClientSession
 	registered map[string]struct{}
+	declared   map[string]struct{}
+	loadGroup  singleflight.Group
 }
 
 // currentSession returns the live session or a typed error if the
@@ -116,6 +138,12 @@ type serverConfig struct {
 	clientVer   string
 	clientOpts  *mcpsdk.ClientOptions
 	onListError func(server string, err error)
+	deferred    bool
+	exposure    dynamic.Exposure
+	exposureSet bool
+	tools       map[string]dynamic.Exposure
+	dynamicCat  *dynamic.Catalog
+	resources   bool
 }
 
 // WithScope sets the registry scope the server's tools register under.
@@ -124,6 +152,49 @@ type serverConfig struct {
 // tool listings but remain callable by explicit name.
 func WithScope(scope string) ServerOption {
 	return func(c *serverConfig) { c.scope = scope }
+}
+
+// WithDeferred attaches the server without connecting: no child process
+// and no tools/list until the first load. Declared tools (see
+// WithTools) are registered as lazy proxies immediately; servers
+// without a tools map register nothing until loaded.
+func WithDeferred(deferred bool) ServerOption {
+	return func(c *serverConfig) { c.deferred = deferred }
+}
+
+// WithExposure sets the default exposure for every tool this server
+// contributes. Per-tool entries in WithTools override it. The default
+// is dynamic.ExposureDeferred: MCP tools enter the model's view through
+// tool_search, not by dumping every server into the prompt.
+func WithExposure(exposure dynamic.Exposure) ServerOption {
+	return func(c *serverConfig) {
+		c.exposure = exposure
+		c.exposureSet = true
+	}
+}
+
+// WithTools declares per-tool exposure by server-side tool name (not
+// the qualified registry name — prefixing stays WithPrefix's job). For
+// deferred servers these names are also registered immediately as lazy
+// proxies, so they are callable by exact name before the first load.
+func WithTools(tools map[string]dynamic.Exposure) ServerOption {
+	return func(c *serverConfig) { c.tools = tools }
+}
+
+// WithDynamicCatalog wires a dynamic catalog for exposure metadata:
+// every tool this server registers gets its exposure recorded there,
+// and deferred proxies are registered through the catalog. A host
+// using the dynamic injection layer should always pass its session
+// catalog here.
+func WithDynamicCatalog(cat *dynamic.Catalog) ServerOption {
+	return func(c *serverConfig) { c.dynamicCat = cat }
+}
+
+// WithResources bridges the server's MCP resources into two registry
+// tools — <prefix>list_resources and <prefix>read_resource — so they
+// inherit exposure, approval, and every other middleware capability.
+func WithResources(enabled bool) ServerOption {
+	return func(c *serverConfig) { c.resources = enabled }
 }
 
 // WithPrefix overrides the namespace prefix applied to the server's tool
@@ -193,24 +264,41 @@ func (s *Source) AddServer(ctx context.Context, name string, transport mcpsdk.Tr
 	for _, opt := range opts {
 		opt(cfg)
 	}
+	exposure := cfg.exposure
+	if !cfg.exposureSet {
+		exposure = dynamic.ExposureDeferred
+	}
+	if err := validateExposureConfig(exposure, cfg.tools); err != nil {
+		return err
+	}
 
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return errdefs.NotAvailablef("mcp: source is closed")
+	toolExposure := make(map[string]dynamic.Exposure, len(cfg.tools))
+	for remote, exp := range cfg.tools {
+		toolExposure[qualify(cfg.prefix, remote)] = exp
 	}
-	if _, exists := s.servers[name]; exists {
-		s.mu.Unlock()
-		return errdefs.Validationf("mcp: server %q is already attached", name)
-	}
-	s.mu.Unlock()
 
 	srv := &server{
-		name:       name,
-		scope:      cfg.scope,
-		prefix:     cfg.prefix,
-		transport:  transport,
-		registered: make(map[string]struct{}),
+		name:          name,
+		scope:         cfg.scope,
+		prefix:        cfg.prefix,
+		transport:     transport,
+		deferred:      cfg.deferred,
+		exposure:      exposure,
+		tools:         cfg.tools,
+		toolExposure:  toolExposure,
+		dynamicCat:    cfg.dynamicCat,
+		clientName:    cfg.clientName,
+		clientVer:     cfg.clientVer,
+		clientOpts:    cfg.clientOpts,
+		onListError:   cfg.onListError,
+		resources:     cfg.resources,
+		resourceTools: make(map[string]struct{}),
+		registered:    make(map[string]struct{}),
+		declared:      make(map[string]struct{}),
+	}
+
+	if cfg.deferred {
+		return s.addDeferred(srv)
 	}
 
 	session, err := s.connect(ctx, srv, cfg)
@@ -225,17 +313,205 @@ func (s *Source) AddServer(ctx context.Context, name string, transport mcpsdk.Tr
 		_ = session.Close()
 		return err
 	}
+	if cfg.resources {
+		if err := s.reconcileResources(ctx, srv); err != nil {
+			s.unregisterAll(srv)
+			_ = session.Close()
+			return err
+		}
+	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
 		// Close raced us; undo rather than leak the session.
 		s.unregisterAll(srv)
 		_ = session.Close()
+		s.mu.Unlock()
 		return errdefs.NotAvailablef("mcp: source is closed")
 	}
+	if _, exists := s.servers[name]; exists {
+		s.mu.Unlock()
+		s.unregisterAll(srv)
+		_ = session.Close()
+		return errdefs.Validationf("mcp: server %q is already attached", name)
+	}
 	s.servers[name] = srv
+	s.mu.Unlock()
 	return nil
+}
+
+// addDeferred publishes a server without connecting. Declared tools
+// (WithTools) are pre-claimed and registered as lazy proxies; tools not
+// declared appear only after the first load.
+func (s *Source) addDeferred(srv *server) error {
+	var claimed []string
+	for remote := range srv.tools {
+		qualified := srv.qualify(remote)
+		if !s.claimOwnership(srv.name, qualified) {
+			for _, name := range claimed {
+				s.releaseOwnership(name)
+			}
+			return errdefs.Conflictf(
+				"mcp: tool %q is already owned by another attached server",
+				qualified)
+		}
+		claimed = append(claimed, qualified)
+	}
+
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		for _, name := range claimed {
+			s.releaseOwnership(name)
+		}
+		return errdefs.NotAvailablef("mcp: source is closed")
+	}
+	if _, exists := s.servers[srv.name]; exists {
+		s.mu.Unlock()
+		for _, name := range claimed {
+			s.releaseOwnership(name)
+		}
+		return errdefs.Validationf("mcp: server %q is already attached", srv.name)
+	}
+	s.servers[srv.name] = srv
+	s.mu.Unlock()
+
+	if err := s.registerDeclaredProxies(srv); err != nil {
+		s.mu.Lock()
+		if current, ok := s.servers[srv.name]; ok && current == srv {
+			delete(s.servers, srv.name)
+		}
+		s.mu.Unlock()
+		for _, name := range claimed {
+			s.releaseOwnership(name)
+		}
+		return err
+	}
+	return nil
+}
+
+// registerDeclaredProxies creates a LazyTool per declared tool name and
+// registers it so the tool is callable by exact name before the first
+// load. Loaders share the server's singleflight session.
+func (s *Source) registerDeclaredProxies(srv *server) error {
+	for remote, exp := range srv.tools {
+		qualified := srv.qualify(remote)
+		loader := s.deferredLoader(srv, remote)
+		placeholder := message.Definition{
+			Name:        qualified,
+			Description: fmt.Sprintf("deferred MCP tool %s/%s; loads on first use", srv.name, remote),
+			InputSchema: emptySchema,
+		}
+		if srv.dynamicCat != nil {
+			if err := srv.dynamicCat.RegisterProxy(qualified, loader, exp,
+				dynamic.WithPlaceholder(placeholder)); err != nil {
+				return err
+			}
+		} else {
+			proxy := dynamic.NewLazyTool(s.registry, qualified, loader,
+				dynamic.WithPlaceholder(placeholder))
+			s.registry.RegisterWithScope(proxy, srv.scope)
+		}
+		srv.declared[qualified] = struct{}{}
+	}
+	return nil
+}
+
+// deferredLoader connects the server on first use (singleflight),
+// reconciles the registry, and returns the live adapted tool for the
+// declared remote name.
+func (s *Source) deferredLoader(srv *server, remote string) dynamic.Loader {
+	return func(ctx context.Context) (sdktool.Tool, error) {
+		if err := s.ensureSession(ctx, srv); err != nil {
+			return nil, err
+		}
+		if err := s.reconcile(ctx, srv); err != nil {
+			return nil, err
+		}
+		if srv.resources {
+			if err := s.reconcileResources(ctx, srv); err != nil {
+				return nil, err
+			}
+		}
+		qualified := srv.qualify(remote)
+		tool, ok := s.registry.Get(qualified)
+		if !ok {
+			return nil, errdefs.NotAvailablef(
+				"mcp: server %q no longer exposes declared tool %q", srv.name, remote)
+		}
+		if _, isLazy := tool.(*dynamic.LazyTool); isLazy {
+			return nil, errdefs.NotAvailablef(
+				"mcp: server %q did not list declared tool %q", srv.name, remote)
+		}
+		return tool, nil
+	}
+}
+
+// ensureSession connects a deferred server at most once concurrently.
+// The first successful session wins; a failed attempt is retried on the
+// next call.
+func (s *Source) ensureSession(ctx context.Context, srv *server) error {
+	srv.mu.Lock()
+	if srv.session != nil {
+		srv.mu.Unlock()
+		return nil
+	}
+	srv.mu.Unlock()
+
+	_, err, _ := srv.loadGroup.Do(srv.name, func() (any, error) {
+		srv.mu.Lock()
+		if srv.session != nil {
+			srv.mu.Unlock()
+			return nil, nil
+		}
+		srv.mu.Unlock()
+
+		cfg := &serverConfig{
+			scope:       srv.scope,
+			prefix:      srv.prefix,
+			clientName:  srv.clientName,
+			clientVer:   srv.clientVer,
+			clientOpts:  srv.clientOpts,
+			onListError: srv.onListError,
+		}
+		session, err := s.connect(ctx, srv, cfg)
+		if err != nil {
+			return nil, err
+		}
+		srv.mu.Lock()
+		if srv.session == nil {
+			srv.session = session
+		} else {
+			_ = session.Close()
+		}
+		srv.mu.Unlock()
+		return nil, nil
+	})
+	return err
+}
+
+func validateExposureConfig(defaultExposure dynamic.Exposure, tools map[string]dynamic.Exposure) error {
+	if !defaultExposure.Valid() {
+		return errdefs.Validationf(
+			"mcp: server exposure %q is invalid", defaultExposure)
+	}
+	for remote, exp := range tools {
+		if strings.TrimSpace(remote) == "" {
+			return errdefs.Validationf("mcp: tools map has an empty tool name")
+		}
+		if !exp.Valid() {
+			return errdefs.Validationf(
+				"mcp: exposure %q for tool %q is invalid", exp, remote)
+		}
+	}
+	return nil
+}
+
+func qualify(prefix, name string) string {
+	if prefix == "" {
+		return name
+	}
+	return prefix + name
 }
 
 // connect builds the go-sdk client with the reconcile hook wired and
@@ -300,6 +576,7 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 		if _, already := srv.registered[qualified]; already {
 			continue
 		}
+		preOwned := s.ownerIs(srv.name, qualified)
 		if !s.claimOwnership(srv.name, qualified) {
 			for _, name := range claimedNew {
 				s.releaseOwnership(name)
@@ -308,7 +585,9 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 				"mcp: tool %q is already owned by another attached server",
 				qualified)
 		}
-		claimedNew = append(claimedNew, qualified)
+		if !preOwned {
+			claimedNew = append(claimedNew, qualified)
+		}
 	}
 
 	for _, mt := range res.Tools {
@@ -321,6 +600,7 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 			continue
 		}
 		s.registry.RegisterWithScope(newAdaptedTool(srv, qualified, mt), srv.scope)
+		s.applyExposure(srv, qualified)
 	}
 	for previous := range srv.registered {
 		if _, still := fresh[previous]; !still {
@@ -329,6 +609,50 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 		}
 	}
 	srv.registered = fresh
+	return nil
+}
+
+// reconcileResources validates that the server supports resources and
+// registers the two resource-bridge tools. The bridge never shadows a
+// server-side tool with the same name; once registered, the bridge
+// tools are re-registered on refresh so metadata stays current.
+func (s *Source) reconcileResources(ctx context.Context, srv *server) error {
+	session, err := srv.currentSession()
+	if err != nil {
+		return err
+	}
+	if _, err := session.ListResources(ctx, nil); err != nil {
+		return errdefs.NotAvailablef(
+			"mcp: server %q: list resources: %v", srv.name, err)
+	}
+	for _, spec := range resourceToolSpecs(srv) {
+		qualified := srv.qualify(spec.remote)
+
+		srv.mu.Lock()
+		_, isResource := srv.resourceTools[qualified]
+		_, isServerTool := srv.registered[qualified]
+		srv.mu.Unlock()
+		if !isResource {
+			if isServerTool {
+				// The server's own tool with this name wins; the bridge
+				// stays out of the way.
+				continue
+			}
+			if !s.claimOwnership(srv.name, qualified) {
+				return errdefs.Conflictf(
+					"mcp: resource tool %q is already owned by another attached server",
+					qualified)
+			}
+			srv.mu.Lock()
+			srv.resourceTools[qualified] = struct{}{}
+			srv.mu.Unlock()
+		}
+		s.registry.RegisterWithScope(spec.tool, srv.scope)
+		s.applyExposure(srv, qualified)
+		srv.mu.Lock()
+		srv.registered[qualified] = struct{}{}
+		srv.mu.Unlock()
+	}
 	return nil
 }
 
@@ -348,6 +672,57 @@ func (s *Source) releaseOwnership(qualified string) {
 	s.ownerMu.Lock()
 	delete(s.owners, qualified)
 	s.ownerMu.Unlock()
+}
+
+// ownerIs reports whether qualified is currently owned by serverName.
+func (s *Source) ownerIs(serverName, qualified string) bool {
+	s.ownerMu.Lock()
+	defer s.ownerMu.Unlock()
+	return s.owners[qualified] == serverName
+}
+
+// applyExposure records a tool's exposure on the wired dynamic catalog.
+// Per-tool entries win; everything else uses the server-level default.
+func (s *Source) applyExposure(srv *server, qualified string) {
+	if srv.dynamicCat == nil {
+		return
+	}
+	_ = srv.dynamicCat.SetExposure(qualified, s.exposureFor(srv, qualified))
+}
+
+func (s *Source) exposureFor(srv *server, qualified string) dynamic.Exposure {
+	if exp, ok := srv.toolExposure[qualified]; ok {
+		return exp
+	}
+	return srv.exposure
+}
+
+// ApplyExposures records every attached server's exposure metadata on a
+// dynamic catalog. Hosts that wire the catalog after attachment (e.g.
+// through a config source) use this instead of WithDynamicCatalog.
+func (s *Source) ApplyExposures(cat *dynamic.Catalog) error {
+	if cat == nil {
+		return errdefs.Validationf("mcp: ApplyExposures: catalog is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, srv := range s.servers {
+		srv.mu.Lock()
+		names := make([]string, 0, len(srv.registered)+len(srv.declared))
+		for qualified := range srv.registered {
+			names = append(names, qualified)
+		}
+		for qualified := range srv.declared {
+			names = append(names, qualified)
+		}
+		srv.mu.Unlock()
+		for _, qualified := range names {
+			if err := cat.SetExposure(qualified, s.exposureFor(srv, qualified)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // Refresh re-lists every attached server and reconciles the registry.
@@ -370,8 +745,20 @@ func (s *Source) Refresh(ctx context.Context) error {
 
 	var errs []error
 	for _, srv := range attached {
+		if srv.deferred {
+			if err := s.ensureSession(ctx, srv); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+		}
 		if err := s.reconcile(ctx, srv); err != nil {
 			errs = append(errs, err)
+			continue
+		}
+		if srv.resources {
+			if err := s.reconcileResources(ctx, srv); err != nil {
+				errs = append(errs, err)
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -417,8 +804,11 @@ func (s *Source) ToolNames(name string) []string {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	names := make([]string, 0, len(srv.registered))
+	names := make([]string, 0, len(srv.registered)+len(srv.declared))
 	for tool := range srv.registered {
+		names = append(names, tool)
+	}
+	for tool := range srv.declared {
 		names = append(names, tool)
 	}
 	return names
@@ -459,7 +849,12 @@ func (s *Source) unregisterAll(srv *server) {
 		s.registry.Unregister(name)
 		s.releaseOwnership(name)
 	}
+	for name := range srv.declared {
+		s.registry.Unregister(name)
+		s.releaseOwnership(name)
+	}
 	srv.registered = make(map[string]struct{})
+	srv.declared = make(map[string]struct{})
 }
 
 // closeServer clears the session pointer before closing so concurrent

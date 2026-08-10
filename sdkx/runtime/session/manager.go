@@ -39,6 +39,7 @@ type Manager struct {
 	checkpoints       agent.CheckpointStore
 	resume            bool
 	observer          SessionObserver
+	catalogProvider   CatalogProvider
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -98,6 +99,7 @@ func NewManager(
 		checkpoints:       opts.checkpoints,
 		resume:            opts.resume,
 		observer:          opts.observer,
+		catalogProvider:   opts.catalogProvider,
 		entries:           make(map[Key]*managerEntry),
 	}, nil
 }
@@ -152,6 +154,7 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 		key, instance, m.hostFactory, m.router, m.sinkBuffer,
 		m.speculativeEvents, m.speculativeBytes,
 		m.checkpoints, m.resume,
+		m.catalogProvider,
 		func(changed *Session) {
 			m.activityChanged(key, changed)
 		},

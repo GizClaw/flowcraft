@@ -255,6 +255,130 @@ func TestInferenceNode_UnknownToolRejected(t *testing.T) {
 	}
 }
 
+// fakeVisibleCatalog is a minimal stand-in for a catalog whose
+// Definitions are the final model-visible set (the dynamic injection
+// view being one such implementation): it accepts RequiredByName
+// declarations through an optional interface the node does not depend
+// on.
+type fakeVisibleCatalog struct {
+	defs     []message.Definition
+	required []string
+	advances int
+}
+
+func (f *fakeVisibleCatalog) Get(string) (tool.Tool, bool) { return nil, false }
+func (f *fakeVisibleCatalog) Definitions() []message.Definition {
+	return f.defs
+}
+func (f *fakeVisibleCatalog) Require(names ...string) {
+	f.required = append(f.required, names...)
+}
+func (f *fakeVisibleCatalog) AdvanceTurn() { f.advances++ }
+
+func TestInferenceNode_AllTools(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	catalog := &fakeVisibleCatalog{
+		defs: []message.Definition{
+			{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "archive", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Runtime: fake.Runtime(t), Catalog: catalog})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:    ptr(inferencetest.DefaultFakeModel),
+		Tools:    []string{"search"},
+		AllTools: true,
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if len(catalog.required) != 1 || catalog.required[0] != "search" {
+		t.Errorf("RequiredByName = %v, want [search]", catalog.required)
+	}
+	intentTools := fake.LastRequest().Input.Content.Intent.Text.Tools
+	if len(intentTools) != 2 {
+		t.Fatalf("intent tools = %+v, want catalog-defined set", intentTools)
+	}
+	if intentTools[0].Name != "search" || intentTools[1].Name != "archive" {
+		t.Errorf("intent tool names = %v, want [search archive]", intentTools)
+	}
+	if catalog.advances != 1 {
+		t.Errorf("AdvanceTurn calls = %d, want 1 per round", catalog.advances)
+	}
+}
+
+func TestInferenceNode_AllToolsUsesContextOverride(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	override := &fakeVisibleCatalog{
+		defs: []message.Definition{
+			{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "archive", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	// The bound catalog is a plain empty registry; the override on the
+	// execution context must win in all_tools mode.
+	bound := tool.NewRegistry()
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Runtime: fake.Runtime(t),
+		Catalog: bound,
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:    ptr(inferencetest.DefaultFakeModel),
+		Tools:    []string{"search"},
+		AllTools: true,
+	})
+
+	ctx := tool.WithCatalogOnContext(context.Background(), override)
+	board := userBoard()
+	if _, err := g.Execute(ctx,
+		agent.Run{Identity: agent.Identity{AgentID: "test-agent", RunID: "run-1"}},
+		agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	intentTools := fake.LastRequest().Input.Content.Intent.Text.Tools
+	if len(intentTools) != 2 {
+		t.Fatalf("intent tools = %+v, want the context override's set", intentTools)
+	}
+	if len(override.required) != 1 || override.required[0] != "search" {
+		t.Errorf("RequiredByName = %v, want [search]", override.required)
+	}
+	if override.advances != 1 {
+		t.Errorf("AdvanceTurn calls = %d, want 1", override.advances)
+	}
+}
+
+func TestInferenceNode_AllToolsRejectsUnknownName(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	catalog := &fakeVisibleCatalog{
+		defs: []message.Definition{
+			{Name: "search", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Runtime: fake.Runtime(t), Catalog: catalog})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:    ptr(inferencetest.DefaultFakeModel),
+		Tools:    []string{"ghost"},
+		AllTools: true,
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("unknown tool in dynamic mode = %v, want Validation", err)
+	}
+}
+
+func TestInferenceNode_AllToolsRequiresCatalog(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Runtime: fake.Runtime(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:    ptr(inferencetest.DefaultFakeModel),
+		AllTools: true,
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err == nil {
+		t.Fatal("AllTools without a catalog succeeded, want error")
+	}
+}
+
 func TestInferenceNode_RouterPathWhenNoModel(t *testing.T) {
 	fake := &inferencetest.GenerateFake{}
 	runtime := fake.Runtime(t)

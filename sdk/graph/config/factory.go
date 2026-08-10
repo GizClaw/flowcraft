@@ -450,9 +450,19 @@ func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools
 	if model, ok := fields["model"]; ok && !bytes.Equal(bytes.TrimSpace(model), []byte("null")) {
 		modelConfigured = true
 	}
-	tools, ok := fields["tools"]
-	if !ok || bytes.Equal(bytes.TrimSpace(tools), []byte("null")) {
-		return modelConfigured, nil, false, nil
+	tools, hasTools := fields["tools"]
+	allTools := false
+	if rawAll, ok := fields["all_tools"]; ok {
+		if err := json.Unmarshal(rawAll, &allTools); err != nil {
+			return false, nil, false, errdefs.Validationf(
+				"inference config all_tools must be a boolean: %v", err)
+		}
+	}
+	if !hasTools {
+		return modelConfigured, nil, allTools, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(tools), []byte("null")) {
+		return modelConfigured, nil, allTools, nil
 	}
 	var names []string
 	if err := json.Unmarshal(tools, &names); err != nil {
@@ -464,7 +474,7 @@ func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools
 			staticTools = append(staticTools, name)
 		}
 	}
-	return modelConfigured, staticTools, len(names) > 0, nil
+	return modelConfigured, staticTools, len(names) > 0 || allTools, nil
 }
 
 func validateRequiredDeps(required nodeRequirements, deps dependencies) error {
