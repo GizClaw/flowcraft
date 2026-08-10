@@ -35,6 +35,10 @@ func TestEnforcement_LocalRunner(t *testing.T) {
 	if e.DiskCap {
 		t.Error("DiskCap must stay unclaimed (no quota mechanism)")
 	}
+	if e.Socks5 || e.MITM || e.UnixSocketPolicy {
+		t.Errorf("LocalRunner must not claim proxy features, got Socks5=%v MITM=%v UnixSocketPolicy=%v",
+			e.Socks5, e.MITM, e.UnixSocketPolicy)
+	}
 	if e.FilesystemBounds {
 		t.Error("FilesystemBounds is OS-level confinement; LocalRunner must not claim it")
 	}
@@ -81,7 +85,9 @@ func TestEnforcementOf_ConservativeFallback(t *testing.T) {
 func enforcementEqual(a, b sandbox.Enforcement) bool {
 	if a.EnvAllowList != b.EnvAllowList || a.MemoryCap != b.MemoryCap ||
 		a.CPUCap != b.CPUCap || a.DiskCap != b.DiskCap ||
-		a.FilesystemBounds != b.FilesystemBounds {
+		a.FilesystemBounds != b.FilesystemBounds ||
+		a.Socks5 != b.Socks5 || a.MITM != b.MITM ||
+		a.UnixSocketPolicy != b.UnixSocketPolicy {
 		return false
 	}
 	if len(a.NetModes) != len(b.NetModes) {

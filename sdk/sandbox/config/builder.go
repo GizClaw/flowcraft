@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
@@ -155,6 +156,15 @@ func validateEnforcement(
 		return unsupportedPolicy(name,
 			fmt.Sprintf("network mode %q", netModeName(defaults.Net.Mode)))
 	}
+	if strings.HasPrefix(defaults.Net.Proxy, "socks5://") && !enforcement.Socks5 {
+		return unsupportedPolicy(name, "socks5 upstream")
+	}
+	if defaults.Net.MITM != nil && defaults.Net.MITM.Enabled && !enforcement.MITM {
+		return unsupportedPolicy(name, "MITM")
+	}
+	if len(defaults.Net.UnixSockets) > 0 && !enforcement.UnixSocketPolicy {
+		return unsupportedPolicy(name, "unix socket allow-list")
+	}
 	if defaults.Resources.MemoryBytes > 0 && !enforcement.MemoryCap {
 		return unsupportedPolicy(name, "memory cap")
 	}
@@ -196,9 +206,12 @@ func toExecOptions(value Defaults) coresandbox.ExecOptions {
 			Inject: maps.Clone(value.Env.Inject),
 		},
 		Net: coresandbox.NetPolicy{
-			Mode:       toNetMode(value.Net.Mode),
-			AllowHosts: slices.Clone(value.Net.AllowHosts),
-			Proxy:      value.Net.Proxy,
+			Mode:        toNetMode(value.Net.Mode),
+			AllowHosts:  slices.Clone(value.Net.AllowHosts),
+			Rules:       toNetRules(value.Net.Rules),
+			Proxy:       value.Net.Proxy,
+			UnixSockets: slices.Clone(value.Net.UnixSockets),
+			MITM:        toMITMPolicy(value.Net.MITM),
 		},
 		Resources: coresandbox.ResourceLimits{
 			CPUMillicores:  value.Resources.CPUMillicores,
@@ -206,6 +219,33 @@ func toExecOptions(value Defaults) coresandbox.ExecOptions {
 			DiskBytes:      value.Resources.DiskBytes,
 			MaxOutputBytes: value.Resources.MaxOutputBytes,
 		},
+	}
+}
+
+func toNetRules(rules []NetRuleJSON) []coresandbox.NetRule {
+	out := make([]coresandbox.NetRule, 0, len(rules))
+	for _, r := range rules {
+		action := coresandbox.NetAllow
+		if r.Action == "deny" {
+			action = coresandbox.NetDeny
+		}
+		out = append(out, coresandbox.NetRule{
+			Action: action,
+			Host:   r.Host,
+			Port:   r.Port,
+		})
+	}
+	return out
+}
+
+func toMITMPolicy(m *MITMJSON) *coresandbox.MITMPolicy {
+	if m == nil {
+		return nil
+	}
+	return &coresandbox.MITMPolicy{
+		Enabled:       m.Enabled,
+		InspectBodies: m.InspectBodies,
+		MaxBodyBytes:  m.MaxBodyBytes,
 	}
 }
 
@@ -234,6 +274,9 @@ func approvalPredicates(root string, approval *ApprovalConfig) []coresandbox.Pre
 	}
 	if approval.NonDefaultNetwork {
 		predicates = append(predicates, coresandbox.NetNonDefault())
+	}
+	if approval.Interactive {
+		predicates = append(predicates, coresandbox.Interactive())
 	}
 	if len(approval.SensitiveCommands) > 0 {
 		predicates = append(predicates,

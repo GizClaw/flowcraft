@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
@@ -19,6 +20,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
 	"github.com/GizClaw/flowcraft/sdkx/sandbox/bwrap/internal/bridge"
 )
 
@@ -39,6 +41,8 @@ type Runner struct {
 	writablePaths    []string
 	defaultMaxOutput int64
 	processes        sandbox.ProcessManager
+	decision         func(httpkit.ProxyDecision)
+	hooks            mitm.ProxyHooks
 }
 
 // Enforcement reports the dimensions bwrap plus the shared
@@ -54,6 +58,9 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 			sandbox.NetAllowList,
 			sandbox.NetProxy,
 		},
+		Socks5:           true,
+		MITM:             true,
+		UnixSocketPolicy: true,
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
@@ -122,6 +129,8 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		extraFlags:       append([]string(nil), cfg.extra...),
 		writablePaths:    writable,
 		defaultMaxOutput: defaultMaxOutputBytes,
+		decision:         cfg.decision,
+		hooks:            cfg.hooks,
 	}
 	runner.processes = sandbox.NewProcessRegistry(runner.spawnProcess)
 	return runner, nil
@@ -155,12 +164,36 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
 			Mode:       opts.Net.Mode,
 			AllowHosts: opts.Net.AllowHosts,
+			Rules:      opts.Net.Rules,
 			Upstream:   opts.Net.Proxy,
+			MITM:       opts.Net.MITM,
+			OnDecision: r.decision,
+			Hooks:      r.hooks,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
 		}
 		defer func() { _ = proxy.Close() }()
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if opts.Net.MITM != nil && opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"bwrap: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+		}
+		defer bundleCleanup()
+		if opts.Env.Inject == nil {
+			opts.Env.Inject = make(map[string]string)
+		} else {
+			opts.Env.Inject = maps.Clone(opts.Env.Inject)
+		}
+		opts.Env.Inject["SSL_CERT_FILE"] = bundlePath
 	}
 
 	flags, err := buildFlags(opts, os.Environ())
@@ -169,6 +202,16 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	}
 	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
 	fsFlags = append(fsFlags, netIsolationFlags(opts.Net.Mode)...)
+	if bundlePath != "" {
+		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
+	}
+	for _, path := range opts.Net.UnixSockets {
+		if _, statErr := os.Stat(path); statErr != nil {
+			return nil, errdefs.NotFoundf(
+				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
+		}
+		fsFlags = append(fsFlags, "--bind", path, path)
+	}
 
 	// The post-"--" argv. For NetAllowList / NetProxy the command is
 	// the in-netns bridge, which then runs the real command as its
@@ -320,10 +363,39 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
 			Mode:       spec.Opts.Net.Mode,
 			AllowHosts: spec.Opts.Net.AllowHosts,
+			Rules:      spec.Opts.Net.Rules,
 			Upstream:   spec.Opts.Net.Proxy,
+			MITM:       spec.Opts.Net.MITM,
+			OnDecision: r.decision,
+			Hooks:      r.hooks,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
+		}
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if spec.Opts.Net.MITM != nil && spec.Opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"bwrap: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+		}
+		if spec.Opts.Env.Inject == nil {
+			spec.Opts.Env.Inject = make(map[string]string)
+		} else {
+			spec.Opts.Env.Inject = maps.Clone(spec.Opts.Env.Inject)
+		}
+		spec.Opts.Env.Inject["SSL_CERT_FILE"] = bundlePath
+	}
+	abortBundle := func() {
+		if bundleCleanup != nil {
+			bundleCleanup()
 		}
 	}
 
@@ -332,10 +404,25 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 		if proxy != nil {
 			_ = proxy.Close()
 		}
+		abortBundle()
 		return nil, err
 	}
 	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
 	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
+	if bundlePath != "" {
+		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
+	}
+	for _, path := range spec.Opts.Net.UnixSockets {
+		if _, statErr := os.Stat(path); statErr != nil {
+			if proxy != nil {
+				_ = proxy.Close()
+			}
+			abortBundle()
+			return nil, errdefs.NotFoundf(
+				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
+		}
+		fsFlags = append(fsFlags, "--bind", path, path)
+	}
 
 	var command []string
 	if proxyMode {
@@ -344,6 +431,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 			if proxy != nil {
 				_ = proxy.Close()
 			}
+			abortBundle()
 			return nil, errdefs.Internalf(
 				"bwrap: resolve host binary for in-netns bridge: %v", err)
 		}
@@ -381,10 +469,14 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 		if proxy != nil {
 			_ = proxy.Close()
 		}
+		abortBundle()
 		return nil, err
 	}
 	if proxy != nil {
-		cleanup := &sessionCleanup{cleanup: func() { _ = proxy.Close() }}
+		cleanup := &sessionCleanup{cleanup: func() {
+			_ = proxy.Close()
+			abortBundle()
+		}}
 		go func() {
 			_, _ = proc.Wait(context.Background())
 			cleanup.once.Do(cleanup.cleanup)

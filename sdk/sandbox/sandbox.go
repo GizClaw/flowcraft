@@ -3,6 +3,9 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -93,9 +96,115 @@ const (
 // errdefs.NotAvailable until a sandboxed backend with kernel-level
 // enforcement is wired up.
 type NetPolicy struct {
-	Mode       NetMode
-	AllowHosts []string
-	Proxy      string
+	Mode        NetMode
+	AllowHosts  []string    // deprecated: compiled as trailing allow rules
+	Rules       []NetRule   // explicit rules; deny wins over allow
+	Proxy       string      // http://host:port or socks5://[user:pass@]host:port
+	UnixSockets []string    // allowed host unix socket paths (backend-gated)
+	MITM        *MITMPolicy // non-nil + Enabled enables HTTPS content hooks
+}
+
+// NetAction is the verdict of one network rule. Rules express an
+// already-decided policy; they never trigger approval.
+type NetAction int
+
+const (
+	// NetDeny blocks the destination.
+	NetDeny NetAction = iota
+	// NetAllow permits the destination.
+	NetAllow
+)
+
+func (a NetAction) String() string {
+	switch a {
+	case NetDeny:
+		return "deny"
+	case NetAllow:
+		return "allow"
+	default:
+		return "unknown"
+	}
+}
+
+// NetRule is one host/port-level allow or deny rule.
+//
+// Host forms:
+//
+//   - "example.com": the bare domain AND every subdomain (legacy
+//     AllowHosts semantics; this is domain-and-descendants, not
+//     exact-only).
+//   - "*.example.com": subdomains only (any depth), never the bare
+//     domain.
+//   - "1.2.3.4": exact IP literal.
+//   - "10.0.0.0/8": CIDR prefix.
+//
+// Unicode hostnames are normalized to punycode when the policy is
+// compiled (see sdkx/internal/httpkit). Port 0 matches any port;
+// otherwise the request port (URL explicit port or protocol default,
+// CONNECT target port) must match exactly.
+type NetRule struct {
+	Action NetAction
+	Host   string
+	Port   int
+}
+
+// MITMPolicy enables TLS termination and content hooks for CONNECT
+// traffic. It is opt-in: a nil policy or Enabled=false leaves CONNECT
+// tunnels untouched.
+type MITMPolicy struct {
+	Enabled       bool
+	InspectBodies bool  // buffer request/response bodies for hooks (bounded)
+	MaxBodyBytes  int64 // body buffer cap; 0 uses the engine default (64 KiB)
+}
+
+// Validate checks NetPolicy's cross-backend invariants. Backend
+// capability gating (which modes / features a runner enforces) is
+// separate and happens via Enforcement.
+func (p NetPolicy) Validate() error {
+	if p.Mode < NetDefault || p.Mode > NetProxy {
+		return errdefs.Validationf("sandbox: unknown net mode %d", int(p.Mode))
+	}
+	if p.Proxy != "" {
+		u, err := url.Parse(p.Proxy)
+		if err != nil {
+			return errdefs.Validationf("sandbox: invalid proxy URL %q: %v", p.Proxy, err)
+		}
+		if u.Scheme != "http" && u.Scheme != "socks5" {
+			return errdefs.Validationf(
+				"sandbox: proxy scheme %q must be http or socks5", u.Scheme)
+		}
+		if u.Host == "" {
+			return errdefs.Validationf("sandbox: proxy URL %q has no host", p.Proxy)
+		}
+		if u.User != nil {
+			if _, hasPassword := u.User.Password(); hasPassword && u.User.Username() == "" {
+				return errdefs.Validationf(
+					"sandbox: proxy URL %q has a password but no username", p.Proxy)
+			}
+		}
+	}
+	for i, rule := range p.Rules {
+		if rule.Action != NetDeny && rule.Action != NetAllow {
+			return errdefs.Validationf("sandbox: net rule %d has invalid action %d", i, int(rule.Action))
+		}
+		if strings.TrimSpace(rule.Host) == "" {
+			return errdefs.Validationf("sandbox: net rule %d has an empty host", i)
+		}
+		if rule.Port < 0 || rule.Port > 65535 {
+			return errdefs.Validationf("sandbox: net rule %d port %d out of range", i, rule.Port)
+		}
+	}
+	for _, path := range p.UnixSockets {
+		if !filepath.IsAbs(path) {
+			return errdefs.Validationf("sandbox: unix socket path %q must be absolute", path)
+		}
+	}
+	if p.MITM != nil {
+		if p.MITM.MaxBodyBytes < 0 {
+			return errdefs.Validationf("sandbox: mitm.max_body_bytes must be non-negative")
+		}
+	}
+	return nil
 }
 
 // ResourceLimits caps how much the child process may consume.

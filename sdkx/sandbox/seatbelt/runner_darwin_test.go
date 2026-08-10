@@ -96,6 +96,9 @@ func TestRunner_UnsupportedPolicies(t *testing.T) {
 		"unknown-net-mode": {
 			Net: sandbox.NetPolicy{Mode: sandbox.NetMode(99)},
 		},
+		"unix sockets": {
+			Net: sandbox.NetPolicy{UnixSockets: []string{"/tmp/test.sock"}},
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := runner.Exec(context.Background(), "/usr/bin/true", nil, opts)
@@ -240,6 +243,62 @@ func TestRunner_ProcessManager_PolicyRejected(t *testing.T) {
 	})
 	if !errdefs.IsNotAvailable(err) {
 		t.Fatalf("disk-limit Start = %v, want NotAvailable", err)
+	}
+}
+
+func TestRunner_Enforcement_ProxyFeatures(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	e := runner.Enforcement()
+	if !e.Socks5 || !e.MITM {
+		t.Errorf("seatbelt proxy supports socks5 + MITM host-side, got Socks5=%v MITM=%v", e.Socks5, e.MITM)
+	}
+	if e.UnixSocketPolicy {
+		t.Error("seatbelt must not claim unix socket policy (SBPL does not confine unix sockets)")
+	}
+}
+
+func TestRunner_ProcessManager_UnixSocketsNotAvailable(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/usr/bin/true"},
+		Opts: sandbox.ExecOptions{Net: sandbox.NetPolicy{
+			UnixSockets: []string{"/tmp/test.sock"},
+		}},
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unix socket policy Start = %v, want NotAvailable", err)
+	}
+}
+
+func TestRunner_ProcessManager_MITMStart(t *testing.T) {
+	runner, err := New(t.TempDir())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/usr/bin/true"},
+		Opts: sandbox.ExecOptions{Net: sandbox.NetPolicy{
+			Mode:       sandbox.NetAllowList,
+			AllowHosts: []string{"example.com"},
+			MITM:       &sandbox.MITMPolicy{Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Start with MITM: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+	exit, err := proc.Wait(context.Background())
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want 0", exit)
 	}
 }
 

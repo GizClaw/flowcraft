@@ -15,6 +15,14 @@ package sandbox
 //   - NetModes: the set of NetMode values the backend can enforce at
 //     the OS level. NetDefault is never listed — it is the absence of
 //     a policy, not an enforceable posture.
+//   - Socks5: the backend's host-side proxy can dial a socks5://
+//     upstream (authentication included).
+//   - MITM: the backend can terminate TLS for configured CONNECT
+//     hosts and inject the temporary CA into the child environment.
+//   - UnixSocketPolicy: the backend can confine unix socket egress to
+//     an explicit allow-list. For bwrap this is namespace-visibility
+//     based (masked dirs deny, listed paths are bind-mounted in), so
+//     the claim is strongest in the isolated net modes.
 //   - MemoryCap: MemoryBytes is enforced (by whatever mechanism the
 //     backend has — cgroup, rlimit, or a sampling watcher) rather
 //     than rejected with NotAvailable.
@@ -28,6 +36,9 @@ package sandbox
 type Enforcement struct {
 	EnvAllowList     bool
 	NetModes         []NetMode
+	Socks5           bool
+	MITM             bool
+	UnixSocketPolicy bool
 	MemoryCap        bool
 	CPUCap           bool
 	DiskCap          bool

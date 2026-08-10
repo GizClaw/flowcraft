@@ -241,6 +241,21 @@ func CommandPatterns(patterns ...string) Predicate {
 	})
 }
 
+// Interactive returns a predicate that matches interactive session
+// starts (ProcessSpec.TTY == true). Ordinary Exec calls never match.
+// Because an interactive session is an all-or-nothing command channel,
+// deployments that want a human in the loop for persistent shells
+// should install this predicate; combined with a nil approver it
+// fail-closes into "interactive sessions are forbidden".
+func Interactive() Predicate {
+	return PredicateFunc(func(req ExecRequest) (string, bool) {
+		if req.TTY {
+			return "interactive TTY session start", true
+		}
+		return "", false
+	})
+}
+
 // NetNonDefault returns a predicate that matches any call requesting a
 // network posture other than NetDefault.
 func NetNonDefault() Predicate {

@@ -68,6 +68,39 @@ group-wide memory and CPU-time caps with a sampling watcher and
 kills the whole process group on overflow. `DiskBytes` still needs
 a quota-capable backend and is rejected with `NotAvailable`.
 
+### Rules, SOCKS5, MITM, and unix sockets
+
+`NetPolicy` carries three optional refinements on top of `Mode` /
+`AllowHosts` / `Proxy`:
+
+- `Rules` are explicit host/port allow or deny rules. Host forms are
+  `example.com` (the domain and all subdomains), `*.example.com`
+  (subdomains only), `1.2.3.4`, and `10.0.0.0/8`. Deny rules are
+  evaluated first across the whole set and always win; `AllowHosts`
+  is compiled as trailing allow rules. When IP/CIDR rules exist the
+  proxy resolves hostnames locally and pins the dial to a validated
+  IP, so neither the upstream nor DNS rebinding can bypass them.
+- `Proxy` accepts `http://host:port` and `socks5://[user:pass@]
+  host:port`. SOCKS5 conversion happens host-side; the child still
+  speaks the plain HTTP proxy protocol to the enforcement proxy.
+  HTTP upstreams now also receive `Proxy-Authorization` on CONNECT.
+- `MITM` (opt-in) terminates TLS for CONNECT tunnels: the proxy signs
+  per-host leaf certificates from a temporary in-memory CA, runs
+  hooks (`OnConnect` / `OnRequest` / `OnResponse`), and injects the CA
+  into the child via `SSL_CERT_FILE` (bundle bind-mounted for bwrap,
+  host path for seatbelt). MITM v1 is HTTP/1.1 only — h2-only clients
+  are not intercepted.
+- `UnixSockets` is an allow-list of host unix socket paths. bwrap
+  bind-mounts only the listed paths (missing paths fail `Start`
+  loudly); seatbelt rejects any non-empty list with `NotAvailable`.
+  The "default deny" for bwrap is namespace-visibility based: masked
+  directories (`/tmp`, and `/run` in isolated net modes) hide
+  everything else, while the host root remains read-only visible.
+
+All features are gated by `Enforcement` (`Socks5`, `MITM`,
+`UnixSocketPolicy`); the config builder rejects a policy the backend
+cannot enforce with `NotAvailable`, never by silently downgrading.
+
 ### Enforcement
 
 `EnforcementOf(r)` returns an `Enforcement` struct describing what
@@ -200,6 +233,12 @@ capability with the same semantics as `Exec`:
 - `AllowCommands` gates `Argv[0]`; note that it cannot police input
   typed inside an interactive shell afterwards — an approved
   interactive session is an all-or-nothing command channel.
+
+In sandbox config, `approval.interactive: true` installs the
+`Interactive()` predicate, so every TTY session start crosses the
+approver before spawning. With no approver configured the chain fails
+closed, which is the recommended way to forbid interactive sessions
+entirely.
 
 `LocalRunner` (pipe or pty), `seatbelt`, and `bwrap` implement
 `ProcessManager`; the sandboxed backends run the session inside the

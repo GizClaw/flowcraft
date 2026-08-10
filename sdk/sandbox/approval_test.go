@@ -301,3 +301,16 @@ func TestWithApproval_DenyErrorMentionsReason(t *testing.T) {
 		t.Fatalf("denial error should surface the reason, got: %v", err)
 	}
 }
+
+func TestInteractivePredicate(t *testing.T) {
+	p := sandbox.Interactive()
+	if _, matched := p.Match(sandbox.ExecRequest{Command: "sh", TTY: true}); !matched {
+		t.Fatal("TTY session start must match Interactive")
+	}
+	if _, matched := p.Match(sandbox.ExecRequest{Command: "sh"}); matched {
+		t.Fatal("plain Exec must not match Interactive")
+	}
+	if _, matched := p.Match(sandbox.ExecRequest{Command: "sh", TTY: false}); matched {
+		t.Fatal("pipe session must not match Interactive")
+	}
+}

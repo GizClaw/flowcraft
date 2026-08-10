@@ -142,4 +142,15 @@
 // for NetAllowList / NetProxy, with the host proxy owned by the
 // session). Stdio is either a pty (TTY: true) or tagged pipes, with
 // the seq-cursor replay contract defined in sdk/sandbox.
+//
+// # Proxy enhancements
+//
+// The host-side enforcement proxy supports rule-based allow/deny,
+// socks5:// upstreams, MITM (TLS termination + hooks) with a merged
+// CA bundle ro-bound into the sandbox and injected via SSL_CERT_FILE,
+// and per-decision audit callbacks. UnixSockets entries are
+// bind-mounted into the sandbox (they must exist at Start); paths in
+// masked directories (/tmp, /run in isolated net modes) are denied by
+// absence. The bridge protocol is unchanged: the child always speaks
+// plain HTTP proxy to the host proxy.
 package bwrap

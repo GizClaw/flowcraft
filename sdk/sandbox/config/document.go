@@ -71,9 +71,27 @@ type EnvDefaults struct {
 
 // NetDefaults configures outbound network policy.
 type NetDefaults struct {
-	Mode       string   `json:"mode,omitempty"`
-	AllowHosts []string `json:"allow_hosts,omitempty"`
-	Proxy      string   `json:"proxy,omitempty"`
+	Mode        string        `json:"mode,omitempty"`
+	AllowHosts  []string      `json:"allow_hosts,omitempty"`
+	Rules       []NetRuleJSON `json:"rules,omitempty"`
+	Proxy       string        `json:"proxy,omitempty"`
+	UnixSockets []string      `json:"unix_sockets,omitempty"`
+	MITM        *MITMJSON     `json:"mitm,omitempty"`
+}
+
+// NetRuleJSON is the wire form of sandbox.NetRule. Action is "allow"
+// or "deny"; port 0 means any port.
+type NetRuleJSON struct {
+	Action string `json:"action"`
+	Host   string `json:"host"`
+	Port   int    `json:"port,omitempty"`
+}
+
+// MITMJSON is the wire form of sandbox.MITMPolicy.
+type MITMJSON struct {
+	Enabled       bool  `json:"enabled,omitempty"`
+	InspectBodies bool  `json:"inspect_bodies,omitempty"`
+	MaxBodyBytes  int64 `json:"max_body_bytes,omitempty"`
 }
 
 // ResourceDefaults configures process resource limits.
@@ -88,6 +106,7 @@ type ResourceDefaults struct {
 type ApprovalConfig struct {
 	OutsideWorkDir    bool     `json:"outside_workdir,omitempty"`
 	NonDefaultNetwork bool     `json:"non_default_network,omitempty"`
+	Interactive       bool     `json:"interactive,omitempty"`
 	SensitiveCommands []string `json:"sensitive_commands,omitempty"`
 }
 
@@ -164,14 +183,15 @@ func (e SandboxEntry) validate() error {
 func (n NetDefaults) validate() error {
 	switch n.Mode {
 	case "", NetModeDefault, NetModeDenyAll:
-		if len(n.AllowHosts) != 0 || n.Proxy != "" {
+		if len(n.AllowHosts) != 0 || len(n.Rules) != 0 || n.Proxy != "" ||
+			len(n.UnixSockets) != 0 || n.MITM != nil {
 			return fmt.Errorf(
-				"defaults.net mode %q cannot set allow_hosts or proxy",
+				"defaults.net mode %q cannot set allow_hosts, rules, proxy, unix_sockets, or mitm",
 				defaultNetMode(n.Mode))
 		}
 	case NetModeAllowList:
-		if len(n.AllowHosts) == 0 {
-			return fmt.Errorf("defaults.net allow_list requires allow_hosts")
+		if len(n.AllowHosts) == 0 && len(n.Rules) == 0 {
+			return fmt.Errorf("defaults.net allow_list requires allow_hosts or rules")
 		}
 		if n.Proxy != "" {
 			return fmt.Errorf("defaults.net allow_list cannot set proxy")
@@ -191,7 +211,14 @@ func (n NetDefaults) validate() error {
 			return fmt.Errorf("defaults.net.allow_hosts[%d] is empty", i)
 		}
 	}
-	return nil
+	for i, rule := range n.Rules {
+		if rule.Action != "allow" && rule.Action != "deny" {
+			return fmt.Errorf("defaults.net.rules[%d].action must be \"allow\" or \"deny\"", i)
+		}
+	}
+	// Reuse the core policy validation for the new fields (proxy
+	// scheme, rule actions/ports, unix socket paths, MITM caps).
+	return toExecOptions(Defaults{Net: n}).Net.Validate()
 }
 
 func defaultNetMode(mode string) string {
@@ -223,7 +250,8 @@ func (r ResourceDefaults) validate(timeout time.Duration) error {
 
 func (a *ApprovalConfig) hasPredicates() bool {
 	return a != nil &&
-		(a.OutsideWorkDir || a.NonDefaultNetwork || len(a.SensitiveCommands) > 0)
+		(a.OutsideWorkDir || a.NonDefaultNetwork || a.Interactive ||
+			len(a.SensitiveCommands) > 0)
 }
 
 // Parse strictly decodes and validates exactly one document. YAML and

@@ -1,5 +1,10 @@
 package seatbelt
 
+import (
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
+)
+
 // RunnerOption configures a Runner at construction time.
 type RunnerOption func(*runnerConfig)
 
@@ -9,6 +14,8 @@ type RunnerOption func(*runnerConfig)
 type runnerConfig struct {
 	binFrom  string   // raw value supplied to WithBinary, "" if defaulted
 	writable []string // extra writable paths, resolved at construction
+	decision func(httpkit.ProxyDecision)
+	hooks    mitm.ProxyHooks
 }
 
 // WithBinary overrides the sandbox-exec binary path. By default the
@@ -32,5 +39,21 @@ func WithBinary(path string) RunnerOption {
 func WithWritablePaths(paths ...string) RunnerOption {
 	return func(c *runnerConfig) {
 		c.writable = append(c.writable, paths...)
+	}
+}
+
+// WithProxyDecision installs the per-decision audit callback used by
+// the host-side enforcement proxy. Keep it fast and non-throwing.
+func WithProxyDecision(fn func(httpkit.ProxyDecision)) RunnerOption {
+	return func(c *runnerConfig) {
+		c.decision = fn
+	}
+}
+
+// WithProxyHooks installs MITM observation/blocking hooks. They only
+// fire when the sandbox policy enables MITM.
+func WithProxyHooks(h mitm.ProxyHooks) RunnerOption {
+	return func(c *runnerConfig) {
+		c.hooks = h
 	}
 }

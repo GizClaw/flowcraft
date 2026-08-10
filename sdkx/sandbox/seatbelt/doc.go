@@ -83,4 +83,12 @@
 // proxy for NetAllowList / NetProxy, which lives as long as the
 // session). Stdio is either a pty (TTY: true) or tagged pipes, with
 // the seq-cursor replay contract defined in sdk/sandbox.
+//
+// # Proxy enhancements
+//
+// The host-side enforcement proxy supports rule-based allow/deny,
+// socks5:// upstreams, MITM (TLS termination + hooks) with
+// SSL_CERT_FILE injection, and per-decision audit callbacks. Unix
+// socket allow-lists are not enforceable under SBPL, so any non-empty
+// UnixSockets policy is rejected with errdefs.NotAvailable.
 package seatbelt
