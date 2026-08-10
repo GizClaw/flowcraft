@@ -578,6 +578,40 @@ func TestFactoryInferenceDependencyScanPreservesBoardReferences(t *testing.T) {
 	}
 }
 
+func TestFactoryInferenceAllToolsRequiresToolDep(t *testing.T) {
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
+		Deps: map[string]any{
+			DepInference: &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
+		},
+		Settings: inlineSettings(validDefinition("inference", map[string]any{
+			"model": map[string]any{
+				"id": map[string]any{"provider": "fake", "name": "model"},
+			},
+			"all_tools": true,
+		})),
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("all_tools without tool dep = %v, want NotFound", err)
+	}
+}
+
+func TestFactoryInferenceRejectsNonBooleanAllTools(t *testing.T) {
+	_, err := NewFactory().New(context.Background(), sdkconfig.Input{
+		Deps: map[string]any{
+			DepInference: &inferenceconfig.Assembly{Runtime: &inference.Runtime{}},
+		},
+		Settings: inlineSettings(validDefinition("inference", map[string]any{
+			"model": map[string]any{
+				"id": map[string]any{"provider": "fake", "name": "model"},
+			},
+			"all_tools": "yes",
+		})),
+	})
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("non-boolean all_tools = %v, want Validation", err)
+	}
+}
+
 func TestFactoryRejectsIncompleteAssemblies(t *testing.T) {
 	for name, deps := range map[string]map[string]any{
 		"inference runtime": {

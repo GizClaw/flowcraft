@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
+	"github.com/GizClaw/flowcraft/sdkx/tool/dynamic"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -65,6 +66,20 @@ type ServerSpec struct {
 	// Prefix overrides the default "<name>__" namespace. An explicit
 	// empty string registers tools under their bare server-side names.
 	Prefix *string `json:"prefix,omitempty"`
+
+	// Defer attaches without connecting: no child process and no
+	// tools/list until the first load. Declared tools in Tools are
+	// registered as lazy proxies immediately.
+	Defer bool `json:"defer,omitempty"`
+	// Exposure is the server-level exposure for every tool it
+	// contributes; per-tool entries in Tools override it. The default is
+	// "deferred" so MCP tools reach the model through tool_search.
+	Exposure dynamic.Exposure `json:"exposure,omitempty"`
+	// Tools maps server-side tool names to exposure overrides.
+	Tools map[string]dynamic.Exposure `json:"tools,omitempty"`
+	// Resources bridges the server's MCP resources into two registry
+	// tools (<prefix>list_resources / <prefix>read_resource).
+	Resources bool `json:"resources,omitempty"`
 }
 
 // Transport constants for ServerSpec.Transport.
@@ -176,6 +191,23 @@ func (s ServerSpec) validate(index int) error {
 			"mcp: servers[%d] (%s): unknown transport %q (want %q or %q)",
 			index, s.Name, s.Transport, TransportStdio, TransportHTTP)
 	}
+	if s.Exposure != "" && !s.Exposure.Valid() {
+		return errdefs.Validationf(
+			"mcp: servers[%d] (%s): exposure %q is not a valid exposure",
+			index, s.Name, s.Exposure)
+	}
+	for toolName, exp := range s.Tools {
+		if strings.TrimSpace(toolName) == "" {
+			return errdefs.Validationf(
+				"mcp: servers[%d] (%s): tools map has an empty tool name",
+				index, s.Name)
+		}
+		if !exp.Valid() {
+			return errdefs.Validationf(
+				"mcp: servers[%d] (%s): tools[%s]: exposure %q is not a valid exposure",
+				index, s.Name, toolName, exp)
+		}
+	}
 	return nil
 }
 
@@ -200,6 +232,22 @@ func (s ServerSpec) options() []ServerOption {
 	}
 	if s.Prefix != nil {
 		opts = append(opts, WithPrefix(*s.Prefix))
+	}
+	if s.Defer {
+		opts = append(opts, WithDeferred(true))
+	}
+	if s.Exposure != "" {
+		opts = append(opts, WithExposure(s.Exposure))
+	}
+	if len(s.Tools) > 0 {
+		tools := make(map[string]dynamic.Exposure, len(s.Tools))
+		for name, exp := range s.Tools {
+			tools[name] = exp
+		}
+		opts = append(opts, WithTools(tools))
+	}
+	if s.Resources {
+		opts = append(opts, WithResources(true))
 	}
 	return opts
 }

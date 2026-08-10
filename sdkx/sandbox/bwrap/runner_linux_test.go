@@ -518,25 +518,9 @@ func TestRunner_ProcessManager_UnixSocketBindFlags(t *testing.T) {
 	}
 	defer func() { _ = proc.Close() }()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var sb strings.Builder
-	var seq int64
-	for {
-		out, err := proc.Read(ctx, seq, 4096)
-		if err != nil {
-			t.Fatalf("Read: %v", err)
-		}
-		for _, ch := range out.Chunks {
-			sb.Write(ch.Data)
-		}
-		seq = out.NextSeq
-		if out.EOF {
-			break
-		}
-	}
-	if !strings.Contains(sb.String(), "ARG:--bind\nARG:"+sock+"\n") {
-		t.Fatalf("unix socket bind not emitted: %q", sb.String())
+	sb := drainProcessStdout(t, proc)
+	if !strings.Contains(sb, "ARG:--bind\nARG:"+sock+"\n") {
+		t.Fatalf("unix socket bind not emitted: %q", sb)
 	}
 }
 
@@ -590,6 +574,19 @@ func TestRunner_ProcessManager_MITMBundleInjected(t *testing.T) {
 	}
 	defer func() { _ = proc.Close() }()
 
+	sb := drainProcessStdout(t, proc)
+	if !strings.Contains(sb, "ARG:SSL_CERT_FILE") || !strings.Contains(sb, "ARG:--ro-bind") {
+		t.Fatalf("MITM CA bundle env/bind missing: %q", sb)
+	}
+}
+
+// drainProcessStdout reads a process to EOF and returns only its stdout
+// bytes. The fake bwrap prints ARG: lines on stdout and the command
+// name on stderr; Process.Read merges the two streams into one chunk
+// sequence with no ordering guarantee between them, so argv-shape
+// assertions must look at stdout alone to be deterministic.
+func drainProcessStdout(t *testing.T, proc sandbox.Process) string {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var sb strings.Builder
@@ -600,14 +597,14 @@ func TestRunner_ProcessManager_MITMBundleInjected(t *testing.T) {
 			t.Fatalf("Read: %v", err)
 		}
 		for _, ch := range out.Chunks {
-			sb.Write(ch.Data)
+			if ch.Stream == sandbox.ProcessStreamStdout {
+				sb.Write(ch.Data)
+			}
 		}
 		seq = out.NextSeq
 		if out.EOF {
 			break
 		}
 	}
-	if !strings.Contains(sb.String(), "ARG:SSL_CERT_FILE") || !strings.Contains(sb.String(), "ARG:--ro-bind") {
-		t.Fatalf("MITM CA bundle env/bind missing: %q", sb.String())
-	}
+	return sb.String()
 }

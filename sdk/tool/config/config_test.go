@@ -276,6 +276,46 @@ func TestBuild_FailFast(t *testing.T) {
 			tools:   []string{"x"},
 			wantErr: "takes no spec",
 		},
+		{
+			name: "resultlimit zero max_chars",
+			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
+				{Kind: "resultlimit", Spec: specJSON(t, `{"max_chars":0}`)},
+			}},
+			tools:   []string{"x"},
+			wantErr: "max_chars",
+		},
+		{
+			name: "resultlimit unknown spec field",
+			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
+				{Kind: "resultlimit", Spec: specJSON(t, `{"max":10}`)},
+			}},
+			tools:   []string{"x"},
+			wantErr: "max",
+		},
+		{
+			name: "redact empty rules",
+			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
+				{Kind: "redact", Spec: specJSON(t, `{"rules":[]}`)},
+			}},
+			tools:   []string{"x"},
+			wantErr: "at least one",
+		},
+		{
+			name: "redact invalid regex",
+			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
+				{Kind: "redact", Spec: specJSON(t, `{"rules":[{"pattern":"("}]}`)},
+			}},
+			tools:   []string{"x"},
+			wantErr: "invalid pattern",
+		},
+		{
+			name: "redact unknown spec field",
+			doc: config.Document{Version: "v1", Middlewares: []config.MiddlewareEntry{
+				{Kind: "redact", Spec: specJSON(t, `{"patterns":["x"]}`)},
+			}},
+			tools:   []string{"x"},
+			wantErr: "patterns",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -401,6 +441,89 @@ func TestTimeoutSpec_RejectsNumericDuration(t *testing.T) {
 	}}
 	if _, err := builder.Build(context.Background(), doc); err == nil {
 		t.Error("numeric duration should be rejected; units belong in the file")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resultlimit / redact kinds
+// ---------------------------------------------------------------------------
+
+func longEchoTool(name string, n int) tool.Tool {
+	return tool.FuncTool(message.Definition{Name: name},
+		func(_ context.Context, _ string) (string, error) {
+			return strings.Repeat("x", n), nil
+		})
+}
+
+func TestBuild_ResultLimitTruncates(t *testing.T) {
+	builder := config.NewBuilder(config.Deps{})
+	builder.RegisterBuiltin(longEchoTool("long", 500))
+	doc, err := config.Parse([]byte(`
+version: v1
+sources:
+  - kind: builtin
+    spec: {tools: [long]}
+middlewares:
+  - kind: resultlimit
+    spec: {max_chars: 64, marker: "[cut]"}
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	assembly, err := builder.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = assembly.Close() })
+	res := assembly.Executor.Execute(context.Background(), call("long"))
+	if res.IsError {
+		t.Fatalf("unexpected error result: %q", res.Content)
+	}
+	if len([]rune(res.Content)) != 64 {
+		t.Errorf("content length = %d, want 64", len([]rune(res.Content)))
+	}
+	if !strings.HasSuffix(res.Content, "[cut]") {
+		t.Errorf("content %q does not end with configured marker", res.Content)
+	}
+}
+
+func TestBuild_RedactAppliesToCallAndResult(t *testing.T) {
+	builder := config.NewBuilder(config.Deps{})
+	builder.RegisterBuiltin(tool.FuncTool(message.Definition{Name: "secret"},
+		func(_ context.Context, args string) (string, error) {
+			return "token=abc123 args=" + args, nil
+		}))
+	doc, err := config.Parse([]byte(`
+version: v1
+sources:
+  - kind: builtin
+    spec: {tools: [secret]}
+middlewares:
+  - kind: redact
+    spec:
+      rules:
+        - pattern: "abc123"
+          replacement: "[REDACTED]"
+`))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	assembly, err := builder.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = assembly.Close() })
+	res := assembly.Executor.Execute(context.Background(), message.Call{
+		ID: "c1", Name: "secret", Arguments: json.RawMessage(`{"token":"abc123"}`),
+	})
+	if res.IsError {
+		t.Fatalf("unexpected error result: %q", res.Content)
+	}
+	if strings.Contains(res.Content, "abc123") {
+		t.Errorf("content still contains the secret: %q", res.Content)
+	}
+	if !strings.Contains(res.Content, "[REDACTED]") || !strings.Contains(res.Content, "args=") {
+		t.Errorf("content = %q, want redacted marker plus untouched argument echo", res.Content)
 	}
 }
 

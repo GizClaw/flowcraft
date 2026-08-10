@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"time"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
@@ -22,6 +23,8 @@ const (
 	KindRateLimit   = "ratelimit"
 	KindApproval    = "approval"
 	KindAudit       = "audit"
+	KindResultLimit = "resultlimit"
+	KindRedact      = "redact"
 )
 
 func (b *Builder) registerBuiltins() {
@@ -39,6 +42,8 @@ func (b *Builder) registerBuiltins() {
 	register(KindRateLimit, b.rateLimitFactory)
 	register(KindApproval, b.approvalFactory)
 	register(KindAudit, b.auditFactory)
+	register(KindResultLimit, resultLimitFactory)
+	register(KindRedact, redactFactory)
 }
 
 // noSpecFactory wraps a plain constructor, rejecting any spec: the kind
@@ -158,6 +163,61 @@ func (b *Builder) auditFactory(_ context.Context, in sdkconfig.Input) (tool.Midd
 			"kind %q requires an AuditSink in config.Deps", KindAudit))
 	}
 	return middleware.Audit(b.deps.AuditSink), nil
+}
+
+type resultLimitSpec struct {
+	MaxChars int    `json:"max_chars"`
+	Marker   string `json:"marker,omitempty"`
+}
+
+func resultLimitFactory(_ context.Context, in sdkconfig.Input) (tool.Middleware, error) {
+	s, err := DecodeSpec[resultLimitSpec](in.Settings)
+	if err != nil {
+		return nil, err
+	}
+	if s.MaxChars <= 0 {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"resultlimit spec: max_chars must be positive, got %d", s.MaxChars))
+	}
+	return middleware.ResultLimiter(s.MaxChars,
+		middleware.WithResultMarker(s.Marker)), nil
+}
+
+type redactSpec struct {
+	Rules []redactRuleSpec `json:"rules"`
+}
+
+type redactRuleSpec struct {
+	Pattern     string `json:"pattern"`
+	Replacement string `json:"replacement,omitempty"`
+}
+
+func redactFactory(_ context.Context, in sdkconfig.Input) (tool.Middleware, error) {
+	s, err := DecodeSpec[redactSpec](in.Settings)
+	if err != nil {
+		return nil, err
+	}
+	if len(s.Rules) == 0 {
+		return nil, errdefs.Validation(fmt.Errorf(
+			"redact spec: rules must list at least one pattern"))
+	}
+	rules := make([]middleware.RedactRule, 0, len(s.Rules))
+	for i, rule := range s.Rules {
+		if rule.Pattern == "" {
+			return nil, errdefs.Validation(fmt.Errorf(
+				"redact spec: rules[%d]: pattern is required", i))
+		}
+		compiled, err := regexp.Compile(rule.Pattern)
+		if err != nil {
+			return nil, errdefs.Validation(fmt.Errorf(
+				"redact spec: rules[%d]: invalid pattern %q: %w", i, rule.Pattern, err))
+		}
+		rules = append(rules, middleware.RedactRule{
+			Pattern:     compiled,
+			Replacement: rule.Replacement,
+		})
+	}
+	return middleware.Redact(rules...), nil
 }
 
 func catalogFrom(in sdkconfig.Input) (tool.Catalog, error) {

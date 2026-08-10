@@ -22,6 +22,7 @@ type managerOptions struct {
 	checkpoints       agent.CheckpointStore
 	resume            bool
 	observer          SessionObserver
+	catalogProvider   CatalogProvider
 }
 
 // WithSinkBufferSize sets the queue size used when SinkSpec.QueueSize is zero.
@@ -56,6 +57,20 @@ func WithSessionObserver(observer SessionObserver) ManagerOption {
 			return errdefs.Validationf("runtime session: session observer is required")
 		}
 		options.observer = observer
+		return nil
+	}
+}
+
+// WithCatalogProvider wires a per-session tool catalog provider. When
+// set, every Session created by this Manager builds one catalog on its
+// first Start, attaches it to each turn's execution context, and closes
+// it when the Session closes.
+func WithCatalogProvider(provider CatalogProvider) ManagerOption {
+	return func(options *managerOptions) error {
+		if isNil(provider) {
+			return errdefs.Validationf("runtime session: catalog provider is required")
+		}
+		options.catalogProvider = provider
 		return nil
 	}
 }

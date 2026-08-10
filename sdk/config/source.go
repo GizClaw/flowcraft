@@ -71,6 +71,29 @@ type Source struct {
 	path    string          // SourceFile / SourceEmbed
 }
 
+// LiteralSource builds a Source from plain document content.
+func LiteralSource(literal string) Source {
+	return Source{kind: SourceLiteral, literal: literal}
+}
+
+// ContentSource builds a Source from a structured JSON/YAML subtree
+// carried inline in the parent document.
+func ContentSource(raw json.RawMessage) Source {
+	return Source{kind: SourceContent, raw: raw}
+}
+
+// FileSource builds a Source that references an external file, resolved
+// against the Loader's base directory.
+func FileSource(path string) Source {
+	return Source{kind: SourceFile, path: path}
+}
+
+// EmbedSource builds a Source that references a build-time embedded
+// asset from the Loader's embed registry.
+func EmbedSource(path string) Source {
+	return Source{kind: SourceEmbed, path: path}
+}
+
 // Kind returns the source form.
 func (s Source) Kind() SourceKind { return s.kind }
 
