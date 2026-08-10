@@ -11,15 +11,27 @@ Release PR before their tags are published.
 
 | Module   | Latest tag      | Notes                                                                                     |
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `sdk`    | `sdk/v0.5.1`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
+| `sdk`    | `sdk/v0.5.2`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.2`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.3`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdk/v0.5.2` - 2026-08-10
+
+### Changed
+
+- Harden agent checkpoint contract: shared Validate/Clone, strict exec-id matching, graph spec-version drift detection, and a CheckpointStore conformance suite
+
+## `sdkx/v0.5.3` - 2026-08-10
+
+### Changed
+
+- Add configurable SQLite and workspace agent checkpoint stores (deploy resources + runtime checkpoint_store wiring), session-level end-to-end resume, and align A2A resume admission with the hardened agent checkpoint contract (shared Validate, strict exec-id matching)
 
 ## `sdkx/v0.5.2` - 2026-08-10
 
