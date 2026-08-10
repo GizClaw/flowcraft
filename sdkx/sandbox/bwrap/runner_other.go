@@ -41,3 +41,21 @@ func (*Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox
 func (*Runner) Enforcement() sandbox.Enforcement {
 	return sandbox.Enforcement{}
 }
+
+// Start is unreachable because New never returns a non-nil Runner on
+// non-Linux platforms. It exists so *Runner satisfies
+// sandbox.ProcessManager in type assertions written by portable code.
+func (*Runner) Start(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	_, _ = ctx, spec
+	return nil, errdefs.NotAvailablef("bwrap: not available on this platform")
+}
+
+// List is unreachable outside Linux.
+func (*Runner) List(context.Context) ([]sandbox.ProcessInfo, error) {
+	return nil, errdefs.NotAvailablef("bwrap: not available on this platform")
+}
+
+// Terminate is unreachable outside Linux.
+func (*Runner) Terminate(context.Context, string) error {
+	return errdefs.NotAvailablef("bwrap: not available on this platform")
+}

@@ -4,10 +4,15 @@ package seatbelt
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -16,6 +21,102 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 )
+
+// TestIntegrationHelper is re-executed by the MITM integration test
+// as the sandboxed child. It is inert unless the helper env is set.
+func TestIntegrationHelper(t *testing.T) {
+	if os.Getenv("FLOWCRAFT_TEST_HELPER") != "1" {
+		return
+	}
+	switch os.Getenv("FLOWCRAFT_TEST_HELPER_MODE") {
+	case "https-client":
+		target := os.Getenv("FLOWCRAFT_TEST_TARGET")
+		// Use the proxy explicitly: Go's ProxyFromEnvironment bypasses
+		// loopback targets by design, but a real proxy-aware client
+		// (curl, browsers) honors HTTPS_PROXY here. The transport still
+		// verifies the MITM leaf through SSL_CERT_FILE.
+		proxyURL, err := url.Parse(os.Getenv("HTTPS_PROXY"))
+		if err != nil {
+			t.Fatalf("parse HTTPS_PROXY: %v", err)
+		}
+		// Load the injected bundle explicitly: on macOS Go's system
+		// root store is the Security framework, which both ignores
+		// SSL_CERT_FILE and is unreachable under SBPL (empty pool).
+		// This is the --cacert behaviour curl would use.
+		pool := x509.NewCertPool()
+		pemData, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+		if err != nil {
+			t.Fatalf("read SSL_CERT_FILE: %v", err)
+		}
+		if !pool.AppendCertsFromPEM(pemData) {
+			t.Fatalf("SSL_CERT_FILE contains no usable certificates")
+		}
+		client := &http.Client{Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		}}
+		resp, err := client.Get(target)
+		if err != nil {
+			t.Fatalf("GET %s: %v", target, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		fmt.Print(string(body))
+	}
+}
+
+// TestIntegration_MITM_HTTPS is the real-environment MITM assertion:
+// a Go client inside the Seatbelt sandbox trusts the injected
+// SSL_CERT_FILE bundle, reaches a local HTTPS origin through the
+// enforcement proxy's TLS termination, and receives the origin body.
+func TestIntegration_MITM_HTTPS(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "mitm-real-ok")
+	}))
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	runner, err := New(t.TempDir(), WithOutboundRoots(roots))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	result, err := runner.Exec(
+		context.Background(),
+		os.Args[0],
+		[]string{"-test.run", "^TestIntegrationHelper$"},
+		sandbox.ExecOptions{
+			Timeout: 30 * time.Second,
+			Env: sandbox.EnvPolicy{
+				Allow: []string{"PATH", "HOME"},
+				Inject: map[string]string{
+					"FLOWCRAFT_TEST_HELPER":      "1",
+					"FLOWCRAFT_TEST_HELPER_MODE": "https-client",
+					"FLOWCRAFT_TEST_TARGET":      srv.URL,
+				},
+			},
+			Net: sandbox.NetPolicy{
+				Mode:       sandbox.NetAllowList,
+				AllowHosts: []string{"127.0.0.1"},
+				MITM:       &sandbox.MITMPolicy{Enabled: true},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", result.ExitCode, result.Stdout, result.Stderr)
+	}
+	if !strings.Contains(result.Stdout, "mitm-real-ok") {
+		t.Fatalf("MITM response missing origin body: %q", result.Stdout)
+	}
+}
 
 // TestIntegration_NetDenyAll proves the generated SBPL profile blocks
 // even loopback connections at the OS level. A local listener avoids

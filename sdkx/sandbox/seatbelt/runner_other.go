@@ -31,3 +31,19 @@ func (*Runner) Exec(ctx context.Context, cmd string, args []string, opts sandbox
 func (*Runner) Enforcement() sandbox.Enforcement {
 	return sandbox.Enforcement{}
 }
+
+// Start is unreachable because New cannot construct a Runner.
+func (*Runner) Start(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	_, _ = ctx, spec
+	return nil, errdefs.NotAvailablef("seatbelt: not available on this platform")
+}
+
+// List is unreachable outside macOS.
+func (*Runner) List(context.Context) ([]sandbox.ProcessInfo, error) {
+	return nil, errdefs.NotAvailablef("seatbelt: not available on this platform")
+}
+
+// Terminate is unreachable outside macOS.
+func (*Runner) Terminate(context.Context, string) error {
+	return errdefs.NotAvailablef("seatbelt: not available on this platform")
+}

@@ -1,5 +1,12 @@
 package bwrap
 
+import (
+	"crypto/x509"
+
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
+)
+
 // RunnerOption configures a Runner at construction time.
 type RunnerOption func(*runnerConfig)
 
@@ -10,6 +17,9 @@ type runnerConfig struct {
 	binFrom  string   // raw value supplied to WithBinary, "" if defaulted
 	extra    []string // extra bwrap flags injected before the "--" separator
 	writable []string // additional explicitly writable host paths
+	decision func(httpkit.ProxyDecision)
+	hooks    mitm.ProxyHooks
+	roots    *x509.CertPool
 }
 
 // WithBinary overrides the bwrap binary path. By default the Runner
@@ -45,5 +55,31 @@ func WithExtraFlags(flags ...string) RunnerOption {
 func WithWritablePaths(paths ...string) RunnerOption {
 	return func(c *runnerConfig) {
 		c.writable = append(c.writable, paths...)
+	}
+}
+
+// WithProxyDecision installs the per-decision audit callback used by
+// the host-side enforcement proxy. Keep it fast and non-throwing.
+func WithProxyDecision(fn func(httpkit.ProxyDecision)) RunnerOption {
+	return func(c *runnerConfig) {
+		c.decision = fn
+	}
+}
+
+// WithProxyHooks installs MITM observation/blocking hooks. They only
+// fire when the sandbox policy enables MITM.
+func WithProxyHooks(h mitm.ProxyHooks) RunnerOption {
+	return func(c *runnerConfig) {
+		c.hooks = h
+	}
+}
+
+// WithOutboundRoots overrides the roots used to verify the real
+// target's TLS certificate during MITM (nil means system roots). Use
+// it for custom/internal CAs; it never weakens the child side, which
+// still trusts only the injected temporary CA plus system roots.
+func WithOutboundRoots(roots *x509.CertPool) RunnerOption {
+	return func(c *runnerConfig) {
+		c.roots = roots
 	}
 }

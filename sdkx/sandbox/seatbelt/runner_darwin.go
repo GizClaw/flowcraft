@@ -5,20 +5,24 @@ package seatbelt
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
@@ -29,6 +33,10 @@ type Runner struct {
 	binary           string
 	writable         []string
 	defaultMaxOutput int64
+	processes        sandbox.ProcessManager
+	decision         func(httpkit.ProxyDecision)
+	hooks            mitm.ProxyHooks
+	outboundRoots    *x509.CertPool
 }
 
 // New constructs a Seatbelt Runner rooted at rootDir.
@@ -66,12 +74,17 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		writable = append(writable, resolved)
 	}
 
-	return &Runner{
+	runner := &Runner{
 		rootDir:          root,
 		binary:           binary,
 		writable:         dedupe(writable),
 		defaultMaxOutput: defaultMaxOutputBytes,
-	}, nil
+		decision:         cfg.decision,
+		hooks:            cfg.hooks,
+		outboundRoots:    cfg.roots,
+	}
+	runner.processes = sandbox.NewProcessRegistry(runner.spawnProcess)
+	return runner, nil
 }
 
 // Enforcement reports the policy dimensions Seatbelt plus the shared
@@ -88,6 +101,8 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 			sandbox.NetAllowList,
 			sandbox.NetProxy,
 		},
+		Socks5:           true,
+		MITM:             true,
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
@@ -99,24 +114,12 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if cmd == "" {
 		return nil, errdefs.Validationf("seatbelt: empty command")
 	}
-	if opts.Resources.DiskBytes != 0 {
+	if len(opts.Net.UnixSockets) > 0 {
 		return nil, errdefs.NotAvailablef(
-			"seatbelt: disk limits not supported (no quota mechanism)",
-		)
+			"seatbelt: unix socket allow-list is not supported (SBPL does not confine unix sockets)")
 	}
-	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
-		return nil, errdefs.NotAvailablef(
-			"seatbelt: CPUMillicores requires a per-call Timeout to derive a cpu-time cap",
-		)
-	}
-	// Memory and cpu caps ride on the shared sampling watcher, not on
-	// the Seatbelt profile. Where that watcher cannot sample, honouring
-	// the call would run the child with no cap at all, so reject it
-	// instead of pretending.
-	if (opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0) && !sandbox.GroupCapsSupported() {
-		return nil, errdefs.NotAvailablef(
-			"seatbelt: resource limits require process-group sampling, which is unavailable here",
-		)
+	if err := sandbox.ValidateExecPolicy(opts); err != nil {
+		return nil, err
 	}
 
 	workDir, err := r.resolveWorkDir(opts.WorkDir)
@@ -133,10 +136,15 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	proxyPort := 0
 	if proxyMode {
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
-			Mode:        opts.Net.Mode,
-			AllowHosts:  opts.Net.AllowHosts,
-			Upstream:    opts.Net.Proxy,
-			TCPLoopback: true,
+			Mode:          opts.Net.Mode,
+			AllowHosts:    opts.Net.AllowHosts,
+			Rules:         opts.Net.Rules,
+			Upstream:      opts.Net.Proxy,
+			TCPLoopback:   true,
+			MITM:          opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
@@ -147,6 +155,20 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 			return nil, errdefs.Internalf("seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
 		}
 		proxyPort = addr.Port
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if opts.Net.MITM != nil && opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"seatbelt: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			return nil, errdefs.Internalf("seatbelt: write CA bundle: %v", err)
+		}
+		defer bundleCleanup()
 	}
 
 	profile, err := buildProfile(r.writable, opts.Net, proxyPort)
@@ -164,6 +186,9 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	c := exec.CommandContext(ctx, r.binary, argv...)
 	c.Dir = workDir
 	c.Env = buildEnv(opts.Env, proxyPort)
+	if bundlePath != "" {
+		c.Env = append(c.Env, "SSL_CERT_FILE="+bundlePath)
+	}
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		if c.Process == nil {
@@ -223,6 +248,163 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		return result, classifyStartError(cmd, runErr)
 	}
 	return result, nil
+}
+
+// Start implements sandbox.ProcessManager. The session runs inside the
+// same generated Seatbelt profile as Exec; the enforcement proxy, when
+// NetAllowList / NetProxy needs one, is owned by the session and closed
+// when the session exits or is closed.
+func (r *Runner) Start(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	return r.processes.Start(ctx, spec)
+}
+
+// List implements sandbox.ProcessManager.
+func (r *Runner) List(ctx context.Context) ([]sandbox.ProcessInfo, error) {
+	return r.processes.List(ctx)
+}
+
+// Terminate implements sandbox.ProcessManager.
+func (r *Runner) Terminate(ctx context.Context, id string) error {
+	return r.processes.Terminate(ctx, id)
+}
+
+// spawnProcess is the Runner's sandbox.ProcessStarter. It mirrors Exec:
+// same policy validation, same profile, same proxy wiring — but the
+// stdio is owned by the shared session implementation instead of being
+// captured into an ExecResult.
+func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	if len(spec.Argv) == 0 {
+		return nil, errdefs.Validationf("seatbelt: empty command")
+	}
+	if len(spec.Opts.Net.UnixSockets) > 0 {
+		return nil, errdefs.NotAvailablef(
+			"seatbelt: unix socket allow-list is not supported (SBPL does not confine unix sockets)")
+	}
+	if err := sandbox.ValidateExecPolicy(spec.Opts); err != nil {
+		return nil, err
+	}
+
+	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyMode := spec.Opts.Net.Mode == sandbox.NetAllowList || spec.Opts.Net.Mode == sandbox.NetProxy
+	var proxy *httpkit.Proxy
+	proxyPort := 0
+	if proxyMode {
+		proxy, err = httpkit.Start(httpkit.ProxyConfig{
+			Mode:          spec.Opts.Net.Mode,
+			AllowHosts:    spec.Opts.Net.AllowHosts,
+			Rules:         spec.Opts.Net.Rules,
+			Upstream:      spec.Opts.Net.Proxy,
+			TCPLoopback:   true,
+			MITM:          spec.Opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
+		})
+		if err != nil {
+			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
+		}
+		addr, ok := proxy.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf("seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
+		}
+		proxyPort = addr.Port
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if spec.Opts.Net.MITM != nil && spec.Opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"seatbelt: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf("seatbelt: write CA bundle: %v", err)
+		}
+		if spec.Opts.Env.Inject == nil {
+			spec.Opts.Env.Inject = make(map[string]string)
+		} else {
+			spec.Opts.Env.Inject = maps.Clone(spec.Opts.Env.Inject)
+		}
+		spec.Opts.Env.Inject["SSL_CERT_FILE"] = bundlePath
+	}
+	abortBundle := func() {
+		if bundleCleanup != nil {
+			bundleCleanup()
+		}
+	}
+
+	profile, err := buildProfile(r.writable, spec.Opts.Net, proxyPort)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		abortBundle()
+		return nil, err
+	}
+
+	argv := []string{"-p", profile, spec.Argv[0]}
+	argv = append(argv, spec.Argv[1:]...)
+	c := exec.Command(r.binary, argv...)
+	c.Dir = workDir
+	c.Env = buildEnv(spec.Opts.Env, proxyPort)
+	if bundlePath != "" {
+		c.Env = append(c.Env, "SSL_CERT_FILE="+bundlePath)
+	}
+
+	maxOut := spec.Opts.Resources.MaxOutputBytes
+	if maxOut <= 0 {
+		maxOut = r.defaultMaxOutput
+	}
+	if maxOut <= 0 {
+		maxOut = math.MaxInt64
+	}
+	spec.Opts.Resources.MaxOutputBytes = maxOut
+
+	proc, err := sandbox.StartSession(ctx, spec, c)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		abortBundle()
+		return nil, err
+	}
+	if proxy != nil {
+		cleanup := &sessionCleanup{cleanup: func() {
+			_ = proxy.Close()
+			abortBundle()
+		}}
+		go func() {
+			_, _ = proc.Wait(context.Background())
+			cleanup.once.Do(cleanup.cleanup)
+		}()
+		return &sessionProcess{Process: proc, cleanup: cleanup}, nil
+	}
+	return proc, nil
+}
+
+// sessionProcess keeps a sandbox.Process's side resources (the
+// enforcement proxy) alive for exactly as long as the session.
+type sessionProcess struct {
+	sandbox.Process
+	cleanup *sessionCleanup
+}
+
+func (p *sessionProcess) Close() error {
+	err := p.Process.Close()
+	p.cleanup.once.Do(p.cleanup.cleanup)
+	return err
+}
+
+type sessionCleanup struct {
+	once    sync.Once
+	cleanup func()
 }
 
 func (r *Runner) resolveWorkDir(dir string) (string, error) {

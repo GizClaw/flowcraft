@@ -34,6 +34,47 @@ func (r *allowCommandsRunner) Exec(ctx context.Context, cmd string, args []strin
 	return r.inner.Exec(ctx, cmd, args, opts)
 }
 
+// Start implements ProcessManager with the same gate as Exec: the
+// session's Argv[0] must be whitelisted before it is ever spawned.
+// Note this gates the session start, not input typed inside an
+// interactive shell — that is the documented all-or-nothing trade-off
+// of interactive sessions.
+func (r *allowCommandsRunner) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
+	if len(spec.Argv) == 0 {
+		return nil, errdefs.Validationf("sandbox: ProcessSpec.Argv must name a command")
+	}
+	if !r.whitelist[spec.Argv[0]] {
+		return nil, errdefs.PolicyDeniedf(
+			"sandbox: command %q is not in the whitelist", spec.Argv[0])
+	}
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.Start(ctx, spec)
+}
+
+// List forwards the inner runner's session list when it has one.
+func (r *allowCommandsRunner) List(ctx context.Context) ([]ProcessInfo, error) {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.List(ctx)
+}
+
+// Terminate forwards to the inner runner's session manager.
+func (r *allowCommandsRunner) Terminate(ctx context.Context, id string) error {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.Terminate(ctx, id)
+}
+
 // Enforcement forwards the inner runner's report: gating command names
 // narrows what may run but adds no enforcement capability, so the
 // decorator claims exactly what its inner runner enforces — the
@@ -111,6 +152,39 @@ type defaultsRunner struct {
 
 func (r *defaultsRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
 	return r.inner.Exec(ctx, cmd, args, r.merge(opts))
+}
+
+// Start implements ProcessManager: the session's Opts go through the
+// same security-biased merge as Exec, so daemon-owned Env/Net/
+// Resources policy is fixed before the backend ever sees the spawn.
+func (r *defaultsRunner) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	spec.Opts = r.merge(spec.Opts)
+	return pm.Start(ctx, spec)
+}
+
+// List forwards the inner runner's session list when it has one.
+func (r *defaultsRunner) List(ctx context.Context) ([]ProcessInfo, error) {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.List(ctx)
+}
+
+// Terminate forwards to the inner runner's session manager.
+func (r *defaultsRunner) Terminate(ctx context.Context, id string) error {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.Terminate(ctx, id)
 }
 
 // Enforcement forwards the inner runner's report: fixing policy

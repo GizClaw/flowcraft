@@ -390,3 +390,224 @@ func TestRunner_Exec_EmptyCommandRejected(t *testing.T) {
 		t.Fatalf("expected validation error for empty command")
 	}
 }
+
+func TestRunner_ProcessManager_PipeSession(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "CMD:/bin/echo") || !strings.Contains(sb.String(), "ARG:hi") {
+		t.Fatalf(`session output missing post-"--" argv: %q`, sb.String())
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestRunner_ProcessManager_TTYSession(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "CMD:/bin/echo") {
+		t.Fatalf("TTY session output missing argv: %q", sb.String())
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestRunner_ProcessManager_PolicyRejected(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/true"},
+		Opts: sandbox.ExecOptions{Resources: sandbox.ResourceLimits{DiskBytes: 1}},
+	})
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("disk-limit Start = %v, want NotAvailable", err)
+	}
+}
+
+func TestRunner_Enforcement_ProxyFeatures(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	e := r.Enforcement()
+	if !e.Socks5 || !e.MITM || !e.UnixSocketPolicy {
+		t.Errorf("bwrap must claim socks5/mitm/unix-socket policy, got %+v", e)
+	}
+}
+
+func TestRunner_ProcessManager_UnixSocketBindFlags(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	sock := filepath.Join(t.TempDir(), "test.sock")
+	if err := os.WriteFile(sock, nil, 0o600); err != nil {
+		t.Fatalf("create socket file: %v", err)
+	}
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+		Opts: sandbox.ExecOptions{Net: sandbox.NetPolicy{
+			UnixSockets: []string{sock},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "ARG:--bind\nARG:"+sock+"\n") {
+		t.Fatalf("unix socket bind not emitted: %q", sb.String())
+	}
+}
+
+func TestRunner_ProcessManager_UnixSocketMissing_NotFound(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/true"},
+		Opts: sandbox.ExecOptions{Net: sandbox.NetPolicy{
+			UnixSockets: []string{"/no/such/socket"},
+		}},
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("missing socket Start = %v, want NotFound", err)
+	}
+}
+
+func TestRunner_Exec_UnixSocketMissing_NotFound(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = r.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Net: sandbox.NetPolicy{UnixSockets: []string{"/no/such/socket"}},
+	})
+	if !errdefs.IsNotFound(err) {
+		t.Fatalf("missing socket Exec = %v, want NotFound", err)
+	}
+}
+
+func TestRunner_ProcessManager_MITMBundleInjected(t *testing.T) {
+	bin := fakeBwrap(t, echoScript)
+	r, err := New(t.TempDir(), WithBinary(bin))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	proc, err := r.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/echo", "hi"},
+		Opts: sandbox.ExecOptions{Net: sandbox.NetPolicy{
+			Mode:       sandbox.NetAllowList,
+			AllowHosts: []string{"example.com"},
+			MITM:       &sandbox.MITMPolicy{Enabled: true},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Start with MITM: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var sb strings.Builder
+	var seq int64
+	for {
+		out, err := proc.Read(ctx, seq, 4096)
+		if err != nil {
+			t.Fatalf("Read: %v", err)
+		}
+		for _, ch := range out.Chunks {
+			sb.Write(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "ARG:SSL_CERT_FILE") || !strings.Contains(sb.String(), "ARG:--ro-bind") {
+		t.Fatalf("MITM CA bundle env/bind missing: %q", sb.String())
+	}
+}

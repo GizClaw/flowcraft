@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
@@ -57,6 +58,8 @@ func WithMaxOutputBytes(n int64) Option {
 type LocalRunner struct {
 	rootDir          string
 	defaultMaxOutput int64
+	processes        ProcessManager
+	registryOnce     sync.Once
 }
 
 // NewLocalRunner constructs a LocalRunner rooted at rootDir. The root is
@@ -73,6 +76,7 @@ func NewLocalRunner(rootDir string, opts ...Option) *LocalRunner {
 	for _, o := range opts {
 		o(r)
 	}
+	r.processes = NewProcessRegistry(r.spawnProcess)
 	return r
 }
 
@@ -96,19 +100,8 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 		return nil, errdefs.NotAvailablef(
 			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
 	}
-	if opts.Resources.DiskBytes != 0 {
-		return nil, errdefs.NotAvailablef(
-			"sandbox: disk limits not supported by local runner (no quota mechanism)")
-	}
-	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
-		return nil, errdefs.NotAvailablef(
-			"sandbox: CPUMillicores requires a per-call Timeout to derive a cpu-time cap")
-	}
-	maxRSSKB, maxCPU := deriveGroupCaps(opts.Resources, opts.Timeout)
-	if (maxRSSKB > 0 || maxCPU > 0) && !groupCapsAvailable() {
-		return nil, errdefs.NotAvailablef(
-			"sandbox: resource limits require process-group sampling, which is unavailable here " +
-				"(non-unix platform, or ps(1) cannot be executed)")
+	if err := ValidateExecPolicy(opts); err != nil {
+		return nil, err
 	}
 
 	if opts.Timeout > 0 {
@@ -180,6 +173,36 @@ func (r *LocalRunner) Exec(ctx context.Context, cmd string, args []string, opts 
 		return result, classifyStartError(cmd, err)
 	}
 	return result, nil
+}
+
+// Start implements the ProcessManager session capability of
+// LocalRunner. Policy validation mirrors Exec (ValidateExecPolicy plus
+// the NetDefault-only posture), then the command is spawned either on
+// pipes or a pty through the shared StartSession implementation.
+func (r *LocalRunner) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
+	return r.registry().Start(ctx, spec)
+}
+
+// List implements ProcessManager.
+func (r *LocalRunner) List(ctx context.Context) ([]ProcessInfo, error) {
+	return r.registry().List(ctx)
+}
+
+// Terminate implements ProcessManager.
+func (r *LocalRunner) Terminate(ctx context.Context, id string) error {
+	return r.registry().Terminate(ctx, id)
+}
+
+// registry returns the session registry, initialising it lazily so a
+// zero-value LocalRunner still answers with NotAvailable instead of
+// panicking on a nil interface.
+func (r *LocalRunner) registry() ProcessManager {
+	r.registryOnce.Do(func() {
+		if r.processes == nil {
+			r.processes = NewProcessRegistry(r.spawnProcess)
+		}
+	})
+	return r.processes
 }
 
 // deriveGroupCaps converts policy resource limits into group-watcher

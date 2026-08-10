@@ -19,9 +19,14 @@ package bwrap
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,6 +38,59 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 )
+
+// TestIntegrationHelper is re-executed by the integration tests as the
+// sandboxed child. It is inert unless the helper env is set.
+func TestIntegrationHelper(t *testing.T) {
+	switch os.Getenv("FLOWCRAFT_TEST_HELPER_MODE") {
+	case "unix-client":
+		path := os.Getenv("FLOWCRAFT_TEST_SOCK")
+		conn, err := net.Dial("unix", path)
+		if err != nil {
+			t.Fatalf("dial unix %s: %v", path, err)
+		}
+		defer func() { _ = conn.Close() }()
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		buf := make([]byte, 4)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if string(buf) != "pong" {
+			t.Fatalf("echo = %q, want pong", buf)
+		}
+		fmt.Print("unix-ok")
+	case "https-client":
+		target := os.Getenv("FLOWCRAFT_TEST_TARGET")
+		proxyURL, err := url.Parse(os.Getenv("HTTPS_PROXY"))
+		if err != nil {
+			t.Fatalf("parse HTTPS_PROXY: %v", err)
+		}
+		pool := x509.NewCertPool()
+		pemData, err := os.ReadFile(os.Getenv("SSL_CERT_FILE"))
+		if err != nil {
+			t.Fatalf("read SSL_CERT_FILE: %v", err)
+		}
+		if !pool.AppendCertsFromPEM(pemData) {
+			t.Fatalf("SSL_CERT_FILE contains no usable certificates")
+		}
+		client := &http.Client{Transport: &http.Transport{
+			Proxy:           http.ProxyURL(proxyURL),
+			TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+		}}
+		resp, err := client.Get(target)
+		if err != nil {
+			t.Fatalf("GET %s: %v", target, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		fmt.Print(string(body))
+	}
+}
 
 func requireBwrap(t *testing.T) {
 	t.Helper()
@@ -542,5 +600,147 @@ func TestIntegration_IsolatedModesMaskHostUDS(t *testing.T) {
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
 		t.Errorf("private /run marker leaked to host, stat err=%v", err)
+	}
+}
+
+// startUnixEcho serves one "ping" → "pong" exchange on a unix socket.
+func startUnixEcho(t *testing.T, path string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", path, err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = conn.Close() }()
+				buf := make([]byte, 4)
+				if _, err := io.ReadFull(conn, buf); err != nil {
+					return
+				}
+				if string(buf) == "ping" {
+					_, _ = conn.Write([]byte("pong"))
+				}
+			}()
+		}
+	}()
+	return ln
+}
+
+// TestIntegration_UnixSocketAllowDeny is the real-environment unix
+// socket policy assertion: a listed socket is bind-mounted and
+// reachable from inside the sandbox, an unlisted socket is invisible
+// (masked /tmp) and the helper's dial fails.
+func TestIntegration_UnixSocketAllowDeny(t *testing.T) {
+	dir := t.TempDir()
+	allowed := filepath.Join(dir, "allowed.sock")
+	denied := filepath.Join(dir, "denied.sock")
+	allowedLn := startUnixEcho(t, allowed)
+	defer func() { _ = allowedLn.Close() }()
+	deniedLn := startUnixEcho(t, denied)
+	defer func() { _ = deniedLn.Close() }()
+
+	runner := newIntegrationRunner(t)
+	ctx := context.Background()
+	env := sandbox.EnvPolicy{
+		Allow: []string{"PATH", "HOME"},
+		Inject: map[string]string{
+			"FLOWCRAFT_TEST_HELPER":      "1",
+			"FLOWCRAFT_TEST_HELPER_MODE": "unix-client",
+			"FLOWCRAFT_TEST_SOCK":        allowed,
+		},
+	}
+	res, err := runner.Exec(ctx, os.Args[0], []string{"-test.run", "^TestIntegrationHelper$"}, sandbox.ExecOptions{
+		Timeout: 15 * time.Second,
+		Env:     env,
+		Net:     sandbox.NetPolicy{UnixSockets: []string{allowed}},
+	})
+	if err != nil {
+		t.Fatalf("allowed Exec: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "unix-ok") {
+		t.Fatalf("allowed socket unreachable: exit=%d stdout=%q stderr=%q",
+			res.ExitCode, res.Stdout, res.Stderr)
+	}
+
+	env.Inject["FLOWCRAFT_TEST_SOCK"] = denied
+	res, err = runner.Exec(ctx, os.Args[0], []string{"-test.run", "^TestIntegrationHelper$"}, sandbox.ExecOptions{
+		Timeout: 15 * time.Second,
+		Env:     env,
+		Net:     sandbox.NetPolicy{UnixSockets: []string{allowed}},
+	})
+	if err != nil {
+		t.Fatalf("denied Exec: %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("unlisted socket reachable: stdout=%q stderr=%q", res.Stdout, res.Stderr)
+	}
+}
+
+// TestIntegration_MITM_HTTPS is the real-environment MITM assertion:
+// the sandboxed child reaches a local HTTPS origin through the
+// enforcement proxy's TLS termination, trusting the injected
+// SSL_CERT_FILE bundle (loaded explicitly, like curl --cacert).
+func TestIntegration_MITM_HTTPS(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "mitm-real-ok")
+	}))
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	runner, err := New(newIntegrationRoot(t), WithOutboundRoots(roots))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The isolated net posture needs bwrap to bring up loopback in the
+	// fresh net namespace (RTM_NEWADDR). Stripped-down kernels / CI
+	// runners without the required capability fail here with EPERM;
+	// per the lane's policy, skip rather than fail when the host
+	// cannot apply the boundary at all.
+	probe, probeErr := runner.Exec(context.Background(), "/bin/true", nil, sandbox.ExecOptions{
+		Net:     sandbox.NetPolicy{Mode: sandbox.NetAllowList, AllowHosts: []string{"127.0.0.1"}},
+		Timeout: 5 * time.Second,
+	})
+	if probeErr != nil || probe.ExitCode != 0 {
+		t.Skipf("bwrap net isolation cannot be applied on this host: err=%v stderr=%q",
+			probeErr, probe.Stderr)
+	}
+
+	res, err := runner.Exec(
+		context.Background(),
+		os.Args[0],
+		[]string{"-test.run", "^TestIntegrationHelper$"},
+		sandbox.ExecOptions{
+			Timeout: 30 * time.Second,
+			Env: sandbox.EnvPolicy{
+				Allow: []string{"PATH", "HOME"},
+				Inject: map[string]string{
+					"FLOWCRAFT_TEST_HELPER":      "1",
+					"FLOWCRAFT_TEST_HELPER_MODE": "https-client",
+					"FLOWCRAFT_TEST_TARGET":      srv.URL,
+				},
+			},
+			Net: sandbox.NetPolicy{
+				Mode:       sandbox.NetAllowList,
+				AllowHosts: []string{"127.0.0.1"},
+				MITM:       &sandbox.MITMPolicy{Enabled: true},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", res.ExitCode, res.Stdout, res.Stderr)
+	}
+	if !strings.Contains(res.Stdout, "mitm-real-ok") {
+		t.Fatalf("MITM response missing origin body: %q", res.Stdout)
 	}
 }

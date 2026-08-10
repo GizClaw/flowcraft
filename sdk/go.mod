@@ -3,6 +3,7 @@ module github.com/GizClaw/flowcraft/sdk
 go 1.25.0
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/expr-lang/expr v1.17.8
 	github.com/rs/xid v1.6.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1

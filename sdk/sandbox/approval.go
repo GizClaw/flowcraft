@@ -9,14 +9,18 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 )
 
-// ExecRequest is a snapshot of one Runner.Exec call, shared by
-// predicates (which inspect it) and approval callbacks (which present
-// it to the approver). It is a DTO rather than loose parameters so new
-// fields remain additive for implementors.
+// ExecRequest is a snapshot of one Runner.Exec call (or one
+// ProcessManager.Start attempt), shared by predicates (which inspect
+// it) and approval callbacks (which present it to the approver). It is
+// a DTO rather than loose parameters so new fields remain additive for
+// implementors. TTY marks interactive session starts so the approver
+// can see that approval covers a persistent command channel rather
+// than a single command; it is false for ordinary Exec calls.
 type ExecRequest struct {
 	Command string
 	Args    []string
 	Opts    ExecOptions
+	TTY     bool
 }
 
 // Predicate decides whether an Exec call crosses a policy boundary and
@@ -97,13 +101,23 @@ type approvalRunner struct {
 
 func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
 	req := ExecRequest{Command: cmd, Args: args, Opts: opts}
+	if err := r.authorize(ctx, req); err != nil {
+		return nil, err
+	}
+	return r.inner.Exec(ctx, cmd, args, opts)
+}
+
+// authorize runs the predicate / approver chain for one request. It is
+// shared by Exec and ProcessManager.Start so interactive sessions go
+// through exactly the same fail-closed tripwire.
+func (r *approvalRunner) authorize(ctx context.Context, req ExecRequest) error {
 	for _, p := range r.preds {
 		if p == nil {
-			return nil, errdefs.PolicyDeniedf(
+			return errdefs.PolicyDeniedf(
 				"sandbox: nil approval predicate configured (fail-closed)")
 		}
 		if predicateFunc, ok := p.(PredicateFunc); ok && predicateFunc == nil {
-			return nil, errdefs.PolicyDeniedf(
+			return errdefs.PolicyDeniedf(
 				"sandbox: nil approval predicate function configured (fail-closed)")
 		}
 		reason, matched := p.Match(cloneExecRequest(req))
@@ -111,7 +125,7 @@ func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, op
 			continue
 		}
 		if r.approve == nil {
-			return nil, errdefs.PolicyDeniedf(
+			return errdefs.PolicyDeniedf(
 				"sandbox: %s (no approver configured)", reason)
 		}
 		decision, err := r.approve(ctx, ApprovalRequest{
@@ -119,16 +133,62 @@ func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, op
 			Reason: reason,
 		})
 		if err != nil {
-			return nil, fmt.Errorf(
-				"sandbox: approval for %q failed; not executed (fail-closed): %w", cmd, err)
+			return fmt.Errorf(
+				"sandbox: approval for %q failed; not executed (fail-closed): %w", req.Command, err)
 		}
 		if decision != Allow {
-			return nil, errdefs.PolicyDeniedf(
-				"sandbox: execution of %q denied: %s", cmd, reason)
+			return errdefs.PolicyDeniedf(
+				"sandbox: execution of %q denied: %s", req.Command, reason)
 		}
 		break
 	}
-	return r.inner.Exec(ctx, cmd, args, opts)
+	return nil
+}
+
+// Start implements ProcessManager: an interactive session crosses the
+// same predicate / approver chain as an Exec call, with TTY surfaced
+// on the request so the approver sees it is authorising a persistent
+// command channel. Once Start is approved, Read/Write/Resize/Terminate
+// never re-enter approval — the policy is fixed at Start.
+func (r *approvalRunner) Start(ctx context.Context, spec ProcessSpec) (Process, error) {
+	if len(spec.Argv) == 0 {
+		return nil, errdefs.Validationf("sandbox: ProcessSpec.Argv must name a command")
+	}
+	req := ExecRequest{
+		Command: spec.Argv[0],
+		Args:    spec.Argv[1:],
+		Opts:    spec.Opts,
+		TTY:     spec.TTY,
+	}
+	if err := r.authorize(ctx, req); err != nil {
+		return nil, err
+	}
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.Start(ctx, spec)
+}
+
+// List forwards the inner runner's session list when it has one.
+func (r *approvalRunner) List(ctx context.Context) ([]ProcessInfo, error) {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.List(ctx)
+}
+
+// Terminate forwards to the inner runner's session manager.
+func (r *approvalRunner) Terminate(ctx context.Context, id string) error {
+	pm := ProcessManagerOf(r.inner)
+	if pm == nil {
+		return errdefs.NotAvailablef(
+			"sandbox: underlying runner does not support process sessions")
+	}
+	return pm.Terminate(ctx, id)
 }
 
 // cloneExecRequest prevents predicates / approvers from mutating the
@@ -176,6 +236,21 @@ func CommandPatterns(patterns ...string) Predicate {
 			if ok, _ := filepath.Match(p, base); ok {
 				return fmt.Sprintf("command %q matches sensitive pattern %q", base, p), true
 			}
+		}
+		return "", false
+	})
+}
+
+// Interactive returns a predicate that matches interactive session
+// starts (ProcessSpec.TTY == true). Ordinary Exec calls never match.
+// Because an interactive session is an all-or-nothing command channel,
+// deployments that want a human in the loop for persistent shells
+// should install this predicate; combined with a nil approver it
+// fail-closes into "interactive sessions are forbidden".
+func Interactive() Predicate {
+	return PredicateFunc(func(req ExecRequest) (string, bool) {
+		if req.TTY {
+			return "interactive TTY session start", true
 		}
 		return "", false
 	})

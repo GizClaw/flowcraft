@@ -5,19 +5,23 @@ package bwrap
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit"
+	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
 	"github.com/GizClaw/flowcraft/sdkx/sandbox/bwrap/internal/bridge"
 )
 
@@ -37,6 +41,10 @@ type Runner struct {
 	extraFlags       []string
 	writablePaths    []string
 	defaultMaxOutput int64
+	processes        sandbox.ProcessManager
+	decision         func(httpkit.ProxyDecision)
+	hooks            mitm.ProxyHooks
+	outboundRoots    *x509.CertPool
 }
 
 // Enforcement reports the dimensions bwrap plus the shared
@@ -52,6 +60,9 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 			sandbox.NetAllowList,
 			sandbox.NetProxy,
 		},
+		Socks5:           true,
+		MITM:             true,
+		UnixSocketPolicy: true,
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
@@ -114,13 +125,18 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		}
 	}
 
-	return &Runner{
+	runner := &Runner{
 		rootDir:          abs,
 		binary:           binary,
 		extraFlags:       append([]string(nil), cfg.extra...),
 		writablePaths:    writable,
 		defaultMaxOutput: defaultMaxOutputBytes,
-	}, nil
+		decision:         cfg.decision,
+		hooks:            cfg.hooks,
+		outboundRoots:    cfg.roots,
+	}
+	runner.processes = sandbox.NewProcessRegistry(runner.spawnProcess)
+	return runner, nil
 }
 
 // Exec runs cmd with args inside a bubblewrap invocation that enforces
@@ -132,22 +148,8 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if cmd == "" {
 		return nil, errdefs.Validationf("bwrap: empty command")
 	}
-	if opts.Resources.DiskBytes != 0 {
-		return nil, errdefs.NotAvailablef(
-			"bwrap: disk limits not supported (no quota mechanism)")
-	}
-	if opts.Resources.CPUMillicores != 0 && opts.Timeout <= 0 {
-		return nil, errdefs.NotAvailablef(
-			"bwrap: CPUMillicores requires a per-call Timeout to derive a cpu-time cap")
-	}
-	// Memory and cpu caps ride on the shared sampling watcher, not on
-	// bwrap. Where that watcher cannot sample, honouring the call
-	// would run the child with no cap at all, so reject it instead of
-	// pretending.
-	if (opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0) && !sandbox.GroupCapsSupported() {
-		return nil, errdefs.NotAvailablef(
-			"bwrap: resource limits require process-group sampling, which is unavailable here",
-		)
+	if err := sandbox.ValidateExecPolicy(opts); err != nil {
+		return nil, err
 	}
 
 	resolvedWorkDir, err := r.resolveWorkDir(opts.WorkDir)
@@ -163,14 +165,39 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	if proxyMode {
 		var err error
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
-			Mode:       opts.Net.Mode,
-			AllowHosts: opts.Net.AllowHosts,
-			Upstream:   opts.Net.Proxy,
+			Mode:          opts.Net.Mode,
+			AllowHosts:    opts.Net.AllowHosts,
+			Rules:         opts.Net.Rules,
+			Upstream:      opts.Net.Proxy,
+			MITM:          opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
 		}
 		defer func() { _ = proxy.Close() }()
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if opts.Net.MITM != nil && opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"bwrap: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+		}
+		defer bundleCleanup()
+		if opts.Env.Inject == nil {
+			opts.Env.Inject = make(map[string]string)
+		} else {
+			opts.Env.Inject = maps.Clone(opts.Env.Inject)
+		}
+		opts.Env.Inject["SSL_CERT_FILE"] = bundlePath
 	}
 
 	flags, err := buildFlags(opts, os.Environ())
@@ -179,6 +206,16 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	}
 	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
 	fsFlags = append(fsFlags, netIsolationFlags(opts.Net.Mode)...)
+	if bundlePath != "" {
+		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
+	}
+	for _, path := range opts.Net.UnixSockets {
+		if _, statErr := os.Stat(path); statErr != nil {
+			return nil, errdefs.NotFoundf(
+				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
+		}
+		fsFlags = append(fsFlags, "--bind", path, path)
+	}
 
 	// The post-"--" argv. For NetAllowList / NetProxy the command is
 	// the in-netns bridge, which then runs the real command as its
@@ -286,6 +323,190 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 		return result, classifyStartError(cmd, runErr)
 	}
 	return result, nil
+}
+
+// Start implements sandbox.ProcessManager. The session runs inside the
+// same bubblewrap invocation as Exec; the in-netns bridge and host
+// enforcement proxy, when NetAllowList / NetProxy needs them, are
+// owned by the session and closed when the session exits or is closed.
+func (r *Runner) Start(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	return r.processes.Start(ctx, spec)
+}
+
+// List implements sandbox.ProcessManager.
+func (r *Runner) List(ctx context.Context) ([]sandbox.ProcessInfo, error) {
+	return r.processes.List(ctx)
+}
+
+// Terminate implements sandbox.ProcessManager.
+func (r *Runner) Terminate(ctx context.Context, id string) error {
+	return r.processes.Terminate(ctx, id)
+}
+
+// spawnProcess is the Runner's sandbox.ProcessStarter. It reuses the
+// exact flag assembly Exec uses (buildFlags + filesystemFlags +
+// netIsolationFlags + bridge re-exec), then hands the bwrap command to
+// the shared session implementation for pty/pipe stdio.
+func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sandbox.Process, error) {
+	if len(spec.Argv) == 0 {
+		return nil, errdefs.Validationf("bwrap: empty command")
+	}
+	if err := sandbox.ValidateExecPolicy(spec.Opts); err != nil {
+		return nil, err
+	}
+
+	resolvedWorkDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+	spec.Opts.WorkDir = resolvedWorkDir
+
+	proxyMode := spec.Opts.Net.Mode == sandbox.NetAllowList || spec.Opts.Net.Mode == sandbox.NetProxy
+	var proxy *httpkit.Proxy
+	if proxyMode {
+		proxy, err = httpkit.Start(httpkit.ProxyConfig{
+			Mode:          spec.Opts.Net.Mode,
+			AllowHosts:    spec.Opts.Net.AllowHosts,
+			Rules:         spec.Opts.Net.Rules,
+			Upstream:      spec.Opts.Net.Proxy,
+			MITM:          spec.Opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
+		})
+		if err != nil {
+			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
+		}
+	}
+
+	var bundlePath string
+	var bundleCleanup func()
+	if spec.Opts.Net.MITM != nil && spec.Opts.Net.MITM.Enabled {
+		if proxy == nil {
+			return nil, errdefs.NotAvailablef(
+				"bwrap: MITM requires allow_list or proxy net mode")
+		}
+		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+		}
+		if spec.Opts.Env.Inject == nil {
+			spec.Opts.Env.Inject = make(map[string]string)
+		} else {
+			spec.Opts.Env.Inject = maps.Clone(spec.Opts.Env.Inject)
+		}
+		spec.Opts.Env.Inject["SSL_CERT_FILE"] = bundlePath
+	}
+	abortBundle := func() {
+		if bundleCleanup != nil {
+			bundleCleanup()
+		}
+	}
+
+	flags, err := buildFlags(spec.Opts, os.Environ())
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		abortBundle()
+		return nil, err
+	}
+	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
+	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
+	if bundlePath != "" {
+		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
+	}
+	for _, path := range spec.Opts.Net.UnixSockets {
+		if _, statErr := os.Stat(path); statErr != nil {
+			if proxy != nil {
+				_ = proxy.Close()
+			}
+			abortBundle()
+			return nil, errdefs.NotFoundf(
+				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
+		}
+		fsFlags = append(fsFlags, "--bind", path, path)
+	}
+
+	var command []string
+	if proxyMode {
+		exe, err := os.Executable()
+		if err != nil {
+			if proxy != nil {
+				_ = proxy.Close()
+			}
+			abortBundle()
+			return nil, errdefs.Internalf(
+				"bwrap: resolve host binary for in-netns bridge: %v", err)
+		}
+		fsFlags = append(fsFlags,
+			"--ro-bind", exe, exe,
+			"--bind", proxy.SocketPath(), sandboxProxySock,
+		)
+		command = append([]string{
+			exe, bridge.Marker, "--sock", sandboxProxySock, "--", spec.Argv[0],
+		}, spec.Argv[1:]...)
+	} else {
+		command = append([]string{spec.Argv[0]}, spec.Argv[1:]...)
+	}
+
+	argv := append([]string{}, r.extraFlags...)
+	argv = append(argv, flags...)
+	argv = append(argv, fsFlags...)
+	argv = append(argv, "--")
+	argv = append(argv, command...)
+
+	c := exec.Command(r.binary, argv...)
+	c.Env = os.Environ()
+
+	maxOut := spec.Opts.Resources.MaxOutputBytes
+	if maxOut <= 0 {
+		maxOut = r.defaultMaxOutput
+	}
+	if maxOut <= 0 {
+		maxOut = math.MaxInt64
+	}
+	spec.Opts.Resources.MaxOutputBytes = maxOut
+
+	proc, err := sandbox.StartSession(ctx, spec, c)
+	if err != nil {
+		if proxy != nil {
+			_ = proxy.Close()
+		}
+		abortBundle()
+		return nil, err
+	}
+	if proxy != nil {
+		cleanup := &sessionCleanup{cleanup: func() {
+			_ = proxy.Close()
+			abortBundle()
+		}}
+		go func() {
+			_, _ = proc.Wait(context.Background())
+			cleanup.once.Do(cleanup.cleanup)
+		}()
+		return &sessionProcess{Process: proc, cleanup: cleanup}, nil
+	}
+	return proc, nil
+}
+
+// sessionProcess keeps a sandbox.Process's side resources (the host
+// enforcement proxy) alive for exactly as long as the session.
+type sessionProcess struct {
+	sandbox.Process
+	cleanup *sessionCleanup
+}
+
+func (p *sessionProcess) Close() error {
+	err := p.Process.Close()
+	p.cleanup.once.Do(p.cleanup.cleanup)
+	return err
+}
+
+type sessionCleanup struct {
+	once    sync.Once
+	cleanup func()
 }
 
 func resolveConfiguredPath(path string) (string, error) {
