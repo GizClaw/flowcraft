@@ -88,7 +88,10 @@ func TestSearchTool_SelectLoadsRealSchemaForNextRound(t *testing.T) {
 			).Required("path").Build(),
 			func(_ context.Context, _ string) (string, error) { return "ok", nil },
 		), nil
-	}, ExposureDeferred); err != nil {
+	}, ExposureDeferred, WithPlaceholder(message.Definition{
+		Name:        "deferred_tool",
+		Description: "alpha shared declared description",
+	})); err != nil {
 		t.Fatalf("RegisterProxy: %v", err)
 	}
 
@@ -99,6 +102,9 @@ func TestSearchTool_SelectLoadsRealSchemaForNextRound(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 	var result struct {
+		Hits []struct {
+			Name string `json:"name"`
+		} `json:"hits"`
 		Selected []string `json:"selected"`
 	}
 	if err := json.Unmarshal([]byte(raw), &result); err != nil {
@@ -106,6 +112,9 @@ func TestSearchTool_SelectLoadsRealSchemaForNextRound(t *testing.T) {
 	}
 	if len(result.Selected) != 1 || result.Selected[0] != "deferred_tool" {
 		t.Fatalf("selected = %v, want [deferred_tool]", result.Selected)
+	}
+	if len(result.Hits) != 1 || result.Hits[0].Name != "deferred_tool" {
+		t.Fatalf("hits = %+v, want the declared proxy", result.Hits)
 	}
 
 	// Round N+1: the real definition, not the LazyTool placeholder.
@@ -134,7 +143,7 @@ func TestSearchTool_SelectSkipsUnloadableTool(t *testing.T) {
 
 	ctx := WithCatalog(context.Background(), c)
 	raw, err := NewSearchTool().Execute(ctx,
-		`{"query":"server unreachable","select":["down"]}`)
+		`{"query":"down","select":["down"]}`)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}

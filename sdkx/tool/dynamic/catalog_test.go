@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -212,6 +213,54 @@ func TestCatalog_EnsureLoadedUnknownTool(t *testing.T) {
 	err := c.EnsureLoaded(context.Background(), "ghost")
 	if !errdefs.IsNotFound(err) {
 		t.Fatalf("EnsureLoaded = %v, want NotFound", err)
+	}
+}
+
+func TestCatalog_SearchDoesNotWakeDeferredProxies(t *testing.T) {
+	reg := sdktool.NewRegistry()
+	c := New(reg, WithDefaultExposure(ExposureDeferred))
+	t.Cleanup(func() { _ = c.Close() })
+
+	var loads atomic.Int32
+	if err := c.RegisterProxy("p", func(_ context.Context) (sdktool.Tool, error) {
+		loads.Add(1)
+		return funcTool("p", "alpha real"), nil
+	}, ExposureDeferred, WithPlaceholder(message.Definition{
+		Name:        "p",
+		Description: "alpha declared",
+	})); err != nil {
+		t.Fatalf("RegisterProxy: %v", err)
+	}
+
+	hits, err := c.Search(context.Background(), "alpha", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if loads.Load() != 0 {
+		t.Fatalf("Search woke the deferred proxy: %d loader calls", loads.Load())
+	}
+	if len(hits) != 1 || hits[0].Name != "p" {
+		t.Fatalf("Search hits = %+v, want the declared proxy metadata", hits)
+	}
+
+	// The explicit opt-in wakes deferred proxies.
+	hits, err = c.SearchWithLoad(context.Background(), "alpha", 10)
+	if err != nil {
+		t.Fatalf("SearchWithLoad: %v", err)
+	}
+	if loads.Load() != 1 {
+		t.Fatalf("SearchWithLoad did not load the proxy: %d loader calls", loads.Load())
+	}
+	if len(hits) != 1 || !strings.Contains(hits[0].Description, "real") {
+		t.Fatalf("SearchWithLoad hits = %+v, want the loaded real metadata", hits)
+	}
+
+	// The proxy is now loaded; select must not load it again.
+	if err := c.EnsureLoaded(context.Background(), "p"); err != nil {
+		t.Fatalf("EnsureLoaded: %v", err)
+	}
+	if loads.Load() != 1 {
+		t.Errorf("loader calls after select = %d, want exactly 1", loads.Load())
 	}
 }
 

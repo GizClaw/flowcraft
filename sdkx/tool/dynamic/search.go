@@ -23,14 +23,33 @@ type searchDoc struct {
 // defaultSearchLimit is used when tool_search omits limit.
 const defaultSearchLimit = 8
 
-// Search triggers a catalog load (so deferred servers contribute their
-// real tools) and ranks searchable definitions against query with BM25.
-// Searchable exposures are Direct and Deferred; Always tools are already
-// visible and Hidden tools must never be surfaced. Load failures are
-// intentionally non-fatal: one unreachable server must not hide the
-// tools that did load, matching the MCP failure-isolation contract.
+// Search ranks the already-known searchable definitions against query
+// with BM25. Searchable exposures are Direct and Deferred; Always tools
+// are already visible and Hidden tools must never be surfaced.
+//
+// Search never loads: deferred proxies are searched by their declared
+// placeholder metadata (name + description), so the first search does
+// not wake up every MCP server. Only a later select (or an explicit
+// Load / EnsureLoaded by the host) connects the chosen server — that is
+// what keeps "deferred" deferred. Hosts that need the complete metadata
+// set (including undeclared server tools) opt into SearchWithLoad or
+// call Load / prewarm explicitly.
 func (c *Catalog) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
-	_ = c.Load(ctx)
+	return c.search(ctx, query, limit, false)
+}
+
+// SearchWithLoad is the explicit opt-in for hosts that want the full
+// metadata set: it loads every deferred proxy (connecting MCP servers)
+// before ranking. Default Search stays lazy — a first search must not
+// wake every server just to answer a query.
+func (c *Catalog) SearchWithLoad(ctx context.Context, query string, limit int) ([]SearchHit, error) {
+	return c.search(ctx, query, limit, true)
+}
+
+func (c *Catalog) search(ctx context.Context, query string, limit int, load bool) ([]SearchHit, error) {
+	if load {
+		_ = c.Load(ctx)
+	}
 	c.mu.RLock()
 	policy := c.policyCopy()
 	c.mu.RUnlock()
