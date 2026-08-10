@@ -88,8 +88,15 @@ a quota-capable backend and is rejected with `NotAvailable`.
   per-host leaf certificates from a temporary in-memory CA, runs
   hooks (`OnConnect` / `OnRequest` / `OnResponse`), and injects the CA
   into the child via `SSL_CERT_FILE` (bundle bind-mounted for bwrap,
-  host path for seatbelt). MITM v1 is HTTP/1.1 only — h2-only clients
-  are not intercepted.
+  host path for seatbelt). Both HTTP/1.1 and HTTP/2 clients are
+  terminated (ALPN offers h2 + http/1.1; h2-only clients like gRPC
+  work). Host selection is policy-driven: empty `hosts` MITMs
+  everything, `hosts` restricts the set, and `exclude_hosts` always
+  raw-tunnels (allow/deny rules still apply, content hooks do not).
+  Because pinned clients fail closed at TLS, deployments with
+  cert-pinning applications should list those destinations in
+  `exclude_hosts` — that is the explicit pass-through, never a silent
+  downgrade.
 - `UnixSockets` is an allow-list of host unix socket paths. bwrap
   bind-mounts only the listed paths (missing paths fail `Start`
   loudly); seatbelt rejects any non-empty list with `NotAvailable`.
@@ -100,6 +107,58 @@ a quota-capable backend and is rejected with `NotAvailable`.
 All features are gated by `Enforcement` (`Socks5`, `MITM`,
 `UnixSocketPolicy`); the config builder rejects a policy the backend
 cannot enforce with `NotAvailable`, never by silently downgrading.
+
+Complete sandbox document exercising every knob:
+
+```yaml
+version: v1
+sandboxes:
+  coding:
+    backend: bwrap            # or seatbelt on macOS / local for dev
+    workspace: project
+    defaults:
+      timeout: 2m
+      env:
+        allow: [PATH, HOME, GOCACHE]
+        inject: { CI: "1" }
+      net:
+        mode: allow_list
+        rules:
+          - action: deny
+            host: "*.internal.example"
+          - action: allow
+            host: "example.com"
+            port: 443
+          - action: allow
+            host: "10.0.0.0/8"
+        unix_sockets: [/var/run/docker.sock]
+        mitm:
+          enabled: true
+          inspect_bodies: false
+          max_body_bytes: 65536
+          exclude_hosts: ["*.nopin.example"]
+      resources:
+        memory_bytes: 2147483648
+        cpu_millicores: 2000
+        max_output_bytes: 10485760
+    allowed_commands: [go, pytest, node]
+    approval:
+      interactive: true        # TTY session starts require approval
+      non_default_network: true
+      sensitive_commands: [rm]
+```
+
+The SOCKS5 variant only changes the proxy string — the child still
+speaks plain HTTP proxy to the enforcement proxy:
+
+```yaml
+      net:
+        mode: proxy
+        proxy: socks5://user:pass@proxy.example:1080
+        rules:
+          - action: deny
+            host: "*.blocked.example"
+```
 
 ### Enforcement
 
@@ -244,6 +303,28 @@ entirely.
 `ProcessManager`; the sandboxed backends run the session inside the
 same profile / namespace as `Exec`, including net enforcement and the
 host-side proxy for `allow_list` / `proxy` modes.
+
+### Signals and event push
+
+Processes expose two optional capabilities, discovered with the same
+`(T, bool)` pattern:
+
+- `ProcessSignalerOf(p)` finds `Signal(ctx, sig)`. P1 supports only
+  `interrupt` — true Ctrl-C semantics: a VINTR byte through the pty on
+  TTY sessions (the terminal driver signals the foreground process
+  group), SIGINT to the whole group on pipe sessions. The process may
+  catch the signal and continue; the session stays usable. A raw-mode
+  TTY (ISIG off) sees no signal — authentic Ctrl-C behaviour. After
+  the process exits or the session closes, `Signal` returns
+  `ErrProcessClosed`.
+- `ProcessEventSourceOf(p)` finds `Watch(ctx)`: a per-subscriber
+  bounded queue (256 events) that replays the retained output before
+  delivering live `ProcessEvent`s (output / exited / closed / lag).
+  The `Events()` channel closes on ctx cancellation, `watcher.Close()`,
+  or right after the session's `Closed` event. A slow subscriber
+  receives `ProcessEventLag` (with the first missed byte cursor) and
+  the watcher closes — recover with `Read(afterSeq=lag.Seq)` or
+  re-`Watch`; the pull `Read` path is unchanged.
 
 ## Workspace vs Sandbox
 

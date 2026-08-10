@@ -206,6 +206,114 @@ type Process interface {
 	Close() error
 }
 
+// ProcessSignal is a soft signal a Process can receive. Unlike
+// Terminate, a signal interrupts: the process may catch it and
+// continue, and the session stays usable.
+type ProcessSignal int
+
+const (
+	// ProcessSignalInterrupt is Ctrl-C semantics: VINTR on TTY
+	// sessions (the terminal driver signals the foreground process
+	// group), SIGINT to the whole group on pipe sessions.
+	ProcessSignalInterrupt ProcessSignal = iota
+)
+
+func (s ProcessSignal) String() string {
+	switch s {
+	case ProcessSignalInterrupt:
+		return "interrupt"
+	default:
+		return "unknown"
+	}
+}
+
+// ProcessSignaler is the optional signal capability of a Process.
+// Discover it with ProcessSignalerOf. Backends without the capability
+// must not implement it; Signal then surfaces NotAvailable instead of
+// a silent no-op.
+type ProcessSignaler interface {
+	Signal(ctx context.Context, sig ProcessSignal) error
+}
+
+// ProcessSignalerOf returns the ProcessSignaler implemented by p, if
+// any. It is the (T, bool) twin of ProcessManagerOf for process-level
+// capabilities.
+func ProcessSignalerOf(p Process) (ProcessSignaler, bool) {
+	s, ok := p.(ProcessSignaler)
+	return s, ok
+}
+
+// ProcessEventType classifies one pushed process event.
+type ProcessEventType int
+
+const (
+	// ProcessEventOutput carries one output chunk (Seq = the chunk's
+	// first byte; Data references the process's immutable buffer).
+	ProcessEventOutput ProcessEventType = iota
+	// ProcessEventExited carries the final exit; Seq is the completion
+	// cursor (all output has been emitted).
+	ProcessEventExited
+	// ProcessEventClosed is emitted when the session is Closed; the
+	// Events channel closes right after it.
+	ProcessEventClosed
+	// ProcessEventLag means the subscriber's bounded queue overflowed.
+	// Seq is the first missed byte cursor: the consumer must
+	// Read(afterSeq=Lag.Seq) to fill the gap. The watcher closes
+	// immediately after this event — re-Watch to resume live delivery.
+	ProcessEventLag
+)
+
+func (t ProcessEventType) String() string {
+	switch t {
+	case ProcessEventOutput:
+		return "output"
+	case ProcessEventExited:
+		return "exited"
+	case ProcessEventClosed:
+		return "closed"
+	case ProcessEventLag:
+		return "lag"
+	default:
+		return "unknown"
+	}
+}
+
+// ProcessEvent is one pushed event. Field validity follows Type:
+// Output fills Seq/Stream/Data; Exited fills Seq/Exit; Lag fills Seq;
+// Closed fills Seq only.
+type ProcessEvent struct {
+	Seq    int64
+	Type   ProcessEventType
+	Stream ProcessStream
+	Data   []byte
+	Exit   *ProcessExit
+}
+
+// ProcessWatcher is one subscription to a Process's event stream.
+// Events delivers replay-then-live events in seq order. The channel
+// closes when ctx cancels, when Close is called, or right after the
+// process's Closed event.
+type ProcessWatcher interface {
+	Events() <-chan ProcessEvent
+	Close() error
+}
+
+// ProcessEventSource is the optional push-capability of a Process:
+// Watch subscribes one independent bounded queue that replays the
+// retained output before delivering live events. Discover it with
+// ProcessEventSourceOf. Pull-based Read is unchanged and stays the
+// recovery path after ProcessEventLag.
+type ProcessEventSource interface {
+	Watch(ctx context.Context) (ProcessWatcher, error)
+}
+
+// ProcessEventSourceOf returns the ProcessEventSource implemented by
+// p, if any.
+func ProcessEventSourceOf(p Process) (ProcessEventSource, bool) {
+	s, ok := p.(ProcessEventSource)
+	return s, ok
+}
+
 // ProcessManager is the optional long-running-session capability of a
 // sandbox. Runner.Exec remains the one-shot interface; a Runner that
 // additionally implements ProcessManager can spawn interactive or
@@ -289,6 +397,9 @@ func (r *processRegistry) Start(ctx context.Context, spec ProcessSpec) (Process,
 	r.sessions[id] = rec
 	r.mu.Unlock()
 
+	// Resolve the ID before spawning so the backend's Process handle
+	// and the registry record share one identifier.
+	spec.ID = id
 	proc, err := r.starter(ctx, spec)
 	if err != nil {
 		r.remove(id)
@@ -412,6 +523,28 @@ func (p *registryProcess) Resize(ctx context.Context, rows, cols int) error {
 
 func (p *registryProcess) Terminate(ctx context.Context) error {
 	return p.inner.Terminate(ctx)
+}
+
+// Signal forwards the optional signal capability of the underlying
+// session. registryProcess wraps inner as a named field, so methods
+// are not promoted automatically; the wrapper must implement the
+// optional interfaces itself for discovery to work on Start handles.
+func (p *registryProcess) Signal(ctx context.Context, sig ProcessSignal) error {
+	signaler, ok := ProcessSignalerOf(p.inner)
+	if !ok {
+		return errdefs.NotAvailablef("sandbox: process does not support signals")
+	}
+	return signaler.Signal(ctx, sig)
+}
+
+// Watch forwards the optional event-source capability of the
+// underlying session, mirroring Signal.
+func (p *registryProcess) Watch(ctx context.Context) (ProcessWatcher, error) {
+	source, ok := ProcessEventSourceOf(p.inner)
+	if !ok {
+		return nil, errdefs.NotAvailablef("sandbox: process does not support event streams")
+	}
+	return source.Watch(ctx)
 }
 
 func (p *registryProcess) Wait(ctx context.Context) (ProcessExit, error) {

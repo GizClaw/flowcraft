@@ -34,6 +34,8 @@ sandboxes:
           enabled: true
           inspect_bodies: true
           max_body_bytes: 65536
+          hosts: ["example.com"]
+          exclude_hosts: ["*.nopin.example"]
 `)
 	net := doc.Sandboxes["x"].Defaults.Net
 	if len(net.Rules) != 3 || net.Rules[0].Action != "deny" || net.Rules[1].Port != 443 {
@@ -44,6 +46,12 @@ sandboxes:
 	}
 	if net.MITM == nil || !net.MITM.Enabled || !net.MITM.InspectBodies || net.MITM.MaxBodyBytes != 65536 {
 		t.Fatalf("mitm = %+v", net.MITM)
+	}
+	if len(net.MITM.Hosts) != 1 || net.MITM.Hosts[0] != "example.com" {
+		t.Fatalf("mitm.hosts = %v", net.MITM.Hosts)
+	}
+	if len(net.MITM.ExcludeHosts) != 1 || net.MITM.ExcludeHosts[0] != "*.nopin.example" {
+		t.Fatalf("mitm.exclude_hosts = %v", net.MITM.ExcludeHosts)
 	}
 
 	proxyDoc := mustParse(t, `

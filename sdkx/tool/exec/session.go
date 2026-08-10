@@ -142,8 +142,8 @@ func (t *SessionTool) Definition() message.Definition {
 			"session is an all-or-nothing command channel, so prefer "+
 			"the exec tool for one-shot commands.",
 		message.ToolEnumProperty("action", "string",
-			"Operation to perform. start creates a session and returns its session_id; read returns buffered output from after_seq; write sends input bytes; resize sets the pty window size; status reports whether the session is still running and its exit; terminate stops the process (output stays readable until close); close frees the session.",
-			"start", "read", "write", "resize", "status", "terminate", "close"),
+			"Operation to perform. start creates a session and returns its session_id; read returns buffered output from after_seq; write sends input bytes; resize sets the pty window size; status reports whether the session is still running and its exit; signal interrupts the session (Ctrl-C semantics, the session stays usable); terminate stops the process (output stays readable until close); close frees the session.",
+			"start", "read", "write", "resize", "status", "signal", "terminate", "close"),
 		message.ToolProperty("session_id", "string",
 			"Session id returned by start. Required for every action except start."),
 		message.ToolProperty("command", "string",
@@ -167,6 +167,9 @@ func (t *SessionTool) Definition() message.Definition {
 			"Maximum bytes to return in one read. Defaults to 4096, capped at 1048576."),
 		message.ToolProperty("data", "string",
 			"Input bytes to write to the process (write)."),
+		message.ToolEnumProperty("signal", "string",
+			"Signal to send (signal action). Only interrupt is supported: VINTR on TTY sessions, SIGINT to the process group otherwise.",
+			"interrupt"),
 	).Required("action").DisallowAdditionalProperties().Build()
 }
 
@@ -191,6 +194,7 @@ type sessionArgs struct {
 	AfterSeq       *int64   `json:"after_seq"`
 	MaxBytes       *int     `json:"max_bytes"`
 	Data           string   `json:"data"`
+	Signal         string   `json:"signal"`
 }
 
 // Execute implements [tool.Tool]. It parses the action, dispatches to
@@ -221,6 +225,8 @@ func (t *SessionTool) Execute(ctx context.Context, arguments string) (string, er
 		return t.resize(ctx, a)
 	case "status":
 		return t.status(ctx, a)
+	case "signal":
+		return t.signal(ctx, a)
 	case "terminate":
 		return t.terminate(ctx, a)
 	case "close":
@@ -229,6 +235,29 @@ func (t *SessionTool) Execute(ctx context.Context, arguments string) (string, er
 		return "", errdefs.Validationf(
 			"exec_session: unknown action %q (start|read|write|resize|status|terminate|close)", a.Action)
 	}
+}
+
+func (t *SessionTool) signal(ctx context.Context, a sessionArgs) (string, error) {
+	s, err := t.lookup(a.SessionID)
+	if err != nil {
+		return "", err
+	}
+	sig := a.Signal
+	if sig == "" {
+		sig = "interrupt"
+	}
+	if sig != "interrupt" {
+		return "", errdefs.Validationf("exec_session: unsupported signal %q", sig)
+	}
+	signaler, ok := sandbox.ProcessSignalerOf(s.proc)
+	if !ok {
+		return "", errdefs.NotAvailablef(
+			"exec_session: backend does not support process signals")
+	}
+	if err := signaler.Signal(ctx, sandbox.ProcessSignalInterrupt); err != nil {
+		return "", classifySessionError(err)
+	}
+	return "{}", nil
 }
 
 func (t *SessionTool) start(ctx context.Context, a sessionArgs) (string, error) {

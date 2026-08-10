@@ -2,8 +2,10 @@
 // enforcement proxy: a per-run temporary CA signs leaf certificates
 // for CONNECT hosts, the proxy terminates TLS with the child, applies
 // hooks, and re-establishes TLS to the real target. It is HTTP/1.1
-// only by design (ALPN advertises http/1.1); h2-only clients are
-// documented as unsupported.
+// and HTTP/2 capable: ALPN offers both h2 and http/1.1, so gRPC-style
+// h2-only clients are terminated too, with everything else falling
+// back to h1. Host selection (MITMPolicy.Hosts / ExcludeHosts)
+// decides which CONNECT tunnels are terminated at all.
 package mitm
 
 import (

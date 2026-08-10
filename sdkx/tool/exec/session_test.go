@@ -56,8 +56,13 @@ func TestSessionDefinition_Shape(t *testing.T) {
 	props, _ := schema["properties"].(map[string]any)
 	action, _ := props["action"].(map[string]any)
 	enums, _ := action["enum"].([]any)
-	if len(enums) != 7 {
-		t.Fatalf("action enum = %v, want 7 actions", enums)
+	if len(enums) != 8 {
+		t.Fatalf("action enum = %v, want 8 actions", enums)
+	}
+	signalProp, _ := props["signal"].(map[string]any)
+	signalEnums, _ := signalProp["enum"].([]any)
+	if len(signalEnums) != 1 || signalEnums[0] != "interrupt" {
+		t.Fatalf("signal enum = %v, want [interrupt]", signalEnums)
 	}
 }
 
@@ -133,6 +138,81 @@ func TestSessionExecute_Resize_Validation(t *testing.T) {
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("bad resize = %v, want Validation", err)
 	}
+}
+
+func TestSessionExecute_Signal_UnsupportedBackend(t *testing.T) {
+	tl, err := exec.NewSession(&fakePM{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = tl.Close() }()
+	start, err := tl.Execute(context.Background(), `{"action":"start","command":"sh"}`)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	id := sessionID(t, start)
+	_, err = tl.Execute(context.Background(), `{"action":"signal","session_id":"`+id+`"}`)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("signal on unsupported backend = %v, want NotAvailable", err)
+	}
+	_, err = tl.Execute(context.Background(), `{"action":"signal","session_id":"`+id+`","signal":"term"}`)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("unknown signal = %v, want Validation", err)
+	}
+}
+
+func TestSessionExecute_Signal_E2E(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pty/process sessions are unix-only")
+	}
+	rn := sandbox.NewLocalRunner(t.TempDir())
+	tl, err := exec.NewSession(sandbox.ProcessManagerOf(rn))
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer func() { _ = tl.Close() }()
+
+	start, err := tl.Execute(context.Background(),
+		`{"action":"start","command":"/bin/sh","args":["-c","trap 'echo caught; exit 0' INT; echo ready; read x"]}`)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	id := sessionID(t, start)
+
+	var sb strings.Builder
+	var seq int64
+	for !strings.Contains(sb.String(), "ready") {
+		out := readSessionAction(t, tl, id, seq)
+		for _, ch := range out.Chunks {
+			sb.WriteString(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if _, err := tl.Execute(context.Background(),
+		`{"action":"signal","session_id":"`+id+`"}`); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+	for !strings.Contains(sb.String(), "caught") {
+		out := readSessionAction(t, tl, id, seq)
+		for _, ch := range out.Chunks {
+			sb.WriteString(ch.Data)
+		}
+		seq = out.NextSeq
+		if out.EOF {
+			break
+		}
+	}
+	if !strings.Contains(sb.String(), "caught") {
+		t.Fatalf("signal did not interrupt the session: %q", sb.String())
+	}
+	st := waitSessionStatus(t, tl, id, false, 5*time.Second)
+	if st.Reason != "exited" || st.ExitCode != 0 {
+		t.Fatalf("status = %+v, want exited(0)", st)
+	}
+	closeSessionAction(t, tl, id)
 }
 
 func TestSessionExecute_Close_TerminatesSessions(t *testing.T) {

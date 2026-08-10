@@ -15,7 +15,7 @@ func TestOutputLog_TrimAndSequenceGap(t *testing.T) {
 	log.append(ProcessStreamStdout, bytesOf(60))
 	log.append(ProcessStreamStdout, bytesOf(60))
 	log.append(ProcessStreamStdout, bytesOf(60))
-	log.finish()
+	log.finish(ProcessExit{})
 
 	if got := log.retainedSeqLocked(); got != 120 {
 		t.Fatalf("retainedSeq = %d, want 120 (only the newest 60-byte chunk fits the 100-byte budget)", got)
@@ -51,7 +51,7 @@ func TestOutputLog_TrimAndSequenceGap(t *testing.T) {
 func TestOutputLog_SingleChunkOverBudgetStaysReplayable(t *testing.T) {
 	log := newOutputLog(10)
 	log.append(ProcessStreamTTY, bytesOf(100))
-	log.finish()
+	log.finish(ProcessExit{})
 
 	out, err := log.read(context.Background(), 0, 4096)
 	if err != nil {
@@ -103,6 +103,102 @@ func TestOutputLog_FutureSeqIsValidation(t *testing.T) {
 	_, err := log.read(context.Background(), 99, 16)
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("future afterSeq error = %v, want Validation", err)
+	}
+}
+
+func TestWatcher_ReplayThenLiveOrdering(t *testing.T) {
+	log := newOutputLog(0)
+	log.append(ProcessStreamStdout, []byte("one"))
+	log.mu.Lock()
+	w := log.subscribe()
+	log.mu.Unlock()
+	go w.run(context.Background())
+
+	done := make(chan []ProcessEvent, 1)
+	go func() {
+		var got []ProcessEvent
+		for ev := range w.Events() {
+			got = append(got, ev)
+		}
+		done <- got
+	}()
+
+	log.append(ProcessStreamStderr, []byte("two"))
+	log.finish(ProcessExit{Code: 7, Reason: ProcessExited})
+	_ = w.Close()
+
+	got := <-done
+	// subscribe() is live-only (replay belongs to session.Watch), so
+	// pre-subscribe output is not delivered.
+	if len(got) != 2 {
+		types := make([]string, len(got))
+		for i, ev := range got {
+			types[i] = ev.Type.String()
+		}
+		t.Fatalf("events = %d (%v), want live(1) + exited(1)", len(got), types)
+	}
+	if got[0].Type != ProcessEventOutput || string(got[0].Data) != "two" || got[0].Stream != ProcessStreamStderr {
+		t.Fatalf("event[1] = %+v", got[1])
+	}
+	if got[1].Type != ProcessEventExited || got[1].Exit == nil || got[1].Exit.Code != 7 {
+		t.Fatalf("event[1] = %+v, want Exited(7)", got[1])
+	}
+	if got[1].Seq != 6 {
+		t.Fatalf("Exited seq = %d, want 6 (3+3 bytes)", got[1].Seq)
+	}
+}
+
+func TestWatcher_LagThenClose(t *testing.T) {
+	log := newOutputLog(0)
+	log.mu.Lock()
+	w := log.subscribe()
+	log.mu.Unlock()
+	go w.run(context.Background())
+
+	for i := 0; i < 300; i++ {
+		log.append(ProcessStreamStdout, []byte("x"))
+	}
+
+	done := make(chan []ProcessEvent, 1)
+	go func() {
+		var got []ProcessEvent
+		for ev := range w.Events() {
+			got = append(got, ev)
+		}
+		done <- got
+	}()
+	got := <-done
+	if len(got) != watcherQueueSize {
+		t.Fatalf("drained %d events, want queue capacity %d (one slot freed for Lag)", len(got), watcherQueueSize)
+	}
+	last := got[len(got)-1]
+	if last.Type != ProcessEventLag {
+		t.Fatalf("last event = %v, want ProcessEventLag", last.Type)
+	}
+	if last.Seq == 0 {
+		t.Fatal("Lag must carry the first missed byte cursor")
+	}
+}
+
+func TestWatcher_ClosedEventOnLogClose(t *testing.T) {
+	log := newOutputLog(0)
+	log.mu.Lock()
+	w := log.subscribe()
+	log.mu.Unlock()
+	go w.run(context.Background())
+
+	done := make(chan []ProcessEvent, 1)
+	go func() {
+		var got []ProcessEvent
+		for ev := range w.Events() {
+			got = append(got, ev)
+		}
+		done <- got
+	}()
+	log.close()
+	got := <-done
+	if len(got) != 1 || got[0].Type != ProcessEventClosed {
+		t.Fatalf("events = %+v, want one Closed", got)
 	}
 }
 

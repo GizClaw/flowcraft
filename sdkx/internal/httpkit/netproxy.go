@@ -300,7 +300,7 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
 	}
-	if p.mitm != nil {
+	if p.mitm != nil && p.mitm.ShouldMITM(host) {
 		if err := p.mitm.Serve(client, host, dialHost); err != nil {
 			return
 		}

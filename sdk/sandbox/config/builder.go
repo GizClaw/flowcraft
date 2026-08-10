@@ -246,6 +246,8 @@ func toMITMPolicy(m *MITMJSON) *coresandbox.MITMPolicy {
 		Enabled:       m.Enabled,
 		InspectBodies: m.InspectBodies,
 		MaxBodyBytes:  m.MaxBodyBytes,
+		Hosts:         slices.Clone(m.Hosts),
+		ExcludeHosts:  slices.Clone(m.ExcludeHosts),
 	}
 }
 

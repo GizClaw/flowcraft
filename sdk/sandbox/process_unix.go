@@ -5,6 +5,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,12 +17,17 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 
 	"github.com/creack/pty"
+	"github.com/rs/xid"
 )
 
 const (
 	defaultSessionRows = 24
 	defaultSessionCols = 80
 	sessionCopyChunk   = 32 * 1024
+	// watcherQueueSize bounds each event subscriber's live queue.
+	// Overflow surfaces as ProcessEventLag followed by the watcher
+	// closing; consumers recover with Read(afterSeq).
+	watcherQueueSize = 256
 	// sessionTerminateGrace is how long Terminate waits after SIGTERM
 	// before escalating to SIGKILL, so TUI/REPL children get a chance
 	// to restore the terminal and flush state.
@@ -37,7 +43,7 @@ const (
 //   - tty=false: stdin is piped and stdout/stderr are tagged streams.
 //
 // Policy validation belongs to the backend (see ValidateExecPolicy);
-// this constructor enforces mechanics only. opts.Resources.
+// this constructor enforces mechanics only. spec.Opts.Resources.
 // MaxOutputBytes bounds the replayable output ring when positive;
 // non-positive keeps all output (callers that want the default cap
 // must apply it, as the built-in runners do).
@@ -45,24 +51,35 @@ const (
 // StartSession is the shared seam the built-in runners use so
 // seatbelt/bwrap/LocalRunner all get identical seq, resize, and
 // termination semantics.
-func StartSession(ctx context.Context, cmd *exec.Cmd, opts ExecOptions, tty bool, rows, cols int) (Process, error) {
+//
+// The returned Process always carries a stable ID: spec.ID when set,
+// otherwise a manager-generated one. Built-in registries resolve the
+// ID before spawning, so ProcessManager.List / Terminate and the
+// handle's ID() always agree.
+func StartSession(ctx context.Context, spec ProcessSpec, cmd *exec.Cmd) (Process, error) {
 	if cmd == nil {
 		return nil, errdefs.Validationf("sandbox: nil command for process session")
 	}
+	rows, cols := spec.Rows, spec.Cols
 	if rows <= 0 {
 		rows = defaultSessionRows
 	}
 	if cols <= 0 {
 		cols = defaultSessionCols
 	}
+	id := spec.ID
+	if id == "" {
+		id = xid.New().String()
+	}
 
 	s := &session{
+		id:   id,
 		cmd:  cmd,
-		out:  newOutputLog(opts.Resources.MaxOutputBytes),
+		out:  newOutputLog(spec.Opts.Resources.MaxOutputBytes),
 		done: make(chan struct{}),
 	}
 
-	if tty {
+	if spec.TTY {
 		ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: uint16(rows), Cols: uint16(cols)})
 		if err != nil {
 			return nil, classifyStartError(cmd.Path, err)
@@ -95,15 +112,15 @@ func StartSession(ctx context.Context, cmd *exec.Cmd, opts ExecOptions, tty bool
 	}
 	s.proc = cmd.Process
 
-	if opts.Resources.MemoryBytes > 0 || opts.Resources.CPUMillicores > 0 {
+	if spec.Opts.Resources.MemoryBytes > 0 || spec.Opts.Resources.CPUMillicores > 0 {
 		// The Start ctx only bounds the spawn; the session outlives it.
 		// WithoutCancel keeps the watcher's telemetry rooted in the
 		// originating trace without making a canceled Start kill the
 		// session.
-		s.watcher = StartGroupCapsWatcher(context.WithoutCancel(ctx), s.pgid, opts.Resources, opts.Timeout)
+		s.watcher = StartGroupCapsWatcher(context.WithoutCancel(ctx), s.pgid, spec.Opts.Resources, spec.Opts.Timeout)
 	}
-	if opts.Timeout > 0 {
-		timer := time.AfterFunc(opts.Timeout, s.timeoutKill)
+	if spec.Opts.Timeout > 0 {
+		timer := time.AfterFunc(spec.Opts.Timeout, s.timeoutKill)
 		go func() {
 			<-s.done
 			timer.Stop()
@@ -137,12 +154,13 @@ func (r *LocalRunner) spawnProcess(ctx context.Context, spec ProcessSpec) (Proce
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = buildEnv(spec.Opts.Env)
-	return StartSession(ctx, cmd, spec.Opts, spec.TTY, spec.Rows, spec.Cols)
+	return StartSession(ctx, spec, cmd)
 }
 
 // session is the concrete Process implementation shared by all unix
 // backends.
 type session struct {
+	id      string
 	cmd     *exec.Cmd
 	ptmx    *os.File
 	stdin   io.WriteCloser
@@ -161,7 +179,7 @@ type session struct {
 	done       chan struct{}
 }
 
-func (s *session) ID() string { return "" }
+func (s *session) ID() string { return s.id }
 
 func (s *session) PID() int {
 	if s.proc == nil {
@@ -232,6 +250,89 @@ func (s *session) Terminate(ctx context.Context) error {
 	s.terminated = true
 	s.mu.Unlock()
 	return s.signal(ctx, false)
+}
+
+// Signal implements ProcessSignaler. Interrupt means Ctrl-C semantics:
+// a VINTR byte on TTY sessions (the terminal driver signals the
+// foreground process group), SIGINT to the whole group on pipe
+// sessions. The process may catch the signal and continue; the session
+// stays usable.
+func (s *session) Signal(_ context.Context, sig ProcessSignal) error {
+	if sig != ProcessSignalInterrupt {
+		return errdefs.NotAvailablef("sandbox: signal %v not supported", sig)
+	}
+	if s.isClosed() {
+		return ErrProcessClosed
+	}
+	select {
+	case <-s.done:
+		return ErrProcessClosed
+	default:
+	}
+	s.mu.Lock()
+	ptmx := s.ptmx
+	s.mu.Unlock()
+	if ptmx != nil {
+		// VINTR through the pty master is a no-op when the child put
+		// the terminal in raw mode (ISIG off) — authentic Ctrl-C
+		// behaviour, documented on ProcessSignaler.
+		if _, err := ptmx.Write([]byte{0x03}); err != nil {
+			return errdefs.Internal(fmt.Errorf("sandbox: signal write to pty: %w", err))
+		}
+		return nil
+	}
+	if err := syscall.Kill(-s.pgid, syscall.SIGINT); err != nil {
+		if errors.Is(err, syscall.ESRCH) {
+			return ErrProcessClosed
+		}
+		return errdefs.Internal(fmt.Errorf("sandbox: signal process group: %w", err))
+	}
+	return nil
+}
+
+// Watch implements ProcessEventSource: it subscribes an independent
+// bounded queue that replays the retained output before delivering
+// live events. The channel closes on ctx cancellation, watcher.Close,
+// or right after the process's Closed event.
+func (s *session) Watch(ctx context.Context) (ProcessWatcher, error) {
+	if s.isClosed() {
+		return nil, ErrProcessClosed
+	}
+	s.out.mu.Lock()
+	if s.out.closed {
+		s.out.mu.Unlock()
+		return nil, ErrProcessClosed
+	}
+	w := s.out.subscribe()
+	if len(s.out.chunks) > watcherQueueSize {
+		// Replay alone would overflow the queue; skip the partial
+		// replay and deliver one Lag from the retained start instead.
+		start := s.out.retainedSeqLocked()
+		w.ch <- ProcessEvent{Seq: start, Type: ProcessEventLag}
+		for i, sub := range s.out.subscribers {
+			if sub == w {
+				s.out.subscribers = append(s.out.subscribers[:i], s.out.subscribers[i+1:]...)
+				break
+			}
+		}
+		w.once.Do(func() { close(w.ch) })
+		s.out.mu.Unlock()
+		return w, nil
+	}
+	for _, chunk := range s.out.chunks {
+		w.ch <- ProcessEvent{
+			Seq:    chunk.seq,
+			Stream: chunk.stream,
+			Data:   chunk.data,
+			Type:   ProcessEventOutput,
+		}
+	}
+	if s.out.eof {
+		w.ch <- ProcessEvent{Seq: s.out.nextSeq, Type: ProcessEventExited, Exit: &s.out.exit}
+	}
+	s.out.mu.Unlock()
+	go w.run(ctx)
+	return w, nil
 }
 
 func (s *session) Wait(ctx context.Context) (ProcessExit, error) {
@@ -340,7 +441,7 @@ func (s *session) reap() {
 	s.exit = exit
 	s.waitErr = err
 	s.mu.Unlock()
-	s.out.finish()
+	s.out.finish(s.exit)
 	close(s.done)
 }
 
@@ -417,14 +518,16 @@ func (w sessionWriter) Write(p []byte) (int, error) {
 // oldest whole chunks are dropped and Read reports ErrSequenceGap for
 // cursors below the retained range.
 type outputLog struct {
-	mu      sync.Mutex
-	wake    chan struct{}
-	chunks  []outputChunk
-	total   int64
-	nextSeq int64
-	max     int64
-	eof     bool
-	closed  bool
+	mu          sync.Mutex
+	wake        chan struct{}
+	chunks      []outputChunk
+	total       int64
+	nextSeq     int64
+	max         int64
+	eof         bool
+	closed      bool
+	exit        ProcessExit
+	subscribers []*watcher
 }
 
 type outputChunk struct {
@@ -454,21 +557,140 @@ func (l *outputLog) append(stream ProcessStream, data []byte) {
 	l.total += int64(len(data))
 	l.nextSeq += int64(len(data))
 	l.trimLocked()
+	l.deliver(ProcessEvent{
+		Seq:    l.nextSeq - int64(len(data)),
+		Stream: stream,
+		Data:   l.chunks[len(l.chunks)-1].data,
+		Type:   ProcessEventOutput,
+	})
 	l.wakeReadersLocked()
 }
 
-func (l *outputLog) finish() {
+// finish marks the stream complete and pushes Exited to every
+// subscriber. The watcher channels stay open until Close, watcher
+// Close, or ctx cancellation.
+func (l *outputLog) finish(exit ProcessExit) {
 	l.mu.Lock()
 	l.eof = true
+	l.exit = exit
+	l.deliver(ProcessEvent{Seq: l.nextSeq, Type: ProcessEventExited, Exit: &l.exit})
 	l.wakeReadersLocked()
 	l.mu.Unlock()
 }
 
+// close marks the log closed, pushes Closed to every subscriber, and
+// terminates their channels and feed goroutines.
 func (l *outputLog) close() {
 	l.mu.Lock()
 	l.closed = true
+	subs := l.subscribers
+	l.subscribers = nil
+	for _, w := range subs {
+		w.deliver(ProcessEvent{Seq: l.nextSeq, Type: ProcessEventClosed})
+		w.once.Do(func() { close(w.ch) })
+		select {
+		case <-w.stop:
+		default:
+			close(w.stop)
+		}
+	}
 	l.wakeReadersLocked()
 	l.mu.Unlock()
+}
+
+// subscribe registers a new independent watcher. It must be called
+// with l.mu held; Watch then replays retained chunks before releasing
+// the lock, so no append can slip between replay and subscription.
+func (l *outputLog) subscribe() *watcher {
+	w := &watcher{
+		ch:   make(chan ProcessEvent, watcherQueueSize),
+		stop: make(chan struct{}),
+		log:  l,
+	}
+	l.subscribers = append(l.subscribers, w)
+	return w
+}
+
+// deliver pushes one event to every active subscriber, dropping
+// watchers that lagged (they close themselves after the Lag event).
+// Callers hold l.mu; all sends are non-blocking.
+func (l *outputLog) deliver(ev ProcessEvent) {
+	kept := l.subscribers[:0]
+	for _, w := range l.subscribers {
+		if w.deliver(ev) {
+			kept = append(kept, w)
+		}
+	}
+	l.subscribers = kept
+}
+
+func (l *outputLog) removeSubscriber(w *watcher) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i, sub := range l.subscribers {
+		if sub == w {
+			l.subscribers = append(l.subscribers[:i], l.subscribers[i+1:]...)
+			return
+		}
+	}
+}
+
+// watcher is one event subscription. Events is replay-then-live; the
+// channel closes on ctx cancellation, watcher.Close, or after the
+// process's Closed event. On queue overflow the subscriber receives
+// one ProcessEventLag (Seq = first missed byte cursor) and the
+// channel closes — the consumer recovers with Read(afterSeq).
+type watcher struct {
+	ch   chan ProcessEvent
+	stop chan struct{}
+	once sync.Once
+	log  *outputLog
+}
+
+func (w *watcher) Events() <-chan ProcessEvent { return w.ch }
+
+func (w *watcher) Close() error {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	return nil
+}
+
+func (w *watcher) run(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+	case <-w.stop:
+	}
+	w.log.removeSubscriber(w)
+	w.once.Do(func() { close(w.ch) })
+}
+
+// deliver performs a non-blocking push. On overflow it makes room for
+// one Lag event (the first undelivered event's cursor), closes the
+// channel, and returns false so the log detaches the watcher.
+func (w *watcher) deliver(ev ProcessEvent) bool {
+	select {
+	case w.ch <- ev:
+		return true
+	default:
+	}
+	select {
+	case <-w.ch:
+	default:
+	}
+	select {
+	case w.ch <- ProcessEvent{Seq: ev.Seq, Type: ProcessEventLag}:
+	default:
+	}
+	w.once.Do(func() { close(w.ch) })
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	return false
 }
 
 // read returns output at/after afterSeq, at most maxBytes, blocking

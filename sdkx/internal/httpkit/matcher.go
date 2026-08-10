@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
-	"golang.org/x/net/idna"
+	"github.com/GizClaw/flowcraft/sdkx/internal/hostmatch"
 )
 
 // Matcher evaluates sandbox.NetPolicy rules against a destination.
@@ -39,11 +39,7 @@ type compiledRule struct {
 	action sandbox.NetAction
 	port   int
 	desc   string
-
-	host   string // normalized hostname (domain / wildcard base)
-	wild   bool
-	addr   netip.Addr
-	prefix netip.Prefix
+	host   *hostmatch.Pattern
 }
 
 // NewMatcher compiles policy into a Matcher. The policy should already
@@ -56,7 +52,7 @@ func NewMatcher(policy sandbox.NetPolicy) (*Matcher, error) {
 		if err != nil {
 			return nil, errdefs.Validationf("sandbox: net rule %d: %v", i, err)
 		}
-		if c.addr.IsValid() || c.prefix.IsValid() {
+		if c.host.IsIP() {
 			m.hasIPRules = true
 		}
 		m.rules = append(m.rules, c)
@@ -69,7 +65,7 @@ func NewMatcher(policy sandbox.NetPolicy) (*Matcher, error) {
 		if err != nil {
 			return nil, errdefs.Validationf("sandbox: allow_hosts entry %q: %v", host, err)
 		}
-		if c.addr.IsValid() || c.prefix.IsValid() {
+		if c.host.IsIP() {
 			m.hasIPRules = true
 		}
 		m.rules = append(m.rules, c)
@@ -87,7 +83,7 @@ func (m *Matcher) HasIPRules() bool { return m.hasIPRules }
 func (m *Matcher) Match(host string, port int) (sandbox.NetAction, string, bool) {
 	host = normalizeHost(host)
 	for _, r := range m.rules {
-		if r.addr.IsValid() || r.prefix.IsValid() || !hostMatches(r, host) {
+		if r.host.IsIP() || !r.host.Match(host) {
 			continue
 		}
 		if !portMatches(r.port, port) {
@@ -98,7 +94,7 @@ func (m *Matcher) Match(host string, port int) (sandbox.NetAction, string, bool)
 		}
 	}
 	for _, r := range m.rules {
-		if r.addr.IsValid() || r.prefix.IsValid() || !hostMatches(r, host) {
+		if r.host.IsIP() || !r.host.Match(host) {
 			continue
 		}
 		if !portMatches(r.port, port) {
@@ -112,7 +108,7 @@ func (m *Matcher) Match(host string, port int) (sandbox.NetAction, string, bool)
 // MatchIP evaluates IP/CIDR rules against one resolved address.
 func (m *Matcher) MatchIP(ip netip.Addr, port int) (sandbox.NetAction, string, bool) {
 	for _, r := range m.rules {
-		if !ipMatches(r, ip) {
+		if !r.host.MatchIP(ip) {
 			continue
 		}
 		if !portMatches(r.port, port) {
@@ -123,7 +119,7 @@ func (m *Matcher) MatchIP(ip netip.Addr, port int) (sandbox.NetAction, string, b
 		}
 	}
 	for _, r := range m.rules {
-		if !ipMatches(r, ip) {
+		if !r.host.MatchIP(ip) {
 			continue
 		}
 		if !portMatches(r.port, port) {
@@ -136,88 +132,25 @@ func (m *Matcher) MatchIP(ip netip.Addr, port int) (sandbox.NetAction, string, b
 
 func compileRule(rule sandbox.NetRule) (compiledRule, error) {
 	c := compiledRule{action: rule.Action, port: rule.Port}
-	host := strings.TrimSpace(rule.Host)
-	if host == "" {
-		return c, fmt.Errorf("empty host")
+	pattern, err := hostmatch.Compile(rule.Host)
+	if err != nil {
+		return c, err
 	}
-	if strings.Contains(host, "*") && !strings.HasPrefix(host, "*.") {
-		return c, fmt.Errorf("host %q: \"*\" is only allowed as a leading \"*.\" wildcard", rule.Host)
-	}
-	c.wild = strings.HasPrefix(host, "*.")
-	if c.wild {
-		host = strings.TrimPrefix(host, "*.")
-		if host == "" || strings.Contains(host, "*") {
-			return c, fmt.Errorf("wildcard host %q must have form \"*.example.com\"", rule.Host)
-		}
-	}
-	host = normalizeHost(host)
-	c.host = host
-
-	if !c.wild {
-		if addr, err := netip.ParseAddr(host); err == nil {
-			c.addr = addr.Unmap()
-			c.desc = fmt.Sprintf("%s %s", c.action, c.addr.String())
-		} else if prefix, err := netip.ParsePrefix(host); err == nil {
-			c.prefix = prefix.Masked()
-			c.addr = netip.Addr{} // prefix rules use prefix only
-			c.desc = fmt.Sprintf("%s %s", c.action, c.prefix.String())
-		}
-	}
-	if c.desc == "" {
-		pattern := c.host
-		if c.wild {
-			pattern = "*." + c.host
-		}
-		c.desc = fmt.Sprintf("%s %s", c.action, pattern)
-	}
+	c.host = pattern
+	c.desc = fmt.Sprintf("%s %s", c.action, rule.Host)
 	if c.port != 0 {
 		c.desc += fmt.Sprintf(":%d", c.port)
 	}
 	return c, nil
 }
 
-func hostMatches(r compiledRule, host string) bool {
-	if r.wild {
-		return strings.HasSuffix(host, "."+r.host)
-	}
-	return host == r.host || strings.HasSuffix(host, "."+r.host)
-}
-
-func ipMatches(r compiledRule, ip netip.Addr) bool {
-	ip = ip.Unmap()
-	if r.addr.IsValid() {
-		return ip == r.addr
-	}
-	if r.prefix.IsValid() {
-		return r.prefix.Contains(ip)
-	}
-	return false
-}
-
 func portMatches(rulePort, port int) bool {
 	return rulePort == 0 || rulePort == port
 }
 
-// normalizeHost lowercases, strips the trailing dot, and converts
-// unicode hostnames to punycode. IDNA failures leave the input
-// unchanged so the proxy can still reject it via the allow-list
-// default; rules themselves are normalized at compile time.
+// normalizeHost mirrors hostmatch's normalization for request-side
+// lookups (no IDNA failure surfacing — mismatches fall through to the
+// mode default).
 func normalizeHost(host string) string {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if ascii := isASCII(host); ascii {
-		return host
-	}
-	if ascii, err := idna.Lookup.ToASCII(host); err == nil {
-		return ascii
-	}
-	return host
-}
-
-func isASCII(s string) bool {
-	for i := 0; i < len(s); i++ {
-		if s[i] >= 0x80 {
-			return false
-		}
-	}
-	return true
+	return strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 }

@@ -88,7 +88,21 @@
 //
 // The host-side enforcement proxy supports rule-based allow/deny,
 // socks5:// upstreams, MITM (TLS termination + hooks) with
-// SSL_CERT_FILE injection, and per-decision audit callbacks. Unix
-// socket allow-lists are not enforceable under SBPL, so any non-empty
-// UnixSockets policy is rejected with errdefs.NotAvailable.
+// SSL_CERT_FILE injection, and per-decision audit callbacks. MITM
+// terminates both HTTP/1.1 and HTTP/2 clients (ALPN h2 + http/1.1);
+// MITMPolicy.Hosts / ExcludeHosts select which CONNECT tunnels are
+// terminated, so cert-pinning destinations can be raw-tunnelled
+// explicitly. Unix socket allow-lists are not enforceable under SBPL,
+// so any non-empty UnixSockets policy is rejected with
+// errdefs.NotAvailable.
+//
+// macOS CA-injection caveat: Go and curl on macOS use the Security
+// framework / SecureTransport by default and ignore SSL_CERT_FILE,
+// and under SBPL the Security framework is unreachable (the child's
+// system pool is empty). Programs must explicitly load the injected
+// bundle (Go: tls.Config.RootCAs from SSL_CERT_FILE; curl:
+// --cacert "$SSL_CERT_FILE") — the environment variable is the
+// carrier, not the automatic trust source. This matches the
+// blast-radius posture: only bundle-aware programs get MITM'd
+// transparently; the rest fail TLS rather than trusting silently.
 package seatbelt

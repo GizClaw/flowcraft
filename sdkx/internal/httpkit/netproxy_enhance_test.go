@@ -23,6 +23,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/sandbox"
 	"github.com/GizClaw/flowcraft/sdkx/internal/httpkit/mitm"
+	"golang.org/x/net/http2"
 )
 
 func TestRules_DenyOverridesInProxyMode(t *testing.T) {
@@ -334,6 +335,249 @@ func TestMITM_HookBlocksRequest(t *testing.T) {
 	}
 }
 
+func TestMITM_SSEStreamsUnbuffered(t *testing.T) {
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	targetCA, targetCert := issueTestCert(t, "127.0.0.1")
+	target := startTLSOriginHandler(t, targetCert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			return
+		}
+		_, _ = fmt.Fprint(w, "data: first\n\n")
+		flusher.Flush()
+		<-release
+		_, _ = fmt.Fprint(w, "data: second\n\n")
+		flusher.Flush()
+	}))
+	defer func() { _ = target.Close() }()
+
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM(targetCAPEM(t, targetCA))
+	hooks := &recordingHooks{}
+	p, err := Start(ProxyConfig{
+		Mode:          sandbox.NetAllowList,
+		AllowHosts:    []string{"127.0.0.1"},
+		MITM:          &sandbox.MITMPolicy{Enabled: true, InspectBodies: true},
+		Hooks:         hooks,
+		OutboundRoots: roots,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+
+	conn := dialProxy(t, p)
+	defer func() { _ = conn.Close() }()
+	targetAddr := target.Addr().String()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+	if _, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect}); err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(p.CAPEM())
+	tlsConn := tls.Client(conn, &tls.Config{RootCAs: caPool, ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("client handshake: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+	_, _ = fmt.Fprintf(tlsConn, "GET /stream HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", targetAddr)
+	br := bufio.NewReader(tlsConn)
+	if _, err := http.ReadResponse(br, nil); err != nil {
+		t.Fatalf("read response headers: %v", err)
+	}
+
+	// The first SSE event must arrive while the origin is still
+	// streaming — a buffering MITM would block here until release.
+	if err := tlsConn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	buf := make([]byte, 4096)
+	for !strings.Contains(got.String(), "data: first") {
+		n, err := br.Read(buf)
+		if n > 0 {
+			got.Write(buf[:n])
+		}
+		if err != nil {
+			t.Fatalf("first SSE event not delivered while origin still streaming: %v", err)
+		}
+	}
+	close(release)
+
+	for {
+		n, err := br.Read(buf)
+		if n > 0 {
+			got.Write(buf[:n])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("read stream tail: %v", err)
+		}
+	}
+	if !strings.Contains(got.String(), "data: second") {
+		t.Fatalf("stream tail missing: %q", got.String())
+	}
+	hooks.mu.Lock()
+	defer hooks.mu.Unlock()
+	if len(hooks.responses) != 1 || hooks.responses[0].Body != nil {
+		t.Fatalf("streaming responses must reach hooks with Body nil, got %+v", hooks.responses)
+	}
+}
+
+func TestMITM_HTTP2Client(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprint(w, "mitm-h2-ok")
+	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	defer srv.Close()
+
+	roots := x509.NewCertPool()
+	roots.AddCert(srv.Certificate())
+	hooks := &recordingHooks{}
+	p, err := Start(ProxyConfig{
+		Mode:          sandbox.NetAllowList,
+		AllowHosts:    []string{"127.0.0.1"},
+		MITM:          &sandbox.MITMPolicy{Enabled: true, InspectBodies: true},
+		Hooks:         hooks,
+		OutboundRoots: roots,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = p.Close() }()
+
+	targetAddr := strings.TrimPrefix(srv.URL, "https://")
+	conn := dialProxy(t, p)
+	defer func() { _ = conn.Close() }()
+	_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+	if _, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect}); err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+
+	caPool := x509.NewCertPool()
+	caPool.AppendCertsFromPEM(p.CAPEM())
+	// h2-only client: ALPN offers only h2, so a server without h2
+	// support would fail the handshake with "no application protocol".
+	tlsConn := tls.Client(conn, &tls.Config{
+		RootCAs:    caPool,
+		ServerName: "127.0.0.1",
+		NextProtos: []string{"h2"},
+		MinVersion: tls.VersionTLS12,
+	})
+	if err := tlsConn.Handshake(); err != nil {
+		t.Fatalf("h2 client handshake through MITM: %v", err)
+	}
+	defer func() { _ = tlsConn.Close() }()
+
+	client := &http2.Transport{
+		DialTLSContext: func(context.Context, string, string, *tls.Config) (net.Conn, error) {
+			return tlsConn, nil
+		},
+	}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequest(http.MethodGet, "https://"+targetAddr+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := client.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("h2 RoundTrip: %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read h2 body: %v", err)
+	}
+	_ = resp.Body.Close()
+	if string(body) != "mitm-h2-ok" {
+		t.Fatalf("h2 body = %q, want mitm-h2-ok", body)
+	}
+	hooks.mu.Lock()
+	defer hooks.mu.Unlock()
+	if len(hooks.requests) != 1 || len(hooks.responses) != 1 {
+		t.Fatalf("hooks = reqs:%d resps:%d, want 1/1 over h2", len(hooks.requests), len(hooks.responses))
+	}
+}
+
+func TestMITM_HostSelection(t *testing.T) {
+	echo := startEchoServer(t)
+	defer func() { _ = echo.Close() }()
+	target := echo.Addr().String()
+
+	tests := []struct {
+		name     string
+		mitm     *sandbox.MITMPolicy
+		wantMITM bool
+	}{
+		{"exclude wins", &sandbox.MITMPolicy{Enabled: true, ExcludeHosts: []string{"127.0.0.1"}}, false},
+		{"include miss", &sandbox.MITMPolicy{Enabled: true, Hosts: []string{"example.com"}}, false},
+		{"include hit", &sandbox.MITMPolicy{Enabled: true, Hosts: []string{"127.0.0.1"}}, true},
+		{"all default", &sandbox.MITMPolicy{Enabled: true}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hooks := &recordingHooks{}
+			p, err := Start(ProxyConfig{
+				Mode:       sandbox.NetAllowList,
+				AllowHosts: []string{"127.0.0.1"},
+				MITM:       tc.mitm,
+				Hooks:      hooks,
+			})
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			defer func() { _ = p.Close() }()
+
+			conn := dialProxy(t, p)
+			defer func() { _ = conn.Close() }()
+			_, _ = fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target)
+			if _, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodConnect}); err != nil {
+				t.Fatalf("read CONNECT response: %v", err)
+			}
+			if _, err := conn.Write([]byte("ping")); err != nil {
+				t.Fatal(err)
+			}
+			buf := make([]byte, 4)
+			if tc.wantMITM {
+				// MITM'd: the tunnel speaks TLS, so plaintext "ping"
+				// must not come back as "ping"; a handshake alert or a
+				// timeout is the expected outcome.
+				_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+				n, err := conn.Read(buf)
+				if err == nil && string(buf[:n]) == "ping" {
+					t.Fatalf("expected MITM TLS, got raw echo")
+				}
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_, err = io.ReadFull(conn, buf)
+			if err != nil {
+				t.Fatalf("raw tunnel read: %v", err)
+			}
+			if string(buf) != "ping" {
+				t.Fatalf("raw tunnel echo = %q, want ping", buf)
+			}
+			hooks.mu.Lock()
+			defer hooks.mu.Unlock()
+			if hooks.connect != 1 {
+				t.Fatalf("OnConnect calls = %d, want 1 even for excluded hosts", hooks.connect)
+			}
+		})
+	}
+}
+
 // --- test helpers ---
 
 func startEchoServer(t *testing.T) net.Listener {
@@ -613,15 +857,20 @@ func targetCAPEM(t *testing.T, ca *x509.Certificate) []byte {
 
 func startTLSOrigin(t *testing.T, _ *x509.Certificate, cert *tls.Certificate) net.Listener {
 	t.Helper()
+	return startTLSOriginHandler(t, cert, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = fmt.Fprint(w, "mitm-ok")
+	}))
+}
+
+func startTLSOriginHandler(t *testing.T, cert *tls.Certificate, handler http.Handler) net.Listener {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	tlsLn := tls.NewListener(ln, &tls.Config{Certificates: []tls.Certificate{*cert}, MinVersion: tls.VersionTLS12})
-	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = fmt.Fprint(w, "mitm-ok")
-	})}
+	srv := &http.Server{Handler: handler}
 	go func() { _ = srv.Serve(tlsLn) }()
 	return &closingListener{Listener: tlsLn, closer: func() { _ = srv.Close() }}
 }

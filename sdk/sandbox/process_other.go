@@ -14,7 +14,7 @@ import (
 // Windows equivalent. ProcessManagerOf still discovers the capability
 // through ProcessManager, so callers see NotAvailable rather than a
 // silent downgrade.
-func StartSession(_ context.Context, _ *exec.Cmd, _ ExecOptions, _ bool, _, _ int) (Process, error) {
+func StartSession(_ context.Context, _ ProcessSpec, _ *exec.Cmd) (Process, error) {
 	return nil, errdefs.NotAvailablef(
 		"sandbox: interactive process sessions require a unix platform")
 }

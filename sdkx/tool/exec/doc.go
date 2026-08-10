@@ -71,7 +71,7 @@
 // output with a sequence cursor:
 //
 //	{
-//	  "action":          "start|read|write|resize|status|terminate|close",
+//	  "action":          "start|read|write|resize|status|signal|terminate|close",
 //	  "session_id":      "session id from start (all actions except start)",
 //	  "command":         "program to run (start)",
 //	  "args":            ["arg", ...],
@@ -82,7 +82,8 @@
 //	  "timeout_seconds": 300,
 //	  "after_seq":       0,
 //	  "max_bytes":       4096,
-//	  "data":            "input to write"
+//	  "data":            "input to write",
+//	  "signal":          "interrupt (signal action)"
 //	}
 //
 // read returns {"next_seq", "eof", "chunks":[{"seq","stream","data"}]}

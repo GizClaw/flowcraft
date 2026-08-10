@@ -148,9 +148,13 @@
 // The host-side enforcement proxy supports rule-based allow/deny,
 // socks5:// upstreams, MITM (TLS termination + hooks) with a merged
 // CA bundle ro-bound into the sandbox and injected via SSL_CERT_FILE,
-// and per-decision audit callbacks. UnixSockets entries are
-// bind-mounted into the sandbox (they must exist at Start); paths in
-// masked directories (/tmp, /run in isolated net modes) are denied by
-// absence. The bridge protocol is unchanged: the child always speaks
-// plain HTTP proxy to the host proxy.
+// and per-decision audit callbacks. MITM terminates both HTTP/1.1 and
+// HTTP/2 clients (ALPN h2 + http/1.1); MITMPolicy.Hosts /
+// ExcludeHosts select which CONNECT tunnels are terminated, so
+// cert-pinning destinations can be raw-tunnelled explicitly.
+// UnixSockets entries are bind-mounted into the sandbox (they must
+// exist at Start); paths in masked directories (/tmp, /run in
+// isolated net modes) are denied by absence. The bridge protocol is
+// unchanged: the child always speaks plain HTTP proxy to the host
+// proxy.
 package bwrap

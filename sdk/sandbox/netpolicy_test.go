@@ -17,7 +17,12 @@ func TestNetPolicy_Validate(t *testing.T) {
 		},
 		Proxy:       "socks5://user:pass@proxy.example:1080",
 		UnixSockets: []string{"/run/docker.sock"},
-		MITM:        &sandbox.MITMPolicy{Enabled: true, MaxBodyBytes: 65536},
+		MITM: &sandbox.MITMPolicy{
+			Enabled:      true,
+			MaxBodyBytes: 65536,
+			Hosts:        []string{"example.com", "*.pinned.internal"},
+			ExcludeHosts: []string{"*.nopin.example"},
+		},
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
@@ -34,6 +39,8 @@ func TestNetPolicy_Validate(t *testing.T) {
 		{"port out of range", sandbox.NetPolicy{Rules: []sandbox.NetRule{{Action: sandbox.NetAllow, Host: "x", Port: 70000}}}},
 		{"relative unix socket", sandbox.NetPolicy{UnixSockets: []string{"run/docker.sock"}}},
 		{"negative body cap", sandbox.NetPolicy{MITM: &sandbox.MITMPolicy{MaxBodyBytes: -1}}},
+		{"empty mitm host", sandbox.NetPolicy{MITM: &sandbox.MITMPolicy{Hosts: []string{" "}}}},
+		{"empty mitm exclude", sandbox.NetPolicy{MITM: &sandbox.MITMPolicy{ExcludeHosts: []string{""}}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

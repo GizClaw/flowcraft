@@ -89,9 +89,11 @@ type NetRuleJSON struct {
 
 // MITMJSON is the wire form of sandbox.MITMPolicy.
 type MITMJSON struct {
-	Enabled       bool  `json:"enabled,omitempty"`
-	InspectBodies bool  `json:"inspect_bodies,omitempty"`
-	MaxBodyBytes  int64 `json:"max_body_bytes,omitempty"`
+	Enabled       bool     `json:"enabled,omitempty"`
+	InspectBodies bool     `json:"inspect_bodies,omitempty"`
+	MaxBodyBytes  int64    `json:"max_body_bytes,omitempty"`
+	Hosts         []string `json:"hosts,omitempty"`
+	ExcludeHosts  []string `json:"exclude_hosts,omitempty"`
 }
 
 // ResourceDefaults configures process resource limits.

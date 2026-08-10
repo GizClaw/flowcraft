@@ -151,10 +151,19 @@ type NetRule struct {
 // MITMPolicy enables TLS termination and content hooks for CONNECT
 // traffic. It is opt-in: a nil policy or Enabled=false leaves CONNECT
 // tunnels untouched.
+//
+// Host selection: empty Hosts means "all CONNECT traffic is MITM'd"
+// (the default; pinned clients then fail closed at TLS). Non-empty
+// Hosts restricts MITM to the listed hosts, and ExcludeHosts always
+// bypasses MITM with a raw tunnel (allow/deny rules still apply).
+// Exclude wins over Hosts. Host forms follow NetRule: "example.com",
+// "*.example.com", IP literals, and CIDR prefixes.
 type MITMPolicy struct {
 	Enabled       bool
-	InspectBodies bool  // buffer request/response bodies for hooks (bounded)
-	MaxBodyBytes  int64 // body buffer cap; 0 uses the engine default (64 KiB)
+	InspectBodies bool
+	MaxBodyBytes  int64
+	Hosts         []string // non-empty: only these hosts get MITM
+	ExcludeHosts  []string // never MITM these hosts (raw tunnel)
 }
 
 // Validate checks NetPolicy's cross-backend invariants. Backend
@@ -202,6 +211,16 @@ func (p NetPolicy) Validate() error {
 	if p.MITM != nil {
 		if p.MITM.MaxBodyBytes < 0 {
 			return errdefs.Validationf("sandbox: mitm.max_body_bytes must be non-negative")
+		}
+		for i, host := range p.MITM.Hosts {
+			if strings.TrimSpace(host) == "" {
+				return errdefs.Validationf("sandbox: mitm.hosts[%d] is empty", i)
+			}
+		}
+		for i, host := range p.MITM.ExcludeHosts {
+			if strings.TrimSpace(host) == "" {
+				return errdefs.Validationf("sandbox: mitm.exclude_hosts[%d] is empty", i)
+			}
 		}
 	}
 	return nil

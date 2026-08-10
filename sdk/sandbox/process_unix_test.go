@@ -5,6 +5,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -226,6 +227,200 @@ func TestLocalProcess_ReadAfterClose(t *testing.T) {
 	}
 	if _, err := proc.Read(context.Background(), 0, 16); !errors.Is(err, sandbox.ErrProcessClosed) {
 		t.Fatalf("Read after Close = %v, want ErrProcessClosed", err)
+	}
+}
+
+func TestStartSession_ResolvesID(t *testing.T) {
+	// Direct (non-registry) use must still yield a stable ID: the
+	// caller's ID when set, otherwise a generated one.
+	proc, err := sandbox.StartSession(context.Background(),
+		sandbox.ProcessSpec{ID: "custom", Argv: []string{"/usr/bin/true"}},
+		exec.Command("/usr/bin/true"))
+	if err != nil {
+		t.Fatalf("StartSession(custom id): %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+	if proc.ID() != "custom" {
+		t.Fatalf("ID = %q, want custom", proc.ID())
+	}
+
+	proc, err = sandbox.StartSession(context.Background(),
+		sandbox.ProcessSpec{Argv: []string{"/usr/bin/true"}},
+		exec.Command("/usr/bin/true"))
+	if err != nil {
+		t.Fatalf("StartSession(generated id): %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+	if proc.ID() == "" {
+		t.Fatal("StartSession must generate an ID when spec.ID is empty")
+	}
+}
+
+func TestLocalProcess_Signal_NonTTY(t *testing.T) {
+	runner := sandbox.NewLocalRunner(t.TempDir())
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/sh", "-c", `trap 'echo caught; exit 0' INT; echo ready; read x`},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	readUntil(t, proc, ctx, "ready")
+
+	signaler, ok := sandbox.ProcessSignalerOf(proc)
+	if !ok {
+		t.Fatal("ProcessSignalerOf must find the signal capability on Start handles")
+	}
+	if err := signaler.Signal(ctx, sandbox.ProcessSignalInterrupt); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+	if got := readUntil(t, proc, ctx, "caught"); !strings.Contains(got, "caught") {
+		t.Fatalf("trap output missing: %q", got)
+	}
+	exit, err := proc.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 || exit.Reason != sandbox.ProcessExited {
+		t.Fatalf("exit = %+v, want exited(0)", exit)
+	}
+}
+
+func TestLocalProcess_Signal_TTY(t *testing.T) {
+	runner := sandbox.NewLocalRunner(t.TempDir())
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/sh", "-c", `trap 'echo caught; exit 0' INT; echo ready; read x`},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	readUntil(t, proc, ctx, "ready")
+
+	signaler, _ := sandbox.ProcessSignalerOf(proc)
+	if err := signaler.Signal(ctx, sandbox.ProcessSignalInterrupt); err != nil {
+		t.Fatalf("Signal: %v", err)
+	}
+	if got := readUntil(t, proc, ctx, "caught"); !strings.Contains(got, "caught") {
+		t.Fatalf("VINTR did not reach the foreground process group: %q", got)
+	}
+	if exit, err := proc.Wait(ctx); err != nil || exit.Code != 0 {
+		t.Fatalf("Wait = %+v, %v; want exited(0)", exit, err)
+	}
+}
+
+func TestLocalProcess_Signal_AfterExit_ErrProcessClosed(t *testing.T) {
+	runner := sandbox.NewLocalRunner(t.TempDir())
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/usr/bin/true"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+	if _, err := proc.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	signaler, ok := sandbox.ProcessSignalerOf(proc)
+	if !ok {
+		t.Fatal("ProcessSignalerOf must find the capability on Start handles")
+	}
+	if err := signaler.Signal(context.Background(), sandbox.ProcessSignalInterrupt); !errors.Is(err, sandbox.ErrProcessClosed) {
+		t.Fatalf("Signal after exit = %v, want ErrProcessClosed", err)
+	}
+}
+
+func TestLocalProcess_Watch_ReplayThenLive(t *testing.T) {
+	runner := sandbox.NewLocalRunner(t.TempDir())
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/bin/sh", "-c", "printf first; sleep 0.3; printf second"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proc.Close() }()
+
+	source, ok := sandbox.ProcessEventSourceOf(proc)
+	if !ok {
+		t.Fatal("ProcessEventSourceOf must find the capability on Start handles")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	w, err := source.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	done := make(chan []sandbox.ProcessEvent, 1)
+	go func() {
+		var got []sandbox.ProcessEvent
+		for ev := range w.Events() {
+			got = append(got, ev)
+		}
+		done <- got
+	}()
+	if _, err := proc.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	_ = w.Close()
+	events := <-done
+
+	var sb strings.Builder
+	var exited *sandbox.ProcessExit
+	var exitedSeq int64
+	for _, ev := range events {
+		switch ev.Type {
+		case sandbox.ProcessEventOutput:
+			sb.Write(ev.Data)
+		case sandbox.ProcessEventExited:
+			exited = ev.Exit
+			exitedSeq = ev.Seq
+		case sandbox.ProcessEventLag, sandbox.ProcessEventClosed:
+			t.Fatalf("unexpected event %v", ev.Type)
+		}
+	}
+	if sb.String() != "firstsecond" {
+		t.Fatalf("streamed output = %q, want firstsecond", sb.String())
+	}
+	if exited == nil || exited.Code != 0 {
+		t.Fatalf("Exited event = %+v, want exited(0)", exited)
+	}
+	// Seq alignment with the pull cursor: everything Read from 0 must
+	// end at the Exited seq.
+	out, err := proc.Read(ctx, 0, 4096)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if out.NextSeq != exitedSeq || out.NextSeq != int64(len("firstsecond")) {
+		t.Fatalf("Read NextSeq = %d, Exited seq = %d, want %d", out.NextSeq, exitedSeq, len("firstsecond"))
+	}
+}
+
+func TestLocalProcess_Watch_AfterClose_ErrProcessClosed(t *testing.T) {
+	runner := sandbox.NewLocalRunner(t.TempDir())
+	proc, err := runner.Start(context.Background(), sandbox.ProcessSpec{
+		Argv: []string{"/usr/bin/true"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := proc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	source, ok := sandbox.ProcessEventSourceOf(proc)
+	if !ok {
+		t.Fatal("ProcessEventSourceOf must find the capability on Start handles")
+	}
+	if _, err := source.Watch(context.Background()); !errors.Is(err, sandbox.ErrProcessClosed) {
+		t.Fatalf("Watch after Close = %v, want ErrProcessClosed", err)
 	}
 }
 

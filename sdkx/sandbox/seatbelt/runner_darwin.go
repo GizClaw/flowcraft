@@ -5,6 +5,7 @@ package seatbelt
 import (
 	"bytes"
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"maps"
@@ -35,6 +36,7 @@ type Runner struct {
 	processes        sandbox.ProcessManager
 	decision         func(httpkit.ProxyDecision)
 	hooks            mitm.ProxyHooks
+	outboundRoots    *x509.CertPool
 }
 
 // New constructs a Seatbelt Runner rooted at rootDir.
@@ -79,6 +81,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		defaultMaxOutput: defaultMaxOutputBytes,
 		decision:         cfg.decision,
 		hooks:            cfg.hooks,
+		outboundRoots:    cfg.roots,
 	}
 	runner.processes = sandbox.NewProcessRegistry(runner.spawnProcess)
 	return runner, nil
@@ -133,14 +136,15 @@ func (r *Runner) Exec(ctx context.Context, cmd string, args []string, opts sandb
 	proxyPort := 0
 	if proxyMode {
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
-			Mode:        opts.Net.Mode,
-			AllowHosts:  opts.Net.AllowHosts,
-			Rules:       opts.Net.Rules,
-			Upstream:    opts.Net.Proxy,
-			TCPLoopback: true,
-			MITM:        opts.Net.MITM,
-			OnDecision:  r.decision,
-			Hooks:       r.hooks,
+			Mode:          opts.Net.Mode,
+			AllowHosts:    opts.Net.AllowHosts,
+			Rules:         opts.Net.Rules,
+			Upstream:      opts.Net.Proxy,
+			TCPLoopback:   true,
+			MITM:          opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
@@ -290,14 +294,15 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 	proxyPort := 0
 	if proxyMode {
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
-			Mode:        spec.Opts.Net.Mode,
-			AllowHosts:  spec.Opts.Net.AllowHosts,
-			Rules:       spec.Opts.Net.Rules,
-			Upstream:    spec.Opts.Net.Proxy,
-			TCPLoopback: true,
-			MITM:        spec.Opts.Net.MITM,
-			OnDecision:  r.decision,
-			Hooks:       r.hooks,
+			Mode:          spec.Opts.Net.Mode,
+			AllowHosts:    spec.Opts.Net.AllowHosts,
+			Rules:         spec.Opts.Net.Rules,
+			Upstream:      spec.Opts.Net.Proxy,
+			TCPLoopback:   true,
+			MITM:          spec.Opts.Net.MITM,
+			OnDecision:    r.decision,
+			Hooks:         r.hooks,
+			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
 			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
@@ -362,7 +367,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.ProcessSpec) (sa
 	}
 	spec.Opts.Resources.MaxOutputBytes = maxOut
 
-	proc, err := sandbox.StartSession(ctx, c, spec.Opts, spec.TTY, spec.Rows, spec.Cols)
+	proc, err := sandbox.StartSession(ctx, spec, c)
 	if err != nil {
 		if proxy != nil {
 			_ = proxy.Close()
