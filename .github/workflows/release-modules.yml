@@ -31,7 +31,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Validate release changesets
         working-directory: tools/releasegate
@@ -157,141 +157,52 @@ jobs:
           echo "release changelog PR: $pr_url"
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
-  gate:
-    name: Gate ${{ matrix.release.module }} (Go ${{ matrix.go-version }})
+  eval:
+    name: Release gate / hermetic eval
     needs: plan
     if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        release: ${{ fromJSON(needs.plan.outputs.modules) }}
-        go-version: ["1.26"]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-
-      - name: Prepare isolated module file
-        id: modfile
-        working-directory: ${{ matrix.release.dir }}
-        env:
-          MODULE: ${{ matrix.release.module }}
-          RELEASES_JSON: ${{ needs.plan.outputs.modules }}
-        run: |
-          set -euo pipefail
-          modfile="$RUNNER_TEMP/${MODULE}.mod"
-          sumfile="$RUNNER_TEMP/${MODULE}.sum"
-          cp go.mod "$modfile"
-          if [ -f go.sum ]; then
-            cp go.sum "$sumfile"
-          else
-            : > "$sumfile"
-          fi
-
-          case "$MODULE" in
-            memory) dependencies="sdk" ;;
-            sdkx) dependencies="sdk memory" ;;
-            *) dependencies="" ;;
-          esac
-
-          for dependency in $dependencies; do
-            if jq -e --arg dependency "$dependency" \
-              '.[] | select(.module == $dependency)' \
-              <<< "$RELEASES_JSON" >/dev/null; then
-              go mod edit -modfile="$modfile" \
-                -replace="github.com/GizClaw/flowcraft/${dependency}=$GITHUB_WORKSPACE/${dependency}"
-            fi
-          done
-
-          cp "$modfile" "$RUNNER_TEMP/${MODULE}.before.mod"
-          cp "$sumfile" "$RUNNER_TEMP/${MODULE}.before.sum"
-          {
-            echo "modfile=$modfile"
-            echo "sumfile=$sumfile"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Verify module is tidy
-        working-directory: ${{ matrix.release.dir }}
-        env:
-          GOWORK: "off"
-          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
-          MODULE: ${{ matrix.release.module }}
-        run: |
-          set -euo pipefail
-          go mod tidy
-          diff -u "$RUNNER_TEMP/${MODULE}.before.mod" "${{ steps.modfile.outputs.modfile }}"
-          diff -u "$RUNNER_TEMP/${MODULE}.before.sum" "${{ steps.modfile.outputs.sumfile }}"
-
-      - name: Build
-        working-directory: ${{ matrix.release.dir }}
-        env:
-          GOWORK: "off"
-          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
-        run: go build ./...
-
-      - name: Vet
-        working-directory: ${{ matrix.release.dir }}
-        env:
-          GOWORK: "off"
-          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
-        run: go vet ./...
-
-      - name: Test
-        working-directory: ${{ matrix.release.dir }}
-        env:
-          GOWORK: "off"
-          GOFLAGS: -modfile=${{ steps.modfile.outputs.modfile }}
-        run: go test -count=1 -race ./...
-
-  eval:
-    name: Release gate / hermetic eval
-    needs: [plan, gate]
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true' && (contains(needs.plan.outputs.modules, '"module":"sdk"') || contains(needs.plan.outputs.modules, '"module":"memory"') || contains(needs.plan.outputs.modules, '"module":"sdkx"'))
-    runs-on: ubuntu-latest
+    env:
+      RELEASES_JSON: ${{ needs.plan.outputs.modules }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
+      - name: Skip eval when memory is not releasing
+        run: |
+          set -euo pipefail
+          if ! jq -e '.[] | select(.module == "memory")' \
+            <<< "$RELEASES_JSON" >/dev/null; then
+            echo "memory is not in this release; skipping hermetic eval"
+            exit 0
+          fi
       - name: Test
         run: make eval
 
-  tag:
-    name: Publish module tags
-    needs: [plan, gate, eval]
-    if: always() && needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+  release-core:
+    name: Release sdk and sdkx sequentially
+    needs: plan
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
+    env:
+      RELEASES_JSON: ${{ needs.plan.outputs.modules }}
+      EXPECTED_TAGS: ${{ needs.plan.outputs.tags }}
     steps:
-      - name: Require every release gate
-        env:
-          GATE_RESULT: ${{ needs.gate.result }}
-          EVAL_RESULT: ${{ needs.eval.result }}
-        run: |
-          set -euo pipefail
-          [ "$GATE_RESULT" = "success" ]
-          case "$EVAL_RESULT" in success|skipped) ;; *) exit 1 ;; esac
-
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Revalidate and atomically publish tags
-        env:
-          EXPECTED_TAGS: ${{ needs.plan.outputs.tags }}
+      - name: Revalidate release plan
         run: |
           set -euo pipefail
           (
@@ -305,15 +216,259 @@ jobs:
             exit 1
           fi
 
-          mapfile -t tags < <(jq -r '.[]' <<< "$EXPECTED_TAGS")
-          [ "${#tags[@]}" -gt 0 ]
-          refspecs=()
-          for tag in "${tags[@]}"; do
+      - name: Gate and publish sdk and sdkx
+        run: |
+          set -euo pipefail
+
+          gate_module() {
+            local module="$1"
+            local dir="$module"
+            local modfile="$RUNNER_TEMP/${module}.mod"
+            local sumfile="$RUNNER_TEMP/${module}.sum"
+
+            cp "$dir/go.mod" "$modfile"
+            if [ -f "$dir/go.sum" ]; then
+              cp "$dir/go.sum" "$sumfile"
+            else
+              : > "$sumfile"
+            fi
+            cp "$modfile" "$RUNNER_TEMP/${module}.before.mod"
+            cp "$sumfile" "$RUNNER_TEMP/${module}.before.sum"
+
+            # Dependencies earlier in the release order are already
+            # tagged, so no local replace is needed. When a dependency
+            # was just released in this run, go.sum is expected to gain
+            # its checksums; allow that change and test the tidied file.
+            local allow_sum_change=false
+            local dependencies=""
+            case "$module" in
+              sdkx) dependencies="sdk" ;;
+            esac
+            for dependency in $dependencies; do
+              if jq -e --arg dependency "$dependency" \
+                '.[] | select(.module == $dependency)' \
+                <<< "$RELEASES_JSON" >/dev/null; then
+                allow_sum_change=true
+              fi
+            done
+
+            (
+              cd "$dir"
+              GOWORK=off GOFLAGS="-modfile=$modfile" go mod tidy
+              diff -u "$RUNNER_TEMP/${module}.before.mod" "$modfile"
+              if [ "$allow_sum_change" = "false" ]; then
+                diff -u "$RUNNER_TEMP/${module}.before.sum" "$sumfile"
+              fi
+              GOWORK=off GOFLAGS="-modfile=$modfile" go build ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go vet ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go test -count=1 -race ./...
+            )
+          }
+
+          publish_module() {
+            local module="$1"
+            local tag
+            tag=$(jq -r --arg module "$module" \
+              '.[] | select(.module == $module) | .tag' <<< "$RELEASES_JSON")
             if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
               echo "tag already exists: $tag" >&2
               exit 1
             fi
             git tag "$tag" "$GITHUB_SHA"
-            refspecs+=("refs/tags/$tag:refs/tags/$tag")
+            git push origin "refs/tags/$tag:refs/tags/$tag"
+          }
+
+          for module in sdk sdkx; do
+            if ! jq -e --arg module "$module" \
+              '.[] | select(.module == $module)' \
+              <<< "$RELEASES_JSON" >/dev/null; then
+              continue
+            fi
+            gate_module "$module"
+            publish_module "$module"
           done
-          git push --atomic origin "${refspecs[@]}"
+
+  release-memory:
+    name: Release memory after hermetic eval
+    needs: [plan, eval, release-core]
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RELEASES_JSON: ${{ needs.plan.outputs.modules }}
+      EXPECTED_TAGS: ${{ needs.plan.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Revalidate release plan
+        run: |
+          set -euo pipefail
+          (
+            cd tools/releasegate
+            GOWORK=off go run . changelog --repo ../.. --check
+            GOWORK=off go run . plan --repo ../.. --json
+          ) > /tmp/release-plan.json
+          actual_tags=$(jq -c '.tags' /tmp/release-plan.json)
+          if [ "$actual_tags" != "$EXPECTED_TAGS" ]; then
+            echo "release plan changed: expected $EXPECTED_TAGS, got $actual_tags" >&2
+            exit 1
+          fi
+
+      - name: Gate and publish memory
+        run: |
+          set -euo pipefail
+
+          if ! jq -e '.[] | select(.module == "memory")' \
+            <<< "$RELEASES_JSON" >/dev/null; then
+            echo "memory is not in this release; nothing to do"
+            exit 0
+          fi
+
+          gate_module() {
+            local module="$1"
+            local dir="$module"
+            local modfile="$RUNNER_TEMP/${module}.mod"
+            local sumfile="$RUNNER_TEMP/${module}.sum"
+
+            cp "$dir/go.mod" "$modfile"
+            if [ -f "$dir/go.sum" ]; then
+              cp "$dir/go.sum" "$sumfile"
+            else
+              : > "$sumfile"
+            fi
+            cp "$modfile" "$RUNNER_TEMP/${module}.before.mod"
+            cp "$sumfile" "$RUNNER_TEMP/${module}.before.sum"
+
+            local allow_sum_change=false
+            local dependencies="sdk sdkx"
+            for dependency in $dependencies; do
+              if jq -e --arg dependency "$dependency" \
+                '.[] | select(.module == $dependency)' \
+                <<< "$RELEASES_JSON" >/dev/null; then
+                allow_sum_change=true
+              fi
+            done
+
+            (
+              cd "$dir"
+              GOWORK=off GOFLAGS="-modfile=$modfile" go mod tidy
+              diff -u "$RUNNER_TEMP/${module}.before.mod" "$modfile"
+              if [ "$allow_sum_change" = "false" ]; then
+                diff -u "$RUNNER_TEMP/${module}.before.sum" "$sumfile"
+              fi
+              GOWORK=off GOFLAGS="-modfile=$modfile" go build ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go vet ./...
+              GOWORK=off GOFLAGS="-modfile=$modfile" go test -count=1 -race ./...
+            )
+          }
+
+          publish_module() {
+            local module="$1"
+            local tag
+            tag=$(jq -r --arg module "$module" \
+              '.[] | select(.module == $module) | .tag' <<< "$RELEASES_JSON")
+            if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "tag already exists: $tag" >&2
+              exit 1
+            fi
+            git tag "$tag" "$GITHUB_SHA"
+            git push origin "refs/tags/$tag:refs/tags/$tag"
+          }
+
+          gate_module memory
+          publish_module memory
+
+  sync-tidy:
+    name: Sync tidy consumer modules
+    needs: [plan, release-core, release-memory]
+    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    runs-on: ubuntu-latest
+    env:
+      RELEASES_JSON: ${{ needs.plan.outputs.modules }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_BRANCH: automation/release-tidy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Sync tidy consumer modules
+        run: |
+          set -euo pipefail
+
+          if jq -e '.[] | select(.module == "sdkx")' \
+            <<< "$RELEASES_JSON" >/dev/null; then
+            (cd sdkx && GOWORK=off go mod tidy)
+          fi
+          if jq -e '.[] | select(.module == "memory")' \
+            <<< "$RELEASES_JSON" >/dev/null; then
+            (cd memory && GOWORK=off go mod tidy)
+          fi
+
+          if git diff --quiet -- \
+            sdkx/go.mod sdkx/go.sum memory/go.mod memory/go.sum; then
+            echo "no tidy changes to sync"
+            exit 0
+          fi
+
+          git diff --check
+          git switch -C "$RELEASE_BRANCH"
+          git add sdkx/go.mod sdkx/go.sum memory/go.mod memory/go.sum
+          git commit -m "chore(release): tidy consumer modules after tags"
+
+          remote_tip=$(git ls-remote --heads origin \
+            "refs/heads/$RELEASE_BRANCH" | awk '{print $1}')
+          if [ -n "$remote_tip" ]; then
+            git fetch origin \
+              "refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+            author_email=$(git show -s --format=%ae "$remote_tip")
+            subject=$(git show -s --format=%s "$remote_tip")
+            if [ "$author_email" != "41898282+github-actions[bot]@users.noreply.github.com" ] ||
+              [ "$subject" != "chore(release): tidy consumer modules after tags" ]; then
+              echo "$RELEASE_BRANCH contains a non-automation commit; refusing to overwrite it" >&2
+              exit 1
+            fi
+          fi
+          git push \
+            "--force-with-lease=refs/heads/$RELEASE_BRANCH:$remote_tip" \
+            origin \
+            "HEAD:refs/heads/$RELEASE_BRANCH"
+
+          pr_url=$(gh pr list \
+            --head "$RELEASE_BRANCH" \
+            --base main \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty')
+          if [ -z "$pr_url" ]; then
+            body_file=$(mktemp)
+            {
+              echo "Normalizes consumer module go.mod/go.sum after releasing dependencies in the same batch."
+              echo
+              echo "This keeps main tidy for the next release; it does not change any published module contents."
+            } > "$body_file"
+            gh pr create \
+              --base main \
+              --head "$RELEASE_BRANCH" \
+              --title "chore(release): tidy consumer modules after tags" \
+              --body-file "$body_file"
+          fi
