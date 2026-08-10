@@ -251,8 +251,9 @@ func (t *Turn) finish(result *agent.Result, err error) {
 	if t.session != nil {
 		t.session.cleanupCheckpoint(t.runID, result)
 	}
-	t.session.turnFinished(t)
-
+	if t.session != nil {
+		t.session.turnFinished(t, result, err)
+	}
 	close(t.done)
 }
 
