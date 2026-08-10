@@ -31,6 +31,7 @@ type generateWire struct {
 	reasoning   string // effort; empty means unset
 	tools       []wireTool
 	toolChoice  *wireToolChoice
+	webSearch   *wireWebSearch
 	stream      bool
 	// includeReasoning asks the Responses API to attach the encrypted
 	// reasoning payload. Only reasoning models can carry it; Azure rejects
@@ -95,17 +96,31 @@ type wireToolChoice struct {
 	name string
 }
 
+type wireWebSearch struct {
+	searchContextSize string
+	allowedDomains    []string
+	city              string
+	country           string
+	region            string
+	timezone          string
+	externalWebAccess *bool
+	returnTokenBudget string
+	required          bool
+}
+
 // ---------------------------------------------------------------------------
 // Raw model — transport-owned response data, decoded into canonical forms.
 // ---------------------------------------------------------------------------
 
 type generateRaw struct {
-	id         string
-	reasonings []rawReasoning // reasoning items in output order
-	texts      []string       // output_text items in order
-	toolCalls  []rawToolCall
-	finish     inference.FinishReason
-	usage      rawUsage
+	id             string
+	reasonings     []rawReasoning // reasoning items in output order
+	texts          []string       // output_text items in order
+	toolCalls      []rawToolCall
+	webSearchCalls []inference.WebSearchCall
+	citations      []inference.Citation
+	finish         inference.FinishReason
+	usage          rawUsage
 }
 
 // rawReasoning lowers one reasoning item: id for round-trip addressing,
@@ -134,15 +149,16 @@ type rawUsage struct {
 // canonical part indices (it is the stateful stage) so the decoder function
 // stays pure and concurrency-safe.
 type streamRaw struct {
-	kind       streamRawKind
-	part       int    // canonical part index (text / tool / reasoning kinds)
-	text       string // text / summary delta
-	signature  string // terminal reasoning encrypted payload
-	id         string // terminal reasoning item id
-	responseID string // response-level id from the terminal event
-	tool       streamRawTool
-	usage      *rawUsage
-	finish     inference.FinishReason
+	kind            streamRawKind
+	part            int    // canonical part index (text / tool / reasoning kinds)
+	text            string // text / summary delta
+	signature       string // terminal reasoning encrypted payload
+	id              string // terminal reasoning item id
+	responseID      string // response-level id from the terminal event
+	tool            streamRawTool
+	usage           *rawUsage
+	finish          inference.FinishReason
+	providerOutputs inference.ProviderOutputs
 }
 
 type streamRawKind int
@@ -151,6 +167,7 @@ const (
 	streamRawText streamRawKind = iota
 	streamRawToolFragment
 	streamRawReasoning
+	streamRawProviderOutput
 	streamRawFinish
 )
 
@@ -324,17 +341,40 @@ func compileGenerate(
 
 		compileIntent(&wire, request.Input.Content.Intent, entry, ledger)
 
-		// No provider extensions exist yet; anything attached is rejected
-		// truthfully rather than dropped.
-		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "openai generate supports no extensions")
-		}
+		// Provider options: GenerateOptions fields lower onto the wire one by
+		// one; extensions for other operations are rejected wholesale.
+		options, other := operationExtensions[GenerateOptions](request.Extensions)
+		rejectOtherExtensions("generate", other, ledger)
+		compileGenerateOptions(&wire, options, ledger)
 
 		report := ledger.report()
 		if len(ledger.order) > 0 {
 			return inference.Compiled[generateWire]{Report: report}, ledger.err()
 		}
 		return inference.Compiled[generateWire]{Wire: wire, Report: report}, nil
+	}
+}
+
+// compileGenerateOptions lowers GenerateOptions onto the wire.
+func compileGenerateOptions(
+	wire *generateWire,
+	options GenerateOptions,
+	ledger *ledger,
+) {
+	if options.WebSearch == nil {
+		return
+	}
+	search := options.WebSearch
+	wire.webSearch = &wireWebSearch{
+		searchContextSize: search.SearchContextSize,
+		allowedDomains:    append([]string(nil), search.AllowedDomains...),
+		city:              search.UserLocation.City,
+		country:           search.UserLocation.Country,
+		region:            search.UserLocation.Region,
+		timezone:          search.UserLocation.Timezone,
+		externalWebAccess: clonePointer(search.ExternalWebAccess),
+		returnTokenBudget: search.ReturnTokenBudget,
+		required:          search.ToolChoice != nil && search.ToolChoice.Required,
 	}
 }
 

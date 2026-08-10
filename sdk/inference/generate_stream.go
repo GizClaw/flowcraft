@@ -123,6 +123,11 @@ type GenerateStreamEvent struct {
 	// Usage is a cumulative snapshot and replaces the previous snapshot.
 	Usage        *Usage       `json:"usage,omitempty"`
 	FinishReason FinishReason `json:"finish_reason,omitempty"`
+	// ProviderOutputs carries a cumulative snapshot per provider output
+	// family (citations, search-call status). An entry with the same
+	// provider/extension identity replaces the previous snapshot, matching
+	// Usage; the terminal result carries the final collection.
+	ProviderOutputs ProviderOutputs `json:"provider_outputs,omitempty"`
 	// RequestID / ResponseID ride the terminal finish event when the
 	// provider exposes them. The stream accumulator carries them onto
 	// the final Result metadata.
@@ -231,6 +236,7 @@ type decodedGenerateStream[RawEvent any] struct {
 	finish     FinishReason
 	requestID  string
 	responseID string
+	outputs    ProviderOutputs
 
 	done      bool
 	result    GenerateResponse
@@ -311,6 +317,9 @@ func (s *decodedGenerateStream[RawEvent]) accumulate(
 			return err
 		}
 	}
+	if err := event.ProviderOutputs.Validate(); err != nil {
+		return err
+	}
 	if s.finish != "" && (event.Delta != nil || event.FinishReason != "") {
 		return fmt.Errorf("stream emitted content after finish")
 	}
@@ -340,6 +349,11 @@ func (s *decodedGenerateStream[RawEvent]) accumulate(
 	}
 	if event.ResponseID != "" {
 		s.responseID = event.ResponseID
+	}
+	if len(event.ProviderOutputs) > 0 {
+		for _, output := range event.ProviderOutputs {
+			s.outputs.Replace(output.Clone())
+		}
 	}
 	if event.FinishReason != "" {
 		if s.finish != "" {
@@ -431,8 +445,9 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 			Role:    message.RoleAssistant,
 			Content: message.Content{Parts: parts},
 		},
-		FinishReason: s.finish,
-		Usage:        s.usage,
+		FinishReason:    s.finish,
+		Usage:           s.usage,
+		ProviderOutputs: s.outputs.Clone(),
 	}
 	metadata := s.report.Metadata(s.model)
 	metadata.RequestID = s.requestID

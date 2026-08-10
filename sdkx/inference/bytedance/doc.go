@@ -10,6 +10,9 @@
 //     Reasoning items decode into canonical reasoning parts (summary text
 //     plus item id); ark signs nothing and consumes no reasoning input, so
 //     traces never round-trip and context compiles them as Dropped.
+//     GenerateOptions.WebSearch attaches Ark's hosted web_search tool;
+//     web_search_call items and url_citation annotations surface on
+//     GenerateResponse.ProviderOutputs (never inside Message).
 //   - Generate ImageIntent: Ark images.generations (seedream models).
 //   - Generate VideoIntent: Ark content-generation tasks (seedance models).
 //     The API is asynchronous — the transport creates a task and polls it to

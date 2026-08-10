@@ -347,6 +347,8 @@ func arkToRaw(response *arkresponses.ResponseObject) (generateRaw, error) {
 			for _, content := range message.GetContent() {
 				if text := content.GetText(); text != nil {
 					raw.texts = append(raw.texts, text.GetText())
+					raw.citations = append(raw.citations,
+						arkCitations(text.GetAnnotations())...)
 				}
 			}
 			continue
@@ -358,10 +360,43 @@ func arkToRaw(response *arkresponses.ResponseObject) (generateRaw, error) {
 				args: []byte(call.GetArguments()),
 			})
 		}
+		if call := item.GetFunctionWebSearch(); call != nil {
+			raw.webSearchCalls = append(raw.webSearchCalls,
+				arkWebSearchCall(call))
+		}
 	}
 	raw.usage = arkUsage(response.GetUsage())
 	raw.finish = arkFinishReason(response, len(raw.toolCalls) > 0)
 	return raw, nil
+}
+
+func arkWebSearchCall(call *arkresponses.ItemFunctionWebSearch) inference.WebSearchCall {
+	record := inference.WebSearchCall{
+		ID:     call.GetId(),
+		Status: call.GetStatus().String(),
+	}
+	if action := call.GetAction(); action != nil {
+		record.Action = action.GetType().String()
+		record.Queries = append(record.Queries, action.GetQuery())
+	}
+	return record
+}
+
+func arkCitations(annotations []*arkresponses.Annotation) []inference.Citation {
+	citations := make([]inference.Citation, 0, len(annotations))
+	for _, annotation := range annotations {
+		citation := inference.Citation{
+			URL:         annotation.GetUrl(),
+			Title:       annotation.GetTitle(),
+			SiteName:    annotation.GetSiteName(),
+			PublishTime: annotation.GetPublishTime(),
+		}
+		if citation.URL == "" {
+			continue
+		}
+		citations = append(citations, citation)
+	}
+	return citations
 }
 
 func arkUsage(usage *arkresponses.Usage) rawUsage {
@@ -469,6 +504,9 @@ func decodeGenerate(
 		FinishReason: raw.finish,
 		Usage:        rawUsageCanonical(raw.usage),
 		Metadata:     inference.Metadata{ResponseID: raw.id},
+	}
+	if output := webSearchProviderOutput(raw.webSearchCalls, raw.citations); output != nil {
+		response.ProviderOutputs = append(response.ProviderOutputs, output)
 	}
 	return response, nil
 }

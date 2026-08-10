@@ -6,8 +6,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
-	openaigo "github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	openaigo "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 const defaultBaseURL = "https://api.deepseek.com"

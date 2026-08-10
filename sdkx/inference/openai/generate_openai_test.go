@@ -17,7 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
 	"github.com/GizClaw/flowcraft/sdk/message"
 
-	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // ---------------------------------------------------------------------------
@@ -354,7 +354,7 @@ func TestWireToParamsMessages(t *testing.T) {
 		t.Fatalf("tool call item = %+v", items[3])
 	}
 	if items[4].OfFunctionCallOutput == nil ||
-		items[4].OfFunctionCallOutput.Output != "found" {
+		items[4].OfFunctionCallOutput.Output.OfString.Value != "found" {
 		t.Fatalf("tool output item = %+v", items[4])
 	}
 }

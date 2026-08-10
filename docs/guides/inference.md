@@ -207,7 +207,8 @@ resp, err := runtime.Generate(ctx, model, inference.GenerateRequest{
         },
     },
 })
-// resp.Message.Content.Parts, resp.FinishReason, resp.Usage, resp.Metadata
+// resp.Message.Content.Parts, resp.FinishReason, resp.Usage, resp.Metadata,
+// resp.ProviderOutputs
 ```
 {% endraw %}
 
@@ -240,9 +241,17 @@ for {
         // tool call assembled at its PartIndex
     }
     // event.Usage is a cumulative snapshot when present
+    // event.ProviderOutputs is a cumulative snapshot per output family
 }
 final, err := stream.Result() // complete GenerateResponse after EOF
 ```
+
+`GenerateResponse.ProviderOutputs` carries provider-owned structured output
+that is **not** part of `Message` — hosted web search calls, citations,
+code-interpreter outputs, MCP metadata, and similar side data. It is
+observational: only `Message` becomes conversation context, so
+`ProviderOutputs` is never fed back into a model request implicitly. Each
+`ProviderOutput` is a typed value addressed by provider and extension ID.
 
 ### Multi-turn and tool calling
 

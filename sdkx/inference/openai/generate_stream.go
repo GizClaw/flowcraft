@@ -2,15 +2,16 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdk/inference"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/ssestream"
-	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/ssestream"
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // responsesStream adapts the SDK SSE reader to ProviderStream[streamRaw]. It
@@ -24,6 +25,11 @@ type responsesStream struct {
 	nextPart int
 	finished bool
 	sawTools bool
+
+	// webSearchOutput is the cumulative provider output snapshot for the
+	// hosted web_search tool. Stream events replace it as calls and
+	// citations arrive.
+	webSearchOutput WebSearchOutput
 }
 
 type streamPart struct {
@@ -135,6 +141,12 @@ func (s *responsesStream) apply(
 			}
 			return raw, true, nil
 		case "function_call":
+		case "web_search_call":
+			s.addWebSearchCall(openaiWebSearchCall(event.Item))
+			if event.Type == "response.output_item.done" {
+				return s.webSearchSnapshot()
+			}
+			return streamRaw{}, false, nil
 		default:
 			return streamRaw{}, false, nil
 		}
@@ -149,8 +161,8 @@ func (s *responsesStream) apply(
 		// accumulator would append the snapshot a second time.
 		if event.Type == "response.output_item.done" &&
 			!part.sawArgsDelta && !part.sawArgsSnapshot {
-			raw.tool.argsFragment = event.Item.Arguments
-			if event.Item.Arguments != "" {
+			raw.tool.argsFragment = event.Item.Arguments.OfString
+			if event.Item.Arguments.OfString != "" {
 				part.sawArgsSnapshot = true
 			}
 		}
@@ -159,34 +171,34 @@ func (s *responsesStream) apply(
 		part := s.registerPart(event.OutputIndex, false)
 		part.reasoning = true
 		part.sawSummary = true
-		if event.Delta.OfString == "" {
+		if event.Delta == "" {
 			return streamRaw{}, false, nil
 		}
 		return streamRaw{
 			kind: streamRawReasoning,
 			part: part.index,
-			text: event.Delta.OfString,
+			text: event.Delta,
 		}, true, nil
 	case "response.output_text.delta":
 		part := s.registerPart(event.OutputIndex, false)
-		if event.Delta.OfString == "" {
+		if event.Delta == "" {
 			return streamRaw{}, false, nil
 		}
 		return streamRaw{
 			kind: streamRawText,
 			part: part.index,
-			text: event.Delta.OfString,
+			text: event.Delta,
 		}, true, nil
 	case "response.function_call_arguments.delta":
 		part := s.registerPart(event.OutputIndex, true)
 		part.sawArgsDelta = true
-		if event.Delta.OfString == "" {
+		if event.Delta == "" {
 			return streamRaw{}, false, nil
 		}
 		return streamRaw{
 			kind: streamRawToolFragment,
 			part: part.index,
-			tool: streamRawTool{argsFragment: event.Delta.OfString},
+			tool: streamRawTool{argsFragment: event.Delta},
 		}, true, nil
 	case "response.function_call_arguments.done":
 		part := s.registerPart(event.OutputIndex, true)
@@ -199,6 +211,13 @@ func (s *responsesStream) apply(
 			part: part.index,
 			tool: streamRawTool{argsFragment: event.Arguments},
 		}, true, nil
+	case "response.output_text.annotation.added":
+		citation, ok := openaiAnnotationCitation(event.Annotation)
+		if !ok {
+			return streamRaw{}, false, nil
+		}
+		s.addCitation(citation)
+		return s.webSearchSnapshot()
 	}
 	// Content-part markers, lifecycle pings, and audio events are
 	// bookkeeping for this operation's output.
@@ -245,12 +264,98 @@ func (s *responsesStream) finishEvent(
 	}
 	s.finished = true
 	usage := responseUsage(response.Usage)
-	return streamRaw{
+	raw := streamRaw{
 		kind:       streamRawFinish,
 		usage:      &usage,
 		finish:     finish,
 		responseID: response.ID,
-	}, nil
+	}
+	if len(s.webSearchOutput.Calls) > 0 || len(s.webSearchOutput.Citations) > 0 {
+		raw.providerOutputs = inference.ProviderOutputs{
+			&WebSearchOutput{
+				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
+				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
+			},
+		}
+	}
+	return raw, nil
+}
+
+func (s *responsesStream) addWebSearchCall(call inference.WebSearchCall) {
+	for i := range s.webSearchOutput.Calls {
+		if s.webSearchOutput.Calls[i].ID != call.ID {
+			continue
+		}
+		if call.Status != "" {
+			s.webSearchOutput.Calls[i].Status = call.Status
+		}
+		if call.Action != "" {
+			s.webSearchOutput.Calls[i].Action = call.Action
+		}
+		if len(call.Queries) > 0 {
+			s.webSearchOutput.Calls[i].Queries = call.Queries
+		}
+		if len(call.Sources) > 0 {
+			s.webSearchOutput.Calls[i].Sources = call.Sources
+		}
+		return
+	}
+	s.webSearchOutput.Calls = append(s.webSearchOutput.Calls, call)
+}
+
+func (s *responsesStream) addCitation(citation inference.Citation) {
+	for i := range s.webSearchOutput.Citations {
+		existing := s.webSearchOutput.Citations[i]
+		if existing.URL != citation.URL {
+			continue
+		}
+		if existing.StartIndex == nil && citation.StartIndex == nil {
+			return
+		}
+		if existing.StartIndex != nil && citation.StartIndex != nil &&
+			*existing.StartIndex == *citation.StartIndex {
+			return
+		}
+	}
+	s.webSearchOutput.Citations = append(s.webSearchOutput.Citations, citation)
+}
+
+func (s *responsesStream) webSearchSnapshot() (streamRaw, bool, error) {
+	if len(s.webSearchOutput.Calls) == 0 && len(s.webSearchOutput.Citations) == 0 {
+		return streamRaw{}, false, nil
+	}
+	return streamRaw{
+		kind: streamRawProviderOutput,
+		providerOutputs: inference.ProviderOutputs{
+			&WebSearchOutput{
+				Calls:     append([]inference.WebSearchCall(nil), s.webSearchOutput.Calls...),
+				Citations: append([]inference.Citation(nil), s.webSearchOutput.Citations...),
+			},
+		},
+	}, true, nil
+}
+
+func openaiAnnotationCitation(annotation any) (inference.Citation, bool) {
+	raw, err := json.Marshal(annotation)
+	if err != nil {
+		return inference.Citation{}, false
+	}
+	var union responses.ResponseOutputTextAnnotationUnion
+	if err := json.Unmarshal(raw, &union); err != nil {
+		return inference.Citation{}, false
+	}
+	if union.Type != "url_citation" {
+		return inference.Citation{}, false
+	}
+	url := union.AsURLCitation()
+	citation := inference.Citation{
+		URL:   url.URL,
+		Title: url.Title,
+	}
+	start, end := url.StartIndex, url.EndIndex
+	citation.StartIndex = &start
+	citation.EndIndex = &end
+	return citation, true
 }
 
 // decodeGenerateStream is pure: streamRaw already carries canonical part
@@ -283,10 +388,15 @@ func decodeGenerateStream(
 				ID:        raw.id,
 			},
 		}, nil
+	case streamRawProviderOutput:
+		return inference.GenerateStreamEvent{
+			ProviderOutputs: raw.providerOutputs.Clone(),
+		}, nil
 	case streamRawFinish:
 		event := inference.GenerateStreamEvent{
-			FinishReason: raw.finish,
-			ResponseID:   raw.responseID,
+			FinishReason:    raw.finish,
+			ResponseID:      raw.responseID,
+			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)

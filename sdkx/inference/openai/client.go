@@ -6,8 +6,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/sdk/inference/config"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
 
 // profileMaterial is one credential profile after secret resolution: the

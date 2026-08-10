@@ -10,10 +10,10 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/inference"
 	"github.com/GizClaw/flowcraft/sdk/message"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/responses"
-	"github.com/openai/openai-go/shared"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,9 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: item.callID,
-					Output: item.output,
+					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+						OfString: param.NewOpt(item.output),
+					},
 				},
 			})
 		case wireItemReasoning:
@@ -105,10 +107,59 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 			OfFunction: &toolParam,
 		})
 	}
+	if wire.webSearch != nil {
+		tool := webSearchToolParam(wire.webSearch)
+		params.Tools = append(params.Tools, responses.ToolUnionParam{
+			OfWebSearch: &tool,
+		})
+		// Sources only come back when the caller asks for them.
+		params.Include = append(params.Include,
+			responses.ResponseIncludableWebSearchCallActionSources)
+	}
 	if wire.toolChoice != nil {
 		params.ToolChoice = toolChoiceParam(wire.toolChoice)
+	} else if wire.webSearch != nil && wire.webSearch.required {
+		params.ToolChoice = responses.ResponseNewParamsToolChoiceUnion{
+			OfToolChoiceMode: param.NewOpt(responses.ToolChoiceOptionsRequired),
+		}
 	}
 	return params
+}
+
+func webSearchToolParam(search *wireWebSearch) responses.WebSearchToolParam {
+	tool := responses.WebSearchToolParam{
+		Type: responses.WebSearchToolTypeWebSearch,
+	}
+	if search.searchContextSize != "" {
+		tool.SearchContextSize =
+			responses.WebSearchToolSearchContextSize(search.searchContextSize)
+	}
+	if len(search.allowedDomains) > 0 {
+		tool.Filters = responses.WebSearchToolFiltersParam{
+			AllowedDomains: append([]string(nil), search.allowedDomains...),
+		}
+	}
+	if search.city != "" || search.country != "" ||
+		search.region != "" || search.timezone != "" {
+		tool.UserLocation = responses.WebSearchToolUserLocationParam{
+			Type:     "approximate",
+			City:     param.NewOpt(search.city),
+			Country:  param.NewOpt(search.country),
+			Region:   param.NewOpt(search.region),
+			Timezone: param.NewOpt(search.timezone),
+		}
+	}
+	extra := map[string]any{}
+	if search.externalWebAccess != nil {
+		extra["external_web_access"] = *search.externalWebAccess
+	}
+	if search.returnTokenBudget != "" {
+		extra["return_token_budget"] = search.returnTokenBudget
+	}
+	if len(extra) > 0 {
+		tool.SetExtraFields(extra)
+	}
+	return tool
 }
 
 func messageContent(
@@ -213,19 +264,74 @@ func responseToRaw(response *responses.Response) (generateRaw, error) {
 			for _, content := range item.Content {
 				if content.Type == "output_text" {
 					raw.texts = append(raw.texts, content.Text)
+					raw.citations = append(raw.citations,
+						openaiCitations(content.Annotations)...)
 				}
 			}
 		case "function_call":
 			raw.toolCalls = append(raw.toolCalls, rawToolCall{
 				id:   item.CallID,
 				name: item.Name,
-				args: []byte(item.Arguments),
+				args: []byte(item.Arguments.OfString),
 			})
+		case "web_search_call":
+			raw.webSearchCalls = append(raw.webSearchCalls,
+				openaiWebSearchCall(item))
 		}
 	}
 	raw.usage = responseUsage(response.Usage)
 	raw.finish = responseFinish(response, len(raw.toolCalls) > 0)
 	return raw, nil
+}
+
+func openaiWebSearchCall(
+	item responses.ResponseOutputItemUnion,
+) inference.WebSearchCall {
+	call := item.AsWebSearchCall()
+	record := inference.WebSearchCall{
+		ID:     call.ID,
+		Status: string(call.Status),
+	}
+	switch call.Action.Type {
+	case "search":
+		action := call.Action.AsSearch()
+		record.Action = string(action.Type)
+		record.Queries = append([]string(nil), action.Queries...)
+		for _, source := range action.Sources {
+			record.Sources = append(record.Sources, source.URL)
+		}
+	case "open_page":
+		action := call.Action.AsOpenPage()
+		record.Action = string(action.Type)
+		record.Sources = append(record.Sources, action.URL)
+	case "find_in_page":
+		action := call.Action.AsFind()
+		record.Action = string(action.Type)
+		record.Queries = append(record.Queries, action.Pattern)
+		record.Sources = append(record.Sources, action.URL)
+	}
+	return record
+}
+
+func openaiCitations(
+	annotations []responses.ResponseOutputTextAnnotationUnion,
+) []inference.Citation {
+	citations := make([]inference.Citation, 0, len(annotations))
+	for _, annotation := range annotations {
+		if annotation.Type != "url_citation" {
+			continue
+		}
+		url := annotation.AsURLCitation()
+		citation := inference.Citation{
+			URL:   url.URL,
+			Title: url.Title,
+		}
+		start, end := url.StartIndex, url.EndIndex
+		citation.StartIndex = &start
+		citation.EndIndex = &end
+		citations = append(citations, citation)
+	}
+	return citations
 }
 
 func responseUsage(usage responses.ResponseUsage) rawUsage {
@@ -325,7 +431,7 @@ func decodeGenerate(
 			Arguments: arguments,
 		}})
 	}
-	return inference.GenerateResponse{
+	response := inference.GenerateResponse{
 		Message: message.Message{
 			Role:    message.RoleAssistant,
 			Content: message.Content{Parts: parts},
@@ -333,7 +439,11 @@ func decodeGenerate(
 		FinishReason: raw.finish,
 		Usage:        rawUsageCanonical(raw.usage),
 		Metadata:     inference.Metadata{ResponseID: raw.id},
-	}, nil
+	}
+	if output := webSearchProviderOutput(raw.webSearchCalls, raw.citations); output != nil {
+		response.ProviderOutputs = append(response.ProviderOutputs, output)
+	}
+	return response, nil
 }
 
 func rawUsageCanonical(raw rawUsage) inference.Usage {
