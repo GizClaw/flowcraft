@@ -21,17 +21,17 @@ _No pending changes._
 
 <!-- releasegate:releases -->
 
-## `sdk/v0.5.4` - 2026-08-11
-
-### Changed
-
-- sdk patch: expose tool Assembly Registry and Sources so session-scoped dynamic catalogs can share the executor's registry and reach source exposure metadata
-
 ## `sdkx/v0.5.6` - 2026-08-11
 
 ### Changed
 
 - sdkx patch: add runtime sessions.dynamic_catalog with per-agent tool.Assembly mapping and automatic per-session dynamic CatalogProvider wiring (tool_search registration, MCP exposure handoff, configurable injection policy); clean up integration decorator iteration
+
+## `sdk/v0.5.4` - 2026-08-11
+
+### Changed
+
+- sdk patch: expose tool Assembly Registry and Sources so session-scoped dynamic catalogs can share the executor's registry and reach source exposure metadata
 
 ## `sdkx/v0.5.5` - 2026-08-11
 
