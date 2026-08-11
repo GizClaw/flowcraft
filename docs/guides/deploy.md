@@ -317,7 +317,7 @@ explicit external consumer is dead configuration and fails the build.
 | `workspace.Registry`      | `yaml`          | workspace container             | `sdk/workspace/config`         |
 | `sandbox.Registry`        | `yaml`          | sandbox container               | `sdk/sandbox/config`            |
 | `inference.Assembly`      | `yaml`          | runtime (+ optional router)     | `sdk/inference/config`    |
-| `tool.Assembly`           | `yaml`          | catalog + executor              | `sdk/tool/config`              |
+| `tool.Assembly`           | `yaml`          | catalog + executor; optional `sandbox` dep for sandbox-backed exec | `sdk/tool/config` |
 | `agent.ScriptRuntime`     | `js`            | JavaScript runtime              | `sdkx/agent/script/jsrt`        |
 | `agent.ScriptRuntime`     | `lua`           | Lua runtime                     | `sdkx/agent/script/luart`       |
 | `agent.Engine`            | `a2a`           | A2A remote-proxy engine (0.3 + 1.0, JSON-RPC + gRPC) | `sdkx/agent/a2a/config`          |

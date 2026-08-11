@@ -48,6 +48,13 @@ type Source interface {
 // fail at build time, not silently drop a server.
 type SourceFactory func(ctx context.Context, in sdkconfig.Input) (Source, error)
 
+// BuiltinFactory constructs one hand-written Go tool at Build time from
+// the builtin source's [sdkconfig.Input]. The input carries the same
+// resource-level Deps the enclosing tool.Assembly resource was bound
+// with, so a tool like exec can reach a sandbox.Runner without the
+// document encoding live objects.
+type BuiltinFactory = sdkconfig.Func[sdkconfig.Input, tool.Tool]
+
 // SourceEntry is one attachment declared in the document: a factory
 // kind plus its opaque spec. Spec stays an undecoded JSON subtree so
 // each factory owns its own schema.
@@ -92,18 +99,35 @@ func (b *Builder) builtinSourceFactory(_ context.Context, in sdkconfig.Input) (S
 			"builtin source: tools must name at least one tool")
 	}
 	return &builtinSource{
-		catalog: b.builtins,
-		names:   append([]string(nil), spec.Tools...),
+		catalog:   b.builtins,
+		factories: b.builtinFactories,
+		deps:      in.Deps,
+		names:     append([]string(nil), spec.Tools...),
 	}, nil
 }
 
 type builtinSource struct {
-	catalog map[string]tool.Tool
-	names   []string
+	catalog   map[string]tool.Tool
+	factories map[string]BuiltinFactory
+	deps      map[string]any
+	names     []string
 }
 
-func (s *builtinSource) Attach(_ context.Context, registry *tool.Registry) error {
+func (s *builtinSource) Attach(ctx context.Context, registry *tool.Registry) error {
 	for _, name := range s.names {
+		if factory, ok := s.factories[name]; ok {
+			registered, err := factory(ctx, sdkconfig.Input{Deps: s.deps})
+			if err != nil {
+				return fmt.Errorf(
+					"builtin source: build builtin tool %q: %w", name, err)
+			}
+			if isNilTool(registered) {
+				return errdefs.Validationf(
+					"builtin source: factory for builtin tool %q returned a nil tool", name)
+			}
+			registry.Register(registered)
+			continue
+		}
 		registered, ok := s.catalog[name]
 		if !ok {
 			return errdefs.Validationf(
@@ -124,7 +148,12 @@ func (s *builtinSource) Close() error { return nil }
 // running or half a server's tools in the registry. That is why Build
 // returns the attached sources on success: the caller must close them,
 // and there is no other handle to them.
-func (b *Builder) buildSources(ctx context.Context, entries []SourceEntry, registry *tool.Registry) ([]Source, error) {
+func (b *Builder) buildSources(
+	ctx context.Context,
+	entries []SourceEntry,
+	registry *tool.Registry,
+	deps map[string]any,
+) ([]Source, error) {
 	attached := make([]Source, 0, len(entries))
 	closeAttached := func() {
 		for _, a := range slices.Backward(attached) {
@@ -140,7 +169,10 @@ func (b *Builder) buildSources(ctx context.Context, entries []SourceEntry, regis
 					"(register it with Builder.RegisterSourceFactory)", i, entry.Kind,
 			))
 		}
-		source, err := factory(ctx, sdkconfig.Input{Settings: entry.Spec})
+		source, err := factory(ctx, sdkconfig.Input{
+			Settings: entry.Spec,
+			Deps:     deps,
+		})
 		if err != nil {
 			closeAttached()
 			return nil, fmt.Errorf(

@@ -1,0 +1,9 @@
+{
+  "summary": "sdkx/tool/exec adds RegisterBuiltin, wiring sandbox-backed exec and exec_session builtin factories that consume the tool.Assembly sandbox dep",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}

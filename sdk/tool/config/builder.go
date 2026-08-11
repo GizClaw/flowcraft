@@ -40,10 +40,11 @@ const RegistryDep = "registry"
 // of the tool surface. No global registration: two Builders in one
 // process stay independent.
 type Builder struct {
-	deps            Deps
-	builtins        map[string]tool.Tool
-	middlewares     *sdkconfig.Registry[sdkconfig.Input, tool.Middleware]
-	sourceFactories map[string]SourceFactory
+	deps             Deps
+	builtins         map[string]tool.Tool
+	builtinFactories map[string]BuiltinFactory
+	middlewares      *sdkconfig.Registry[sdkconfig.Input, tool.Middleware]
+	sourceFactories  map[string]SourceFactory
 }
 
 // NewBuilder returns a Builder with the built-in middleware factories
@@ -52,10 +53,11 @@ type Builder struct {
 // dependency.
 func NewBuilder(deps Deps) *Builder {
 	b := &Builder{
-		deps:            deps,
-		builtins:        make(map[string]tool.Tool),
-		middlewares:     sdkconfig.NewRegistry[sdkconfig.Input, tool.Middleware](),
-		sourceFactories: make(map[string]SourceFactory),
+		deps:             deps,
+		builtins:         make(map[string]tool.Tool),
+		builtinFactories: make(map[string]BuiltinFactory),
+		middlewares:      sdkconfig.NewRegistry[sdkconfig.Input, tool.Middleware](),
+		sourceFactories:  make(map[string]SourceFactory),
 	}
 	b.registerBuiltins()
 	b.sourceFactories[BuiltinKind] = b.builtinSourceFactory
@@ -77,6 +79,10 @@ func (b *Builder) RegisterBuiltin(t tool.Tool) {
 	if _, exists := b.builtins[name]; exists {
 		panic(fmt.Sprintf("config.RegisterBuiltin: tool %q is already registered", name))
 	}
+	if _, exists := b.builtinFactories[name]; exists {
+		panic(fmt.Sprintf(
+			"config.RegisterBuiltin: tool %q is already registered as a builtin factory", name))
+	}
 	b.builtins[name] = t
 }
 
@@ -85,6 +91,38 @@ func (b *Builder) RegisterBuiltins(tools ...tool.Tool) {
 	for _, t := range tools {
 		b.RegisterBuiltin(t)
 	}
+}
+
+// RegisterBuiltinFactory adds a hand-written Go tool factory to the
+// builtin catalog. Unlike [RegisterBuiltin]'s pre-constructed tools, a
+// factory is invoked once per Build with the source's [sdkconfig.Input],
+// so it can consume resource-level deps — for example the sandbox
+// runner bound through a tool.Assembly resource:
+//
+//	builder.RegisterBuiltinFactory("exec", func(_ context.Context, in sdkconfig.Input) (tool.Tool, error) {
+//	    runner, ok := in.Dep(DepSandbox).(sandbox.Runner)
+//	    ...
+//	})
+//
+// The document enables it by name through a builtin source entry, the
+// same way it enables constructed tools. Nil factories, empty names,
+// and duplicates (against either catalog) are programming bugs.
+func (b *Builder) RegisterBuiltinFactory(name string, factory BuiltinFactory) {
+	if name == "" {
+		panic("config.RegisterBuiltinFactory: name is empty")
+	}
+	if factory == nil {
+		panic(fmt.Sprintf("config.RegisterBuiltinFactory: factory for %q is nil", name))
+	}
+	if _, exists := b.builtins[name]; exists {
+		panic(fmt.Sprintf(
+			"config.RegisterBuiltinFactory: tool %q is already registered as a builtin", name))
+	}
+	if _, exists := b.builtinFactories[name]; exists {
+		panic(fmt.Sprintf(
+			"config.RegisterBuiltinFactory: factory for %q is already registered", name))
+	}
+	b.builtinFactories[name] = factory
 }
 
 // RegisterFactory adds a factory for kind. Empty kinds, nil factories,
@@ -174,11 +212,20 @@ func (a *Assembly) Close() error {
 // whatever already attached, so an error never leaves child processes
 // behind.
 func (b *Builder) Build(ctx context.Context, doc Document) (*Assembly, error) {
+	return b.build(ctx, doc, nil)
+}
+
+// build assembles the Executor and the Registry. deps carries the
+// resource-level dependencies (declared by [Builder.Spec] and resolved
+// by a deployment engine) down to every source factory, so a builtin
+// factory can reach values the document cannot express — the sandbox
+// runner behind exec, for example.
+func (b *Builder) build(ctx context.Context, doc Document, deps map[string]any) (*Assembly, error) {
 	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
 	registry := tool.NewRegistry()
-	sources, err := b.buildSources(ctx, doc.Sources, registry)
+	sources, err := b.buildSources(ctx, doc.Sources, registry, deps)
 	if err != nil {
 		return nil, err
 	}

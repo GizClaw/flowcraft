@@ -129,6 +129,13 @@ scopes:
 Unknown source/middleware kinds and unknown builtin tool names fail Build.
 `agent.tools` allow-lists are runtime policy gates, not build-time checks.
 
+Sandbox-backed command tools (`exec`, `exec_session`) register on the tool
+builder with `exec.RegisterBuiltin(toolBuilder)`. The tool resource then
+declares the optional `deps: {sandbox: boxes/<name>}` binding to a
+`sandbox.Registry` item; the tools are built from that runner per assembly
+and the build fails closed when the dep is missing or not a
+`sandbox.Runner`.
+
 ## Other first-party settings
 
 - `event.Bus/memory`: `route_cache_size` — 0 disables cache, negative keeps
