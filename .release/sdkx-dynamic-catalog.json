@@ -1,0 +1,9 @@
+{
+  "summary": "sdkx patch: add runtime sessions.dynamic_catalog with per-agent tool.Assembly mapping and automatic per-session dynamic CatalogProvider wiring (tool_search registration, MCP exposure handoff, configurable injection policy); clean up integration decorator iteration",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}

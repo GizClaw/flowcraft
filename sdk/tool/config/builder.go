@@ -115,7 +115,31 @@ type Assembly struct {
 	// the assembly exposes both halves.
 	Catalog tool.Catalog
 
-	sources []Source
+	registry *tool.Registry
+	sources  []Source
+}
+
+// Registry returns the registry Build created. The dynamic injection
+// layer needs the concrete registry (not just the Catalog view) so it
+// can register search tools and lazy proxies on the same execution
+// surface the Executor dispatches against.
+func (a *Assembly) Registry() *tool.Registry {
+	if a == nil {
+		return nil
+	}
+	return a.registry
+}
+
+// Sources returns the attached external sources. Hosts use them to
+// reach source-owned metadata (for example an MCP source's per-tool
+// exposure declarations) after Build has attached them. The returned
+// slice is a copy; the sources themselves remain owned by the Assembly
+// until Close.
+func (a *Assembly) Sources() []Source {
+	if a == nil {
+		return nil
+	}
+	return slices.Clone(a.sources)
 }
 
 // Close releases every attached source, unregistering their tools.
@@ -158,7 +182,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Assembly, error) {
 	if err != nil {
 		return nil, err
 	}
-	assembly := &Assembly{sources: sources}
+	assembly := &Assembly{sources: sources, registry: registry}
 
 	for name, scope := range doc.Scopes {
 		registered, ok := registry.Get(name)

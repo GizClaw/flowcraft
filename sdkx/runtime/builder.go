@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 	sdkscheduler "github.com/GizClaw/flowcraft/sdk/scheduler"
 	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
+	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
@@ -175,6 +176,17 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	}
 	owned.result = result
 
+	var catalogProvider session.CatalogProvider
+	if cfg.Sessions.DynamicCatalog != nil {
+		assemblies, err := resolveDynamicCatalogAssemblies(
+			doc, result, cfg.Sessions.DynamicCatalog)
+		if err != nil {
+			return nil, fail(err)
+		}
+		catalogProvider = newDynamicCatalogProvider(
+			assemblies, cfg.Sessions.DynamicCatalog)
+	}
+
 	schedulerServer, err := resolveScheduler(result, cfg.Scheduler)
 	if err != nil {
 		return nil, fail(err)
@@ -222,19 +234,19 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 
 	// Wrapping in reverse configuration order makes integrations[0] the
 	// outermost decorator while preserving each decorator's ordinary semantics.
-	for i := len(owned.integrations) - 1; i >= 0; i-- {
+	for _, v := range slices.Backward(owned.integrations) {
 		if isNil(hostFactory) {
 			return nil, fail(errdefs.Internalf(
-				"runtime integration %q received a nil HostFactory", owned.integrations[i].name))
+				"runtime integration %q received a nil HostFactory", v.name))
 		}
-		hostFactory, err = owned.integrations[i].integration.DecorateHost(hostFactory)
+		hostFactory, err = v.integration.DecorateHost(hostFactory)
 		if err != nil {
 			return nil, fail(fmt.Errorf(
-				"runtime integration %q decorate host: %w", owned.integrations[i].name, err))
+				"runtime integration %q decorate host: %w", v.name, err))
 		}
 		if isNil(hostFactory) {
 			return nil, fail(errdefs.Internalf(
-				"runtime integration %q decorate host returned nil", owned.integrations[i].name))
+				"runtime integration %q decorate host returned nil", v.name))
 		}
 	}
 
@@ -257,6 +269,10 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 			session.WithCheckpointStore(checkpoints),
 			session.WithResume(cfg.Sessions.Resume),
 		)
+	}
+	if catalogProvider != nil {
+		managerOptions = append(managerOptions,
+			session.WithCatalogProvider(catalogProvider))
 	}
 	manager, err := session.NewManager(result, hostFactory, router, managerOptions...)
 	if err != nil {
@@ -348,6 +364,22 @@ func resolveCatalog(
 			}
 		}
 		external = append(external, cfg.Scheduler)
+	}
+	if cfg.Sessions.DynamicCatalog != nil {
+		for agentID, resourceName := range cfg.Sessions.DynamicCatalog.Tools {
+			entry, exists := doc.Resources[resourceName]
+			if !exists {
+				return nil, nil, errdefs.NotFoundf(
+					"runtime config sessions.dynamic_catalog.tools[%q]: resource %q is not defined",
+					agentID, resourceName)
+			}
+			if entry.Kind != toolconfig.ResourceKind {
+				return nil, nil, errdefs.Validationf(
+					"runtime config sessions.dynamic_catalog.tools[%q]: resource %q has kind %q, want %q",
+					agentID, resourceName, entry.Kind, toolconfig.ResourceKind)
+			}
+			external = append(external, resourceName)
+		}
 	}
 	for i, item := range cfg.Integrations {
 		registered, exists := catalog[item.Kind]

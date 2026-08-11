@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/sdk/event"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
 	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
+	"github.com/GizClaw/flowcraft/sdkx/tool/dynamic"
 )
 
 func parseRuntimeDocument(t *testing.T, runtimeYAML string) deploy.Document {
@@ -127,5 +128,115 @@ func TestRegisterIntegrationRejectsInvalidFactoriesAndSpecs(t *testing.T) {
 	}
 	if err := builder.RegisterIntegration(good); err == nil {
 		t.Fatal("duplicate kind accepted")
+	}
+}
+
+func TestDecodeConfig_DynamicCatalog(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {default: shared_tools, researcher: research_tools}
+      default_exposure: direct
+      exposures: {tool_search: always, exec: hidden}
+      selected_retention: 3
+      recent_window: 7
+      budget: {max_definitions: 20, max_bytes: 4096}
+`)
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		dc := cfg.Sessions.DynamicCatalog
+		if dc == nil {
+			t.Fatal("DynamicCatalog is nil")
+		}
+		if dc.Tools["default"] != "shared_tools" ||
+			dc.Tools["researcher"] != "research_tools" {
+			t.Fatalf("Tools = %#v", dc.Tools)
+		}
+		if dc.DefaultExposure != dynamic.ExposureDirect {
+			t.Errorf("DefaultExposure = %q, want direct", dc.DefaultExposure)
+		}
+		if dc.Exposures["tool_search"] != dynamic.ExposureAlways ||
+			dc.Exposures["exec"] != dynamic.ExposureHidden {
+			t.Errorf("Exposures = %#v", dc.Exposures)
+		}
+		if dc.SelectedRetention != 3 || dc.RecentWindow != 7 {
+			t.Errorf("retention/window = %d/%d, want 3/7",
+				dc.SelectedRetention, dc.RecentWindow)
+		}
+		if dc.Budget.MaxDefinitions != 20 || dc.Budget.MaxBytes != 4096 {
+			t.Errorf("budget = %+v, want 20/4096", dc.Budget)
+		}
+	})
+
+	t.Run("omitted policy uses defaults", func(t *testing.T) {
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: research_tools}
+`)
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		dc := cfg.Sessions.DynamicCatalog
+		if dc.DefaultExposure != dynamic.ExposureDeferred {
+			t.Errorf("DefaultExposure = %q, want deferred", dc.DefaultExposure)
+		}
+		if len(dc.Exposures) != 0 || dc.SelectedRetention != 0 ||
+			dc.RecentWindow != 0 || dc.Budget.MaxDefinitions != 0 ||
+			dc.Budget.MaxBytes != 0 {
+			t.Errorf("unexpected non-default policy: %#v", dc)
+		}
+	})
+
+	for name, runtimeYAML := range map[string]string{
+		"missing tools": `  event_bus: events
+  sessions:
+    dynamic_catalog: {}
+`,
+		"empty agent key": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {'': research_tools}
+`,
+		"empty resource": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: ''}
+`,
+		"bad default exposure": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: research_tools}
+      default_exposure: sometimes
+`,
+		"bad exposure value": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: research_tools}
+      exposures: {exec: maybe}
+`,
+		"negative retention": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: research_tools}
+      selected_retention: -1
+`,
+		"negative budget": `  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {researcher: research_tools}
+      budget: {max_definitions: -2}
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := parseRuntimeDocument(t, runtimeYAML)
+			if _, err := DecodeConfig(doc); err == nil {
+				t.Fatal("DecodeConfig unexpectedly succeeded")
+			}
+		})
 	}
 }
