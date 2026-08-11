@@ -11,15 +11,27 @@ Release PR before their tags are published.
 
 | Module   | Latest tag      | Notes                                                                                     |
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `sdk`    | `sdk/v0.5.2`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
+| `sdk`    | `sdk/v0.5.3`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.4`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.5`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdk/v0.5.3` - 2026-08-11
+
+### Changed
+
+- sdk patch: sandbox ProcessManager sessions, rule-based net policy, MITM, process events; pty Resize race fix; dynamic tool injection and policy middleware; hosted web_search capability metadata
+
+## `sdkx/v0.5.5` - 2026-08-11
+
+### Changed
+
+- sdkx patch: hosted web_search via ProviderOutputs, dynamic tool injection / lazy MCP attach / policy middleware / session wiring, session lifecycle observer, sandbox sessions and net policy, bwrap CI alignment
 
 ## `sdkx/v0.5.4` - 2026-08-10
 
