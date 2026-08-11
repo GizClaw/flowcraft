@@ -204,6 +204,64 @@ func TestPlanEmptySetAndCLIJSON(t *testing.T) {
 	}
 }
 
+func TestPreflightDetectsAndWritesSameBatchTidy(t *testing.T) {
+	repo := initRepo(t)
+	seedModule(t, repo, "sdk", "")
+	seedModule(t, repo, "sdkx", "require github.com/GizClaw/flowcraft/sdk v1.0.0\n")
+	commitAll(t, repo, "seed")
+	gitRun(t, repo, "tag", "sdk/v1.0.0")
+	gitRun(t, repo, "tag", "sdkx/v1.0.0")
+
+	writeFile(t, repo, "memory/go.mod", "module github.com/GizClaw/flowcraft/memory\n\ngo 1.25.0\n")
+	writeFile(t, repo, "memory/module.go", "package memory\n")
+	writeFile(t, repo, "sdk/import.go", "package sdk\n\nimport _ \"github.com/GizClaw/flowcraft/memory\"\n")
+	writeFile(t, repo, "sdk/go.mod", moduleFile("sdk",
+		"require github.com/GizClaw/flowcraft/memory v0.1.0\n\nreplace github.com/GizClaw/flowcraft/memory => ../memory\n"))
+	writeFile(t, repo, "sdkx/import.go", "package sdkx\n\nimport _ \"github.com/GizClaw/flowcraft/sdk\"\n")
+	writeFile(t, repo, "sdkx/go.mod", moduleFile("sdkx",
+		"require github.com/GizClaw/flowcraft/sdk v1.0.1\n\nreplace github.com/GizClaw/flowcraft/memory => ../memory\n"))
+	writeFile(t, repo, ".release/all.json",
+		`{"summary":"coordinated","releases":[{"module":"sdk","bump":"patch"},{"module":"sdkx","bump":"patch"}]}`)
+	commitAll(t, repo, "changes")
+
+	var stdout, stderr bytes.Buffer
+	if code := runCLI([]string{"preflight", "--repo", repo}, &stdout, &stderr); code == 0 ||
+		!strings.Contains(stderr.String(), "github.com/GizClaw/flowcraft/memory") {
+		t.Fatalf("preflight check code = %d, stderr = %s", code, stderr.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runCLI([]string{"preflight", "--repo", repo, "--write"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("preflight write code = %d, stderr = %s", code, stderr.String())
+	}
+	sdkxMod, err := os.ReadFile(filepath.Join(repo, "sdkx/go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertContains(t, string(sdkxMod), "github.com/GizClaw/flowcraft/memory v0.1.0 // indirect")
+	if strings.Contains(string(sdkxMod), "replace github.com/GizClaw/flowcraft/sdk") {
+		t.Fatalf("preflight replace leaked into go.mod:\n%s", sdkxMod)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runCLI([]string{"preflight", "--repo", repo}, &stdout, &stderr); code != 0 {
+		t.Fatalf("preflight check after write code = %d, stderr = %s", code, stderr.String())
+	}
+}
+
+func TestPreflightNoPendingReleases(t *testing.T) {
+	repo := initRepo(t)
+	var stdout, stderr bytes.Buffer
+	if code := runCLI([]string{"preflight", "--repo", repo}, &stdout, &stderr); code != 0 {
+		t.Fatalf("preflight code = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "no pending releases") {
+		t.Fatalf("stdout = %q, want no pending releases", stdout.String())
+	}
+}
+
 func TestChangelogSingleModuleUsesPlanTagAndUpdatesState(t *testing.T) {
 	repo := changelogRepo(t, "sdk", "1.2.3")
 	writeFile(t, repo, "sdk/change.go", "package sdk\n\nconst Changed = true\n")

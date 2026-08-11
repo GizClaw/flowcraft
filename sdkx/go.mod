@@ -25,6 +25,8 @@ require (
 	modernc.org/sqlite v1.56.0
 )
 
+require github.com/creack/pty v1.1.24 // indirect
+
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.22.0 // indirect
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect

@@ -75,6 +75,13 @@ make release-plan
 The release gate rejects a module whose same-batch dependency pins do not match
 the planned versions.
 
+Before opening a coordinated release PR, run `make release-preflight`. It tidies
+each planned module against the same-batch versions (using temporary local
+`replace` directives), so new indirect requirements introduced by the dependency
+bump are committed with the release instead of failing the gate after the first
+tag is published. `make release-preflight-write` applies the tidy results to the
+module's `go.mod`/`go.sum`.
+
 ## Release automation
 
 After a changeset reaches `main`, the `Release modules` workflow aggregates its
