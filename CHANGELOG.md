@@ -11,15 +11,27 @@ Release PR before their tags are published.
 
 | Module   | Latest tag      | Notes                                                                                     |
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `sdk`    | `sdk/v0.5.4`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
+| `sdk`    | `sdk/v0.5.5`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.6`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.7`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdk/v0.5.5` - 2026-08-11
+
+### Changed
+
+- tool.Assembly declares an optional sandbox.Runner dep forwarded to source factories, and builtin tools can be registered as per-build factories (RegisterBuiltinFactory) that consume resource deps
+
+## `sdkx/v0.5.7` - 2026-08-11
+
+### Changed
+
+- sdkx/tool/exec adds RegisterBuiltin, wiring sandbox-backed exec and exec_session builtin factories that consume the tool.Assembly sandbox dep
 
 ## `sdkx/v0.5.6` - 2026-08-11
 
