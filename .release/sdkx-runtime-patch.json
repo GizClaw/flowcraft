@@ -1,0 +1,9 @@
+{
+  "summary": "sdkx patch: hosted web_search via ProviderOutputs, dynamic tool injection / lazy MCP attach / policy middleware / session wiring, session lifecycle observer, sandbox sessions and net policy, bwrap CI alignment",
+  "releases": [
+    {
+      "module": "sdkx",
+      "bump": "patch"
+    }
+  ]
+}
