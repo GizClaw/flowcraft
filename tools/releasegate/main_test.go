@@ -243,6 +243,12 @@ func TestPreflightDetectsAndWritesSameBatchTidy(t *testing.T) {
 	if strings.Contains(string(sdkxMod), "replace github.com/GizClaw/flowcraft/sdk") {
 		t.Fatalf("preflight replace leaked into go.mod:\n%s", sdkxMod)
 	}
+	if strings.HasSuffix(string(sdkxMod), "\n\n") {
+		t.Fatalf("preflight write left a blank line at EOF:\n%s", sdkxMod)
+	}
+	if !strings.HasSuffix(string(sdkxMod), "\n") {
+		t.Fatalf("preflight write must end with a newline:\n%s", sdkxMod)
+	}
 
 	stdout.Reset()
 	stderr.Reset()
