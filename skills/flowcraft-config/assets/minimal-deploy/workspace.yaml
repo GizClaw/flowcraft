@@ -1,0 +1,10 @@
+version: v1
+workspaces:
+  project:
+    driver: local
+    settings:
+      root: workspace
+    scope:
+      deny_read: ["**/.env"]
+      allow_write: ["**"]
+      mandatory_deny: [".git/**"]

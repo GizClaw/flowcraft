@@ -127,7 +127,7 @@ func must(err error) {
       "id": "ask",
       "type": "inference",
       "config": {
-        "model": { "provider": "openai", "name": "gpt-5.4" },
+        "model": { "id": { "provider": "openai", "name": "gpt-5.4" } },
         "messages_channel": "main",
         "system_prompt": "You are a friendly greeter.",
         "tool_pending_key": "tool_pending"

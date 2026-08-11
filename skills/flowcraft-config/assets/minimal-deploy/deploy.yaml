@@ -1,0 +1,39 @@
+version: v1
+
+resources:
+  events:
+    kind: event.Bus
+    impl: memory
+    settings:
+      route_cache_size: 1024
+
+  ws:
+    kind: workspace.Registry
+    impl: yaml
+    settings:
+      file: ./workspace.yaml
+
+  infer:
+    kind: inference.Assembly
+    impl: yaml
+    settings:
+      file: ./inference.yaml
+
+agents:
+  assistant:
+    card:
+      name: Assistant
+      description: Handles interactive requests with memory.
+    engine:
+      kind: graph
+      settings:
+        graph: {file: ./graphs/assistant.json}
+    deps:
+      inference: infer
+      workspace: ws/project
+
+runtime:
+  event_bus: events
+  sessions:
+    idle_timeout: 10m
+    sink_buffer: 256

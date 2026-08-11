@@ -33,6 +33,8 @@
 !sdk/**
 !sdkx/
 !sdkx/**
+!skills/
+!skills/**
 !tools/
 !tools/**
 !.release/

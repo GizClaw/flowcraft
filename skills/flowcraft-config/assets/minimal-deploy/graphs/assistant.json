@@ -1,0 +1,21 @@
+{
+  "name": "assistant",
+  "version": "1",
+  "entry": "chat",
+  "nodes": [
+    {
+      "id": "chat",
+      "type": "inference",
+      "config": {
+        "model": {
+          "id": {"provider": "deepseek", "name": "deepseek-v4-flash"}
+        },
+        "messages_channel": "main",
+        "system_prompt": "You are a helpful assistant.",
+        "tool_pending_key": "tool_pending",
+        "stream": true
+      }
+    }
+  ],
+  "edges": []
+}
