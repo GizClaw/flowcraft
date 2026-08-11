@@ -152,6 +152,7 @@ the core and depend on it, never the reverse.
 | [`sdkx`](sdkx/)                             | Provider adapters + generic assembly (deploy, runtime, tool, memory, scheduler)  | Versioned Go module  |
 | [`examples/forge`](examples/forge/)         | Runnable local workspace demo                                                     | Examples            |
 | [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
+| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs               | Codex skill         |
 
 ## Highlights
 
@@ -217,6 +218,40 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 - [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
   `sdk/memory` contracts, the `memory/` implementation, and `sdkx/memory`
   deploy/runtime glue.
+
+### Configuration authoring skill (`skills/flowcraft-config`)
+
+[`skills/flowcraft-config/`](skills/flowcraft-config/) is a Codex skill for
+writing, validating, and troubleshooting FlowCraft deployment
+configuration: the deployment document (the filename is arbitrary;
+`deploy.yaml` is the convention), the `runtime` section,
+inference/workspace/sandbox/tool sub-documents, `sdk/memory` contracts,
+and graph JSON node wiring. The unreleased `memory/` implementation
+module is deliberately excluded from its examples and dependencies.
+
+The skill ships an L2 dry-run validator that pins the released
+`sdk`/`sdkx` module versions and builds your deployment through the real
+`sdkx/deploy` assembly layer with stub secrets — no network, no real
+credentials:
+
+```bash
+skills/flowcraft-config/scripts/validate-config.sh deploy.yaml
+skills/flowcraft-config/scripts/validate-config.sh --type graph graphs/assistant.json
+```
+
+`--type` supports `deploy` (default), `inference`, `workspace`, `sandbox`,
+`tool`, `graph`, and `agent` entries.
+
+Install it into Codex (replaces an existing copy, so remove
+`~/.codex/skills/flowcraft-config` first if present):
+
+```bash
+python3 ~/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py \
+  --repo GizClaw/flowcraft --path skills/flowcraft-config --ref main
+```
+
+The `skills/<skill-name>/SKILL.md` layout is also discoverable through
+skills.sh (`npx skills add GizClaw/flowcraft`).
 
 Reference material:
 
