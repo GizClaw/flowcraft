@@ -11,15 +11,27 @@ Release PR before their tags are published.
 
 | Module   | Latest tag      | Notes                                                                                     |
 | -------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `sdk`    | `sdk/v0.5.3`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
+| `sdk`    | `sdk/v0.5.4`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
 | `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.5`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| `sdkx`   | `sdkx/v0.5.6`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `sdk/v0.5.4` - 2026-08-11
+
+### Changed
+
+- sdk patch: expose tool Assembly Registry and Sources so session-scoped dynamic catalogs can share the executor's registry and reach source exposure metadata
+
+## `sdkx/v0.5.6` - 2026-08-11
+
+### Changed
+
+- sdkx patch: add runtime sessions.dynamic_catalog with per-agent tool.Assembly mapping and automatic per-session dynamic CatalogProvider wiring (tool_search registration, MCP exposure handoff, configurable injection policy); clean up integration decorator iteration
 
 ## `sdkx/v0.5.5` - 2026-08-11
 
