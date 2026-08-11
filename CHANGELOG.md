@@ -21,17 +21,17 @@ _No pending changes._
 
 <!-- releasegate:releases -->
 
-## `sdk/v0.5.3` - 2026-08-11
-
-### Changed
-
-- sdk patch: sandbox ProcessManager sessions, rule-based net policy, MITM, process events; pty Resize race fix; dynamic tool injection and policy middleware; hosted web_search capability metadata
-
 ## `sdkx/v0.5.5` - 2026-08-11
 
 ### Changed
 
 - sdkx patch: hosted web_search via ProviderOutputs, dynamic tool injection / lazy MCP attach / policy middleware / session wiring, session lifecycle observer, sandbox sessions and net policy, bwrap CI alignment
+
+## `sdk/v0.5.3` - 2026-08-11
+
+### Changed
+
+- sdk patch: sandbox ProcessManager sessions, rule-based net policy, MITM, process events; pty Resize race fix; dynamic tool injection and policy middleware; hosted web_search capability metadata
 
 ## `sdkx/v0.5.4` - 2026-08-10
 
