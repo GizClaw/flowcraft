@@ -201,7 +201,9 @@ shape:
 | `observe`  | `agent.Observer` (read-only)           | Lifecycle events (start, interrupt, revise, end)   | Logging, metrics, notifications, snapshots            |
 
 `policy` is **not** a hook — it is a per-call struct
-(`max_revise`, `artifact_channels`) read by the engine factory.
+(`max_revise`, `artifact_channels`) that the harness turns into
+per-call execute options (`agent.WithMaxRevise` /
+`agent.WithArtifactChannels`); the engine factory never reads it.
 
 Only `discard_on_interrupt` is built in. Every other hook kind must
 be registered on the `Builder` (`RegisterPreparer`, `RegisterReferee`,
@@ -421,15 +423,17 @@ agents:
 ```
 
 - `card` is the declarative subset of `agent.AgentCard`.
-- `tools` is a per-agent allow-list (policy gate, validated at build
-  time against the tool catalog).
+- `tools` is a per-agent allow-list (policy gate): it is promoted to
+  `Run.ToolAllowList` and enforced by the engine at runtime; the
+  document itself does not validate names against the catalog.
 - `engine` is opaque to the loader; the registered engine factory
   decodes and validates `settings` strictly.
 - `deps` is keyed by the engine's `Spec.Deps`; type mismatches fail
   the build.
-- `policy` is a per-call struct, not a hook. The graph engine reads
-  `max_revise`; custom engines can read whichever fields they
-  declared.
+- `policy` is a per-call struct, not a hook. The harness turns
+  `max_revise` / `artifact_channels` into per-call execute options
+  (`WithMaxRevise` / `WithArtifactChannels`); engines never see the
+  policy block.
 
 ### Engines
 
@@ -527,9 +531,10 @@ A `memory.Assembly` is bound **whole** as the hooks' `memory` dependency
 that need the raw stores can address the implementation's exposed item — with
 the flowcraft implementation it is `system`, i.e. `memories/system`.
 
-The flowcraft implementation requires a workspace and the inference runtime
-item exported by the inference assembly (deps are declared by the
-implementation at registration, not by the `sdk/memory` protocol):
+The flowcraft implementation requires a workspace and the whole inference
+assembly — the runtime plus its route policy — as the `inference` dep (deps
+are declared by the implementation at registration, not by the `sdk/memory`
+protocol):
 
 ```yaml
 # deploy.yaml
@@ -548,7 +553,7 @@ resources:
     impl: flowcraft
     deps:
       workspace: ws/project
-      inference: infer/runtime
+      inference: infer
     settings: {file: ./memory.yaml}
 agents:
   researcher:
@@ -577,10 +582,24 @@ providers:
   - id: openai
     driver: openai
     profiles:
-      - id: default
-        operations: [embed]
+      - operations: [embed]
         secrets:
           api_key: {resolver: env, key: OPENAI_API_KEY}
+  - id: deepseek
+    driver: deepseek
+    profiles:
+      - operations: [generate]
+        secrets:
+          api_key: {resolver: env, key: DEEPSEEK_API_KEY}
+route:
+  generate:
+    - tier: primary
+      targets:
+        - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+  embed:
+    - tier: primary
+      targets:
+        - model: {id: {provider: openai, name: text-embedding-3-small}}
 ```
 
 ```yaml
@@ -588,9 +607,6 @@ providers:
 storage:
   log: {driver: workspace}
   kv: {driver: workspace}
-generate:
-  provider: deepseek
-  name: deepseek-v4-flash
 embed:
   provider: openai
   name: text-embedding-3-small
@@ -600,10 +616,11 @@ scopes:
 interval: 1m
 ```
 
-Credentials and provider catalogs stay in `inference.yaml`; `memory.yaml`
-contains only flat model references (provider, name, optional profile),
-scopes, and derivation/maintenance policy. The implementation owns the full
-schema of its settings document (which has no `version` field).
+Credentials, provider catalogs, and the generate route stay in
+`inference.yaml`; `memory.yaml` contains only the flat embed model reference
+(provider, name, optional profile), scopes, and derivation/maintenance
+policy. The implementation owns the full schema of its settings document
+(which has no `version` field).
 
 Background work is not a cron schema anymore. The flowcraft implementation
 owns a worker and lifecycle runner; in an application Runtime, register the

@@ -10,8 +10,9 @@ no-op bus (`NoopBus`) ship in the box; remote implementations (NATS,
 Kafka, …) plug into the same `Bus` interface.
 
 A bus is a **host capability**, not a graph build dep. Deployments
-build it, then surface it through `agent.Host.EventBus()` per turn —
-the engine asks the host for the bus it needs. See
+build it, then surface it through the optional `agent.EventBusProvider`
+capability on the turn host — the engine asks the host for the bus it
+needs. See
 [deploy.md#event-bus-and-the-host](deploy.md#event-bus-and-the-host)
 for the wiring.
 
@@ -137,6 +138,7 @@ decides:
 | `DropNewest` (default) | incoming envelope is dropped; older items stay                           |
 | `DropOldest`           | oldest buffered item is dropped; new one is enqueued                     |
 | `Block`                | `Publish` blocks until the buffer has room or the publishing ctx cancels |
+| `Sample`               | keeps each envelope with probability `WithSampleRate`; kept envelopes still follow the buffer-full drop path |
 
 Drop policies are fast paths — `Block` is the only one that can
 back-pressure publishers. Use `Block` only when a slow subscriber is
@@ -145,10 +147,10 @@ default to `DropNewest` and observe drop counts via the `Observer`.
 
 ## Host integration
 
-`agent.Host` declares an `EventBus() event.Bus` capability. Engines
-(such as the graph runner) call this per turn to publish lifecycle
-events; the host owns the bus and may share one bus across many
-runs or give each run its own.
+`agent.EventBusProvider` is the optional host capability for exposing a
+bus (`EventBus() event.Bus`). Engines (such as the graph runner) call
+this per turn to publish lifecycle events; the host owns the bus and
+may share one bus across many runs or give each run its own.
 
 ```go
 type runtimeHost struct {
@@ -187,11 +189,13 @@ error surface every other deploy extension point uses.
 
 ## Observing a bus
 
-`MemoryBus` accepts an `Observer` for lifecycle instrumentation —
-durations, drop counts, subscriber count, and the route cache
-hit/miss ratio. Replace it with your own `Observer` implementation
-to forward to Prometheus, OTel, or a custom metric sink. Drops and
-backpressure events are first-class signals here, not log noise.
+`MemoryBus` accepts an `Observer` for lifecycle instrumentation.
+The observer sees `OnPublish` / `OnDeliver` / `OnDrop` per envelope,
+so durations and drop counts (by reason) are easy to derive and
+forward to Prometheus, OTel, or a custom metric sink. Subscriber
+counts and route-cache hit/miss ratios are not part of the
+`Observer` surface. Drops and backpressure events are first-class
+signals here, not log noise.
 
 ## Testing
 
@@ -212,7 +216,7 @@ shared `Bus` contract.
   / `SubOption` surface), `sdk/event/envelope.go`, `sdk/event/subject.go`,
   `sdk/event/observer.go`, `sdk/event/trace.go`.
 - Host capability that reaches it: `sdk/agent/host.go`
-  (`Host.EventBus`).
+  (`EventBusProvider`).
 - Assembly: `sdk/event/config/resource.go`, the `event.Bus` resource
   in [deploy.md](deploy.md#first-party-impls).
 - Remote bridges: per-package `doc.go` (NATS / SSE / …).

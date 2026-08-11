@@ -483,7 +483,7 @@ attempt spans nest under the route span).
 
 Every operation emits one span at the `Runtime` funnel:
 
-- `inference.generate` / `inference.embed` / `inference.transcribe` /
+- `inference.generate` / `inference.embed` / `inference.transcription` /
   `inference.realtime` (streaming adds a `.stream` suffix)
 - Attributes: `inference.operation`, `llm.provider`, `llm.model`,
   `inference.profile` — the `llm.*` keys match the rest of the
@@ -544,8 +544,8 @@ covering protocol quirks, catalog, spec schema, and extensions.
 | Driver      |            Generate            |        Embed         |    Transcription    | Realtime | Secret(s)                                                |
 | ----------- | :----------------------------: | :------------------: | :-----------------: | :------: | -------------------------------------------------------- |
 | `anthropic` |               ✓                |                      |                     |          | `api_key`                                                |
-| `azure`     |               ✓                |          ✓           |          ✓          |          | `api_key`                                                |
-| `bytedance` | ✓ (+image/audio/video intents) |          ✓           | ✓ (unary + session) |    ✓     | `api_key`, `speech_api_key`, `access_key` / `secret_key` |
+| `azure`     | ✓ (+image/audio intents)       |          ✓           |          ✓          |          | `api_key`                                                |
+| `bytedance` | ✓ (+image/audio/video intents) |          ✓           | ✓ (session only)    |    ✓     | `api_key`, `speech_api_key`, `access_key` / `secret_key` |
 | `deepseek`  |               ✓                |                      |                     |          | `api_key`                                                |
 | `kimi`      |               ✓                |                      |                     |          | `api_key`                                                |
 | `minimax`   | ✓ (+image/audio/video intents) |                      |                     |          | `api_key`                                                |

@@ -45,6 +45,12 @@ resources:
     kind: scheduler.Server
     impl: local
 
+  checkpoints:
+    kind: agent.CheckpointStore
+    impl: sqlite
+    settings:
+      path: ./data/checkpoints.db
+
   ws:
     kind: workspace.Registry
     impl: yaml
@@ -75,7 +81,7 @@ resources:
     impl: flowcraft
     deps:
       workspace: ws/project
-      inference: infer/runtime
+      inference: infer
     settings:
       file: ./memory.yaml
 
@@ -92,11 +98,13 @@ agents:
 runtime:
   event_bus: events
   scheduler: schedules
+  checkpoint_store: checkpoints
   sessions:
     idle_timeout: 10m
     sink_buffer: 256
     speculative_buffer_events: 1024
     speculative_buffer_bytes: 1048576
+    resume: true
   integrations:
     - name: delegation
       kind: delegation.local
@@ -113,10 +121,15 @@ runtime:
       settings: {}
 ```
 
-`event_bus`, `scheduler`, and every integration dependency are exact resource
-map keys. Runtime never discovers resources by kind. Runtime references are
-external consumers during deployment assembly, so `events`, `schedules`,
-`delegations`, and `memories` do not need `export: true`.
+`event_bus`, `scheduler`, `checkpoint_store`, and every integration dependency
+are exact resource map keys. Runtime never discovers resources by kind.
+Runtime references are external consumers during deployment assembly, so
+`events`, `schedules`, `checkpoints`, `delegations`, and `memories` do not
+need `export: true`.
+
+`checkpoint_store` names an `agent.CheckpointStore` resource (sqlite or
+workspace-backed); `sessions.resume: true` enables checkpoint-based
+resumption and requires it. Omit both for a stateless runtime.
 
 `delegation.local` accepts `max_concurrency`, `max_depth`, and a Go-duration
 `timeout` string. Its `backend` dependency is optional. The
@@ -142,7 +155,8 @@ registry:
 
 Aliases used below: `sdkscheduler` =
 `github.com/GizClaw/flowcraft/sdkx/scheduler`, `schedulerconfig` =
-`github.com/GizClaw/flowcraft/sdk/scheduler/config`, `workspaceconfig` =
+`github.com/GizClaw/flowcraft/sdk/scheduler/config`, `sqlitecheckpointconfig` =
+`github.com/GizClaw/flowcraft/sdkx/agent/checkpoint/sqlite/config`, `workspaceconfig` =
 `github.com/GizClaw/flowcraft/sdk/workspace/config`, `inferenceconfig` =
 `github.com/GizClaw/flowcraft/sdk/inference/config`, `memoryconfig` =
 `flowcraftmemory` =
@@ -164,6 +178,8 @@ if err := sdkscheduler.Register(schedulerBuilder); err != nil {
     return err
 }
 deployBuilder.MustRegisterResource(schedulerconfig.NewDeployFactory("local", schedulerBuilder))
+
+deployBuilder.MustRegisterResource(sqlitecheckpointconfig.NewFactory())
 
 deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 
@@ -234,8 +250,9 @@ if err != nil {
 ```
 
 `Session.Start` always replaces a caller-supplied `Request.ContextID` with the
-session key and replaces `Request.RunID` with a new root RunID. Use
-`turn.RunID()` for event correlation.
+session key and replaces `Request.RunID` with the session's root RunID — fresh
+per turn by default, stable across turns when `sessions.resume` is enabled.
+Use `turn.RunID()` for event correlation.
 
 Prompt requests arrive through the same event stream as
 `session.PromptRequested`. Reply with the correlated prompt ID:

@@ -3,7 +3,6 @@
 
 # ── Git config ──
 !.gitignore
-!.golangci.yml
 
 # ── Root documentation ──
 !README.md
@@ -14,6 +13,9 @@
 !CODE_OF_CONDUCT.md
 !docs/
 !docs/**
+
+# ── Go CI ──
+!.golangci.yml
 
 # ── Go source ──
 !go.mod

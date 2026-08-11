@@ -212,7 +212,7 @@ delegated to MCP. The rule:
 | Package                | Tool name(s)                     | Category                                                       |
 | ---------------------- | -------------------------------- | -------------------------------------------------------------- |
 | `sdkx/tool/askuser`    | `ask_user`                       | host bridge (reaches the `agent.UserPrompter` host capability) |
-| `sdkx/tool/exec`       | `exec`                           | sandbox boundary (reaches `sandbox.Runner`)                    |
+| `sdkx/tool/exec`       | `exec`, `exec_session`           | sandbox boundary (reaches `sandbox.Runner` / `ProcessManager`) |
 | `sdkx/tool/delegation` | `delegate`, `delegation_status` | orchestration state through `sdk/delegation` contracts         |
 | `sdkx/tool/mcp`        | (catalog from MCP servers)       | adapter                                                        |
 
