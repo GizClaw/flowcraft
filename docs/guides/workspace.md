@@ -85,9 +85,9 @@ diagnostics; it is not part of the `Workspace` interface.
 
 | Type                      | Backing store                                   | Atomic rename         | Use when                                                                |
 | ------------------------- | ----------------------------------------------- | --------------------- | ----------------------------------------------------------------------- |
-| `LocalWorkspace`          | local directory                                 | yes (POSIX rename(2)) | production per-host state, durable across restarts                      |
+| `LocalWorkspace`          | local directory                                 | yes (POSIX rename(2)) | production per-host state; survives process restarts (`DurableOnWrite=false`) |
 | `MemWorkspace`            | in-memory map                                   | yes (in-process)      | tests, ephemeral runs, scratch space                                    |
-| `ScopedWorkspace`         | wraps another `Workspace` with deny/allow rules | inherits inner        | least-privilege isolation: deny-by-default read, allow-by-default write |
+| `ScopedWorkspace`         | wraps another `Workspace` with deny/allow rules | inherits inner        | least-privilege isolation: reads denied only by `denyRead`; writes allowed only by `allowWrite` |
 | `Sub(ws, prefix)`         | virtual subtree of another `Workspace`          | inherits inner        | composability: a subsystem sees its own prefix as root                  |
 | `sdkx/workspace/objstore` | S3 / GCS / Azure Blob                           | backend-dependent     | cross-host shared state                                                 |
 
