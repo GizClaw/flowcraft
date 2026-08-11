@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_releases: ${{ steps.plan.outputs.has_releases }}
+      has_sdk: ${{ steps.plan.outputs.has_sdk }}
+      has_sdkx: ${{ steps.plan.outputs.has_sdkx }}
+      has_memory: ${{ steps.plan.outputs.has_memory }}
       changelog_ready: ${{ steps.changelog.outputs.ready }}
       modules: ${{ steps.plan.outputs.modules }}
       tags: ${{ steps.plan.outputs.tags }}
@@ -51,9 +54,30 @@ jobs:
           modules=$(jq -c '.modules' /tmp/release-plan.json)
           tags=$(jq -c '.tags' /tmp/release-plan.json)
           count=$(jq '.modules | length' /tmp/release-plan.json)
+          if jq -e '.[] | select(.module == "sdk")' \
+            <<< "$modules" >/dev/null; then
+            has_sdk=true
+          else
+            has_sdk=false
+          fi
+          if jq -e '.[] | select(.module == "sdkx")' \
+            <<< "$modules" >/dev/null; then
+            has_sdkx=true
+          else
+            has_sdkx=false
+          fi
+          if jq -e '.[] | select(.module == "memory")' \
+            <<< "$modules" >/dev/null; then
+            has_memory=true
+          else
+            has_memory=false
+          fi
           {
             echo "modules=$modules"
             echo "tags=$tags"
+            echo "has_sdk=$has_sdk"
+            echo "has_sdkx=$has_sdkx"
+            echo "has_memory=$has_memory"
             if [ "$count" -gt 0 ]; then
               echo "has_releases=true"
             else
@@ -160,30 +184,22 @@ jobs:
   eval:
     name: Release gate / hermetic eval
     needs: plan
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    if: needs.plan.outputs.has_memory == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
-    env:
-      RELEASES_JSON: ${{ needs.plan.outputs.modules }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      - name: Skip eval when memory is not releasing
-        run: |
-          set -euo pipefail
-          if ! jq -e '.[] | select(.module == "memory")' \
-            <<< "$RELEASES_JSON" >/dev/null; then
-            echo "memory is not in this release; skipping hermetic eval"
-            exit 0
-          fi
       - name: Test
         run: make eval
 
   release-core:
     name: Release sdk and sdkx sequentially
     needs: plan
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    # Runs only when sdk or sdkx has a pending release; publishes sdk before
+    # sdkx in dependency order when both are in the batch.
+    if: (needs.plan.outputs.has_sdk == 'true' || needs.plan.outputs.has_sdkx == 'true') && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     env:
       RELEASES_JSON: ${{ needs.plan.outputs.modules }}
@@ -291,11 +307,12 @@ jobs:
   release-memory:
     name: Release memory after hermetic eval
     needs: [plan, eval, release-core]
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    # Runs only when memory has a pending release, and always after
+    # release-core so sdk/sdkx are already tagged in dependency order.
+    if: needs.plan.outputs.has_memory == 'true' && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     env:
       RELEASES_JSON: ${{ needs.plan.outputs.modules }}
-      EXPECTED_TAGS: ${{ needs.plan.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -318,21 +335,19 @@ jobs:
             GOWORK=off go run . changelog --repo ../.. --check
             GOWORK=off go run . plan --repo ../.. --json
           ) > /tmp/release-plan.json
-          actual_tags=$(jq -c '.tags' /tmp/release-plan.json)
-          if [ "$actual_tags" != "$EXPECTED_TAGS" ]; then
-            echo "release plan changed: expected $EXPECTED_TAGS, got $actual_tags" >&2
+          expected_memory_tag=$(jq -r \
+            '.[] | select(.module == "memory") | .tag' <<< "$RELEASES_JSON")
+          actual_memory_tag=$(jq -r \
+            '.modules[] | select(.module == "memory") | .tag' \
+            /tmp/release-plan.json)
+          if [ "$actual_memory_tag" != "$expected_memory_tag" ]; then
+            echo "release plan changed: expected memory tag $expected_memory_tag, got $actual_memory_tag" >&2
             exit 1
           fi
 
       - name: Gate and publish memory
         run: |
           set -euo pipefail
-
-          if ! jq -e '.[] | select(.module == "memory")' \
-            <<< "$RELEASES_JSON" >/dev/null; then
-            echo "memory is not in this release; nothing to do"
-            exit 0
-          fi
 
           gate_module() {
             local module="$1"
@@ -391,7 +406,7 @@ jobs:
   sync-tidy:
     name: Sync tidy consumer modules
     needs: [plan, release-core, release-memory]
-    if: needs.plan.outputs.has_releases == 'true' && needs.plan.outputs.changelog_ready == 'true'
+    if: (needs.plan.outputs.has_sdkx == 'true' || needs.plan.outputs.has_memory == 'true') && needs.plan.outputs.changelog_ready == 'true'
     runs-on: ubuntu-latest
     env:
       RELEASES_JSON: ${{ needs.plan.outputs.modules }}
