@@ -30,12 +30,13 @@ the L2 dry-run harness and fix build failures against the reference cards.
    and `source`; wire edges back to the inference node after tool nodes.
 5. **Validate with L2.** Run
    `skills/flowcraft-config/scripts/validate-config.sh <deploy.yaml>`
-   from inside a FlowCraft checkout (or set `FLOWCRAFT_ROOT` when the
-   skill is installed elsewhere). It parses every sub-document,
-   dry-builds the deployment through the real `sdkx/deploy` assembly
-   with first-party factories and stub secrets, decodes graph node
-   configs statically, and cross-checks the runtime section. It never
-   reads real credentials and never calls providers.
+   (or the installed copy's script). The validator pins the FlowCraft
+   module versions in its `go.mod` and works standalone from any
+   directory. It parses every sub-document, dry-builds the deployment
+   through the real `sdkx/deploy` assembly with first-party factories
+   and stub secrets, decodes graph node configs statically, and
+   cross-checks the runtime section. It never reads real credentials and
+   never calls providers.
 6. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
    `[build]`, or `[runtime]`; the build short-circuits on the first error.
    Consult [references/pitfalls.md](references/pitfalls.md) for the
@@ -68,11 +69,13 @@ workflow.
 
 ## Compatibility and versioning
 
-This skill tracks the config schema of the FlowCraft checkout it lives
-in. FlowCraft modules are independently versioned, so when validating a
-config written for another version, run the in-repo validator against
-that checkout rather than trusting memory. The L2 harness registers the
-first-party surface only; document anything app-registered in the handoff.
+One skill version pins one FlowCraft version. The validator's `go.mod`
+requires `github.com/GizClaw/flowcraft/sdk v0.5.3` and
+`github.com/GizClaw/flowcraft/sdkx v0.5.5`; the schema cards in this
+skill document exactly that release pair. When FlowCraft releases a new
+version, bump the pins and reconcile the cards in the same change. The
+L2 harness registers the first-party surface only; document anything
+app-registered in the handoff.
 
 ## Reference index
 

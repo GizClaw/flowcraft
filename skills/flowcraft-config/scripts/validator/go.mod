@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/sdk v0.5.3
-	github.com/GizClaw/flowcraft/sdkx v0.5.0
+	github.com/GizClaw/flowcraft/sdkx v0.5.5
 )
 
 require (
@@ -79,7 +79,3 @@ require (
 	modernc.org/sqlite v1.56.0 // indirect
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
-
-replace github.com/GizClaw/flowcraft/sdk => ../../../../sdk
-
-replace github.com/GizClaw/flowcraft/sdkx => ../../../../sdkx
