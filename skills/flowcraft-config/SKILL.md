@@ -30,11 +30,12 @@ the L2 dry-run harness and fix build failures against the reference cards.
    and `source`; wire edges back to the inference node after tool nodes.
 5. **Validate with L2.** Run
    `skills/flowcraft-config/scripts/validate-config.sh <deploy.yaml>`
-   from the repo root. It parses every sub-document, dry-builds the
-   deployment through the real `sdkx/deploy` assembly with first-party
-   factories and stub secrets, decodes graph node configs statically, and
-   cross-checks the runtime section. It never reads real credentials and
-   never calls providers.
+   from inside a FlowCraft checkout (or set `FLOWCRAFT_ROOT` when the
+   skill is installed elsewhere). It parses every sub-document,
+   dry-builds the deployment through the real `sdkx/deploy` assembly
+   with first-party factories and stub secrets, decodes graph node
+   configs statically, and cross-checks the runtime section. It never
+   reads real credentials and never calls providers.
 6. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
    `[build]`, or `[runtime]`; the build short-circuits on the first error.
    Consult [references/pitfalls.md](references/pitfalls.md) for the
