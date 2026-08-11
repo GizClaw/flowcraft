@@ -125,11 +125,37 @@ runtime:
 are exact resource map keys. Runtime never discovers resources by kind.
 Runtime references are external consumers during deployment assembly, so
 `events`, `schedules`, `checkpoints`, `delegations`, and `memories` do not
-need `export: true`.
+need `export: true`; the same applies to every `tool.Assembly` resource
+named by `sessions.dynamic_catalog.tools`.
 
 `checkpoint_store` names an `agent.CheckpointStore` resource (sqlite or
 workspace-backed); `sessions.resume: true` enables checkpoint-based
 resumption and requires it. Omit both for a stateless runtime.
+
+`sessions.dynamic_catalog` enables the per-session dynamic tool
+catalog. `tools` maps agent IDs to `tool.Assembly` resource names and
+may include a `default` entry as the fallback for agents without an
+explicit mapping; every deployed agent must be covered either way.
+`default_exposure` (one of `always`, `direct`, `deferred`, `hidden`;
+defaults to `deferred`), `exposures`, `selected_retention`,
+`recent_window`, and `budget` tune the injection policy. The runtime
+creates one catalog per `(AgentID, ContextID)` session over the mapped
+assembly's shared registry, applies MCP source exposure metadata, and
+registers `tool_search`; sessions using dynamic injection should run
+their inference nodes with `all_tools: true`.
+
+```yaml
+runtime:
+  event_bus: events
+  sessions:
+    dynamic_catalog:
+      tools: {default: shared_tools, researcher: research_tools}
+      default_exposure: deferred
+      exposures: {tool_search: always}
+      selected_retention: 5
+      recent_window: 10
+      budget: {max_definitions: 32, max_bytes: 16384}
+```
 
 `delegation.local` accepts `max_concurrency`, `max_depth`, and a Go-duration
 `timeout` string. Its `backend` dependency is optional. The

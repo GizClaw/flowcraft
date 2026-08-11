@@ -10,6 +10,15 @@ import (
 	sdktool "github.com/GizClaw/flowcraft/sdk/tool"
 )
 
+// ExposureSource is implemented by tool sources that can publish their
+// per-tool exposure metadata onto a session catalog after attachment.
+// The MCP source implements it; hosts and the runtime use it to carry
+// config-declared exposure declarations (server-level and per-tool)
+// into the injection view without importing the source package.
+type ExposureSource interface {
+	ApplyExposures(*Catalog) error
+}
+
 // Catalog is the session-scoped, model-facing view over a shared
 // tool.Registry. It implements the tool.Catalog contract with
 // Exposure-based injection:

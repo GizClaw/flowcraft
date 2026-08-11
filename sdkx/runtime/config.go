@@ -10,6 +10,7 @@ import (
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
 	"github.com/GizClaw/flowcraft/sdk/errdefs"
 	"github.com/GizClaw/flowcraft/sdkx/deploy"
+	"github.com/GizClaw/flowcraft/sdkx/tool/dynamic"
 )
 
 const (
@@ -43,6 +44,30 @@ type SessionConfig struct {
 	SpeculativeBufferEvents int
 	SpeculativeBufferBytes  int
 	Resume                  bool
+	// DynamicCatalog enables the per-session dynamic injection catalog
+	// for the configured agents. Nil keeps the current behaviour: the
+	// session manager runs without a catalog provider.
+	DynamicCatalog *DynamicCatalogConfig
+}
+
+// DynamicCatalogConfig is the declarative policy for the per-session
+// dynamic catalog. Tools maps agent IDs to tool.Assembly resource
+// names; the reserved "default" key is the fallback for agents without
+// an explicit entry.
+type DynamicCatalogConfig struct {
+	Tools             map[string]string
+	DefaultExposure   dynamic.Exposure
+	Exposures         map[string]dynamic.Exposure
+	SelectedRetention int
+	RecentWindow      int
+	Budget            DynamicBudgetConfig
+}
+
+// DynamicBudgetConfig caps how many definitions reach the model per
+// turn. Zero fields fall back to the dynamic package defaults.
+type DynamicBudgetConfig struct {
+	MaxDefinitions int
+	MaxBytes       int64
 }
 
 // IntegrationConfig configures one independently prepared integration.
@@ -62,11 +87,26 @@ type configWire struct {
 }
 
 type sessionConfigWire struct {
-	IdleTimeout             *string `json:"idle_timeout,omitempty"`
-	SinkBuffer              *int    `json:"sink_buffer,omitempty"`
-	SpeculativeBufferEvents *int    `json:"speculative_buffer_events,omitempty"`
-	SpeculativeBufferBytes  *int    `json:"speculative_buffer_bytes,omitempty"`
-	Resume                  *bool   `json:"resume,omitempty"`
+	IdleTimeout             *string                   `json:"idle_timeout,omitempty"`
+	SinkBuffer              *int                      `json:"sink_buffer,omitempty"`
+	SpeculativeBufferEvents *int                      `json:"speculative_buffer_events,omitempty"`
+	SpeculativeBufferBytes  *int                      `json:"speculative_buffer_bytes,omitempty"`
+	Resume                  *bool                     `json:"resume,omitempty"`
+	DynamicCatalog          *dynamicCatalogConfigWire `json:"dynamic_catalog,omitempty"`
+}
+
+type dynamicCatalogConfigWire struct {
+	Tools             map[string]string           `json:"tools,omitempty"`
+	DefaultExposure   *string                     `json:"default_exposure,omitempty"`
+	Exposures         map[string]dynamic.Exposure `json:"exposures,omitempty"`
+	SelectedRetention *int                        `json:"selected_retention,omitempty"`
+	RecentWindow      *int                        `json:"recent_window,omitempty"`
+	Budget            *dynamicBudgetConfigWire    `json:"budget,omitempty"`
+}
+
+type dynamicBudgetConfigWire struct {
+	MaxDefinitions *int   `json:"max_definitions,omitempty"`
+	MaxBytes       *int64 `json:"max_bytes,omitempty"`
 }
 
 type integrationConfigWire struct {
@@ -141,6 +181,13 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		return Config{}, errdefs.Validationf(
 			"runtime config: sessions.resume requires checkpoint_store")
 	}
+	if wire.Sessions.DynamicCatalog != nil {
+		catalog, err := decodeDynamicCatalog(wire.Sessions.DynamicCatalog)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.Sessions.DynamicCatalog = catalog
+	}
 
 	seenNames := make(map[string]struct{}, len(wire.Items))
 	for i, item := range wire.Items {
@@ -177,6 +224,94 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		}
 		cfg.Integrations[i] = IntegrationConfig{
 			Name: name, Kind: kind, Deps: deps, Settings: item.Settings,
+		}
+	}
+	return cfg, nil
+}
+
+// decodeDynamicCatalog strictly decodes and validates the
+// sessions.dynamic_catalog subtree. Resource existence and agent
+// coverage are deployment facts, so they are checked by the Builder
+// rather than here.
+func decodeDynamicCatalog(wire *dynamicCatalogConfigWire) (*DynamicCatalogConfig, error) {
+	if len(wire.Tools) == 0 {
+		return nil, errdefs.Validationf(
+			"runtime config: sessions.dynamic_catalog.tools must map agent IDs to tool resource names")
+	}
+	tools := make(map[string]string, len(wire.Tools))
+	for agentID, resource := range wire.Tools {
+		if strings.TrimSpace(agentID) == "" {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.tools has an empty agent ID")
+		}
+		if strings.TrimSpace(resource) == "" {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.tools[%q] is empty",
+				agentID)
+		}
+		tools[agentID] = resource
+	}
+
+	cfg := &DynamicCatalogConfig{
+		Tools:             tools,
+		DefaultExposure:   dynamic.ExposureDeferred,
+		Exposures:         map[string]dynamic.Exposure{},
+		SelectedRetention: 0,
+		RecentWindow:      0,
+	}
+	if wire.DefaultExposure != nil {
+		exp := dynamic.Exposure(strings.TrimSpace(*wire.DefaultExposure))
+		if exp == "" {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.default_exposure is empty")
+		}
+		if !exp.Valid() {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.default_exposure %q is invalid",
+				exp)
+		}
+		cfg.DefaultExposure = exp
+	}
+	for name, exp := range wire.Exposures {
+		if strings.TrimSpace(name) == "" {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.exposures has an empty tool name")
+		}
+		if !exp.Valid() {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.exposures[%s] %q is invalid",
+				name, exp)
+		}
+		cfg.Exposures[name] = exp
+	}
+	if wire.SelectedRetention != nil {
+		if *wire.SelectedRetention < 0 {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.selected_retention must not be negative")
+		}
+		cfg.SelectedRetention = *wire.SelectedRetention
+	}
+	if wire.RecentWindow != nil {
+		if *wire.RecentWindow < 0 {
+			return nil, errdefs.Validationf(
+				"runtime config: sessions.dynamic_catalog.recent_window must not be negative")
+		}
+		cfg.RecentWindow = *wire.RecentWindow
+	}
+	if wire.Budget != nil {
+		if wire.Budget.MaxDefinitions != nil {
+			if *wire.Budget.MaxDefinitions < 0 {
+				return nil, errdefs.Validationf(
+					"runtime config: sessions.dynamic_catalog.budget.max_definitions must not be negative")
+			}
+			cfg.Budget.MaxDefinitions = *wire.Budget.MaxDefinitions
+		}
+		if wire.Budget.MaxBytes != nil {
+			if *wire.Budget.MaxBytes < 0 {
+				return nil, errdefs.Validationf(
+					"runtime config: sessions.dynamic_catalog.budget.max_bytes must not be negative")
+			}
+			cfg.Budget.MaxBytes = *wire.Budget.MaxBytes
 		}
 	}
 	return cfg, nil

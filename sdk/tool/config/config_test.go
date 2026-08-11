@@ -680,6 +680,41 @@ func TestBuild_SourceToolsJoinTheRegistry(t *testing.T) {
 	}
 }
 
+func TestAssembly_RegistryAndSourcesExposeBuildInternals(t *testing.T) {
+	builder := config.NewBuilder(config.Deps{})
+	builder.RegisterBuiltin(echoTool("builtin"))
+	source := &fakeSource{tools: []string{"remote"}}
+	builder.RegisterSourceFactory("fake", func(context.Context, sdkconfig.Input) (config.Source, error) {
+		return source, nil
+	})
+
+	doc := sourceDoc(t, "fake")
+	doc.Sources = append([]config.SourceEntry{builtinSource(t, "builtin")}, doc.Sources...)
+
+	assembly, err := builder.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = assembly.Close() })
+
+	if assembly.Registry() == nil {
+		t.Fatal("Registry() returned nil")
+	}
+	if assembly.Registry() != assembly.Catalog {
+		t.Error("Registry() is not the registry the Catalog view wraps")
+	}
+	sources := assembly.Sources()
+	if len(sources) != 2 || sources[1] != source {
+		t.Fatalf("Sources() = %#v, want builtin + fake source", sources)
+	}
+	// The returned slice is a copy: mutating it must not affect the
+	// assembly's ownership.
+	sources[0] = nil
+	if got := assembly.Sources(); len(got) != 2 || got[1] != source {
+		t.Fatalf("Sources() changed after caller mutation: %#v", got)
+	}
+}
+
 func TestBuild_SourceAttachesBeforeScopes(t *testing.T) {
 	builder := config.NewBuilder(config.Deps{})
 	builder.RegisterSourceFactory("fake", func(context.Context, sdkconfig.Input) (config.Source, error) {

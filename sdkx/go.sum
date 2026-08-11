@@ -10,8 +10,6 @@ github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2/go.mod h1:HKpQ
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb h1:iS4tRKtteioA1ZDrUqn2tGkBjM4fiQeRoqJx6E3dD34=
 github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb/go.mod h1:4R3wUAZkYk1BSgzv+QVF+2SZPu3VDy8NvaQdNRYGgBs=
-github.com/GizClaw/flowcraft/sdk v0.5.3 h1:zeHaCoT0Gj7uHR6eNvT6OUKWyTeSFfrW3PP2vIdjZpE=
-github.com/GizClaw/flowcraft/sdk v0.5.3/go.mod h1:Nxcbz6SLISgg1mLxcuM0N5+w7ggX8SklJ1i/qgGE+Qs=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=
 github.com/Masterminds/semver/v3 v3.2.1/go.mod h1:qvl/7zhW3nngYb5+80sSMF+FG2BjYrf8m9wsX0PNOMQ=
 github.com/a2aproject/a2a-go v0.3.15 h1:h5YpCiPq3jxQ5rIns7oDjPag3ivP8u817AzdA4F+NiI=
