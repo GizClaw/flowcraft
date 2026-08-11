@@ -859,8 +859,9 @@ builder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
 
 // Resources the document references.
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
-builder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
-builder.MustRegisterResource(sandboxconfig.NewDeployFactory())
+builder.MustRegisterResource(workspaceBuilder)
+sandboxBuilder := sandboxconfig.NewBuilder(sandboxconfig.Deps{})
+builder.MustRegisterResource(sandboxBuilder)
 builder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
 builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
 builder.MustRegisterResource(jsrt.NewDeployFactory())

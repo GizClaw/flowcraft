@@ -1,0 +1,4 @@
+interface:
+  display_name: "FlowCraft Config Authoring"
+  short_description: "Write, validate, and debug FlowCraft configs"
+  default_prompt: "Use $flowcraft-config to write a complete FlowCraft deployment (runtime + graph + resources), then validate it."

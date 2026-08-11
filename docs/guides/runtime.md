@@ -184,7 +184,7 @@ deployBuilder.MustRegisterResource(sqlitecheckpointconfig.NewFactory())
 deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
 
 workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: configDir})
-deployBuilder.MustRegisterResource(workspaceconfig.NewDeployFactory(workspaceBuilder))
+deployBuilder.MustRegisterResource(workspaceBuilder)
 deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
 deployBuilder.MustRegisterResource(flowcraftmemory.Factory())
 
