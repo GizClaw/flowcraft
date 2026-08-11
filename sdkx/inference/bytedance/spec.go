@@ -67,6 +67,9 @@ type ModelSpec struct {
 	Video bool `json:"video,omitempty"`
 	// Reasoning (generate) enables the reasoning effort control.
 	Reasoning bool `json:"reasoning,omitempty"`
+	// WebSearch (generate) enables the hosted Web Search (联网内容插件)
+	// tool.
+	WebSearch bool `json:"web_search,omitempty"`
 	// ImageInput (embed) allows image items via multimodal embedding.
 	ImageInput bool `json:"image_input,omitempty"`
 	// Dimensions (embed) allows custom output dimensions.

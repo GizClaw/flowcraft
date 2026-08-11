@@ -284,6 +284,45 @@ func TestFactoryBuild(t *testing.T) {
 		whisper.Descriptor.Lifecycle.Replacement.Name != "gpt-4o-transcribe" {
 		t.Fatalf("whisper replacement = %+v", whisper.Descriptor.Lifecycle.Replacement)
 	}
+	byName := make(map[string]inference.ModelImplementation, len(provider.Models))
+	for _, model := range provider.Models {
+		byName[model.Descriptor.ID.Name] = model
+	}
+	if !byName["gpt-5.6-sol"].Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("gpt-5.6-sol lost its hosted web search capability")
+	}
+	if byName["gpt-4.1-nano"].Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("gpt-4.1-nano must not claim hosted web search")
+	}
+}
+
+func TestFactoryCustomModelWebSearchCapability(t *testing.T) {
+	input := config.ProviderInput{
+		ID: "openai",
+		Spec: json.RawMessage(
+			`{"models":[{"name":"my-search","kind":"generate","web_search":true}]}`,
+		),
+		Profiles: []config.ResolvedProfile{{
+			ID:      "default",
+			Secrets: map[string]config.Secret{SecretAPIKey: testSecret(t, "sk-test")},
+		}},
+	}
+	provider, err := Factory().Build(context.Background(), input)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	var custom *inference.ModelImplementation
+	for index := range provider.Models {
+		if provider.Models[index].Descriptor.ID.Name == "my-search" {
+			custom = &provider.Models[index]
+		}
+	}
+	if custom == nil {
+		t.Fatal("my-search missing from provider models")
+	}
+	if !custom.Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("custom model must carry the declared hosted web search capability")
+	}
 }
 
 // ---------------------------------------------------------------------------

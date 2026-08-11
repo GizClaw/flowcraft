@@ -99,7 +99,13 @@ func TestFactoryExposesCatalog(t *testing.T) {
 	if seed.Openers.Generate == nil {
 		t.Fatal("generate model has no generate opener")
 	}
+	if !seed.Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("doubao-seed-2-1-pro lost its hosted web search capability")
+	}
 	legacy := byName["doubao-seed-1-6"]
+	if !legacy.Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("doubao-seed-1-6 lost its hosted web search capability")
+	}
 	if legacy.Descriptor.Lifecycle.Status != inference.ModelStatusDeprecated {
 		t.Fatalf("seed-1-6 lifecycle = %q", legacy.Descriptor.Lifecycle.Status)
 	}
@@ -112,6 +118,9 @@ func TestFactoryExposesCatalog(t *testing.T) {
 	}
 	if byName["doubao-embedding-large"].Openers.Embed == nil {
 		t.Fatal("embed model has no embed opener")
+	}
+	if byName["doubao-embedding-large"].Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("embed model must not claim hosted web search")
 	}
 	if byName["doubao-asr-sauc-2-0"].Openers.Transcription == nil {
 		t.Fatal("asr model has no transcription opener")
@@ -192,9 +201,10 @@ func TestFactoryCustomModelAndEndpoint(t *testing.T) {
 	})
 	provider := buildProvider(t, map[string]any{
 		"models": []map[string]any{{
-			"name":   "my-internal-model",
-			"kind":   "generate",
-			"vision": true,
+			"name":       "my-internal-model",
+			"kind":       "generate",
+			"vision":     true,
+			"web_search": true,
 		}},
 	}, profiles)
 	var custom *inference.ModelImplementation
@@ -208,6 +218,9 @@ func TestFactoryCustomModelAndEndpoint(t *testing.T) {
 	}
 	if custom.Openers.Generate == nil {
 		t.Fatal("custom generate model has no opener")
+	}
+	if !custom.Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("custom model must carry the declared hosted web search capability")
 	}
 }
 

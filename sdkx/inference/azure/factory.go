@@ -44,8 +44,13 @@ func Factory() config.Factory {
 		for _, model := range spec.Models {
 			id := inference.ModelID{Provider: input.ID, Name: model.Name}
 			provider.Models = append(provider.Models, inference.ModelImplementation{
-				Descriptor: inference.ModelDescriptor{ID: id},
-				Openers:    openersFor(spec, model, profiles, id),
+				Descriptor: inference.ModelDescriptor{
+					ID: id,
+					Capabilities: inference.ModelCapabilities{
+						HostedWebSearch: model.WebSearch,
+					},
+				},
+				Openers: openersFor(spec, model, profiles, id),
 			})
 		}
 		return provider, nil
@@ -76,6 +81,7 @@ func openersFor(
 	caps := openai.Capabilities{
 		Vision:     model.Vision,
 		Reasoning:  model.Reasoning,
+		WebSearch:  model.WebSearch,
 		Dimensions: model.Dimensions,
 	}
 	switch modelKind(model.Kind) {

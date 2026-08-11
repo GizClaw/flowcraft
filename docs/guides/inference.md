@@ -82,6 +82,17 @@ addressed to the executing provider that is unknown, meant for another
 operation, or colliding with a canonical field is a structured
 rejection.
 
+### Model capabilities
+
+`ModelDescriptor.Capabilities` is public, credential-free discovery
+metadata returned by `Runtime.Models` and `Runtime.InspectModel`. It lets a
+host decide whether the selected provider/model can serve an optional
+feature without hardcoding provider or model names — for example,
+`Capabilities.HostedWebSearch` reports whether the model accepts the hosted
+`web_search` tool. The tool's configuration still rides on
+`GenerateRequest.Extensions`; the capability bit only declares support, and
+the provider compiler rejects the extension when the bit is unset.
+
 ## Deployment configuration
 
 Deployments are described by a versioned `config.Document`. Documents

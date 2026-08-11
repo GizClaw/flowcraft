@@ -26,6 +26,11 @@ type catalogEntry struct {
 	video bool
 	// generate: supports the thinking control behind reasoning effort.
 	reasoning bool
+	// webSearch (generate) accepts the hosted Web Search (联网内容插件)
+	// tool. Support is per model per the Ark tool-calling capability
+	// matrix; see
+	// https://www.volcengine.com/docs/82379/1330310#f44ceef7.
+	webSearch bool
 	// embed: accepts image items (multimodal embedding).
 	imageInput bool
 	// embed: accepts custom output dimensions.
@@ -47,31 +52,31 @@ type catalogEntry struct {
 var catalog = map[string]catalogEntry{
 	// Seed 2.1 (2026-06) — current flagship tier. The whole Seed 2.x line is
 	// natively multimodal (text/image/video in) with thinking support.
-	"doubao-seed-2-1-pro":   {kind: kindGenerate, vision: true, video: true, reasoning: true},
-	"doubao-seed-2-1-turbo": {kind: kindGenerate, vision: true, video: true, reasoning: true},
+	"doubao-seed-2-1-pro":   {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-1-turbo": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
-	"doubao-seed-2-0-pro":  {kind: kindGenerate, vision: true, video: true, reasoning: true},
-	"doubao-seed-2-0-lite": {kind: kindGenerate, vision: true, video: true, reasoning: true},
-	"doubao-seed-2-0-mini": {kind: kindGenerate, vision: true, video: true, reasoning: true},
-	"doubao-seed-2-0-code": {kind: kindGenerate, vision: true, reasoning: true},
+	"doubao-seed-2-0-pro":  {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-0-lite": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-0-mini": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-0-code": {kind: kindGenerate, vision: true, reasoning: true, webSearch: true},
 
 	// Seed 1.x — superseded by the 2.x line; kept routable for existing
 	// deployments, announced as deprecated with a replacement.
 	"doubao-seed-1-8": {
-		kind: kindGenerate, vision: true, video: true, reasoning: true,
+		kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 	},
 	"doubao-seed-1-6": {
-		kind: kindGenerate, reasoning: true,
+		kind: kindGenerate, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-mini",
 	},
 	"doubao-seed-1-6-vision": {
-		kind: kindGenerate, vision: true, reasoning: true,
+		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 	},
 	"doubao-seed-1-6-flash": {
-		kind: kindGenerate, reasoning: true,
+		kind: kindGenerate, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-mini",
 	},
 
@@ -127,6 +132,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			vision:        model.Vision,
 			video:         model.Video,
 			reasoning:     model.Reasoning,
+			webSearch:     model.WebSearch,
 			imageInput:    model.ImageInput,
 			dimensions:    model.Dimensions,
 			maxResolution: model.MaxResolution,

@@ -364,7 +364,7 @@ func compileGenerate(
 		// one; extensions for other operations are rejected wholesale.
 		options, other := operationExtensions[GenerateOptions](request.Extensions)
 		rejectOtherExtensions("generate", other, ledger)
-		compileGenerateOptions(&wire, options, request, ledger)
+		compileGenerateOptions(&wire, options, entry, request, ledger)
 
 		report := ledger.report()
 		if len(ledger.order) > 0 {
@@ -378,6 +378,7 @@ func compileGenerate(
 func compileGenerateOptions(
 	wire *generateWire,
 	options GenerateOptions,
+	entry catalogEntry,
 	_ inference.GenerateRequest,
 	ledger *ledger,
 ) {
@@ -403,6 +404,13 @@ func compileGenerateOptions(
 		wire.maxToolCalls = options.MaxToolCalls
 	}
 	if options.WebSearch != nil {
+		if !entry.webSearch {
+			ledger.reject(
+				inference.ExtensionField("web_search").Qualify(options),
+				"model does not support hosted web search",
+			)
+			return
+		}
 		search := options.WebSearch
 		wire.webSearch = &wireWebSearch{
 			limit:      search.Limit,

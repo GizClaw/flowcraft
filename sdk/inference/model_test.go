@@ -73,6 +73,34 @@ func TestModelDescriptorAllowsEmptyProfileProjection(t *testing.T) {
 	}
 }
 
+func TestModelDescriptorCapabilitiesRequireGenerateOperation(t *testing.T) {
+	descriptor := ModelDescriptor{
+		ID:           ModelID{Provider: "openai", Name: "gpt-5"},
+		Operations:   []Operation{OperationEmbed},
+		Capabilities: ModelCapabilities{HostedWebSearch: true},
+	}
+	if err := descriptor.Validate(); err == nil {
+		t.Fatal("Validate accepted hosted web search without the generate operation")
+	}
+	descriptor.Operations = []Operation{OperationGenerate}
+	if err := descriptor.Validate(); err != nil {
+		t.Fatalf("Validate with generate: %v", err)
+	}
+}
+
+func TestModelDescriptorCloneCopiesCapabilities(t *testing.T) {
+	descriptor := ModelDescriptor{
+		ID:           ModelID{Provider: "openai", Name: "gpt-5"},
+		Operations:   []Operation{OperationGenerate},
+		Capabilities: ModelCapabilities{HostedWebSearch: true},
+	}
+	clone := descriptor.Clone()
+	clone.Capabilities.HostedWebSearch = false
+	if !descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("clone mutation leaked into the source descriptor")
+	}
+}
+
 func TestModelLifecycleRejectsActiveRetirementMetadata(t *testing.T) {
 	retirement := time.Now().UTC()
 	descriptor := ModelDescriptor{

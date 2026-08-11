@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -67,6 +68,27 @@ func TestGenerateOptionsWebSearchCompilesToHostedTool(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("tool JSON %s does not contain %s", body, want)
 		}
+	}
+}
+
+func TestGenerateOptionsWebSearchRejectedWithoutCapability(t *testing.T) {
+	request := simpleTextRequest("hi")
+	request.Extensions = inference.Extensions{
+		GenerateOptions{WebSearch: &GenerateWebSearch{}},
+	}
+	_, err := compileGenerate("gpt-4.1-nano", catalog["gpt-4.1-nano"])(
+		context.Background(),
+		openaiModel("gpt-4.1-nano"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if !inference.IsKind(err, inference.InvalidExtension) {
+		t.Fatalf("error = %v, want InvalidExtension", err)
+	}
+	var inferenceErr *inference.Error
+	if !errors.As(err, &inferenceErr) ||
+		inferenceErr.Field != "extension.openai.generate_options.web_search" {
+		t.Fatalf("error field = %v, want web_search extension", inferenceErr)
 	}
 }
 

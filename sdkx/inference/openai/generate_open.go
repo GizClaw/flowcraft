@@ -17,5 +17,6 @@ func openGenerate(
 	return KernelGenerate(cls.api, id.Name, Capabilities{
 		Vision:    entry.vision,
 		Reasoning: entry.reasoning,
+		WebSearch: entry.webSearch,
 	})
 }
