@@ -1,0 +1,9 @@
+{
+  "summary": "sdk patch: sandbox ProcessManager sessions, rule-based net policy, MITM, process events; pty Resize race fix; dynamic tool injection and policy middleware; hosted web_search capability metadata",
+  "releases": [
+    {
+      "module": "sdk",
+      "bump": "patch"
+    }
+  ]
+}
