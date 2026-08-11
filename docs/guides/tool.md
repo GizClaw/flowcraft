@@ -235,16 +235,23 @@ toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{
     Approver:  approver,
     AuditSink: auditSink,
 })
-toolBuilder.RegisterBuiltins(searchTool{}, execTool{})
+exec.RegisterBuiltin(toolBuilder) // sandbox-backed exec / exec_session
 
 builder.MustRegisterResource(toolconfig.NewDeployFactory(toolBuilder))
 ```
 
 ```yaml
 resources:
+  boxes:
+    kind: sandbox.Registry
+    impl: yaml
+    settings:
+      file: ./sandboxes.yaml
   tools:
     kind: tool.Assembly
     impl: yaml
+    deps:
+      sandbox: boxes/coding
     settings:
       file: ./tools.yaml
 ```
@@ -255,7 +262,7 @@ version: v1
 sources:
   - kind: builtin
     spec:
-      tools: [search, exec]
+      tools: [exec, exec_session]
 middlewares:
   - kind: recover
   - kind: telemetry
@@ -269,10 +276,18 @@ scopes: { exec: platform }
 ```
 
 The `builtin` source resolves hand-written Go tools from the builder's
-catalog; naming a tool that was not registered fails the build. Built-in
-middleware kinds map 1:1 to the constructors in `sdk/tool/middleware`. Custom
-kinds register on the `Builder` via `RegisterFactory`; external sources (e.g.
-MCP) register via `RegisterSourceFactory`.
+catalog; naming a tool that was not registered fails the build. Tools may be
+registered either as pre-constructed values (`RegisterBuiltin`) or as
+per-build factories (`RegisterBuiltinFactory`). `exec.RegisterBuiltin` uses
+the factory form: the tool is built once per assembly from the
+`tool.Assembly` resource's `sandbox` dep, so the deployment document decides
+which sandbox `exec` and `exec_session` run under. Naming a factory-backed
+tool without binding the `sandbox` dep fails the build.
+
+Built-in middleware kinds map 1:1 to the constructors in
+`sdk/tool/middleware`. Custom kinds register on the `Builder` via
+`RegisterFactory`; external sources (e.g. MCP) register via
+`RegisterSourceFactory`.
 
 A graph engine binds a `tool.Assembly` through its `tools` dep and the
 executor becomes the dispatch target for `tool` nodes and for inference-driven

@@ -35,7 +35,8 @@
 // before anything else so their tools are in the registry by the time
 // scopes and middleware name them. The builtin source kind is
 // registered by default and resolves hand-written Go tools the host
-// registered on the Builder:
+// registered on the Builder — either pre-constructed values via
+// RegisterBuiltin, or per-build factories via RegisterBuiltinFactory:
 //
 //	sources:
 //	  - kind: builtin
@@ -48,6 +49,24 @@
 // External source kinds are opt-in through
 // [Builder.RegisterSourceFactory], since each pulls in an external
 // dependency.
+//
+// # Resource deps
+//
+// The tool.Assembly deployment resource declares one optional
+// dependency, DepSandbox (type "sandbox.Runner"), so a deployment can
+// bind a sandbox out of a sandbox.Registry:
+//
+//	resources:
+//	  tools:
+//	    kind: tool.Assembly
+//	    impl: yaml
+//	    deps: {sandbox: boxes/main}
+//	    settings: {file: ./tools.yaml}
+//
+// The resolved value is carried in every source factory's Input.Deps.
+// Builtin factories that build command tools (sdkx/tool/exec's
+// sandbox-backed exec / exec_session) consume it there; source kinds
+// that do not need it simply ignore the key.
 //
 // Sources are live resources — child processes, HTTP sessions — so
 // Build returns an Assembly rather than a bare Executor, and the caller

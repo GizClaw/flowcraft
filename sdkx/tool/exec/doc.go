@@ -116,4 +116,31 @@
 // The same sandbox can be shared with the script-engine shell bridge,
 // host-application sandbox resources, and the sdkx/sandbox/{seatbelt,
 // bwrap} backends without changing these tools' call sites.
+//
+// # Declarative wiring
+//
+// Hosts that assemble through sdk/tool/config can register both tools
+// as builtin factories with [RegisterBuiltin]. Each factory is invoked
+// once per assembly and reads the sandbox runner out of the
+// tool.Assembly resource's `sandbox` dep, so the deployment document
+// chooses which sandbox the tools execute under instead of the host
+// hard-wiring one:
+//
+//	exec.RegisterBuiltin(toolBuilder)
+//
+//	resources:
+//	  tools:
+//	    kind: tool.Assembly
+//	    impl: yaml
+//	    deps: {sandbox: boxes/coding}
+//	    settings: {file: ./tools.yaml}
+//
+//	tools.yaml:
+//	  sources:
+//	    - kind: builtin
+//	      spec: {tools: [exec, exec_session]}
+//
+// The exec factory fails closed when the dep is missing or not a
+// sandbox.Runner; exec_session additionally fails with NotAvailable
+// when the runner has no ProcessManager.
 package exec

@@ -3,10 +3,13 @@ package config_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
+	"github.com/GizClaw/flowcraft/sdk/tool"
 	"github.com/GizClaw/flowcraft/sdk/tool/config"
 )
 
@@ -15,9 +18,67 @@ func TestDeployFactorySpec(t *testing.T) {
 	want := sdkconfig.Spec{
 		Kind: config.ResourceKind,
 		Impl: "yaml",
+		Deps: []sdkconfig.DepSpec{{
+			Name:     config.DepSandbox,
+			Type:     "sandbox.Runner",
+			Required: false,
+		}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Spec() = %+v, want %+v", got, want)
+	}
+}
+
+func TestDeployFactoryNewPassesDepsToBuiltinFactories(t *testing.T) {
+	factory := config.NewBuilder(config.Deps{})
+	var got any
+	factory.RegisterBuiltinFactory("made", func(
+		_ context.Context,
+		in sdkconfig.Input,
+	) (tool.Tool, error) {
+		got, _ = in.Dep(config.DepSandbox)
+		return echoTool("made"), nil
+	})
+	value, err := factory.New(context.Background(), sdkconfig.Input{
+		Resolve: resolveLiteral(t),
+		Settings: literalSettings(t, `{
+			"version": "v1",
+			"sources": [{"kind": "builtin", "spec": {"tools": ["made"]}}]
+		}`),
+		Deps: map[string]any{config.DepSandbox: "the-runner"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	assembly := value.(*config.Assembly)
+	if _, ok := assembly.Catalog.Get("made"); !ok {
+		t.Fatal("builtin factory tool missing from catalog")
+	}
+	if got != "the-runner" {
+		t.Fatalf("factory dep = %#v, want %q", got, "the-runner")
+	}
+}
+
+func TestDeployFactoryNewBuiltinFactoryErrorsPropagate(t *testing.T) {
+	factory := config.NewBuilder(config.Deps{})
+	factory.RegisterBuiltinFactory("needy", func(
+		_ context.Context,
+		in sdkconfig.Input,
+	) (tool.Tool, error) {
+		if _, ok := in.Dep(config.DepSandbox); !ok {
+			return nil, errors.New("needs sandbox dep")
+		}
+		return echoTool("needy"), nil
+	})
+	_, err := factory.New(context.Background(), sdkconfig.Input{
+		Resolve: resolveLiteral(t),
+		Settings: literalSettings(t, `{
+			"version": "v1",
+			"sources": [{"kind": "builtin", "spec": {"tools": ["needy"]}}]
+		}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "needs sandbox dep") {
+		t.Fatalf("New error = %v, want missing-dep failure", err)
 	}
 }
 

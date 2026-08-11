@@ -436,6 +436,13 @@ func stripPreflightReplaces(content []byte, paths map[string]bool) []byte {
 		}
 		out = append(out, line)
 	}
+	// The preflight replace block is appended after a leading newline, so
+	// stripping it leaves a blank line that plain `go mod tidy` would not
+	// write. Drop the extra trailing empty lines, keeping the one that
+	// represents the final newline, so --write output matches tidy.
+	for len(out) > 1 && out[len(out)-1] == "" && out[len(out)-2] == "" {
+		out = out[:len(out)-1]
+	}
 	return []byte(strings.Join(out, "\n"))
 }
 

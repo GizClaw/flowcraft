@@ -79,7 +79,7 @@ unknown fields.
 | `workspace.Registry` | `yaml` | container, item `workspace.Workspace` | `sdk/workspace/config` |
 | `sandbox.Registry` | `yaml` | container, item `sandbox.Runner` | `sdk/sandbox/config` |
 | `inference.Assembly` | `yaml` | runtime + optional router, item `inference.Runtime` | `sdk/inference/config` |
-| `tool.Assembly` | `yaml` | catalog + executor | `sdk/tool/config` |
+| `tool.Assembly` | `yaml` | catalog + executor; optional `deps.sandbox` (`sandbox.Runner`) for sandbox-backed exec tools | `sdk/tool/config` |
 | `event.Bus` | `memory` | in-process bus | `sdk/event/config` |
 | `agent.ScriptRuntime` | `js` / `lua` | script runtime | `sdkx/agent/script/{jsrt,luart}` |
 | `scheduler.Server` | `local` | unstarted scheduler server | `sdk/scheduler/config` + `sdkx/scheduler` |
