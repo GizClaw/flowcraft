@@ -66,6 +66,10 @@ func TestSpecValidation(t *testing.T) {
 			raw:  `{"endpoint":"https://res.openai.azure.com","models":[{"name":"m","kind":"generate","dimensions":true}]}`,
 		},
 		{
+			name: "web search on embed",
+			raw:  `{"endpoint":"https://res.openai.azure.com","models":[{"name":"m","kind":"embed","web_search":true}]}`,
+		},
+		{
 			name: "bad version token",
 			raw:  `{"endpoint":"https://res.openai.azure.com","api_version":"2025-01-01?x=1","models":[{"name":"m","kind":"generate"}]}`,
 		},
@@ -115,6 +119,7 @@ func TestFactoryBuild(t *testing.T) {
 			"endpoint": "https://res.openai.azure.com",
 			"models": [
 				{"name": "chat-1", "kind": "generate", "vision": true},
+				{"name": "search-1", "kind": "generate", "web_search": true},
 				{"name": "embed-1", "kind": "embed", "dimensions": true},
 				{"name": "stt-1", "kind": "asr"}
 			]
@@ -131,16 +136,22 @@ func TestFactoryBuild(t *testing.T) {
 	if provider.ID != "azure" {
 		t.Fatalf("provider ID = %q", provider.ID)
 	}
-	if len(provider.Models) != 3 {
+	if len(provider.Models) != 4 {
 		t.Fatalf("models = %d", len(provider.Models))
 	}
 	if provider.Models[0].Openers.Generate == nil {
 		t.Fatal("generate deployment has no generate opener")
 	}
-	if provider.Models[1].Openers.Embed == nil {
+	if provider.Models[0].Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("chat-1 must not claim hosted web search without the flag")
+	}
+	if !provider.Models[1].Descriptor.Capabilities.HostedWebSearch {
+		t.Fatal("search-1 must carry the declared hosted web search capability")
+	}
+	if provider.Models[2].Openers.Embed == nil {
 		t.Fatal("embed deployment has no embed opener")
 	}
-	if provider.Models[2].Openers.Transcription == nil {
+	if provider.Models[3].Openers.Transcription == nil {
 		t.Fatal("asr deployment has no transcription opener")
 	}
 }
@@ -224,5 +235,62 @@ func TestGenerateEndToEnd(t *testing.T) {
 	text, ok := response.Message.Content.Parts[0].(message.TextPart)
 	if !ok || text.Text != "ok" {
 		t.Fatalf("part = %#v", response.Message.Content.Parts[0])
+	}
+}
+
+func TestKernelGenerateWebSearchCapabilityGate(t *testing.T) {
+	spec, err := decodeSpec([]byte(
+		`{"endpoint":"https://res.openai.azure.com","models":[{"name":"chat-1","kind":"generate"}]}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	cls := profileMaterial{apiKey: "az-key"}.newClients(spec)
+	request := inference.GenerateRequest{
+		Input: inference.GenerateInput{
+			Role: inference.InputRoleUser,
+			Content: inference.InputContent{
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "hi"},
+				}},
+				Intent: inference.Intent{Text: &inference.TextIntent{}},
+			},
+		},
+		Extensions: inference.Extensions{
+			openai.GenerateOptions{
+				Provider:  "azure",
+				WebSearch: &openai.GenerateWebSearch{},
+			},
+		},
+	}
+	for _, tc := range []struct {
+		name string
+		caps openai.Capabilities
+		ok   bool
+	}{
+		{name: "declared", caps: openai.Capabilities{WebSearch: true}, ok: true},
+		{name: "undeclared", caps: openai.Capabilities{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			operations, err := openai.KernelGenerate(
+				cls.api,
+				"chat-1",
+				tc.caps,
+			)
+			if err != nil {
+				t.Fatalf("KernelGenerate: %v", err)
+			}
+			_, err = operations.Unary.Explain(
+				context.Background(),
+				azureModel("chat-1"),
+				request,
+			)
+			if tc.ok && err != nil {
+				t.Fatalf("Explain with capability: %v", err)
+			}
+			if !tc.ok && !inference.IsKind(err, inference.InvalidExtension) {
+				t.Fatalf("Explain without capability = %v, want InvalidExtension", err)
+			}
+		})
 	}
 }

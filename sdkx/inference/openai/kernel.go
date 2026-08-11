@@ -22,6 +22,8 @@ type Capabilities struct {
 	Vision bool
 	// Reasoning accepts the reasoning effort and summary knobs.
 	Reasoning bool
+	// WebSearch accepts the hosted web_search tool on generate.
+	WebSearch bool
 	// Dimensions accepts the embed dimensions knob.
 	Dimensions bool
 }
@@ -38,6 +40,7 @@ func KernelGenerate(
 			kind:      kindGenerate,
 			vision:    caps.Vision,
 			reasoning: caps.Reasoning,
+			webSearch: caps.WebSearch,
 		}),
 		transportGenerate(client),
 		decodeGenerate,

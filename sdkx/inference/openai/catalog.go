@@ -16,9 +16,13 @@ const (
 // catalogEntry is one model in the built-in catalog. Capability flags mirror
 // ModelSpec so deployment-declared models behave identically.
 type catalogEntry struct {
-	kind        modelKind
-	vision      bool
-	reasoning   bool
+	kind      modelKind
+	vision    bool
+	reasoning bool
+	// webSearch (generate) accepts the hosted web_search tool. Model
+	// support is per model per the OpenAI model documentation; see
+	// https://developers.openai.com/api/docs/models.
+	webSearch   bool
 	dimensions  bool
 	deprecated  bool
 	replacement string
@@ -29,29 +33,30 @@ type catalogEntry struct {
 // via Spec.Models.
 var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
-	"gpt-5.6-sol":   {kind: kindGenerate, vision: true, reasoning: true},
-	"gpt-5.6-terra": {kind: kindGenerate, vision: true, reasoning: true},
-	"gpt-5.6-luna":  {kind: kindGenerate, vision: true, reasoning: true},
+	"gpt-5.6-sol":   {kind: kindGenerate, vision: true, reasoning: true, webSearch: true},
+	"gpt-5.6-terra": {kind: kindGenerate, vision: true, reasoning: true, webSearch: true},
+	"gpt-5.6-luna":  {kind: kindGenerate, vision: true, reasoning: true, webSearch: true},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
-		kind: kindGenerate, vision: true, reasoning: true,
+		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "gpt-5.6-sol",
 	},
 	"gpt-5.4": {
-		kind: kindGenerate, vision: true, reasoning: true,
+		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "gpt-5.6-sol",
 	},
 	"gpt-5.4-mini": {
-		kind: kindGenerate, vision: true, reasoning: true,
+		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "gpt-5.6-terra",
 	},
 	"gpt-5.4-nano": {
-		kind: kindGenerate, vision: true, reasoning: true,
+		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "gpt-5.6-luna",
 	},
 	// Generate — GPT-4.1 line: vision without the reasoning control.
-	"gpt-4.1":      {kind: kindGenerate, vision: true},
-	"gpt-4.1-mini": {kind: kindGenerate, vision: true},
+	"gpt-4.1":      {kind: kindGenerate, vision: true, webSearch: true},
+	"gpt-4.1-mini": {kind: kindGenerate, vision: true, webSearch: true},
+	// gpt-4.1-nano has no hosted web_search tool.
 	"gpt-4.1-nano": {kind: kindGenerate, vision: true},
 
 	// Embed.
@@ -99,6 +104,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			kind:       modelKind(model.Kind),
 			vision:     model.Vision,
 			reasoning:  model.Reasoning,
+			webSearch:  model.WebSearch,
 			dimensions: model.Dimensions,
 		}
 	}

@@ -54,7 +54,12 @@ func Factory() config.Factory {
 		for _, name := range names {
 			entry := models[name]
 			id := inference.ModelID{Provider: input.ID, Name: name}
-			descriptor := inference.ModelDescriptor{ID: id}
+			descriptor := inference.ModelDescriptor{
+				ID: id,
+				Capabilities: inference.ModelCapabilities{
+					HostedWebSearch: entry.webSearch,
+				},
+			}
 			if entry.deprecated {
 				descriptor.Lifecycle.Status = inference.ModelStatusDeprecated
 				if entry.replacement != "" {

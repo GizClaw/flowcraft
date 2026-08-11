@@ -44,6 +44,8 @@ type ModelSpec struct {
 	Vision bool `json:"vision,omitempty"`
 	// Reasoning (generate) enables the reasoning effort control.
 	Reasoning bool `json:"reasoning,omitempty"`
+	// WebSearch (generate) enables the hosted web_search tool.
+	WebSearch bool `json:"web_search,omitempty"`
 	// Dimensions (embed) allows custom output dimensions.
 	Dimensions bool `json:"dimensions,omitempty"`
 }

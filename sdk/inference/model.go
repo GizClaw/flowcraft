@@ -102,14 +102,26 @@ func (l ModelLifecycle) ValidateFor(model ModelID) error {
 	return nil
 }
 
+// ModelCapabilities describes optional feature bits a model can serve.
+// Zero is the conservative declaration: every feature the struct omits is
+// treated as unsupported until a provider declares it.
+type ModelCapabilities struct {
+	// HostedWebSearch marks provider-side web_search tool support. It is
+	// discovery metadata for hosts; the search configuration itself still
+	// rides on GenerateRequest.Extensions as a provider GenerateOptions
+	// extension.
+	HostedWebSearch bool `json:"hosted_web_search,omitempty"`
+}
+
 // ModelDescriptor is public discovery metadata. Operations must be derived
 // from the drivers registered for the model rather than maintained as a
 // separate capability declaration.
 type ModelDescriptor struct {
-	ID         ModelID        `json:"id"`
-	Label      string         `json:"label,omitempty"`
-	Operations []Operation    `json:"operations"`
-	Lifecycle  ModelLifecycle `json:"lifecycle,omitzero"`
+	ID           ModelID           `json:"id"`
+	Label        string            `json:"label,omitempty"`
+	Operations   []Operation       `json:"operations"`
+	Capabilities ModelCapabilities `json:"capabilities,omitzero"`
+	Lifecycle    ModelLifecycle    `json:"lifecycle,omitzero"`
 }
 
 func (d ModelDescriptor) Clone() ModelDescriptor {
@@ -131,6 +143,13 @@ func (d ModelDescriptor) Validate() error {
 			return fmt.Errorf("duplicate model operation %q", operation)
 		}
 		seen[operation] = struct{}{}
+	}
+	if d.Capabilities.HostedWebSearch {
+		if _, ok := seen[OperationGenerate]; !ok {
+			return fmt.Errorf(
+				"hosted web search requires the generate operation",
+			)
+		}
 	}
 	return d.Lifecycle.ValidateFor(d.ID)
 }

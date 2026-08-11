@@ -39,6 +39,10 @@ type ModelSpec struct {
 	Vision bool `json:"vision,omitempty"`
 	// Reasoning accepts reasoning effort and summary knobs (generate only).
 	Reasoning bool `json:"reasoning,omitempty"`
+	// WebSearch accepts the hosted web_search tool (generate only). The
+	// Responses API web_search tool works with GPT-4 and later deployments,
+	// subject to the subscription-level feature switch.
+	WebSearch bool `json:"web_search,omitempty"`
 	// Dimensions accepts the embed dimensions knob (embed only).
 	Dimensions bool `json:"dimensions,omitempty"`
 }
@@ -93,6 +97,13 @@ func (s Spec) Validate() error {
 		if model.Reasoning && modelKind(model.Kind) != kindGenerate {
 			return fmt.Errorf(
 				"azure: deployment %q sets reasoning on kind %q",
+				model.Name,
+				model.Kind,
+			)
+		}
+		if model.WebSearch && modelKind(model.Kind) != kindGenerate {
+			return fmt.Errorf(
+				"azure: deployment %q sets web_search on kind %q",
 				model.Name,
 				model.Kind,
 			)

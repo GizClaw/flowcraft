@@ -403,6 +403,20 @@ func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 				Field: inference.FieldGenerateIntentReasoningEffort,
 				Kind:  inference.UnsupportedFeature,
 			},
+			{
+				Name: "web search on model without hosted web search",
+				Request: func() inference.GenerateRequest {
+					request := simpleTextRequest("hi")
+					request.Extensions = inference.Extensions{
+						GenerateOptions{WebSearch: &GenerateWebSearch{}},
+					}
+					return request
+				},
+				Field: inference.FieldID(
+					"extension.bytedance.generate_options.web_search",
+				),
+				Kind: inference.InvalidExtension,
+			},
 		},
 	})
 }
