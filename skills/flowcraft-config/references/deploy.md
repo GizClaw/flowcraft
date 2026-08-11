@@ -1,8 +1,12 @@
-# Deploy document schema (`deploy.yaml`)
+# Deploy document schema
 
 Owned by `sdkx/deploy`. Strictly decoded: unknown fields, unknown
 kinds/impls, unregistered engines/hooks, dep type mismatches, dead
 resources, and cycles all fail `Parse`/`Build`.
+
+The filename is arbitrary — `deploy.yaml` is only the convention used by
+this repo's examples and this skill's template. Pass any path to the
+validator.
 
 ## Top-level
 

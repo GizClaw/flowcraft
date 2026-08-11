@@ -1,11 +1,14 @@
-// Command validate-config is the L2 validator for FlowCraft deployment
-// configuration. It parses a deploy document, dry-builds the deployment
-// through the real sdkx/deploy assembly layer with first-party factories
-// and stub secrets, and cross-checks the runtime section.
+// Command validate-config is the L2 validator for FlowCraft
+// configuration. Its default entry is a deployment document (any
+// filename); --type switches to a standalone sub-document entry
+// (inference, workspace, sandbox, tool, graph, agent).
 //
-// It is deliberately hermetic: no network calls, no real credentials, and
-// no remote engines. App-registered kinds, sources, and hook types are
-// reported as scope limits instead of being guessed at.
+// The deploy path parses every sub-document and dry-builds the
+// deployment through the real sdkx/deploy assembly layer with
+// first-party factories and stub secrets. The validator is hermetic: no
+// network calls, no real credentials, no remote engines. App-registered
+// kinds, sources, and hook types are reported as scope limits instead of
+// being guessed at.
 package main
 
 import (
@@ -115,9 +118,11 @@ func main() {
 }
 
 func run() int {
-	baseDir := flag.String("base-dir", "", "base directory for relative config paths (default: deploy.yaml's directory)")
+	baseDir := flag.String("base-dir", "", "base directory for relative config paths (default: the input file's directory)")
+	typ := flag.String("type", "deploy", "document type: deploy, inference, workspace, sandbox, tool, graph, agent")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "usage: validate-config [--base-dir DIR] deploy.yaml\n")
+		fmt.Fprintf(os.Stderr, "usage: validate-config [--base-dir DIR] [--type TYPE] <config-file>\n")
+		fmt.Fprintln(os.Stderr, "types: deploy (default), inference, workspace, sandbox, tool, graph, agent")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -127,10 +132,10 @@ func run() int {
 		flag.Usage()
 		return exitUsage
 	}
-	deployPath := args[0]
+	path := args[0]
 	dir := *baseDir
 	if dir == "" {
-		dir = filepath.Dir(deployPath)
+		dir = filepath.Dir(path)
 	}
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
@@ -138,20 +143,42 @@ func run() int {
 		return exitUsage
 	}
 
-	raw, err := os.ReadFile(deployPath)
+	raw, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "read %s: %v\n", deployPath, err)
-		return exitError
-	}
-
-	doc, err := deploy.Parse(raw)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "[parse] %s\n", err)
+		fmt.Fprintf(os.Stderr, "read %s: %v\n", path, err)
 		return exitError
 	}
 
 	loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(absDir))
 	ctx := context.Background()
+
+	switch *typ {
+	case "deploy":
+		return validateDeploy(raw, path, loader, ctx)
+	case "inference":
+		return validateInference(raw, loader, ctx)
+	case "workspace":
+		return validateWorkspace(raw, absDir, ctx)
+	case "sandbox":
+		return validateSandbox(raw)
+	case "tool":
+		return validateTool(raw, ctx)
+	case "graph":
+		return validateGraphFile(raw, path, loader, ctx)
+	case "agent":
+		return validateAgentFile(raw)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown --type %q (want deploy, inference, workspace, sandbox, tool, graph, or agent)\n", *typ)
+		return exitUsage
+	}
+}
+
+func validateDeploy(raw []byte, deployPath string, loader *sdkconfig.Loader, ctx context.Context) int {
+	doc, err := deploy.Parse(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] %s\n", err)
+		return exitError
+	}
 
 	scopeNotes := scanScope(doc)
 	resolvers := discoverResolvers(loader, ctx, doc, raw)
@@ -214,6 +241,199 @@ func run() int {
 	return exitOK
 }
 
+func validateInference(raw []byte, loader *sdkconfig.Loader, ctx context.Context) int {
+	doc, err := inferenceconfig.Parse(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] inference config: %s\n", err)
+		return exitError
+	}
+	builder, err := inferenceconfig.NewBuilder(providerFactories(), stubResolvers(resolverNamesFrom(raw)))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[build] inference config: %s\n", err)
+		return exitError
+	}
+	asm, err := builder.NewAssembly(ctx, doc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[build] inference config: %s\n", err)
+		printBuildGuidance(os.Stderr, err)
+		return exitError
+	}
+	router := "none"
+	if asm.Router != nil {
+		router = "present"
+	}
+	fmt.Printf("OK: inference config (%d providers, route router %s)\n", len(doc.Providers), router)
+	return exitOK
+}
+
+func validateWorkspace(raw []byte, baseDir string, ctx context.Context) int {
+	doc, err := workspaceconfig.Parse(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] workspace config: %s\n", err)
+		return exitError
+	}
+	registry, err := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: baseDir}).Build(ctx, doc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[build] workspace config: %s\n", err)
+		printBuildGuidance(os.Stderr, err)
+		return exitError
+	}
+	defer registry.Close()
+	names := sortedNames(doc.Workspaces)
+	fmt.Printf("OK: workspace config (%d workspaces: %s)\n", len(names), strings.Join(names, ", "))
+	return exitOK
+}
+
+func validateSandbox(raw []byte) int {
+	doc, err := sandboxconfig.Parse(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] sandbox config: %s\n", err)
+		return exitError
+	}
+	names := sortedNames(doc.Sandboxes)
+	fmt.Printf("OK: sandbox config (%d sandboxes: %s)\n", len(names), strings.Join(names, ", "))
+	fmt.Println("note: structural validation only; full build requires the workspace registry dep in a deploy document (sandbox.Registry deps.workspaces)")
+	return exitOK
+}
+
+func validateTool(raw []byte, ctx context.Context) int {
+	doc, err := toolconfig.Parse(raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] tool config: %s\n", err)
+		return exitError
+	}
+	asm, err := toolconfig.NewBuilder(toolconfig.Deps{}).Build(ctx, doc)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[build] tool config: %s\n", err)
+		printBuildGuidance(os.Stderr, err)
+		return exitError
+	}
+	defer asm.Close()
+	defs := asm.Catalog.Definitions()
+	fmt.Printf("OK: tool config (%d middlewares, %d tools in catalog)\n", len(doc.Middlewares), len(defs))
+	return exitOK
+}
+
+func validateGraphFile(raw []byte, path string, loader *sdkconfig.Loader, ctx context.Context) int {
+	def, err := sdkconfigutils.Decode[graph.GraphDefinition](raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] graph definition: %s\n", err)
+		return exitError
+	}
+	if err := def.Validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] graph definition: %s\n", err)
+		return exitError
+	}
+	if err := validateGraphNodes(loader, ctx, def); err != nil {
+		fmt.Fprintf(os.Stderr, "[graph] %s\n", err)
+		return exitError
+	}
+	fmt.Printf("OK: graph %q (version %q, %d nodes, %d edges)\n",
+		def.Name, def.Version, len(def.Nodes), len(def.Edges))
+	return exitOK
+}
+
+// validateAgentFile mirrors sdkx/deploy's parseAgentFile and
+// validateAgentEntry for a standalone agent recipe.
+func validateAgentFile(raw []byte) int {
+	probe, err := sdkconfigutils.Decode[map[string]json.RawMessage](raw)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: %s\n", err)
+		return exitError
+	}
+	versionRaw, ok := probe["version"]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "[parse] agent document: agent config version is required")
+		return exitError
+	}
+	var version string
+	if err := json.Unmarshal(versionRaw, &version); err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: decode version: %s\n", err)
+		return exitError
+	}
+	if version != deploy.VersionV1 {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: agent config version %q is not supported (want %q)\n", version, deploy.VersionV1)
+		return exitError
+	}
+	if _, ok := probe["source"]; ok {
+		fmt.Fprintln(os.Stderr, "[parse] agent document: field source is not allowed in an agent file")
+		return exitError
+	}
+	delete(probe, "version")
+	body, err := json.Marshal(probe)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: re-encode: %s\n", err)
+		return exitError
+	}
+	var entry deploy.AgentEntry
+	if err := json.Unmarshal(body, &entry); err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: %s\n", err)
+		return exitError
+	}
+	if entry.Engine.Kind == "" {
+		fmt.Fprintln(os.Stderr, "[parse] agent document: engine.kind is required")
+		return exitError
+	}
+	if err := validateAgentDeps(entry.Deps); err != nil {
+		fmt.Fprintf(os.Stderr, "[parse] agent document: %s\n", err)
+		return exitError
+	}
+	for _, h := range entry.Prepare {
+		if err := validateHook(h.Type, h.Deps); err != nil {
+			fmt.Fprintf(os.Stderr, "[parse] agent document: prepare: %s\n", err)
+			return exitError
+		}
+	}
+	for _, h := range entry.Observe {
+		if err := validateHook(h.Type, h.Deps); err != nil {
+			fmt.Fprintf(os.Stderr, "[parse] agent document: observe: %s\n", err)
+			return exitError
+		}
+	}
+	for _, h := range entry.Referees {
+		if err := validateHook(h.Type, h.Deps); err != nil {
+			fmt.Fprintf(os.Stderr, "[parse] agent document: referees: %s\n", err)
+			return exitError
+		}
+	}
+	for _, h := range entry.Commit {
+		if err := validateHook(h.Type, h.Deps); err != nil {
+			fmt.Fprintf(os.Stderr, "[parse] agent document: commit: %s\n", err)
+			return exitError
+		}
+	}
+	if entry.Policy.MaxRevise < 0 {
+		fmt.Fprintln(os.Stderr, "[parse] agent document: policy.max_revise must be >= 0")
+		return exitError
+	}
+	fmt.Printf("OK: agent recipe (engine %q, %d deps, %d hooks)\n",
+		entry.Engine.Kind, len(entry.Deps),
+		len(entry.Prepare)+len(entry.Observe)+len(entry.Referees)+len(entry.Commit))
+	return exitOK
+}
+
+func validateHook(hookType string, deps map[string]deploy.DepRef) error {
+	if hookType == "" {
+		return fmt.Errorf("type is required")
+	}
+	return validateAgentDeps(deps)
+}
+
+func validateAgentDeps(deps map[string]deploy.DepRef) error {
+	for name, dep := range deps {
+		if name == "" {
+			return fmt.Errorf("deps: empty dep name")
+		}
+		switch {
+		case dep.Source == "" && dep.Resource == "":
+			return fmt.Errorf("deps[%q]: source or resource is required", name)
+		case dep.Source != "" && dep.Resource != "":
+			return fmt.Errorf("deps[%q]: source and resource are mutually exclusive", name)
+		}
+	}
+	return nil
+}
+
 // registerBuilder registers every first-party factory the L2 validator
 // can construct hermetically. App-registered kinds remain out of scope.
 func registerBuilder(builder *deploy.Builder, loader *sdkconfig.Loader, resolvers map[string]bool) {
@@ -228,26 +448,7 @@ func registerBuilder(builder *deploy.Builder, loader *sdkconfig.Loader, resolver
 	toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
 	builder.MustRegisterResource(toolBuilder)
 
-	providerFactories := map[string]inferenceconfig.Factory{
-		"openai":    openai.Factory(),
-		"azure":     azure.Factory(),
-		"deepseek":  deepseek.Factory(),
-		"qwen":      qwen.Factory(),
-		"bytedance": bytedance.Factory(),
-		"minimax":   minimax.Factory(),
-		"kimi":      kimi.Factory(),
-		"anthropic": anthropic.Factory(),
-	}
-	secretResolvers := map[string]inferenceconfig.SecretResolver{
-		"env":  inferenceconfig.SecretResolverFunc(stubResolve),
-		"file": inferenceconfig.SecretResolverFunc(stubResolve),
-	}
-	for name := range resolvers {
-		if _, ok := secretResolvers[name]; !ok {
-			secretResolvers[name] = inferenceconfig.SecretResolverFunc(stubResolve)
-		}
-	}
-	builder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories, secretResolvers))
+	builder.MustRegisterResource(inferenceconfig.NewDeployFactory(providerFactories(), stubResolvers(resolvers)))
 
 	builder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
 	builder.MustRegisterResource(jsrt.NewDeployFactory())
@@ -265,17 +466,47 @@ func registerBuilder(builder *deploy.Builder, loader *sdkconfig.Loader, resolver
 		delegationconfig.NewHandoffRefereeFactory(delegation.NewDirectory()))
 }
 
+func providerFactories() map[string]inferenceconfig.Factory {
+	return map[string]inferenceconfig.Factory{
+		"openai":    openai.Factory(),
+		"azure":     azure.Factory(),
+		"deepseek":  deepseek.Factory(),
+		"qwen":      qwen.Factory(),
+		"bytedance": bytedance.Factory(),
+		"minimax":   minimax.Factory(),
+		"kimi":      kimi.Factory(),
+		"anthropic": anthropic.Factory(),
+	}
+}
+
+func stubResolvers(extra map[string]bool) map[string]inferenceconfig.SecretResolver {
+	resolvers := map[string]inferenceconfig.SecretResolver{
+		"env":  inferenceconfig.SecretResolverFunc(stubResolve),
+		"file": inferenceconfig.SecretResolverFunc(stubResolve),
+	}
+	for name := range extra {
+		if _, ok := resolvers[name]; !ok {
+			resolvers[name] = inferenceconfig.SecretResolverFunc(stubResolve)
+		}
+	}
+	return resolvers
+}
+
+// resolverNamesFrom finds every secret resolver name referenced in one
+// document's bytes.
+func resolverNamesFrom(data []byte) map[string]bool {
+	names := map[string]bool{}
+	for _, match := range resolverPattern.FindAllSubmatch(data, -1) {
+		names[string(match[1])] = true
+	}
+	return names
+}
+
 // discoverResolvers finds every secret resolver name referenced anywhere
 // in the deploy document and its file-backed resource documents, so L2
 // can stub them without reading real credentials.
 func discoverResolvers(loader *sdkconfig.Loader, ctx context.Context, doc deploy.Document, raw []byte) map[string]bool {
-	names := map[string]bool{}
-	scan := func(data []byte) {
-		for _, match := range resolverPattern.FindAllSubmatch(data, -1) {
-			names[string(match[1])] = true
-		}
-	}
-	scan(raw)
+	names := resolverNamesFrom(raw)
 	for _, entry := range doc.Resources {
 		if len(entry.Settings) == 0 {
 			continue
@@ -288,15 +519,21 @@ func discoverResolvers(loader *sdkconfig.Loader, ctx context.Context, doc deploy
 		case sdkconfig.SourceFile:
 			data, err := loader.Load(ctx, src)
 			if err == nil {
-				scan(data)
+				for name := range resolverNamesFrom(data) {
+					names[name] = true
+				}
 			}
 		case sdkconfig.SourceContent:
 			if content, ok := src.Content(); ok {
-				scan(content)
+				for name := range resolverNamesFrom(content) {
+					names[name] = true
+				}
 			}
 		case sdkconfig.SourceLiteral:
 			if literal, ok := src.Literal(); ok {
-				scan([]byte(literal))
+				for name := range resolverNamesFrom([]byte(literal)) {
+					names[name] = true
+				}
 			}
 		}
 	}
@@ -378,6 +615,35 @@ func scanScope(doc deploy.Document) []string {
 	return notes
 }
 
+func preflightRuntime(doc deploy.Document) ([]string, error) {
+	cfg, err := runtimecore.DecodeConfig(doc)
+	if err != nil {
+		return nil, err
+	}
+	var refs []string
+	for _, ref := range []string{cfg.EventBus, cfg.Scheduler, cfg.CheckpointStore} {
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	for _, item := range cfg.Integrations {
+		for _, ref := range item.Deps {
+			refs = append(refs, ref)
+		}
+	}
+	var missing []string
+	for _, ref := range refs {
+		if _, ok := doc.Resources[ref]; !ok {
+			missing = append(missing, ref)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return nil, fmt.Errorf("runtime references resources that are not declared in the deployment: %s", strings.Join(missing, ", "))
+	}
+	return refs, nil
+}
+
 func validateRuntime(doc deploy.Document, result *deploy.Result, warnings *[]string) error {
 	cfg, err := runtimecore.DecodeConfig(doc)
 	if err != nil {
@@ -415,39 +681,6 @@ func validateRuntime(doc deploy.Document, result *deploy.Result, warnings *[]str
 		fmt.Sprintf("runtime validated: event_bus=%s scheduler=%s checkpoint_store=%s sessions.resume=%v integrations=%d",
 			cfg.EventBus, cfg.Scheduler, cfg.CheckpointStore, cfg.Sessions.Resume, len(cfg.Integrations)))
 	return nil
-}
-
-// preflightRuntime decodes the runtime section before the deployment
-// build and returns the resource names the runtime borrows. Those names
-// are marked as external consumers so Build does not treat them as dead
-// configuration.
-func preflightRuntime(doc deploy.Document) ([]string, error) {
-	cfg, err := runtimecore.DecodeConfig(doc)
-	if err != nil {
-		return nil, err
-	}
-	var refs []string
-	for _, ref := range []string{cfg.EventBus, cfg.Scheduler, cfg.CheckpointStore} {
-		if ref != "" {
-			refs = append(refs, ref)
-		}
-	}
-	for _, item := range cfg.Integrations {
-		for _, ref := range item.Deps {
-			refs = append(refs, ref)
-		}
-	}
-	var missing []string
-	for _, ref := range refs {
-		if _, ok := doc.Resources[ref]; !ok {
-			missing = append(missing, ref)
-		}
-	}
-	if len(missing) > 0 {
-		sort.Strings(missing)
-		return nil, fmt.Errorf("runtime references resources that are not declared in the deployment: %s", strings.Join(missing, ", "))
-	}
-	return refs, nil
 }
 
 // validateGraphNodeConfigs statically decodes every node config in every
@@ -621,9 +854,17 @@ func printBuildGuidance(out *os.File, err error) {
 	case strings.Contains(msg, "graph agent"):
 		fmt.Fprintln(out, "guidance: the graph definition or its node config failed. Check node ids, types, config keys, edges, and engine dep wiring.")
 	case strings.Contains(msg, "memory config"):
-		fmt.Fprintln(out, "guidance: the memory assembly or its inference/workspace wiring failed. Verify inference.yaml has the route section memory needs and that deps bind the whole assemblies.")
+		fmt.Fprintln(out, "guidance: memory implementation wiring failed. Check the implementation module's schema and that hooks bind the whole memory.Assembly.")
 	case strings.Contains(msg, "dead configuration"):
 		fmt.Fprintln(out, "guidance: a built resource is consumed by nothing. Bind it from an agent/hook/another resource, set export: true, or remove it.")
+	case strings.Contains(msg, "inference config"):
+		fmt.Fprintln(out, "guidance: the inference document or its route targets failed. Check provider ids/drivers, secret refs, and that route models exist in the provider catalog.")
+	case strings.Contains(msg, "workspace config"):
+		fmt.Fprintln(out, "guidance: the workspace document or driver settings failed. Check drivers, roots, and scope pattern rules.")
+	case strings.Contains(msg, "tool config"):
+		fmt.Fprintln(out, "guidance: the tool document failed. Check middleware kinds/specs, source kinds, and scopes (agent/platform).")
+	case strings.Contains(msg, "sandbox config"):
+		fmt.Fprintln(out, "guidance: the sandbox document failed. Check backends, workspace names, defaults, and approval config.")
 	}
 }
 
@@ -634,4 +875,13 @@ func sortedKeys(set map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func sortedNames[V any](set map[string]V) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

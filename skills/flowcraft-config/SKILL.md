@@ -14,7 +14,9 @@ the L2 dry-run harness and fix build failures against the reference cards.
 1. **Scope the deployment.** Collect the agents, capabilities (chat,
    tools, memory, scripts, sandboxing), and runtime needs (sessions,
    resume, event bus, scheduler, integrations).
-2. **Draft `deploy.yaml` structure.** Read
+2. **Draft the deployment document.** `deploy.yaml` is the convention
+   but any filename works; pass whatever path you choose to the
+   validator. Read
    [references/deploy.md](references/deploy.md) first. Order the areas:
    resources → agents → runtime. Decide whole-resource vs item dep refs
    (`infer` vs `ws/project`).
@@ -29,7 +31,7 @@ the L2 dry-run harness and fix build failures against the reference cards.
    Model refs must use the nested `id` form; script nodes need `runtime`
    and `source`; wire edges back to the inference node after tool nodes.
 5. **Validate with L2.** Run
-   `skills/flowcraft-config/scripts/validate-config.sh <deploy.yaml>`
+   `skills/flowcraft-config/scripts/validate-config.sh <deployment-file>`
    (or the installed copy's script). The validator pins the FlowCraft
    module versions in its `go.mod` and works standalone from any
    directory. It parses every sub-document, dry-builds the deployment
@@ -37,6 +39,13 @@ the L2 dry-run harness and fix build failures against the reference cards.
    and stub secrets, decodes graph node configs statically, and
    cross-checks the runtime section. It never reads real credentials and
    never calls providers.
+
+   Sub-documents can also be validated on their own:
+   `validate-config.sh --type inference inference.yaml` (types:
+   `deploy`, `inference`, `workspace`, `sandbox`, `tool`, `graph`,
+   `agent`). Standalone checks use each module's real parser; graph and
+   inference additionally run their semantic checks (node config decode,
+   route targets against the provider catalog).
 6. **Fix errors.** Each failure is prefixed `[parse]`, `[graph]`,
    `[build]`, or `[runtime]`; the build short-circuits on the first error.
    Consult [references/pitfalls.md](references/pitfalls.md) for the

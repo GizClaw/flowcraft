@@ -4,6 +4,11 @@ Each first-party resource wraps its own module document via
 `settings: {file: ...}` or inline content. Sub-documents keep their own
 version field and strictness.
 
+Every sub-document can be validated standalone:
+`validate-config.sh --type inference inference.yaml` (types:
+`inference`, `workspace`, `sandbox`, `tool`). The deploy entry validates
+them together and additionally checks cross-file wiring.
+
 ## inference.yaml
 
 ```yaml
