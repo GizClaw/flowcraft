@@ -73,7 +73,7 @@ func main() {
 
 func runCLI(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: releasegate <validate|plan|changelog> [options]")
+		fmt.Fprintln(stderr, "usage: releasegate <validate|plan|changelog|preflight> [options]")
 		return 2
 	}
 
@@ -180,8 +180,26 @@ func runCLI(args []string, stdout, stderr io.Writer) int {
 		}
 		return 0
 
+	case "preflight":
+		flags := flag.NewFlagSet("preflight", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		repo := flags.String("repo", ".", "repository root")
+		write := flags.Bool("write", false, "write tidied go.mod/go.sum instead of failing")
+		if err := flags.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if flags.NArg() != 0 {
+			fmt.Fprintln(stderr, "preflight does not accept positional arguments")
+			return 2
+		}
+		if err := preflightRepo(*repo, *write, stdout); err != nil {
+			fmt.Fprintf(stderr, "releasegate preflight: %v\n", err)
+			return 1
+		}
+		return 0
+
 	default:
-		fmt.Fprintf(stderr, "unknown command %q; usage: releasegate <validate|plan|changelog> [options]\n", args[0])
+		fmt.Fprintf(stderr, "unknown command %q; usage: releasegate <validate|plan|changelog|preflight> [options]\n", args[0])
 		return 2
 	}
 }
@@ -233,6 +251,298 @@ func validateRepo(repo, base string) error {
 		return fmt.Errorf("changeset %s was %s; .release changesets are immutable and may only be added", path, action)
 	}
 	return nil
+}
+
+func preflightRepo(repo string, write bool, stdout io.Writer) error {
+	plan, err := buildPlan(repo)
+	if err != nil {
+		return err
+	}
+	if len(plan.Modules) == 0 {
+		fmt.Fprintln(stdout, "no pending releases")
+		return nil
+	}
+	byModule := make(map[string]ModulePlan, len(plan.Modules))
+	for _, item := range plan.Modules {
+		byModule[item.Module] = item
+	}
+	for _, item := range plan.Modules {
+		changed, err := preflightModule(repo, item, byModule, write)
+		if err != nil {
+			return err
+		}
+		if write && changed {
+			fmt.Fprintf(stdout, "%s: updated go.mod/go.sum\n", item.Module)
+		} else {
+			fmt.Fprintf(stdout, "%s: preflight tidy OK\n", item.Module)
+		}
+	}
+	return nil
+}
+
+func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, write bool) (bool, error) {
+	moduleDir := filepath.Join(repo, item.Dir)
+	modPath := filepath.Join(moduleDir, "go.mod")
+	sumPath := filepath.Join(moduleDir, "go.sum")
+	modData, err := os.ReadFile(modPath)
+	if err != nil {
+		return false, fmt.Errorf("module %s: read go.mod: %w", item.Module, err)
+	}
+	sumData := []byte{}
+	if _, err := os.Stat(sumPath); err == nil {
+		sumData, err = os.ReadFile(sumPath)
+		if err != nil {
+			return false, fmt.Errorf("module %s: read go.sum: %w", item.Module, err)
+		}
+	}
+
+	tempDir, err := os.MkdirTemp("", "releasegate-preflight-*")
+	if err != nil {
+		return false, fmt.Errorf("module %s: create temp dir: %w", item.Module, err)
+	}
+	defer os.RemoveAll(tempDir)
+	tempMod := filepath.Join(tempDir, "modfile.mod")
+	tempSum := filepath.Join(tempDir, "modfile.sum")
+	if err := os.WriteFile(tempMod, modData, 0o644); err != nil {
+		return false, fmt.Errorf("module %s: write temp go.mod: %w", item.Module, err)
+	}
+	if err := os.WriteFile(tempSum, sumData, 0o644); err != nil {
+		return false, fmt.Errorf("module %s: write temp go.sum: %w", item.Module, err)
+	}
+
+	deps := sameBatchDeps(item.Module, plan)
+	paths := make(map[string]bool, len(deps))
+	if len(deps) != 0 {
+		var replace strings.Builder
+		replace.WriteString("\nreplace (\n")
+		for _, dep := range deps {
+			depDir := filepath.Join(repo, dep.Dir)
+			modulePath, err := readModulePath(filepath.Join(depDir, "go.mod"))
+			if err != nil {
+				return false, err
+			}
+			target, err := filepath.Abs(depDir)
+			if err != nil {
+				return false, fmt.Errorf("module %s: resolve %s path: %w", item.Module, dep.Module, err)
+			}
+			paths[modulePath] = true
+			fmt.Fprintf(&replace, "\t%s => %s\n", modulePath, target)
+		}
+		replace.WriteString(")\n")
+		if err := os.WriteFile(tempMod, append(modData, []byte(replace.String())...), 0o644); err != nil {
+			return false, fmt.Errorf("module %s: write temp go.mod with replaces: %w", item.Module, err)
+		}
+	}
+
+	cmd := exec.Command("go", "mod", "tidy")
+	cmd.Dir = moduleDir
+	cmd.Env = withEnv(os.Environ(), map[string]string{
+		"GOWORK":  "off",
+		"GOFLAGS": "-modfile=" + tempMod,
+	})
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("module %s: go mod tidy: %w\n%s", item.Module, err, output)
+	}
+	tidiedMod, err := os.ReadFile(tempMod)
+	if err != nil {
+		return false, fmt.Errorf("module %s: read tidied go.mod: %w", item.Module, err)
+	}
+	tidiedSum, err := os.ReadFile(tempSum)
+	if err != nil {
+		return false, fmt.Errorf("module %s: read tidied go.sum: %w", item.Module, err)
+	}
+	normalizedMod := stripPreflightReplaces(tidiedMod, paths)
+	normalizedSum := filterPreflightSums(tidiedSum, paths)
+
+	var changedFiles []string
+	if !bytes.Equal(modData, normalizedMod) {
+		changedFiles = append(changedFiles, "go.mod")
+	}
+	if !bytes.Equal(sumData, normalizedSum) {
+		changedFiles = append(changedFiles, "go.sum")
+	}
+	if len(changedFiles) == 0 {
+		return false, nil
+	}
+	if !write {
+		var diff strings.Builder
+		if !bytes.Equal(modData, normalizedMod) {
+			fmt.Fprintf(&diff, "go.mod:\n%s", lineDiff(modData, normalizedMod))
+		}
+		if !bytes.Equal(sumData, normalizedSum) {
+			fmt.Fprintf(&diff, "go.sum:\n%s", lineDiff(sumData, normalizedSum))
+		}
+		return false, fmt.Errorf("module %s: %s not tidy for planned releases:\n%s"+
+			"run `releasegate preflight --write` to apply the changes",
+			item.Module, strings.Join(changedFiles, ", "), diff.String())
+	}
+	if err := writeModuleFile(modPath, normalizedMod); err != nil {
+		return false, fmt.Errorf("module %s: write go.mod: %w", item.Module, err)
+	}
+	if err := writeModuleFile(sumPath, normalizedSum); err != nil {
+		return false, fmt.Errorf("module %s: write go.sum: %w", item.Module, err)
+	}
+	return true, nil
+}
+
+func sameBatchDeps(module string, plan map[string]ModulePlan) []ModulePlan {
+	var deps []ModulePlan
+	for _, dependency := range moduleDependencies[module] {
+		if item, ok := plan[dependency]; ok {
+			deps = append(deps, item)
+		}
+	}
+	return deps
+}
+
+func stripPreflightReplaces(content []byte, paths map[string]bool) []byte {
+	if len(paths) == 0 {
+		return content
+	}
+	lines := strings.Split(string(content), "\n")
+	var out []string
+	var block []string
+	inBlock := false
+	flushBlock := func() {
+		kept := make([]string, 0, len(block))
+		for _, line := range block {
+			if !replaceLineTargets(line, paths) {
+				kept = append(kept, line)
+			}
+		}
+		if len(kept) != 0 {
+			out = append(out, kept...)
+		}
+		block = nil
+	}
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock && strings.HasPrefix(trimmed, "replace (") {
+			inBlock = true
+			block = []string{line}
+			continue
+		}
+		if inBlock {
+			block = append(block, line)
+			if trimmed == ")" {
+				flushBlock()
+				inBlock = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "replace ") && !strings.HasPrefix(trimmed, "replace (") &&
+			replaceLineTargets(line, paths) {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+func replaceLineTargets(line string, paths map[string]bool) bool {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	if fields[0] == "replace" {
+		return len(fields) >= 2 && paths[fields[1]]
+	}
+	return paths[fields[0]]
+}
+
+func filterPreflightSums(sum []byte, paths map[string]bool) []byte {
+	if len(paths) == 0 {
+		return sum
+	}
+	lines := strings.Split(string(sum), "\n")
+	var out []string
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 1 && paths[fields[0]] {
+			continue
+		}
+		out = append(out, line)
+	}
+	return []byte(strings.Join(out, "\n"))
+}
+
+func lineDiff(oldData, newData []byte) string {
+	oldLines := splitLines(oldData)
+	newLines := splitLines(newData)
+	rows, cols := len(oldLines)+1, len(newLines)+1
+	dp := make([][]int, rows)
+	for i := range dp {
+		dp[i] = make([]int, cols)
+	}
+	for i := len(oldLines) - 1; i >= 0; i-- {
+		for j := len(newLines) - 1; j >= 0; j-- {
+			if oldLines[i] == newLines[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else if dp[i+1][j] >= dp[i][j+1] {
+				dp[i][j] = dp[i+1][j]
+			} else {
+				dp[i][j] = dp[i][j+1]
+			}
+		}
+	}
+	var diff strings.Builder
+	i, j := 0, 0
+	for i < len(oldLines) && j < len(newLines) {
+		if oldLines[i] == newLines[j] {
+			fmt.Fprintf(&diff, "  %s\n", oldLines[i])
+			i++
+			j++
+		} else if dp[i+1][j] >= dp[i][j+1] {
+			fmt.Fprintf(&diff, "- %s\n", oldLines[i])
+			i++
+		} else {
+			fmt.Fprintf(&diff, "+ %s\n", newLines[j])
+			j++
+		}
+	}
+	for ; i < len(oldLines); i++ {
+		fmt.Fprintf(&diff, "- %s\n", oldLines[i])
+	}
+	for ; j < len(newLines); j++ {
+		fmt.Fprintf(&diff, "+ %s\n", newLines[j])
+	}
+	return diff.String()
+}
+
+func splitLines(data []byte) []string {
+	lines := strings.Split(string(data), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+func withEnv(env []string, overrides map[string]string) []string {
+	var out []string
+	for _, entry := range env {
+		key := entry
+		if index := strings.IndexByte(entry, '='); index >= 0 {
+			key = entry[:index]
+		}
+		if _, ok := overrides[key]; !ok {
+			out = append(out, entry)
+		}
+	}
+	for key, value := range overrides {
+		out = append(out, key+"="+value)
+	}
+	return out
+}
+
+func writeModuleFile(path string, content []byte) error {
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(path); err == nil {
+		mode = info.Mode().Perm()
+	}
+	return os.WriteFile(path, content, mode)
 }
 
 func loadChangesets(repo string) ([]Changeset, error) {

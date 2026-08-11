@@ -33,11 +33,21 @@ The CLI is a standalone Go module. Run these commands from the repository root:
 make release-check
 make release-check BASE=origin/main
 make release-plan
+make release-preflight
+make release-preflight-write
 make release-changelog
 ```
 
 `plan --json` prints the module plan, GitHub Actions matrix, and tags to create.
 With no pending release intent, it succeeds with empty arrays.
+
+`preflight` runs `go mod tidy` (with `GOWORK=off`) for every planned module. When
+the module releases in the same batch as an in-tree dependency, the dependency is
+replaced with its local directory so the tidy result reflects the versions that
+will exist after tagging. This catches new indirect requirements before the
+release gate runs. `preflight --write` applies the normalized tidy result to the
+module's `go.mod`/`go.sum` (without the temporary replace directives), so a
+coordinated release PR can commit the tidy state up front.
 
 After a changeset reaches `main`, the `Release modules` workflow aggregates all
 pending summaries, updates the module-version table and release sections in

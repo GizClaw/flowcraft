@@ -36,6 +36,8 @@ help:
 	@echo "  make release-check  Test release tooling, validate changesets, and"
 	@echo "                      verify the pending module release plan."
 	@echo "  make release-plan   Print the pending module release plan as JSON."
+	@echo "  make release-preflight  Verify planned modules stay tidy when released together."
+	@echo "  make release-preflight-write  Apply preflight tidy results to go.mod/go.sum."
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
 	@echo ""
 	@echo "  make eval              Hermetic memory retrieval eval (memory/eval module)."
@@ -81,6 +83,14 @@ release-check:
 .PHONY: release-plan
 release-plan:
 	@cd tools/releasegate && GOWORK=off go run . plan --repo ../.. --json
+
+.PHONY: release-preflight
+release-preflight:
+	@cd tools/releasegate && GOWORK=off go run . preflight --repo ../..
+
+.PHONY: release-preflight-write
+release-preflight-write:
+	@cd tools/releasegate && GOWORK=off go run . preflight --repo ../.. --write
 
 .PHONY: release-changelog
 release-changelog:
