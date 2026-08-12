@@ -1,11 +1,13 @@
 package resource
 
 import (
+	"bytes"
 	"context"
 	"sort"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils"
 )
 
 // DepSpec declares one named dependency accepted by a build factory.
@@ -109,6 +111,10 @@ type Wireable interface {
 type Input struct {
 	Settings []byte
 	Deps     map[string]any
+	// Loader materializes Source references in settings subtrees. It
+	// is the deployment-level loader injected by the assembly layer;
+	// nil means source resolution is unavailable.
+	Loader *Loader
 }
 
 // Dep returns the named dependency.
@@ -135,4 +141,33 @@ func (in Input) DepsMany(name string) []any {
 		values = append(values, in.Deps[key])
 	}
 	return values
+}
+
+// Resolve materializes a [Source] through the input's loader.
+func (in Input) Resolve(ctx context.Context, src Source) ([]byte, error) {
+	if in.Loader == nil {
+		return nil, errdefs.Validationf(
+			"resource: source resolution is not configured")
+	}
+	return in.Loader.Load(ctx, src)
+}
+
+// ResolveSettings interprets Settings as a whole-subtree [Source] and
+// materializes it. Inline settings are returned unchanged; {"file":…}
+// and {"embed":…} settings are resolved through the loader.
+func (in Input) ResolveSettings(ctx context.Context) ([]byte, error) {
+	src, err := ParseSource(in.Settings)
+	if err != nil {
+		return nil, err
+	}
+	if !src.IsRef() {
+		return bytes.Clone(in.Settings), nil
+	}
+	data, err := in.Resolve(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	// Sub-documents may be YAML; convert to JSON for strict settings
+	// decoding.
+	return utils.ToJSON(data)
 }

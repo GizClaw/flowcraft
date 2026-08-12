@@ -16,5 +16,7 @@
 //   - spec.go     — Factory / Spec / DepSpec / Input
 //   - settings.go — strict settings decoding
 //   - expand.go   — scalar settings reference expansion (env, base, home)
+//   - source.go   — Source: inline / {file:} / {embed:} settings subtrees
+//   - loader.go   — Loader: base dir, embed FS, confinement, size caps
 //   - registry.go — kind/impl registry
 package resource

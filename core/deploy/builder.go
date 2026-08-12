@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils"
 )
 
 // Builder constructs a deployment's resources from a [Document] using
@@ -16,15 +17,32 @@ import (
 // Builder never touches global state.
 type Builder struct {
 	registry *resource.Registry
+	loader   *resource.Loader
+}
+
+// BuilderOption configures a Builder.
+type BuilderOption func(*Builder)
+
+// WithLoader supplies the deployment-level loader used to materialize
+// settings subtrees that are {"file":…} / {"embed":…} references, and
+// passed to factories for their own source resolution.
+func WithLoader(loader *resource.Loader) BuilderOption {
+	return func(b *Builder) { b.loader = loader }
 }
 
 // NewBuilder returns a Builder over registry. A nil registry yields an
 // empty one.
-func NewBuilder(registry *resource.Registry) *Builder {
+func NewBuilder(registry *resource.Registry, opts ...BuilderOption) *Builder {
 	if registry == nil {
 		registry = resource.NewRegistry()
 	}
-	return &Builder{registry: registry}
+	builder := &Builder{registry: registry}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(builder)
+		}
+	}
+	return builder
 }
 
 // Build validates the document, resolves the resource DAG, and
@@ -60,14 +78,24 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 			closeAll(values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
+		settings := res.Settings
+		if b.loader != nil {
+			settings, err = resolveSettings(ctx, b.loader, settings)
+			if err != nil {
+				closeAll(values, order)
+				return nil, errdefs.Validationf(
+					"deploy: resource %q: %v", name, err)
+			}
+		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
 			closeAll(values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		value, err := factory.New(ctx, resource.Input{
-			Settings: res.Settings,
+			Settings: settings,
 			Deps:     deps,
+			Loader:   b.loader,
 		})
 		if err != nil {
 			closeAll(values, order)
@@ -81,6 +109,32 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		order:  order,
 		agents: make(map[string]*BoundAgent, len(doc.Agents)),
 	}, nil
+}
+
+// resolveSettings materializes a settings subtree when the whole
+// subtree is a file/embed reference; inline settings pass through.
+func resolveSettings(
+	ctx context.Context,
+	loader *resource.Loader,
+	raw []byte,
+) ([]byte, error) {
+	if len(raw) == 0 {
+		return raw, nil
+	}
+	src, err := resource.ParseSource(raw)
+	if err != nil {
+		return nil, err
+	}
+	if !src.IsRef() {
+		return raw, nil
+	}
+	data, err := loader.Load(ctx, src)
+	if err != nil {
+		return nil, err
+	}
+	// Settings sub-documents may be YAML; convert to JSON so factory
+	// DecodeSettings (strict JSON) accepts them.
+	return utils.ToJSON(data)
 }
 
 // Wire runs the post-build wiring phase: resource values implementing
