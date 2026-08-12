@@ -167,24 +167,24 @@ func (p DataPart) Validate() error {
 func (DataPart) messagePart() {}
 
 type ToolCallPart struct {
-	ToolCall ToolCall `json:"call"`
+	Call ToolCall `json:"call"`
 }
 
 func (ToolCallPart) Kind() PartKind { return PartToolCall }
 func (p ToolCallPart) Clone() Part {
-	p.ToolCall = p.ToolCall.Clone()
+	p.Call = p.Call.Clone()
 	return p
 }
-func (p ToolCallPart) Validate() error { return p.ToolCall.Validate() }
+func (p ToolCallPart) Validate() error { return p.Call.Validate() }
 func (ToolCallPart) messagePart()      {}
 
 type ToolResultPart struct {
-	ToolResult ToolResult `json:"result"`
+	Result ToolResult `json:"result"`
 }
 
 func (ToolResultPart) Kind() PartKind    { return PartToolResult }
 func (p ToolResultPart) Clone() Part     { return p }
-func (p ToolResultPart) Validate() error { return p.ToolResult.Validate() }
+func (p ToolResultPart) Validate() error { return p.Result.Validate() }
 func (ToolResultPart) messagePart()      {}
 
 // ReasoningPart is one provider reasoning trace: the thinking a model

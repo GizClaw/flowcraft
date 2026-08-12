@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -54,6 +55,10 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 			return nil, errdefs.Validationf(
 				"deploy: resource %q: no factory for %s/%s",
 				name, res.Kind, res.Impl)
+		}
+		if err := validateDeps(factory, res.Deps); err != nil {
+			closeAll(values, order)
+			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
@@ -127,6 +132,9 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 				"deploy: agent %q: no factory for engine %s/%s",
 				name, def.Engine.Kind, def.Engine.Impl)
 		}
+		if err := validateDeps(engineFactory, def.Engine.Deps); err != nil {
+			return errdefs.Validationf("deploy: agent %q engine: %v", name, err)
+		}
 		engineDeps, err := resolveDeps(result.values, def.Engine.Deps)
 		if err != nil {
 			return errdefs.Validationf("deploy: agent %q: %v", name, err)
@@ -148,6 +156,10 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 					return errdefs.Validationf(
 						"deploy: agent %q: no factory for hook %s/%s",
 						name, kind, entry.Type)
+				}
+				if err := validateDeps(factory, entry.Deps); err != nil {
+					return errdefs.Validationf(
+						"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
 				}
 				deps, err := resolveDeps(result.values, entry.Deps)
 				if err != nil {
@@ -177,6 +189,57 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 			Definition: def,
 			Engine:     engine,
 			Hooks:      hooks,
+		}
+	}
+	return nil
+}
+
+// validateDeps checks document deps against the factory's declared
+// DepSpecs: every document key must match a fixed dep name or a Many
+// dep prefix, and every Required dep must be supplied.
+func validateDeps(factory resource.Factory, deps resource.Deps) error {
+	spec := factory.Spec()
+	declared := make(map[string]resource.DepSpec, len(spec.Deps))
+	for _, dep := range spec.Deps {
+		declared[dep.Name] = dep
+	}
+	for key := range deps {
+		if _, ok := declared[key]; ok {
+			continue
+		}
+		matched := false
+		for _, dep := range spec.Deps {
+			if dep.Many && strings.HasPrefix(key, dep.Name+".") {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return errdefs.Validationf(
+				"undeclared dep %q for %s/%s", key, spec.Kind, spec.Impl)
+		}
+	}
+	for _, dep := range spec.Deps {
+		if !dep.Required {
+			continue
+		}
+		if dep.Many {
+			found := false
+			for key := range deps {
+				if key == dep.Name || strings.HasPrefix(key, dep.Name+".") {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return errdefs.Validationf(
+					"required many dep %q missing for %s/%s",
+					dep.Name, spec.Kind, spec.Impl)
+			}
+		} else if _, ok := deps[dep.Name]; !ok {
+			return errdefs.Validationf(
+				"required dep %q missing for %s/%s",
+				dep.Name, spec.Kind, spec.Impl)
 		}
 	}
 	return nil

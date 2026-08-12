@@ -79,7 +79,7 @@ func (m Message) ToolCalls() []ToolCall {
 			continue
 		}
 		if call, ok := normalized.(ToolCallPart); ok {
-			calls = append(calls, call.ToolCall.Clone())
+			calls = append(calls, call.Call.Clone())
 		}
 	}
 	return calls
@@ -93,7 +93,7 @@ func (m Message) ToolResults() []ToolResult {
 			continue
 		}
 		if result, ok := normalized.(ToolResultPart); ok {
-			results = append(results, result.ToolResult)
+			results = append(results, result.Result)
 		}
 	}
 	return results
@@ -233,12 +233,12 @@ func (c Content) MarshalJSON() ([]byte, error) {
 			wire[i] = struct {
 				Type     PartKind `json:"type"`
 				ToolCall ToolCall `json:"call"`
-			}{PartToolCall, value.ToolCall}
+			}{PartToolCall, value.Call}
 		case ToolResultPart:
 			wire[i] = struct {
 				Type       PartKind   `json:"type"`
 				ToolResult ToolResult `json:"result"`
-			}{PartToolResult, value.ToolResult}
+			}{PartToolResult, value.Result}
 		case ReasoningPart:
 			wire[i] = struct {
 				Type      PartKind `json:"type"`
@@ -340,22 +340,22 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 			decoded.Parts[i] = DataPart{MediaType: item.MediaType, Value: item.Value}
 		case PartToolCall:
 			var item struct {
-				Type     PartKind `json:"type"`
-				ToolCall ToolCall `json:"call"`
+				Type PartKind `json:"type"`
+				Call ToolCall `json:"call"`
 			}
 			if err := decodeStrict(raw, &item); err != nil {
 				return fmt.Errorf("content part %d: %w", i, err)
 			}
-			decoded.Parts[i] = ToolCallPart{ToolCall: item.ToolCall}
+			decoded.Parts[i] = ToolCallPart{Call: item.Call}
 		case PartToolResult:
 			var item struct {
-				Type       PartKind   `json:"type"`
-				ToolResult ToolResult `json:"result"`
+				Type   PartKind   `json:"type"`
+				Result ToolResult `json:"result"`
 			}
 			if err := decodeStrict(raw, &item); err != nil {
 				return fmt.Errorf("content part %d: %w", i, err)
 			}
-			decoded.Parts[i] = ToolResultPart{ToolResult: item.ToolResult}
+			decoded.Parts[i] = ToolResultPart{Result: item.Result}
 		case PartReasoning:
 			var item struct {
 				Type      PartKind `json:"type"`

@@ -27,15 +27,18 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewToolCall: %v", err)
 	}
-	content := message.Content{Parts: []message.Part{message.TextPart{Text: "hello"},
-		message.ImagePart{Source: image},
-		message.AudioPart{Source: audio},
-		message.VideoPart{Source: video},
-		message.FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
-		message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
-		message.ToolCallPart{ToolCall: call},
-		message.ToolResultPart{ToolResult: message.ToolResult{CallID: "call-1", Content: "found"}},
-		message.ReasoningPart{Text: "let me think", Signature: "sig-1"}},
+	content := message.Content{
+		Parts: []message.Part{
+			message.TextPart{Text: "hello"},
+			message.ImagePart{Source: image},
+			message.AudioPart{Source: audio},
+			message.VideoPart{Source: video},
+			message.FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
+			message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
+			message.ToolCallPart{Call: call},
+			message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "found"}},
+			message.ReasoningPart{Text: "let me think", Signature: "sig-1"},
+		},
 	}
 
 	data, err := json.Marshal(content)
@@ -62,11 +65,11 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 
 	clone := decoded.Clone()
 	clone.Parts[5].(message.DataPart).Value[0] = '['
-	clone.Parts[6].(message.ToolCallPart).ToolCall.Arguments[0] = '['
+	clone.Parts[6].(message.ToolCallPart).Call.Arguments[0] = '['
 	if string(decoded.Parts[5].(message.DataPart).Value) != `{"answer":42}` {
 		t.Fatal("data part clone mutated source")
 	}
-	if string(decoded.Parts[6].(message.ToolCallPart).ToolCall.Arguments) != `{"query":"cat"}` {
+	if string(decoded.Parts[6].(message.ToolCallPart).Call.Arguments) != `{"query":"cat"}` {
 		t.Fatal("tool call part clone mutated source")
 	}
 }
@@ -117,7 +120,7 @@ func TestMessageValidationRoles(t *testing.T) {
 	assistant := message.Message{
 		Role: message.RoleAssistant,
 		Content: message.Content{Parts: []message.Part{
-			message.ToolCallPart{ToolCall: call},
+			message.ToolCallPart{Call: call},
 		}},
 	}
 	if err := assistant.Validate(); err != nil {
@@ -130,7 +133,7 @@ func TestMessageValidationRoles(t *testing.T) {
 	toolResult := message.Message{
 		Role: message.RoleTool,
 		Content: message.Content{Parts: []message.Part{
-			message.ToolResultPart{ToolResult: message.ToolResult{CallID: "c1", Content: "ok"}},
+			message.ToolResultPart{Result: message.ToolResult{CallID: "c1", Content: "ok"}},
 		}},
 	}
 	if err := toolResult.Validate(); err != nil {
@@ -153,7 +156,7 @@ func TestPointerToolCallPartRoundTrip(t *testing.T) {
 	msg := message.Message{
 		Role: message.RoleAssistant,
 		Content: message.Content{Parts: []message.Part{
-			&message.ToolCallPart{ToolCall: call},
+			&message.ToolCallPart{Call: call},
 		}},
 	}
 	if err := msg.Validate(); err != nil {
@@ -298,7 +301,7 @@ func TestContentTextSkipsNonTextParts(t *testing.T) {
 	c := message.Content{Parts: []message.Part{
 		message.TextPart{Text: "hello "},
 		message.TextPart{Text: "world"},
-		message.ToolCallPart{ToolCall: call},
+		message.ToolCallPart{Call: call},
 	}}
 	if got := c.Text(); got != "hello world" {
 		t.Fatalf("Text() = %q", got)
@@ -344,13 +347,22 @@ func TestNormalizePart(t *testing.T) {
 		{"image", message.ImagePart{Source: image}, &message.ImagePart{Source: image}},
 		{"audio", message.AudioPart{Source: audio}, &message.AudioPart{Source: audio}},
 		{"video", message.VideoPart{Source: video}, &message.VideoPart{Source: video}},
-		{"file", message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
-			&message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"}},
-		{"data", message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)},
-			&message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)}},
-		{"tool_call", message.ToolCallPart{ToolCall: call}, &message.ToolCallPart{ToolCall: call}},
-		{"tool_result", message.ToolResultPart{ToolResult: message.ToolResult{CallID: "call-1", Content: "ok"}},
-			&message.ToolResultPart{ToolResult: message.ToolResult{CallID: "call-1", Content: "ok"}}},
+		{
+			"file",
+			message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
+			&message.FilePart{URI: "file:///tmp/a.txt", MediaType: "text/plain"},
+		},
+		{
+			"data",
+			message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)},
+			&message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"a":1}`)},
+		},
+		{"tool_call", message.ToolCallPart{Call: call}, &message.ToolCallPart{Call: call}},
+		{
+			"tool_result",
+			message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "ok"}},
+			&message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "ok"}},
+		},
 		{"reasoning", message.ReasoningPart{Text: "thinking"}, &message.ReasoningPart{Text: "thinking"}},
 	}
 

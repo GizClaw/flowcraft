@@ -2,6 +2,8 @@ package resource
 
 import (
 	"context"
+	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -13,6 +15,11 @@ type DepSpec struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
 	Required bool   `json:"required,omitempty"`
+	// Many declares a list dependency: the document supplies zero or
+	// more deps whose keys equal Name or start with Name+"." (e.g.
+	// "provider", "provider.openai", "provider.qwen"). Input.DepsMany
+	// collects them in deterministic key order.
+	Many bool `json:"many,omitempty"`
 }
 
 // Spec is the static declaration of one build factory: the unique
@@ -48,6 +55,11 @@ func (s Spec) Validate() error {
 		if dep.Type == "" {
 			return errdefs.Validationf(
 				"resource factory spec %s/%s: dep %q type is empty",
+				s.Kind, s.Impl, dep.Name)
+		}
+		if strings.HasSuffix(dep.Name, ".") {
+			return errdefs.Validationf(
+				"resource factory spec %s/%s: dep %q name must not end with '.'",
 				s.Kind, s.Impl, dep.Name)
 		}
 		if _, dup := seen[dep.Name]; dup {
@@ -103,4 +115,24 @@ type Input struct {
 func (in Input) Dep(name string) (any, bool) {
 	v, ok := in.Deps[name]
 	return v, ok
+}
+
+// DepsMany returns every dependency whose key equals name or starts
+// with name+"." (the list form of a [DepSpec] with Many), in sorted
+// key order so the result is deterministic regardless of map
+// iteration order.
+func (in Input) DepsMany(name string) []any {
+	prefix := name + "."
+	var keys []string
+	for key := range in.Deps {
+		if key == name || strings.HasPrefix(key, prefix) {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	values := make([]any, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, in.Deps[key])
+	}
+	return values
 }
