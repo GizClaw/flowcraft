@@ -3,6 +3,9 @@ module github.com/GizClaw/flowcraft/core
 go 1.26.0
 
 require (
+	github.com/creack/pty v1.1.24
+	github.com/rs/xid v1.6.0
+	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0
