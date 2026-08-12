@@ -6,4 +6,5 @@ use (
 	./memory/eval
 	./sdk
 	./sdkx
+	./core
 )

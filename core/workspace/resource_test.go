@@ -1,0 +1,85 @@
+package workspace_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/workspace"
+)
+
+func TestRegister(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	factory, ok := reg.Lookup("workspace.Workspace", "local")
+	if !ok {
+		t.Fatal("workspace.Workspace/local factory not registered")
+	}
+	value, err := factory.New(context.Background(), resource.Input{
+		Settings: []byte(`{"root": "` + t.TempDir() + `"}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := value.(*workspace.LocalWorkspace); !ok {
+		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
+	}
+}
+
+func TestFactoryRequiresRoot(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	if _, err := factory.New(context.Background(), resource.Input{}); err == nil {
+		t.Fatal("New unexpectedly accepted missing root")
+	}
+}
+
+func TestFactoryScopedDisabled(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	value, err := factory.New(context.Background(), resource.Input{
+		Settings: []byte(`{"root": "` + t.TempDir() + `",
+			"scoped": {"enabled": false, "deny_read": ["secret/**"]}}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := value.(*workspace.LocalWorkspace); !ok {
+		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
+	}
+}
+
+func TestFactoryScopedEnabled(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	value, err := factory.New(context.Background(), resource.Input{
+		Settings: []byte(`{"root": "` + t.TempDir() + `",
+			"scoped": {"enabled": true, "allow_write": ["public/**"]}}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	scoped, ok := value.(*workspace.ScopedWorkspace)
+	if !ok {
+		t.Fatalf("New returned %T, want *workspace.ScopedWorkspace", value)
+	}
+	ctx := context.Background()
+	if err := scoped.Write(ctx, "secret/key.txt", []byte("x")); !errors.Is(err, workspace.ErrAccessDenied) {
+		t.Fatalf("write to denied path error = %v, want ErrAccessDenied", err)
+	}
+	if err := scoped.Write(ctx, "public/ok.txt", []byte("x")); err != nil {
+		t.Fatalf("write to allowed path: %v", err)
+	}
+}

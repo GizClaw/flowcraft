@@ -21,6 +21,8 @@
 !go.mod
 !go.sum
 !go.work
+!core/
+!core/**
 !cmd/
 !cmd/**
 !eval/

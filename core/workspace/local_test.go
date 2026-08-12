@@ -1,0 +1,492 @@
+package workspace
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+)
+
+func TestLocalWorkspace_Sub(t *testing.T) {
+	base, _ := newLocalWS(t)
+	child, err := base.Sub(filepath.Join("runtime-a", "memory"))
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	want := filepath.Join(base.Root(), "runtime-a", "memory")
+	if child.Root() != want {
+		t.Fatalf("Root() = %q, want %q", child.Root(), want)
+	}
+	nested, err := child.Sub("retrieval")
+	if err != nil {
+		t.Fatalf("nested Sub: %v", err)
+	}
+	if want := filepath.Join(child.Root(), "retrieval"); nested.Root() != want {
+		t.Fatalf("nested Root() = %q, want %q", nested.Root(), want)
+	}
+	same, err := base.Sub(".")
+	if err != nil {
+		t.Fatalf("empty Sub: %v", err)
+	}
+	if same != base {
+		t.Fatal("empty Sub should return the receiver")
+	}
+}
+
+func TestLocalWorkspace_SubRejectsTraversalAndSymlinkEscape(t *testing.T) {
+	base, _ := newLocalWS(t)
+	if _, err := base.Sub("../escape"); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("traversal Sub error = %v, want ErrPathTraversal", err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(base.Root(), "escape")); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+	if _, err := base.Sub(filepath.Join("escape", "created")); !errors.Is(err, ErrPathTraversal) {
+		t.Fatalf("symlink Sub error = %v, want ErrPathTraversal", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "created")); !os.IsNotExist(err) {
+		t.Fatalf("symlink Sub created an outside directory: %v", err)
+	}
+}
+
+func TestLocalWorkspace_ReadWrite(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "test.txt", []byte("hello")); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ws.Read(ctx, "test.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("got %q, want 'hello'", data)
+	}
+
+	exists, err := ws.Exists(ctx, "test.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !exists {
+		t.Fatal("expected file to exist")
+	}
+
+	if err := ws.Delete(ctx, "test.txt"); err != nil {
+		t.Fatal(err)
+	}
+	exists, _ = ws.Exists(ctx, "test.txt")
+	if exists {
+		t.Fatal("expected file to be deleted")
+	}
+}
+
+func TestLocalWorkspace_Root(t *testing.T) {
+	ws, _ := newLocalWS(t)
+	root := ws.Root()
+	if root == "" {
+		t.Fatal("Root() returned empty string")
+	}
+	if !filepath.IsAbs(root) {
+		t.Fatalf("Root() should be absolute, got %q", root)
+	}
+}
+
+func TestLocalWorkspace_NestedDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	nested := filepath.Join("sub", "dir", "file.txt")
+	if err := ws.Write(ctx, nested, []byte("nested")); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ws.Read(ctx, nested)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "nested" {
+		t.Fatalf("got %q, want 'nested'", data)
+	}
+}
+
+func TestLocalWorkspace_Append(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Append(ctx, "log.txt", []byte("line1\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Append(ctx, "log.txt", []byte("line2\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ws.Read(ctx, "log.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "line1\nline2\n" {
+		t.Fatalf("got %q", data)
+	}
+}
+
+func TestLocalWorkspace_List(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "b.txt", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "sub/c.txt", []byte("c")); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(entries))
+	}
+
+	subEntries, err := ws.List(ctx, "sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(subEntries) != 1 {
+		t.Fatalf("expected 1 entry in sub/, got %d", len(subEntries))
+	}
+}
+
+func TestLocalWorkspace_ListMissingIsEmpty(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	entries, err := ws.List(ctx, "nonexistent")
+	if err != nil {
+		t.Fatalf("listing a missing directory should not error: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected 0 entries, got %d", len(entries))
+	}
+}
+
+func TestLocalWorkspace_ListSorted(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "z.txt", []byte("z")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "m.txt", []byte("m")); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"a.txt", "m.txt", "z.txt"}
+	got := make([]string, 0, len(entries))
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("List order = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestLocalWorkspace_Stat(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "data.txt", []byte("12345")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := ws.Stat(ctx, "data.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name() != "data.txt" {
+		t.Fatalf("Name = %q", info.Name())
+	}
+	if info.Size() != 5 {
+		t.Fatalf("Size = %d, want 5", info.Size())
+	}
+	if info.IsDir() {
+		t.Fatal("expected file, not dir")
+	}
+}
+
+func TestLocalWorkspace_StatNotFound(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	_, err := ws.Stat(ctx, "nope.txt")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestLocalWorkspace_RemoveAll(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "dir/a.txt", []byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "dir/sub/b.txt", []byte("b")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ws.RemoveAll(ctx, "dir"); err != nil {
+		t.Fatal(err)
+	}
+
+	exists, _ := ws.Exists(ctx, "dir")
+	if exists {
+		t.Fatal("dir should be gone")
+	}
+}
+
+func TestLocalWorkspace_RemoveAll_Root(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	err := ws.RemoveAll(ctx, ".")
+	if err == nil {
+		t.Fatal("should refuse to remove root")
+	}
+	_ = ctx
+}
+
+func TestLocalWorkspace_ReadNotFound(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	_, err := ws.Read(ctx, "nonexistent.txt")
+	if err == nil {
+		t.Fatal("expected not-found error")
+	}
+}
+
+func TestLocalWorkspace_DeleteIdempotent(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Delete(ctx, "nonexistent.txt"); err != nil {
+		t.Fatalf("deleting a missing path should be idempotent: %v", err)
+	}
+}
+
+func TestLocalWorkspace_DeleteEmptyDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "emptydir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Delete(ctx, "emptydir"); err == nil {
+		t.Fatal("expected error deleting a directory")
+	}
+	exists, err := ws.Exists(ctx, "emptydir")
+	if err != nil || !exists {
+		t.Fatalf("directory should remain after rejected delete: exists=%v err=%v", exists, err)
+	}
+}
+
+func TestLocalWorkspace_WriteOverDir(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "dir/file.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Write(ctx, "dir", []byte("bad")); err == nil {
+		t.Fatal("expected error writing over a directory")
+	}
+	data, err := ws.Read(ctx, "dir/file.txt")
+	if err != nil || string(data) != "x" {
+		t.Fatalf("child file should be untouched: data=%q err=%v", data, err)
+	}
+}
+
+func TestLocalWorkspace_PathTraversal(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	_, err := ws.Read(ctx, "../etc/passwd")
+	if err == nil {
+		t.Fatal("expected path traversal error")
+	}
+
+	err = ws.Write(ctx, "/etc/passwd", []byte("x"))
+	if err == nil {
+		t.Fatal("expected absolute path rejection")
+	}
+}
+
+func TestLocalWorkspace_ExistsNotFound(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	exists, err := ws.Exists(ctx, "nope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exists {
+		t.Fatal("should not exist")
+	}
+}
+
+func TestLocalWorkspace_SymlinkEscape(t *testing.T) {
+	skipWindows(t)
+	ws, ctx := newLocalWS(t)
+
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("leaked"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(ws.Root(), "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ws.Read(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("expected symlink escape to be blocked on read")
+	}
+	if err := ws.Write(ctx, "escape/new.txt", []byte("pwned")); err == nil {
+		t.Fatal("expected symlink escape to be blocked on write")
+	}
+	if exists, err := ws.Exists(ctx, "escape/secret.txt"); err == nil && exists {
+		t.Fatal("expected symlink escape to be blocked on exists")
+	}
+	if _, err := ws.Stat(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("expected symlink escape to be blocked on stat")
+	}
+	if _, err := ws.List(ctx, "escape"); err == nil {
+		t.Fatal("expected symlink escape to be blocked on list")
+	}
+	if err := ws.Append(ctx, "escape/log.txt", []byte("x")); err == nil {
+		t.Fatal("expected symlink escape to be blocked on append")
+	}
+	if err := ws.Delete(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("expected symlink escape to be blocked on delete")
+	}
+	if err := ws.RemoveAll(ctx, "escape"); err == nil {
+		t.Fatal("expected symlink escape to be blocked on removeall")
+	}
+}
+
+func TestLocalWorkspace_SymlinkFileEscape(t *testing.T) {
+	skipWindows(t)
+	ws, ctx := newLocalWS(t)
+
+	outside := t.TempDir()
+	secretFile := filepath.Join(outside, "passwd")
+	if err := os.WriteFile(secretFile, []byte("root:x:0:0"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(secretFile, filepath.Join(ws.Root(), "passwd")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ws.Read(ctx, "passwd"); err == nil {
+		t.Fatal("expected symlink file escape to be blocked")
+	}
+}
+
+func TestLocalWorkspace_InternalSymlinkAllowed(t *testing.T) {
+	skipWindows(t)
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "real/data.txt", []byte("internal")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(ws.Root(), "real"), filepath.Join(ws.Root(), "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := ws.Read(ctx, "link/data.txt")
+	if err != nil {
+		t.Fatalf("internal symlink should be allowed: %v", err)
+	}
+	if string(data) != "internal" {
+		t.Fatalf("got %q, want 'internal'", data)
+	}
+}
+
+func TestLocalWorkspace_ResolveEmptyAndDot(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "f.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ws.List(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("listing empty path should return root contents")
+	}
+
+	entries2, err := ws.List(ctx, ".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries2) != len(entries) {
+		t.Fatal("empty and '.' should be equivalent")
+	}
+}
+
+// --- helpers ---
+
+func TestLocalWorkspace_Rename(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+	if err := ws.Write(ctx, "a/old.txt", []byte("payload")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Rename(ctx, "a/old.txt", "b/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if exists, _ := ws.Exists(ctx, "a/old.txt"); exists {
+		t.Fatal("src must not exist after rename")
+	}
+	data, err := ws.Read(ctx, "b/new.txt")
+	if err != nil || string(data) != "payload" {
+		t.Fatalf("read dst: data=%q err=%v", data, err)
+	}
+	// rename overwrites existing dst.
+	if err := ws.Write(ctx, "src.txt", []byte("v2")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ws.Rename(ctx, "src.txt", "b/new.txt"); err != nil {
+		t.Fatal(err)
+	}
+	data2, _ := ws.Read(ctx, "b/new.txt")
+	if string(data2) != "v2" {
+		t.Fatalf("rename should overwrite; got %q", data2)
+	}
+}
+
+func TestLocalWorkspace_Rename_SrcNotFound(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+	if err := ws.Rename(ctx, "missing.txt", "dst.txt"); err == nil {
+		t.Fatal("expected error when src missing")
+	}
+}
+
+func newLocalWS(t *testing.T) (*LocalWorkspace, context.Context) {
+	t.Helper()
+	ws, err := NewLocalWorkspace(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ws, context.Background()
+}
+
+func skipWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("skipping on windows")
+	}
+}
