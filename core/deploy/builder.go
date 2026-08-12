@@ -107,7 +107,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	return &Result{
 		values: values,
 		order:  order,
-		agents: make(map[string]*BoundAgent, len(doc.Agents)),
+		agents: make(map[string]*agent.Agent, len(doc.Agents)),
 	}, nil
 }
 
@@ -175,9 +175,10 @@ func (b *Builder) Deploy(ctx context.Context, doc Document) (*Result, error) {
 	return result, nil
 }
 
-// bindAgents constructs every agent: the engine from the registry
-// (kind = agent.Engine.Kind), then each hook under "hook.<slot>".
-// Hooks are wired (attached) before being recorded on the agent.
+// bindAgents constructs every [agent.Agent] from its Definition: the
+// engine from the registry (kind = EngineRef.Kind / Impl), then each
+// hook under "hook.<slot>". Hooks are wired (attached) before being
+// recorded on the agent.
 func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) error {
 	for name, def := range doc.Agents {
 		engineFactory, ok := b.registry.Lookup(def.Engine.Kind, def.Engine.Impl)
@@ -200,52 +201,100 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 		if err != nil {
 			return errdefs.Validationf("deploy: agent %q engine: %v", name, err)
 		}
-
-		hooks := make(map[string][]any, len(def.Hooks))
-		for slot, entries := range def.Hooks {
-			for i, entry := range entries {
-				kind := resource.Kind("hook." + slot)
-				factory, ok := b.registry.Lookup(kind, entry.Type)
-				if !ok {
-					return errdefs.Validationf(
-						"deploy: agent %q: no factory for hook %s/%s",
-						name, kind, entry.Type)
-				}
-				if err := validateDeps(factory, entry.Deps); err != nil {
-					return errdefs.Validationf(
-						"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
-				}
-				deps, err := resolveDeps(result.values, entry.Deps)
-				if err != nil {
-					return errdefs.Validationf(
-						"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
-				}
-				value, err := factory.New(ctx, resource.Input{
-					Settings: entry.Settings,
-					Deps:     deps,
-				})
-				if err != nil {
-					return errdefs.Validationf(
-						"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
-				}
-				if w, ok := value.(resource.Wireable); ok {
-					if err := w.Wire(ctx); err != nil {
-						return errdefs.Validationf(
-							"deploy: agent %q: wire hook %s[%d]: %v", name, slot, i, err)
-					}
-				}
-				hooks[slot] = append(hooks[slot], value)
-			}
+		engineContract, ok := engine.(agent.Engine)
+		if !ok {
+			return errdefs.Validationf(
+				"deploy: agent %q: engine factory returned %T, want agent.Engine",
+				name, engine)
 		}
 
-		result.agents[name] = &BoundAgent{
-			Name:       name,
-			Definition: def,
-			Engine:     engine,
-			Hooks:      hooks,
+		prepare, err := buildHookList[agent.Preparer](
+			b, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		if err != nil {
+			return err
+		}
+		observe, err := buildHookList[agent.Observer](
+			b, result, ctx, name, agent.HookSlotObserver, def.Observe)
+		if err != nil {
+			return err
+		}
+		referees, err := buildHookList[agent.Referee](
+			b, result, ctx, name, agent.HookSlotReferee, def.Referees)
+		if err != nil {
+			return err
+		}
+		commit, err := buildHookList[agent.Committer](
+			b, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+		if err != nil {
+			return err
+		}
+
+		result.agents[name] = &agent.Agent{
+			ID:       name,
+			Card:     def.Card,
+			Tools:    def.Tools,
+			Engine:   engineContract,
+			Prepare:  prepare,
+			Observe:  observe,
+			Referees: referees,
+			Commit:   commit,
 		}
 	}
 	return nil
+}
+
+// buildHookList constructs every hook in one slot, type-asserting the
+// factory values to T (agent.Preparer / Observer / Referee /
+// Committer) and wiring [resource.Wireable] values before recording
+// them on the agent.
+func buildHookList[T any](
+	b *Builder,
+	result *Result,
+	ctx context.Context,
+	name, slot string,
+	entries []agent.Hook,
+) ([]T, error) {
+	var values []T
+	for i, entry := range entries {
+		kind := resource.Kind("hook." + slot)
+		factory, ok := b.registry.Lookup(kind, entry.Type)
+		if !ok {
+			return nil, errdefs.Validationf(
+				"deploy: agent %q: no factory for hook %s/%s",
+				name, kind, entry.Type)
+		}
+		if err := validateDeps(factory, entry.Deps); err != nil {
+			return nil, errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+		}
+		deps, err := resolveDeps(result.values, entry.Deps)
+		if err != nil {
+			return nil, errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+		}
+		value, err := factory.New(ctx, resource.Input{
+			Settings: entry.Settings,
+			Deps:     deps,
+		})
+		if err != nil {
+			return nil, errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+		}
+		typed, ok := value.(T)
+		if !ok {
+			return nil, errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d] factory returned %T, want %T",
+				name, slot, i, value, *new(T))
+		}
+		if w, ok := value.(resource.Wireable); ok {
+			if err := w.Wire(ctx); err != nil {
+				return nil, errdefs.Validationf(
+					"deploy: agent %q: wire hook %s[%d]: %v", name, slot, i, err)
+			}
+		}
+		values = append(values, typed)
+	}
+	return values, nil
 }
 
 // validateDeps checks document deps against the factory's declared
@@ -332,7 +381,7 @@ func resolveDeps(values map[string]any, deps resource.Deps) (map[string]any, err
 type Result struct {
 	values map[string]any
 	order  []string
-	agents map[string]*BoundAgent
+	agents map[string]*agent.Agent
 }
 
 // Value returns the built resource registered under name.
@@ -351,17 +400,8 @@ func (r *Result) Names() []string {
 	return names
 }
 
-// BoundAgent is a wired agent: the constructed engine and the attached
-// lifecycle hooks, keyed by slot.
-type BoundAgent struct {
-	Name       string
-	Definition agent.Definition
-	Engine     any
-	Hooks      map[string][]any
-}
-
-// Agent returns the bound agent registered under name.
-func (r *Result) Agent(name string) (*BoundAgent, bool) {
+// Agent returns the assembled agent registered under name.
+func (r *Result) Agent(name string) (*agent.Agent, bool) {
 	a, ok := r.agents[name]
 	return a, ok
 }

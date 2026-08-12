@@ -279,7 +279,22 @@ func (engineFactory) Spec() resource.Spec {
 }
 
 func (engineFactory) New(context.Context, resource.Input) (any, error) {
-	return "engine", nil
+	return agent.EngineFunc(func(
+		ctx context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		return board, nil
+	}), nil
+}
+
+// hookRecorder satisfies agent.Observer (via BaseObserver) and
+// resource.Wireable (via wireRecorder) so bindAgents can attach it to
+// the observe slot and record wire order.
+type hookRecorder struct {
+	agent.BaseObserver
+	wireRecorder
 }
 
 type hookFactory struct {
@@ -295,7 +310,9 @@ func (f hookFactory) New(context.Context, resource.Input) (any, error) {
 	if f.fail != nil {
 		return nil, f.fail
 	}
-	return &wireRecorder{order: f.order, name: "hook"}, nil
+	return &hookRecorder{
+		wireRecorder: wireRecorder{order: f.order, name: "hook"},
+	}, nil
 }
 
 func TestDeployBuildsAgentsAndWires(t *testing.T) {
@@ -312,11 +329,9 @@ func TestDeployBuildsAgentsAndWires(t *testing.T) {
 		},
 		Agents: map[string]agent.Definition{
 			"researcher": {
-				Card:   agent.Card{Name: "Researcher"},
-				Engine: agent.Engine{Kind: "engine.test", Impl: "graph"},
-				Hooks: map[string][]agent.Hook{
-					"observe": {{Type: "audit"}},
-				},
+				Card:    agent.AgentCard{Name: "Researcher"},
+				Engine:  agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+				Observe: []agent.Hook{{Type: "audit"}},
 			},
 		},
 	}
@@ -330,11 +345,11 @@ func TestDeployBuildsAgentsAndWires(t *testing.T) {
 	if !ok {
 		t.Fatal("agent missing from result")
 	}
-	if bound.Engine != "engine" {
-		t.Fatalf("engine = %v", bound.Engine)
+	if bound.Engine == nil {
+		t.Fatal("engine is nil")
 	}
-	if len(bound.Hooks["observe"]) != 1 {
-		t.Fatalf("hooks = %v", bound.Hooks)
+	if len(bound.Observe) != 1 {
+		t.Fatalf("hooks = %v", bound.Observe)
 	}
 	if len(order) != 2 || order[0] != "observer" || order[1] != "hook" {
 		t.Fatalf("wire order = %v, want [observer hook]", order)
@@ -348,11 +363,9 @@ func TestDeployRejectsUnknownHook(t *testing.T) {
 		Version: "v1",
 		Agents: map[string]agent.Definition{
 			"a": {
-				Card:   agent.Card{Name: "A"},
-				Engine: agent.Engine{Kind: "engine.test", Impl: "graph"},
-				Hooks: map[string][]agent.Hook{
-					"observe": {{Type: "nope"}},
-				},
+				Card:    agent.AgentCard{Name: "A"},
+				Engine:  agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+				Observe: []agent.Hook{{Type: "nope"}},
 			},
 		},
 	}
@@ -375,11 +388,9 @@ func TestDeployRollsBackOnWireFailure(t *testing.T) {
 		},
 		Agents: map[string]agent.Definition{
 			"a2": {
-				Card:   agent.Card{Name: "A"},
-				Engine: agent.Engine{Kind: "engine.test", Impl: "graph"},
-				Hooks: map[string][]agent.Hook{
-					"observe": {{Type: "audit"}},
-				},
+				Card:    agent.AgentCard{Name: "A"},
+				Engine:  agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+				Observe: []agent.Hook{{Type: "audit"}},
 			},
 		},
 	}

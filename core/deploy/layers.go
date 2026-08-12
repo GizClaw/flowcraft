@@ -178,22 +178,51 @@ func mergeAgents(base, override map[string]agent.Definition) map[string]agent.De
 
 func mergeAgent(base, override agent.Definition) agent.Definition {
 	merged := base
-	if override.Card.Name != "" {
-		merged.Card.Name = override.Card.Name
-	}
-	if override.Card.Description != "" {
-		merged.Card.Description = override.Card.Description
-	}
+	merged.Card = mergeAgentCard(base.Card, override.Card)
 	if override.Tools != nil {
 		merged.Tools = override.Tools
 	}
 	merged.Deps = mergeDeps(base.Deps, override.Deps)
-	merged.Engine = mergeEngine(base.Engine, override.Engine)
-	merged.Hooks = mergeHooks(base.Hooks, override.Hooks)
+	merged.Engine = mergeEngineRef(base.Engine, override.Engine)
+	if override.Prepare != nil {
+		merged.Prepare = override.Prepare
+	}
+	if override.Observe != nil {
+		merged.Observe = override.Observe
+	}
+	if override.Referees != nil {
+		merged.Referees = override.Referees
+	}
+	if override.Commit != nil {
+		merged.Commit = override.Commit
+	}
 	return merged
 }
 
-func mergeEngine(base, override agent.Engine) agent.Engine {
+func mergeAgentCard(base, override agent.AgentCard) agent.AgentCard {
+	merged := base
+	if override.Name != "" {
+		merged.Name = override.Name
+	}
+	if override.Description != "" {
+		merged.Description = override.Description
+	}
+	if override.Skills != nil {
+		merged.Skills = override.Skills
+	}
+	if override.DefaultInputModes != nil {
+		merged.DefaultInputModes = override.DefaultInputModes
+	}
+	if override.DefaultOutputModes != nil {
+		merged.DefaultOutputModes = override.DefaultOutputModes
+	}
+	if override.Capabilities != (agent.AgentCapabilities{}) {
+		merged.Capabilities = override.Capabilities
+	}
+	return merged
+}
+
+func mergeEngineRef(base, override agent.EngineRef) agent.EngineRef {
 	merged := base
 	if override.Kind != "" {
 		merged.Kind = override.Kind
@@ -204,17 +233,6 @@ func mergeEngine(base, override agent.Engine) agent.Engine {
 	merged.Deps = mergeDeps(base.Deps, override.Deps)
 	merged.Settings = mergeJSON(base.Settings, override.Settings)
 	return merged
-}
-
-func mergeHooks(base, override map[string][]agent.Hook) map[string][]agent.Hook {
-	out := make(map[string][]agent.Hook, len(base)+len(override))
-	for slot, hooks := range base {
-		out[slot] = hooks
-	}
-	for slot, hooks := range override {
-		out[slot] = hooks // arrays replace wholesale
-	}
-	return out
 }
 
 // mergeJSON deep-merges two JSON values: objects merge recursively,

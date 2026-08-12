@@ -11,9 +11,9 @@ import (
 
 func TestDefinitionValidate(t *testing.T) {
 	def := agent.Definition{
-		Card:  agent.Card{Name: "Researcher"},
+		Card:  agent.AgentCard{Name: "Researcher"},
 		Tools: []string{"search"},
-		Engine: agent.Engine{
+		Engine: agent.EngineRef{
 			Kind: "graph",
 			Deps: resource.Deps{"workspace": "fs"},
 		},
@@ -26,7 +26,7 @@ func TestDefinitionValidate(t *testing.T) {
 		t.Fatalf("missing card name error = %v, want validation", err)
 	}
 	bad := def
-	bad.Engine = agent.Engine{Deps: resource.Deps{"workspace": "fs"}}
+	bad.Engine = agent.EngineRef{Deps: resource.Deps{"workspace": "fs"}}
 	if err := bad.Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("engine without kind error = %v, want validation", err)
 	}
@@ -47,17 +47,27 @@ func TestHookValidate(t *testing.T) {
 
 func TestDefinitionValidatesHooks(t *testing.T) {
 	def := agent.Definition{
-		Card: agent.Card{Name: "Researcher"},
-		Hooks: map[string][]agent.Hook{
-			"observe": {{Type: "audit"}},
-		},
+		Card:    agent.AgentCard{Name: "Researcher"},
+		Observe: []agent.Hook{{Type: "audit"}},
 	}
 	if err := def.Validate(); err != nil {
 		t.Fatalf("valid hooks rejected: %v", err)
 	}
 	bad := def
-	bad.Hooks = map[string][]agent.Hook{"observe": {{}}}
+	bad.Observe = []agent.Hook{{}}
 	if err := bad.Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("hook without type error = %v, want validation", err)
+	}
+}
+
+func TestAgentCardValidateSkills(t *testing.T) {
+	if err := (agent.AgentCard{Name: "A", Skills: []agent.Skill{
+		{ID: "search"},
+	}}).Validate(); err != nil {
+		t.Fatalf("valid card rejected: %v", err)
+	}
+	bad := agent.AgentCard{Name: "A", Skills: []agent.Skill{{}}}
+	if err := bad.Validate(); !errdefs.IsValidation(err) {
+		t.Fatalf("skill without id error = %v, want validation", err)
 	}
 }

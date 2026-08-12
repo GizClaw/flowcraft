@@ -17,8 +17,8 @@ func TestDocumentValidate(t *testing.T) {
 		},
 		Agents: map[string]agent.Definition{
 			"researcher": {
-				Card: agent.Card{Name: "Researcher"},
-				Engine: agent.Engine{
+				Card: agent.AgentCard{Name: "Researcher"},
+				Engine: agent.EngineRef{
 					Kind: "graph",
 					Deps: resource.Deps{"workspace": "fs"},
 				},
@@ -35,7 +35,7 @@ func TestDocumentValidate(t *testing.T) {
 
 	badAgent := doc
 	badAgent.Agents = map[string]agent.Definition{
-		"x": {Engine: agent.Engine{Kind: "graph"}},
+		"x": {Engine: agent.EngineRef{Kind: "graph"}},
 	}
 	if err := badAgent.Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("agent without card name error = %v, want validation", err)
@@ -43,10 +43,10 @@ func TestDocumentValidate(t *testing.T) {
 }
 
 func TestEngineValidate(t *testing.T) {
-	if err := (agent.Engine{Kind: "graph"}).Validate(); err != nil {
+	if err := (agent.EngineRef{Kind: "graph"}).Validate(); err != nil {
 		t.Fatalf("valid engine rejected: %v", err)
 	}
-	if err := (agent.Engine{}).Validate(); !errdefs.IsValidation(err) {
+	if err := (agent.EngineRef{}).Validate(); !errdefs.IsValidation(err) {
 		t.Fatalf("engine without kind error = %v, want validation", err)
 	}
 }

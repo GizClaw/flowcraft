@@ -70,6 +70,189 @@ func NormalizePart(part Part) (Part, error) {
 	}
 }
 
+// MarshalPart encodes one canonical part in its wire form: a
+// type-discriminated object, e.g. {"type":"image","source":...}. This
+// is the same shape [Content] uses for each entry of its "parts"
+// array, exported so single-part carriers (stream deltas, protocol
+// envelopes) can reuse the canonical encoding instead of duplicating
+// the switch.
+func MarshalPart(part Part) ([]byte, error) {
+	normalized, err := NormalizePart(part)
+	if err != nil {
+		return nil, err
+	}
+	var wire any
+	switch value := normalized.(type) {
+	case TextPart:
+		wire = struct {
+			Type PartKind `json:"type"`
+			Text string   `json:"text"`
+		}{PartText, value.Text}
+	case ImagePart:
+		wire = struct {
+			Type   PartKind          `json:"type"`
+			Source media.ImageSource `json:"source"`
+		}{PartImage, value.Source}
+	case AudioPart:
+		wire = struct {
+			Type           PartKind           `json:"type"`
+			Source         media.AudioSource  `json:"source"`
+			Format         *media.AudioFormat `json:"format,omitempty"`
+			DurationMillis *int64             `json:"duration_millis,omitempty"`
+		}{PartAudio, value.Source, value.Format, value.DurationMillis}
+	case VideoPart:
+		wire = struct {
+			Type   PartKind          `json:"type"`
+			Source media.VideoSource `json:"source"`
+		}{PartVideo, value.Source}
+	case FilePart:
+		wire = struct {
+			Type      PartKind `json:"type"`
+			URI       string   `json:"uri"`
+			MediaType string   `json:"media_type,omitempty"`
+			Name      string   `json:"name,omitempty"`
+		}{PartFile, value.URI, value.MediaType, value.Name}
+	case DataPart:
+		wire = struct {
+			Type      PartKind        `json:"type"`
+			MediaType string          `json:"media_type,omitempty"`
+			Value     json.RawMessage `json:"value"`
+		}{PartData, value.MediaType, value.Value}
+	case ToolCallPart:
+		wire = struct {
+			Type     PartKind `json:"type"`
+			ToolCall ToolCall `json:"call"`
+		}{PartToolCall, value.Call}
+	case ToolResultPart:
+		wire = struct {
+			Type       PartKind   `json:"type"`
+			ToolResult ToolResult `json:"result"`
+		}{PartToolResult, value.Result}
+	case ReasoningPart:
+		wire = struct {
+			Type      PartKind `json:"type"`
+			Text      string   `json:"text,omitempty"`
+			Signature string   `json:"signature,omitempty"`
+			ID        string   `json:"id,omitempty"`
+		}{PartReasoning, value.Text, value.Signature, value.ID}
+	default:
+		return nil, fmt.Errorf("unsupported content part %T", part)
+	}
+	return json.Marshal(wire)
+}
+
+// UnmarshalPart decodes one type-discriminated wire object back into
+// its canonical part value. Unknown "type" values are rejected so a
+// typo cannot silently decode into a zero part.
+func UnmarshalPart(data []byte) (Part, error) {
+	var header struct {
+		Type PartKind `json:"type"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return nil, fmt.Errorf("content part: %w", err)
+	}
+	switch header.Type {
+	case PartText:
+		var item struct {
+			Type PartKind `json:"type"`
+			Text *string  `json:"text"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		if item.Text == nil {
+			return nil, fmt.Errorf("content part has no text payload")
+		}
+		return TextPart{Text: *item.Text}, nil
+	case PartImage:
+		var item struct {
+			Type   PartKind          `json:"type"`
+			Source media.ImageSource `json:"source"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return ImagePart{Source: item.Source}, nil
+	case PartAudio:
+		var item struct {
+			Type           PartKind           `json:"type"`
+			Source         media.AudioSource  `json:"source"`
+			Format         *media.AudioFormat `json:"format,omitempty"`
+			DurationMillis *int64             `json:"duration_millis,omitempty"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return AudioPart{
+			Source: item.Source, Format: item.Format,
+			DurationMillis: item.DurationMillis,
+		}, nil
+	case PartVideo:
+		var item struct {
+			Type   PartKind          `json:"type"`
+			Source media.VideoSource `json:"source"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return VideoPart{Source: item.Source}, nil
+	case PartFile:
+		var item struct {
+			Type      PartKind `json:"type"`
+			URI       string   `json:"uri"`
+			MediaType string   `json:"media_type,omitempty"`
+			Name      string   `json:"name,omitempty"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return FilePart{URI: item.URI, MediaType: item.MediaType, Name: item.Name}, nil
+	case PartData:
+		var item struct {
+			Type      PartKind        `json:"type"`
+			MediaType string          `json:"media_type,omitempty"`
+			Value     json.RawMessage `json:"value"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return DataPart{MediaType: item.MediaType, Value: item.Value}, nil
+	case PartToolCall:
+		var item struct {
+			Type PartKind `json:"type"`
+			Call ToolCall `json:"call"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return ToolCallPart{Call: item.Call}, nil
+	case PartToolResult:
+		var item struct {
+			Type   PartKind   `json:"type"`
+			Result ToolResult `json:"result"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return ToolResultPart{Result: item.Result}, nil
+	case PartReasoning:
+		var item struct {
+			Type      PartKind `json:"type"`
+			Text      string   `json:"text,omitempty"`
+			Signature string   `json:"signature,omitempty"`
+			ID        string   `json:"id,omitempty"`
+		}
+		if err := decodeStrict(data, &item); err != nil {
+			return nil, fmt.Errorf("content part: %w", err)
+		}
+		return ReasoningPart{
+			Text: item.Text, Signature: item.Signature, ID: item.ID,
+		}, nil
+	default:
+		return nil, fmt.Errorf("content part has unknown type %q", header.Type)
+	}
+}
+
 type TextPart struct {
 	Text string `json:"text"`
 }

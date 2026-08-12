@@ -8,8 +8,6 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-
-	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 type Role string
@@ -187,71 +185,20 @@ func (c Content) MarshalJSON() ([]byte, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	wire := make([]any, len(c.Parts))
+	wire := make([]json.RawMessage, len(c.Parts))
 	for i, part := range c.Parts {
 		normalized, err := NormalizePart(part)
 		if err != nil {
 			return nil, fmt.Errorf("content part %d: %w", i, err)
 		}
-		switch value := normalized.(type) {
-		case TextPart:
-			wire[i] = struct {
-				Type PartKind `json:"type"`
-				Text string   `json:"text"`
-			}{PartText, value.Text}
-		case ImagePart:
-			wire[i] = struct {
-				Type   PartKind          `json:"type"`
-				Source media.ImageSource `json:"source"`
-			}{PartImage, value.Source}
-		case AudioPart:
-			wire[i] = struct {
-				Type           PartKind           `json:"type"`
-				Source         media.AudioSource  `json:"source"`
-				Format         *media.AudioFormat `json:"format,omitempty"`
-				DurationMillis *int64             `json:"duration_millis,omitempty"`
-			}{PartAudio, value.Source, value.Format, value.DurationMillis}
-		case VideoPart:
-			wire[i] = struct {
-				Type   PartKind          `json:"type"`
-				Source media.VideoSource `json:"source"`
-			}{PartVideo, value.Source}
-		case FilePart:
-			wire[i] = struct {
-				Type      PartKind `json:"type"`
-				URI       string   `json:"uri"`
-				MediaType string   `json:"media_type,omitempty"`
-				Name      string   `json:"name,omitempty"`
-			}{PartFile, value.URI, value.MediaType, value.Name}
-		case DataPart:
-			wire[i] = struct {
-				Type      PartKind        `json:"type"`
-				MediaType string          `json:"media_type,omitempty"`
-				Value     json.RawMessage `json:"value"`
-			}{PartData, value.MediaType, value.Value}
-		case ToolCallPart:
-			wire[i] = struct {
-				Type     PartKind `json:"type"`
-				ToolCall ToolCall `json:"call"`
-			}{PartToolCall, value.Call}
-		case ToolResultPart:
-			wire[i] = struct {
-				Type       PartKind   `json:"type"`
-				ToolResult ToolResult `json:"result"`
-			}{PartToolResult, value.Result}
-		case ReasoningPart:
-			wire[i] = struct {
-				Type      PartKind `json:"type"`
-				Text      string   `json:"text,omitempty"`
-				Signature string   `json:"signature,omitempty"`
-				ID        string   `json:"id,omitempty"`
-			}{PartReasoning, value.Text, value.Signature, value.ID}
-		default:
-			return nil, fmt.Errorf("unsupported content part %T", part)
+		raw, err := MarshalPart(normalized)
+		if err != nil {
+			return nil, fmt.Errorf("content part %d: %w", i, err)
 		}
+		wire[i] = raw
 	}
 	return json.Marshal(struct {
-		Parts []any `json:"parts"`
+		Parts []json.RawMessage `json:"parts"`
 	}{Parts: wire})
 }
 
@@ -264,116 +211,11 @@ func (c *Content) UnmarshalJSON(data []byte) error {
 	}
 	decoded := Content{Parts: make([]Part, len(wire.Parts))}
 	for i, raw := range wire.Parts {
-		var header struct {
-			Type PartKind `json:"type"`
-		}
-		if err := json.Unmarshal(raw, &header); err != nil {
+		part, err := UnmarshalPart(raw)
+		if err != nil {
 			return fmt.Errorf("content part %d: %w", i, err)
 		}
-		switch header.Type {
-		case PartText:
-			var item struct {
-				Type PartKind `json:"type"`
-				Text *string  `json:"text"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			if item.Text == nil {
-				return fmt.Errorf("content part %d has no text payload", i)
-			}
-			decoded.Parts[i] = TextPart{Text: *item.Text}
-		case PartImage:
-			var item struct {
-				Type   PartKind          `json:"type"`
-				Source media.ImageSource `json:"source"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = ImagePart{Source: item.Source}
-		case PartAudio:
-			var item struct {
-				Type           PartKind           `json:"type"`
-				Source         media.AudioSource  `json:"source"`
-				Format         *media.AudioFormat `json:"format,omitempty"`
-				DurationMillis *int64             `json:"duration_millis,omitempty"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = AudioPart{
-				Source: item.Source, Format: item.Format,
-				DurationMillis: item.DurationMillis,
-			}
-		case PartVideo:
-			var item struct {
-				Type   PartKind          `json:"type"`
-				Source media.VideoSource `json:"source"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = VideoPart{Source: item.Source}
-		case PartFile:
-			var item struct {
-				Type      PartKind `json:"type"`
-				URI       string   `json:"uri"`
-				MediaType string   `json:"media_type,omitempty"`
-				Name      string   `json:"name,omitempty"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = FilePart{
-				URI: item.URI, MediaType: item.MediaType, Name: item.Name,
-			}
-		case PartData:
-			var item struct {
-				Type      PartKind        `json:"type"`
-				MediaType string          `json:"media_type,omitempty"`
-				Value     json.RawMessage `json:"value"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = DataPart{MediaType: item.MediaType, Value: item.Value}
-		case PartToolCall:
-			var item struct {
-				Type PartKind `json:"type"`
-				Call ToolCall `json:"call"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = ToolCallPart{Call: item.Call}
-		case PartToolResult:
-			var item struct {
-				Type   PartKind   `json:"type"`
-				Result ToolResult `json:"result"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = ToolResultPart{Result: item.Result}
-		case PartReasoning:
-			var item struct {
-				Type      PartKind `json:"type"`
-				Text      string   `json:"text,omitempty"`
-				Signature string   `json:"signature,omitempty"`
-				ID        string   `json:"id,omitempty"`
-			}
-			if err := decodeStrict(raw, &item); err != nil {
-				return fmt.Errorf("content part %d: %w", i, err)
-			}
-			decoded.Parts[i] = ReasoningPart{
-				Text:      item.Text,
-				Signature: item.Signature,
-				ID:        item.ID,
-			}
-		default:
-			return fmt.Errorf("content part %d has unknown type %q", i, header.Type)
-		}
+		decoded.Parts[i] = part
 	}
 	if err := decoded.Validate(); err != nil {
 		return err
