@@ -105,6 +105,15 @@ type Wireable interface {
 	Wire(ctx context.Context) error
 }
 
+// DeploymentBinder is implemented by resource values that need the
+// fully assembled deployment after every resource and agent has been
+// wired. The assembly layer passes its read-only deployment view after
+// agents are bound; implementations type-assert it to their own
+// minimal interface (e.g. delegation's agent directory).
+type DeploymentBinder interface {
+	BindDeployment(deployment any) error
+}
+
 // Input is the universal factory input: the factory-owned settings
 // subtree as raw JSON plus already-built dependencies keyed by the
 // names used in the document.

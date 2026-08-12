@@ -271,6 +271,25 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 	return service, nil
 }
 
+// BindDeployment implements resource.DeploymentBinder: it binds the
+// assembled deployment into the service's directory once agents are
+// ready. The deployment view is the read-only interface exposed by
+// *deploy.Result; binding is idempotent.
+func (s *LocalService) BindDeployment(deployment any) error {
+	if s == nil {
+		return errdefs.Validationf("local delegation: nil service")
+	}
+	if s.directory == nil {
+		return errdefs.Internalf("local delegation: service has no directory")
+	}
+	view, ok := deployment.(Deployment)
+	if !ok || isNilInterface(deployment) {
+		return errdefs.Validationf(
+			"local delegation: deployment is not a read-only deployment view")
+	}
+	return s.directory.Bind(view)
+}
+
 // Start begins asynchronous workers when the backend supports WorkSource.
 // Repeated calls are safe and do not create duplicate workers.
 func (s *LocalService) Start() error {

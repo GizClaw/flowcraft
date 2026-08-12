@@ -345,6 +345,30 @@ func TestBuildWrapsDelegationService(t *testing.T) {
 	}
 }
 
+func TestBuildBindsDelegationDirectory(t *testing.T) {
+	directory := delegation.NewDirectory()
+	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
+	reg.MustRegister(delegation.NewServiceFactory(directory))
+	doc := baseRuntimeDoc(t)
+	doc.Resources["delegation"] = resource.Resource{
+		Kind: delegation.ServiceKind, Impl: "local",
+	}
+
+	app, err := NewBuilder(reg).Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = app.Close() }()
+
+	targets, err := directory.List(context.Background())
+	if err != nil {
+		t.Fatalf("directory was not bound: %v", err)
+	}
+	if len(targets) != 1 || targets[0].ID != "bot" {
+		t.Fatalf("bound targets = %+v, want [bot]", targets)
+	}
+}
+
 func TestBuildRejectsMultipleDelegationServices(t *testing.T) {
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
 	reg.MustRegister(testResourceFactory{

@@ -95,8 +95,8 @@ func TestDirectoryBindListGetLookup(t *testing.T) {
 	if err := directory.Bind(result); err != nil {
 		t.Fatal(err)
 	}
-	if err := directory.Bind(result); !errdefs.IsConflict(err) {
-		t.Fatalf("second Bind error = %v, want conflict", err)
+	if err := directory.Bind(result); err != nil {
+		t.Fatalf("repeated Bind error = %v, want idempotent success", err)
 	}
 
 	targets, err := directory.List(context.Background())
@@ -129,6 +129,33 @@ func TestDirectoryBindListGetLookup(t *testing.T) {
 		if !errors.Is(err, ErrTargetNotFound) || !errdefs.IsNotFound(err) {
 			t.Fatalf("unknown target error = %v", err)
 		}
+	}
+}
+
+func TestLocalServiceBindDeployment(t *testing.T) {
+	directory := NewDirectory()
+	service, err := NewService(directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+
+	if err := service.BindDeployment("not a deployment"); !errdefs.IsValidation(err) {
+		t.Fatalf("BindDeployment(wrong type) error = %v, want validation", err)
+	}
+	result := buildResult(t, completedEngine("ok"))
+	if err := service.BindDeployment(result); err != nil {
+		t.Fatalf("BindDeployment: %v", err)
+	}
+	if err := service.BindDeployment(result); err != nil {
+		t.Fatalf("repeated BindDeployment error = %v, want idempotent success", err)
+	}
+	targets, err := directory.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 2 || targets[0].ID != "researcher" {
+		t.Fatalf("bound targets = %+v", targets)
 	}
 }
 

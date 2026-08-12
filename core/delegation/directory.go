@@ -45,7 +45,10 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.bound {
-		return errdefs.Conflictf("local delegation directory: already bound")
+		// Binding is idempotent: a directory is immutable after a
+		// successful bind, so multiple resources may share one
+		// directory without failing the deployment.
+		return nil
 	}
 
 	names := result.AgentNames()

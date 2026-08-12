@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -353,6 +354,89 @@ func TestDeployBuildsAgentsAndWires(t *testing.T) {
 	}
 	if len(order) != 2 || order[0] != "observer" || order[1] != "hook" {
 		t.Fatalf("wire order = %v, want [observer hook]", order)
+	}
+}
+
+type deploymentBinderRecorder struct {
+	bound    bool
+	agentIDs []string
+	fail     error
+}
+
+func (b *deploymentBinderRecorder) BindDeployment(deployment any) error {
+	if b.fail != nil {
+		return b.fail
+	}
+	result, ok := deployment.(*deploy.Result)
+	if !ok {
+		return errors.New("deployment binder: unexpected deployment type")
+	}
+	b.bound = true
+	b.agentIDs = append([]string(nil), result.AgentNames()...)
+	return nil
+}
+
+type binderFactory struct {
+	recorder *deploymentBinderRecorder
+}
+
+func (binderFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: "test.DeploymentBinder", Impl: "local"}
+}
+
+func (f binderFactory) New(context.Context, resource.Input) (any, error) {
+	return f.recorder, nil
+}
+
+func TestDeployBindsDeploymentAfterAgents(t *testing.T) {
+	recorder := &deploymentBinderRecorder{}
+	reg := resource.NewRegistry()
+	reg.MustRegister(engineFactory{})
+	reg.MustRegister(binderFactory{recorder: recorder})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"binder": {Kind: "test.DeploymentBinder", Impl: "local"},
+		},
+		Agents: map[string]agent.Definition{
+			"researcher": {
+				Card:   agent.AgentCard{Name: "Researcher"},
+				Engine: agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+			},
+		},
+	}
+	result, err := deploy.NewBuilder(reg).Deploy(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	defer func() { _ = result.Close() }()
+
+	if !recorder.bound || len(recorder.agentIDs) != 1 || recorder.agentIDs[0] != "researcher" {
+		t.Fatalf("binder state = bound:%v agents:%v, want bound with researcher",
+			recorder.bound, recorder.agentIDs)
+	}
+}
+
+func TestDeployBindFailureRollsBack(t *testing.T) {
+	recorder := &deploymentBinderRecorder{fail: errors.New("bind failed")}
+	reg := resource.NewRegistry()
+	reg.MustRegister(engineFactory{})
+	reg.MustRegister(binderFactory{recorder: recorder})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"binder": {Kind: "test.DeploymentBinder", Impl: "local"},
+		},
+		Agents: map[string]agent.Definition{
+			"researcher": {
+				Card:   agent.AgentCard{Name: "Researcher"},
+				Engine: agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Deploy(context.Background(), doc); err == nil ||
+		!strings.Contains(err.Error(), "bind deployment") {
+		t.Fatalf("Deploy error = %v, want bind deployment failure", err)
 	}
 }
 

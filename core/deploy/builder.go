@@ -140,9 +140,11 @@ func resolveSettings(
 
 // Wire runs the post-build wiring phase: resource values implementing
 // [resource.Wireable] attach themselves (observers to buses, hooks to
-// streams), then every agent is bound from its engine and hooks. Wire
-// never participates in the construction DAG, so observed values never
-// depend on their observers.
+// streams), then every agent is bound from its engine and hooks, and
+// finally values implementing [resource.DeploymentBinder] receive the
+// assembled deployment (agents included). Wire never participates in
+// the construction DAG, so observed values never depend on their
+// observers.
 func (b *Builder) Wire(ctx context.Context, result *Result, doc Document) error {
 	if result == nil {
 		return errdefs.Validationf("deploy: wire: nil result")
@@ -159,7 +161,28 @@ func (b *Builder) Wire(ctx context.Context, result *Result, doc Document) error 
 			}
 		}
 	}
-	return b.bindAgents(ctx, result, doc)
+	if err := b.bindAgents(ctx, result, doc); err != nil {
+		return err
+	}
+	return b.bindDeployment(result)
+}
+
+// bindDeployment hands the fully assembled result to every resource
+// value that needs it after agents are bound.
+func (b *Builder) bindDeployment(result *Result) error {
+	for _, name := range result.order {
+		value, ok := result.values[name]
+		if !ok {
+			continue
+		}
+		if binder, ok := value.(resource.DeploymentBinder); ok {
+			if err := binder.BindDeployment(result); err != nil {
+				return errdefs.Validationf(
+					"deploy: bind deployment resource %q: %v", name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // Deploy is the convenience entry point: Build, then Wire. On wire
