@@ -30,6 +30,7 @@ type Definition struct {
 	Tools    []string      `json:"tools,omitempty"`
 	Engine   EngineRef     `json:"engine,omitzero"`
 	Deps     resource.Deps `json:"deps,omitempty"`
+	Policy   Policy        `json:"policy,omitzero"`
 	Prepare  []Hook        `json:"prepare,omitempty"`
 	Observe  []Hook        `json:"observe,omitempty"`
 	Referees []Hook        `json:"referees,omitempty"`
@@ -51,6 +52,10 @@ func (d Definition) Validate() error {
 			return err
 		}
 	}
+	if d.Policy.MaxRevise < 0 {
+		return errdefs.Validationf(
+			"agent: policy.max_revise must not be negative")
+	}
 	for _, list := range []struct {
 		slot  string
 		hooks []Hook
@@ -68,6 +73,17 @@ func (d Definition) Validate() error {
 		}
 	}
 	return nil
+}
+
+// Policy is the per-call harness policy declared on the document form
+// and applied by Execute unless overridden per call.
+type Policy struct {
+	// MaxRevise bounds how many times a Referee may ask Execute to
+	// re-invoke the engine. Zero means one attempt (no revise).
+	MaxRevise int `json:"max_revise,omitempty"`
+	// ArtifactChannels names board channels collected into
+	// Result.Artifacts.
+	ArtifactChannels []string `json:"artifact_channels,omitempty"`
 }
 
 // AgentCard describes an agent's capabilities for discovery. Field

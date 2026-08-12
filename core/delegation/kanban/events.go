@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/delegation"
-	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/event"
 )
 
@@ -43,7 +42,7 @@ type CardEvent struct {
 	Producer  string                   `json:"producer,omitempty"`
 	Consumer  string                   `json:"consumer,omitempty"`
 	Request   *delegation.AsyncRequest `json:"request,omitempty"`
-	Response  *sdkdelegation.Response  `json:"response,omitempty"`
+	Response  *delegation.Response     `json:"response,omitempty"`
 	ResumeRef string                   `json:"resume_ref,omitempty"`
 	ElapsedMs int64                    `json:"elapsed_ms"`
 	Meta      map[string]string        `json:"meta,omitempty"`

@@ -18,7 +18,7 @@ func (f providerFactory) Spec() resource.Spec {
 }
 
 func (f providerFactory) New(context.Context, resource.Input) (any, error) {
-	return providerValue{name: f.name}, nil
+	return providerValue(f), nil
 }
 
 type assemblyFactory struct{ got *[]any }

@@ -9,14 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-func def(name, desc string) message.ToolDefinition {
-	return message.ToolDefinition{
-		Name:        name,
-		Description: desc,
-		InputSchema: []byte(`{"type":"object"}`),
-	}
-}
-
 func dynamicAssembly(t *testing.T, names ...string) (*tool.Assembly, tool.Policy) {
 	t.Helper()
 	exposures := map[string]tool.Exposure{

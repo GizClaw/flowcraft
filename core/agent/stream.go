@@ -198,3 +198,26 @@ func validateStreamDataIdentity(p StreamDeltaPayload) error {
 	}
 	return nil
 }
+
+// StreamSink is the consumer-side counterpart of the EmitStream*
+// helpers. A sink receives one decoded [StreamDeltaPayload] at a time
+// along with its source envelope (for headers / trace ids / raw subject
+// access) and forwards it to whatever transport the caller cares about.
+//
+// Implementations:
+//   - MUST be safe for concurrent OnDelta calls;
+//   - SHOULD return errors only for unrecoverable failures;
+//   - MUST observe ctx.Done and return promptly.
+type StreamSink interface {
+	OnDelta(ctx context.Context, env event.Envelope, delta StreamDeltaPayload) error
+}
+
+// StreamSinkFunc is a func adapter for [StreamSink].
+type StreamSinkFunc func(ctx context.Context, env event.Envelope, delta StreamDeltaPayload) error
+
+// OnDelta implements StreamSink.
+func (f StreamSinkFunc) OnDelta(ctx context.Context, env event.Envelope, delta StreamDeltaPayload) error {
+	return f(ctx, env, delta)
+}
+
+var _ StreamSink = StreamSinkFunc(nil)

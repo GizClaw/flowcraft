@@ -9,10 +9,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
-type fakeProvider struct{ name string }
-
-func (p fakeProvider) Name() string { return p.name }
-
 type fakeProviderFactory struct{ name string }
 
 func (f fakeProviderFactory) Spec() resource.Spec {
@@ -27,7 +23,9 @@ func TestAssemblyCollectsProviderDeps(t *testing.T) {
 	reg := resource.NewRegistry()
 	reg.MustRegister(fakeProviderFactory{name: "openai"})
 	reg.MustRegister(fakeProviderFactory{name: "qwen"})
-	inference.Register(reg)
+	if err := inference.Register(reg); err != nil {
+		t.Fatalf("inference.Register: %v", err)
+	}
 
 	doc := deploy.Document{
 		Version: "v1",
@@ -63,7 +61,9 @@ func TestAssemblyCollectsProviderDeps(t *testing.T) {
 
 func TestAssemblyRejectsMissingProviders(t *testing.T) {
 	reg := resource.NewRegistry()
-	inference.Register(reg)
+	if err := inference.Register(reg); err != nil {
+		t.Fatalf("inference.Register: %v", err)
+	}
 	doc := deploy.Document{
 		Version: "v1",
 		Resources: resource.Resources{

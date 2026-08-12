@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/delegation"
-	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 )
@@ -66,7 +65,7 @@ type retainedOperation struct {
 	id          string
 	key         string
 	fingerprint [sha256.Size]byte
-	response    sdkdelegation.Response
+	response    delegation.Response
 	expires     time.Time
 }
 
@@ -201,9 +200,9 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	if err := request.Request.Validate(); err != nil {
 		return "", err
 	}
-	if request.Request.Mode != sdkdelegation.ModeAsync {
+	if request.Request.Mode != delegation.ModeAsync {
 		return "", errdefs.Validationf(
-			"delegation kanban: request mode must be %q", sdkdelegation.ModeAsync)
+			"delegation kanban: request mode must be %q", delegation.ModeAsync)
 	}
 	request = cloneAsyncRequest(request)
 	b.mu.Lock()
@@ -297,9 +296,9 @@ func (b *Board) idempotentSubmissionLocked(
 }
 
 // Status implements delegation.AsyncBackend.
-func (b *Board) Status(ctx context.Context, id string) (sdkdelegation.Response, error) {
+func (b *Board) Status(ctx context.Context, id string) (delegation.Response, error) {
 	if id == "" {
-		return sdkdelegation.Response{}, errdefs.Validationf(
+		return delegation.Response{}, errdefs.Validationf(
 			"delegation kanban: delegation id is required")
 	}
 	if ctx == nil {
@@ -307,7 +306,7 @@ func (b *Board) Status(ctx context.Context, id string) (sdkdelegation.Response, 
 	}
 	select {
 	case <-ctx.Done():
-		return sdkdelegation.Response{}, ctx.Err()
+		return delegation.Response{}, ctx.Err()
 	default:
 	}
 	b.mu.RLock()
@@ -324,7 +323,7 @@ func (b *Board) Status(ctx context.Context, id string) (sdkdelegation.Response, 
 		return response, nil
 	}
 	b.mu.RUnlock()
-	return sdkdelegation.Response{}, sdkdelegation.RequestNotFound(id)
+	return delegation.Response{}, delegation.RequestNotFound(id)
 }
 
 // Claim implements delegation.WorkSource. It blocks until pending work is
@@ -378,7 +377,7 @@ func (b *Board) Complete(
 	ctx context.Context,
 	id string,
 	leaseToken string,
-	response sdkdelegation.Response,
+	response delegation.Response,
 ) error {
 	if id == "" {
 		return errdefs.Validationf("delegation kanban: delegation id is required")
@@ -425,11 +424,11 @@ func (b *Board) Complete(
 	}
 	from := card.Status
 	switch response.Status {
-	case sdkdelegation.StatusSucceeded:
+	case delegation.StatusSucceeded:
 		card.Status = StatusDone
-	case sdkdelegation.StatusFailed:
+	case delegation.StatusFailed:
 		card.Status = StatusFailed
-	case sdkdelegation.StatusCanceled:
+	case delegation.StatusCanceled:
 		card.Status = StatusCancelled
 	}
 	card.Result = &Result{Response: response}
@@ -486,9 +485,9 @@ func (b *Board) Resume(id string) (string, bool) {
 
 // Cancel terminates any non-terminal delegation.
 func (b *Board) Cancel(id, reason string) bool {
-	response := sdkdelegation.Response{
+	response := delegation.Response{
 		ID:     id,
-		Status: sdkdelegation.StatusCanceled,
+		Status: delegation.StatusCanceled,
 		Error:  reason,
 	}
 	return b.transition(id, func(card *Card) bool {
@@ -716,17 +715,17 @@ func asyncRequestFingerprint(request delegation.AsyncRequest) [sha256.Size]byte 
 	return sha256.Sum256(encoded)
 }
 
-func responseForCard(card *Card) sdkdelegation.Response {
+func responseForCard(card *Card) delegation.Response {
 	if card.Result != nil {
 		response := cloneResponse(card.Result.Response)
 		response.ID = card.ID
 		return response
 	}
-	status := sdkdelegation.StatusAccepted
+	status := delegation.StatusAccepted
 	if card.Status == StatusClaimed {
-		status = sdkdelegation.StatusRunning
+		status = delegation.StatusRunning
 	}
-	return sdkdelegation.Response{ID: card.ID, Status: status}
+	return delegation.Response{ID: card.ID, Status: status}
 }
 
 func newCardID() string {

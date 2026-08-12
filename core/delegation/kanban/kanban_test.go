@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/delegation"
-	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/delegation/kanban"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -23,8 +22,8 @@ func newBoard(t *testing.T, options ...kanban.Option) *kanban.Board {
 
 func request(target string) delegation.AsyncRequest {
 	return delegation.AsyncRequest{
-		Request: sdkdelegation.Request{
-			Mode:   sdkdelegation.ModeAsync,
+		Request: delegation.Request{
+			Mode:   delegation.ModeAsync,
 			Target: target,
 			Input:  "do the work",
 			Metadata: map[string]string{
@@ -72,7 +71,7 @@ func TestAsyncBackendSubmitAndStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if response.ID != id || response.Status != sdkdelegation.StatusAccepted {
+	if response.ID != id || response.Status != delegation.StatusAccepted {
 		t.Fatalf("Status = %+v", response)
 	}
 }
@@ -158,7 +157,7 @@ func TestSubmitValidationAndValidator(t *testing.T) {
 		t.Fatalf("invalid request error = %v", err)
 	}
 	syncRequest := request("worker")
-	syncRequest.Request.Mode = sdkdelegation.ModeSync
+	syncRequest.Request.Mode = delegation.ModeSync
 	if _, err := board.Submit(context.Background(), syncRequest); !errdefs.IsValidation(err) {
 		t.Fatalf("sync request error = %v", err)
 	}
@@ -200,12 +199,12 @@ func TestWorkSourceClaimBlocksThenCompletes(t *testing.T) {
 		t.Fatalf("Claim context = %v, want active lease", work.Context)
 	}
 	running, err := board.Status(context.Background(), id)
-	if err != nil || running.Status != sdkdelegation.StatusRunning {
+	if err != nil || running.Status != delegation.StatusRunning {
 		t.Fatalf("running Status = %+v, %v", running, err)
 	}
 
-	done := sdkdelegation.Response{
-		Status: sdkdelegation.StatusSucceeded,
+	done := delegation.Response{
+		Status: delegation.StatusSucceeded,
 		Output: "finished",
 		Metadata: map[string]string{
 			"run": "one",
@@ -218,7 +217,7 @@ func TestWorkSourceClaimBlocksThenCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status(done): %v", err)
 	}
-	if got.ID != id || got.Status != sdkdelegation.StatusSucceeded ||
+	if got.ID != id || got.Status != delegation.StatusSucceeded ||
 		got.Output != "finished" || got.Metadata["run"] != "one" {
 		t.Fatalf("terminal Status = %+v", got)
 	}
@@ -245,8 +244,8 @@ func TestClaimLeaseCanceledByCancelAndClose(t *testing.T) {
 		case <-time.After(time.Second):
 			t.Fatal("Cancel did not cancel the claim lease")
 		}
-		if err := board.Complete(context.Background(), id, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusCanceled,
+		if err := board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusCanceled,
 			Error:  context.Canceled.Error(),
 		}); err != nil {
 			t.Fatalf("canceled worker completion should be idempotent: %v", err)
@@ -275,7 +274,7 @@ func TestClaimLeaseCanceledByCancelAndClose(t *testing.T) {
 			context.Background(),
 			id,
 			work.LeaseToken,
-			sdkdelegation.Response{Status: sdkdelegation.StatusSucceeded},
+			delegation.Response{Status: delegation.StatusSucceeded},
 		); err != nil {
 			t.Fatalf("stale completion after Close: %v", err)
 		}
@@ -302,8 +301,8 @@ func TestClaimLeaseConcurrentCancelComplete(t *testing.T) {
 		go func() {
 			defer calls.Done()
 			<-start
-			_ = board.Complete(context.Background(), id, work.LeaseToken, sdkdelegation.Response{
-				Status: sdkdelegation.StatusSucceeded,
+			_ = board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+				Status: delegation.StatusSucceeded,
 				Output: "done",
 			})
 		}()
@@ -324,35 +323,35 @@ func TestStatusMapsEveryCardState(t *testing.T) {
 	tests := []struct {
 		name       string
 		drive      func(*kanban.Board, string)
-		want       sdkdelegation.Status
+		want       delegation.Status
 		wantOutput string
 		wantError  string
 	}{
-		{"pending", func(*kanban.Board, string) {}, sdkdelegation.StatusAccepted, "", ""},
+		{"pending", func(*kanban.Board, string) {}, delegation.StatusAccepted, "", ""},
 		{"claimed", func(board *kanban.Board, id string) {
 			board.ClaimCard(id, "worker")
-		}, sdkdelegation.StatusRunning, "", ""},
+		}, delegation.StatusRunning, "", ""},
 		{"suspended", func(board *kanban.Board, id string) {
 			board.ClaimCard(id, "worker")
 			board.Suspend(id, "checkpoint")
-		}, sdkdelegation.StatusAccepted, "", ""},
+		}, delegation.StatusAccepted, "", ""},
 		{"done", func(board *kanban.Board, id string) {
 			work, _ := board.Claim(context.Background())
-			_ = board.Complete(context.Background(), id, work.LeaseToken, sdkdelegation.Response{
-				Status: sdkdelegation.StatusSucceeded,
+			_ = board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+				Status: delegation.StatusSucceeded,
 				Output: "ok",
 			})
-		}, sdkdelegation.StatusSucceeded, "ok", ""},
+		}, delegation.StatusSucceeded, "ok", ""},
 		{"failed", func(board *kanban.Board, id string) {
 			work, _ := board.Claim(context.Background())
-			_ = board.Complete(context.Background(), id, work.LeaseToken, sdkdelegation.Response{
-				Status: sdkdelegation.StatusFailed,
+			_ = board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+				Status: delegation.StatusFailed,
 				Error:  "boom",
 			})
-		}, sdkdelegation.StatusFailed, "", "boom"},
+		}, delegation.StatusFailed, "", "boom"},
 		{"cancelled", func(board *kanban.Board, id string) {
 			board.Cancel(id, "stopped")
-		}, sdkdelegation.StatusCanceled, "", "stopped"},
+		}, delegation.StatusCanceled, "", "stopped"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -507,7 +506,7 @@ func TestSuspendResumeReturnsWorkToBlockingClaim(t *testing.T) {
 		t.Fatal("Suspend did not cancel the current lease")
 	}
 	response, _ := board.Status(context.Background(), id)
-	if response.Status != sdkdelegation.StatusAccepted {
+	if response.Status != delegation.StatusAccepted {
 		t.Fatalf("suspended status = %q", response.Status)
 	}
 
@@ -561,11 +560,11 @@ func TestStaleCompleteDoesNotAffectReclaimedLease(t *testing.T) {
 
 		start := make(chan struct{})
 		results := make(chan error, 2)
-		for _, response := range []sdkdelegation.Response{
-			{Status: sdkdelegation.StatusCanceled, Error: context.Canceled.Error()},
-			{Status: sdkdelegation.StatusSucceeded, Output: "stale"},
+		for _, response := range []delegation.Response{
+			{Status: delegation.StatusCanceled, Error: context.Canceled.Error()},
+			{Status: delegation.StatusSucceeded, Output: "stale"},
 		} {
-			go func(response sdkdelegation.Response) {
+			go func(response delegation.Response) {
 				<-start
 				results <- board.Complete(
 					context.Background(), id, first.LeaseToken, response)
@@ -579,22 +578,22 @@ func TestStaleCompleteDoesNotAffectReclaimedLease(t *testing.T) {
 		}
 
 		status, err := board.Status(context.Background(), id)
-		if err != nil || status.Status != sdkdelegation.StatusRunning {
+		if err != nil || status.Status != delegation.StatusRunning {
 			t.Fatalf("status after stale completions = %+v, %v", status, err)
 		}
 		if err := board.Complete(
 			context.Background(),
 			id,
 			current.LeaseToken,
-			sdkdelegation.Response{
-				Status: sdkdelegation.StatusSucceeded,
+			delegation.Response{
+				Status: delegation.StatusSucceeded,
 				Output: "current",
 			},
 		); err != nil {
 			t.Fatalf("current Complete: %v", err)
 		}
 		status, err = board.Status(context.Background(), id)
-		if err != nil || status.Status != sdkdelegation.StatusSucceeded ||
+		if err != nil || status.Status != delegation.StatusSucceeded ||
 			status.Output != "current" {
 			t.Fatalf("terminal status = %+v, %v", status, err)
 		}
@@ -619,8 +618,8 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		board := newBoard(t, kanban.WithMaxCards(1))
 		terminal := submit(t, board, "worker")
 		work, _ := board.Claim(context.Background())
-		if err := board.Complete(context.Background(), terminal, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusSucceeded,
+		if err := board.Complete(context.Background(), terminal, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusSucceeded,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -636,8 +635,8 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		board := newBoard(t, kanban.WithCardTTL(time.Nanosecond))
 		terminal := submit(t, board, "worker")
 		work, _ := board.Claim(context.Background())
-		_ = board.Complete(context.Background(), terminal, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusFailed,
+		_ = board.Complete(context.Background(), terminal, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusFailed,
 			Error:  "failed",
 		})
 		pending := submit(t, board, "worker")
@@ -665,8 +664,8 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusSucceeded,
+		if err := board.Complete(context.Background(), first, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusSucceeded,
 			Output: "done",
 		}); err != nil {
 			t.Fatal(err)
@@ -692,7 +691,7 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status.Status != sdkdelegation.StatusSucceeded || status.Output != "done" {
+		if status.Status != delegation.StatusSucceeded || status.Output != "done" {
 			t.Fatalf("tombstone status = %+v", status)
 		}
 		different := req
@@ -719,8 +718,8 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusSucceeded,
+		if err := board.Complete(context.Background(), first, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusSucceeded,
 			Output: "done",
 		}); err != nil {
 			t.Fatal(err)
@@ -740,7 +739,7 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if status.Status != sdkdelegation.StatusSucceeded || status.Output != "done" {
+		if status.Status != delegation.StatusSucceeded || status.Output != "done" {
 			t.Fatalf("tombstone status = %+v", status)
 		}
 	})
@@ -759,8 +758,8 @@ func TestCapacityAndTerminalEviction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := board.Complete(context.Background(), first, work.LeaseToken, sdkdelegation.Response{
-			Status: sdkdelegation.StatusSucceeded,
+		if err := board.Complete(context.Background(), first, work.LeaseToken, delegation.Response{
+			Status: delegation.StatusSucceeded,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -804,13 +803,13 @@ func TestCompleteRejectsInvalidTransitions(t *testing.T) {
 		context.Background(),
 		"missing",
 		"stale-token",
-		sdkdelegation.Response{Status: sdkdelegation.StatusSucceeded},
+		delegation.Response{Status: delegation.StatusSucceeded},
 	); err != nil {
 		t.Fatalf("Complete(stale missing) error = %v", err)
 	}
 	id := submit(t, board, "worker")
-	if err := board.Complete(context.Background(), id, "stale-token", sdkdelegation.Response{
-		Status: sdkdelegation.StatusSucceeded,
+	if err := board.Complete(context.Background(), id, "stale-token", delegation.Response{
+		Status: delegation.StatusSucceeded,
 	}); err != nil {
 		t.Fatalf("Complete(stale pending) error = %v", err)
 	}
@@ -818,8 +817,8 @@ func TestCompleteRejectsInvalidTransitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := board.Complete(context.Background(), id, work.LeaseToken, sdkdelegation.Response{
-		Status: sdkdelegation.StatusRunning,
+	if err := board.Complete(context.Background(), id, work.LeaseToken, delegation.Response{
+		Status: delegation.StatusRunning,
 	}); !errdefs.IsValidation(err) {
 		t.Fatalf("Complete(nonterminal) error = %v", err)
 	}

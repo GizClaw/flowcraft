@@ -12,6 +12,7 @@ type Agent struct {
 	ID       string      `json:"id"`
 	Card     AgentCard   `json:"card,omitzero"`
 	Tools    []string    `json:"tools,omitempty"`
+	Policy   Policy      `json:"-"`
 	Engine   Engine      `json:"-"`
 	Prepare  []Preparer  `json:"-"`
 	Observe  []Observer  `json:"-"`

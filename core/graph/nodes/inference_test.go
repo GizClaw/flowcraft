@@ -290,7 +290,7 @@ func (f *fakeVisibleCatalog) Definitions() []message.ToolDefinition {
 func (f *fakeVisibleCatalog) Require(names ...string) {
 	f.required = append(f.required, names...)
 }
-func (f *fakeVisibleCatalog) AdvanceTurn() { f.advances++ }
+func (f *fakeVisibleCatalog) AdvanceTurn()                { f.advances++ }
 func (f *fakeVisibleCatalog) Select(...string)            {}
 func (f *fakeVisibleCatalog) RecordCall(message.ToolCall) {}
 func (f *fakeVisibleCatalog) Load(context.Context) error  { return nil }
@@ -351,7 +351,7 @@ func TestInferenceNode_AllToolsUsesContextOverride(t *testing.T) {
 	bound := toolCatalog(t)
 	reg := inferenceRegistry(t, InferenceNodeDeps{
 		Assembly: fake.Assembly(t),
-		Catalog: bound,
+		Catalog:  bound,
 	})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
 		Model:    ptr(inferencetest.DefaultFakeModel),

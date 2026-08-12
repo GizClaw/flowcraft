@@ -14,6 +14,10 @@ type Document struct {
 	Version   string                      `json:"version,omitempty"`
 	Resources resource.Resources          `json:"resources,omitempty"`
 	Agents    map[string]agent.Definition `json:"agents,omitempty"`
+	// Runtime is an application-runtime-owned configuration subtree.
+	// Parse preserves it verbatim so the runtime layer can decode it
+	// strictly without weakening strictness for the deployment schema.
+	Runtime *resource.Opaque `json:"runtime,omitempty"`
 }
 
 // Validate checks the document without resolving any factory.

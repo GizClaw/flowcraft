@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/delegation"
-	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 )
 
 // Status is the internal lifecycle state of a delegation card.
@@ -32,7 +31,7 @@ type Task struct {
 
 // Result is the terminal delegation response stored by a card.
 type Result struct {
-	Response sdkdelegation.Response `json:"response"`
+	Response delegation.Response `json:"response"`
 }
 
 // Card is an operational snapshot of one delegation backend entry.
@@ -103,7 +102,7 @@ func cloneAsyncRequest(req delegation.AsyncRequest) delegation.AsyncRequest {
 	return req
 }
 
-func cloneResponse(response sdkdelegation.Response) sdkdelegation.Response {
+func cloneResponse(response delegation.Response) delegation.Response {
 	response.Metadata = cloneMetadata(response.Metadata)
 	return response
 }

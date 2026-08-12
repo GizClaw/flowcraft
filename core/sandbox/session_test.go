@@ -42,7 +42,7 @@ func TestStartReturnsSessionWithCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	caps := sess.Capabilities()
 	if !caps.Signal || !caps.Events {
@@ -79,13 +79,13 @@ func TestSessionWatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	watcher, err := sess.Watch(ctx)
 	if err != nil {
 		t.Fatalf("Watch: %v", err)
 	}
-	defer watcher.Close()
+	defer func() { _ = watcher.Close() }()
 
 	var sawOutput, sawExited bool
 	for {
@@ -120,7 +120,7 @@ func TestSessionSignal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 
 	if err := sess.Signal(ctx, sandbox.SessionSignalInterrupt); err != nil {
 		t.Fatalf("Signal: %v", err)

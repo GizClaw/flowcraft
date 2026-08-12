@@ -192,19 +192,6 @@ func (profile profileEntry) allows(operation Operation) bool {
 	return ok
 }
 
-func (profile profileEntry) filter(operations []Operation) []Operation {
-	if profile.operations == nil {
-		return append([]Operation(nil), operations...)
-	}
-	filtered := make([]Operation, 0, len(operations))
-	for _, operation := range operations {
-		if profile.allows(operation) {
-			filtered = append(filtered, operation)
-		}
-	}
-	return filtered
-}
-
 func (openers Openers) Operations() []Operation {
 	var operations []Operation
 	if openers.Generate != nil {

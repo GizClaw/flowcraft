@@ -473,6 +473,10 @@ type execConfig struct {
 // "agent owns some hooks; the call adds more" pattern.
 func applyOptions(ag Agent, opts []ExecuteOption) execConfig {
 	rc := execConfig{}
+	if ag.Policy.MaxRevise > 0 {
+		rc.maxRevise = ag.Policy.MaxRevise
+	}
+	rc.artifactChannels = append(rc.artifactChannels, ag.Policy.ArtifactChannels...)
 	for _, h := range ag.Observe {
 		if h != nil {
 			rc.hooks = append(rc.hooks, h)

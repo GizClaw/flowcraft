@@ -413,20 +413,6 @@ func WithCircuitBreaker(config CircuitBreakerConfig) Option {
 	}
 }
 
-func withTestClock(clock func() time.Time) Option {
-	return func(configured *routerOptions) error {
-		configured.clock = clock
-		return nil
-	}
-}
-
-func withTestSleeper(sleeper func(context.Context, time.Duration) error) Option {
-	return func(configured *routerOptions) error {
-		configured.sleeper = sleeper
-		return nil
-	}
-}
-
 func defaultSleeper(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

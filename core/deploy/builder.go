@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -69,27 +70,27 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		res := doc.Resources[name]
 		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
 		if !ok {
-			closeAll(values, order)
+			_ = closeAll(values, order)
 			return nil, errdefs.Validationf(
 				"deploy: resource %q: no factory for %s/%s",
 				name, res.Kind, res.Impl)
 		}
 		if err := validateDeps(factory, res.Deps); err != nil {
-			closeAll(values, order)
+			_ = closeAll(values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		settings := res.Settings
 		if b.loader != nil {
 			settings, err = resolveSettings(ctx, b.loader, settings)
 			if err != nil {
-				closeAll(values, order)
+				_ = closeAll(values, order)
 				return nil, errdefs.Validationf(
 					"deploy: resource %q: %v", name, err)
 			}
 		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
-			closeAll(values, order)
+			_ = closeAll(values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		value, err := factory.New(ctx, resource.Input{
@@ -98,7 +99,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 			Loader:   b.loader,
 		})
 		if err != nil {
-			closeAll(values, order)
+			_ = closeAll(values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		values[name] = value
@@ -233,6 +234,7 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 			ID:       name,
 			Card:     def.Card,
 			Tools:    def.Tools,
+			Policy:   def.Policy,
 			Engine:   engineContract,
 			Prepare:  prepare,
 			Observe:  observe,
@@ -432,9 +434,26 @@ func closeAll(values map[string]any, order []string) error {
 		if !ok {
 			continue
 		}
+		if isNilValue(closer) {
+			continue
+		}
 		if err := closer.Close(); err != nil && first == nil {
 			first = err
 		}
 	}
 	return first
+}
+
+func isNilValue(value any) bool {
+	if value == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }
