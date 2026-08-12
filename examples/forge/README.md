@@ -55,13 +55,13 @@ working directory, and the per-user config directory.
 
 Each `scenarios/raids/<name>/` is a complete workspace template:
 
-- `deploy.yaml` — the `sdkx/deploy` document: resources (event bus, scheduler,
-  workspace registry, inference assembly, tool assembly, JS script runtime),
-  the graph agent, and runtime integrations.
-- `inference.yaml` — provider profiles and secret resolvers.
-- `workspace.yaml` — the workspace registry root and layout.
-- `tools.yaml` — tool assembly policy; tool implementations are Go values
-  registered from `internal/simtools`.
+- `deploy.yaml` — the `core/deploy` resource document: event bus, simulated
+  tool source, tool assembly, workspace, DeepSeek provider, inference
+  assembly, JS script runtime, and the graph agent.
+- `inference.yaml` — provider profiles and secret resolvers (still used by
+  forge's credential preflight).
+- `workspace.yaml` / `tools.yaml` — authoring references kept alongside the
+  new inline resource settings; the runtime consumes deploy.yaml directly.
 - `graphs/assistant.yaml` — the graph definition, with `scripts/` and
   `prompts/` beside it (script sources and system prompts are referenced as
   `{"file": ...}`).
@@ -119,11 +119,13 @@ its own labelled block, and tool invocations appear as separate
 
 ## How it wires into the stack
 
-- `sdkx/deploy` + `sdkx/runtime` assemble the runtime from `deploy.yaml`;
-  `sdkx/runtime/session` drives turns and streams deltas to sinks.
-- The graph engine is `sdk/graph`, with script nodes running on the bundled JS
-  runtime (`sdkx/agent/script/jsrt`).
-- Simulated tools are Go values registered from `internal/simtools`.
+- `core/deploy` + `core/runtime` assemble the runtime from `deploy.yaml`;
+  `core/runtime/session` drives turns and streams deltas to sinks.
+- The graph engine is `core/graph/resource`, with script nodes running on the
+  bundled JS runtime (`core/agent/scriptrt/jsrt`).
+- Simulated tools are a `tool.Source` resource registered from
+  `internal/simtools`; the DeepSeek provider comes from
+  `driver/deepseek`.
 - `WithHostFactory` wraps the session host so every LLM call's token usage is
   mirrored onto the app for TUI display.
 

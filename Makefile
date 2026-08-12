@@ -7,10 +7,10 @@ SHELL := /bin/bash
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
 # sdk + sdkx are the tightly-coupled core that needs atomic in-tree edits
 # (sdkx imports sdk).
-MODULES_WORK := sdk memory sdkx examples/forge
+MODULES_WORK := core driver sdk memory sdkx examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := sdk memory memory/eval sdkx
+MODULES_LINT := core driver sdk memory memory/eval sdkx
 
 # `make fmt` mirrors the CI gofmt -s gate; memory/eval is included here
 # even though it is not part of MODULES_WORK (vet/test run).

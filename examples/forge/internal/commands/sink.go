@@ -2,42 +2,59 @@ package commands
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
+
 	"github.com/GizClaw/flowcraft/examples/forge/internal/chatfmt"
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
 )
 
 // textCollectorSink accumulates the streamed assistant text for
 // scripted turns.
 type textCollectorSink struct {
-	builder strings.Builder
-	tokens  int
-	first   time.Time
-	blocks  chatfmt.Collector
-	labels  func(nodeID string) string
+	builder   strings.Builder
+	tokens    int
+	first     time.Time
+	blocks    chatfmt.Collector
+	labels    func(nodeID string) string
+	callNames map[string]string
 }
 
 func (s *textCollectorSink) spec() session.SinkSpec {
 	return session.SinkSpec{
 		ID: "collector",
-		Sink: agent.StreamSinkFunc(func(_ context.Context, env event.Envelope, delta agent.StreamDeltaPayload) error {
-			switch delta.Type {
-			case agent.StreamDeltaToken:
+		Sink: agent.StreamSinkFunc(func(
+			_ context.Context,
+			env event.Envelope,
+			delta agent.StreamDeltaPayload,
+		) error {
+			if delta.Type != agent.StreamDeltaPart {
+				return nil
+			}
+			if s.callNames == nil {
+				s.callNames = make(map[string]string)
+			}
+			switch part := delta.Part.(type) {
+			case message.TextPart:
 				if s.tokens == 0 {
 					s.first = time.Now()
 				}
 				s.tokens++
-				s.builder.WriteString(delta.Content)
-				s.blocks.Token(env.NodeID(), delta.Content)
-			case agent.StreamDeltaToolCall:
-				s.blocks.ToolCall(delta.Name, fmt.Sprint(delta.Arguments))
-			case agent.StreamDeltaToolResult:
-				s.blocks.ToolResult(delta.Name, delta.Content)
+				s.builder.WriteString(part.Text)
+				s.blocks.Token(env.NodeID(), part.Text)
+			case message.ToolCallPart:
+				s.callNames[part.Call.ID] = part.Call.Name
+				s.blocks.ToolCall(part.Call.Name, string(part.Call.Arguments))
+			case message.ToolResultPart:
+				name := s.callNames[part.Result.CallID]
+				if name == "" {
+					name = part.Result.CallID
+				}
+				s.blocks.ToolResult(name, part.Result.Content)
 			}
 			return nil
 		}),

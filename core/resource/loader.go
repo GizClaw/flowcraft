@@ -55,6 +55,15 @@ func NewLoader(opts ...LoaderOption) *Loader {
 	return loader
 }
 
+// BaseDir returns the directory file references resolve against, or ""
+// when no base dir is configured.
+func (l *Loader) BaseDir() string {
+	if l == nil {
+		return ""
+	}
+	return l.baseDir
+}
+
 // Load materializes src: inline content is returned unchanged, file
 // and embed references are read and size-capped.
 func (l *Loader) Load(ctx context.Context, src Source) ([]byte, error) {

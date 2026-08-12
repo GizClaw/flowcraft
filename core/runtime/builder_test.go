@@ -68,6 +68,20 @@ func TestWithHostFactoryValidation(t *testing.T) {
 	}
 }
 
+func TestWithLoaderValidation(t *testing.T) {
+	builder := NewBuilder(resource.NewRegistry())
+	if err := builder.WithLoader(nil); !errdefs.IsValidation(err) {
+		t.Fatalf("nil loader error = %v, want validation", err)
+	}
+	loader := resource.NewLoader(resource.WithBaseDir(t.TempDir()))
+	if err := builder.WithLoader(loader); err != nil {
+		t.Fatalf("first loader: %v", err)
+	}
+	if err := builder.WithLoader(loader); !errdefs.IsValidation(err) {
+		t.Fatalf("duplicate loader error = %v, want validation", err)
+	}
+}
+
 func TestBuildRejectsInvalidEventBus(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

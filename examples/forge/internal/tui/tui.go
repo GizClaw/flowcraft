@@ -8,9 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/event"
-	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -154,6 +155,7 @@ type Model struct {
 	usageBefore   app.UsageSnapshot
 	usage         app.UsageSnapshot
 	curNodeID     string
+	callNames     map[string]string
 }
 
 // NewModel builds a TUI model over an open app.
@@ -186,6 +188,7 @@ func NewModel(a *app.App, workspacePath string) Model {
 		chatInput:     chat,
 		chatViewport:  chatViewport,
 		chatSpinner:   chatSpinner,
+		callNames:     make(map[string]string),
 	}
 }
 
@@ -258,13 +261,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.afterRun()
 		}
 		if msg.delta != nil {
-			switch msg.delta.Type {
-			case agent.StreamDeltaToken:
-				m.appendAssistant(msg.delta.Content, msg.nodeID)
-			case agent.StreamDeltaToolCall:
-				m.appendTool("tool_call", msg.delta.Name, fmt.Sprint(msg.delta.Arguments))
-			case agent.StreamDeltaToolResult:
-				m.appendTool("tool_result", msg.delta.Name, msg.delta.Content)
+			if msg.delta.Type == agent.StreamDeltaPart {
+				switch part := msg.delta.Part.(type) {
+				case message.TextPart:
+					m.appendAssistant(part.Text, msg.nodeID)
+				case message.ToolCallPart:
+					m.callNames[part.Call.ID] = part.Call.Name
+					m.appendTool("tool_call", part.Call.Name, string(part.Call.Arguments))
+				case message.ToolResultPart:
+					name := m.callNames[part.Result.CallID]
+					if name == "" {
+						name = part.Result.CallID
+					}
+					m.appendTool("tool_result", name, part.Result.Content)
+				}
 			}
 		}
 		return m, pollCmd(m.eventCh)

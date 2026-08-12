@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"path/filepath"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -42,6 +43,11 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 	if settings.Root == "" {
 		return nil, errdefs.Validationf(
 			"workspace: settings.root is required")
+	}
+	if !filepath.IsAbs(settings.Root) && in.Loader != nil {
+		if base := in.Loader.BaseDir(); base != "" {
+			settings.Root = filepath.Join(base, settings.Root)
+		}
 	}
 	local, err := NewLocalWorkspace(settings.Root)
 	if err != nil {

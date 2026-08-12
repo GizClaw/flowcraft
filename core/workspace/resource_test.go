@@ -3,6 +3,7 @@ package workspace_test
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -81,5 +82,33 @@ func TestFactoryScopedEnabled(t *testing.T) {
 	}
 	if err := scoped.Write(ctx, "public/ok.txt", []byte("x")); err != nil {
 		t.Fatalf("write to allowed path: %v", err)
+	}
+}
+
+func TestFactoryRelativeRootUsesLoaderBaseDir(t *testing.T) {
+	base := t.TempDir()
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	value, err := factory.New(context.Background(), resource.Input{
+		Settings: []byte(`{"root": "./ws"}`),
+		Loader:   resource.NewLoader(resource.WithBaseDir(base)),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	local, ok := value.(*workspace.LocalWorkspace)
+	if !ok {
+		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
+	}
+	want := filepath.Join(base, "ws")
+	resolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatalf("eval symlinks: %v", err)
+	}
+	if local.Root() != resolved {
+		t.Fatalf("root = %q, want %q", local.Root(), resolved)
 	}
 }

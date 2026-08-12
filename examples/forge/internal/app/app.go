@@ -13,20 +13,18 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/message"
-	"github.com/GizClaw/flowcraft/sdk/tool"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
-	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
 )
 
 // App owns one built runtime.
 type App struct {
 	info            Info
 	dir             string
-	rt              *runtimecore.Runtime
-	tools           *tool.Registry
+	rt              *runtime.Runtime
 	toolCalls       atomic.Int64
 	usageIn         atomic.Int64
 	usageOut        atomic.Int64
@@ -64,7 +62,7 @@ func Open(ctx context.Context, workspaceDir string) (*App, error) {
 	if err := requireProviderCredential(workspaceDir); err != nil {
 		return nil, err
 	}
-	a := &App{info: info, dir: workspaceDir, tools: tool.NewRegistry()}
+	a := &App{info: info, dir: workspaceDir}
 	rt, err := buildRuntimeFromDocument(ctx, a, doc)
 	if err != nil {
 		return nil, err

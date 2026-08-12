@@ -30,6 +30,7 @@ type Builder struct {
 	mu            sync.Mutex
 	used          bool
 	hostDecorator HostFactoryDecorator
+	loader        *resource.Loader
 }
 
 // NewBuilder creates a Runtime builder over a resource registry. The
@@ -58,6 +59,28 @@ func (b *Builder) WithHostFactory(decorator HostFactoryDecorator) error {
 		return errdefs.Validationf("runtime host factory decorator is already set")
 	}
 	b.hostDecorator = decorator
+	return nil
+}
+
+// WithLoader installs the deployment-level loader used to materialize
+// {"file":…} / {"embed":…} settings subtrees and agent engine/hook
+// settings. It is rejected after Build starts.
+func (b *Builder) WithLoader(loader *resource.Loader) error {
+	if b == nil {
+		return errdefs.Validationf("runtime Builder is nil")
+	}
+	if loader == nil {
+		return errdefs.Validationf("runtime loader is nil")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used {
+		return ErrBuilderUsed
+	}
+	if b.loader != nil {
+		return errdefs.Validationf("runtime loader is already set")
+	}
+	b.loader = loader
 	return nil
 }
 
@@ -90,7 +113,11 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		return nil, err
 	}
 
-	result, err := deploy.NewBuilder(reg).Deploy(ctx, doc)
+	deployBuilder := deploy.NewBuilder(reg)
+	if b.loader != nil {
+		deployBuilder = deploy.NewBuilder(reg, deploy.WithLoader(b.loader))
+	}
+	result, err := deployBuilder.Deploy(ctx, doc)
 	if err != nil {
 		return nil, fmt.Errorf("runtime build deployment: %w", err)
 	}

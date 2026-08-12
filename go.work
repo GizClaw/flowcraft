@@ -1,10 +1,11 @@
 go 1.26.0
 
 use (
+	./core
+	./driver
 	./examples/forge
 	./memory
 	./memory/eval
 	./sdk
 	./sdkx
-	./core
 )

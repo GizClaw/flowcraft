@@ -23,10 +23,8 @@
 !go.work
 !core/
 !core/**
-!cmd/
-!cmd/**
-!eval/
-!eval/**
+!driver/
+!driver/**
 !examples/
 !examples/**
 !memory/

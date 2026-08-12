@@ -221,6 +221,7 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 		engine, err := engineFactory.New(ctx, resource.Input{
 			Settings: def.Engine.Settings,
 			Deps:     engineDeps,
+			Loader:   b.loader,
 		})
 		if err != nil {
 			return errdefs.Validationf("deploy: agent %q engine: %v", name, err)
@@ -300,6 +301,7 @@ func buildHookList[T any](
 		value, err := factory.New(ctx, resource.Input{
 			Settings: entry.Settings,
 			Deps:     deps,
+			Loader:   b.loader,
 		})
 		if err != nil {
 			return nil, errdefs.Validationf(
