@@ -4,8 +4,11 @@ go 1.26.0
 
 require (
 	github.com/creack/pty v1.1.24
+	github.com/dop251/goja v0.0.0-20260219130522-0ba9a5494a59
+	github.com/expr-lang/expr v1.17.8
 	github.com/rs/xid v1.6.0
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
+	github.com/yuin/gopher-lua v1.1.1
 	go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp v0.16.0
@@ -25,8 +28,11 @@ require (
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
+	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
