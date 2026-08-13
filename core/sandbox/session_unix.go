@@ -226,6 +226,12 @@ func (s *localSession) CloseInput() error {
 	}
 	err := s.stdin.Close()
 	s.stdin = nil
+	if errors.Is(err, os.ErrClosed) {
+		// cmd.Wait (running in reap) closes the parent-side stdin write
+		// end once the child exits. Racing that cleanup is a successful
+		// no-op: the input is already closed, which is the desired state.
+		return nil
+	}
 	return err
 }
 
