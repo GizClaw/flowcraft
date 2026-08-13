@@ -41,6 +41,14 @@ resources:
         allow_write: ["**"]
 ```
 
+`settings.root` supports scalar settings expansion: `${env:NAME}` reads an
+environment variable (an unset variable fails the build), `${base}` /
+`${base:rel}` resolve against the deployment document's base dir, and `~`,
+`~/...`, `${home}`, `${home:rel}` resolve against the user home directory. A
+plain relative root still resolves against the deployment base dir. Expansion
+applies to the whole settings subtree, so scoped patterns expand too; they
+must remain relative paths.
+
 Object-store backends are app-registered and not part of the current core module.
 
 See [sandbox.md](sandbox.md) for the execution boundary.

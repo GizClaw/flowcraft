@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
@@ -110,5 +111,79 @@ func TestFactoryRelativeRootUsesLoaderBaseDir(t *testing.T) {
 	}
 	if local.Root() != resolved {
 		t.Fatalf("root = %q, want %q", local.Root(), resolved)
+	}
+}
+
+func TestFactoryExpandsSettingsRefs(t *testing.T) {
+	envRoot := t.TempDir()
+	base := t.TempDir()
+	home := t.TempDir()
+	t.Setenv("FLOWCRAFT_TEST_WS_ROOT", envRoot)
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+
+	for _, tc := range []struct {
+		name string
+		root string
+		want string
+	}{
+		{"env", "${env:FLOWCRAFT_TEST_WS_ROOT}", envRoot},
+		{"base", "${base}", base},
+		{"base rel", "${base:ws}", filepath.Join(base, "ws")},
+		{"home tilde", "~/ws", filepath.Join(home, "ws")},
+		{"home ref", "${home:ws}", filepath.Join(home, "ws")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			value, err := factory.New(context.Background(), resource.Input{
+				Settings: []byte(`{"root": "` + tc.root + `"}`),
+				Loader:   resource.NewLoader(resource.WithBaseDir(base)),
+			})
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			local, ok := value.(*workspace.LocalWorkspace)
+			if !ok {
+				t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
+			}
+			want, err := filepath.EvalSymlinks(tc.want)
+			if err != nil {
+				t.Fatalf("eval symlinks: %v", err)
+			}
+			if local.Root() != want {
+				t.Fatalf("root = %q, want %q", local.Root(), want)
+			}
+		})
+	}
+}
+
+func TestFactoryExpansionErrors(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := workspace.Register(reg); err != nil {
+		t.Fatal(err)
+	}
+	factory, _ := reg.Lookup("workspace.Workspace", "local")
+
+	for _, tc := range []struct {
+		name     string
+		settings string
+	}{
+		{"unset env", `{"root": "${env:FLOWCRAFT_TEST_WS_UNSET}"}`},
+		{"unknown ref", `{"root": "${unknown}"}`},
+		{"base without base dir", `{"root": "${base}"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := factory.New(context.Background(), resource.Input{
+				Settings: []byte(tc.settings),
+			})
+			if !errdefs.IsValidation(err) {
+				t.Fatalf("New error = %v, want validation error", err)
+			}
+		})
 	}
 }
