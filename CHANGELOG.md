@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.1` - 2026-08-13
+
+### Changed
+
+- Fold sandbox backends into core/sandbox, split local runner into core/sandbox/local, and move net policy/proxy/mitm into core/utils/net
 
 ## `core/v0.1.0` - 2026-08-13
 
