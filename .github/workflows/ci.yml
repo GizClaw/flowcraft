@@ -165,7 +165,7 @@ jobs:
         working-directory: ${{ matrix.module }}
 
   test-sandbox-bwrap:
-    name: Integration backends/sandbox/bwrap
+    name: Integration core/sandbox/bwrap
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -185,7 +185,7 @@ jobs:
           bwrap --version
       - name: Test
         run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
-        working-directory: backends/sandbox
+        working-directory: core/sandbox
 
   ci-pass:
     name: CI

@@ -11,7 +11,6 @@ use (
 	./driver/kimi
 	./driver/bytedance
 	./examples/forge
-	./backends/sandbox
 	./backends/checkpoint
 	./memory
 	./memory/eval

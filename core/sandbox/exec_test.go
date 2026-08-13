@@ -8,13 +8,14 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
-var _ sandbox.Runner = (*sandbox.LocalRunner)(nil)
+var _ sandbox.Runner = (*local.Runner)(nil)
 
-func localRunner(t *testing.T) *sandbox.LocalRunner {
+func localRunner(t *testing.T) *local.Runner {
 	t.Helper()
-	return sandbox.NewLocalRunner(t.TempDir())
+	return local.New(t.TempDir())
 }
 
 func TestExecEcho(t *testing.T) {
@@ -77,7 +78,7 @@ func TestExecTimeout(t *testing.T) {
 	}
 }
 
-func TestLocalRunnerExecMethod(t *testing.T) {
+func TestRunnerExecMethod(t *testing.T) {
 	result, err := localRunner(t).Exec(
 		context.Background(), "echo", []string{"ok"}, sandbox.ExecOptions{})
 	if err != nil {

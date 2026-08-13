@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 )
 
 // ExecRequest is a snapshot of one Runner.Exec call (or one
@@ -246,7 +247,7 @@ func Interactive() Predicate {
 // network posture other than NetDefault.
 func NetNonDefault() Predicate {
 	return PredicateFunc(func(req ExecRequest) (string, bool) {
-		if req.Opts.Net.Mode != NetDefault {
+		if req.Opts.Net.Mode != corenet.NetDefault {
 			return fmt.Sprintf("non-default network policy requested (mode %d)", req.Opts.Net.Mode), true
 		}
 		return "", false
@@ -258,7 +259,7 @@ func NetNonDefault() Predicate {
 // WorkDir values always stay under the runner root and never match.
 // Note the approval flow this enables: the approver is *asked* about
 // the escape; whether the escape then actually runs is still the
-// backend's decision (LocalRunner rejects out-of-root WorkDir
+// backend's decision (sandbox/local rejects out-of-root WorkDir
 // outright).
 func WorkDirOutsideRoot(root string) Predicate {
 	real, err := filepath.Abs(root)
@@ -273,7 +274,7 @@ func WorkDirOutsideRoot(root string) Predicate {
 			return "", false
 		}
 		abs := filepath.Clean(wd)
-		resolved, err := evalExistingPrefix(abs)
+		resolved, err := EvalExistingPrefix(abs)
 		if err != nil {
 			resolved = abs
 		}

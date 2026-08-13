@@ -251,7 +251,7 @@ Reference material:
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
 - [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai) — example provider adapter.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/backends/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/backends/sandbox) — sandbox backends.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/core/sandbox) — sandbox backends.
 
 ## Status
 

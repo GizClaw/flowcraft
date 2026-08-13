@@ -65,7 +65,7 @@ var sampleGroupFn = sampleGroup
 // memory footprint still trips the cap on the sum.
 //
 // The type is exported for sandbox.Runner backend authors (e.g.
-// backends/sandbox/seatbelt): start it after launching a child that leads
+// core/sandbox/seatbelt): start it after launching a child that leads
 // its own process group, and Stop it after reaping the child.
 type GroupCapsWatcher struct {
 	// ctx is captured at Start time so telemetry emitted by the

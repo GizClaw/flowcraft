@@ -6,10 +6,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/sandbox/local"
 )
 
-func TestLocalRunnerCapabilities(t *testing.T) {
-	r := sandbox.NewLocalRunner(t.TempDir())
+func TestRunnerCapabilities(t *testing.T) {
+	r := local.New(t.TempDir())
 	caps := r.Capabilities()
 
 	if !caps.Policy.EnvAllowList {
@@ -25,7 +26,7 @@ func TestLocalRunnerCapabilities(t *testing.T) {
 	}
 	// Sessions either exist on the platform with the full local feature
 	// set, or not at all — the three flags must never diverge for
-	// LocalRunner.
+	// local.Runner.
 	if caps.Features.TTY != caps.Features.Signal ||
 		caps.Features.Signal != caps.Features.Events {
 		t.Errorf("session features diverge: %+v", caps.Features)
@@ -34,7 +35,7 @@ func TestLocalRunnerCapabilities(t *testing.T) {
 
 func TestStartReturnsSessionWithCapabilities(t *testing.T) {
 	ctx := context.Background()
-	r := sandbox.NewLocalRunner(t.TempDir())
+	r := local.New(t.TempDir())
 
 	sess, err := r.Start(ctx, sandbox.SessionSpec{
 		Argv: []string{"sh", "-c", "echo hi"},
@@ -71,7 +72,7 @@ func TestStartReturnsSessionWithCapabilities(t *testing.T) {
 func TestSessionWatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	r := sandbox.NewLocalRunner(t.TempDir())
+	r := local.New(t.TempDir())
 
 	sess, err := r.Start(ctx, sandbox.SessionSpec{
 		Argv: []string{"sh", "-c", "echo out; sleep 0.2; echo done"},
@@ -112,7 +113,7 @@ func TestSessionWatch(t *testing.T) {
 func TestSessionSignal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	r := sandbox.NewLocalRunner(t.TempDir())
+	r := local.New(t.TempDir())
 
 	sess, err := r.Start(ctx, sandbox.SessionSpec{
 		Argv: []string{"sleep", "30"},

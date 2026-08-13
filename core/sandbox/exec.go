@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 )
 
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot Exec
@@ -17,7 +18,7 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 // Field semantics:
 //
 //   - WorkDir: directory the command runs in. Relative paths are resolved
-//     against the runner's root (e.g. LocalRunner.rootDir); absolute paths
+//     against the runner's root (e.g. local.Runner.rootDir); absolute paths
 //     must stay inside the root or the call is rejected with
 //     ErrPathTraversal. Empty means "use the runner's root".
 //   - Stdin: bytes piped to the command's stdin. nil means no stdin.
@@ -25,8 +26,8 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     (the caller's ctx still applies).
 //   - Env: see EnvPolicy. Replaces the historical "inherit everything"
 //     behaviour while staying back-compat when EnvPolicy.Allow is nil.
-//   - Net: see NetPolicy. LocalRunner only accepts NetDefault.
-//   - Resources: see ResourceLimits. LocalRunner enforces MemoryBytes,
+//   - Net: see NetPolicy. The local runner only accepts NetDefault.
+//   - Resources: see ResourceLimits. The local runner enforces MemoryBytes,
 //     CPUMillicores (with Timeout), and MaxOutputBytes; DiskBytes is
 //     still errdefs.NotAvailable.
 type ExecOptions struct {
@@ -34,7 +35,7 @@ type ExecOptions struct {
 	Stdin     []byte
 	Timeout   time.Duration
 	Env       EnvPolicy
-	Net       NetPolicy
+	Net       corenet.NetPolicy
 	Resources ResourceLimits
 }
 
@@ -52,7 +53,7 @@ type ExecResult struct {
 // through the runner's session capability. The command is started as a
 // non-TTY process, stdin is written and closed, stdout/stderr are
 // collected (truncated to the first MaxOutputBytes per stream, the
-// same semantics as the former LocalRunner.Exec), and the exit code is
+// same semantics as the former local Runner.Exec), and the exit code is
 // surfaced on ExecResult. Non-zero exits return err == nil.
 //
 // Policy enforcement (net posture, workdir confinement, resource
