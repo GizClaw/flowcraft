@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): runtime prompt event subscription, prompt lifecycle resolved events, and sandbox allowlist approval composition",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -30,6 +31,18 @@ type promptEntry struct {
 	state   promptState
 	outcome chan promptOutcome
 }
+
+// promptResolution records one prompt that left the pending state, so
+// the caller can publish PromptResolved after releasing the turn lock.
+type promptResolution struct {
+	promptID string
+	status   PromptStatus
+}
+
+// promptResolvePublishTimeout bounds the best-effort PromptResolved
+// publish so a slow subscriber can never stall turn finalization or
+// interrupt handling.
+const promptResolvePublishTimeout = 2 * time.Second
 
 // Reply supplies a response to one prompt without affecting other prompts.
 func (t *Turn) Reply(ctx context.Context, promptID string, reply agent.UserReply) error {
@@ -58,6 +71,7 @@ func (t *Turn) Reply(ctx context.Context, promptID string, reply agent.UserReply
 		entry.outcome <- promptOutcome{reply: reply}
 		t.mu.Unlock()
 		t.session.changeActivity(activityPrompt, -1)
+		t.publishPromptResolved(t.host, promptID, PromptReplied)
 		return nil
 	default:
 		t.mu.Unlock()
@@ -107,6 +121,7 @@ func (t *Turn) askUser(ctx context.Context, prompt agent.UserPrompt) (agent.User
 	if err != nil {
 		if t.resolvePrompt(promptID, promptClosed, promptOutcome{err: err}) {
 			t.session.changeActivity(activityPrompt, -1)
+			t.publishPromptResolved(host, promptID, PromptClosed)
 		}
 		return agent.UserReply{}, err
 	}
@@ -118,6 +133,7 @@ func (t *Turn) askUser(ctx context.Context, prompt agent.UserPrompt) (agent.User
 		ctxErr := errdefs.FromContext(ctx.Err())
 		if t.resolvePrompt(promptID, promptExpired, promptOutcome{err: ctxErr}) {
 			t.session.changeActivity(activityPrompt, -1)
+			t.publishPromptResolved(host, promptID, PromptExpired)
 			return agent.UserReply{}, ctxErr
 		}
 		outcome := <-entry.outcome
@@ -140,36 +156,70 @@ func (t *Turn) resolvePrompt(promptID string, state promptState, outcome promptO
 	return true
 }
 
-func (t *Turn) interruptPendingPromptsLocked(interrupt agent.Interrupt) int {
-	changed := 0
-	for _, entry := range t.prompts {
+func (t *Turn) interruptPendingPromptsLocked(interrupt agent.Interrupt) []promptResolution {
+	var resolved []promptResolution
+	for promptID, entry := range t.prompts {
 		if entry.state != promptPending {
 			continue
 		}
 		entry.state = promptInterrupted
 		entry.outcome <- promptOutcome{err: agent.Interrupted(interrupt)}
-		changed++
+		resolved = append(resolved, promptResolution{
+			promptID: promptID,
+			status:   PromptInterrupted,
+		})
 	}
-	return changed
+	return resolved
 }
 
-func (t *Turn) closePendingPromptsLocked() int {
-	changed := 0
-	for _, entry := range t.prompts {
+func (t *Turn) closePendingPromptsLocked() []promptResolution {
+	var resolved []promptResolution
+	for promptID, entry := range t.prompts {
 		if entry.state != promptPending {
 			continue
 		}
 		entry.state = promptClosed
 		entry.outcome <- promptOutcome{err: ErrPromptClosed}
-		changed++
+		resolved = append(resolved, promptResolution{
+			promptID: promptID,
+			status:   PromptClosed,
+		})
 	}
-	return changed
+	return resolved
 }
 
 func (t *Turn) finishPromptActivity(count int) {
 	if count > 0 {
 		t.session.changeActivity(activityPrompt, -count)
 	}
+}
+
+// publishPromptResolved emits one best-effort PromptResolved envelope.
+// It is called only after the turn lock is released — Publish can block
+// on Block-backpressure subscribers, so it must never run under t.mu.
+func (t *Turn) publishPromptResolved(host agent.Host, promptID string, status PromptStatus) {
+	if t == nil || host == nil || promptID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(t.runCtx),
+		promptResolvePublishTimeout,
+	)
+	defer cancel()
+	envelope, err := event.NewEnvelope(ctx, SubjectPromptResolved(t.runID), PromptResolved{
+		RunID:    t.runID,
+		TurnID:   t.runID,
+		PromptID: promptID,
+		Status:   status,
+	})
+	if err != nil {
+		return
+	}
+	envelope.SetRunID(t.runID)
+	if t.session != nil {
+		envelope.SetAgentID(t.session.key.AgentID)
+	}
+	_ = host.Publish(ctx, envelope)
 }
 
 func randomID() (string, error) {

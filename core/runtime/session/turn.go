@@ -114,9 +114,12 @@ func (t *Turn) Interrupt(interrupt agent.Interrupt) error {
 	case t.interrupts <- interrupt:
 	default:
 	}
-	prompts := t.interruptPendingPromptsLocked(interrupt)
+	resolved := t.interruptPendingPromptsLocked(interrupt)
 	t.mu.Unlock()
-	t.finishPromptActivity(prompts)
+	t.finishPromptActivity(len(resolved))
+	for _, r := range resolved {
+		t.publishPromptResolved(t.host, r.promptID, r.status)
+	}
 	return nil
 }
 
@@ -213,13 +216,16 @@ func (t *Turn) finish(result *agent.Result, err error) {
 	t.result = result
 	t.err = err
 	t.state = terminalState(result, err)
-	prompts := t.closePendingPromptsLocked()
+	resolved := t.closePendingPromptsLocked()
 	attachments := append([]*queuedSink(nil), t.attachments...)
 	coordinator := t.coordinator
 	detachCoordinator := t.coordinatorDetach
 	t.mu.Unlock()
 
-	t.finishPromptActivity(prompts)
+	t.finishPromptActivity(len(resolved))
+	for _, r := range resolved {
+		t.publishPromptResolved(t.host, r.promptID, r.status)
+	}
 	var runEndErr *agent.RunEndPublishError
 	runEndFailed := result != nil && errors.As(result.Err, &runEndErr)
 	var finalizeErr error

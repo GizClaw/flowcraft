@@ -69,13 +69,24 @@ type ApprovalRequest struct {
 type ApprovalFunc func(ctx context.Context, req ApprovalRequest) (Decision, error)
 
 // WithApproval returns a Runner that consults approve before
-// delegating to inner, but only when at least one predicate matches.
-// In-bounds calls pass straight through without any approver
-// round-trip. When several predicates match, only the first one's
-// reason is reported — one call, one decision.
+// delegating to inner, but only when the call is out-of-bounds.
+// Calls matching allowlist are pre-approved and pass straight through
+// without any approver round-trip. When allowlist is non-nil, every
+// other call consults the approver (reason "command not in sandbox
+// allowlist"); predicates add extra tripwires on top of that (workdir
+// escapes, non-default network posture, …). When several predicates
+// match, only the first one's reason is reported — one call, one
+// decision. With allowlist nil, only predicate-matching calls reach
+// the approver.
 //
 // Contract:
 //
+//   - allowlist may be nil (no pre-approved commands) or an empty
+//     list (every call goes through the approver).
+//   - Matching the allowlist bypasses the predicates as well: it is a
+//     blanket pre-authorization of the call. Deployments that also
+//     want per-call approval on other dimensions (network posture,
+//     workdir) should keep those calls out of the allowlist.
 //   - Denied decisions surface as errdefs.PolicyDenied and the inner
 //     runner is never invoked.
 //   - ApprovalFunc errors are fail-closed: the call does not run.
@@ -90,14 +101,15 @@ type ApprovalFunc func(ctx context.Context, req ApprovalRequest) (Decision, erro
 // the effective policy. Reversing them makes the approver see only the
 // caller's pre-merge options. The recommended local chain uses the
 // former ordering.
-func WithApproval(inner Runner, approve ApprovalFunc, preds ...Predicate) Runner {
-	return &approvalRunner{inner: inner, approve: approve, preds: preds}
+func WithApproval(inner Runner, approve ApprovalFunc, allowlist *Allowlist, preds ...Predicate) Runner {
+	return &approvalRunner{inner: inner, approve: approve, allowlist: allowlist, preds: preds}
 }
 
 type approvalRunner struct {
-	inner   Runner
-	approve ApprovalFunc
-	preds   []Predicate
+	inner     Runner
+	approve   ApprovalFunc
+	allowlist *Allowlist
+	preds     []Predicate
 }
 
 func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, opts ExecOptions) (*ExecResult, error) {
@@ -108,10 +120,13 @@ func (r *approvalRunner) Exec(ctx context.Context, cmd string, args []string, op
 	return Exec(ctx, r.inner, cmd, args, opts)
 }
 
-// authorize runs the predicate / approver chain for one request. It is
-// shared by Exec and Runner.Start so interactive sessions go
-// through exactly the same fail-closed tripwire.
+// authorize runs the allowlist / predicate / approver chain for one
+// request. It is shared by Exec and Runner.Start so interactive
+// sessions go through exactly the same fail-closed tripwire.
 func (r *approvalRunner) authorize(ctx context.Context, req ExecRequest) error {
+	if r.allowlist != nil && r.allowlist.Matches(req) {
+		return nil
+	}
 	for _, p := range r.preds {
 		if p == nil {
 			return errdefs.PolicyDeniedf(
@@ -125,23 +140,30 @@ func (r *approvalRunner) authorize(ctx context.Context, req ExecRequest) error {
 		if !matched {
 			continue
 		}
-		if r.approve == nil {
-			return errdefs.PolicyDeniedf(
-				"sandbox: %s (no approver configured)", reason)
-		}
-		decision, err := r.approve(ctx, ApprovalRequest{
-			Exec:   cloneExecRequest(req),
-			Reason: reason,
-		})
-		if err != nil {
-			return fmt.Errorf(
-				"sandbox: approval for %q failed; not executed (fail-closed): %w", req.Command, err)
-		}
-		if decision != Allow {
-			return errdefs.PolicyDeniedf(
-				"sandbox: execution of %q denied: %s", req.Command, reason)
-		}
-		break
+		return r.requestApproval(ctx, req, reason)
+	}
+	if r.allowlist != nil {
+		return r.requestApproval(ctx, req, "command not in sandbox allowlist")
+	}
+	return nil
+}
+
+func (r *approvalRunner) requestApproval(ctx context.Context, req ExecRequest, reason string) error {
+	if r.approve == nil {
+		return errdefs.PolicyDeniedf(
+			"sandbox: %s (no approver configured)", reason)
+	}
+	decision, err := r.approve(ctx, ApprovalRequest{
+		Exec:   cloneExecRequest(req),
+		Reason: reason,
+	})
+	if err != nil {
+		return fmt.Errorf(
+			"sandbox: approval for %q failed; not executed (fail-closed): %w", req.Command, err)
+	}
+	if decision != Allow {
+		return errdefs.PolicyDeniedf(
+			"sandbox: execution of %q denied: %s", req.Command, reason)
 	}
 	return nil
 }

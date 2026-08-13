@@ -47,3 +47,6 @@ resources:
 ```
 
 The runtime host exposes the bus through `agent.EventBusProvider`.
+Runtime-level consumers can also subscribe through `Runtime.Attach`
+without resolving the resource themselves; the prompt lifecycle events
+are documented in [prompt.md](prompt.md).

@@ -172,11 +172,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		catalogProvider = newDynamicCatalogProvider(assemblies)
 	}
 
-	// The session coordinator must observe every run event and stream
-	// delta in order; a dropping subscription could lose run-end
-	// delimiters or confirmed deltas, so the router blocks instead of
-	// using the bus default.
-	router := event.NewRouter(bus, event.WithDefaultAttachBackpressure(event.Block))
+	router := event.NewRouter(bus)
 	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
