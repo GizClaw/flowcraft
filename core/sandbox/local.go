@@ -55,7 +55,7 @@ func WithMaxOutputBytes(n int64) Option {
 type LocalRunner struct {
 	rootDir          string
 	defaultMaxOutput int64
-	sessions         *sessionRegistry
+	sessions         *SessionRegistry
 	registryOnce     sync.Once
 }
 
@@ -124,7 +124,7 @@ func (r *LocalRunner) Terminate(ctx context.Context, id string) error {
 // registry returns the session registry, initialising it lazily so a
 // zero-value LocalRunner still answers with NotAvailable instead of
 // panicking on a nil interface.
-func (r *LocalRunner) registry() *sessionRegistry {
+func (r *LocalRunner) registry() *SessionRegistry {
 	r.registryOnce.Do(func() {
 		if r.sessions == nil {
 			r.sessions = NewSessionRegistry(r.spawnProcess)

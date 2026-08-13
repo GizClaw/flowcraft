@@ -30,17 +30,19 @@ type managerEntry struct {
 // It borrows its resolver, HostFactory, and event router and never
 // closes them.
 type Manager struct {
-	resolver          InstanceResolver
-	hostFactory       HostFactory
-	router            *event.Router
-	idleTimeout       time.Duration
-	sinkBuffer        int
-	speculativeEvents int
-	speculativeBytes  int
-	checkpoints       agent.CheckpointStore
-	resume            bool
-	observer          SessionObserver
-	catalogProvider   CatalogProvider
+	resolver            InstanceResolver
+	hostFactory         HostFactory
+	router              *event.Router
+	idleTimeout         time.Duration
+	sinkBuffer          int
+	speculativeEvents   int
+	speculativeBytes    int
+	deliveryConcurrency int
+	maxSessions         int
+	checkpoints         agent.CheckpointStore
+	resume              bool
+	observer            SessionObserver
+	catalogProvider     CatalogProvider
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -68,8 +70,10 @@ func NewManager(
 
 	opts := managerOptions{
 		idleTimeout: defaultIdleTimeout, sinkBuffer: defaultSinkBuffer,
-		speculativeEvents: defaultSpeculativeBufferEvents,
-		speculativeBytes:  defaultSpeculativeBufferBytes,
+		speculativeEvents:   defaultSpeculativeBufferEvents,
+		speculativeBytes:    defaultSpeculativeBufferBytes,
+		deliveryConcurrency: defaultDeliveryConcurrency,
+		maxSessions:         defaultMaxSessions,
 	}
 	for _, option := range options {
 		if isNil(option) {
@@ -90,18 +94,20 @@ func NewManager(
 		}
 	}
 	return &Manager{
-		resolver:          resolver,
-		hostFactory:       hostFactory,
-		router:            router,
-		idleTimeout:       opts.idleTimeout,
-		sinkBuffer:        opts.sinkBuffer,
-		speculativeEvents: opts.speculativeEvents,
-		speculativeBytes:  opts.speculativeBytes,
-		checkpoints:       opts.checkpoints,
-		resume:            opts.resume,
-		observer:          opts.observer,
-		catalogProvider:   opts.catalogProvider,
-		entries:           make(map[Key]*managerEntry),
+		resolver:            resolver,
+		hostFactory:         hostFactory,
+		router:              router,
+		idleTimeout:         opts.idleTimeout,
+		sinkBuffer:          opts.sinkBuffer,
+		speculativeEvents:   opts.speculativeEvents,
+		speculativeBytes:    opts.speculativeBytes,
+		deliveryConcurrency: opts.deliveryConcurrency,
+		maxSessions:         opts.maxSessions,
+		checkpoints:         opts.checkpoints,
+		resume:              opts.resume,
+		observer:            opts.observer,
+		catalogProvider:     opts.catalogProvider,
+		entries:             make(map[Key]*managerEntry),
 	}, nil
 }
 
@@ -143,6 +149,10 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 		}
 		return newLease(m, key, entry.session), nil
 	}
+	if m.maxSessions > 0 && len(m.entries) >= m.maxSessions {
+		return nil, errdefs.RateLimitf(
+			"runtime session: max sessions reached (%d)", m.maxSessions)
+	}
 
 	instance, ok := m.resolver.Instance(key.AgentID)
 	if !ok {
@@ -153,7 +163,7 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	}
 	session := newSession(
 		key, instance, m.hostFactory, m.router, m.sinkBuffer,
-		m.speculativeEvents, m.speculativeBytes,
+		m.speculativeEvents, m.speculativeBytes, m.deliveryConcurrency,
 		m.checkpoints, m.resume,
 		m.catalogProvider,
 		func(changed *Session) {

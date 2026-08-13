@@ -16,7 +16,11 @@ package event
 import (
 	"context"
 	"errors"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
 )
+
+const maxMemoryBufferSize = 1 << 20
 
 // ErrBusClosed is returned by Publish / Subscribe after a Bus has been
 // closed. Implementations must return this exact value (not a wrapped
@@ -73,14 +77,20 @@ type subOptions struct {
 	backpressure BackpressurePolicy
 	predicate    func(Envelope) bool
 	sampleRate   float64
+	err          error
 }
 
 // WithBufferSize sets the buffered channel capacity. Values <= 0 fall back
-// to the default (64).
+// to the default (64). Values above 1 MiB are rejected at Subscribe time.
 func WithBufferSize(n int) SubOption {
 	return func(o *subOptions) {
 		if n > 0 {
 			o.bufferSize = n
+			if n > maxMemoryBufferSize {
+				o.err = errdefs.Validationf(
+					"event: subscription buffer size %d exceeds max %d",
+					n, maxMemoryBufferSize)
+			}
 		}
 	}
 }

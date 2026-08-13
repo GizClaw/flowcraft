@@ -10,7 +10,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 )
 
-const defaultSinkDeliveryTimeout = 30 * time.Second
+const (
+	defaultSinkDeliveryTimeout     = 30 * time.Second
+	defaultSinkDeliveryConcurrency = 8
+)
 
 type sinkItem struct {
 	ctx   context.Context
@@ -26,6 +29,7 @@ type queuedSink struct {
 	delivered func(string, DeliveryCursor)
 	onDetach  func(error)
 	queue     chan sinkItem
+	delivery  chan struct{}
 	stop      chan struct{}
 	done      chan struct{}
 
@@ -39,12 +43,19 @@ type sinkDetach struct {
 
 func newQueuedSink(session *Session, runID string, spec SinkSpec, size int) *queuedSink {
 	return &queuedSink{
-		spec:    spec,
-		session: session,
-		runEnd:  agent.SubjectRunEnd(runID),
-		queue:   make(chan sinkItem, size),
-		stop:    make(chan struct{}),
-		done:    make(chan struct{}),
+		spec:     spec,
+		session:  session,
+		runEnd:   agent.SubjectRunEnd(runID),
+		queue:    make(chan sinkItem, size),
+		delivery: make(chan struct{}, defaultSinkDeliveryConcurrency),
+		stop:     make(chan struct{}),
+		done:     make(chan struct{}),
+	}
+}
+
+func (s *queuedSink) setDeliveryConcurrency(limit int) {
+	if limit > 0 {
+		s.delivery = make(chan struct{}, limit)
 	}
 }
 
@@ -106,8 +117,14 @@ func (s *queuedSink) deliver(item sinkItem) (bool, error) {
 			s.offered(s.spec.ID, cursor)
 		}
 	}
+	select {
+	case s.delivery <- struct{}{}:
+	case <-s.stop:
+		return false, nil
+	}
 	result := make(chan error, 1)
 	go func() {
+		defer func() { <-s.delivery }()
 		result <- s.spec.Sink.OnDelta(ctx, item.env, item.delta)
 	}()
 

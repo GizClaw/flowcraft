@@ -31,7 +31,8 @@ const (
 	// sessionTerminateGrace is how long Terminate waits after SIGTERM
 	// before escalating to SIGKILL, so TUI/REPL children get a chance
 	// to restore the terminal and flush state.
-	sessionTerminateGrace = 2 * time.Second
+	sessionTerminateGrace   = 2 * time.Second
+	sessionWriteConcurrency = 4
 )
 
 // StartSession launches an already-configured *exec.Cmd as a Session.
@@ -73,10 +74,11 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 	}
 
 	s := &localSession{
-		id:   id,
-		cmd:  cmd,
-		out:  newOutputLog(spec.Opts.Resources.MaxOutputBytes),
-		done: make(chan struct{}),
+		id:         id,
+		cmd:        cmd,
+		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
+		done:       make(chan struct{}),
+		writeSlots: make(chan struct{}, sessionWriteConcurrency),
 	}
 
 	if spec.TTY {
@@ -167,15 +169,16 @@ func (r *LocalRunner) spawnProcess(ctx context.Context, spec SessionSpec) (Sessi
 // child's stdio (pipes or pty), the bounded replayable output log,
 // and the resource-cap watcher.
 type localSession struct {
-	id      string
-	cmd     *exec.Cmd
-	ptmx    *os.File
-	stdin   io.WriteCloser
-	proc    *os.Process
-	pgid    int
-	out     *outputLog
-	watcher *GroupCapsWatcher
-	copiers sync.WaitGroup
+	id         string
+	cmd        *exec.Cmd
+	ptmx       *os.File
+	stdin      io.WriteCloser
+	proc       *os.Process
+	pgid       int
+	out        *outputLog
+	watcher    *GroupCapsWatcher
+	copiers    sync.WaitGroup
+	writeSlots chan struct{}
 
 	mu         sync.Mutex
 	closed     bool
@@ -212,8 +215,16 @@ func (s *localSession) Write(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
+	select {
+	case s.writeSlots <- struct{}{}:
+	case <-ctx.Done():
+		return errdefs.FromContext(ctx.Err())
+	case <-s.done:
+		return ErrSessionClosed
+	}
 	done := make(chan error, 1)
 	go func() {
+		defer func() { <-s.writeSlots }()
 		_, err := io.Copy(s.stdin, bytes.NewReader(data))
 		done <- err
 	}()

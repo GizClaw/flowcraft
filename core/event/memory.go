@@ -485,6 +485,9 @@ func (b *MemoryBus) Subscribe(ctx context.Context, pattern Pattern, opts ...SubO
 	for _, fn := range opts {
 		fn(&o)
 	}
+	if o.err != nil {
+		return nil, o.err
+	}
 
 	b.mu.Lock()
 	if b.closed {

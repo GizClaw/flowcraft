@@ -16,6 +16,12 @@ const (
 	defaultSinkBuffer              = 256
 	defaultSpeculativeBufferEvents = 1024
 	defaultSpeculativeBufferBytes  = 1 << 20
+	defaultDeliveryConcurrency     = 8
+	defaultMaxSessions             = 1024
+	maxSinkBuffer                  = 1 << 20
+	maxSpeculativeBufferEvents     = 1 << 20
+	maxSpeculativeBufferBytes      = 256 << 20
+	maxDeliveryConcurrency         = 1024
 )
 
 // Config is the strictly decoded deploy.Document.Runtime subtree.
@@ -36,6 +42,8 @@ type SessionConfig struct {
 	SinkBuffer              int
 	SpeculativeBufferEvents int
 	SpeculativeBufferBytes  int
+	DeliveryConcurrency     int
+	MaxSessions             int
 	Resume                  bool
 }
 
@@ -60,6 +68,8 @@ type sessionConfigWire struct {
 	SinkBuffer              *int    `json:"sink_buffer,omitempty"`
 	SpeculativeBufferEvents *int    `json:"speculative_buffer_events,omitempty"`
 	SpeculativeBufferBytes  *int    `json:"speculative_buffer_bytes,omitempty"`
+	DeliveryConcurrency     *int    `json:"delivery_concurrency,omitempty"`
+	MaxSessions             *int    `json:"max_sessions,omitempty"`
 	Resume                  *bool   `json:"resume,omitempty"`
 }
 
@@ -84,6 +94,8 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 			SinkBuffer:              defaultSinkBuffer,
 			SpeculativeBufferEvents: defaultSpeculativeBufferEvents,
 			SpeculativeBufferBytes:  defaultSpeculativeBufferBytes,
+			DeliveryConcurrency:     defaultDeliveryConcurrency,
+			MaxSessions:             defaultMaxSessions,
 			Resume:                  false,
 		},
 	}
@@ -103,25 +115,47 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		cfg.Sessions.IdleTimeout = timeout
 	}
 	if wire.Sessions.SinkBuffer != nil {
-		if *wire.Sessions.SinkBuffer <= 0 {
+		if *wire.Sessions.SinkBuffer <= 0 ||
+			*wire.Sessions.SinkBuffer > maxSinkBuffer {
 			return Config{}, errdefs.Validationf(
-				"runtime config: sessions.sink_buffer must be positive")
+				"runtime config: sessions.sink_buffer must be between 1 and %d",
+				maxSinkBuffer)
 		}
 		cfg.Sessions.SinkBuffer = *wire.Sessions.SinkBuffer
 	}
 	if wire.Sessions.SpeculativeBufferEvents != nil {
-		if *wire.Sessions.SpeculativeBufferEvents <= 0 {
+		if *wire.Sessions.SpeculativeBufferEvents <= 0 ||
+			*wire.Sessions.SpeculativeBufferEvents > maxSpeculativeBufferEvents {
 			return Config{}, errdefs.Validationf(
-				"runtime config: sessions.speculative_buffer_events must be positive")
+				"runtime config: sessions.speculative_buffer_events must be between 1 and %d",
+				maxSpeculativeBufferEvents)
 		}
 		cfg.Sessions.SpeculativeBufferEvents = *wire.Sessions.SpeculativeBufferEvents
 	}
 	if wire.Sessions.SpeculativeBufferBytes != nil {
-		if *wire.Sessions.SpeculativeBufferBytes <= 0 {
+		if *wire.Sessions.SpeculativeBufferBytes <= 0 ||
+			*wire.Sessions.SpeculativeBufferBytes > maxSpeculativeBufferBytes {
 			return Config{}, errdefs.Validationf(
-				"runtime config: sessions.speculative_buffer_bytes must be positive")
+				"runtime config: sessions.speculative_buffer_bytes must be between 1 and %d",
+				maxSpeculativeBufferBytes)
 		}
 		cfg.Sessions.SpeculativeBufferBytes = *wire.Sessions.SpeculativeBufferBytes
+	}
+	if wire.Sessions.DeliveryConcurrency != nil {
+		if *wire.Sessions.DeliveryConcurrency <= 0 ||
+			*wire.Sessions.DeliveryConcurrency > maxDeliveryConcurrency {
+			return Config{}, errdefs.Validationf(
+				"runtime config: sessions.delivery_concurrency must be between 1 and %d",
+				maxDeliveryConcurrency)
+		}
+		cfg.Sessions.DeliveryConcurrency = *wire.Sessions.DeliveryConcurrency
+	}
+	if wire.Sessions.MaxSessions != nil {
+		if *wire.Sessions.MaxSessions <= 0 {
+			return Config{}, errdefs.Validationf(
+				"runtime config: sessions.max_sessions must be positive")
+		}
+		cfg.Sessions.MaxSessions = *wire.Sessions.MaxSessions
 	}
 	if wire.Sessions.Resume != nil {
 		cfg.Sessions.Resume = *wire.Sessions.Resume

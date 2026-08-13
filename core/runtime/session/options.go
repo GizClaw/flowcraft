@@ -12,17 +12,46 @@ const (
 	defaultSinkBuffer              = 256
 	defaultSpeculativeBufferEvents = 1024
 	defaultSpeculativeBufferBytes  = 1 << 20
+	defaultDeliveryConcurrency     = 8
+	defaultMaxSessions             = 1024
 )
 
 type managerOptions struct {
-	idleTimeout       time.Duration
-	sinkBuffer        int
-	speculativeEvents int
-	speculativeBytes  int
-	checkpoints       agent.CheckpointStore
-	resume            bool
-	observer          SessionObserver
-	catalogProvider   CatalogProvider
+	idleTimeout         time.Duration
+	sinkBuffer          int
+	speculativeEvents   int
+	speculativeBytes    int
+	deliveryConcurrency int
+	maxSessions         int
+	checkpoints         agent.CheckpointStore
+	resume              bool
+	observer            SessionObserver
+	catalogProvider     CatalogProvider
+}
+
+// WithDeliveryConcurrency bounds how many sink callbacks may be in flight
+// concurrently for one sink.
+func WithDeliveryConcurrency(limit int) ManagerOption {
+	return func(options *managerOptions) error {
+		if limit <= 0 {
+			return errdefs.Validationf(
+				"runtime session: delivery concurrency must be positive")
+		}
+		options.deliveryConcurrency = limit
+		return nil
+	}
+}
+
+// WithMaxSessions bounds the number of distinct live sessions the manager
+// retains. Values <= 0 leave the manager default (1024).
+func WithMaxSessions(limit int) ManagerOption {
+	return func(options *managerOptions) error {
+		if limit <= 0 {
+			return errdefs.Validationf("runtime session: max sessions must be positive")
+		}
+		options.maxSessions = limit
+		return nil
+	}
 }
 
 // WithSinkBufferSize sets the queue size used when SinkSpec.QueueSize is zero.

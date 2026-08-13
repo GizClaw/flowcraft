@@ -57,6 +57,42 @@ func newTestManager(t *testing.T, timeout time.Duration) (*Manager, *testResolve
 	return manager, resolver
 }
 
+func TestManagerMaxSessions(t *testing.T) {
+	resolver := &testResolver{instances: map[string]*agent.Agent{
+		"agent-a": {},
+		"agent-b": {},
+	}}
+	router := event.NewRouter(event.NewMemoryBus())
+	t.Cleanup(func() { _ = router.Close() })
+	manager, err := NewManager(
+		resolver,
+		HostFactoryFunc(func(context.Context, HostRequest) (agent.Host, error) {
+			return agent.NoopHost{}, nil
+		}),
+		router,
+		WithMaxSessions(1),
+	)
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	first, err := manager.Open(context.Background(), Key{AgentID: "agent-a", ContextID: "a"})
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+
+	if _, err := manager.Open(context.Background(), Key{AgentID: "agent-b", ContextID: "b"}); !errdefs.IsRateLimit(err) {
+		t.Fatalf("second distinct session error = %v, want rate limit", err)
+	}
+	secondLease, err := manager.Open(context.Background(), Key{AgentID: "agent-a", ContextID: "a"})
+	if err != nil {
+		t.Fatalf("additional lease for existing session: %v", err)
+	}
+	defer func() { _ = secondLease.Close() }()
+}
+
 func TestKeyValidate(t *testing.T) {
 	tests := []struct {
 		name string

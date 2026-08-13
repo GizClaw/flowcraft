@@ -26,16 +26,17 @@ const (
 // Session owns conversational activity for one Key while borrowing all
 // deployment and event-routing dependencies from the runtime.
 type Session struct {
-	key               Key
-	instance          *agent.Agent
-	hostFactory       HostFactory
-	router            *event.Router
-	sinkBuffer        int
-	speculativeEvents int
-	speculativeBytes  int
-	checkpoints       agent.CheckpointStore
-	resume            bool
-	catalogProvider   CatalogProvider
+	key                 Key
+	instance            *agent.Agent
+	hostFactory         HostFactory
+	router              *event.Router
+	sinkBuffer          int
+	speculativeEvents   int
+	speculativeBytes    int
+	deliveryConcurrency int
+	checkpoints         agent.CheckpointStore
+	resume              bool
+	catalogProvider     CatalogProvider
 
 	startMu        sync.Mutex
 	mu             sync.Mutex
@@ -59,6 +60,7 @@ func newSession(
 	sinkBuffer int,
 	speculativeEvents int,
 	speculativeBytes int,
+	deliveryConcurrency int,
 	checkpoints agent.CheckpointStore,
 	resume bool,
 	catalogProvider CatalogProvider,
@@ -66,18 +68,19 @@ func newSession(
 	observer SessionObserver,
 ) *Session {
 	return &Session{
-		key:               key,
-		instance:          instance,
-		hostFactory:       hostFactory,
-		router:            router,
-		sinkBuffer:        sinkBuffer,
-		speculativeEvents: speculativeEvents,
-		speculativeBytes:  speculativeBytes,
-		checkpoints:       checkpoints,
-		resume:            resume,
-		catalogProvider:   catalogProvider,
-		activityNotify:    activityNotify,
-		observer:          observer,
+		key:                 key,
+		instance:            instance,
+		hostFactory:         hostFactory,
+		router:              router,
+		sinkBuffer:          sinkBuffer,
+		speculativeEvents:   speculativeEvents,
+		speculativeBytes:    speculativeBytes,
+		deliveryConcurrency: deliveryConcurrency,
+		checkpoints:         checkpoints,
+		resume:              resume,
+		catalogProvider:     catalogProvider,
+		activityNotify:      activityNotify,
+		observer:            observer,
 	}
 }
 
@@ -191,6 +194,7 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 			size = s.sinkBuffer
 		}
 		attachment := newQueuedSink(s, runID, spec, size)
+		attachment.setDeliveryConcurrency(s.deliveryConcurrency)
 		attachment.delivered = turn.sinkDelivered
 		attachment.onDetach = func(err error) {
 			turn.sinkDetached(spec.ID, err)

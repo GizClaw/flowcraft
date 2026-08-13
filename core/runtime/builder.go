@@ -180,6 +180,8 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
+		session.WithDeliveryConcurrency(cfg.Sessions.DeliveryConcurrency),
+		session.WithMaxSessions(cfg.Sessions.MaxSessions),
 		session.WithSpeculativeBufferLimits(
 			cfg.Sessions.SpeculativeBufferEvents,
 			cfg.Sessions.SpeculativeBufferBytes,

@@ -28,6 +28,8 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
     sink_buffer: 17
     speculative_buffer_events: 23
     speculative_buffer_bytes: 4096
+    delivery_concurrency: 3
+    max_sessions: 7
     resume: true
 `)
 		cfg, err := DecodeConfig(doc)
@@ -39,6 +41,8 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 			cfg.Sessions.SinkBuffer != 17 ||
 			cfg.Sessions.SpeculativeBufferEvents != 23 ||
 			cfg.Sessions.SpeculativeBufferBytes != 4096 ||
+			cfg.Sessions.DeliveryConcurrency != 3 ||
+			cfg.Sessions.MaxSessions != 7 ||
 			!cfg.Sessions.Resume {
 			t.Fatalf("unexpected config: %#v", cfg)
 		}
@@ -54,6 +58,8 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 			cfg.Sessions.SinkBuffer != defaultSinkBuffer ||
 			cfg.Sessions.SpeculativeBufferEvents != defaultSpeculativeBufferEvents ||
 			cfg.Sessions.SpeculativeBufferBytes != defaultSpeculativeBufferBytes ||
+			cfg.Sessions.DeliveryConcurrency != defaultDeliveryConcurrency ||
+			cfg.Sessions.MaxSessions != defaultMaxSessions ||
 			cfg.Sessions.Resume {
 			t.Fatalf("defaults not applied: %#v", cfg.Sessions)
 		}
@@ -71,14 +77,19 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 	})
 
 	for name, runtimeYAML := range map[string]string{
-		"absent":                 "",
-		"empty":                  "  {}\n",
-		"unknown runtime field":  "  event_bus: events\n  surprise: true\n",
-		"bad duration":           "  event_bus: events\n  sessions: {idle_timeout: soon}\n",
-		"bad sink buffer":        "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
-		"bad speculative events": "  event_bus: events\n  sessions: {speculative_buffer_events: 0}\n",
-		"bad speculative bytes":  "  event_bus: events\n  sessions: {speculative_buffer_bytes: -1}\n",
-		"resume without store":   "  event_bus: events\n  sessions: {resume: true}\n",
+		"absent":                   "",
+		"empty":                    "  {}\n",
+		"unknown runtime field":    "  event_bus: events\n  surprise: true\n",
+		"bad duration":             "  event_bus: events\n  sessions: {idle_timeout: soon}\n",
+		"bad sink buffer":          "  event_bus: events\n  sessions: {sink_buffer: -1}\n",
+		"bad speculative events":   "  event_bus: events\n  sessions: {speculative_buffer_events: 0}\n",
+		"bad speculative bytes":    "  event_bus: events\n  sessions: {speculative_buffer_bytes: -1}\n",
+		"huge sink buffer":         "  event_bus: events\n  sessions: {sink_buffer: 2097152}\n",
+		"huge speculative events":  "  event_bus: events\n  sessions: {speculative_buffer_events: 2097152}\n",
+		"huge speculative bytes":   "  event_bus: events\n  sessions: {speculative_buffer_bytes: 536870912}\n",
+		"bad delivery concurrency": "  event_bus: events\n  sessions: {delivery_concurrency: 0}\n",
+		"bad max sessions":         "  event_bus: events\n  sessions: {max_sessions: 0}\n",
+		"resume without store":     "  event_bus: events\n  sessions: {resume: true}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var doc deploy.Document

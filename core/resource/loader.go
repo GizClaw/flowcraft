@@ -78,11 +78,27 @@ func (l *Loader) Load(ctx context.Context, src Source) ([]byte, error) {
 }
 
 func (l *Loader) loadFile(_ context.Context, name string) ([]byte, error) {
-	path, err := l.confine(name)
-	if err != nil {
-		return nil, err
+	if l.baseDir == "" {
+		return nil, errdefs.Validationf(
+			"resource loader: file source requires a base dir")
 	}
-	data, err := os.ReadFile(path)
+	if filepath.IsAbs(name) {
+		return nil, errdefs.Validationf(
+			"resource loader: file source %q must be relative", name)
+	}
+	clean := filepath.Clean(name)
+	if clean == ".." || strings.HasPrefix(
+		clean, ".."+string(filepath.Separator)) {
+		return nil, errdefs.Forbiddenf(
+			"resource loader: file source %q escapes base dir", name)
+	}
+	root, err := os.OpenRoot(l.baseDir)
+	if err != nil {
+		return nil, errdefs.Forbiddenf(
+			"resource loader: open base dir: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(clean)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, errdefs.NotFoundf(
@@ -117,47 +133,6 @@ func (l *Loader) loadEmbed(_ context.Context, name string) ([]byte, error) {
 			"resource loader: embed %q exceeds %d bytes", name, l.maxBytes)
 	}
 	return data, nil
-}
-
-// confine resolves name against the base dir and rejects any path that
-// escapes it, either lexically or through symlinks.
-func (l *Loader) confine(name string) (string, error) {
-	if l.baseDir == "" {
-		return "", errdefs.Validationf(
-			"resource loader: file source requires a base dir")
-	}
-	if filepath.IsAbs(name) {
-		return "", errdefs.Validationf(
-			"resource loader: file source %q must be relative", name)
-	}
-	clean := filepath.Clean(name)
-	if clean == ".." || strings.HasPrefix(
-		clean, ".."+string(filepath.Separator)) {
-		return "", errdefs.Forbiddenf(
-			"resource loader: file source %q escapes base dir", name)
-	}
-	target := filepath.Join(l.baseDir, clean)
-
-	evalBase, err := filepath.EvalSymlinks(l.baseDir)
-	if err != nil {
-		return "", errdefs.Forbiddenf(
-			"resource loader: resolve base dir: %v", err)
-	}
-	evalTarget, err := filepath.EvalSymlinks(target)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return target, nil
-		}
-		return "", errdefs.Forbiddenf(
-			"resource loader: resolve %q: %v", name, err)
-	}
-	rel, err := filepath.Rel(evalBase, evalTarget)
-	if err != nil || rel == ".." ||
-		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errdefs.Forbiddenf(
-			"resource loader: file source %q escapes base dir", name)
-	}
-	return target, nil
 }
 
 // Describe returns a human-readable description of the source for

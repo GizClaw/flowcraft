@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -23,15 +25,16 @@ type Spec struct {
 
 // ServerSpec declares one server attachment.
 type ServerSpec struct {
-	Name      string            `json:"name"`
-	Transport string            `json:"transport"`
-	Command   string            `json:"command,omitempty"`
-	Args      []string          `json:"args,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
-	Prefix    *string           `json:"prefix,omitempty"`
-	Resources bool              `json:"resources,omitempty"`
+	Name        string            `json:"name"`
+	Transport   string            `json:"transport"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URL         string            `json:"url,omitempty"`
+	Headers     map[string]string `json:"headers,omitempty"`
+	HTTPTimeout *string           `json:"http_timeout,omitempty"`
+	Prefix      *string           `json:"prefix,omitempty"`
+	Resources   bool              `json:"resources,omitempty"`
 }
 
 // Transport constants for ServerSpec.Transport.
@@ -42,10 +45,34 @@ const (
 
 // Factory builds a tool.Source resource that connects every declared MCP
 // server and exposes its tools.
-type Factory struct{}
+type Factory struct {
+	httpClient *http.Client
+}
+
+// FactoryOption configures an MCP tool source factory.
+type FactoryOption func(*Factory)
+
+// WithHTTPClient injects the HTTP client used for streamable-HTTP MCP
+// servers. A nil client is ignored and the factory falls back to the
+// hardened core/utils client.
+func WithHTTPClient(client *http.Client) FactoryOption {
+	return func(f *Factory) {
+		if client != nil {
+			f.httpClient = client
+		}
+	}
+}
 
 // NewFactory returns an MCP tool source factory.
-func NewFactory() Factory { return Factory{} }
+func NewFactory(opts ...FactoryOption) Factory {
+	f := Factory{}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&f)
+		}
+	}
+	return f
+}
 
 // Spec implements resource.Factory.
 func (Factory) Spec() resource.Spec {
@@ -53,14 +80,14 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
+func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
 	parsed, err := ParseSpec(in.Settings)
 	if err != nil {
 		return nil, err
 	}
 	source := NewSource()
 	for _, srv := range parsed.Servers {
-		transport, err := srv.transport()
+		transport, err := srv.transport(f.httpClient)
 		if err != nil {
 			_ = source.Close()
 			return nil, err
@@ -75,7 +102,7 @@ func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 
 // Register adds the MCP tool source factory to r.
 func Register(r *resource.Registry) error {
-	return r.Register(Factory{})
+	return r.Register(NewFactory())
 }
 
 // ParseSpec strictly decodes an MCP source spec.
@@ -135,6 +162,14 @@ func (s ServerSpec) validate(index int) error {
 				"mcp: servers[%d] (%s): command/args/env are stdio fields, not http",
 				index, s.Name)
 		}
+		if s.HTTPTimeout != nil {
+			timeout, err := time.ParseDuration(*s.HTTPTimeout)
+			if err != nil || timeout <= 0 {
+				return errdefs.Validationf(
+					"mcp: servers[%d] (%s): http_timeout must be a positive duration",
+					index, s.Name)
+			}
+		}
 	case "":
 		return errdefs.Validationf(
 			"mcp: servers[%d] (%s): transport is required (%q or %q)",
@@ -148,12 +183,20 @@ func (s ServerSpec) validate(index int) error {
 }
 
 // transport builds the go-sdk transport this spec describes.
-func (s ServerSpec) transport() (mcpsdk.Transport, error) {
+func (s ServerSpec) transport(client *http.Client) (mcpsdk.Transport, error) {
 	switch s.Transport {
 	case TransportStdio:
 		return Stdio(s.Command, s.Args, s.Env)
 	case TransportHTTP:
-		return StreamableHTTP(s.URL, s.Headers, http.DefaultClient)
+		if s.HTTPTimeout != nil && client == nil {
+			timeout, err := time.ParseDuration(*s.HTTPTimeout)
+			if err != nil {
+				return nil, errdefs.Validationf(
+					"mcp: server %q: http_timeout: %v", s.Name, err)
+			}
+			client = utils.NewHttpClient(utils.WithTimeout(timeout))
+		}
+		return StreamableHTTP(s.URL, s.Headers, client)
 	default:
 		return nil, errdefs.Validationf(
 			"mcp: server %q: unknown transport %q", s.Name, s.Transport)

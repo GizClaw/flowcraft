@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 
+	"github.com/GizClaw/flowcraft/core/utils"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,10 +45,15 @@ func Stdio(command string, args []string, env map[string]string) (mcpsdk.Transpo
 //
 // headers are attached to every outgoing request, which is where
 // per-server credentials belong (`Authorization: Bearer ...`). They are
-// never logged. Passing a nil client uses http.DefaultClient.
+// never logged. Passing a nil client uses the hardened core/utils
+// transport without an overall request timeout (MCP streamable-HTTP may
+// keep a standing SSE connection open for server-initiated messages).
 func StreamableHTTP(endpoint string, headers map[string]string, client *http.Client) (mcpsdk.Transport, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("mcp: streamable-http transport endpoint is empty")
+	}
+	if client == nil {
+		client = &http.Client{Transport: utils.NewRoundTripper()}
 	}
 	if len(headers) > 0 {
 		base := http.DefaultTransport
@@ -55,13 +61,9 @@ func StreamableHTTP(endpoint string, headers map[string]string, client *http.Cli
 			base = client.Transport
 		}
 		wrapped := &headerRoundTripper{base: base, headers: headers}
-		if client == nil {
-			client = &http.Client{Transport: wrapped}
-		} else {
-			copied := *client
-			copied.Transport = wrapped
-			client = &copied
-		}
+		copied := *client
+		copied.Transport = wrapped
+		client = &copied
 	}
 	return &mcpsdk.StreamableClientTransport{
 		Endpoint:   endpoint,

@@ -30,14 +30,17 @@ type SessionStarter func(ctx context.Context, spec SessionSpec) (Session, error)
 // tracked in-process and started by starter. It implements the ID
 // uniqueness / generation, List, Terminate-by-ID, and Close removal
 // contract so every backend gets identical session semantics.
-func NewSessionRegistry(starter SessionStarter) *sessionRegistry {
-	return &sessionRegistry{
+func NewSessionRegistry(starter SessionStarter) *SessionRegistry {
+	return &SessionRegistry{
 		starter:  starter,
 		sessions: make(map[string]*sessionRecord),
 	}
 }
 
-type sessionRegistry struct {
+// SessionRegistry tracks in-process sessions for one backend. It
+// implements Start/List/Terminate with ID uniqueness, session generation,
+// and Close removal semantics shared by every sandbox backend.
+type SessionRegistry struct {
 	starter  SessionStarter
 	mu       sync.Mutex
 	sessions map[string]*sessionRecord
@@ -54,7 +57,7 @@ type sessionRecord struct {
 	err     error
 }
 
-func (r *sessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session, error) {
+func (r *SessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session, error) {
 	if r.starter == nil {
 		return nil, errdefs.NotAvailablef("sandbox: session starter not configured")
 	}
@@ -97,7 +100,7 @@ func (r *sessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session,
 	return &registrySession{inner: sess, reg: r, id: id}, nil
 }
 
-func (r *sessionRegistry) track(id string, sess Session) {
+func (r *SessionRegistry) track(id string, sess Session) {
 	exit, err := sess.Wait(context.Background())
 	r.mu.Lock()
 	if rec := r.sessions[id]; rec != nil {
@@ -108,7 +111,7 @@ func (r *sessionRegistry) track(id string, sess Session) {
 	r.mu.Unlock()
 }
 
-func (r *sessionRegistry) List(context.Context) ([]SessionInfo, error) {
+func (r *SessionRegistry) List(context.Context) ([]SessionInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]SessionInfo, 0, len(r.sessions))
@@ -135,7 +138,7 @@ func (r *sessionRegistry) List(context.Context) ([]SessionInfo, error) {
 	return out, nil
 }
 
-func (r *sessionRegistry) Terminate(ctx context.Context, id string) error {
+func (r *SessionRegistry) Terminate(ctx context.Context, id string) error {
 	r.mu.Lock()
 	rec := r.sessions[id]
 	r.mu.Unlock()
@@ -168,7 +171,7 @@ func (r *sessionRegistry) Terminate(ctx context.Context, id string) error {
 	return nil
 }
 
-func (r *sessionRegistry) remove(id string) {
+func (r *SessionRegistry) remove(id string) {
 	r.mu.Lock()
 	delete(r.sessions, id)
 	r.mu.Unlock()
@@ -179,7 +182,7 @@ func (r *sessionRegistry) remove(id string) {
 // always see the stable identifier, including manager-generated ones.
 type registrySession struct {
 	inner Session
-	reg   *sessionRegistry
+	reg   *SessionRegistry
 	id    string
 	once  sync.Once
 }
