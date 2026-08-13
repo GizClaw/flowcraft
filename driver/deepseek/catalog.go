@@ -47,7 +47,8 @@ type catalogEntry struct {
 // The legacy `deepseek-chat` / `deepseek-reasoner` aliases retired on
 // 2026-07-24 and are deliberately absent. Both V4 models are hybrid
 // thinking models (thinking enabled by default) with a 1M token context.
-// The Responses API currently only serves deepseek-v4-flash.
+// The Responses API serves both V4 models; deepseek-v4-pro support
+// landed after the initial flash-only launch.
 var catalog = map[string]catalogEntry{
 	"deepseek-v4-flash": {
 		kind:      kindGenerate,
@@ -58,6 +59,8 @@ var catalog = map[string]catalogEntry{
 	"deepseek-v4-pro": {
 		kind:      kindGenerate,
 		reasoning: true,
+		responses: true,
+		webSearch: true,
 	},
 }
 

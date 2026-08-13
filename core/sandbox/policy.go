@@ -92,7 +92,7 @@ func (a NetAction) String() string {
 //   - "10.0.0.0/8": CIDR prefix.
 //
 // Unicode hostnames are normalized to punycode when the policy is
-// compiled (see core/utils/httpkit). Port 0 matches any port;
+// compiled (see core/utils). Port 0 matches any port;
 // otherwise the request port (URL explicit port or protocol default,
 // CONNECT target port) must match exactly.
 type NetRule struct {

@@ -70,7 +70,7 @@ func TestResponsesProviderRejectsUnsupportedModels(t *testing.T) {
 	}
 }
 
-func TestResponsesProviderAllowsDeclaredFlashOverride(t *testing.T) {
+func TestResponsesProviderAllowsDeclaredOverride(t *testing.T) {
 	value, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "deepseek",
@@ -93,8 +93,35 @@ func TestResponsesProviderAllowsDeclaredFlashOverride(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	provider, ok := value.(inference.ProviderDefinition)
-	if !ok || len(provider.Models) != 1 {
+	if !ok || len(provider.Models) != 2 {
 		t.Fatalf("provider = %+v", provider)
+	}
+}
+
+func TestResponsesProviderBuildsBothV4Models(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "deepseek",
+			"spec": {"api": "responses"},
+			"profiles": [{
+				"id": "default",
+				"secrets": {"api_key": "sk-test"}
+			}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider, ok := value.(inference.ProviderDefinition)
+	if !ok {
+		t.Fatalf("New returned %T, want inference.ProviderDefinition", value)
+	}
+	names := make(map[string]bool)
+	for _, model := range provider.Models {
+		names[model.Descriptor.ID.Name] = true
+	}
+	if !names["deepseek-v4-flash"] || !names["deepseek-v4-pro"] {
+		t.Fatalf("responses provider models = %v, want flash + pro", names)
 	}
 }
 

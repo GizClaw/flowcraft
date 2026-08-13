@@ -8,12 +8,10 @@
 //     DeepSeek reasoning_content round-trip that thinking-mode tool loops
 //     require. json_schema output is not available on this surface.
 //   - Responses (`api: responses`): OpenAI-compatible Responses API on
-//     https://api.deepseek.com/responses. It currently supports
-//     deepseek-v4-flash only; deepseek-v4-pro lands later and is excluded
-//     from the built-in catalog in this mode (declare it explicitly once
-//     DeepSeek enables it). The surface adds json_schema output, hosted
-//     web_search, and plain-text reasoning item round-trips. `include` is
-//     intentionally never sent: DeepSeek does not support it.
+//     https://api.deepseek.com/responses. Both deepseek-v4-flash and
+//     deepseek-v4-pro support it. The surface adds json_schema output,
+//     hosted web_search, and plain-text reasoning item round-trips.
+//     `include` is intentionally never sent: DeepSeek does not support it.
 //
 // Credentials come exclusively from resource profiles: `api_key`
 // authenticates every surface, and secret values may reference the

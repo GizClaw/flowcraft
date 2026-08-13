@@ -95,8 +95,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 				}
 				// Built-in models without the responses capability are
 				// excluded from a Responses provider rather than failing
-				// the whole deployment (the docs today only expose
-				// deepseek-v4-flash).
+				// the whole deployment.
 				delete(models, name)
 			}
 		}

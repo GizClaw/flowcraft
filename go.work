@@ -2,7 +2,14 @@ go 1.26.0
 
 use (
 	./core
-	./driver
+	./driver/openai
+	./driver/deepseek
+	./driver/azure
+	./driver/anthropic
+	./driver/minimax
+	./driver/qwen
+	./driver/kimi
+	./driver/bytedance
 	./examples/forge
 	./memory
 	./memory/eval

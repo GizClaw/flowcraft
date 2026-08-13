@@ -15,9 +15,8 @@ const SecretAPIKey = "api_key"
 // secrets resolve per profile and never appear here.
 type Spec struct {
 	// API selects the generate surface: "chat" (default) or "responses".
-	// Responses currently requires deepseek-v4-flash; built-in models
-	// without the capability are excluded, and declared models without it
-	// are rejected.
+	// Built-in models without the capability are excluded from a
+	// Responses provider, and declared models without it are rejected.
 	API string `json:"api,omitempty"`
 	// BaseURL overrides the API endpoint. Defaults to
 	// https://api.deepseek.com (the OpenAI-compatible surface shared by
@@ -41,7 +40,8 @@ type ModelSpec struct {
 	Kind string `json:"kind"`
 	// Reasoning enables the thinking/effort controls and reasoning traces.
 	Reasoning bool `json:"reasoning,omitempty"`
-	// Responses declares Responses API support (deepseek-v4-flash).
+	// Responses declares Responses API support (deepseek-v4-flash and
+	// deepseek-v4-pro).
 	Responses bool `json:"responses,omitempty"`
 	// WebSearch declares hosted web_search support on the Responses API.
 	WebSearch bool `json:"web_search,omitempty"`
