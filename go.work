@@ -11,19 +11,12 @@ use (
 	./driver/kimi
 	./driver/bytedance
 	./examples/forge
-	./integrations/objstore
-	./integrations/sandbox
-	./integrations/sqlite
+	./backends/sandbox
+	./backends/checkpoint
 	./memory
 	./memory/eval
 )
 
-replace github.com/GizClaw/flowcraft/core v0.1.0 => ./core
 replace github.com/GizClaw/flowcraft/driver/deepseek v0.1.0 => ./driver/deepseek
+
 replace github.com/GizClaw/flowcraft/driver/openai v0.1.0 => ./driver/openai
-replace github.com/GizClaw/flowcraft/driver/azure v0.1.0 => ./driver/azure
-replace github.com/GizClaw/flowcraft/driver/anthropic v0.1.0 => ./driver/anthropic
-replace github.com/GizClaw/flowcraft/driver/minimax v0.1.0 => ./driver/minimax
-replace github.com/GizClaw/flowcraft/driver/qwen v0.1.0 => ./driver/qwen
-replace github.com/GizClaw/flowcraft/driver/kimi v0.1.0 => ./driver/kimi
-replace github.com/GizClaw/flowcraft/driver/bytedance v0.1.0 => ./driver/bytedance

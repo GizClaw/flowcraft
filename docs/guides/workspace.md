@@ -41,6 +41,6 @@ resources:
         allow_write: ["**"]
 ```
 
-Object-store backends live in `integrations/objstore`.
+Object-store backends are app-registered and not part of the current core module.
 
 See [sandbox.md](sandbox.md) for the execution boundary.

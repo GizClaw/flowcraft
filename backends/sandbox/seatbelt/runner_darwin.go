@@ -1,38 +1,33 @@
-//go:build linux
+//go:build darwin
 
-package bwrap
+package seatbelt
 
 import (
 	"context"
 	"crypto/x509"
 	"fmt"
 	"maps"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit/mitm"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/bwrap/internal/bridge"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit/mitm"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 
-// sandboxProxySock is where the host enforcement proxy's unix socket
-// is bind-mounted inside the sandbox for NetAllowList / NetProxy execs.
-const sandboxProxySock = "/run/flowcraft-proxy.sock"
-
-// Runner is a bubblewrap-backed core/sandbox.Runner. It is only
-// constructible on Linux; see [New] for non-Linux behaviour.
+// Runner confines child processes with macOS Seatbelt and implements
+// core/sandbox.Runner.
 type Runner struct {
 	rootDir          string
 	binary           string
-	extraFlags       []string
-	writablePaths    []string
+	writable         []string
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	decision         func(httpkit.ProxyDecision)
@@ -40,73 +35,47 @@ type Runner struct {
 	outboundRoots    *x509.CertPool
 }
 
-// Enforcement reports the dimensions bwrap plus the shared
-// process-group watcher enforce in this backend.
-func (r *Runner) Enforcement() sandbox.Enforcement {
-	caps := sandbox.GroupCapsSupported()
-	return sandbox.Enforcement{
-		EnvAllowList:     true,
-		NetModes:         []sandbox.NetMode{sandbox.NetDenyAll, sandbox.NetAllowList, sandbox.NetProxy},
-		Socks5:           true,
-		MITM:             true,
-		UnixSocketPolicy: true,
-		MemoryCap:        caps,
-		CPUCap:           caps,
-		FilesystemBounds: true,
-	}
-}
-
-// New returns a Runner that confines child processes with bubblewrap.
+// New constructs a Seatbelt Runner rooted at rootDir.
 func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 	cfg := &runnerConfig{}
-	for _, o := range opts {
-		if o != nil {
-			o(cfg)
+	for _, option := range opts {
+		if option != nil {
+			option(cfg)
 		}
-	}
-	if err := validateExtraFlags(cfg.extra); err != nil {
-		return nil, err
 	}
 
 	binary := cfg.binFrom
 	if binary == "" {
-		resolved, err := exec.LookPath("bwrap")
+		resolved, err := exec.LookPath("sandbox-exec")
 		if err != nil {
 			return nil, errdefs.NotAvailablef(
-				"bwrap: binary not found on PATH; install bubblewrap or use WithBinary")
+				"seatbelt: sandbox-exec not found; this macOS installation cannot enforce Seatbelt profiles",
+			)
 		}
 		binary = resolved
 	} else if _, err := exec.LookPath(binary); err != nil {
 		return nil, errdefs.NotAvailablef(
-			"bwrap: binary %q not executable: %v", binary, err)
+			"seatbelt: binary %q not executable: %v", binary, err,
+		)
 	}
 
-	abs, err := filepath.Abs(rootDir)
+	root, err := resolveRoot(rootDir)
 	if err != nil {
-		return nil, errdefs.Validationf("bwrap: resolve rootDir: %v", err)
+		return nil, err
 	}
-	if resolved, evalErr := filepath.EvalSymlinks(abs); evalErr == nil {
-		abs = resolved
-	}
-
-	writable := make([]string, 0, len(cfg.writable))
-	seenWritable := map[string]bool{abs: true}
+	writable := []string{root}
 	for _, path := range cfg.writable {
-		resolved, err := resolveConfiguredPath(path)
+		resolved, err := resolveRoot(path)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("seatbelt: resolve writable path %q: %w", path, err)
 		}
-		if !seenWritable[resolved] {
-			seenWritable[resolved] = true
-			writable = append(writable, resolved)
-		}
+		writable = append(writable, resolved)
 	}
 
 	runner := &Runner{
-		rootDir:          abs,
+		rootDir:          root,
 		binary:           binary,
-		extraFlags:       append([]string(nil), cfg.extra...),
-		writablePaths:    writable,
+		writable:         dedupe(writable),
 		defaultMaxOutput: defaultMaxOutputBytes,
 		decision:         cfg.decision,
 		hooks:            cfg.hooks,
@@ -118,8 +87,17 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 
 // Capabilities implements core/sandbox.Runner.
 func (r *Runner) Capabilities() sandbox.Capabilities {
+	caps := sandbox.GroupCapsSupported()
 	return sandbox.Capabilities{
-		Policy: r.Enforcement(),
+		Policy: sandbox.Enforcement{
+			EnvAllowList:     true,
+			NetModes:         []sandbox.NetMode{sandbox.NetDenyAll, sandbox.NetAllowList, sandbox.NetProxy},
+			Socks5:           true,
+			MITM:             true,
+			MemoryCap:        caps,
+			CPUCap:           caps,
+			FilesystemBounds: true,
+		},
 		Features: sandbox.SessionFeatures{
 			TTY:    true,
 			Signal: true,
@@ -153,43 +131,53 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 	return r.sessions.Terminate(ctx, id)
 }
 
-// spawnProcess is the core sandbox SessionStarter. It builds the bwrap
-// invocation from the SessionSpec and hands it to the shared session
-// implementation.
+// spawnProcess is the core sandbox SessionStarter.
 func (r *Runner) spawnProcess(
 	ctx context.Context,
 	spec sandbox.SessionSpec,
 ) (sandbox.Session, error) {
 	if len(spec.Argv) == 0 {
-		return nil, errdefs.Validationf("bwrap: empty command")
+		return nil, errdefs.Validationf("seatbelt: empty command")
+	}
+	if len(spec.Opts.Net.UnixSockets) > 0 {
+		return nil, errdefs.NotAvailablef(
+			"seatbelt: unix socket allow-list is not supported (SBPL does not confine unix sockets)")
 	}
 	if err := sandbox.ValidateExecPolicy(spec.Opts); err != nil {
 		return nil, err
 	}
 
-	resolvedWorkDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
+	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
 	if err != nil {
 		return nil, err
 	}
-	spec.Opts.WorkDir = resolvedWorkDir
 
 	proxyMode := spec.Opts.Net.Mode == sandbox.NetAllowList ||
 		spec.Opts.Net.Mode == sandbox.NetProxy
 	var proxy *httpkit.Proxy
+	proxyPort := 0
 	if proxyMode {
 		proxy, err = httpkit.Start(httpkit.ProxyConfig{
 			Mode:          spec.Opts.Net.Mode,
 			AllowHosts:    spec.Opts.Net.AllowHosts,
 			Rules:         spec.Opts.Net.Rules,
 			Upstream:      spec.Opts.Net.Proxy,
+			TCPLoopback:   true,
 			MITM:          spec.Opts.Net.MITM,
 			OnDecision:    r.decision,
 			Hooks:         r.hooks,
 			OutboundRoots: r.outboundRoots,
 		})
 		if err != nil {
-			return nil, errdefs.Internalf("bwrap: start enforcement proxy: %v", err)
+			return nil, errdefs.Internalf("seatbelt: start enforcement proxy: %v", err)
 		}
+		addr, ok := proxy.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = proxy.Close()
+			return nil, errdefs.Internalf(
+				"seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
+		}
+		proxyPort = addr.Port
 	}
 
 	var bundlePath string
@@ -197,12 +185,12 @@ func (r *Runner) spawnProcess(
 	if spec.Opts.Net.MITM != nil && spec.Opts.Net.MITM.Enabled {
 		if proxy == nil {
 			return nil, errdefs.NotAvailablef(
-				"bwrap: MITM requires allow_list or proxy net mode")
+				"seatbelt: MITM requires allow_list or proxy net mode")
 		}
 		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
 		if err != nil {
 			_ = proxy.Close()
-			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
+			return nil, errdefs.Internalf("seatbelt: write CA bundle: %v", err)
 		}
 		if spec.Opts.Env.Inject == nil {
 			spec.Opts.Env.Inject = make(map[string]string)
@@ -217,7 +205,7 @@ func (r *Runner) spawnProcess(
 		}
 	}
 
-	flags, err := buildFlags(spec.Opts, os.Environ())
+	profile, err := buildProfile(r.writable, spec.Opts.Net, proxyPort)
 	if err != nil {
 		if proxy != nil {
 			_ = proxy.Close()
@@ -225,60 +213,19 @@ func (r *Runner) spawnProcess(
 		abortBundle()
 		return nil, err
 	}
-	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
-	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
-	if bundlePath != "" {
-		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
-	}
-	for _, path := range spec.Opts.Net.UnixSockets {
-		if _, statErr := os.Stat(path); statErr != nil {
-			if proxy != nil {
-				_ = proxy.Close()
-			}
-			abortBundle()
-			return nil, errdefs.NotFoundf(
-				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
-		}
-		fsFlags = append(fsFlags, "--bind", path, path)
-	}
 
-	var command []string
-	if proxyMode {
-		exe, err := os.Executable()
-		if err != nil {
-			if proxy != nil {
-				_ = proxy.Close()
-			}
-			abortBundle()
-			return nil, errdefs.Internalf(
-				"bwrap: resolve host binary for in-netns bridge: %v", err)
-		}
-		fsFlags = append(fsFlags,
-			"--ro-bind", exe, exe,
-			"--bind", proxy.SocketPath(), sandboxProxySock,
-		)
-		command = append([]string{
-			exe, bridge.Marker, "--sock", sandboxProxySock, "--", spec.Argv[0],
-		}, spec.Argv[1:]...)
-	} else {
-		command = append([]string{spec.Argv[0]}, spec.Argv[1:]...)
-	}
-
-	argv := append([]string{}, r.extraFlags...)
-	argv = append(argv, flags...)
-	argv = append(argv, fsFlags...)
-	argv = append(argv, "--")
-	argv = append(argv, command...)
-
+	argv := []string{"-p", profile, spec.Argv[0]}
+	argv = append(argv, spec.Argv[1:]...)
 	c := exec.Command(r.binary, argv...)
-	c.Env = os.Environ()
+	c.Dir = workDir
+	c.Env = buildEnv(spec.Opts.Env, proxyPort)
+	if bundlePath != "" {
+		c.Env = append(c.Env, "SSL_CERT_FILE="+bundlePath)
+	}
 
 	maxOut := spec.Opts.Resources.MaxOutputBytes
 	if maxOut <= 0 {
 		maxOut = r.defaultMaxOutput
-	}
-	if maxOut <= 0 {
-		maxOut = 0
 	}
 	spec.Opts.Resources.MaxOutputBytes = maxOut
 
@@ -304,8 +251,7 @@ func (r *Runner) spawnProcess(
 	return sess, nil
 }
 
-// sessionHandle keeps a core Session's side resources (the host
-// enforcement proxy) alive for exactly as long as the session.
+// sessionHandle keeps a core Session's side resources alive.
 type sessionHandle struct {
 	sandbox.Session
 	cleanup *sessionCleanup
@@ -324,21 +270,6 @@ type sessionCleanup struct {
 	cleanup func()
 }
 
-func resolveConfiguredPath(path string) (string, error) {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", errdefs.Validationf("bwrap: resolve writable path %q: %v", path, err)
-	}
-	real, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return "", errdefs.Validationf(
-			"bwrap: writable path %q must exist: %v", path, err)
-	}
-	return real, nil
-}
-
-// resolveWorkDir applies the same root-confinement rules LocalRunner
-// uses.
 func (r *Runner) resolveWorkDir(dir string) (string, error) {
 	if dir == "" {
 		return r.rootDir, nil
@@ -348,15 +279,26 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 		abs = filepath.Join(r.rootDir, dir)
 	}
 	abs = filepath.Clean(abs)
-
 	real, err := evalExistingPrefix(abs)
 	if err != nil {
-		return "", fmt.Errorf("bwrap: resolve workdir: %w", err)
+		return "", fmt.Errorf("seatbelt: resolve workdir: %w", err)
 	}
 	if real != r.rootDir && !strings.HasPrefix(real, r.rootDir+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil
+}
+
+func resolveRoot(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", errdefs.Validationf("seatbelt: resolve path %q: %v", path, err)
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", errdefs.Validationf("seatbelt: path %q must exist: %v", path, err)
+	}
+	return real, nil
 }
 
 func evalExistingPrefix(path string) (string, error) {
@@ -376,6 +318,71 @@ func evalExistingPrefix(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(realParent, filepath.Base(path)), nil
+}
+
+// buildEnv constructs the child environment from the caller's EnvPolicy.
+func buildEnv(policy sandbox.EnvPolicy, proxyPort int) []string {
+	values := map[string]string{}
+	switch {
+	case policy.Allow == nil:
+		for _, kv := range os.Environ() {
+			if key, value, ok := splitKV(kv); ok {
+				values[key] = value
+			}
+		}
+	case len(policy.Allow) > 0:
+		allowed := make(map[string]bool, len(policy.Allow))
+		for _, name := range policy.Allow {
+			allowed[name] = true
+		}
+		for _, kv := range os.Environ() {
+			if key, value, ok := splitKV(kv); ok && allowed[key] {
+				values[key] = value
+			}
+		}
+	}
+	for key, value := range policy.Inject {
+		values[key] = value
+	}
+	if proxyPort > 0 {
+		proxy := fmt.Sprintf("http://127.0.0.1:%d", proxyPort)
+		for _, name := range []string{
+			"HTTP_PROXY", "http_proxy",
+			"HTTPS_PROXY", "https_proxy",
+			"ALL_PROXY", "all_proxy",
+		} {
+			values[name] = proxy
+		}
+		delete(values, "NO_PROXY")
+		delete(values, "no_proxy")
+		values["NO_PROXY"] = ""
+		values["no_proxy"] = ""
+	}
+	env := make([]string, 0, len(values))
+	for key, value := range values {
+		env = append(env, key+"="+value)
+	}
+	return env
+}
+
+func splitKV(kv string) (string, string, bool) {
+	index := strings.IndexByte(kv, '=')
+	if index <= 0 {
+		return "", "", false
+	}
+	return kv[:index], kv[index+1:], true
+}
+
+func dedupe(paths []string) []string {
+	seen := make(map[string]bool, len(paths))
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !seen[path] {
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 var _ sandbox.Runner = (*Runner)(nil)

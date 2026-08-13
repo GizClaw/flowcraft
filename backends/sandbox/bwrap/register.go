@@ -1,31 +1,32 @@
-package seatbelt
+package bwrap
 
 import (
 	"context"
 	"fmt"
 
+	internalpath "github.com/GizClaw/flowcraft/backends/sandbox/internal/path"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	internalpath "github.com/GizClaw/flowcraft/integrations/sandbox/internal/path"
 )
 
 // ResourceKind is the deployment resource kind implemented by this
 // package.
 const ResourceKind = "sandbox.Runner"
 
-// BackendName is the sandbox impl name for seatbelt.
-const BackendName = "seatbelt"
+// BackendName is the sandbox impl name for bubblewrap.
+const BackendName = "bwrap"
 
 type settings struct {
 	Root          string   `json:"root"`
 	Binary        string   `json:"binary,omitempty"`
 	WritablePaths []string `json:"writable_paths,omitempty"`
+	ExtraFlags    []string `json:"extra_flags,omitempty"`
 }
 
 type factory struct{}
 
-// NewFactory returns a deployment resource factory for seatbelt.
+// NewFactory returns a deployment resource factory for bubblewrap.
 func NewFactory() resource.Factory { return factory{} }
 
 // Spec implements resource.Factory.
@@ -37,25 +38,28 @@ func (factory) Spec() resource.Spec {
 func (factory) New(_ context.Context, in resource.Input) (any, error) {
 	s, err := resource.DecodeTyped[settings](in.Settings, resource.ExpandEnv())
 	if err != nil {
-		return nil, errdefs.Validationf("decode seatbelt settings: %v", err)
+		return nil, errdefs.Validationf("decode bwrap settings: %v", err)
 	}
 	if s.Root == "" {
-		return nil, errdefs.Validationf("seatbelt settings.root is required")
+		return nil, errdefs.Validationf("bwrap settings.root is required")
 	}
 	var options []RunnerOption
 	if s.Binary != "" {
 		binary, err := internalpath.Resolve(s.Root, s.Binary)
 		if err != nil {
-			return nil, fmt.Errorf("seatbelt settings.binary: %w", err)
+			return nil, fmt.Errorf("bwrap settings.binary: %w", err)
 		}
 		options = append(options, WithBinary(binary))
 	}
 	writable, err := internalpath.ResolveMany(s.Root, s.WritablePaths)
 	if err != nil {
-		return nil, fmt.Errorf("seatbelt settings.writable_paths: %w", err)
+		return nil, fmt.Errorf("bwrap settings.writable_paths: %w", err)
 	}
 	if writable != nil {
 		options = append(options, WithWritablePaths(writable...))
+	}
+	if s.ExtraFlags != nil {
+		options = append(options, WithExtraFlags(s.ExtraFlags...))
 	}
 	runner, err := New(s.Root, options...)
 	if err != nil {
@@ -64,7 +68,7 @@ func (factory) New(_ context.Context, in resource.Input) (any, error) {
 	return sandbox.Runner(runner), nil
 }
 
-// Register adds the seatbelt factory to r.
+// Register adds the bubblewrap factory to r.
 func Register(r *resource.Registry) error {
 	return r.Register(NewFactory())
 }

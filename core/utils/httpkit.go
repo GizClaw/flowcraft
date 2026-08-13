@@ -1,7 +1,7 @@
 // This file carries the HTTP conveniences provider clients use: a tuned
 // connection-pooling transport, a bounded retry RoundTripper for transient
 // failures, and an option-driven client builder hardening HTTP/1.1 and
-// HTTP/2. HTTP/3 is intentionally absent (the old integrations transport's quic-go
+// HTTP/2. HTTP/3 is intentionally absent (the old backends transport's quic-go
 // dependency was dropped during the core migration).
 package utils
 

@@ -28,8 +28,8 @@
 !driver/**
 !examples/
 !examples/**
-!integrations/
-!integrations/**
+!backends/
+!backends/**
 !memory/
 !memory/**
 !skills/

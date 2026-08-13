@@ -9,7 +9,7 @@ fixes are issued against the latest release of each versioned module.
 | ---------------- | -------------------- |
 | `core`           | latest `core/v0.x` |
 | `driver/*`       | latest `driver/<name>/v0.x` |
-| `integrations/*` | latest `integrations/<name>/v0.x` |
+| `backends/*` | latest `backends/<name>/v0.x` |
 | `memory`         | latest `memory/v0.x` |
 
 Older minor versions are not patched; please upgrade before reporting issues
@@ -19,10 +19,10 @@ The repository also contains:
 
 - `examples/forge` — the runnable local workspace demo. It is built from the
   workspace and not versioned; fixes ship with the next `core`/`driver`/
-  `integrations`/`memory` release that the workspace tracks.
+  `backends`/`memory` release that the workspace tracks.
 
 Because modules depend on `core`, coordinated fixes may require same-batch
-releases across `core`, `driver/*`, `integrations/*`, and `memory`.
+releases across `core`, `driver/*`, `backends/*`, and `memory`.
 
 ## Reporting a Vulnerability
 
@@ -55,7 +55,7 @@ Please include:
 
 In scope:
 
-- Code in this repository (`core/`, `driver/`, `integrations/`, `memory/`,
+- Code in this repository (`core/`, `driver/`, `backends/`, `memory/`,
   `examples/forge/`, `tools/`).
 - Supply-chain and dependency issues affecting published modules.
 

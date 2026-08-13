@@ -2,7 +2,7 @@
 
 package bwrap
 
-import "github.com/GizClaw/flowcraft/integrations/sandbox/bwrap/internal/bridge"
+import "github.com/GizClaw/flowcraft/backends/sandbox/bwrap/internal/bridge"
 
 // MaybeBridge runs the in-netns bridge when the current process was
 // re-executed by the bwrap runner for NetAllowList / NetProxy execs.

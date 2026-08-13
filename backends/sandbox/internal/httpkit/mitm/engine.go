@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"net/netip"
 
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/hostmatch"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/hostmatch"
 	"golang.org/x/net/http2"
 )
 

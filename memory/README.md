@@ -204,7 +204,7 @@ if err := runtimeBuilder.RegisterIntegration(flowcraftruntime.NewFactory()); err
 runtime:
   event_bus: events
   scheduler: schedules
-  integrations:
+  backends:
     - name: memory
       kind: memory.worker
       deps: { memory: memories }

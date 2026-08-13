@@ -46,7 +46,7 @@ go run . workspace inspect --workspace ./workspace
 
 每个 `scenarios/raids/<name>/` 都是一个完整的工作区模板:
 
-- `deploy.yaml` — `core/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime integrations。
+- `deploy.yaml` — `core/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime backends。
 - `inference.yaml` — provider 配置文件和 secret 解析器。
 - `workspace.yaml` — workspace registry 的根目录与布局。
 - `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
