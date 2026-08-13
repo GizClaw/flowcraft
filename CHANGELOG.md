@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.3` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.4` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.4` - 2026-08-13
+
+### Changed
+
+- Treat already-closed sandbox stdin as a no-op close to fix the release-gate exec race
 
 ## `core/v0.1.3` - 2026-08-13
 
