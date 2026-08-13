@@ -1,0 +1,9 @@
+{
+  "summary": "Add stream terminal signals and request-id telemetry, stamp usage model/latency, and enrich driver usage and audio support",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
