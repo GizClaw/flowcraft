@@ -739,12 +739,13 @@ func deepseekCitations(
 
 func responsesUsage(usage responses.ResponseUsage) rawUsage {
 	raw := rawUsage{
-		input:     usage.InputTokens,
-		output:    usage.OutputTokens,
-		total:     usage.TotalTokens,
-		cached:    usage.InputTokensDetails.CachedTokens,
-		reasoning: usage.OutputTokensDetails.ReasoningTokens,
-		present:   true,
+		input:      usage.InputTokens,
+		output:     usage.OutputTokens,
+		total:      usage.TotalTokens,
+		cached:     usage.InputTokensDetails.CachedTokens,
+		cacheWrite: usage.InputTokensDetails.CacheWriteTokens,
+		reasoning:  usage.OutputTokensDetails.ReasoningTokens,
+		present:    true,
 	}
 	if raw.total == 0 {
 		raw.total = raw.input + raw.output

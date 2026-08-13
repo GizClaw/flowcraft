@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
@@ -198,12 +199,13 @@ func (d *generateStreamDriver[Wire, RawEvent]) Stream(
 		)
 	}
 	return &decodedGenerateStream[RawEvent]{
-		raw:     raw,
-		decode:  d.decode,
-		model:   model,
-		request: request.Clone(),
-		report:  compiled.Report,
-		parts:   make(map[int]*generatePartAccumulator),
+		raw:       raw,
+		decode:    d.decode,
+		model:     model,
+		request:   request.Clone(),
+		report:    compiled.Report,
+		parts:     make(map[int]*generatePartAccumulator),
+		startedAt: time.Now(),
 	}, nil
 }
 
@@ -237,6 +239,7 @@ type decodedGenerateStream[RawEvent any] struct {
 	requestID  string
 	responseID string
 	outputs    ProviderOutputs
+	startedAt  time.Time
 
 	done      bool
 	result    GenerateResponse
@@ -454,6 +457,11 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	metadata.ResponseID = s.responseID
 	response.Metadata = metadata
 	deriveGenerateUsage(s.request, &response)
+	// Stamp the call-context envelope at the terminal result, matching the
+	// unary driver: the exact model reference that produced the stream and
+	// the wall-clock latency from stream open to completion.
+	response.Usage.Model = s.model
+	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := response.ValidateFor(s.request); err != nil {
 		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
 		return
@@ -482,10 +490,17 @@ func (p *generatePartAccumulator) result() (message.Part, error) {
 		if err != nil {
 			return nil, err
 		}
+		duration := p.audioDuration
+		if duration == nil {
+			millis, ok := media.AudioDurationMillis(p.audio.Bytes(), *p.audioFormat)
+			if ok {
+				duration = &millis
+			}
+		}
 		return message.AudioPart{
 			Source:         source,
 			Format:         clonePointer(p.audioFormat),
-			DurationMillis: clonePointer(p.audioDuration),
+			DurationMillis: clonePointer(duration),
 		}, nil
 	case message.PartImage:
 		if p.completeImage == nil {

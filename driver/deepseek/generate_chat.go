@@ -565,6 +565,14 @@ func usageToRaw(usage openaigo.CompletionUsage) rawUsage {
 			raw.cached = cached
 		}
 	}
+	// DeepSeek reports the uncached (freshly processed) input as
+	// prompt_cache_miss_tokens alongside the hit counter.
+	if field, exists := usage.JSON.ExtraFields["prompt_cache_miss_tokens"]; exists && field.Raw() != "" {
+		var uncached int64
+		if err := json.Unmarshal([]byte(field.Raw()), &uncached); err == nil {
+			raw.uncached = uncached
+		}
+	}
 	return raw
 }
 

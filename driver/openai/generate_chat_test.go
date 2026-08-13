@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+
+	"github.com/openai/openai-go/v3"
 )
 
 func TestChatCompileRejectsWebSearch(t *testing.T) {
@@ -25,6 +27,68 @@ func TestChatCompileRejectsWebSearch(t *testing.T) {
 	if compiled.Wire.webSearch != nil {
 		t.Fatal("chat wire carries web_search")
 	}
+}
+
+func TestChatUsageMapsProviderDetails(t *testing.T) {
+	var wireUsage openai.CompletionUsage
+	if err := json.Unmarshal([]byte(`{
+		"prompt_tokens": 10,
+		"completion_tokens": 8,
+		"total_tokens": 18,
+		"prompt_tokens_details": {
+			"cached_tokens": 3,
+			"cache_write_tokens": 4,
+			"audio_tokens": 2
+		},
+		"completion_tokens_details": {
+			"reasoning_tokens": 5,
+			"accepted_prediction_tokens": 1,
+			"rejected_prediction_tokens": 1,
+			"audio_tokens": 2
+		}
+	}`), &wireUsage); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage := rawUsageCanonical(chatUsageToRaw(wireUsage))
+
+	if usage.Input.CacheReadTokens == nil || *usage.Input.CacheReadTokens != 3 {
+		t.Fatalf("cache read = %+v", usage.Input)
+	}
+	if usage.Input.CacheWriteTokens == nil || *usage.Input.CacheWriteTokens != 4 {
+		t.Fatalf("cache write = %+v", usage.Input)
+	}
+	if usage.Output.ReasoningTokens == nil || *usage.Output.ReasoningTokens != 5 {
+		t.Fatalf("reasoning = %+v", usage.Output)
+	}
+	if usage.Output.ReasoningAccounting != inference.ReasoningIncludedInOutput {
+		t.Fatalf(
+			"reasoning accounting = %q, want included_in_output",
+			usage.Output.ReasoningAccounting,
+		)
+	}
+	if usage.Output.AcceptedPredictionTokens == nil ||
+		*usage.Output.AcceptedPredictionTokens != 1 {
+		t.Fatalf("accepted predictions = %+v", usage.Output)
+	}
+	if usage.Output.RejectedPredictionTokens == nil ||
+		*usage.Output.RejectedPredictionTokens != 1 {
+		t.Fatalf("rejected predictions = %+v", usage.Output)
+	}
+	if got := modalityTokens(usage.Input.ByModality); got != 2 {
+		t.Fatalf("input audio tokens = %d, want 2", got)
+	}
+	if got := modalityTokens(usage.Output.ByModality); got != 2 {
+		t.Fatalf("output audio tokens = %d, want 2", got)
+	}
+}
+
+func modalityTokens(usages []inference.ModalityTokenUsage) int64 {
+	for _, usage := range usages {
+		if usage.Modality == inference.ModalityAudio {
+			return usage.Tokens
+		}
+	}
+	return 0
 }
 
 func TestChatUnaryTransportAndDecode(t *testing.T) {

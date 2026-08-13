@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -30,12 +31,20 @@ type captureHost struct {
 	agent.NoopHost
 	mu        sync.Mutex
 	envelopes []event.Envelope
+	usages    []inference.Usage
 }
 
 func (h *captureHost) Publish(_ context.Context, env event.Envelope) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.envelopes = append(h.envelopes, env)
+	return nil
+}
+
+func (h *captureHost) ReportUsage(_ context.Context, usage inference.Usage) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.usages = append(h.usages, usage)
 	return nil
 }
 
@@ -457,8 +466,8 @@ func TestInferenceNode_Stream_PublishesDeltasAppendsAssembled(t *testing.T) {
 
 	// Subscribers saw one token event per text delta, in order.
 	deltas := host.published(agent.SubjectStreamDelta("run-1", "test-agent.node.n"))
-	if len(deltas) != 2 {
-		t.Fatalf("stream-delta envelopes = %d, want 2", len(deltas))
+	if len(deltas) != 3 {
+		t.Fatalf("stream-delta envelopes = %d, want 3", len(deltas))
 	}
 	for i, want := range []string{"hel", "lo"} {
 		var payload agent.StreamDeltaPayload
@@ -470,6 +479,14 @@ func TestInferenceNode_Stream_PublishesDeltasAppendsAssembled(t *testing.T) {
 			t.Fatalf("delta %d = %+v, want text part %q", i, payload, want)
 		}
 	}
+	var finish agent.StreamDeltaPayload
+	if err := deltas[2].Decode(&finish); err != nil {
+		t.Fatalf("finish delta payload: %v", err)
+	}
+	if finish.Type != agent.StreamDeltaFinish ||
+		finish.FinishReason != string(inference.FinishCompleted) {
+		t.Fatalf("finish delta = %+v, want completed finish", finish)
+	}
 
 	// …and the board still received exactly one assembled message.
 	msgs := board.Channel(agent.MainChannel)
@@ -479,6 +496,181 @@ func TestInferenceNode_Stream_PublishesDeltasAppendsAssembled(t *testing.T) {
 	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "hello" {
 		t.Fatalf("assembled message = %+v, want text %q", msgs[1].Content.Parts[0], "hello")
 	}
+}
+
+func TestInferenceNode_Stream_PublishesReasoningDeltas(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.ReasoningDelta{Text: "thin"}},
+			{PartIndex: 0, Delta: inference.ReasoningDelta{Text: "king"}},
+			{PartIndex: 1, Delta: inference.TextPartDelta{Text: "answer"}},
+			{PartIndex: 0, Delta: inference.ReasoningDelta{Signature: "sig-1", ID: "trace-1"}},
+			{FinishReason: inference.FinishCompleted},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+	})
+	host := &captureHost{}
+	board := userBoard()
+	if err := executeGraph(t, g, host, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// Subscribers saw each reasoning fragment as an incremental
+	// reasoning part, interleaved with the text token, and no
+	// duplicate complete-part emission at the end.
+	deltas := host.published(agent.SubjectStreamDelta("run-1", "test-agent.node.n"))
+	want := []message.Part{
+		message.ReasoningPart{Text: "thin"},
+		message.ReasoningPart{Text: "king"},
+		message.TextPart{Text: "answer"},
+		message.ReasoningPart{Signature: "sig-1", ID: "trace-1"},
+	}
+	if len(deltas) != len(want)+1 {
+		t.Fatalf("stream-delta envelopes = %d, want %d", len(deltas), len(want)+1)
+	}
+	for i, part := range want {
+		var payload agent.StreamDeltaPayload
+		if err := deltas[i].Decode(&payload); err != nil {
+			t.Fatalf("delta %d payload: %v", i, err)
+		}
+		if payload.Type != agent.StreamDeltaPart {
+			t.Fatalf("delta %d type = %q, want part", i, payload.Type)
+		}
+		if !reflect.DeepEqual(payload.Part, part) {
+			t.Fatalf("delta %d part = %#v, want %#v", i, payload.Part, part)
+		}
+	}
+	var finish agent.StreamDeltaPayload
+	if err := deltas[len(want)].Decode(&finish); err != nil {
+		t.Fatalf("finish delta payload: %v", err)
+	}
+	if finish.Type != agent.StreamDeltaFinish ||
+		finish.FinishReason != string(inference.FinishCompleted) {
+		t.Fatalf("finish delta = %+v, want completed finish", finish)
+	}
+
+	// …and the board still received exactly one assembled message
+	// with the complete reasoning trace plus the answer text.
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 {
+		t.Fatalf("channel len = %d, want user + one assistant", len(msgs))
+	}
+	parts := msgs[1].Content.Parts
+	if len(parts) != 2 {
+		t.Fatalf("assembled parts = %d, want 2", len(parts))
+	}
+	reasoning, ok := parts[0].(message.ReasoningPart)
+	if !ok || reasoning.Text != "thinking" ||
+		reasoning.Signature != "sig-1" || reasoning.ID != "trace-1" {
+		t.Fatalf("assembled reasoning = %#v", parts[0])
+	}
+	if text, ok := parts[1].(message.TextPart); !ok || text.Text != "answer" {
+		t.Fatalf("assembled text = %#v", parts[1])
+	}
+}
+
+func TestInferenceNode_EmitsProviderOutputsAndFinishMetadata(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hi"}},
+			{
+				FinishReason:    inference.FinishCompleted,
+				ProviderOutputs: inference.ProviderOutputs{testProviderOutput{Query: "flowcraft"}},
+				RequestID:       "req-1",
+				ResponseID:      "resp-1",
+			},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+	})
+	host := &captureHost{}
+	if err := executeGraph(t, g, host, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	deltas := host.published(agent.SubjectStreamDelta("run-1", "test-agent.node.n"))
+	if len(deltas) != 3 {
+		t.Fatalf("stream-delta envelopes = %d, want 3", len(deltas))
+	}
+
+	var outputs agent.StreamDeltaPayload
+	if err := deltas[1].Decode(&outputs); err != nil {
+		t.Fatalf("provider_outputs payload: %v", err)
+	}
+	if outputs.Type != agent.StreamDeltaProviderOutputs || len(outputs.ProviderOutputs) != 1 {
+		t.Fatalf("provider_outputs delta = %+v", outputs)
+	}
+	env := outputs.ProviderOutputs[0]
+	if env.Provider != "fake" || env.Extension != "web_search" {
+		t.Fatalf("provider_outputs envelope = %+v", env)
+	}
+	var output testProviderOutput
+	if err := json.Unmarshal(env.Value, &output); err != nil {
+		t.Fatalf("decode provider output value: %v", err)
+	}
+	if output.Query != "flowcraft" {
+		t.Fatalf("provider output = %+v", output)
+	}
+
+	var finish agent.StreamDeltaPayload
+	if err := deltas[2].Decode(&finish); err != nil {
+		t.Fatalf("finish payload: %v", err)
+	}
+	if finish.Type != agent.StreamDeltaFinish ||
+		finish.FinishReason != string(inference.FinishCompleted) ||
+		finish.RequestID != "req-1" || finish.ResponseID != "resp-1" {
+		t.Fatalf("finish delta = %+v", finish)
+	}
+}
+
+func TestInferenceNode_StreamFailureReportsPartialUsage(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hel"}},
+			{Usage: &inference.Usage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}},
+		},
+		StreamErr:   errors.New("connection reset"),
+		StreamErrAt: 2,
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+	})
+	host := &captureHost{}
+	if err := executeGraph(t, g, host, userBoard()); err == nil {
+		t.Fatal("mid-stream failure must propagate")
+	}
+	host.mu.Lock()
+	usages := append([]inference.Usage(nil), host.usages...)
+	host.mu.Unlock()
+	if len(usages) != 1 {
+		t.Fatalf("usage reports = %d, want 1", len(usages))
+	}
+	if usages[0].TotalTokens != 7 ||
+		usages[0].InputTokens != 3 || usages[0].OutputTokens != 4 {
+		t.Fatalf("partial usage = %+v", usages[0])
+	}
+}
+
+// testProviderOutput exercises the provider-outputs stream delta with
+// a concrete, JSON-round-trippable output family.
+type testProviderOutput struct {
+	Query string `json:"query,omitempty"`
+}
+
+func (testProviderOutput) ProviderID() string  { return "fake" }
+func (testProviderOutput) ExtensionID() string { return "web_search" }
+func (testProviderOutput) Validate() error     { return nil }
+func (o testProviderOutput) Clone() inference.ProviderOutput {
+	return o
 }
 
 // testExtension mirrors a provider option struct for the extensions

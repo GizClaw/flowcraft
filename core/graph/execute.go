@@ -238,6 +238,10 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 	defer func() {
 		status := execStatus(err)
 		if err != nil && !isInterruptedErr(err) {
+			if requestID, ok := errdefs.RequestID(err); ok {
+				span.SetAttributes(
+					attribute.String(telemetry.AttrLLMRequestID, requestID))
+			}
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		} else {

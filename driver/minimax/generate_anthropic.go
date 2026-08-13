@@ -217,14 +217,26 @@ func messageToRaw(message *anthropicgo.Message) (generateRaw, error) {
 			})
 		}
 	}
-	raw.usage = rawUsage{
-		inputTokens:      message.Usage.InputTokens,
-		outputTokens:     message.Usage.OutputTokens,
-		cacheReadTokens:  message.Usage.CacheReadInputTokens,
-		cacheWriteTokens: message.Usage.CacheCreationInputTokens,
-	}
+	raw.usage = usageFromSDK(message.Usage)
 	raw.finish = stopReasonFinish(message.StopReason, len(raw.toolCalls) > 0)
 	return raw, nil
+}
+
+// usageFromSDK lowers the SDK usage object onto the provider raw model,
+// keeping every counter the Messages protocol can report: cache totals and
+// their per-TTL breakdown, thinking tokens, and server tool request counts.
+func usageFromSDK(usage anthropicgo.Usage) rawUsage {
+	return rawUsage{
+		inputTokens:       usage.InputTokens,
+		outputTokens:      usage.OutputTokens,
+		cacheReadTokens:   usage.CacheReadInputTokens,
+		cacheWriteTokens:  usage.CacheCreationInputTokens,
+		cacheWrite5m:      usage.CacheCreation.Ephemeral5mInputTokens,
+		cacheWrite1h:      usage.CacheCreation.Ephemeral1hInputTokens,
+		thinkingTokens:    usage.OutputTokensDetails.ThinkingTokens,
+		webSearchRequests: usage.ServerToolUse.WebSearchRequests,
+		webFetchRequests:  usage.ServerToolUse.WebFetchRequests,
+	}
 }
 
 // stopReasonFinish maps the API's stop reasons onto canonical finish
@@ -306,6 +318,41 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 	if raw.cacheWriteTokens > 0 {
 		write := raw.cacheWriteTokens
 		usage.Input.CacheWriteTokens = &write
+	}
+	cacheWrites := make([]inference.CacheWriteUsage, 0, 2)
+	if raw.cacheWrite5m > 0 {
+		cacheWrites = append(cacheWrites, inference.CacheWriteUsage{
+			TTL:    inference.CacheTTL5Minutes,
+			Tokens: raw.cacheWrite5m,
+		})
+	}
+	if raw.cacheWrite1h > 0 {
+		cacheWrites = append(cacheWrites, inference.CacheWriteUsage{
+			TTL:    inference.CacheTTL1Hour,
+			Tokens: raw.cacheWrite1h,
+		})
+	}
+	if len(cacheWrites) > 0 &&
+		raw.cacheWrite5m+raw.cacheWrite1h == raw.cacheWriteTokens {
+		usage.Input.CacheWrites = cacheWrites
+	}
+	if raw.thinkingTokens > 0 {
+		thinking := raw.thinkingTokens
+		usage.Output.ReasoningTokens = &thinking
+		// thinking_tokens is always a subset of output_tokens.
+		usage.Output.ReasoningAccounting = inference.ReasoningIncludedInOutput
+	}
+	if raw.webSearchRequests > 0 {
+		usage.Tools = append(usage.Tools, inference.ToolUsage{
+			Kind:     inference.ToolUsageWebSearch,
+			Requests: raw.webSearchRequests,
+		})
+	}
+	if raw.webFetchRequests > 0 {
+		usage.Tools = append(usage.Tools, inference.ToolUsage{
+			Kind:     inference.ToolUsageWebFetch,
+			Requests: raw.webFetchRequests,
+		})
 	}
 	return usage
 }

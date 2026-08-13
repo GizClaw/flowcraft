@@ -42,6 +42,7 @@ func RunGenerateUnary(t *testing.T, suite GenerateUnarySuite) {
 	if suite.Driver == nil {
 		t.Fatal("GenerateUnarySuite requires a driver")
 	}
+	assertResponse := suite.AssertResponse
 	RunUnary(t, UnarySuite[inference.GenerateRequest, inference.GenerateResponse]{
 		Operation: inference.OperationGenerate,
 		Model:     suite.Model,
@@ -53,7 +54,24 @@ func RunGenerateUnary(t *testing.T, suite GenerateUnarySuite) {
 		Execute:        suite.Driver.Execute,
 		Metadata:       func(response inference.GenerateResponse) inference.Metadata { return response.Metadata },
 		TransportCalls: suite.TransportCalls,
-		AssertResponse: suite.AssertResponse,
+		AssertResponse: func(t *testing.T, response inference.GenerateResponse) {
+			if response.Usage.Model != suite.Model {
+				t.Fatalf(
+					"Usage.Model = %+v, want %+v",
+					response.Usage.Model,
+					suite.Model,
+				)
+			}
+			if response.Usage.LatencyMs < 0 {
+				t.Fatalf(
+					"Usage.LatencyMs = %d, want non-negative",
+					response.Usage.LatencyMs,
+				)
+			}
+			if assertResponse != nil {
+				assertResponse(t, response)
+			}
+		},
 	})
 }
 

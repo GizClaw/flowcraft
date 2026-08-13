@@ -88,9 +88,7 @@ func (s *messagesStream) apply(
 	switch event.Type {
 	case "message_start":
 		s.id = event.Message.ID
-		s.usage.inputTokens = event.Message.Usage.InputTokens
-		s.usage.cacheReadTokens = event.Message.Usage.CacheReadInputTokens
-		s.usage.cacheWriteTokens = event.Message.Usage.CacheCreationInputTokens
+		s.usage = usageFromSDK(event.Message.Usage)
 		return streamRaw{}, false, nil
 	case "content_block_start":
 		return s.applyBlockStart(event.Index, event.ContentBlock)
@@ -98,6 +96,9 @@ func (s *messagesStream) apply(
 		return s.applyBlockDelta(event)
 	case "message_delta":
 		s.usage.outputTokens = event.Usage.OutputTokens
+		s.usage.thinkingTokens = event.Usage.OutputTokensDetails.ThinkingTokens
+		s.usage.webSearchRequests = event.Usage.ServerToolUse.WebSearchRequests
+		s.usage.webFetchRequests = event.Usage.ServerToolUse.WebFetchRequests
 		return s.finishEvent(stopReasonFinish(event.Delta.StopReason, s.sawTools))
 	}
 	// content_block_stop, message_stop, ping: lifecycle bookkeeping. The

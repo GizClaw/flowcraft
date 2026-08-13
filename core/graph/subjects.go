@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 )
 
@@ -24,6 +25,10 @@ func stepActorFor(agentID, nodeID string) string {
 type RunEventPayload struct {
 	Graph string `json:"graph"`
 	Error string `json:"error,omitempty"`
+
+	// RequestID is the provider-assigned request identifier carried by
+	// the failure, when the error chain exposes one. Empty otherwise.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 func publishRunEvent(ctx context.Context, host agent.Host, g *Graph, run agent.Run, subject event.Subject, runErr error) error {
@@ -33,6 +38,9 @@ func publishRunEvent(ctx context.Context, host agent.Host, g *Graph, run agent.R
 	payload := RunEventPayload{Graph: g.name}
 	if runErr != nil {
 		payload.Error = runErr.Error()
+		if requestID, ok := errdefs.RequestID(runErr); ok {
+			payload.RequestID = requestID
+		}
 	}
 	env, err := event.NewEnvelope(ctx, subject, payload)
 	if err != nil {
@@ -64,6 +72,10 @@ type StepEventPayload struct {
 
 	// Error carries the failure message on step-error envelopes.
 	Error string `json:"error,omitempty"`
+
+	// RequestID is the provider-assigned request identifier carried by
+	// the failure, when the error chain exposes one. Empty otherwise.
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // publishStepStarted / publishStepCompleted / publishStepError emit
@@ -88,8 +100,12 @@ func publishStepSkipped(ctx context.Context, host agent.Host, g *Graph, info age
 }
 
 func publishStepError(ctx context.Context, host agent.Host, g *Graph, info agent.RunInfo, nodeID string, stepErr error) {
+	payload := StepEventPayload{NodeID: nodeID, Graph: g.name, Error: stepErr.Error()}
+	if requestID, ok := errdefs.RequestID(stepErr); ok {
+		payload.RequestID = requestID
+	}
 	publishStep(ctx, host, agent.SubjectStepError(info.RunID, stepActorFor(info.AgentID, nodeID)),
-		info, StepEventPayload{NodeID: nodeID, Graph: g.name, Error: stepErr.Error()})
+		info, payload)
 }
 
 func publishStep(ctx context.Context, host agent.Host, subject event.Subject, info agent.RunInfo, payload StepEventPayload) {

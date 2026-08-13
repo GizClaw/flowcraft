@@ -401,11 +401,16 @@ func arkCitations(annotations []*arkresponses.Annotation) []inference.Citation {
 
 func arkUsage(usage *arkresponses.Usage) rawUsage {
 	raw := rawUsage{
-		inputTokens:     usage.GetInputTokens(),
-		outputTokens:    usage.GetOutputTokens(),
-		totalTokens:     usage.GetTotalTokens(),
-		cachedTokens:    usage.GetInputTokensDetails().GetCachedTokens(),
-		reasoningTokens: usage.GetOutputTokensDetails().GetReasoningTokens(),
+		inputTokens:      usage.GetInputTokens(),
+		outputTokens:     usage.GetOutputTokens(),
+		totalTokens:      usage.GetTotalTokens(),
+		cachedTokens:     usage.GetInputTokensDetails().GetCachedTokens(),
+		reasoningTokens:  usage.GetOutputTokensDetails().GetReasoningTokens(),
+		inputAudioTokens: usage.GetInputTokensDetails().GetAudioTokens(),
+	}
+	if tool := usage.GetToolUsage(); tool != nil {
+		raw.webSearchRequests = tool.GetWebSearch()
+		raw.mcpRequests = tool.GetMcp()
 	}
 	if raw.totalTokens == 0 {
 		raw.totalTokens = raw.inputTokens + raw.outputTokens
@@ -526,6 +531,25 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 		usage.Output.ReasoningTokens = &reasoning
 		// Ark reports output_tokens inclusive of reasoning tokens.
 		usage.Output.ReasoningAccounting = inference.ReasoningIncludedInOutput
+	}
+	if raw.inputAudioTokens > 0 {
+		usage.Input.ByModality = append(usage.Input.ByModality,
+			inference.ModalityTokenUsage{
+				Modality: inference.ModalityAudio,
+				Tokens:   raw.inputAudioTokens,
+			})
+	}
+	if raw.webSearchRequests > 0 {
+		usage.Tools = append(usage.Tools, inference.ToolUsage{
+			Kind:     inference.ToolUsageWebSearch,
+			Requests: raw.webSearchRequests,
+		})
+	}
+	if raw.mcpRequests > 0 {
+		usage.Tools = append(usage.Tools, inference.ToolUsage{
+			Kind:     inference.ToolUsageMCP,
+			Requests: raw.mcpRequests,
+		})
 	}
 	return usage
 }

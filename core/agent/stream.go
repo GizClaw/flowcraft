@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 
@@ -143,6 +144,33 @@ func validateStreamDelta(p StreamDeltaPayload) error {
 		}
 		if p.Reason != "" {
 			return fmt.Errorf("engine: stream delta part must not carry Reason")
+		}
+		return validateStreamDataIdentity(p)
+	case StreamDeltaFinish:
+		if p.FinishReason == "" {
+			return fmt.Errorf("engine: stream delta finish requires FinishReason")
+		}
+		if !partIsNil(p.Part) {
+			return fmt.Errorf("engine: stream delta finish must not carry Part")
+		}
+		return validateStreamDataIdentity(p)
+	case StreamDeltaProviderOutputs:
+		if len(p.ProviderOutputs) == 0 {
+			return fmt.Errorf("engine: stream delta provider_outputs requires ProviderOutputs")
+		}
+		for i, output := range p.ProviderOutputs {
+			if output.Provider == "" {
+				return fmt.Errorf("engine: stream delta provider_outputs[%d] requires Provider", i)
+			}
+			if output.Extension == "" {
+				return fmt.Errorf("engine: stream delta provider_outputs[%d] requires Extension", i)
+			}
+			if len(output.Value) == 0 || !json.Valid(output.Value) {
+				return fmt.Errorf("engine: stream delta provider_outputs[%d] has invalid Value", i)
+			}
+		}
+		if !partIsNil(p.Part) {
+			return fmt.Errorf("engine: stream delta provider_outputs must not carry Part")
 		}
 		return validateStreamDataIdentity(p)
 	case StreamDeltaParallelBranchAccept, StreamDeltaParallelBranchCancel:

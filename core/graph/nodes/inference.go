@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 
@@ -45,9 +46,12 @@ type InferenceConfig struct {
 	// through a tool node and loop back.
 	ToolPendingKey string `json:"tool_pending_key,omitempty"`
 
-	// Stream opens a GenerateStream and publishes text deltas as
-	// token stream events; the board still receives exactly one
-	// assembled message (tool_call parts included).
+	// Stream opens a GenerateStream and publishes text and reasoning
+	// deltas as token stream events. Reasoning fragments arrive as
+	// incremental message.ReasoningPart deltas: consumers concatenate
+	// Text and take Signature/ID from the terminal fragment. The board
+	// still receives exactly one assembled message (tool_call parts
+	// included).
 	Stream bool `json:"stream,omitempty"`
 
 	// Tools names the catalog tools the model may call this turn.
@@ -138,18 +142,19 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 		}
 	}
 
-	// Stream every part of the response: text (unless it was already
-	// streamed token-by-token), images, audio, files, tool calls and
-	// results, reasoning — each as one StreamDeltaPart. The board still
-	// receives the complete assembled message.
+	// Stream every part of the response: text and reasoning (unless
+	// they were already streamed incrementally), images, audio, files,
+	// tool calls and results — each as one StreamDeltaPart. The board
+	// still receives the complete assembled message.
 	for _, part := range resp.Message.Content.Parts {
 		normalized, err := message.NormalizePart(part)
 		if err != nil {
 			return err
 		}
 		if cfg.Stream {
-			if _, ok := normalized.(message.TextPart); ok {
-				continue // tokens were already streamed by MessageStream
+			switch normalized.(type) {
+			case message.TextPart, message.ReasoningPart:
+				continue // already streamed incrementally
 			}
 		}
 		if err := ec.EmitStreamDelta(agent.StreamDeltaPayload{
@@ -175,7 +180,47 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 			return err
 		}
 	}
+	if err := emitGenerationTerminal(ec, resp); err != nil {
+		return err
+	}
 	return nil
+}
+
+// emitGenerationTerminal publishes the terminal stream deltas of one
+// successful generation: the final provider-owned outputs (when any)
+// followed by the finish signal carrying the normalized finish reason
+// and the provider-issued request / response identifiers. It fixes the
+// node's previous silent drop of ProviderOutputs and gives downstream
+// stream consumers a definitive end-of-generation event.
+func emitGenerationTerminal(ec graph.ExecutionContext, resp inference.GenerateResponse) error {
+	if len(resp.ProviderOutputs) > 0 {
+		envelopes := make([]agent.ProviderOutputEnvelope, 0, len(resp.ProviderOutputs))
+		for _, output := range resp.ProviderOutputs {
+			raw, err := json.Marshal(output)
+			if err != nil {
+				return errdefs.Validationf(
+					"inference node: marshal provider output %q/%q: %v",
+					output.ProviderID(), output.ExtensionID(), err)
+			}
+			envelopes = append(envelopes, agent.ProviderOutputEnvelope{
+				Provider:  output.ProviderID(),
+				Extension: output.ExtensionID(),
+				Value:     raw,
+			})
+		}
+		if err := ec.EmitStreamDelta(agent.StreamDeltaPayload{
+			Type:            agent.StreamDeltaProviderOutputs,
+			ProviderOutputs: envelopes,
+		}); err != nil {
+			return err
+		}
+	}
+	return ec.EmitStreamDelta(agent.StreamDeltaPayload{
+		Type:         agent.StreamDeltaFinish,
+		FinishReason: string(resp.FinishReason),
+		RequestID:    resp.Metadata.RequestID,
+		ResponseID:   resp.Metadata.ResponseID,
+	})
 }
 
 // buildGenerateRequest splits the channel tail into context + current
@@ -337,12 +382,18 @@ func executeGenerate(ec graph.ExecutionContext, board *agent.Board, cfg Inferenc
 
 // executeGenerateStream drains a GenerateStream through a
 // MessageStream: each text delta is buffered and published as a token
-// event. On success the caller appends the driver-accumulated response
-// (complete message, tool_calls included). On a mid-stream failure —
-// driver error or run interruption — the buffered partial text is
-// committed to the board as one assistant message before the error
-// propagates, so downstream consumers and a host-saved board keep the
-// progress instead of silently losing every token.
+// event, and each reasoning delta is published incrementally as a
+// reasoning part. On success the caller appends the driver-accumulated
+// response (complete message, tool_calls included). On a mid-stream
+// failure — driver error or run interruption — the buffered partial
+// text is committed to the board as one assistant message before the
+// error propagates, so downstream consumers and a host-saved board keep
+// the progress instead of silently losing every token. Partial
+// reasoning is streamed but not committed to the board: an unsigned
+// fragment must not round-trip into a conversation context that
+// requires signed reasoning. The last cumulative usage snapshot seen
+// before the failure is still reported to the host, so budget
+// accounting observes the tokens the provider already billed.
 func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, deps InferenceNodeDeps, req inference.GenerateRequest) (inference.GenerateResponse, error) {
 	var stream inference.GenerateStream
 	var err error
@@ -372,8 +423,26 @@ func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg In
 
 func drainGenerateStream(ec graph.ExecutionContext, board *agent.Board, channel string, stream inference.GenerateStream) (response inference.GenerateResponse, err error) {
 	s := ec.NewMessageStream(channel)
+	var (
+		lastUsage inference.Usage
+		usageSeen bool
+	)
+	reportPartialUsage := func() {
+		if !usageSeen || ec.Host == nil {
+			return
+		}
+		if reportErr := ec.Host.ReportUsage(ec.Context, lastUsage); reportErr != nil {
+			telemetry.WarnErr(ec.Context, "inference node: report partial usage", reportErr,
+				otellog.String("node.type", "inference"),
+				otellog.String("channel", channel))
+		}
+	}
 	defer func() {
 		if err != nil {
+			// The provider may have billed tokens before the stream
+			// failed; surface the last cumulative usage snapshot so
+			// budget accounting still observes the partial spend.
+			reportPartialUsage()
 			// Preserve the original stream error; partial materialization
 			// is best effort, but if Close itself fails the caller should
 			// still see why their partial materialization didn't land.
@@ -392,8 +461,35 @@ func drainGenerateStream(ec graph.ExecutionContext, board *agent.Board, channel 
 		if nextErr != nil {
 			return response, nextErr
 		}
-		if delta, ok := event.Delta.(inference.TextPartDelta); ok && delta.Text != "" {
+		if event.Usage != nil {
+			lastUsage = event.Usage.Clone()
+			usageSeen = true
+		}
+		switch delta := event.Delta.(type) {
+		case inference.TextPartDelta:
+			if delta.Text == "" {
+				continue
+			}
 			if emitErr := s.Emit(delta.Text); emitErr != nil {
+				return response, emitErr
+			}
+		case inference.ReasoningDelta:
+			// Reasoning fragments bypass MessageStream, which is
+			// text-only: publish each fragment as an incremental
+			// reasoning part. Signature/ID ride the terminal fragment.
+			part := message.ReasoningPart{
+				Text:      delta.Text,
+				Signature: delta.Signature,
+				ID:        delta.ID,
+			}
+			if err := part.Validate(); err != nil {
+				// ID-only bookkeeping delta with nothing displayable.
+				continue
+			}
+			if emitErr := ec.EmitStreamDelta(agent.StreamDeltaPayload{
+				Type: agent.StreamDeltaPart,
+				Part: part,
+			}); emitErr != nil {
 				return response, emitErr
 			}
 		}
