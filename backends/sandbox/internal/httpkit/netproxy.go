@@ -40,8 +40,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit/mitm"
+	"github.com/GizClaw/flowcraft/core/sandbox"
 	"golang.org/x/net/proxy"
 )
 
