@@ -31,17 +31,36 @@ jobs:
           BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
         run: |
           python3 - <<'PY' > matrix.json
-          import json, os, pathlib, subprocess
+          import json, os, pathlib, re, subprocess
 
-          def modules(root):
-              return sorted(
-                  str(path.parent)
-                  for path in pathlib.Path(root).glob("*/go.mod")
-              )
+          def module_dirs():
+              dirs = ["core", "memory", "memory/eval", "examples/forge"]
+              dirs += [str(p.parent) for p in pathlib.Path("backends").glob("*/go.mod")]
+              dirs += [str(p.parent) for p in pathlib.Path("driver").glob("*/go.mod")]
+              return sorted(set(dirs))
 
-          backends = modules("backends")
-          drivers = modules("driver")
-          all_lint = ["core", *backends, *drivers, "memory", "memory/eval"]
+          dirs = module_dirs()
+          lint_dirs = [d for d in dirs if d != "examples/forge"]
+
+          # Parse each in-workspace module's identity and its requires on
+          # other flowcraft modules so a change can pull in every module
+          # that (transitively) depends on it.
+          path_of = {}
+          deps_of = {}
+          for d in dirs:
+              text = pathlib.Path(d, "go.mod").read_text()
+              mod = re.search(r"(?m)^module\s+(\S+)", text).group(1)
+              path_of[d] = mod
+              deps_of[d] = set(re.findall(
+                  r"(?m)^\s*(?:require\s+)?(github\.com/GizClaw/flowcraft/[\w./-]+)\s+v\S+",
+                  text,
+              ))
+          dir_of = {path: d for d, path in path_of.items()}
+          reverse = {d: set() for d in dirs}
+          for d, deps in deps_of.items():
+              for dep in deps:
+                  if dep in dir_of:
+                      reverse[dir_of[dep]].add(d)
 
           base = os.environ["BASE_SHA"]
           files = subprocess.check_output(
@@ -58,25 +77,33 @@ jobs:
               "Makefile",
               ".golangci.yml",
           }
+          prefixes = sorted(dirs, key=len, reverse=True)
 
           for file in files:
               if file in root_trigger_files:
                   root_trigger = True
                   continue
-              parts = pathlib.PurePosixPath(file).parts
-              if file.startswith("core/"):
-                  changed.add("core")
-              elif file.startswith("memory/eval/"):
-                  changed.add("memory/eval")
-              elif file.startswith("memory/"):
-                  changed.add("memory")
-              elif file.startswith("driver/") and len(parts) >= 2:
-                  changed.add(f"driver/{parts[1]}")
-              elif file.startswith("backends/") and len(parts) >= 2:
-                  changed.add(f"backends/{parts[1]}")
+              for d in prefixes:
+                  if file == d or file.startswith(d + "/"):
+                      changed.add(d)
+                      break
 
-          lint = all_lint if root_trigger else sorted(changed & set(all_lint))
-          test = all_lint + ["examples/forge"]
+          def reverse_closure(seeds):
+              out = set(seeds)
+              stack = list(seeds)
+              while stack:
+                  d = stack.pop()
+                  for dep in reverse[d]:
+                      if dep not in out:
+                          out.add(dep)
+                          stack.append(dep)
+              return out
+
+          lint = lint_dirs if root_trigger else sorted(changed & set(lint_dirs))
+          # examples/forge pins released module versions and builds with
+          # GOWORK=off, so it always runs rather than joining the closure.
+          test = sorted(reverse_closure(changed)) if not root_trigger else sorted(dirs)
+          test = sorted(set(test) | {"examples/forge"})
           json.dump(
               {"lint": {"module": lint}, "test": {"module": test}},
               open("matrix.json", "w"),
