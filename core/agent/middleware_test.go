@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/agent/agenttest"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -40,6 +41,15 @@ func TestComposeHost_OrdersFirstSliceEntryAsOutermost(t *testing.T) {
 	if len(seen) != 3 || seen[0] != want[0] || seen[1] != want[1] || seen[2] != want[2] {
 		t.Fatalf("call order = %v, want %v (declaration order)", seen, want)
 	}
+}
+
+// TestHostFuncs_HostSuiteContract pins down the zero-override adapter
+// as a conforming Host: every nil func field must delegate to Inner
+// exactly like a hand-written host.
+func TestHostFuncs_HostSuiteContract(t *testing.T) {
+	agenttest.HostSuite(t, func() agent.Host {
+		return agent.HostFuncs{Inner: agent.NoopHost{}}
+	})
 }
 
 func TestComposeHost_NoMiddlewaresEchoesBase(t *testing.T) {

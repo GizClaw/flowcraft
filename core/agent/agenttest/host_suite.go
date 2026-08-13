@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
 )
@@ -62,9 +63,10 @@ type HostCapabilities struct {
 
 	// SkipPublishConcurrency is true when the host's Publish
 	// implementation is intentionally serial (e.g. a writer-locked
-	// log shipper that must preserve order). The suite then runs
-	// the Publish concurrency probe sequentially so the test
-	// reflects the real serial-only contract.
+	// log shipper that must preserve order). The suite then keeps
+	// Publish calls out of the concurrent phase and issues them
+	// sequentially instead, so the test reflects the real
+	// serial-only contract.
 	SkipPublishConcurrency bool
 
 	// AcceptsBudgetExceeded, when true, indicates the host's
@@ -152,10 +154,16 @@ func hostAskUserClassification(t *testing.T, f HostFactory, c HostCapabilities) 
 	if err == nil {
 		_ = reply.Parts
 		if c.SkipAskUserNotAvailable {
+			if len(reply.Parts) == 0 {
+				t.Errorf("AskUser succeeded but returned a zero reply; a host declaring SkipAskUserNotAvailable must produce a real reply")
+			}
 			return
 		}
 		t.Logf("AskUser returned (%+v, nil) on a host that did not declare SkipAskUserNotAvailable; if this host genuinely supports prompting, set HostCapabilities.SkipAskUserNotAvailable=true", reply)
 		return
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Errorf("AskUser error must satisfy errdefs.IsNotAvailable (the UserPrompter contract reserves that class for UI-less hosts); got %v", err)
 	}
 }
 
@@ -176,16 +184,20 @@ func hostConcurrentAccess(t *testing.T, f HostFactory, c HostCapabilities) {
 					t.Errorf("concurrent host call panicked: %v", r)
 				}
 			}()
-			_ = h.Publish(ctx, event.Envelope{Subject: "test"})
+			if !c.SkipPublishConcurrency {
+				_ = h.Publish(ctx, event.Envelope{Subject: "test"})
+			}
 			_ = h.Checkpoint(ctx, agent.Checkpoint{ExecID: "x"})
 			_ = h.ReportUsage(ctx, inference.Usage{})
 			_ = h.Interrupts()
 		}()
 	}
-	if c.SkipPublishConcurrency {
-		_ = h.Publish(ctx, event.Envelope{Subject: "seq"})
-	}
 	wg.Wait()
+	if c.SkipPublishConcurrency {
+		for i := 0; i < n; i++ {
+			_ = h.Publish(ctx, event.Envelope{Subject: "seq"})
+		}
+	}
 }
 
 // hostRecoverPanicAs converts a panic inside a method probe into a

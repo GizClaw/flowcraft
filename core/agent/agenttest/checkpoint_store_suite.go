@@ -1,6 +1,3 @@
-// Package agenttest provides shared conformance suites for core/agent
-// contracts. Store implementations (workspace, future sqlite, ...) run
-// the same suite so behaviour cannot drift between backends.
 package agenttest
 
 import (
@@ -203,15 +200,19 @@ func CheckpointStoreSuite(t *testing.T, newStore func() agent.CheckpointStore) {
 }
 
 func checkpointStoreSample(execID string) agent.Checkpoint {
+	// Fixed whole-second timestamps keep the identity checks portable:
+	// stores that truncate sub-second precision must still pass.
+	ts := time.Unix(1_700_000_000, 0)
 	return agent.Checkpoint{
-		ExecID:      execID,
-		Steps:       []string{"wave-1"},
-		Iteration:   3,
-		Board:       checkpointStoreBoard(),
-		Payload:     []byte(`{"task_id":"t1"}`),
-		Attributes:  map[string]string{"tenant": "tenant-a"},
-		Timestamp:   time.Now(),
-		SpecVersion: "v1",
+		ExecID:            execID,
+		Steps:             []string{"wave-1"},
+		Iteration:         3,
+		Board:             checkpointStoreBoard(),
+		Payload:           []byte(`{"task_id":"t1"}`),
+		Attributes:        map[string]string{"tenant": "tenant-a"},
+		Timestamp:         ts,
+		OriginalStartedAt: ts,
+		SpecVersion:       "v1",
 	}
 }
 
@@ -237,9 +238,14 @@ func containsString(values []string, want string) bool {
 }
 
 func checkpointEqual(a, b agent.Checkpoint) bool {
-	if !a.Timestamp.Equal(b.Timestamp) || !a.OriginalStartedAt.Equal(b.OriginalStartedAt) {
+	if !a.OriginalStartedAt.Equal(b.OriginalStartedAt) {
 		return false
 	}
+	// Timestamp is advisory: [agent.Checkpoint] explicitly allows
+	// hosts to overwrite it when they persist, and sub-second
+	// precision is not portable across store backends. OriginalStartedAt
+	// is compared separately above because resume plumbing
+	// (agent.LoadAndResume) threads it through the store.
 	a.Timestamp = time.Time{}
 	b.Timestamp = time.Time{}
 	a.OriginalStartedAt = time.Time{}
