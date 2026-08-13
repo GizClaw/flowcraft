@@ -1,0 +1,9 @@
+{
+  "summary": "Add inference and agent conformance suites and expand workspace settings references",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
