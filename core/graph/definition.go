@@ -17,9 +17,9 @@ const END = "__end__"
 // It is deliberately JSON-shaped at the wire layer. A graph is not a
 // shared resource: [Build] returns a *Graph that IS an agent.Engine,
 // so declarative authoring enters through the engine settings of a
-// deployment document (sdkx/deploy) rather than a config package of
-// its own. sdk/graph/config accepts YAML as authoring sugar and
-// converts it to JSON with sdk/config/utils before this type is
+// deployment document (core/deploy) rather than a config package of
+// its own. core/graph/config accepts YAML as authoring sugar and
+// converts it to JSON with core/utils before this type is
 // decoded; the kernel itself never parses YAML, which keeps node
 // configs in a single canonical encoding.
 //

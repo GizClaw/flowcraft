@@ -1,5 +1,5 @@
 // Package agenttest provides reusable contract-test machinery for
-// the interfaces declared in sdk/agent — [agent.Engine], [agent.Host],
+// the interfaces declared in core/agent — [agent.Engine], [agent.Host],
 // [agent.Observer] and [agent.Referee] today.
 //
 // Modeled on net/http/httptest, testing/iotest, and

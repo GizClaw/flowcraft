@@ -40,9 +40,9 @@ const (
 	HeaderRunID  = "run_id"
 	HeaderNodeID = "node_id"
 
-	// HeaderAgentID identifies the agent (sdk/agent.Agent.ID) that
+	// HeaderAgentID identifies the agent (core/agent.Agent.ID) that
 	// produced this envelope — i.e. the executor identity in
-	// engine-neutral terms. The producer end is sdk/agent.Run, which
+	// engine-neutral terms. The producer end is core/agent.Run, which
 	// promotes Agent.ID into engine.Run.Attributes under
 	// telemetry.AttrAgentID; engines forward that into the envelope
 	// header via SetAgentID. Consumers that need to fan-in / filter
@@ -156,12 +156,12 @@ func (e *Envelope) SetNodeID(id string) { e.SetHeader(HeaderNodeID, id) }
 // NodeID returns the value of the well-known node_id header.
 func (e Envelope) NodeID() string { return e.Header(HeaderNodeID) }
 
-// SetAgentID stamps the agent identifier (sdk/agent.Agent.ID) of the
+// SetAgentID stamps the agent identifier (core/agent.Agent.ID) of the
 // producer onto the envelope.
 //
 // The producer identity is the agent id — engine.SubjectStep*'s
 // per-step "actor" segment (agent.id + node id) is a separate
-// dimension, see sdk/engine/subjects.go.
+// dimension, see core/graph/subjects.go.
 func (e *Envelope) SetAgentID(id string) {
 	e.SetHeader(HeaderAgentID, id)
 }

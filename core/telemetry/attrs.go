@@ -3,7 +3,7 @@ package telemetry
 // This file collects the well-known OpenTelemetry attribute / log key
 // names that flowcraft components emit. Centralising them here means:
 //
-//   - producers (sdk/engine, sdk/graph, sdk/tool, ...) can
+//   - producers (core/graph, core/graph, core/tool, ...) can
 //     reference one constant instead of re-typing string literals,
 //     guaranteeing key parity across the codebase;
 //   - consumers (dashboards, alerting, log queries) have one place to
@@ -23,7 +23,7 @@ package telemetry
 const (
 	// ----- Identity (who is doing the work) -----
 
-	// AttrAgentID identifies the agent (sdk/agent.Agent.ID) executing
+	// AttrAgentID identifies the agent (core/agent.Agent.ID) executing
 	// the operation. Stable across runs of the same logical agent.
 	AttrAgentID = "agent.id"
 
@@ -45,8 +45,8 @@ const (
 	AttrParentRunID = "parent.run.id"
 
 	// AttrTaskID identifies the A2A-aligned task an operation
-	// belongs to (sdk/agent.Request.TaskID, mirrored into
-	// sdk/agent.Result.TaskID). Promoted by sdk/agent.Run into
+	// belongs to (core/agent.Request.TaskID, mirrored into
+	// core/agent.Result.TaskID). Promoted by core/agent.Run into
 	// engine.Run.Attributes so engines / nodes / observers can
 	// recover it without reaching back through agent state.
 	// Optional: empty when the upstream Request did not carry a
@@ -69,7 +69,7 @@ const (
 	// ----- Graph engine specifics -----
 
 	// AttrGraphName identifies the graph definition (graph.GraphDefinition.Name)
-	// being executed. Emitted by sdk/graph/runner; absent for
+	// being executed. Emitted by core/graph/runner; absent for
 	// non-graph engines.
 	AttrGraphName = "graph.name"
 
@@ -100,7 +100,7 @@ const (
 	AttrLLMProvider = "llm.provider"
 
 	// AttrLLMModel identifies the resolved LLM model name a call
-	// targets. Emitted by sdk/llm dispatch spans.
+	// targets. Emitted by core/inference dispatch spans.
 	AttrLLMModel = "llm.model"
 
 	// AttrLLMInputTokens / AttrLLMOutputTokens / AttrLLMTotalTokens
@@ -114,7 +114,7 @@ const (
 	// AttrLLMCachedInputTokens mirrors model.TokenUsage.CachedInputTokens —
 	// the subset of input tokens served from the provider's prompt
 	// cache. It is always a subset of AttrLLMInputTokens (enforced
-	// by the adapter normalisation in sdkx/llm) so dashboards can
+	// by the adapter normalisation in integrations/llm) so dashboards can
 	// compute a uniform hit-rate as cached / input without
 	// provider-specific branching. Producers MUST omit the
 	// attribute when zero (no cache hit reported, or provider
@@ -149,9 +149,9 @@ const (
 	// ----- Conversation / data scope -----
 
 	// AttrConversationID identifies the conversation an operation
-	// belongs to. Shared by memory/history (transcript / DAG / archive),
-	// memory/recall (long-term memory writes keyed by conversation), and
-	// the future sdk/pod controller (multi-agent pods that share a
+	// belongs to. Shared by conversation history and long-term memory
+	// implementations, and
+	// the future core controller (multi-agent pods that share a
 	// conversation context). Producers MUST use this constant
 	// instead of legacy snake_case "conversation_id" string literals
 	// so dashboards can join across these packages by a single

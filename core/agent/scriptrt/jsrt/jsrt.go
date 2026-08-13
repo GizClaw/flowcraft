@@ -49,7 +49,7 @@ func WithMaxCallStackSize(n int) Option {
 //
 // On expiry the script is interrupted via goja's Interrupt mechanism
 // and Exec returns a context-deadline error classified by
-// sdk/errdefs.IsTimeout.
+// core/errdefs.IsTimeout.
 func WithMaxExecTime(d time.Duration) Option {
 	return func(r *Runtime) {
 		if d > 0 {

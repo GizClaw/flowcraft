@@ -22,7 +22,7 @@ import (
 
 const (
 	// engineKind is the stable telemetry token for this engine, matching
-	// the registry key used by sdkx/agent/a2a/config.
+	// the registry key used by core/agent/a2a/config.
 	engineKind = "a2a"
 
 	// runEndPublishTimeout bounds the best-effort terminal event publish

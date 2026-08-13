@@ -1,22 +1,16 @@
 # Changelog
 
-All notable changes to this repository are documented here. FlowCraft is a
-multi-module monorepo; each Go module is released independently with its own tag
-prefix, for example `sdk/vX.Y.Z`, `memory/vX.Y.Z`, and `sdkx/vX.Y.Z`.
+All notable changes to this repository are documented here. The active
+published module is `core`; releases use the `core/vX.Y.Z` tag prefix.
 
 Pending changesets are aggregated into module release sections by the automated
 Release PR before their tags are published.
 
 ## Current Published State
 
-| Module           | Latest tag      | Notes                                                                                     |
-| ---------------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `core`           | `core/v0.1.0`   | Unified platform module: contracts, deploy, runtime, and built-in resources.              |
-| `driver/openai`  | `driver/openai/v0.1.0`  | OpenAI provider adapter.                                                        |
-| `driver/deepseek`| `driver/deepseek/v0.1.0` | DeepSeek provider adapter.                                                     |
-| `driver/*`       | `driver/<name>/v0.1.0`  | Remaining provider adapters (`azure`, `anthropic`, `minimax`, `qwen`, `kimi`, `bytedance`). |
-| `integrations/*` | `integrations/<name>/v0.1.0` | Object-store, sandbox, and SQLite integrations.                                |
-| `memory`         | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
+| Module | Latest tag | Notes |
+| --- | --- | --- |
+| `core` | `core/v0.1.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 

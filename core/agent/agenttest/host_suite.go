@@ -3,7 +3,7 @@ package agenttest
 // Generic contract test suite for [agent.Host] implementations.
 //
 // Sibling of [EngineSuite] (which targets [agent.Engine]). Lives in
-// the same package because both interfaces belong to sdk/agent
+// the same package because both interfaces belong to core/agent
 // and the Go convention is one xxxtest sub-package per parent
 // package — see net/http/httptest, io/iotest, gocloud.dev/blob/drivertest.
 //

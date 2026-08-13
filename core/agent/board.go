@@ -21,7 +21,7 @@ import (
 // channel or var names beginning with "__"; doing so risks colliding
 // with a future engine-managed slot. Existing reserved names besides
 // MainChannel include graph-level vars VarInterruptedNode and
-// VarToolCalls (see sdk/graph).
+// VarToolCalls (see core/graph).
 const MainChannel = "__main_channel"
 
 // Cloneable may be implemented by values stored in Board vars to

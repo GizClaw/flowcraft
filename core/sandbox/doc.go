@@ -32,7 +32,7 @@
 // Runner.Capabilities lets callers inspect the honest policy surface
 // before execution. LocalRunner reports env + process-group resource
 // enforcement but not filesystem or network confinement. Concrete
-// sdkx backends add those OS-level boundaries:
+// integrations backends add those OS-level boundaries:
 //
 //	                         LocalRunner  seatbelt/macOS  bubblewrap/Linux
 //	Env allow-list               yes           yes             yes

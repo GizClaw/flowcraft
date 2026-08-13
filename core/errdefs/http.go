@@ -13,7 +13,7 @@ package errdefs
 // The reverse mapping is shared by every SDK boundary that talks to an
 // external provider over HTTP/SaaS: chat completion, embeddings, rerank,
 // vector search, TTS/STT, knowledge ingestion, etc. It deliberately lives
-// in errdefs (not in sdk/llm) so peer capabilities are not forced through
+// in errdefs (not in core/inference) so peer capabilities are not forced through
 // the LLM package just to reuse the classification.
 //
 // Two entry points:
@@ -124,12 +124,12 @@ func ClassifyHTTPStatus(provider string, code int, body string) error {
 // errors coming back from external providers. It carries strictly more
 // information than the errdefs IsXxx behavior set: 401/403 (Auth) and
 // 402 (Billing) both map to Forbidden/Unauthorized for wire purposes,
-// but consumers like sdk/llm.FallbackLLM need to distinguish them when
+// but consumers like core/inference.FallbackLLM need to distinguish them when
 // choosing a cooldown duration. ContextOverflow and Permanent likewise
 // both surface as Validation but warrant different telemetry buckets.
 //
-// ProviderCategory is exported so sibling capabilities (sdk/llm chat
-// fallback, future sdk/embedding rerank chains, ...) share one keyword
+// ProviderCategory is exported so sibling capabilities (core/inference chat
+// fallback, future core/inference embedding rerank chains, ...) share one keyword
 // table and one HTTP-code switch. New consumers SHOULD wrap it in a
 // domain-specific type alias rather than referencing it directly, so
 // the enum name reads naturally at the call site.
@@ -217,7 +217,7 @@ var providerHTTPCodePattern = regexp.MustCompile(`\b(?:http|status)\s*(\d{3})\b`
 // "http 400: maximum context length exceeded" classifies as
 // ContextOverflow rather than as a generic Permanent. Both still surface
 // as Validation in errdefs, but consumers using ProviderCategory
-// directly (e.g. sdk/llm fallback for cooldown selection) need the
+// directly (e.g. core/inference fallback for cooldown selection) need the
 // finer-grained signal.
 var providerKeywordClassifiers = []struct {
 	category ProviderCategory

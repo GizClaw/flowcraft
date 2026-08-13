@@ -17,7 +17,7 @@ import (
 // the honest reading of a missing schema.
 var emptySchema = json.RawMessage(`{"type":"object"}`)
 
-// adaptedTool presents one MCP server tool as a sdk/tool.Tool. It holds
+// adaptedTool presents one MCP server tool as a core/tool.Tool. It holds
 // the qualified (namespaced) name it was registered under plus the
 // definition captured at discovery time, so Definition() is a pure
 // accessor — no network, no error, matching the Catalog contract that

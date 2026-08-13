@@ -18,7 +18,7 @@ func (e *httpErr) Error() string       { return e.msg }
 func (e *httpErr) HTTPStatusCode() int { return e.code }
 
 // TestClassifyProvider pins the structured-error / keyword / regex
-// dispatcher. Behaviour change here means every dependent (sdk/llm
+// dispatcher. Behaviour change here means every dependent (core/inference
 // fallback plus external embedding / rerank adapters) silently shifts
 // how it classifies the same upstream error.
 func TestClassifyProvider(t *testing.T) {
@@ -55,7 +55,7 @@ func TestClassifyProvider(t *testing.T) {
 		{"400+auth keyword wins", fmt.Errorf("http 400: unauthorized access"), ProviderAuth},
 
 		// Multi-error chain (errors.Join) must still match through the
-		// inner error message. This is the path sdk/llm uses when it
+		// inner error message. This is the path core/inference uses when it
 		// joins ctx.Err() with the SDK error before logging.
 		{"joined errors", errors.Join(fmt.Errorf("first"), fmt.Errorf("rate limit exceeded")), ProviderRateLimit},
 
@@ -166,7 +166,7 @@ func TestClassifyHTTPStatus_Mapping(t *testing.T) {
 
 // TestProviderCategoryFromHTTPCode pins the bare code → category map
 // that both ClassifyProvider and ClassifyHTTPStatus use. Calling it
-// directly is exposed so consumers like sdk/llm fallback can map a
+// directly is exposed so consumers like core/inference fallback can map a
 // status code to a cooldown class without paying for the keyword scan.
 func TestProviderCategoryFromHTTPCode(t *testing.T) {
 	cases := []struct {

@@ -15,7 +15,7 @@
 
 FlowCraft is a Go workspace for building and evaluating AI applications without
 tying application code to one model provider or execution model. Graphs are one
-built-in option, not a required architecture: use the SDK packages directly, or
+built-in option, not a required architecture: use the core packages directly, or
 start with the forge demo in `examples/forge` for a runnable local workspace.
 
 ## Modules
@@ -28,9 +28,6 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
 - **`integrations/*`** — Platform-specific implementations: object-store
   workspaces, sandbox backends (`bwrap`, `seatbelt`), and SQLite checkpoints.
-- **`memory`** — The flowcraft memory implementation: component, derive, and
-  projection pipelines, retrieval, lifecycle maintenance, sources and views,
-  and the background worker.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
@@ -43,10 +40,8 @@ the layers they need.
 ## Memory architecture
 
 `core/memory` defines the memory capability contracts — `ContextProvider`,
-`TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope`, and `Turn`. The
-`memory/` module is **one implementation** of those contracts: it owns its own
-settings schema, its own assembly factory, and its own background worker
-runtime integration. `core/memory` also provides the generic glue: a
+`TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope`, and `Turn`.
+`core/memory` also provides the generic glue: a
 `memory.Assembly` deploy resource that dispatches to implementations by
 `impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
 the GoTemplate context renderer.
@@ -81,8 +76,8 @@ simulations. Command reference, scenario layout, and credentials live in
 
 ### Embed FlowCraft in a Go service
 
-Use `core` directly and add `memory`, `driver/*`, or `integrations/*` when the
-application needs long-term memory, persistence, or provider adapters.
+Use `core` directly and add `driver/*` or `integrations/*` for provider
+adapters and platform integrations.
 Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
 `core/runtime`, and drive turns through `core/runtime/session`:
 
@@ -120,13 +115,12 @@ without becoming dependencies of the core.
                            │
              ┌─────────────┬─────────────┐
              ▼                           ▼
-      ┌─────────────┐             ┌─────────────┐
-      │ driver/*   │             │   memory/   │
-      │  inference │             │ component · │
-      │ providers  │             │  derive ·   │
-      │            │             │ projection  │
-      │            │             │ retrieval · │
-      └──────┬──────┘             └──────┬──────┘
+      ┌─────────────┐             ┌─────────────────┐
+      │ driver/*    │             │ app-registered  │
+      │  inference  │             │ memory          │
+      │ providers   │             │ implementations │
+      │             │             │                 │
+      └──────┬──────┘             └──────┬──────────┘
              └─────────────┬─────────────┘
                            ▼
                 ┌──────────────────────┐
@@ -141,34 +135,32 @@ without becoming dependencies of the core.
 **Layering rule:** execution contracts live in `core/agent` (`agent.Engine`,
 `agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
 import graph or tool packages. `core/graph` builds on those contracts and
-returns an `agent.Engine`. Memory contracts live in the SDK, while
-implementations (the `memory/` module) and adapters (`driver/*`, `integrations/*`) stay outside
+returns an `agent.Engine`. Memory contracts live in core, while
+app-registered implementations and adapters (`driver/*`, `integrations/*`) stay outside
 the core and depend on it, never the reverse.
 
 ## Module map
 
-| Path                                        | Role                                                                             | Distribution         |
-| ------------------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
-| [`core`](core/)                             | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
-| [`driver`](driver/)                         | Provider inference adapters                                                       | Versioned Go modules |
-| [`integrations`](integrations/)             | Platform-specific sandbox/object-store/checkpoint integrations                     | Versioned Go modules |
-| [`memory`](memory/)                         | Component, derive, projection, retrieval, lifecycle, worker, sources, views      | Versioned Go module  |
-| [`examples/forge`](examples/forge/)         | Runnable local workspace demo                                                     | Examples            |
-| [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
-| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs               | Codex skill         |
+| Path                                                  | Role                                                                                     | Distribution         |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
+| [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
+| [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
+| [`integrations`](integrations/)                       | Platform-specific sandbox/object-store/checkpoint integrations                           | Versioned Go modules |
+| [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
+| [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
+| [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
 
 ## Highlights
 
-### Hybrid memory that actually recalls (`memory/`)
+### Hybrid memory that actually recalls (`core/memory`)
 
 - Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank
   Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay,
   and time decay.
 - Canonical source → derived view → rebuildable projection → hydrated context,
   with deterministic packing and durable outbox commits.
-- Memory as a pluggable implementation: `memory/` is one factory behind the
-  `sdk/memory` contracts, and its background worker integrates through its own
-  runtime integration.
+- Memory as a pluggable implementation: concrete implementations are
+  app-registered behind the `core/memory` contracts.
 
 ### Streaming, durable, resumable (`core/agent`)
 
@@ -219,8 +211,7 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   `core/runtime/session`: process-level services and leased, interruptible
   streaming sessions above a built deployment.
 - [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
-  `core/memory` contracts, the `memory/` implementation, and `core/memory`
-  deploy/runtime glue.
+  `core/memory` contracts and deploy/runtime glue.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)
 
@@ -229,8 +220,7 @@ writing, validating, and troubleshooting FlowCraft deployment
 configuration: the deployment document (the filename is arbitrary;
 `deploy.yaml` is the convention), the `runtime` section,
 inference/workspace/sandbox/tool sub-documents, `core/memory` contracts,
-and graph JSON node wiring. The unreleased `memory/` implementation
-module is deliberately excluded from its examples and dependencies.
+and graph JSON node wiring. Concrete memory implementations are app-registered.
 
 The skill ships an L2 dry-run validator that pins the released
 `core`/`driver`/`integrations` module versions and builds your deployment
@@ -260,15 +250,13 @@ Reference material:
 
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
 - [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — memory implementation.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai) — example provider adapter.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox) — sandbox backends.
 
 ## Status
 
-The active project surface is `core`, `driver/*`, `integrations/*`, `memory`,
-and the forge demo.
-Library modules are released independently and remain pre-1.0. Durable
+The active project surface is `core`, `driver/*`, `integrations/*`, and the
+forge demo. The `core` module is released independently and remains pre-1.0. Durable
 execution contracts (checkpoints, interrupt/resume, scheduling), OTel
 instrumentation, and retrieval end-to-end coverage are maintained in-tree;
 checkpoint persistence is host-provided through the `CheckpointStore`
@@ -289,7 +277,7 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `core`, `driver/*`,
-`integrations/*`, `memory`, and `examples/forge`; release tooling in `tools/releasegate` builds
+`integrations/*`, and `examples/forge`; release tooling in `tools/releasegate` builds
 standalone with `GOWORK=off`.
 
 ## Contributing
@@ -303,8 +291,8 @@ Issues and pull requests are welcome. Before opening a PR:
    `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`
-changesets for `core`, `driver/*`, `integrations/*`, and `memory`; a changeset is optional for
-ordinary PRs. After merge, automation aggregates pending summaries into a
+changesets for `core`; a changeset is optional for ordinary PRs. After merge,
+automation aggregates pending summaries into a
 Release PR that updates `CHANGELOG.md`. Merging that PR runs isolated tidy,
 build, vet, and race-test gates before all planned tags are pushed atomically.
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the contract and coordinated

@@ -16,7 +16,7 @@ import (
 // per-node delta emission, exposed to scripts via host.emit. The
 // graph executor's per-node emitter (ExecutionContext.EmitStreamDelta)
 // satisfies it through a thin adapter; the bridge takes the smaller
-// shape so the bindings package does not depend on sdk/graph.
+// shape so the bindings package does not depend on core/graph.
 type StreamEmitter interface {
 	Emit(eventType string, payload any)
 }

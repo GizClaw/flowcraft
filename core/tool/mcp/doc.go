@@ -5,9 +5,9 @@
 // # Why this is an attachment, not a tool
 //
 // MCP is not a built-in tool. The built-in set is fixed and small:
-// sdkx/tool/askuser, sdkx/tool/exec, and sdkx/tool/delegation.
+// core/tool/askuser, core/tool/exec, and core/tool/delegation.
 // Everything else is delegated to the MCP ecosystem, which is what
-// this package exists to reach. See sdkx/tool's package doc for the
+// this package exists to reach. See core/tool's package doc for the
 // boundary between the two.
 //
 // The unit of integration is therefore a [Source]: a host-owned handle

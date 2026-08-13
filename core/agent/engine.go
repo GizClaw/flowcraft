@@ -4,7 +4,7 @@ import "context"
 
 // Engine is the deliberately thin contract every local execution
 // engine satisfies so the agent layer can drive it through a uniform
-// shape. Concrete engines (sdk/graph DAG executor, future script-
+// shape. Concrete engines (core/graph DAG executor, future script-
 // based engines, …) usually expose richer APIs in addition to this
 // method.
 //
@@ -59,7 +59,7 @@ func (f EngineFunc) Execute(ctx context.Context, run Run, host Host, board *Boar
 // Capabilities describes the optional features an engine kind
 // declares to its host. The declaration is made once, statically,
 // when the engine kind is registered — engine factories expose it
-// through a capability interface that sdkx/deploy and hosts assert —
+// through a capability interface that core/deploy and hosts assert —
 // never probed per instance at run time. Hosts read capabilities
 // to:
 //

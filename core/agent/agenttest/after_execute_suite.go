@@ -1,5 +1,5 @@
 // Package agenttest provides reusable contract-test machinery for
-// the interfaces declared in sdk/agent — [agent.Referee] and
+// the interfaces declared in core/agent — [agent.Referee] and
 // [agent.Observer] today, more if the agent package grows.
 //
 // Modeled on the stdlib xxxtest layout: ONE xxxtest sub-package

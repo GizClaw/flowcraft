@@ -110,7 +110,7 @@ story or `/next` to keep the story moving. After each turn the Chat panel
 shows that turn's token
 accounting under the input box: input / output / total tokens, reasoning
 tokens, cache read / write tokens, and call count. Usage is mirrored from the
-runtime host through `sdkx/runtime`'s `WithHostFactory` decorator; the runtime
+runtime host through `core/runtime`'s `WithHostFactory` decorator; the runtime
 remains the owner of usage aggregation.
 
 Chat output is split per speaker: every graph node's streamed text appears as

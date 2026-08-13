@@ -10,7 +10,7 @@ import (
 // the global "node". It is a deliberately graph-layer bridge — "node"
 // is a graph executor concept that does not exist at the agent /
 // bindings layer, so the bridge lives next to the script node rather
-// than in sdk/agent/bindings.
+// than in core/agent/bindings.
 //
 // The split-of-concerns is:
 //

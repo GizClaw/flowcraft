@@ -187,9 +187,8 @@ func safeRun(f func()) {
 // It is the single extension point for "anything that should be on
 // the board before the engine sees it":
 //
-//   - conversation history (load from memory/history, summarise, window);
-//   - retrieved long-term memory (memory/recall results, knowledge-base
-//     hits);
+//   - conversation history (load, summarise, window);
+//   - retrieved long-term memory and knowledge-base hits;
 //   - system prompts and persona text;
 //   - request-scoped board vars (form fields, parameters, tool
 //     allow-lists);

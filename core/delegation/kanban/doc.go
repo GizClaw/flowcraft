@@ -1,4 +1,4 @@
-// Package kanban provides an in-memory sdkx/delegation AsyncBackend and
+// Package kanban provides an in-memory core/delegation AsyncBackend and
 // WorkSource.
 //
 // Submit and Status expose only backend-neutral delegation ids, requests, and

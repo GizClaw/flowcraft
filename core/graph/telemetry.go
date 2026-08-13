@@ -13,7 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
-// Kernel instrumentation, following the sdk/inference pattern: a
+// Kernel instrumentation, following the core/inference pattern: a
 // package-level meter under the "graph" instrumentation scope, with
 // spans created per Execute / node invocation by the executor.
 //
@@ -27,7 +27,7 @@ import (
 // classes "step" / "stream_delta".
 
 // engineKind is the stable engine-kind token for the graph runner,
-// matching the "graph" registry key used by sdk/graph/config.
+// matching the "graph" registry key used by core/graph/config.
 const engineKind = "graph"
 
 var (

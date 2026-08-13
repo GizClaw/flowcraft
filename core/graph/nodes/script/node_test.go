@@ -14,7 +14,7 @@ import (
 
 // fakeRuntime captures what the node hands the script runtime. The
 // script contract (agent.ScriptRuntime) has no canned test
-// implementation — the real runtimes live in sdkx/agent — so the node
+// implementation — the real runtimes live in integrations/agent — so the node
 // tests stub the one-method interface inline.
 type fakeRuntime struct {
 	exec func(ctx context.Context, name, source string, env *agent.ScriptEnv) (*agent.ScriptSignal, error)

@@ -808,7 +808,7 @@ type Run struct {
 	// kind, feature flags, …). Identity dimensions do NOT live here
 	// — they are typed fields on [Identity].
 	//
-	// Convention: keys SHOULD use the constants in sdk/telemetry
+	// Convention: keys SHOULD use the constants in core/telemetry
 	// (`telemetry.AttrTenantID`, `telemetry.AttrEngineKind`, …) so
 	// cross-package consumers (dashboards, log queries) can filter
 	// without per-package translation rules.

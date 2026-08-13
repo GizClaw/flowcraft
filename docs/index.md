@@ -62,7 +62,6 @@ The repository is organised as independently released Go modules:
 | Agent runtime        | `core/agent`                                        | Agents, observers, referees, board seeders, and execution lifecycle                            |
 | Delegation contracts | `core/delegation`                                   | Backend-neutral target discovery, sync / handoff / async requests, service and host contracts  |
 | Async delegation     | `core/delegation/kanban`                            | In-memory `AsyncBackend` / `WorkSource` implementation and operational views                   |
-| Memory services      | `memory/{component,derive,projection,retrieval,lifecycle,worker,sources,views}` | Component graph, derive/projection pipelines, retrieval indexes, lifecycle maintenance, sources and views |
 | Adapters             | `driver/*`, `integrations/*`                       | Concrete provider / protocol bindings layered on core contracts                                  |
 
 ## Repository layout
@@ -71,7 +70,6 @@ The repository is organised as independently released Go modules:
 core/            Platform module (contracts, deploy, runtime, built-in resources)
 driver/          Provider inference adapters
 integrations/    Platform-specific sandbox, object-store, and checkpoint integrations
-memory/          Component, derive, projection, retrieval, lifecycle, worker, sources, views
 examples/        Reference assemblies
 ```
 
@@ -79,9 +77,8 @@ examples/        Reference assemblies
 
 ```bash
 go get github.com/GizClaw/flowcraft/core@v0.1.0
-go get github.com/GizClaw/flowcraft/memory@latest
 ```
 
 See the package-level `doc.go` files for runnable usage snippets:
 `core/agent/doc.go`, `core/graph/doc.go`, and
-the focused packages under `memory/`.
+the focused packages under `core/`.

@@ -32,7 +32,7 @@ func (e *RunEndPublishError) Unwrap() error {
 
 // This file defines the cross-engine event subject convention.
 //
-// Why subjects live in sdk/agent
+// Why subjects live in core/agent
 //
 // engine is the smallest layer every concrete execution engine must
 // import (to satisfy [Engine.Execute]). Putting the subject convention
@@ -43,7 +43,7 @@ func (e *RunEndPublishError) Unwrap() error {
 //     below rather than fmt.Sprintf-ing their own strings;
 //   - engine consumers (voice, SSE bridges, dashboards, kanban hooks)
 //     can route on subject without knowing which engine produced the
-//     event — they import sdk/agent, not the engine implementation.
+//     event — they import core/agent, not the engine implementation.
 //
 // What this file does NOT lock down
 //

@@ -11,7 +11,7 @@ import (
 // Field names and JSON tags mirror the A2A protocol's MessageSendParams
 // schema (camelCase: taskId, contextId, …) so requests can be
 // serialised across the protocol without translation. The notable
-// absence vs sdk/workflow.Request is that Request does not carry a
+// absence vs core/agent.Request is that Request does not carry a
 // RuntimeID (Run is now a stateless function) and does not carry a
 // Strategy hint (the engine is supplied directly to Run).
 type Request struct {
@@ -120,7 +120,7 @@ type Artifact struct {
 //     caller cannot reasonably recover from (e.g. history append
 //     refused, factory returned nil engine).
 //
-// This mirrors sdk/workflow.Result's "W-5" rule and avoids the
+// This mirrors core/agent.Result's "W-5" rule and avoids the
 // double-encoding pattern where errors are also carried by Status.
 type Result struct {
 	// TaskID echoes the input Request.TaskID for correlation.

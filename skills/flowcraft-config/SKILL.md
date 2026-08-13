@@ -24,9 +24,8 @@ the L2 dry-run harness and fix build failures against the reference cards.
    [references/resources.md](references/resources.md) for the owning
    module's schema. Workspace before sandbox (sandbox deps a workspace
    registry). Memory implementation modules are app-registered and the
-   flowcraft `memory/` module is not released yet — omit memory
-   implementation examples; `core/memory` contracts and hooks are fine
-   to use.
+   concrete memory implementations are app-registered — omit
+   implementation examples; `core/memory` contracts and hooks are fine to use.
 4. **Write graph JSON.** Read [references/graph.md](references/graph.md).
    Model refs must use the nested `id` form; script nodes need `runtime`
    and `source`; wire edges back to the inference node after tool nodes.
@@ -59,8 +58,7 @@ the L2 dry-run harness and fix build failures against the reference cards.
 ## Cross-file invariants
 
 - Memory hooks bind a whole `memory.Assembly` resource; the settings
-  schema is impl-owned. Do not write examples against the unreleased
-  `memory/` implementation module.
+  schema is impl-owned. Concrete implementations are app-registered.
 - Sandbox resources need `deps: {workspaces: <workspace resource>}`.
 - `runtime.event_bus` is required when a `runtime` section exists; every
   runtime resource/integration dep name must be an exact resource key.

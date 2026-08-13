@@ -239,8 +239,8 @@ func ValidateExecPolicy(opts ExecOptions) error {
 
 // ErrPathTraversal is returned when a WorkDir resolves outside the
 // runner's root, including via symlinks. sandbox owns its own
-// ErrPathTraversal so this package does not depend on sdk/workspace
+// ErrPathTraversal so this package does not depend on core/workspace
 // (which would create an import cycle through the deprecation aliases).
-// sdk/workspace keeps a separate ErrPathTraversal for its filesystem
+// core/workspace keeps a separate ErrPathTraversal for its filesystem
 // API.
 var ErrPathTraversal = errdefs.Forbidden(errors.New("sandbox: path traversal denied"))

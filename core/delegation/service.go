@@ -312,7 +312,7 @@ func (s *LocalService) Start() error {
 	return nil
 }
 
-// Delegate implements sdk/delegation.Service.
+// Delegate implements core/delegation.Service.
 func (s *LocalService) Delegate(ctx context.Context, req Request) (Response, error) {
 	if err := req.Validate(); err != nil {
 		return Response{}, err

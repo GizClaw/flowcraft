@@ -11,7 +11,7 @@ import (
 // segment of the step and stream-delta subjects built by the agent
 // package (agent.SubjectStepStart, agent.SubjectStreamDelta, …).
 //
-// The actor MUST start with the executing agent id per the sdk/agent
+// The actor MUST start with the executing agent id per the core/agent
 // subject contract, with ".node.<nodeID>" appended for the graph
 // runner's private suffix. The subject builders sanitise the whole
 // actor, so the dotted form is collapsed on the wire; consumers that

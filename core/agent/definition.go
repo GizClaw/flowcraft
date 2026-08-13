@@ -11,7 +11,7 @@ import (
 // Hook slot names. A hook factory registers under ("hook."+slot,
 // type); the document lists hooks under the matching top-level field
 // (prepare / observe / referees / commit). The four slots mirror the
-// lifecycle stages in sdk/agent: Preparer, Observer, Referee,
+// lifecycle stages in core/agent: Preparer, Observer, Referee,
 // Committer.
 const (
 	HookSlotPreparer  = "prepare"

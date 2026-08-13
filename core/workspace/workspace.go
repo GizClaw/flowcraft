@@ -7,7 +7,7 @@
 // on a concrete implementation. Implementations include an in-memory map, a
 // local directory tree, prefixed and scoped views, and object stores.
 // Execution-boundary concerns (command runners, network policy, resource
-// limits) live in sibling package sdk/sandbox.
+// limits) live in sibling package core/sandbox.
 package workspace
 
 import (

@@ -76,8 +76,7 @@ tools:
 ## memory
 
 Memory implementations are app-registered. `core/memory` supplies contracts
-and hooks; a concrete implementation such as `memory/` owns its settings
-document.
+and hooks; each implementation owns its settings document.
 
 ## graph
 

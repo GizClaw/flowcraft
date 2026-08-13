@@ -480,7 +480,7 @@ type hostCtxKey struct{}
 
 // ContextWithHost returns a derived context carrying h. Engines that
 // dispatch to extension points which were not designed to receive
-// the Host directly (sdk/tool's Tool.Execute signature, custom
+// the Host directly (core/tool's Tool.Execute signature, custom
 // plugin callbacks, …) call ContextWithHost before invoking those
 // extensions so the extension can recover the Host via
 // [HostFromContext].

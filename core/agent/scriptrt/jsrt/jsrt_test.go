@@ -74,7 +74,7 @@ func TestRuntime_SignalError(t *testing.T) {
 	}
 	// Bare-string form keeps Kind empty so SignalToError can degrade
 	// it to errdefs.Internal — exercised by the script-level helper
-	// tests in sdk/script/signal_test.go.
+	// tests in core/agent/scriptrt signal_test.go.
 	if sig.Kind != "" {
 		t.Errorf("bare-string error should leave Kind empty, got %q", sig.Kind)
 	}
