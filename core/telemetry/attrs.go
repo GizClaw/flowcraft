@@ -114,7 +114,7 @@ const (
 	// AttrLLMCachedInputTokens mirrors model.TokenUsage.CachedInputTokens —
 	// the subset of input tokens served from the provider's prompt
 	// cache. It is always a subset of AttrLLMInputTokens (enforced
-	// by the adapter normalisation in integrations/llm) so dashboards can
+	// by the adapter normalisation in backends/llm) so dashboards can
 	// compute a uniform hit-rate as cached / input without
 	// provider-specific branching. Producers MUST omit the
 	// attribute when zero (no cache hit reported, or provider

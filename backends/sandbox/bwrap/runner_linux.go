@@ -15,9 +15,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/bwrap/internal/bridge"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit/mitm"
+	"github.com/GizClaw/flowcraft/backends/sandbox/bwrap/internal/bridge"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit/mitm"
 )
 
 const defaultMaxOutputBytes int64 = 10 * 1024 * 1024

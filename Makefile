@@ -5,10 +5,13 @@ SHELL := /bin/bash
 .DEFAULT_GOAL := help
 
 # Modules listed in go.work — `go vet ./...` and friends work as-is.
-MODULES_WORK := core integrations/sqlite integrations/objstore integrations/sandbox driver/openai driver/deepseek driver/azure driver/anthropic driver/minimax driver/qwen driver/kimi driver/bytedance memory examples/forge
+BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod))
+DRIVER_MODULES := $(patsubst %/go.mod,%,$(wildcard driver/*/go.mod))
+
+MODULES_WORK := core $(BACKEND_MODULES) $(DRIVER_MODULES) memory examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core integrations/sqlite integrations/objstore integrations/sandbox driver/openai driver/deepseek driver/azure driver/anthropic driver/minimax driver/qwen driver/kimi driver/bytedance memory memory/eval
+MODULES_LINT := core $(BACKEND_MODULES) $(DRIVER_MODULES) memory memory/eval
 
 # `make fmt` mirrors the CI gofmt -s gate; memory/eval is included here
 # even though it is not part of MODULES_WORK (vet/test run).

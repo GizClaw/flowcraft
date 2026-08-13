@@ -13,7 +13,7 @@ the L2 dry-run harness and fix build failures against the reference cards.
 
 1. **Scope the deployment.** Collect the agents, capabilities (chat,
    tools, memory, scripts, sandboxing), and runtime needs (sessions,
-   resume, event bus, scheduler, integrations).
+   resume, event bus, scheduler, backends).
 2. **Draft the deployment document.** `deploy.yaml` is the convention
    but any filename works; pass whatever path you choose to the
    validator. Read
@@ -78,7 +78,7 @@ workflow.
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
 requires `github.com/GizClaw/flowcraft/core v0.1.0` plus the relevant
-`driver/*` and `integrations/*` modules; the schema cards in this skill
+`driver/*` and `backends/*` modules; the schema cards in this skill
 document exactly that release. When FlowCraft releases a new version,
 bump the pins and reconcile the cards in the same change. The L2 harness
 registers the first-party surface only; document anything app-registered
@@ -89,7 +89,7 @@ in the handoff.
 - [deploy.md](references/deploy.md) — deploy document schema, dep refs,
   first-party kinds, registration.
 - [runtime.md](references/runtime.md) — runtime section, sessions,
-  integrations.
+  backends.
 - [resources.md](references/resources.md) — inference/memory/workspace/
   sandbox/tool/event/scheduler/checkpoint sub-documents.
 - [graph.md](references/graph.md) — graph JSON, node configs, engine

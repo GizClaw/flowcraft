@@ -7,7 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	internalpath "github.com/GizClaw/flowcraft/integrations/sandbox/internal/path"
+	internalpath "github.com/GizClaw/flowcraft/backends/sandbox/internal/path"
 )
 
 // ResourceKind is the deployment resource kind implemented by this

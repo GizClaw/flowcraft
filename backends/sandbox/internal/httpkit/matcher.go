@@ -7,7 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/hostmatch"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/hostmatch"
 )
 
 // Matcher evaluates sandbox.NetPolicy rules against a destination.

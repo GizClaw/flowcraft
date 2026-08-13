@@ -15,7 +15,7 @@ import (
 // behaviour is exercised by calling the map directly — no script VM
 // needed. (The VM-side "maps are injected as globals" contract is
 // covered by the runtime packages' own tests; keeping these tests in
-// pure Go also avoids an sdk → integrations test-only module dependency.)
+// pure Go also avoids an sdk → backends test-only module dependency.)
 
 type toolAPI struct {
 	call        func(name, args string) map[string]any

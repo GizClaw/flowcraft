@@ -2,7 +2,7 @@
 
 # FlowCraft
 
-**A modular Go toolkit for extensible AI applications, long-term memory, provider integrations, and local interactive workflows.**
+**A modular Go toolkit for extensible AI applications, long-term memory, provider backends, and local interactive workflows.**
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/core.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/core)
@@ -26,7 +26,7 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   delegation contracts.
 - **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
   ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
-- **`integrations/*`** — Platform-specific implementations: object-store
+- **`backends/*`** — Platform-specific implementations: object-store
   workspaces, sandbox backends (`bwrap`, `seatbelt`), and SQLite checkpoints.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
@@ -76,8 +76,8 @@ simulations. Command reference, scenario layout, and credentials live in
 
 ### Embed FlowCraft in a Go service
 
-Use `core` directly and add `driver/*` or `integrations/*` for provider
-adapters and platform integrations.
+Use `core` directly and add `driver/*` or `backends/*` for provider
+adapters and platform backends.
 Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
 `core/runtime`, and drive turns through `core/runtime/session`:
 
@@ -136,7 +136,7 @@ without becoming dependencies of the core.
 `agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
 import graph or tool packages. `core/graph` builds on those contracts and
 returns an `agent.Engine`. Memory contracts live in core, while
-app-registered implementations and adapters (`driver/*`, `integrations/*`) stay outside
+app-registered implementations and adapters (`driver/*`, `backends/*`) stay outside
 the core and depend on it, never the reverse.
 
 ## Module map
@@ -145,7 +145,7 @@ the core and depend on it, never the reverse.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
-| [`integrations`](integrations/)                       | Platform-specific sandbox/object-store/checkpoint integrations                           | Versioned Go modules |
+| [`backends`](backends/)                       | Platform-specific sandbox/object-store/checkpoint backends                           | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
@@ -223,7 +223,7 @@ inference/workspace/sandbox/tool sub-documents, `core/memory` contracts,
 and graph JSON node wiring. Concrete memory implementations are app-registered.
 
 The skill ships an L2 dry-run validator that pins the released
-`core`/`driver`/`integrations` module versions and builds your deployment
+`core`/`driver`/`backends` module versions and builds your deployment
 through the real `core/deploy` assembly layer with stub secrets — no network, no real
 credentials:
 
@@ -251,11 +251,11 @@ Reference material:
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
 - [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai) — example provider adapter.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox) — sandbox backends.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/backends/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/backends/sandbox) — sandbox backends.
 
 ## Status
 
-The active project surface is `core`, `driver/*`, `integrations/*`, and the
+The active project surface is `core`, `driver/*`, `backends/*`, and the
 forge demo. The `core` module is released independently and remains pre-1.0. Durable
 execution contracts (checkpoints, interrupt/resume, scheduling), OTel
 instrumentation, and retrieval end-to-end coverage are maintained in-tree;
@@ -277,7 +277,7 @@ make release-check # validate changesets and the pending release plan
 ```
 
 This repository is a Go workspace. Active members are `core`, `driver/*`,
-`integrations/*`, and `examples/forge`; release tooling in `tools/releasegate` builds
+`backends/*`, and `examples/forge`; release tooling in `tools/releasegate` builds
 standalone with `GOWORK=off`.
 
 ## Contributing

@@ -3,8 +3,8 @@ package bwrap
 import (
 	"crypto/x509"
 
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit"
-	"github.com/GizClaw/flowcraft/integrations/sandbox/internal/httpkit/mitm"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit"
+	"github.com/GizClaw/flowcraft/backends/sandbox/internal/httpkit/mitm"
 )
 
 // RunnerOption configures a Runner at construction time.

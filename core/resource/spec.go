@@ -97,7 +97,7 @@ type ItemResolver interface {
 
 // Wireable is implemented by resource values that need a post-build
 // attachment step: observers attaching to buses, hooks subscribing to
-// event streams, integrations registering into hosts. Wire runs after
+// event streams, backends registering into hosts. Wire runs after
 // every resource is constructed and never participates in the
 // construction DAG, so an observed value can never depend on its
 // observer.

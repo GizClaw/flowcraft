@@ -53,7 +53,7 @@ root: ./sandbox
 ```
 
 The local runner accepts a root. Platform backends (`bwrap`, `seatbelt`) are
-registered from `integrations/sandbox/*`.
+registered from `backends/sandbox/*`.
 
 ## tool source / assembly
 

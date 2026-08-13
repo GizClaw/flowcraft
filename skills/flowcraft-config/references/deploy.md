@@ -71,7 +71,7 @@ the core schema. Agent hooks use factory kind `hook.<slot>`.
 | `agent.ScriptRuntime` | `js`, `lua` | `core/agent/scriptrt/{jsrt,luart}` |
 | `agent.Engine` | `graph` | `core/graph/resource` |
 | `delegation.Service` | `local` | `core/delegation` |
-| `agent.CheckpointStore` | workspace/sqlite | `core/agent/checkpoint/workspace`, `integrations/sqlite` |
+| `agent.CheckpointStore` | workspace/sqlite | `core/agent/checkpoint/workspace`, `backends/checkpoint/sqlite` |
 
 Engine dependencies must match the graph engine's declared dep names:
 `inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`.
