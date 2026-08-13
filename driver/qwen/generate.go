@@ -635,6 +635,7 @@ type dashUsage struct {
 	InputTokens     int64 `json:"input_tokens"`
 	OutputTokens    int64 `json:"output_tokens"`
 	TotalTokens     int64 `json:"total_tokens"`
+	CachedTokens    int64 `json:"-"`
 	ReasoningTokens int64 `json:"-"`
 }
 
@@ -644,9 +645,17 @@ func (u dashUsage) canonical() inference.Usage {
 		OutputTokens: u.OutputTokens,
 		TotalTokens:  u.TotalTokens,
 	}
+	if u.CachedTokens > 0 {
+		cached := u.CachedTokens
+		usage.Input.CacheReadTokens = &cached
+	}
 	if u.ReasoningTokens > 0 {
 		reasoning := u.ReasoningTokens
 		usage.Output.ReasoningTokens = &reasoning
+		// DashScope accounts for thinking tokens outside output_tokens:
+		// output_tokens covers the visible answer only, while reasoning
+		// tokens are billed separately at the output price.
+		usage.Output.ReasoningAccounting = inference.ReasoningAdditional
 	}
 	return usage
 }
@@ -669,9 +678,12 @@ type dashResponse struct {
 		} `json:"choices"`
 	} `json:"output"`
 	Usage struct {
-		InputTokens   int64 `json:"input_tokens"`
-		OutputTokens  int64 `json:"output_tokens"`
-		TotalTokens   int64 `json:"total_tokens"`
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+		TotalTokens  int64 `json:"total_tokens"`
+		InputDetails struct {
+			CachedTokens int64 `json:"cached_tokens"`
+		} `json:"input_tokens_details"`
 		OutputDetails struct {
 			ReasoningTokens int64 `json:"reasoning_tokens"`
 		} `json:"output_tokens_details"`
@@ -683,6 +695,7 @@ func (r dashResponse) usage() dashUsage {
 		InputTokens:     r.Usage.InputTokens,
 		OutputTokens:    r.Usage.OutputTokens,
 		TotalTokens:     r.Usage.TotalTokens,
+		CachedTokens:    r.Usage.InputDetails.CachedTokens,
 		ReasoningTokens: r.Usage.OutputDetails.ReasoningTokens,
 	}
 }

@@ -253,11 +253,16 @@ func chatFinishReason(reason string) (inference.FinishReason, error) {
 
 func chatUsageToRaw(usage openai.CompletionUsage) rawUsage {
 	return rawUsage{
-		inputTokens:     usage.PromptTokens,
-		outputTokens:    usage.CompletionTokens,
-		totalTokens:     usage.TotalTokens,
-		cachedTokens:    usage.PromptTokensDetails.CachedTokens,
-		reasoningTokens: usage.CompletionTokensDetails.ReasoningTokens,
+		inputTokens:              usage.PromptTokens,
+		outputTokens:             usage.CompletionTokens,
+		totalTokens:              usage.TotalTokens,
+		cachedTokens:             usage.PromptTokensDetails.CachedTokens,
+		cacheWriteTokens:         usage.PromptTokensDetails.CacheWriteTokens,
+		reasoningTokens:          usage.CompletionTokensDetails.ReasoningTokens,
+		acceptedPredictionTokens: usage.CompletionTokensDetails.AcceptedPredictionTokens,
+		rejectedPredictionTokens: usage.CompletionTokensDetails.RejectedPredictionTokens,
+		inputAudioTokens:         usage.PromptTokensDetails.AudioTokens,
+		outputAudioTokens:        usage.CompletionTokensDetails.AudioTokens,
 	}
 }
 

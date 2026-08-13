@@ -336,11 +336,12 @@ func openaiCitations(
 
 func responseUsage(usage responses.ResponseUsage) rawUsage {
 	raw := rawUsage{
-		inputTokens:     usage.InputTokens,
-		outputTokens:    usage.OutputTokens,
-		totalTokens:     usage.TotalTokens,
-		cachedTokens:    usage.InputTokensDetails.CachedTokens,
-		reasoningTokens: usage.OutputTokensDetails.ReasoningTokens,
+		inputTokens:      usage.InputTokens,
+		outputTokens:     usage.OutputTokens,
+		totalTokens:      usage.TotalTokens,
+		cachedTokens:     usage.InputTokensDetails.CachedTokens,
+		cacheWriteTokens: usage.InputTokensDetails.CacheWriteTokens,
+		reasoningTokens:  usage.OutputTokensDetails.ReasoningTokens,
 	}
 	if raw.totalTokens == 0 {
 		raw.totalTokens = raw.inputTokens + raw.outputTokens
@@ -455,6 +456,10 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 	if raw.cachedTokens > 0 {
 		cached := raw.cachedTokens
 		usage.Input.CacheReadTokens = &cached
+	}
+	if raw.cacheWriteTokens > 0 {
+		write := raw.cacheWriteTokens
+		usage.Input.CacheWriteTokens = &write
 	}
 	if raw.reasoningTokens > 0 {
 		reasoning := raw.reasoningTokens

@@ -124,10 +124,15 @@ type rawToolCall struct {
 }
 
 type rawUsage struct {
-	inputTokens      int64
-	outputTokens     int64
-	cacheReadTokens  int64
-	cacheWriteTokens int64
+	inputTokens       int64
+	outputTokens      int64
+	cacheReadTokens   int64
+	cacheWriteTokens  int64
+	cacheWrite5m      int64
+	cacheWrite1h      int64
+	thinkingTokens    int64
+	webSearchRequests int64
+	webFetchRequests  int64
 }
 
 // streamRaw is one provider stream event. The streaming transport assigns

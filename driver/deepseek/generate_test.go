@@ -119,6 +119,7 @@ func chatCompletionJSON(reasoning string) string {
 			"completion_tokens":         7,
 			"total_tokens":              19,
 			"prompt_cache_hit_tokens":   3,
+			"prompt_cache_miss_tokens":  9,
 			"completion_tokens_details": map[string]any{"reasoning_tokens": 2},
 		},
 	})
@@ -207,6 +208,10 @@ func TestChatUnaryReasoning(t *testing.T) {
 	if response.Usage.Input.CacheReadTokens == nil ||
 		*response.Usage.Input.CacheReadTokens != 3 {
 		t.Fatalf("cache = %+v", response.Usage.Input)
+	}
+	if response.Usage.Input.UncachedTokens == nil ||
+		*response.Usage.Input.UncachedTokens != 9 {
+		t.Fatalf("uncached = %+v", response.Usage.Input)
 	}
 	if response.Usage.Output.ReasoningTokens == nil ||
 		*response.Usage.Output.ReasoningTokens != 2 {

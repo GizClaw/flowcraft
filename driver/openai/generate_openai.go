@@ -336,11 +336,12 @@ func openaiCitations(
 
 func responseUsage(usage responses.ResponseUsage) rawUsage {
 	raw := rawUsage{
-		inputTokens:     usage.InputTokens,
-		outputTokens:    usage.OutputTokens,
-		totalTokens:     usage.TotalTokens,
-		cachedTokens:    usage.InputTokensDetails.CachedTokens,
-		reasoningTokens: usage.OutputTokensDetails.ReasoningTokens,
+		inputTokens:      usage.InputTokens,
+		outputTokens:     usage.OutputTokens,
+		totalTokens:      usage.TotalTokens,
+		cachedTokens:     usage.InputTokensDetails.CachedTokens,
+		cacheWriteTokens: usage.InputTokensDetails.CacheWriteTokens,
+		reasoningTokens:  usage.OutputTokensDetails.ReasoningTokens,
 	}
 	if raw.totalTokens == 0 {
 		raw.totalTokens = raw.inputTokens + raw.outputTokens
@@ -456,11 +457,37 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 		cached := raw.cachedTokens
 		usage.Input.CacheReadTokens = &cached
 	}
+	if raw.cacheWriteTokens > 0 {
+		write := raw.cacheWriteTokens
+		usage.Input.CacheWriteTokens = &write
+	}
 	if raw.reasoningTokens > 0 {
 		reasoning := raw.reasoningTokens
 		usage.Output.ReasoningTokens = &reasoning
 		// The Responses API reports output_tokens inclusive of reasoning.
 		usage.Output.ReasoningAccounting = inference.ReasoningIncludedInOutput
+	}
+	if raw.acceptedPredictionTokens > 0 {
+		accepted := raw.acceptedPredictionTokens
+		usage.Output.AcceptedPredictionTokens = &accepted
+	}
+	if raw.rejectedPredictionTokens > 0 {
+		rejected := raw.rejectedPredictionTokens
+		usage.Output.RejectedPredictionTokens = &rejected
+	}
+	if raw.inputAudioTokens > 0 {
+		usage.Input.ByModality = append(usage.Input.ByModality,
+			inference.ModalityTokenUsage{
+				Modality: inference.ModalityAudio,
+				Tokens:   raw.inputAudioTokens,
+			})
+	}
+	if raw.outputAudioTokens > 0 {
+		usage.Output.ByModality = append(usage.Output.ByModality,
+			inference.ModalityTokenUsage{
+				Modality: inference.ModalityAudio,
+				Tokens:   raw.outputAudioTokens,
+			})
 	}
 	return usage
 }

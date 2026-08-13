@@ -361,11 +361,19 @@ func decodeTTS(
 		return inference.GenerateResponse{}, fmt.Errorf("bytedance: audio payload: %w", err)
 	}
 	format := raw.format
+	var duration *int64
+	if millis, ok := media.AudioDurationMillis(raw.data, raw.format); ok {
+		duration = &millis
+	}
 	return inference.GenerateResponse{
 		Message: message.Message{
 			Role: message.RoleAssistant,
 			Content: message.Content{Parts: []message.Part{
-				message.AudioPart{Source: source, Format: &format},
+				message.AudioPart{
+					Source:         source,
+					Format:         &format,
+					DurationMillis: duration,
+				},
 			}},
 		},
 		FinishReason: inference.FinishCompleted,

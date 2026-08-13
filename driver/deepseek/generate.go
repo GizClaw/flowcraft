@@ -40,12 +40,14 @@ type rawToolCall struct {
 }
 
 type rawUsage struct {
-	input     int64
-	output    int64
-	total     int64
-	cached    int64
-	reasoning int64
-	present   bool
+	input      int64
+	output     int64
+	total      int64
+	cached     int64
+	cacheWrite int64
+	uncached   int64
+	reasoning  int64
+	present    bool
 }
 
 // streamRawKind enumerates the events the stateful stream transport hands
@@ -250,6 +252,14 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 	if raw.cached > 0 {
 		cached := raw.cached
 		usage.Input.CacheReadTokens = &cached
+	}
+	if raw.cacheWrite > 0 {
+		write := raw.cacheWrite
+		usage.Input.CacheWriteTokens = &write
+	}
+	if raw.uncached > 0 {
+		uncached := raw.uncached
+		usage.Input.UncachedTokens = &uncached
 	}
 	if raw.reasoning > 0 {
 		reasoning := raw.reasoning
