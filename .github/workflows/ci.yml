@@ -14,6 +14,36 @@ permissions:
   contents: read
 
 jobs:
+  detect:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      drivers: ${{ steps.filter.outputs.drivers }}
+      integrations: ${{ steps.filter.outputs.integrations }}
+      memory: ${{ steps.filter.outputs.memory }}
+      ci: ${{ steps.filter.outputs.ci }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'core/**'
+            drivers:
+              - 'driver/**'
+            integrations:
+              - 'integrations/**'
+            memory:
+              - 'memory/**'
+            ci:
+              - '.github/workflows/**'
+              - '.release/**'
+              - '.golangci.yml'
+              - 'Makefile'
+              - 'tools/releasegate/**'
+
   release-intent:
     name: Validate release intent
     runs-on: ubuntu-latest
@@ -71,6 +101,8 @@ jobs:
 
   lint:
     name: Lint (${{ matrix.module }})
+    needs: detect
+    if: needs.detect.outputs.core == 'true' || needs.detect.outputs.drivers == 'true' || needs.detect.outputs.integrations == 'true' || needs.detect.outputs.memory == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:

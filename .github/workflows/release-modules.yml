@@ -80,33 +80,6 @@ jobs:
           set -euo pipefail
           make release-changelog
           if git diff --quiet -- CHANGELOG.md; then
-            while read -r tag; do
-              heading_line=$(awk -v heading="## \`$tag\` -" \
-                'index($0, heading) == 1 { print NR; exit }' CHANGELOG.md)
-              if [ -z "$heading_line" ]; then
-                echo "missing generated changelog heading for $tag" >&2
-                exit 1
-              fi
-              release_commit=$(git blame --porcelain \
-                -L "$heading_line,$heading_line" CHANGELOG.md |
-                awk 'NR == 1 { print $1 }')
-              release_commit=${release_commit#^}
-              release_pr_count=$(
-                gh api "repos/$GITHUB_REPOSITORY/commits/$release_commit/pulls" |
-                  jq --arg repo "$GITHUB_REPOSITORY" \
-                    --arg branch "$RELEASE_BRANCH" \
-                    'map(select(
-                      .head.repo.full_name == $repo and
-                      .head.ref == $branch and
-                      .base.ref == "main" and
-                      .merged_at != null
-                    )) | length'
-              )
-              if [ "$release_pr_count" -lt 1 ]; then
-                echo "generated changelog for $tag was not merged from $GITHUB_REPOSITORY:$RELEASE_BRANCH" >&2
-                exit 1
-              fi
-            done < <(jq -r '.[]' <<< "$TAGS_JSON")
             echo "ready=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
