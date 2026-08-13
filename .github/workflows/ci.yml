@@ -102,7 +102,7 @@ jobs:
   lint:
     name: Lint (${{ matrix.module }})
     needs: detect
-    if: needs.detect.outputs.core == 'true' || needs.detect.outputs.drivers == 'true' || needs.detect.outputs.integrations == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.ci == 'true'
+    if: needs.detect.outputs.core == 'true' || needs.detect.outputs.drivers == 'true' || needs.detect.outputs.integrations == 'true' || needs.detect.outputs.memory == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
