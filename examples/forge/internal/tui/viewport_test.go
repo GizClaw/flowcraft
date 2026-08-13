@@ -141,7 +141,7 @@ func TestCtrlCRequiresSecondPress(t *testing.T) {
 		t.Fatal("first ctrl+c should schedule the disarm timer")
 	}
 
-	updated, cmd = armed.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	_, cmd = armed.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd == nil {
 		t.Fatal("second ctrl+c should quit")
 	}

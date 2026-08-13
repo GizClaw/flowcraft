@@ -4,85 +4,72 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GizClaw/flowcraft/core/agent/scriptrt"
+	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/event"
+	graphresource "github.com/GizClaw/flowcraft/core/graph/resource"
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/middleware"
+	"github.com/GizClaw/flowcraft/core/workspace"
+
+	"github.com/GizClaw/flowcraft/driver/deepseek"
+	"github.com/GizClaw/flowcraft/driver/openai"
+
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
-	sdkconfig "github.com/GizClaw/flowcraft/sdk/config"
-	eventconfig "github.com/GizClaw/flowcraft/sdk/event/config"
-	graphconfig "github.com/GizClaw/flowcraft/sdk/graph/config"
-	inferenceconfig "github.com/GizClaw/flowcraft/sdk/inference/config"
-	envresolver "github.com/GizClaw/flowcraft/sdk/inference/config/env"
-	schedulerconfig "github.com/GizClaw/flowcraft/sdk/scheduler/config"
-	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
-	workspaceconfig "github.com/GizClaw/flowcraft/sdk/workspace/config"
-	jsrt "github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt"
-	kanbanconfig "github.com/GizClaw/flowcraft/sdkx/delegation/kanban/config"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
-	"github.com/GizClaw/flowcraft/sdkx/inference/azure"
-	"github.com/GizClaw/flowcraft/sdkx/inference/bytedance"
-	"github.com/GizClaw/flowcraft/sdkx/inference/deepseek"
-	"github.com/GizClaw/flowcraft/sdkx/inference/minimax"
-	"github.com/GizClaw/flowcraft/sdkx/inference/openai"
-	"github.com/GizClaw/flowcraft/sdkx/inference/qwen"
-	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
-	delegationruntime "github.com/GizClaw/flowcraft/sdkx/runtime/integration/delegation"
-	sdkscheduler "github.com/GizClaw/flowcraft/sdkx/scheduler"
 )
 
-func buildRuntimeFromDocument(ctx context.Context, a *App, doc deploy.Document) (*runtimecore.Runtime, error) {
-	loader := sdkconfig.NewLoader(sdkconfig.WithBaseDir(a.dir))
+func buildRuntimeFromDocument(
+	ctx context.Context,
+	a *App,
+	doc deploy.Document,
+) (*runtime.Runtime, error) {
+	loader := resource.NewLoader(resource.WithBaseDir(a.dir))
+	reg := resource.NewRegistry()
 
-	deployBuilder := deploy.NewBuilder(deploy.WithLoader(loader))
-	deployBuilder.RegisterEngine(graphconfig.NewFactory(graphconfig.WithLoader(loader)))
-	simtools.Register(a.tools, &a.toolCalls)
-	deployBuilder.MustRegisterResource(eventconfig.NewMemoryDeployFactory())
-
-	schedulerBuilder := schedulerconfig.NewBuilder()
-	if err := sdkscheduler.Register(schedulerBuilder); err != nil {
+	if err := event.Register(reg); err != nil {
 		return nil, err
 	}
-	deployBuilder.MustRegisterResource(schedulerconfig.NewDeployFactory("local", schedulerBuilder))
-	deployBuilder.MustRegisterResource(kanbanconfig.NewMemoryDeployFactory())
-
-	workspaceBuilder := workspaceconfig.NewBuilder(workspaceconfig.Deps{BaseDir: a.dir})
-	deployBuilder.MustRegisterResource(workspaceBuilder)
-	deployBuilder.MustRegisterResource(jsrt.NewDeployFactory())
-
-	toolBuilder := toolconfig.NewBuilder(toolconfig.Deps{})
-	for _, name := range a.tools.Names() {
-		if t, ok := a.tools.Get(name); ok {
-			toolBuilder.RegisterBuiltin(t)
-		}
-	}
-	deployBuilder.MustRegisterResource(toolBuilder)
-
-	factories := providerFactories()
-	resolvers := map[string]inferenceconfig.SecretResolver{"env": envresolver.New()}
-	deployBuilder.MustRegisterResource(inferenceconfig.NewDeployFactory(factories, resolvers))
-
-	runtimeBuilder := runtimecore.NewBuilder(deployBuilder)
-	delegationFactory, err := delegationruntime.NewFactory(a.tools)
-	if err != nil {
+	if err := graphresource.Register(reg); err != nil {
 		return nil, err
 	}
-	if err := runtimeBuilder.RegisterIntegration(delegationFactory); err != nil {
+	if err := workspace.Register(reg); err != nil {
 		return nil, err
 	}
-	if err := runtimeBuilder.WithHostFactory(usageHostDecorator(a)); err != nil {
+	if err := tool.Register(reg); err != nil {
 		return nil, err
 	}
-	rt, err := runtimeBuilder.Build(ctx, doc)
+	if err := middleware.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := inference.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := scriptrt.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := openai.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := deepseek.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := reg.Register(simtools.NewSourceFactory(&a.toolCalls)); err != nil {
+		return nil, fmt.Errorf("register sim tools: %w", err)
+	}
+
+	builder := runtime.NewBuilder(reg)
+	if err := builder.WithLoader(loader); err != nil {
+		return nil, err
+	}
+	if err := builder.WithHostFactory(usageHostDecorator(a)); err != nil {
+		return nil, err
+	}
+	rt, err := builder.Build(ctx, doc)
 	if err != nil {
 		return nil, fmt.Errorf("build runtime: %w", err)
 	}
 	return rt, nil
-}
-
-func providerFactories() map[string]inferenceconfig.Factory {
-	return map[string]inferenceconfig.Factory{
-		"openai":    openai.Factory(),
-		"azure":     azure.Factory(),
-		"deepseek":  deepseek.Factory(),
-		"qwen":      qwen.Factory(),
-		"bytedance": bytedance.Factory(),
-		"minimax":   minimax.Factory(),
-	}
 }

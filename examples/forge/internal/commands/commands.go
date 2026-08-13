@@ -91,7 +91,7 @@ func configCmdWithOutput(args []string, w io.Writer) error {
 	case "test":
 		return configKindCmd("test", args[1:], w, scenario.ListTests)
 	case "help", "-h", "--help":
-		fmt.Fprint(w, configUsage())
+		_, _ = fmt.Fprint(w, configUsage())
 		return nil
 	default:
 		return fmt.Errorf("unknown config kind %q\n\n%s", args[0], configUsage())
@@ -109,11 +109,11 @@ func configKindCmd(kind string, args []string, w io.Writer, list func() ([]strin
 			return fmt.Errorf("list %s configs: %w", kind, err)
 		}
 		for _, name := range names {
-			fmt.Fprintln(w, name)
+			_, _ = fmt.Fprintln(w, name)
 		}
 		return nil
 	case "help", "-h", "--help":
-		fmt.Fprint(w, configUsage())
+		_, _ = fmt.Fprint(w, configUsage())
 		return nil
 	default:
 		return fmt.Errorf("unknown config %s command %q\n\n%s", kind, args[0], configUsage())

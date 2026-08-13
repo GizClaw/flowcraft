@@ -1,8 +1,8 @@
 # Graph definition JSON
 
-The graph engine (`engine.kind: graph`) takes `settings.graph` as a
-config source: literal content, `{file: ...}`, or `{embed: ...}`, JSON or
-YAML. File definitions are limited to 1 MiB.
+The graph engine (`engine.kind: agent.Engine`, `impl: graph`) reads
+`settings.graph` as literal content or `{file: ...}` / `{embed: ...}`.
+File definitions are capped at 1 MiB.
 
 ```json
 {
@@ -10,7 +10,14 @@ YAML. File definitions are limited to 1 MiB.
   "version": "1",
   "entry": "chat",
   "nodes": [
-    {"id": "chat", "type": "inference", "config": {...}}
+    {"id": "chat", "type": "inference", "config": {
+      "model": {"id": {"provider": "deepseek", "name": "deepseek-v4-flash"}},
+      "messages_channel": "main"
+    }},
+    {"id": "tools", "type": "tool", "config": {
+      "messages_channel": "main",
+      "results_key": "tool_results"
+    }}
   ],
   "edges": [
     {"from": "chat", "to": "tools", "condition": "tool_pending == true"},
@@ -20,115 +27,32 @@ YAML. File definitions are limited to 1 MiB.
 }
 ```
 
-- `entry` must name a node; ids unique; edges target a node or `__end__`.
-- `condition`/`skip_condition` are expr-lang expressions over board vars;
-  `${board.<name>}` references inside config string values resolve before
-  node decode. `__iterations` is exposed in edge conditions for loops.
-- Multiple outgoing edges may fire (fan-out); zero firing edges end the
-  branch.
-- Bump `version` when node semantics change; it is recorded in checkpoints
-  and compared on resume.
+## Rules
 
-## Node types and configs
+- `entry` must name a node; IDs are unique.
+- Edges target node IDs or `__end__`.
+- `condition`/`skip_condition` are expr-lang expressions over board vars.
+- Model refs require the nested `id` form.
+- Script nodes require `runtime` and `source`; the bound runtime must match
+  the engine's `script_runtime_name`.
+
+## Node types
 
 ### inference
 
-```json
-{
-  "id": "chat",
-  "type": "inference",
-  "config": {
-    "model": {"id": {"provider": "deepseek", "name": "deepseek-v4-flash"}},
-    "messages_channel": "main",
-    "system_prompt": "You are a helpful assistant.",
-    "output_key": "reply",
-    "usage_key": "usage",
-    "tool_pending_key": "tool_pending",
-    "stream": true,
-    "tools": ["web_search"],
-    "all_tools": false,
-    "tool_choice": {"type": "auto"},
-    "temperature": 0.4,
-    "top_p": 1,
-    "max_output_tokens": 1024,
-    "reasoning_enabled": true,
-    "reasoning_effort": "high",
-    "extensions": [{"provider": "qwen", "id": "thinking_budget", "fields": {"budget": 4096}}]
-  }
-}
-```
-
-`model` is a `ModelRef`: the nested `id` object is required — writing
-`model: {provider: ..., name: ...}` without `id` is a common error. The
-node appends one assistant message to the channel and sets
-`tool_pending_key` when finish reason is tool calls; it never executes
-tool calls itself. `system_prompt` accepts `{file: ...}` refs (materialized
-by the graph factory).
+Common config fields: `model`, `messages_channel`, `system_prompt`,
+`output_key`, `usage_key`, `tool_pending_key`, `stream`, `tools`,
+`all_tools`, `temperature`, `max_output_tokens`, `extensions`.
 
 ### tool
 
-```json
-{
-  "id": "tools",
-  "type": "tool",
-  "config": {
-    "messages_channel": "main",
-    "results_key": "tool_results"
-  }
-}
-```
-
-Executes the channel tail's tool calls as one batch and appends one
-role=tool message. Allow-listing lives in the dispatcher middleware, not
-the node.
+Executes pending tool calls in one batch and appends one `role=tool` message.
 
 ### script
 
-```json
-{
-  "id": "tally",
-  "type": "script",
-  "config": {
-    "runtime": "js",
-    "name": "tally",
-    "source": {"file": "./scripts/tally.js"},
-    "config": {"max": 10}
-  }
-}
-```
-
-`runtime` and `source` are required; `source` accepts inline text or
-`{file: ...}`. Standard bridges: `board`, `expr`, `host`, `run`, `tools`,
-`inference`, `node`, `stream`, `parallel`; `fs` and `shell` globals are
-opt-in via wired workspace/sandbox deps.
-
-## Engine settings
-
-```yaml
-engine:
-  kind: graph
-  settings:
-    graph: {file: ./graphs/assistant.json}
-    script_runtime_name: js      # default js
-    build:
-      max_iterations: 100
-      timeout: 5m
-      run_end_publish_timeout: 5s
-      max_node_retries: 2
-      parallel:
-        enabled: true
-        branch_timeout: 30s
-        max_concurrency: 8
-        max_branches: 32
-        merge_strategy: last_write_wins   # or first_write_wins
-```
-
-`run_end_publish_timeout` must be positive. Deps required by node types:
-`inference` → whole `inference.Assembly`; `tool` nodes / inference tools →
-`tool.Assembly`; scripts with fs → `workspace.Workspace` item; scripts with
-shell → `sandbox.Runner` item; script nodes → `agent.ScriptRuntime`.
+Runs a JS or Lua script. `runtime` names the bound `agent.ScriptRuntime`.
 
 ## Sources of truth
 
-`docs/guides/graph.md`, `sdk/graph/definition.go`,
-`sdk/graph/nodes/{inference,tool}.go`, `sdk/graph/nodes/script/node.go`.
+`core/graph/definition.go`, `core/graph/nodes/`,
+`core/graph/resource/resource.go`, `docs/guides/graph.md`.

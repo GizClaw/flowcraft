@@ -1,9 +1,0 @@
-{
-  "summary": "sdk patch: expose tool Assembly Registry and Sources so session-scoped dynamic catalogs can share the executor's registry and reach source exposure metadata",
-  "releases": [
-    {
-      "module": "sdk",
-      "bump": "patch"
-    }
-  ]
-}

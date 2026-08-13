@@ -46,7 +46,7 @@ go run . workspace inspect --workspace ./workspace
 
 每个 `scenarios/raids/<name>/` 都是一个完整的工作区模板:
 
-- `deploy.yaml` — `sdkx/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime integrations。
+- `deploy.yaml` — `core/deploy` 文档:资源(event bus、scheduler、workspace registry、inference assembly、tool assembly、JS 脚本 runtime)、graph agent 和 runtime integrations。
 - `inference.yaml` — provider 配置文件和 secret 解析器。
 - `workspace.yaml` — workspace registry 的根目录与布局。
 - `tools.yaml` — tool assembly 策略;工具实现是 `internal/simtools` 注册的 Go 值。
@@ -91,7 +91,7 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 退出。空输入不会提交;输入 `/start` 开启新故事,`/next` 让故事继续推进。
 每轮结束后,Chat 面板的输入框下方会显示该轮的 token 统计:输入 /
 输出 / 总 token、reasoning token、缓存读 / 写 token 和调用次数。用量通过
-`sdkx/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
+`core/runtime` 的 `WithHostFactory` 装饰器从 runtime host 镜像到应用侧;
 聚合责任仍在 runtime。
 
 聊天输出按发言人分块:每个 graph 节点的流式文本显示为独立的带标签段落,
@@ -99,10 +99,10 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 
 ## 与技术栈的接线方式
 
-- `sdkx/deploy` + `sdkx/runtime` 从 `deploy.yaml` 装配 runtime;
-  `sdkx/runtime/session` 驱动对话并把流增量发给 sink。
-- graph 引擎是 `sdk/graph`,script 节点跑在自带的 JS runtime
-  (`sdkx/agent/script/jsrt`)上。
+- `core/deploy` + `core/runtime` 从 `deploy.yaml` 装配 runtime;
+  `core/runtime/session` 驱动对话并把流增量发给 sink。
+- graph 引擎是 `core/graph`,script 节点跑在自带的 JS runtime
+  (`core/agent/scriptrt/jsrt`)上。
 - 模拟工具是 `internal/simtools` 注册的 Go 值。
 - `WithHostFactory` 包住 session host,把每次 LLM 调用的 token 用量镜像到
   应用侧,供 TUI 展示。

@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
-	"github.com/GizClaw/flowcraft/sdkx/deploy"
+	"github.com/GizClaw/flowcraft/core/deploy"
+	"github.com/GizClaw/flowcraft/core/utils"
 )
 
 // inspectDocument reads metadata out of the native documents without
@@ -60,7 +60,7 @@ func requireProviderCredential(workspaceDir string) error {
 // utils converts the document at the boundary, and the result is a
 // plain string map.
 func decodeSpeakers(raw []byte) (map[string]string, error) {
-	jsonData, err := configutils.ToJSON(raw)
+	jsonData, err := utils.ToJSON(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ type inferenceCredentials struct {
 // driver, and provider-specific fields are valid in inference.yaml but
 // irrelevant here, and the preflight should stay best-effort.
 func decodeInferenceCredentials(raw []byte) (inferenceCredentials, error) {
-	jsonData, err := configutils.ToJSON(raw)
+	jsonData, err := utils.ToJSON(raw)
 	if err != nil {
 		return inferenceCredentials{}, err
 	}

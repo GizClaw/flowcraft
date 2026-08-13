@@ -8,6 +8,7 @@
 !README.md
 !LICENSE
 !CHANGELOG.md
+!CHANGELOG.legacy.md
 !SECURITY.md
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
@@ -21,29 +22,22 @@
 !go.mod
 !go.sum
 !go.work
-!cmd/
-!cmd/**
-!eval/
-!eval/**
+!core/
+!core/**
+!driver/
+!driver/**
 !examples/
 !examples/**
+!integrations/
+!integrations/**
 !memory/
 !memory/**
-!sdk/
-!sdk/**
-!sdkx/
-!sdkx/**
 !skills/
 !skills/**
 !tools/
 !tools/**
 !.release/
 !.release/**
-
-# ── Container ──
-!Dockerfile
-!.dockerignore
-!docker-compose*.yml
 
 # ── CI/CD ──
 !Makefile

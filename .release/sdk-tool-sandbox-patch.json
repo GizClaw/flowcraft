@@ -1,9 +1,0 @@
-{
-  "summary": "tool.Assembly declares an optional sandbox.Runner dep forwarded to source factories, and builtin tools can be registered as per-build factories (RegisterBuiltinFactory) that consume resource deps",
-  "releases": [
-    {
-      "module": "sdk",
-      "bump": "patch"
-    }
-  ]
-}

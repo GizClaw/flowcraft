@@ -1,9 +1,0 @@
-{
-  "summary": "Move script runtimes to sdkx/agent/script/{jsrt,luart} and keep deprecated alias packages marked for 0.6.0 removal",
-  "releases": [
-    {
-      "module": "sdkx",
-      "bump": "patch"
-    }
-  ]
-}

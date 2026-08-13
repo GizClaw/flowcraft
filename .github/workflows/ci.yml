@@ -14,37 +14,6 @@ permissions:
   contents: read
 
 jobs:
-  detect:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      sdk: ${{ steps.filter.outputs.sdk }}
-      memory: ${{ steps.filter.outputs.memory }}
-      sdkx: ${{ steps.filter.outputs.sdkx }}
-      ci: ${{ steps.filter.outputs.ci }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          base: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || '' }}
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
-          filters: |
-            sdk:
-              - 'sdk/**'
-            memory:
-              - 'memory/**'
-            sdkx:
-              - 'sdkx/**'
-            ci:
-              - '.github/workflows/**'
-              - '.release/**'
-              - '.golangci.yml'
-              - 'Makefile'
-              - 'tools/releasegate/**'
-
   release-intent:
     name: Validate release intent
     runs-on: ubuntu-latest
@@ -55,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - name: Test release gate tooling
         working-directory: tools/releasegate
@@ -83,46 +52,46 @@ jobs:
           GOWORK: "off"
         run: go run . changelog --repo ../.. --check
 
-  lint:
-    name: Lint
-    needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+  gofmt:
+    name: Format check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26"
-      - name: go vet
-        run: |
-          # Workspace members (go.work) — vetted with the workspace
-          # overlay so cross-module symbols at monorepo HEAD resolve.
-          for m in sdk memory memory/eval sdkx; do
-            echo "==> vet $m"
-            (cd "$m" && go vet ./...)
-          done
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l sdk memory memory/eval sdkx)
+          diff=$(gofmt -s -l core driver integrations memory memory/eval examples/forge)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
             exit 1
           fi
 
-  lint-golangci:
-    name: Lint golangci (${{ matrix.module }})
-    needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+  lint:
+    name: Lint (${{ matrix.module }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        module: [sdk, memory, memory/eval, sdkx]
+        module:
+          - core
+          - driver/openai
+          - driver/deepseek
+          - driver/azure
+          - driver/anthropic
+          - driver/minimax
+          - driver/qwen
+          - driver/kimi
+          - driver/bytedance
+          - integrations/sqlite
+          - integrations/objstore
+          - integrations/sandbox
+          - memory
+          - memory/eval
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history so --new-from-rev can resolve the PR base (or the
-          # workflow_dispatch base_sha) as a lint baseline.
           fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
@@ -132,91 +101,40 @@ jobs:
         with:
           version: v2.12.2
           working-directory: ${{ matrix.module }}
-          # Report only issues on lines changed since the baseline; the tree
-          # still carries pre-existing findings, so a full-tree gate would
-          # block unrelated PRs. `make lint` runs the full tree locally.
           args: --new-from-rev=${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
 
-  test-sdk:
-    name: Test sdk (Go ${{ matrix.go-version }})
-    needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.ci == 'true'
+  test:
+    name: Test (${{ matrix.module }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        go-version: ["1.26"]
+        module:
+          - core
+          - driver/openai
+          - driver/deepseek
+          - driver/azure
+          - driver/anthropic
+          - driver/minimax
+          - driver/qwen
+          - driver/kimi
+          - driver/bytedance
+          - integrations/sqlite
+          - integrations/objstore
+          - integrations/sandbox
+          - memory
+          - memory/eval
+          - examples/forge
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: "1.26"
       - name: Test
         run: go test -count=1 -race ./...
-        working-directory: sdk
+        working-directory: ${{ matrix.module }}
 
-  test-memory:
-    name: Test memory (Go ${{ matrix.go-version }})
-    needs: detect
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: memory
-
-  test-eval:
-    name: Test eval (Go ${{ matrix.go-version }})
-    needs: detect
-    # eval is a workspace member (see go.work) — sdk/sdkx/memory resolve to
-    # monorepo HEAD via the workspace overlay.
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 ./...
-        working-directory: memory/eval
-
-  test-sdkx:
-    name: Test sdkx (Go ${{ matrix.go-version }})
-    needs: detect
-    # sdkx depends on sdk and memory adapters, so run when any changes
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        go-version: ["1.26"]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
-        with:
-          go-version: ${{ matrix.go-version }}
-      - name: Test
-        run: go test -count=1 -race ./...
-        working-directory: sdkx
-
-  test-sdkx-bwrap-integration:
-    name: Integration sdkx/sandbox/bwrap
-    needs: detect
-    # bwrap backend lives in sdkx and depends on sdk/sandbox; rerun
-    # whenever either module's source changes (or CI itself changes).
-    # The job installs bubblewrap and runs the integration_bwrap-tagged
-    # tests, which never run in the default test-sdkx lane (the build
-    # tag keeps them out).
-    if: needs.detect.outputs.sdk == 'true' || needs.detect.outputs.memory == 'true' || needs.detect.outputs.sdkx == 'true' || needs.detect.outputs.ci == 'true'
+  test-sandbox-bwrap:
+    name: Integration integrations/sandbox/bwrap
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -224,10 +142,6 @@ jobs:
         with:
           go-version: "1.26"
       - name: Install bubblewrap
-        # bubblewrap is packaged in Ubuntu (universe), so this is a
-        # single apt install — no source build, no sudo shim. GitHub
-        # hosted runners allow unprivileged user namespaces, which is
-        # all bwrap needs for its mount / net namespaces.
         run: |
           set -euo pipefail
           if command -v bwrap >/dev/null 2>&1; then
@@ -239,32 +153,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
       - name: Test
-        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./sandbox/bwrap/...
-        working-directory: sdkx
+        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
+        working-directory: integrations/sandbox
 
-  # Gate job: single required status check for branch protection.
-  # Always runs; succeeds only when all triggered jobs pass.
   ci-pass:
     name: CI
     if: always()
-    needs: [detect, release-intent, lint, lint-golangci, test-sdk, test-memory, test-eval, test-sdkx, test-sdkx-bwrap-integration]
+    needs: [release-intent, gofmt, lint, test, test-sandbox-bwrap]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
         run: |
-          if [[ "${{ needs.detect.result }}" != "success" ]]; then
-            echo "Change detection failed: ${{ needs.detect.result }}"
-            exit 1
-          fi
           results=( \
             "${{ needs.release-intent.result }}" \
+            "${{ needs.gofmt.result }}" \
             "${{ needs.lint.result }}" \
-            "${{ needs.lint-golangci.result }}" \
-            "${{ needs.test-sdk.result }}" \
-            "${{ needs.test-memory.result }}" \
-            "${{ needs.test-eval.result }}" \
-            "${{ needs.test-sdkx.result }}" \
-            "${{ needs.test-sdkx-bwrap-integration.result }}" \
+            "${{ needs.test.result }}" \
+            "${{ needs.test-sandbox-bwrap.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

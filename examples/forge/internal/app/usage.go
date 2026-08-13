@@ -8,10 +8,10 @@ import (
 	"context"
 	"errors"
 
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	"github.com/GizClaw/flowcraft/sdk/inference"
-	runtimecore "github.com/GizClaw/flowcraft/sdkx/runtime"
-	"github.com/GizClaw/flowcraft/sdkx/runtime/session"
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/runtime"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
 )
 
 // UsageSnapshot is a point-in-time cumulative token accounting.
@@ -80,7 +80,7 @@ func (f *usageHostFactory) NewHost(ctx context.Context, request session.HostRequ
 // usageHostDecorator adapts the app mirror to the runtime's host
 // factory decorator contract: it must hand back a factory that wraps
 // the provided base factory, never one that replaces it.
-func usageHostDecorator(a *App) runtimecore.HostFactoryDecorator {
+func usageHostDecorator(a *App) runtime.HostFactoryDecorator {
 	return func(base session.HostFactory) (session.HostFactory, error) {
 		if base == nil {
 			return nil, errors.New("usage host decorator: runtime base host factory is nil")

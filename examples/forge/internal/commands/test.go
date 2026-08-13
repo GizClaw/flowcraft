@@ -10,10 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/utils"
+
 	"github.com/GizClaw/flowcraft/examples/forge/internal/app"
 	"github.com/GizClaw/flowcraft/examples/forge/internal/scenario"
-	"github.com/GizClaw/flowcraft/sdk/agent"
-	configutils "github.com/GizClaw/flowcraft/sdk/config/utils"
 )
 
 type testFile struct {
@@ -99,7 +100,7 @@ func testCmd(args []string) error {
 // YAML authoring form to JSON at the boundary; json.Unmarshal keeps the
 // decode permissive so test files may carry extra fields.
 func parseTestFile(data []byte) (testFile, error) {
-	jsonData, err := configutils.ToJSON(data)
+	jsonData, err := utils.ToJSON(data)
 	if err != nil {
 		return testFile{}, err
 	}
@@ -131,7 +132,7 @@ func runTestTurns(workspacePath, logPath string, inputs []string, timeout time.D
 		return metrics, fmt.Errorf("open test chat log: %w", err)
 	}
 	defer func() { _ = logFile.Close() }()
-	fmt.Fprintf(logFile, "# workspace: %s\n\n", workspacePath)
+	_, _ = fmt.Fprintf(logFile, "# workspace: %s\n\n", workspacePath)
 
 	for i, input := range inputs {
 		turnMetric, text, rendered, err := runOneTestTurn(ctx, a, i+1, input, timeout)

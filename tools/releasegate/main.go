@@ -18,12 +18,7 @@ import (
 
 const changelogMarker = "<!-- releasegate:releases -->"
 
-var moduleOrder = []string{"sdk", "memory", "sdkx"}
-
-var moduleDependencies = map[string][]string{
-	"memory": {"sdk"},
-	"sdkx":   {"sdk", "memory"},
-}
+var moduleOrder = []string{"core"}
 
 type Changeset struct {
 	Summary  string    `json:"summary"`
@@ -48,12 +43,7 @@ type ModulePlan struct {
 
 type Plan struct {
 	Modules []ModulePlan `json:"modules"`
-	Matrix  Matrix       `json:"matrix"`
 	Tags    []string     `json:"tags"`
-}
-
-type Matrix struct {
-	Include []ModulePlan `json:"include"`
 }
 
 type version struct {
@@ -237,6 +227,9 @@ func validateRepo(repo, base string) error {
 		if status == "A" {
 			continue
 		}
+		if status[0] == 'D' && isLegacyChangeset(path) {
+			continue
+		}
 		action := "changed"
 		switch status[0] {
 		case 'M':
@@ -251,6 +244,11 @@ func validateRepo(repo, base string) error {
 		return fmt.Errorf("changeset %s was %s; .release changesets are immutable and may only be added", path, action)
 	}
 	return nil
+}
+
+func isLegacyChangeset(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasPrefix(base, "sdk") || strings.HasPrefix(base, "sdkx")
 }
 
 func preflightRepo(repo string, write bool, stdout io.Writer) error {
@@ -310,29 +308,7 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 		return false, fmt.Errorf("module %s: write temp go.sum: %w", item.Module, err)
 	}
 
-	deps := sameBatchDeps(item.Module, plan)
-	paths := make(map[string]bool, len(deps))
-	if len(deps) != 0 {
-		var replace strings.Builder
-		replace.WriteString("\nreplace (\n")
-		for _, dep := range deps {
-			depDir := filepath.Join(repo, dep.Dir)
-			modulePath, err := readModulePath(filepath.Join(depDir, "go.mod"))
-			if err != nil {
-				return false, err
-			}
-			target, err := filepath.Abs(depDir)
-			if err != nil {
-				return false, fmt.Errorf("module %s: resolve %s path: %w", item.Module, dep.Module, err)
-			}
-			paths[modulePath] = true
-			fmt.Fprintf(&replace, "\t%s => %s\n", modulePath, target)
-		}
-		replace.WriteString(")\n")
-		if err := os.WriteFile(tempMod, append(modData, []byte(replace.String())...), 0o644); err != nil {
-			return false, fmt.Errorf("module %s: write temp go.mod with replaces: %w", item.Module, err)
-		}
-	}
+	paths := map[string]bool{}
 
 	cmd := exec.Command("go", "mod", "tidy")
 	cmd.Dir = moduleDir
@@ -383,16 +359,6 @@ func preflightModule(repo string, item ModulePlan, plan map[string]ModulePlan, w
 		return false, fmt.Errorf("module %s: write go.sum: %w", item.Module, err)
 	}
 	return true, nil
-}
-
-func sameBatchDeps(module string, plan map[string]ModulePlan) []ModulePlan {
-	var deps []ModulePlan
-	for _, dependency := range moduleDependencies[module] {
-		if item, ok := plan[dependency]; ok {
-			deps = append(deps, item)
-		}
-	}
-	return deps
 }
 
 func stripPreflightReplaces(content []byte, paths map[string]bool) []byte {
@@ -623,7 +589,6 @@ func ensureJSONEOF(decoder *json.Decoder) error {
 func buildPlan(repo string) (Plan, error) {
 	empty := Plan{
 		Modules: make([]ModulePlan, 0),
-		Matrix:  Matrix{Include: make([]ModulePlan, 0)},
 		Tags:    make([]string, 0),
 	}
 	changesets, err := loadChangesets(repo)
@@ -643,13 +608,19 @@ func buildPlan(repo string) (Plan, error) {
 			if !ok {
 				tag, err = latestModuleTag(repo, release.Module)
 				if err != nil {
-					return empty, err
+					if !strings.Contains(err.Error(), "no seed tag") {
+						return empty, err
+					}
+					tag = tagVersion{}
 				}
 				latest[release.Module] = tag
 			}
-			consumed, err := tagContainsPath(repo, tag.tag, changeset.file)
-			if err != nil {
-				return empty, err
+			consumed := false
+			if tag.tag != "" {
+				consumed, err = tagContainsPath(repo, tag.tag, changeset.file)
+				if err != nil {
+					return empty, err
+				}
 			}
 			if consumed {
 				continue
@@ -670,9 +641,12 @@ func buildPlan(repo string) (Plan, error) {
 			continue
 		}
 		tag := latest[module]
-		changed, err := moduleChangedSince(repo, tag.tag, module)
-		if err != nil {
-			return empty, err
+		changed := true
+		if tag.tag != "" {
+			changed, err = moduleChangedSince(repo, tag.tag, module)
+			if err != nil {
+				return empty, err
+			}
 		}
 		if !changed {
 			return empty, fmt.Errorf("module %s has pending changesets but no changes since %s", module, tag.tag)
@@ -691,16 +665,12 @@ func buildPlan(repo string) (Plan, error) {
 		}
 	}
 
-	if err := validateDependencyPins(repo, planByModule); err != nil {
-		return empty, err
-	}
 	for _, module := range moduleOrder {
 		item, ok := planByModule[module]
 		if !ok {
 			continue
 		}
 		empty.Modules = append(empty.Modules, item)
-		empty.Matrix.Include = append(empty.Matrix.Include, item)
 		empty.Tags = append(empty.Tags, item.Tag)
 	}
 	return empty, nil
@@ -1012,48 +982,6 @@ func moduleChangedSince(repo, tag, module string) (bool, error) {
 		return false, fmt.Errorf("find untracked changes for module %s: %w", module, err)
 	}
 	return strings.TrimSpace(untracked) != "", nil
-}
-
-func validateDependencyPins(repo string, plan map[string]ModulePlan) error {
-	for _, module := range moduleOrder {
-		item, pending := plan[module]
-		if !pending {
-			continue
-		}
-		requirements, err := readRequirements(filepath.Join(repo, item.Dir, "go.mod"))
-		if err != nil {
-			return fmt.Errorf("module %s: %w", module, err)
-		}
-		for _, dependency := range moduleDependencies[module] {
-			dependencyPlan, sameBatch := plan[dependency]
-			if !sameBatch {
-				continue
-			}
-			modulePath, err := readModulePath(filepath.Join(repo, dependencyPlan.Dir, "go.mod"))
-			if err != nil {
-				return fmt.Errorf("dependency %s: %w", dependency, err)
-			}
-			want := "v" + dependencyPlan.Next
-			if got := requirements[modulePath]; got != want {
-				return fmt.Errorf("module %s must require same-batch dependency %s at %s; found %q", module, modulePath, want, got)
-			}
-		}
-	}
-	return nil
-}
-
-func readModulePath(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read %s: %w", path, err)
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(stripComment(line))
-		if len(fields) == 2 && fields[0] == "module" {
-			return fields[1], nil
-		}
-	}
-	return "", fmt.Errorf("%s has no module directive", path)
 }
 
 func readRequirements(path string) (map[string]string, error) {

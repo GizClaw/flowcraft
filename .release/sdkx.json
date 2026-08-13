@@ -1,9 +1,0 @@
-{
-  "summary": "sdkx v0.5.0: unify provider adapters under sdkx/inference, land deploy/runtime/scheduler/delegation and A2A assembly, swap nsjail for bubblewrap, and remove the legacy 0.4.x surfaces",
-  "releases": [
-    {
-      "module": "sdkx",
-      "bump": "minor"
-    }
-  ]
-}

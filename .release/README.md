@@ -9,7 +9,7 @@ the intent.
   "summary": "Add streaming retries",
   "releases": [
     {
-      "module": "sdk",
+      "module": "core",
       "bump": "patch"
     }
   ]
@@ -19,7 +19,7 @@ the intent.
 - `summary` must be a non-empty single line and must not contain the reserved
   releasegate marker.
 - `releases` must contain at least one entry.
-- `module` must be `sdk`, `memory`, or `sdkx`.
+- `module` must be `core`.
 - `bump` must be `patch` or `minor`.
 - A changeset cannot declare the same module more than once.
 - Multiple pending changesets for one module use the highest bump (`minor`

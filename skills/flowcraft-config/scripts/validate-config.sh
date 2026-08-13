@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# L2 validation: dry-build a FlowCraft deployment through the real
-# sdkx/deploy assembly layer. The validator pins the FlowCraft module
+# L2 validation: parse a FlowCraft deployment through the real
+# core/deploy assembly layer. The validator pins the FlowCraft core module
 # versions declared in scripts/validator/go.mod, so it works standalone
 # from any working directory.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

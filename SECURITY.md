@@ -5,11 +5,12 @@ fixes are issued against the latest release of each versioned module.
 
 ## Supported Versions
 
-| Module     | Supported tag stream |
-| ---------- | -------------------- |
-| `sdk`      | latest `sdk/v0.x`    |
-| `memory`   | latest `memory/v0.x` |
-| `sdkx`     | latest `sdkx/v0.x`   |
+| Module           | Supported tag stream |
+| ---------------- | -------------------- |
+| `core`           | latest `core/v0.x` |
+| `driver/*`       | latest `driver/<name>/v0.x` |
+| `integrations/*` | latest `integrations/<name>/v0.x` |
+| `memory`         | latest `memory/v0.x` |
 
 Older minor versions are not patched; please upgrade before reporting issues
 that only reproduce on outdated tags.
@@ -17,11 +18,11 @@ that only reproduce on outdated tags.
 The repository also contains:
 
 - `examples/forge` — the runnable local workspace demo. It is built from the
-  workspace and not versioned; fixes ship with the next `sdk`/`sdkx`/`memory`
-  release that the workspace tracks.
+  workspace and not versioned; fixes ship with the next `core`/`driver`/
+  `integrations`/`memory` release that the workspace tracks.
 
-Because `memory` depends on `sdk` and `sdkx`, coordinated fixes to the memory
-module may require a same-batch release of all three modules.
+Because modules depend on `core`, coordinated fixes may require same-batch
+releases across `core`, `driver/*`, `integrations/*`, and `memory`.
 
 ## Reporting a Vulnerability
 
@@ -36,7 +37,7 @@ Use one of the following private channels:
 
 Please include:
 
-- Affected module(s) and version/tag (e.g. `sdk/v0.4.0`).
+- Affected module(s) and version/tag (e.g. `core/v0.1.0`).
 - A minimal reproduction (config, command, request, or code snippet).
 - Impact assessment (what a malicious actor could do).
 - Any suggested mitigation, if you have one.
@@ -54,8 +55,8 @@ Please include:
 
 In scope:
 
-- Code in this repository (`sdk/`, `memory/`, `sdkx/`, `examples/forge/`,
-  `tools/`).
+- Code in this repository (`core/`, `driver/`, `integrations/`, `memory/`,
+  `examples/forge/`, `tools/`).
 - Supply-chain and dependency issues affecting published modules.
 
 Out of scope:

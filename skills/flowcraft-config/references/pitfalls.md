@@ -1,70 +1,38 @@
 # Pitfalls and build-failure troubleshooting
 
-These are the drift points found while aligning the guides with the
-modules. When a config fails, check this list before inventing new schema.
+## Common pitfalls
 
-## Known pitfalls
+1. Agent engine deps belong under `engine.deps`, not top-level `agent.deps`.
+2. `runtime.event_bus` is required when `runtime` exists.
+3. `sessions.resume: true` requires `checkpoint_store`.
+4. Graph model refs must use `model: {id: {provider, name}}`.
+5. Script nodes need `runtime` and `source`; `runtime` must match the bound
+   script runtime.
+6. Resource settings file/embed refs must be the whole settings subtree.
+7. Runtime buffer/concurrency settings have hard upper bounds.
+8. Dynamic catalog mappings must cover every deployed agent directly or with
+   `default`.
+9. `tool.Assembly` with dynamic injection requires at least one tool source.
+10. Local sandbox is a no-isolation backend and should not be used for
+    untrusted production execution.
 
-1. Memory hooks (`memory.context` / `memory.turn`) bind a whole
-   `memory.Assembly` resource as their `memory` dep; the settings schema
-   is owned by the implementation module. The flowcraft `memory/` module
-   is not released yet — do not write memory implementation examples
-   against it. `sdk/memory` contracts and `sdkx/memory/hook` are fine.
-2. The default credential profile has an empty id (`- secrets: ...`),
-   not `id: default`.
-3. bytedance transcription is session-only (no unary transcribe); azure
-   supports unary transcription and image/audio intents; openai realtime
-   is absent.
-4. The transcription span name is `inference.transcription`, not
-   `inference.transcribe`.
-5. Agent `tools` is a runtime allow-list promoted to `Run.ToolAllowList`;
-   the deploy document does not validate names against the catalog.
-6. Agent `policy` is read by the harness, not the engine factory: it maps
-   to `WithMaxRevise` / `WithArtifactChannels`.
-7. `workspace` scope semantics: reads default to allowed (deny-only
-   `deny_read`), writes default to denied (allow-only `allow_write`).
-8. The event `Observer` has only `OnPublish` / `OnDeliver` / `OnDrop`;
-   there is no subscriber-count or cache hit-miss callback.
-9. `sdkx/tool/exec` also ships `exec_session` alongside `exec`.
-10. The event `BackpressurePolicy` includes `Sample`.
-11. Runtime config supports `checkpoint_store` and `sessions.resume`
-    (resume requires the store).
-12. `EventBus()` is an optional `agent.EventBusProvider`, not a member of
-    the `Host` interface.
-13. Workspace/sandbox deploy factories are the builders themselves:
-    register `workspaceconfig.NewBuilder(...)` and
-    `sandboxconfig.NewBuilder(...)` directly; there is no
-    `workspaceconfig.NewDeployFactory`.
-14. Graph `model` refs need the nested `id`:
-    `model: {id: {provider: ..., name: ...}}`; the flattened
-    `{provider: ..., name: ...}` form is invalid.
-15. `LocalWorkspace.Capabilities` reports `DurableOnWrite: false`.
+## Error map
 
-## Error → cause map
-
-| Error you see | Likely cause | Fix |
+| Error | Likely cause | Fix |
 | --- | --- | --- |
-| memory implementation build error | impl-owned settings mismatch or missing deps | check the implementation module's schema; bind the whole assembly the hooks require |
-| `no constructor registered for kind "X" impl "Y"` | typo, or app-registered kind | fix kind/impl; verify host registration (L2 reports this as a scope limit) |
-| `dead configuration` | resource built but consumed by nothing | bind it, set `export: true`, or mark it as an external consumer |
-| `runtime config: sessions.resume requires checkpoint_store` | resume enabled without store | add `checkpoint_store` resource + runtime field, or set `resume: false` |
-| `runtime references resources that are not in the deployment` | runtime name mismatch | resource keys must match exactly |
-| `unknown field "..."` | typo at any level | check the owning section's schema |
-| `invalid node config: json: unknown field "provider"` | flattened model ref | use `model: {id: {provider, name}}` |
-| `script node: runtime is required` / `source is required` | script node missing fields | set `runtime` and `source` |
-| `graph entry node "X" not found` | `entry` mismatch | fix `entry` or node ids |
-| `edge to unknown node "X"` | edge target typo | targets must be node ids or `__end__` |
-| agent tool allow-list warning | tool not in built catalog | app-registered tool (expected) or typo in the name |
-| `provider driver "X" is not registered` | driver typo or custom driver | use a first-party driver name or register the custom factory |
-| `secret resolver "X" is not registered` | resolver typo or app-owned resolver | use `env` or register the resolver in the host |
+| no factory for `kind/impl` | typo or missing registration | fix kind/impl and register factory |
+| dep references missing resource | bad resource name | use an exact resource key |
+| dependency cycle | circular `deps` | break the cycle |
+| undeclared dep | document dep not in `Spec.Deps` | fix dep name or factory spec |
+| `runtime config: event_bus is required` | missing runtime `event_bus` | add an `event.Bus` resource and reference |
+| `sessions.resume requires checkpoint_store` | resume enabled without store | add store or set resume false |
+| graph `unknown field "provider"` | flattened model ref | use nested `id` |
+| script node missing `runtime`/`source` | incomplete script config | add both fields |
+| dynamic catalog uncovered agent | no per-agent or default mapping | add `default` or map every agent |
 
 ## Debug order
 
-1. `deploy.Parse` errors are structural — fix top-level typos first.
-2. `Builder.Build` errors short-circuit on the first failure — fix the
-   reported resource/agent, then re-run.
-3. Runtime errors come after a successful build — check name wiring and
-   the resume/checkpoint invariant.
-4. Graph node config errors surface at invocation, not at build. The L2
-   validator decodes node configs statically to catch them early; keep
-   model refs nested and script nodes complete.
+1. Parse/deploy structural errors first.
+2. Resolve resource factory/dependency errors.
+3. Validate runtime config.
+4. Validate graph node config.

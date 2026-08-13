@@ -2,54 +2,42 @@ package simtools_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/tool"
+
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
-	"github.com/GizClaw/flowcraft/sdk/tool"
-	toolconfig "github.com/GizClaw/flowcraft/sdk/tool/config"
 )
 
-func TestScenarioToolsDeclareAllSimtoolsAsBuiltin(t *testing.T) {
-	registry := tool.NewRegistry()
-	simtools.Register(registry, new(atomic.Int64))
-
-	builder := toolconfig.NewBuilder(toolconfig.Deps{})
-	for _, name := range registry.Names() {
-		registered, ok := registry.Get(name)
-		if !ok {
-			t.Fatalf("builtin %q missing from registry", name)
+func TestSimToolsSourceExposesExpectedTools(t *testing.T) {
+	value, err := simtools.NewSourceFactory(new(atomic.Int64)).New(
+		context.Background(),
+		resource.Input{Settings: []byte(`{}`)},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	src, ok := value.(tool.Source)
+	if !ok {
+		t.Fatalf("New returned %T, want tool.Source", value)
+	}
+	names := make(map[string]bool)
+	for _, definition := range src.Tools() {
+		names[definition.Definition().Name] = true
+	}
+	for _, want := range []string{
+		"play_music",
+		"set_device_volume",
+		"stop_playback",
+		"werewolf_game_event",
+	} {
+		if !names[want] {
+			t.Errorf("source is missing tool %q", want)
 		}
-		builder.RegisterBuiltin(registered)
 	}
-
-	scenarios := []string{
-		"../../scenarios/personas/tom/tools.yaml",
-		"../../scenarios/raids/werewolf/tools.yaml",
-		"../../scenarios/raids/multi_role_storyteller/tools.yaml",
-	}
-	for _, path := range scenarios {
-		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatalf("read %s: %v", path, err)
-			}
-			doc, err := toolconfig.Parse(data)
-			if err != nil {
-				t.Fatalf("Parse(%s): %v", path, err)
-			}
-			assembly, err := builder.Build(context.Background(), doc)
-			if err != nil {
-				t.Fatalf("Build(%s): %v", path, err)
-			}
-			t.Cleanup(func() { _ = assembly.Close() })
-			for _, name := range registry.Names() {
-				if _, ok := assembly.Catalog.Get(name); !ok {
-					t.Errorf("%s: builtin tool %q missing from catalog", path, name)
-				}
-			}
-		})
+	if len(src.LazyTools()) != 0 {
+		t.Errorf("sim source unexpectedly exposes lazy tools")
 	}
 }

@@ -16,12 +16,13 @@ git diff --check
 
 Add tests for changed behavior and format Go files with `gofmt`. Commit
 messages use Conventional Commits with a module scope, e.g.
-`feat(sdkx/inference): add qwen provider` or `fix(memory): harden streaming`.
+`feat(driver/openai): add qwen provider` or `fix(core): harden streaming`.
 Keep changes within module boundaries.
 
 ## Modules and dependency order
 
-The independently versioned library modules are `sdk`, `memory`, and `sdkx`.
+The independently versioned library modules are `core`, `driver/*`,
+`integrations/*`, and `memory`.
 The Go workspace also includes `examples/forge` (the runnable local demo, not
 released), while `tools/releasegate` builds with `GOWORK=off` against pinned
 releases.
@@ -29,14 +30,14 @@ releases.
 Module dependency order:
 
 ```text
-sdk -> sdkx -> memory
+core -> driver/* / integrations/* -> memory
 ```
 
-- `sdk` is the contract layer and depends on nothing in-tree.
-- `sdkx` provides adapters and generic assembly over `sdk`.
-- `memory` is one implementation of the `sdk/memory` contracts and depends on
-  both `sdk` and `sdkx` (its worker runtime integration implements
-  `sdkx/runtime` interfaces).
+- `core` is the platform module and depends on nothing in-tree.
+- `driver/*` provides provider inference adapters over `core`.
+- `integrations/*` provides platform-specific sandbox/object-store/SQLite
+  integrations over `core`.
+- `memory` is one implementation of the `core/memory` contracts.
 
 ## Declaring a module release
 
@@ -49,7 +50,7 @@ publish one or more library modules, add a new immutable
   "summary": "Add streaming retries",
   "releases": [
     {
-      "module": "sdk",
+      "module": "core",
       "bump": "patch"
     }
   ]
@@ -64,9 +65,7 @@ correct release intent.
 ### Coordinated releases
 
 When dependent modules release together, update their `go.mod` requirements to
-the versions being planned in the same batch. Because the order is
-`sdk -> sdkx -> memory`, a coordinated batch pins `sdkx` on `sdk` and `memory`
-on both. Check the exact versions with:
+the versions being planned in the same batch. Check the exact versions with:
 
 ```sh
 make release-plan
@@ -98,10 +97,12 @@ the next push to `main` or a manual workflow dispatch.
 
 ## Working in the workspace
 
-- `make ci` runs `vet` + `test` across `sdk`, `memory`, `sdkx`, and
+- `make ci` runs `vet` + `test` across `core`, `driver/*`, `integrations/*`,
+  `memory`, and
   `examples/forge`.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
-- Changes to `sdk` or `sdkx` contracts may break `examples/forge` or `memory`;
+- Changes to `core` contracts may break `driver/*`, `integrations/*`,
+  `examples/forge`, or `memory`;
   `make ci` covers them in-tree.
 - The forge demo's scenarios are native deployment documents; changes to the
   assembly or runtime surface should be exercised with a demo run

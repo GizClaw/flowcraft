@@ -1,0 +1,135 @@
+package resource
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+)
+
+func TestExpandNoOptionsReturnsInput(t *testing.T) {
+	out, err := Expand([]byte(`{"a": "${env:X}"}`))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if string(out) != `{"a": "${env:X}"}` {
+		t.Fatalf("Expand = %s", out)
+	}
+}
+
+func TestExpandEnv(t *testing.T) {
+	lookup := func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv/flowcraft", true
+		}
+		return "", false
+	}
+	out, err := Expand([]byte(`{
+		"root": "${env:ROOT}",
+		"nested": {"path": "${env:ROOT}/data"},
+		"list": ["${env:ROOT}/a", "plain"]
+	}`), WithEnv(lookup))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["root"] != "/srv/flowcraft" {
+		t.Fatalf("root = %v", got["root"])
+	}
+	nested := got["nested"].(map[string]any)
+	if nested["path"] != "/srv/flowcraft/data" {
+		t.Fatalf("nested path = %v", nested["path"])
+	}
+	list := got["list"].([]any)
+	if list[0] != "/srv/flowcraft/a" || list[1] != "plain" {
+		t.Fatalf("list = %v", list)
+	}
+}
+
+func TestExpandBase(t *testing.T) {
+	out, err := Expand([]byte(`{
+		"dir": "${base}",
+		"file": "${base:tools/tools.yaml}"
+	}`), ExpandBase("/tmp/deploy"))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["dir"] != "/tmp/deploy" {
+		t.Fatalf("dir = %v", got["dir"])
+	}
+	if got["file"] != filepath.Join("/tmp/deploy", "tools/tools.yaml") {
+		t.Fatalf("file = %v", got["file"])
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	out, err := Expand([]byte(`{
+		"bare": "~",
+		"sub": "~/flowcraft",
+		"ref": "${home:data}",
+		"reffull": "${home}"
+	}`), ExpandHome())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["bare"] != home || got["sub"] != filepath.Join(home, "flowcraft") ||
+		got["ref"] != filepath.Join(home, "data") || got["reffull"] != home {
+		t.Fatalf("home expansion = %v", got)
+	}
+}
+
+func TestExpandErrors(t *testing.T) {
+	lookup := func(string) (string, bool) { return "", false }
+	for _, tc := range []struct {
+		name string
+		raw  string
+		opts []ExpandOption
+	}{
+		{"missing env", `{"a": "${env:UNSET}"}`, []ExpandOption{WithEnv(lookup)}},
+		{"env not enabled", `{"a": "${env:X}"}`, []ExpandOption{ExpandBase("/tmp")}},
+		{"base not enabled", `{"a": "${base}"}`, []ExpandOption{ExpandEnv()}},
+		{"unknown ref", `{"a": "${foo}"}`, []ExpandOption{ExpandEnv()}},
+		{"unterminated", `{"a": "${env:X"}`, []ExpandOption{ExpandEnv()}},
+	} {
+		if _, err := Expand([]byte(tc.raw), tc.opts...); !errdefs.IsValidation(err) {
+			t.Fatalf("%s: error = %v, want validation", tc.name, err)
+		}
+	}
+}
+
+func TestDecodeSettingsWithExpansion(t *testing.T) {
+	type settings struct {
+		Root string `json:"root"`
+	}
+	lookup := func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv/flowcraft", true
+		}
+		return "", false
+	}
+	got, err := DecodeTyped[settings](
+		[]byte(`{"root": "${env:ROOT}/data"}`), WithEnv(lookup))
+	if err != nil {
+		t.Fatalf("DecodeTyped: %v", err)
+	}
+	if got.Root != "/srv/flowcraft/data" {
+		t.Fatalf("Root = %q", got.Root)
+	}
+}
