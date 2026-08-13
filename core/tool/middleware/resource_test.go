@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
 	toolmiddleware "github.com/GizClaw/flowcraft/core/tool/middleware"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 func TestAssemblyFactory(t *testing.T) {
@@ -29,7 +30,7 @@ func TestAssemblyFactory(t *testing.T) {
 			"dynamic": {"default": "deferred"}
 		}`),
 		Deps: map[string]any{
-			"tool": testSource{tools: []tool.Tool{slowTool("slow", 50*time.Millisecond)}},
+			"tool": tooltest.Source(slowTool("slow", 50*time.Millisecond)),
 		},
 	})
 	if err != nil {
@@ -53,7 +54,7 @@ func TestAssemblyFactoryRejectsBadTimeout(t *testing.T) {
 	_, err := (toolmiddleware.AssemblyFactory{}).New(context.Background(), resource.Input{
 		Settings: []byte(`{"middlewares": {"timeout": {"default": "not-a-duration"}}}`),
 		Deps: map[string]any{
-			"tool": testSource{tools: []tool.Tool{slowTool("a", 0)}},
+			"tool": tooltest.Source(slowTool("a", 0)),
 		},
 	})
 	if !errdefs.IsValidation(err) {
@@ -68,16 +69,10 @@ func TestAssemblyFactoryRequiresSources(t *testing.T) {
 	}
 }
 
-type testSource struct {
-	tools []tool.Tool
-}
-
-func (s testSource) Tools() []tool.Tool         { return s.tools }
-func (s testSource) LazyTools() []tool.LazyTool { return nil }
-
 func slowTool(name string, d time.Duration) tool.Tool {
-	return tool.FuncTool(
-		message.ToolDefinition{Name: name, InputSchema: []byte(`{"type":"object"}`)},
+	return tooltest.FuncTool(
+		name,
+		"",
 		func(ctx context.Context, _ string) (string, error) {
 			select {
 			case <-time.After(d):

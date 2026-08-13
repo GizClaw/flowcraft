@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 type testSource struct {
@@ -16,7 +17,7 @@ func (s testSource) Tools() []tool.Tool         { return s.tools }
 func (s testSource) LazyTools() []tool.LazyTool { return nil }
 
 func catalogWith(tools ...tool.Tool) *tool.Registry {
-	reg, err := tool.NewRegistry([]tool.Source{testSource{tools: tools}})
+	reg, err := tool.NewRegistry([]tool.Source{tooltest.Source(tools...)})
 	if err != nil {
 		panic(err)
 	}
@@ -24,10 +25,9 @@ func catalogWith(tools ...tool.Tool) *tool.Registry {
 }
 
 func echoTool(name string) tool.Tool {
-	return tool.FuncTool(message.ToolDefinition{Name: name},
-		func(_ context.Context, args string) (string, error) {
-			return "echo:" + args, nil
-		})
+	return tooltest.FuncTool(name, "", func(_ context.Context, args string) (string, error) {
+		return "echo:" + args, nil
+	})
 }
 
 func call(name string) message.ToolCall {

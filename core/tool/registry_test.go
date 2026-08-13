@@ -10,13 +10,13 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/tool/tooltest"
 )
 
 func funcTool(name, content string) tool.Tool {
-	return tool.FuncTool(
-		message.ToolDefinition{Name: name, InputSchema: []byte(`{"type":"object"}`)},
-		func(context.Context, string) (string, error) { return content, nil },
-	)
+	return tooltest.FuncTool(name, "", func(context.Context, string) (string, error) {
+		return content, nil
+	})
 }
 
 type source struct {
