@@ -14,49 +14,24 @@ permissions:
   contents: read
 
 jobs:
-  detect:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      core: ${{ steps.filter.outputs.core }}
-      drivers: ${{ steps.filter.outputs.drivers }}
-      backends: ${{ steps.filter.outputs.backends }}
-      memory: ${{ steps.filter.outputs.memory }}
-      ci: ${{ steps.filter.outputs.ci }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            core:
-              - 'core/**'
-            drivers:
-              - 'driver/**'
-            backends:
-              - 'backends/**'
-            memory:
-              - 'memory/**'
-            ci:
-              - '.github/workflows/**'
-              - '.release/**'
-              - '.golangci.yml'
-              - 'Makefile'
-              - 'tools/releasegate/**'
-
   compute-matrix:
     name: Compute module matrix
     runs-on: ubuntu-latest
     outputs:
       lint: ${{ steps.matrix.outputs.lint }}
+      lint_enabled: ${{ steps.matrix.outputs.lint_enabled }}
       test: ${{ steps.matrix.outputs.test }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Build module matrix
         id: matrix
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || inputs.base_sha }}
         run: |
           python3 - <<'PY' > matrix.json
-          import json, pathlib
+          import json, os, pathlib, subprocess
 
           def modules(root):
               return sorted(
@@ -66,9 +41,48 @@ jobs:
 
           backends = modules("backends")
           drivers = modules("driver")
-          lint = ["core", *backends, *drivers, "memory", "memory/eval"]
-          test = lint + ["examples/forge"]
-          json.dump({"lint": {"module": lint}, "test": {"module": test}}, open("matrix.json", "w"))
+          all_lint = ["core", *backends, *drivers, "memory", "memory/eval"]
+
+          base = os.environ["BASE_SHA"]
+          files = subprocess.check_output(
+              ["git", "diff", "--name-only", f"{base}...HEAD"],
+              text=True,
+          ).splitlines()
+
+          changed = set()
+          root_trigger = False
+          root_trigger_files = {
+              "go.work",
+              "go.mod",
+              "go.sum",
+              "Makefile",
+              ".golangci.yml",
+          }
+
+          for file in files:
+              if file in root_trigger_files:
+                  root_trigger = True
+                  continue
+              parts = pathlib.PurePosixPath(file).parts
+              if file.startswith("core/"):
+                  changed.add("core")
+              elif file.startswith("memory/eval/"):
+                  changed.add("memory/eval")
+              elif file.startswith("memory/"):
+                  changed.add("memory")
+              elif file.startswith("driver/") and len(parts) >= 2:
+                  changed.add(f"driver/{parts[1]}")
+              elif file.startswith("backends/") and len(parts) >= 2:
+                  changed.add(f"backends/{parts[1]}")
+
+          lint = all_lint if root_trigger else sorted(changed & set(all_lint))
+          test = all_lint + ["examples/forge"]
+          json.dump(
+              {"lint": {"module": lint}, "test": {"module": test}},
+              open("matrix.json", "w"),
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"lint_enabled={'true' if lint else 'false'}\n")
           PY
           echo "lint=$(jq -c .lint matrix.json)" >> "$GITHUB_OUTPUT"
           echo "test=$(jq -c .test matrix.json)" >> "$GITHUB_OUTPUT"
@@ -130,8 +144,8 @@ jobs:
 
   lint:
     name: Lint (${{ matrix.module }})
-    needs: [detect, compute-matrix]
-    if: needs.detect.outputs.core == 'true' || needs.detect.outputs.drivers == 'true' || needs.detect.outputs.backends == 'true' || needs.detect.outputs.memory == 'true'
+    needs: [compute-matrix]
+    if: needs.compute-matrix.outputs.lint_enabled == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix: ${{ fromJson(needs.compute-matrix.outputs.lint) }}

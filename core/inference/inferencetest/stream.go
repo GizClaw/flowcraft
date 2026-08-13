@@ -149,3 +149,80 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 	}
 	assertUnchanged(t, expected, request.Clone())
 }
+
+// GenerateStreamFailureSuite verifies that a provider stream can fail
+// cleanly mid-stream: Next surfaces the error, Result carries the same
+// failure, and Close remains usable afterwards.
+type GenerateStreamFailureSuite struct {
+	Model   inference.ModelRef
+	Request func() inference.GenerateRequest
+	Driver  inference.GenerateStreamDriver
+
+	TransportCalls func() int64
+	AssertError    func(*testing.T, error)
+}
+
+func RunGenerateStreamFailure(t *testing.T, suite GenerateStreamFailureSuite) {
+	t.Helper()
+	if suite.Request == nil || suite.Driver == nil || suite.TransportCalls == nil {
+		t.Fatal("GenerateStreamFailureSuite requires request, driver, and transport probe")
+	}
+	if err := suite.Model.Validate(); err != nil {
+		t.Fatalf("Model: %v", err)
+	}
+
+	request := suite.Request()
+	expected := request.Clone()
+	before := suite.TransportCalls()
+	explanation, err := suite.Driver.Explain(context.Background(), suite.Model, request)
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if suite.TransportCalls() != before ||
+		explanation.Operation != inference.OperationGenerate ||
+		len(explanation.Decisions) == 0 {
+		t.Fatalf("Explain performed I/O or lost decisions: %+v", explanation)
+	}
+	assertUnchanged(t, expected, request.Clone())
+
+	stream, err := suite.Driver.Stream(context.Background(), suite.Model, request)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			_ = stream.Close()
+		}
+	})
+	if suite.TransportCalls() != before+1 {
+		t.Fatalf("Stream transport calls = %d, want %d", suite.TransportCalls(), before+1)
+	}
+
+	var nextErr error
+	for {
+		_, err := stream.Next(context.Background())
+		if err == io.EOF {
+			t.Fatal("Next reached EOF, want a mid-stream error")
+		}
+		if err != nil {
+			nextErr = err
+			break
+		}
+	}
+	if nextErr == nil {
+		t.Fatal("Next returned no error")
+	}
+	if suite.AssertError != nil {
+		suite.AssertError(t, nextErr)
+	}
+
+	if _, resultErr := stream.Result(); resultErr == nil {
+		t.Fatal("Result after stream failure = nil, want error")
+	}
+	if closeErr := stream.Close(); closeErr != nil {
+		t.Fatalf("Close after stream failure: %v", closeErr)
+	}
+	closed = true
+	assertUnchanged(t, expected, request.Clone())
+}
