@@ -1,0 +1,9 @@
+{
+  "summary": "Treat already-closed sandbox stdin as a no-op close to fix the release-gate exec race",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
