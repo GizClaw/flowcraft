@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.4` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.5` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.5` - 2026-08-13
+
+### Changed
+
+- feat(core): runtime prompt event subscription, prompt lifecycle resolved events, and sandbox allowlist approval composition
 
 ## `core/v0.1.4` - 2026-08-13
 
