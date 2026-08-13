@@ -1,6 +1,9 @@
 package inference
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type generateDriver[Wire, Raw any] struct {
 	pipeline *pipeline[GenerateRequest, Wire, Raw, GenerateResponse]
@@ -25,11 +28,19 @@ func (d *generateDriver[Wire, Raw]) Execute(
 	model ModelRef,
 	request GenerateRequest,
 ) (GenerateResponse, error) {
+	start := time.Now()
 	response, report, err := d.pipeline.execute(ctx, model, request)
 	if err != nil {
 		return GenerateResponse{}, err
 	}
 	deriveGenerateUsage(request, &response)
+	// Stamp the call-context envelope the driver never sees: the exact
+	// model (including credential profile) that produced the call and the
+	// wall-clock latency of the producing call. Hosts bucket and enforce
+	// per-model budgets off Usage.Model; without this stamp the field
+	// would be zero for every provider.
+	response.Usage.Model = model
+	response.Usage.LatencyMs = time.Since(start).Milliseconds()
 	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
 	return response, nil
 }

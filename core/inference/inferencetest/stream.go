@@ -137,6 +137,19 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 		len(response.Metadata.Decisions) == 0 {
 		t.Fatalf("Result metadata = %+v", response.Metadata)
 	}
+	if response.Usage.Model != suite.Model {
+		t.Fatalf(
+			"Usage.Model = %+v, want %+v",
+			response.Usage.Model,
+			suite.Model,
+		)
+	}
+	if response.Usage.LatencyMs < 0 {
+		t.Fatalf(
+			"Usage.LatencyMs = %d, want non-negative",
+			response.Usage.LatencyMs,
+		)
+	}
 	if suite.AssertResult != nil {
 		suite.AssertResult(t, response)
 	}
