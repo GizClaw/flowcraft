@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -269,5 +270,81 @@ func TestEmitStreamDelta_AcceptsForwardCompatibleType(t *testing.T) {
 	}
 	if len(pub.got) != 1 {
 		t.Fatalf("expected publish, got %d", len(pub.got))
+	}
+}
+
+func TestEmitStreamDelta_FinishAndProviderOutputs(t *testing.T) {
+	t.Parallel()
+	pub := &capturePublisher{}
+
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n",
+		StreamDeltaPayload{Type: StreamDeltaFinish}); err == nil {
+		t.Fatal("expected error for finish without FinishReason")
+	}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n", StreamDeltaPayload{
+		Type:         StreamDeltaFinish,
+		FinishReason: "completed",
+		Part:         message.TextPart{Text: "x"},
+	}); err == nil {
+		t.Fatal("expected error for finish carrying Part")
+	}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n",
+		StreamDeltaPayload{Type: StreamDeltaProviderOutputs}); err == nil {
+		t.Fatal("expected error for provider_outputs without ProviderOutputs")
+	}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n", StreamDeltaPayload{
+		Type: StreamDeltaProviderOutputs,
+		ProviderOutputs: []ProviderOutputEnvelope{
+			{Provider: "fake", Extension: "web_search"},
+		},
+	}); err == nil {
+		t.Fatal("expected error for provider output envelope without Value")
+	}
+	if len(pub.got) != 0 {
+		t.Fatalf("malformed terminal deltas leaked through: %d envelopes", len(pub.got))
+	}
+
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n", StreamDeltaPayload{
+		Type:         StreamDeltaFinish,
+		FinishReason: "completed",
+		RequestID:    "req-1",
+		ResponseID:   "resp-1",
+	}); err != nil {
+		t.Fatalf("valid finish delta: %v", err)
+	}
+	if err := EmitStreamDelta(context.Background(), pub, "r", "n", StreamDeltaPayload{
+		Type: StreamDeltaProviderOutputs,
+		ProviderOutputs: []ProviderOutputEnvelope{{
+			Provider:  "fake",
+			Extension: "web_search",
+			Value:     json.RawMessage(`{"query":"flowcraft"}`),
+		}},
+	}); err != nil {
+		t.Fatalf("valid provider_outputs delta: %v", err)
+	}
+	if len(pub.got) != 2 {
+		t.Fatalf("expected 2 envelopes, got %d", len(pub.got))
+	}
+
+	finish, err := DecodeStreamDelta(pub.got[0])
+	if err != nil {
+		t.Fatalf("DecodeStreamDelta finish: %v", err)
+	}
+	if finish.Type != StreamDeltaFinish ||
+		finish.FinishReason != "completed" ||
+		finish.RequestID != "req-1" || finish.ResponseID != "resp-1" {
+		t.Fatalf("finish payload = %+v", finish)
+	}
+
+	outputs, err := DecodeStreamDelta(pub.got[1])
+	if err != nil {
+		t.Fatalf("DecodeStreamDelta provider_outputs: %v", err)
+	}
+	if outputs.Type != StreamDeltaProviderOutputs ||
+		len(outputs.ProviderOutputs) != 1 ||
+		outputs.ProviderOutputs[0].Provider != "fake" ||
+		outputs.ProviderOutputs[0].Extension != "web_search" ||
+		string(outputs.ProviderOutputs[0].Value) != `{"query":"flowcraft"}` {
+		t.Fatalf("provider_outputs payload = %+v", outputs)
 	}
 }

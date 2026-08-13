@@ -264,6 +264,18 @@ const (
 	// reasoning. Required field: Part.
 	StreamDeltaPart StreamDeltaType = "part"
 
+	// StreamDeltaFinish marks the terminal event of a generation's
+	// delta sequence: the normalized finish reason and the
+	// provider-issued request / response identifiers. Required field:
+	// FinishReason; RequestID / ResponseID are optional.
+	StreamDeltaFinish StreamDeltaType = "finish"
+
+	// StreamDeltaProviderOutputs carries the final collection of
+	// provider-owned observational outputs (citations, search-call
+	// records, code-interpreter metadata) attached to a generation.
+	// Required field: ProviderOutputs.
+	StreamDeltaProviderOutputs StreamDeltaType = "provider_outputs"
+
 	// StreamDeltaParallelBranchAccept marks a speculative parallel
 	// branch's stream output as accepted by the graph runner.
 	// Required fields: ForkID, BranchID.
@@ -286,16 +298,19 @@ const (
 //
 // Per-Type field requirements:
 //
-//	Type           Required               Recommended
-//	------------   --------------------   --------------------
-//	part           Part                   —
-//	parallel_branch_accept ForkID, BranchID —
-//	parallel_branch_cancel ForkID, BranchID Reason
+//	Type                     Required         Recommended
+//	-----------------------   ---------------  --------------------
+//	part                      Part             —
+//	finish                    FinishReason     RequestID, ResponseID
+//	provider_outputs          ProviderOutputs  —
+//	parallel_branch_accept    ForkID, BranchID —
+//	parallel_branch_cancel    ForkID, BranchID Reason
 //
-// Speculative part deltas additionally require both ForkID and
-// BranchID. Non-speculative part deltas MUST carry neither field,
-// avoiding a half-speculative state that consumers cannot interpret
-// safely. Parallel-branch control deltas MUST NOT carry Part.
+// Speculative data deltas (part, finish, provider_outputs)
+// additionally require both ForkID and BranchID. Non-speculative data
+// deltas MUST carry neither field, avoiding a half-speculative state
+// that consumers cannot interpret safely. Parallel-branch control
+// deltas MUST NOT carry Part.
 type StreamDeltaPayload struct {
 	// Type discriminates the payload variant. See StreamDeltaType
 	// constants for the standard values.
@@ -320,21 +335,51 @@ type StreamDeltaPayload struct {
 
 	// Reason carries the rollback/abort reason for parallel_branch_cancel.
 	Reason string `json:"reason,omitempty"`
+
+	// FinishReason carries the normalized finish reason on "finish".
+	// Values use the inference.FinishReason vocabulary.
+	FinishReason string `json:"finish_reason,omitempty"`
+
+	// RequestID and ResponseID ride the "finish" delta when the
+	// provider exposes them.
+	RequestID  string `json:"request_id,omitempty"`
+	ResponseID string `json:"response_id,omitempty"`
+
+	// ProviderOutputs carries the final observational outputs on
+	// "provider_outputs", one envelope per output.
+	ProviderOutputs []ProviderOutputEnvelope `json:"provider_outputs,omitempty"`
+}
+
+// ProviderOutputEnvelope carries one provider-owned observational
+// output on a [StreamDeltaProviderOutputs] delta: the provider /
+// extension identity plus the raw output value. Value is opaque to the
+// stream protocol; consumers decode it against the provider
+// extension's schema when they recognize the family.
+type ProviderOutputEnvelope struct {
+	Provider  string          `json:"provider"`
+	Extension string          `json:"extension"`
+	Value     json.RawMessage `json:"value"`
 }
 
 // MarshalJSON encodes Part through [message.MarshalPart] so the wire
 // form carries the canonical "type" discriminator.
 func (p StreamDeltaPayload) MarshalJSON() ([]byte, error) {
 	wire := struct {
-		Type        StreamDeltaType `json:"type"`
-		Part        json.RawMessage `json:"part,omitempty"`
-		Speculative bool            `json:"speculative,omitempty"`
-		ForkID      string          `json:"fork_id,omitempty"`
-		BranchID    string          `json:"branch_id,omitempty"`
-		Reason      string          `json:"reason,omitempty"`
+		Type            StreamDeltaType          `json:"type"`
+		Part            json.RawMessage          `json:"part,omitempty"`
+		Speculative     bool                     `json:"speculative,omitempty"`
+		ForkID          string                   `json:"fork_id,omitempty"`
+		BranchID        string                   `json:"branch_id,omitempty"`
+		Reason          string                   `json:"reason,omitempty"`
+		FinishReason    string                   `json:"finish_reason,omitempty"`
+		RequestID       string                   `json:"request_id,omitempty"`
+		ResponseID      string                   `json:"response_id,omitempty"`
+		ProviderOutputs []ProviderOutputEnvelope `json:"provider_outputs,omitempty"`
 	}{
 		Type: p.Type, Speculative: p.Speculative, ForkID: p.ForkID,
 		BranchID: p.BranchID, Reason: p.Reason,
+		FinishReason: p.FinishReason, RequestID: p.RequestID,
+		ResponseID: p.ResponseID, ProviderOutputs: p.ProviderOutputs,
 	}
 	if p.Part != nil {
 		raw, err := message.MarshalPart(p.Part)
@@ -350,12 +395,16 @@ func (p StreamDeltaPayload) MarshalJSON() ([]byte, error) {
 // [message.UnmarshalPart].
 func (p *StreamDeltaPayload) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		Type        StreamDeltaType `json:"type"`
-		Part        json.RawMessage `json:"part"`
-		Speculative bool            `json:"speculative"`
-		ForkID      string          `json:"fork_id"`
-		BranchID    string          `json:"branch_id"`
-		Reason      string          `json:"reason"`
+		Type            StreamDeltaType          `json:"type"`
+		Part            json.RawMessage          `json:"part"`
+		Speculative     bool                     `json:"speculative"`
+		ForkID          string                   `json:"fork_id"`
+		BranchID        string                   `json:"branch_id"`
+		Reason          string                   `json:"reason"`
+		FinishReason    string                   `json:"finish_reason"`
+		RequestID       string                   `json:"request_id"`
+		ResponseID      string                   `json:"response_id"`
+		ProviderOutputs []ProviderOutputEnvelope `json:"provider_outputs"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -365,6 +414,10 @@ func (p *StreamDeltaPayload) UnmarshalJSON(data []byte) error {
 	p.ForkID = wire.ForkID
 	p.BranchID = wire.BranchID
 	p.Reason = wire.Reason
+	p.FinishReason = wire.FinishReason
+	p.RequestID = wire.RequestID
+	p.ResponseID = wire.ResponseID
+	p.ProviderOutputs = wire.ProviderOutputs
 	if len(wire.Part) > 0 && string(wire.Part) != "null" {
 		part, err := message.UnmarshalPart(wire.Part)
 		if err != nil {
