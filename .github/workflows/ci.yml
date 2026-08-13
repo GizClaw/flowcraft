@@ -153,8 +153,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends bubblewrap
           bwrap --version
       - name: Test
-        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./sandbox/bwrap/...
-        working-directory: integrations
+        run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
+        working-directory: integrations/sandbox
 
   ci-pass:
     name: CI

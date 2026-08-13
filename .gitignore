@@ -21,6 +21,7 @@
 # ── Go source ──
 !go.mod
 !go.sum
+!go.work
 !core/
 !core/**
 !driver/

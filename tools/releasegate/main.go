@@ -227,6 +227,9 @@ func validateRepo(repo, base string) error {
 		if status == "A" {
 			continue
 		}
+		if status[0] == 'D' && isLegacyChangeset(path) {
+			continue
+		}
 		action := "changed"
 		switch status[0] {
 		case 'M':
@@ -241,6 +244,11 @@ func validateRepo(repo, base string) error {
 		return fmt.Errorf("changeset %s was %s; .release changesets are immutable and may only be added", path, action)
 	}
 	return nil
+}
+
+func isLegacyChangeset(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasPrefix(base, "sdk") || strings.HasPrefix(base, "sdkx")
 }
 
 func preflightRepo(repo string, write bool, stdout io.Writer) error {
