@@ -1,5 +1,7 @@
 package sandbox
 
+import corenet "github.com/GizClaw/flowcraft/core/utils/net"
+
 // Enforcement reports which policy dimensions a Runner can actually
 // enforce on the current platform, so callers and UIs never have to
 // guess from trial calls. It mirrors the workspace.Capabilities
@@ -30,12 +32,12 @@ package sandbox
 //   - DiskCap: DiskBytes is enforced. No local backend reports this
 //     today.
 //   - FilesystemBounds: writes are confined to the runner root at the
-//     OS level (Seatbelt profile, namespace mounts). LocalRunner's
+//     OS level (Seatbelt profile, namespace mounts). sandbox/local's
 //     WorkDir check is call-time validation only — once the child is
 //     running it can chdir anywhere — so it does not qualify.
 type Enforcement struct {
 	EnvAllowList     bool
-	NetModes         []NetMode
+	NetModes         []corenet.NetMode
 	Socks5           bool
 	MITM             bool
 	UnixSocketPolicy bool
@@ -48,7 +50,7 @@ type Enforcement struct {
 // GroupCapsSupported reports whether the shared process-group watcher
 // (StartGroupCapsWatcher) can enforce MemoryCap/CPUCap in this process:
 // unix, with a working ps(1). Backends that delegate resource caps to
-// that watcher — LocalRunner, backends/sandbox/seatbelt — must gate the
+// that watcher — core/sandbox/local, core/sandbox/seatbelt — must gate the
 // MemoryCap/CPUCap fields of their Enforcement on it instead of
 // hardcoding true, otherwise they advertise caps that silently never
 // fire in a restricted environment where ps cannot be executed.

@@ -19,24 +19,24 @@
 //   - Env (EnvPolicy): explicit allow-list of host environment variables
 //     plus an Inject map. Replaces "inherit the entire daemon's env" which
 //     is unsafe in a multi-tenant agent harness.
-//   - Net (NetPolicy): mode + (future) allow-list / proxy URL. LocalRunner
+//   - Net (NetPolicy): mode + (future) allow-list / proxy URL. The local
 //     only accepts NetDefault; non-default modes require a sandboxing
 //     backend (namespace-based, container-based, or microVM-based) that
 //     can actually enforce the policy at the kernel level.
 //   - Resources (ResourceLimits): CPU / memory / disk caps plus
-//     MaxOutputBytes. On unix, LocalRunner enforces group-wide memory
+//     MaxOutputBytes. On unix, sandbox/local enforces group-wide memory
 //     and cpu-time caps with a sampling watcher and kills the whole
 //     process group on overflow. DiskBytes still needs a quota-capable
 //     backend and is rejected with errdefs.NotAvailable.
 //
 // Runner.Capabilities lets callers inspect the honest policy surface
-// before execution. LocalRunner reports env + process-group resource
+// before execution. sandbox/local reports env + process-group resource
 // enforcement but not filesystem or network confinement. Concrete
 // backends backends add those OS-level boundaries:
 //
-//	                         LocalRunner  seatbelt/macOS  bubblewrap/Linux
-//	Env allow-list               yes           yes             yes
-//	Filesystem write bounds       no           yes             yes
+//	                             local     seatbelt/macOS  bubblewrap/Linux
+//	Env allow-list                yes           yes             yes
+//	Filesystem write bounds        no           yes             yes
 //	NetDenyAll                     no           yes             yes
 //	MemoryBytes                   yes           yes             yes
 //	CPUMillicores                 yes           yes             yes
@@ -68,10 +68,10 @@
 //     SessionSpec / SessionExit / event types), session_registry.go
 //   - Policy: policy.go (env / net / resource limits), enforcement.go
 //   - Sessions: session_unix.go / session_other.go
-//   - Local backend: local.go (+ local_unix.go / local_other.go)
+//   - Local backend: local/ (core/sandbox/local)
 //   - Resource watcher: watcher_unix.go / watcher_other.go
 //   - One-shot view: exec.go (Exec / ExecOptions / ExecResult)
 //   - Composition: decorator.go, approval.go, compose.go
-//   - Resource: resource.go (sandbox.Runner/local)
+//   - Resource: local/resource.go (sandbox.Runner/local)
 //   - Wire transport: transport/ (replaceable Protocol + framed client/server)
 package sandbox

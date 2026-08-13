@@ -4,7 +4,6 @@ package sandbox
 
 import (
 	"context"
-	"os/exec"
 	"time"
 )
 

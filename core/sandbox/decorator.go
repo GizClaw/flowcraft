@@ -103,7 +103,7 @@ func (r *allowCommandsRunner) Capabilities() Capabilities {
 //     network posture is sandbox-level policy.
 //   - Resources: defaults wins entirely. Caller cannot raise caps;
 //     and narrowing CPU/Mem/Disk per call is not actionable for a
-//     LocalRunner today (those fields are advisory until a real
+//     local runner today (those fields are advisory until a real
 //     isolation backend lands), so the simpler "defaults only"
 //     rule keeps the contract honest.
 //
@@ -111,7 +111,7 @@ func (r *allowCommandsRunner) Capabilities() Capabilities {
 //
 //	rn := sandbox.WithDefaults(
 //	    sandbox.AllowCommands(
-//	        sandbox.NewLocalRunner(spec.Root, sandbox.WithMaxOutputBytes(spec.MaxOutput)),
+//	        local.New(spec.Root, local.WithMaxOutputBytes(spec.MaxOutput)),
 //	        spec.AllowedCommands,
 //	    ),
 //	    sandbox.ExecOptions{
@@ -121,7 +121,7 @@ func (r *allowCommandsRunner) Capabilities() Capabilities {
 //	    },
 //	)
 //
-// The inner-to-outer ordering is: LocalRunner (actually runs the
+// The inner-to-outer ordering is: local.Runner (actually runs the
 // command) → AllowCommands (gates the command name) → WithDefaults
 // (rewrites ExecOptions). Reversing the gate vs. defaults order
 // has no semantic difference today because neither decorator
@@ -203,7 +203,7 @@ func mergeTimeout(caller, def time.Duration) time.Duration {
 // mergeEnv enforces the asymmetric Env policy: defaults owns Allow,
 // caller can layer Inject. We never clone defaults.Inject directly
 // into the returned EnvPolicy when caller.Inject is empty — the
-// LocalRunner reads the map by value, and aliasing the defaults map
+// local.Runner reads the map by value, and aliasing the defaults map
 // would let a buggy downstream mutate the shared policy.
 func mergeEnv(caller, def EnvPolicy) EnvPolicy {
 	out := EnvPolicy{Allow: def.Allow}

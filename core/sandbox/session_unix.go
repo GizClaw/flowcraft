@@ -50,7 +50,7 @@ const (
 // must apply it, as the built-in runners do).
 //
 // StartSession is the shared seam the built-in runners use so
-// seatbelt/bwrap/LocalRunner all get identical seq, resize, and
+// seatbelt/bwrap/local all get identical seq, resize, and
 // termination semantics.
 //
 // The returned Session always carries a stable ID: spec.ID when set,
@@ -130,39 +130,6 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 	}
 	go s.reap()
 	return s, nil
-}
-
-// sessionsAvailable reports whether the platform can start interactive
-// process sessions at all. It is false on non-unix platforms, where
-// Start fails with NotAvailable and LocalRunner advertises no session
-// features.
-func sessionsAvailable() bool { return true }
-
-// spawnProcess is LocalRunner's SessionStarter: it applies the same
-// policy surface as Exec and hands the configured command to the
-// shared session implementation.
-func (r *LocalRunner) spawnProcess(ctx context.Context, spec SessionSpec) (Session, error) {
-	if err := ValidateExecPolicy(spec.Opts); err != nil {
-		return nil, err
-	}
-	if spec.Opts.Net.Mode != NetDefault {
-		return nil, errdefs.NotAvailablef(
-			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
-	}
-	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
-	if err != nil {
-		return nil, err
-	}
-	maxOut := spec.Opts.Resources.MaxOutputBytes
-	if maxOut <= 0 {
-		maxOut = r.defaultMaxOutput
-	}
-	spec.Opts.Resources.MaxOutputBytes = maxOut
-
-	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
-	cmd.Dir = workDir
-	cmd.Env = buildEnv(spec.Opts.Env)
-	return StartSession(ctx, spec, cmd)
 }
 
 // localSession is the concrete unix backend session: it owns the

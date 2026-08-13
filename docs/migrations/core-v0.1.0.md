@@ -29,8 +29,8 @@ There are **no compatibility shims**.
 | `github.com/GizClaw/flowcraft/sdkx/tool/mcp` | `github.com/GizClaw/flowcraft/core/tool/mcp` |
 | `github.com/GizClaw/flowcraft/sdk/workspace` | `github.com/GizClaw/flowcraft/core/workspace` |
 | `github.com/GizClaw/flowcraft/sdk/sandbox` | `github.com/GizClaw/flowcraft/core/sandbox` |
-| `github.com/GizClaw/flowcraft/sdkx/sandbox/bwrap` | `github.com/GizClaw/flowcraft/backends/sandbox/bwrap` |
-| `github.com/GizClaw/flowcraft/sdkx/sandbox/seatbelt` | `github.com/GizClaw/flowcraft/backends/sandbox/seatbelt` |
+| `github.com/GizClaw/flowcraft/sdkx/sandbox/bwrap` | `github.com/GizClaw/flowcraft/core/sandbox/bwrap` |
+| `github.com/GizClaw/flowcraft/sdkx/sandbox/seatbelt` | `github.com/GizClaw/flowcraft/core/sandbox/seatbelt` |
 | `github.com/GizClaw/flowcraft/sdkx/agent/checkpoint/sqlite` | `github.com/GizClaw/flowcraft/backends/checkpoint` |
 | `github.com/GizClaw/flowcraft/sdkx/agent/script/jsrt` | `github.com/GizClaw/flowcraft/core/agent/scriptrt/jsrt` |
 | `github.com/GizClaw/flowcraft/sdkx/agent/script/luart` | `github.com/GizClaw/flowcraft/core/agent/scriptrt/luart` |

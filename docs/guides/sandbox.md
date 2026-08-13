@@ -34,8 +34,8 @@ resources:
 
 Platform backends are registered from integration modules:
 
-- `backends/sandbox/bwrap` for Linux namespace isolation.
-- `backends/sandbox/seatbelt` for macOS confinement.
+- `core/sandbox/bwrap` for Linux namespace isolation.
+- `core/sandbox/seatbelt` for macOS confinement.
 
 ## Policy groups
 
