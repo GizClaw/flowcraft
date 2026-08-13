@@ -2,7 +2,11 @@ package route
 
 import (
 	"context"
+	"errors"
+	"io"
+	"sync"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -113,6 +117,10 @@ func recordRoute(
 	}
 	if err != nil {
 		routeExecCount.Add(ctx, 1, metric.WithAttributes(opAttr, attribute.String("status", "error")))
+		if requestID, ok := errdefs.RequestID(err); ok {
+			span.SetAttributes(
+				attribute.String(telemetry.AttrLLMRequestID, requestID))
+		}
 		span.SetStatus(codes.Error, err.Error())
 		span.End()
 		return
@@ -136,4 +144,60 @@ func recordRoute(
 	routeExecCount.Add(ctx, 1, metric.WithAttributes(opAttr, attribute.String("status", "success")))
 	span.SetStatus(codes.Ok, "OK")
 	span.End()
+}
+
+// routeGenerateStream defers the route span close from stream-open
+// time to stream completion. The provider-issued request / response
+// identifiers ride the terminal finish event, so they are only known
+// once the stream has been drained to its result.
+type routeGenerateStream struct {
+	inner      inference.GenerateStream
+	ctx        context.Context
+	span       trace.Span
+	operation  inference.Operation
+	routeTrace Trace
+	once       sync.Once
+}
+
+func wrapRouteStream(
+	ctx context.Context,
+	span trace.Span,
+	operation inference.Operation,
+	routeTrace Trace,
+	inner inference.GenerateStream,
+) inference.GenerateStream {
+	return &routeGenerateStream{
+		inner:      inner,
+		ctx:        ctx,
+		span:       span,
+		operation:  operation,
+		routeTrace: routeTrace,
+	}
+}
+
+func (s *routeGenerateStream) finish(metadata inference.Metadata, err error) {
+	s.once.Do(func() {
+		recordRoute(s.ctx, s.span, s.operation, s.routeTrace, metadata, err)
+	})
+}
+
+func (s *routeGenerateStream) Next(ctx context.Context) (inference.GenerateStreamEvent, error) {
+	event, err := s.inner.Next(ctx)
+	if err != nil && !errors.Is(err, io.EOF) {
+		s.finish(inference.Metadata{}, err)
+	}
+	return event, err
+}
+
+func (s *routeGenerateStream) Result() (inference.GenerateResponse, error) {
+	response, err := s.inner.Result()
+	s.finish(response.Metadata, err)
+	return response, err
+}
+
+func (s *routeGenerateStream) Close() error {
+	err := s.inner.Close()
+	s.finish(inference.Metadata{}, errdefs.Validationf(
+		"inference route: stream closed before completion"))
+	return err
 }

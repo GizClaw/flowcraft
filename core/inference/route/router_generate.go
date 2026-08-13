@@ -55,12 +55,6 @@ func (r *Router) GenerateStream(
 	request inference.GenerateRequest,
 ) (stream inference.GenerateStream, routeTrace Trace, err error) {
 	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
-	defer func() {
-		recordRoute(
-			ctx, span, inference.OperationGenerate, routeTrace,
-			inference.Metadata{}, err,
-		)
-	}()
 	snapshot := request.Clone()
 	stream, routeTrace, err = openSessionWithFallback(r,
 		ctx,
@@ -81,6 +75,15 @@ func (r *Router) GenerateStream(
 			return r.target.GenerateStream(ctx, target, snapshot)
 		},
 	)
+	if err != nil {
+		recordRoute(
+			ctx, span, inference.OperationGenerate, routeTrace,
+			inference.Metadata{}, err,
+		)
+		return stream, routeTrace, err
+	}
+	stream = wrapRouteStream(
+		ctx, span, inference.OperationGenerate, routeTrace, stream)
 	return stream, routeTrace, err
 }
 
