@@ -38,6 +38,10 @@ type MockHost struct {
 
 	// checkpointErr, if non-nil, is returned from every Checkpoint.
 	checkpointErr error
+
+	// usageErr, if non-nil, is returned from every ReportUsage call
+	// (after the usage value is recorded).
+	usageErr error
 }
 
 // NewMockHost returns a ready-to-use MockHost. The interrupt channel
@@ -162,8 +166,17 @@ func (h *MockHost) Checkpoints() []agent.Checkpoint {
 func (h *MockHost) ReportUsage(_ context.Context, usage inference.Usage) error {
 	h.mu.Lock()
 	h.usages = append(h.usages, usage)
+	err := h.usageErr
 	h.mu.Unlock()
-	return nil
+	return err
+}
+
+// SetUsageError configures all subsequent ReportUsage calls to return
+// err (typically errdefs.BudgetExceeded). Pass nil to clear.
+func (h *MockHost) SetUsageError(err error) {
+	h.mu.Lock()
+	h.usageErr = err
+	h.mu.Unlock()
 }
 
 // Usages returns a copy of every usage report.

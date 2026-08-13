@@ -39,3 +39,14 @@ func (g *Graph) CanResume(cp agent.Checkpoint) error {
 	}
 	return nil
 }
+
+// SuggestCheckpoint implements [agent.CheckpointSuggester]. Graph
+// execution already stamps a checkpoint at every wave boundary, so a
+// voluntary suggestion has nothing extra to do: the next completed
+// wave persists one unconditionally. Returning nil documents that the
+// suggestion is always honoured by construction.
+func (g *Graph) SuggestCheckpoint() error { return nil }
+
+// Compile-time assertion that the graph engine exposes the optional
+// advisory checkpoint suggestion surface.
+var _ agent.CheckpointSuggester = (*Graph)(nil)

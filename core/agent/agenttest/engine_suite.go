@@ -70,6 +70,7 @@ func EngineSuite(t *testing.T, f Factory) {
 	t.Run("InterruptZeroValue", func(t *testing.T) { testInterruptZeroValue(t, f) })
 	t.Run("AttributesUntouched", func(t *testing.T) { testAttributesUntouched(t, f) })
 	t.Run("PublishErrorTolerated", func(t *testing.T) { testPublishErrorTolerated(t, f) })
+	t.Run("BudgetExceededPropagated", func(t *testing.T) { testBudgetExceeded(t, f) })
 	t.Run("ResumeForeignExecID", func(t *testing.T) { testResumeForeignExecID(t, f) })
 	t.Run("ResumeNotSupported", func(t *testing.T) { testResumeNotSupported(t, f) })
 }
@@ -117,9 +118,15 @@ func testContextCancel(t *testing.T, f Factory) {
 
 	// Engines may finish before noticing cancel (trivial engines that
 	// do no work succeed immediately); only assert the error shape
-	// when an error is present.
-	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("ctx-cancel error is not context.Canceled / DeadlineExceeded: %v", err)
+	// when an error is present. agent.Execute accepts both the raw
+	// context errors and their classified errdefs equivalents
+	// (Aborted/Timeout), so the suite accepts the same set.
+	if err != nil &&
+		!errors.Is(err, context.Canceled) &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!errdefs.IsAborted(err) &&
+		!errdefs.IsTimeout(err) {
+		t.Errorf("ctx-cancel error is not context.Canceled / DeadlineExceeded (or their classified equivalents): %v", err)
 	}
 	if got == nil {
 		t.Error("ctx-cancel returned nil board; partial board must still be returned")
@@ -226,6 +233,11 @@ func testAttributesUntouched(t *testing.T, f Factory) {
 // testPublishErrorTolerated verifies that a Publisher returning an
 // error does not cause the engine to fail the run. Publish errors are
 // observability concerns, never control flow per [agent.Publisher].
+//
+// The one documented exception is the mandatory run-end envelope
+// ([agent.SubjectRunEnd]): engines that treat it as a delivery
+// barrier may surface [agent.RunEndPublishError]. Every other
+// mid-run publish failure must be swallowed.
 func testPublishErrorTolerated(t *testing.T, f Factory) {
 	t.Helper()
 	eng, _ := f()
@@ -237,9 +249,46 @@ func testPublishErrorTolerated(t *testing.T, f Factory) {
 	run := agent.Run{Identity: agent.Identity{RunID: "run-pub-err"}}
 
 	_, err := eng.Execute(context.Background(), run, host, board)
-	if err != nil {
+	var runEndErr *agent.RunEndPublishError
+	if err != nil && !errors.As(err, &runEndErr) {
 		t.Fatalf("Execute failed because Publish returned error; "+
-			"publish errors must not propagate: %v", err)
+			"publish errors must not propagate (except the run-end barrier): %v", err)
+	}
+}
+
+// testBudgetExceeded verifies the [agent.UsageReporter] budget
+// contract on the engine side: when ReportUsage returns a
+// budget-exceeded error, the engine MUST stop performing further
+// LLM-cost-incurring work and return the error from Execute.
+//
+// Engines that never call ReportUsage cannot observe the signal, so
+// the subtest skips when no usage was reported.
+func testBudgetExceeded(t *testing.T, f Factory) {
+	t.Helper()
+	eng, _ := f()
+
+	host := NewMockHost()
+	host.SetUsageError(errdefs.BudgetExceededf("simulated budget exhaustion"))
+
+	board := agent.NewBoard()
+	run := agent.Run{Identity: agent.Identity{RunID: "run-budget"}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	got, err := eng.Execute(ctx, run, host, board)
+	if got == nil {
+		t.Error("budget-exceeded run returned nil board; partial board must still be returned")
+	}
+
+	if len(host.Usages()) == 0 {
+		t.Skip("engine never reported usage; the budget signal cannot be observed by this engine")
+	}
+	if err == nil {
+		t.Fatal("engine observed a BudgetExceeded usage error but completed cleanly; it must stop LLM-cost-incurring work and return the error")
+	}
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("budget-exceeded error must satisfy errdefs.IsBudgetExceeded; got %v", err)
 	}
 }
 

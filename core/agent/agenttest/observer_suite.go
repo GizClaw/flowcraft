@@ -13,9 +13,9 @@ import (
 // ObserverFactory builds a fresh [agent.Observer] for each subtest.
 type ObserverFactory func() agent.Observer
 
-// HookCapabilities lets observers opt out of subtests that
+// ObserverCapabilities lets observers opt out of subtests that
 // don't apply. Most observers pass the zero value.
-type HookCapabilities struct {
+type ObserverCapabilities struct {
 	// SkipMutationCheck is true for observers that intentionally
 	// mutate the *Request / *Result they receive. The interface
 	// godoc says "MUST treat as read-only"; this knob exists only
@@ -32,9 +32,9 @@ type HookCapabilities struct {
 
 // ObserverSuite runs every applicable contract subtest against
 // observers produced by f.
-func ObserverSuite(t *testing.T, f ObserverFactory, caps ...HookCapabilities) {
+func ObserverSuite(t *testing.T, f ObserverFactory, caps ...ObserverCapabilities) {
 	t.Helper()
-	c := HookCapabilities{}
+	c := ObserverCapabilities{}
 	if len(caps) > 0 {
 		c = caps[0]
 	}

@@ -1,25 +1,3 @@
-// Package agenttest provides reusable contract-test machinery for
-// the interfaces declared in core/agent — [agent.Referee] and
-// [agent.Observer] today, more if the agent package grows.
-//
-// Modeled on the stdlib xxxtest layout: ONE xxxtest sub-package
-// per parent package, multiple suites within when the parent
-// declares multiple contractual interfaces. See io/iotest,
-// net/http/httptest, gocloud.dev/blob/drivertest for the same
-// pattern in the wider Go ecosystem.
-//
-// # What lives here
-//
-//   - [RefereeSuite] — the contract every [agent.Referee]
-//     implementation should pass.
-//   - [ObserverSuite] — the contract every [agent.Observer]
-//     implementation should pass.
-//
-// # What does NOT live here
-//
-// Referee / Observer business logic — those are per-implementation
-// unit tests. The suites only enforce "agent.Execute can call you
-// safely without crashing the run".
 package agenttest
 
 import (

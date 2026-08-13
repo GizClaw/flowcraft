@@ -1,6 +1,9 @@
 // Package agenttest provides reusable contract-test machinery for
 // the interfaces declared in core/agent — [agent.Engine], [agent.Host],
-// [agent.Observer] and [agent.Referee] today.
+// [agent.Observer], [agent.Referee], [agent.CheckpointStore],
+// [agent.Resumer], [agent.StreamSink], [agent.Preparer],
+// [agent.Committer], [agent.CommitViewProvider],
+// [agent.CheckpointSuggester] and [agent.ScriptRuntime].
 //
 // Modeled on net/http/httptest, testing/iotest, and
 // gocloud.dev/blob/drivertest: a single sibling package next to its
@@ -34,11 +37,44 @@
 //   - [RefereeSuite] — the standard contract every
 //     [agent.Referee] implementation should pass.
 //
+//   - [CheckpointStoreSuite] — the shared conformance suite every
+//     [agent.CheckpointStore] implementation should pass, including
+//     the optional [agent.CheckpointLister] / [agent.CheckpointDeleter]
+//     extensions.
+//
+//   - [ResumerSuite] — the contract every [agent.Resumer]
+//     implementation should pass (cheap, classified, mutation-free,
+//     concurrent-safe).
+//
+//   - [StreamSinkSuite] — the contract every [agent.StreamSink]
+//     implementation should pass (panic-free, ctx-observing,
+//     concurrent-safe).
+//
+//   - [PreparerSuite] — the contract every [agent.Preparer]
+//     implementation should pass (non-nil fresh boards, no input
+//     mutation, ctx-observing).
+//
+//   - [CommitterSuite] — the contract every [agent.Committer]
+//     implementation should pass (no input mutation, ctx-observing).
+//
+//   - [CommitViewProviderSuite] — the contract every
+//     [agent.CommitViewProvider] implementation should pass (non-nil
+//     projected board, no input mutation, ctx-observing).
+//
+//   - [CheckpointSuggesterSuite] — the contract every
+//     [agent.CheckpointSuggester] implementation should pass
+//     (panic-free, prompt return).
+//
+//   - [ScriptRuntimeSuite] — the contract every [agent.ScriptRuntime]
+//     implementation should pass (panic-free, executes a caller-supplied
+//     minimal fixture, concurrent-safe).
+//
 //   - [MockHost] — a minimal Host implementation that records every
-//     interaction, lets tests inject interrupts / user replies, and
-//     exposes the captured envelopes / usage / checkpoints for
-//     assertion. Engines may use it directly in their own tests
-//     instead of re-implementing the full Host surface.
+//     interaction, lets tests inject interrupts / user replies /
+//     publish-checkpoint-usage errors, and exposes the captured
+//     envelopes / usage / checkpoints for assertion. Engines may use
+//     it directly in their own tests instead of re-implementing the
+//     full Host surface.
 //
 // # What does NOT live here
 //
