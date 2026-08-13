@@ -217,11 +217,16 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	// Single subscription to the whole run namespace: `>` matches both
 	// the run lifecycle events (run-end delimits attempts) and the
 	// stream deltas. Two subscriptions would deliver every stream delta
-	// twice.
+	// twice. The coordinator must observe every event and delta in
+	// order; a dropping subscription could lose run-end delimiters or
+	// confirmed deltas, so it explicitly blocks instead of using the
+	// bus default (external Runtime.Attach consumers keep the
+	// non-blocking default).
 	detach, attachErr := s.router.Attach(
 		context.Background(),
 		agent.PatternRun(runID),
 		coordinator,
+		event.WithAttachBackpressure(event.Block),
 	)
 	if attachErr != nil {
 		for _, attachment := range attachments {

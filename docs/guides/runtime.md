@@ -27,6 +27,25 @@ defer app.Close()
 
 `Runtime` owns its `deploy.Result`, event router, and session manager.
 
+## Subscribing to runtime events
+
+`Runtime.Attach` subscribes a sink to the runtime's event router
+without resolving the deployment document's `event_bus` resource:
+
+```go
+detach, err := app.Attach(ctx, session.PatternPromptRequested(), sink)
+if err != nil {
+    return err
+}
+defer detach()
+```
+
+Attachments are torn down when the Runtime closes, and `Attach` fails
+with `NotAvailable` afterwards. External attachments inherit the bus
+default backpressure (`DropNewest`); pass
+`event.WithAttachBackpressure` to override per subscription. See
+[prompt.md](prompt.md) for the prompt lifecycle events.
+
 ## Runtime config
 
 ```yaml

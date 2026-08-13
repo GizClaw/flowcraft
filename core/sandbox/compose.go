@@ -5,12 +5,15 @@ package sandbox
 //
 //   - AllowedCommands nil means no command-name gate is installed.
 //     A non-nil empty slice installs a gate that blocks every command.
+//   - Allowlist nil means no command is pre-approved; a non-nil list
+//     skips the approver for matching calls.
 //   - Predicates nil means no approval tripwire is installed.
 //   - Approval may be nil; if a predicate matches, WithApproval then
 //     fails closed with PolicyDenied.
 type LocalPolicy struct {
 	Defaults        ExecOptions
 	AllowedCommands []string
+	Allowlist       *Allowlist
 	Approval        ApprovalFunc
 	Predicates      []Predicate
 }
@@ -46,7 +49,7 @@ func DefaultLocalPolicy(root string, approval ApprovalFunc, sensitiveCommands ..
 //
 //	WithDefaults(
 //	    WithApproval(
-//	        AllowCommands(backend),
+//	        AllowCommands(backend), allowlist,
 //	    ),
 //	)
 //
@@ -55,7 +58,9 @@ func DefaultLocalPolicy(root string, approval ApprovalFunc, sensitiveCommands ..
 // WithApproval inspects the call, so the approver sees the effective
 // Env / Net / Resources posture rather than the caller's raw request.
 // AllowCommands sits closest to the backend and remains an independent
-// hard gate: approval cannot bypass a command allow-list.
+// hard gate: approval cannot bypass a command allow-list. The
+// Allowlist pre-approves in-bounds commands so the human approver is
+// only consulted for the rest.
 //
 // ComposeLocal adds no writable paths and never modifies backend
 // enforcement. Seatbelt callers should use seatbelt.WithWritablePaths
@@ -68,10 +73,11 @@ func ComposeLocal(backend Runner, policy LocalPolicy) Runner {
 	if policy.AllowedCommands != nil {
 		runner = AllowCommands(runner, policy.AllowedCommands)
 	}
-	if len(policy.Predicates) > 0 {
+	if policy.Allowlist != nil || len(policy.Predicates) > 0 {
 		runner = WithApproval(
 			runner,
 			policy.Approval,
+			policy.Allowlist,
 			policy.Predicates...,
 		)
 	}

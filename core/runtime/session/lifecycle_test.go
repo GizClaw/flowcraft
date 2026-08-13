@@ -509,3 +509,199 @@ func TestHostFactoryNilAndErrorPreventExecution(t *testing.T) {
 		t.Fatalf("engine executions = %d, want 0", executions.Load())
 	}
 }
+
+type capturedPromptEvent struct {
+	kind     string // "requested" or "resolved"
+	promptID string
+	status   PromptStatus
+}
+
+func capturePromptLifecycle(sub event.Subscription) chan capturedPromptEvent {
+	events := make(chan capturedPromptEvent, 32)
+	go func() {
+		for env := range sub.C() {
+			switch env.Subject {
+			case SubjectPromptRequested(env.RunID()):
+				var req PromptRequested
+				if env.Decode(&req) == nil {
+					events <- capturedPromptEvent{kind: "requested", promptID: req.PromptID}
+				}
+			case SubjectPromptResolved(env.RunID()):
+				var res PromptResolved
+				if env.Decode(&res) == nil {
+					events <- capturedPromptEvent{
+						kind:     "resolved",
+						promptID: res.PromptID,
+						status:   res.Status,
+					}
+				}
+			}
+		}
+	}()
+	return events
+}
+
+func waitForPromptEvent(t *testing.T, events chan capturedPromptEvent, want capturedPromptEvent) {
+	t.Helper()
+	timeout := time.After(3 * time.Second)
+	for {
+		select {
+		case got := <-events:
+			if got == want {
+				return
+			}
+		case <-timeout:
+			t.Fatalf("timed out waiting for prompt event %+v", want)
+		}
+	}
+}
+
+func waitForAnyPromptEvent(t *testing.T, events chan capturedPromptEvent) capturedPromptEvent {
+	t.Helper()
+	select {
+	case got := <-events:
+		return got
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the first prompt event")
+		return capturedPromptEvent{}
+	}
+}
+
+func TestPromptResolutionEvents(t *testing.T) {
+	t.Run("replied", func(t *testing.T) {
+		engine := agent.EngineFunc(func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+			reply, err := host.AskUser(ctx, agent.UserPrompt{Source: "replied"})
+			if err != nil {
+				return board, err
+			}
+			if len(reply.Parts) == 0 {
+				return board, errors.New("AskUser reply missing parts")
+			}
+			return board, nil
+		})
+		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
+		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
+		defer func() { _ = sub.Close() }()
+		events := capturePromptLifecycle(sub)
+		turn, err := session.Start(context.Background(), agent.Request{
+			Message: message.NewTextMessage(message.RoleUser, "hi"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := waitForAnyPromptEvent(t, events)
+		if req.kind != "requested" {
+			t.Fatalf("first prompt event = %+v, want requested", req)
+		}
+		if err := turn.Reply(context.Background(), req.promptID, agent.UserReply{
+			Parts: []message.Part{message.TextPart{Text: "ok"}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		waitForPromptEvent(t, events, capturedPromptEvent{
+			kind:     "resolved",
+			promptID: req.promptID,
+			status:   PromptReplied,
+		})
+		if _, err := turn.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("expired", func(t *testing.T) {
+		engine := agent.EngineFunc(func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+			promptCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+			defer cancel()
+			_, err := host.AskUser(promptCtx, agent.UserPrompt{Source: "expired"})
+			return board, err
+		})
+		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
+		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
+		defer func() { _ = sub.Close() }()
+		events := capturePromptLifecycle(sub)
+		turn, err := session.Start(context.Background(), agent.Request{
+			Message: message.NewTextMessage(message.RoleUser, "hi"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := waitForAnyPromptEvent(t, events)
+		if _, err := turn.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		waitForPromptEvent(t, events, capturedPromptEvent{
+			kind:     "resolved",
+			promptID: req.promptID,
+			status:   PromptExpired,
+		})
+	})
+
+	t.Run("interrupted", func(t *testing.T) {
+		engine := agent.EngineFunc(func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+			_, err := host.AskUser(ctx, agent.UserPrompt{Source: "interrupted"})
+			return board, err
+		})
+		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
+		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
+		defer func() { _ = sub.Close() }()
+		events := capturePromptLifecycle(sub)
+		turn, err := session.Start(context.Background(), agent.Request{
+			Message: message.NewTextMessage(message.RoleUser, "hi"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := waitForAnyPromptEvent(t, events)
+		if err := turn.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := turn.Wait(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Status != agent.StatusInterrupted {
+			t.Fatalf("status = %q, want interrupted", result.Status)
+		}
+		waitForPromptEvent(t, events, capturedPromptEvent{
+			kind:     "resolved",
+			promptID: req.promptID,
+			status:   PromptInterrupted,
+		})
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		askDone := make(chan error, 1)
+		release := make(chan struct{})
+		engine := agent.EngineFunc(func(ctx context.Context, _ agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+			go func() {
+				_, err := host.AskUser(ctx, agent.UserPrompt{Source: "closed"})
+				askDone <- err
+			}()
+			<-release
+			return board, nil
+		})
+		_, session, _, bus := newTurnSession(t, engine, turnHostFactory)
+		sub, _ := bus.Subscribe(context.Background(), agent.PatternAllRuns())
+		defer func() { _ = sub.Close() }()
+		events := capturePromptLifecycle(sub)
+		turn, err := session.Start(context.Background(), agent.Request{
+			Message: message.NewTextMessage(message.RoleUser, "hi"),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := waitForAnyPromptEvent(t, events)
+		close(release)
+		if _, err := turn.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		waitForPromptEvent(t, events, capturedPromptEvent{
+			kind:     "resolved",
+			promptID: req.promptID,
+			status:   PromptClosed,
+		})
+		if err := <-askDone; !errors.Is(err, ErrPromptClosed) {
+			t.Fatalf("AskUser error = %v, want closed", err)
+		}
+	})
+}
