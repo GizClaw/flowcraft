@@ -22,20 +22,5 @@ _No pending changes._
 
 ### Changed
 
-- Introduced the `core` platform module (`github.com/GizClaw/flowcraft/core`)
-  containing agent, message, errdefs, resource, deploy, runtime, session,
-  event, graph, inference, memory contracts, tool, telemetry, workspace, and
-  sandbox packages.
-- Moved provider adapters to per-provider `driver/*` modules and
-  platform-specific sandbox/object-store/SQLite implementations to
-  `integrations/*`.
-- `deploy` now builds resources through `core/resource.Factory` and wires
-  agents/hooks after resource construction.
-- `runtime` now owns `core/runtime` and `core/runtime/session`.
+- Introduce core as the single platform module by folding sdk and sdkx contracts, deploy/runtime assembly, built-in resources, and tooltest support into core
 
-### Removed
-
-- Active `sdk` and `sdkx` documentation and examples were replaced by the
-  `core`/`driver`/`integrations` layout with no compatibility shims.
-
-Historical `sdk` / `sdkx` / `memory` release notes are archived in [CHANGELOG.legacy.md](CHANGELOG.legacy.md).
