@@ -107,15 +107,18 @@ func TestPlanTreatsChangesetInLatestTagAsConsumed(t *testing.T) {
 	}
 }
 
-func TestPlanRejectsMissingSeedTag(t *testing.T) {
+func TestPlanInitialReleaseWithoutSeedTag(t *testing.T) {
 	repo := initRepo(t)
 	seedModule(t, repo, "core", "")
 	writeFile(t, repo, ".release/change.json", validChangeset("change", "core", "patch"))
 	commitAll(t, repo, "change")
 
-	_, err := buildPlan(repo)
-	if err == nil || !strings.Contains(err.Error(), "seed tag") {
-		t.Fatalf("buildPlan() error = %v, want seed tag error", err)
+	got, err := buildPlan(repo)
+	if err != nil {
+		t.Fatalf("buildPlan() error = %v", err)
+	}
+	if len(got.Modules) != 1 || got.Modules[0].Current != "0.0.0" || got.Modules[0].Next != "0.0.1" {
+		t.Fatalf("plan = %#v, want initial patch release from 0.0.0", got.Modules)
 	}
 }
 

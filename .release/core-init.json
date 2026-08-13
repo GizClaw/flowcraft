@@ -1,0 +1,9 @@
+{
+  "summary": "Introduce core as the single platform module by folding sdk and sdkx contracts, deploy/runtime assembly, built-in resources, and tooltest support into core",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "minor"
+    }
+  ]
+}

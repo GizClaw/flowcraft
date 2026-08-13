@@ -600,13 +600,19 @@ func buildPlan(repo string) (Plan, error) {
 			if !ok {
 				tag, err = latestModuleTag(repo, release.Module)
 				if err != nil {
-					return empty, err
+					if !strings.Contains(err.Error(), "no seed tag") {
+						return empty, err
+					}
+					tag = tagVersion{}
 				}
 				latest[release.Module] = tag
 			}
-			consumed, err := tagContainsPath(repo, tag.tag, changeset.file)
-			if err != nil {
-				return empty, err
+			consumed := false
+			if tag.tag != "" {
+				consumed, err = tagContainsPath(repo, tag.tag, changeset.file)
+				if err != nil {
+					return empty, err
+				}
 			}
 			if consumed {
 				continue
@@ -627,9 +633,12 @@ func buildPlan(repo string) (Plan, error) {
 			continue
 		}
 		tag := latest[module]
-		changed, err := moduleChangedSince(repo, tag.tag, module)
-		if err != nil {
-			return empty, err
+		changed := true
+		if tag.tag != "" {
+			changed, err = moduleChangedSince(repo, tag.tag, module)
+			if err != nil {
+				return empty, err
+			}
 		}
 		if !changed {
 			return empty, fmt.Errorf("module %s has pending changesets but no changes since %s", module, tag.tag)
