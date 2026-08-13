@@ -1,7 +1,7 @@
 // Package azure provides the Azure OpenAI inference provider.
 //
 // The provider serves the operation surfaces Azure OpenAI shares with the
-// OpenAI wire protocol, bound through the driver/openai kernel helpers:
+// OpenAI wire protocol through a self-hosted kernel:
 //
 //   - Generate: Responses API over chat deployments, unary + SSE stream.
 //   - Embed: embeddings deployments.

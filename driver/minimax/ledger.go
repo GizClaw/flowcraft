@@ -38,6 +38,18 @@ func (l *ledger) reject(field inference.FieldID, reason string) {
 	}
 }
 
+// drop records an intentional discard that keeps the compile successful.
+// Rejection wins when both land on one field: a failed compile reports the
+// rejection.
+func (l *ledger) drop(field inference.FieldID, reason string) {
+	if _, rejected := l.rejected[field]; rejected {
+		return
+	}
+	if _, exists := l.dropped[field]; !exists {
+		l.dropped[field] = reason
+	}
+}
+
 // report renders the compile report: every active field carries exactly one
 // disposition — Rejected, then Dropped, otherwise Native.
 func (l *ledger) report() inference.CompileReport {

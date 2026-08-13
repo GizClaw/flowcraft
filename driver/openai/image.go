@@ -283,5 +283,13 @@ func openImage(
 	id inference.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
-	return KernelImage(cls.api, id.Name)
+	unary, err := inference.BindGenerate(
+		compileImage(id.Name),
+		transportImage(cls.api),
+		decodeImage,
+	)
+	if err != nil {
+		return inference.GenerateOperations{}, err
+	}
+	return inference.GenerateOperations{Unary: unary}, nil
 }

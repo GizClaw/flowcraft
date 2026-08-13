@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/core v0.1.0
-	github.com/GizClaw/flowcraft/driver/anthropic v0.1.0
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 )
 

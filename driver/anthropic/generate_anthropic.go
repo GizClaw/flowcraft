@@ -19,7 +19,7 @@ import (
 // The reasoning dialect translates here — it selects which params field
 // carries the control, a transport-boundary concern the compiler stays
 // out of.
-func wireToParams(wire generateWire, control ReasoningControl) anthropicgo.MessageNewParams {
+func wireToParams(wire generateWire) anthropicgo.MessageNewParams {
 	params := anthropicgo.MessageNewParams{
 		Model:     anthropicgo.Model(wire.model),
 		MaxTokens: wire.maxTokens,
@@ -49,12 +49,11 @@ func wireToParams(wire generateWire, control ReasoningControl) anthropicgo.Messa
 		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
 			OfDisabled: &anthropicgo.ThinkingConfigDisabledParam{},
 		}
-	case wire.effort != "" && control == ReasoningControlEffort:
+	case wire.effort != "":
+		// Anthropic serves the effort dialect: reasoning levels map to
+		// output_config.effort.
 		params.OutputConfig.Effort = anthropicgo.OutputConfigEffort(wire.effort)
-	case wire.effort != "" || (wire.thinking != nil && *wire.thinking):
-		// Adaptive covers both the binary-thinking dialect (any effort
-		// turned into wire.thinking by the compiler) and an explicit
-		// reasoning switch with no level.
+	case wire.thinking != nil && *wire.thinking:
 		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
 			OfAdaptive: &anthropicgo.ThinkingConfigAdaptiveParam{},
 		}
@@ -175,10 +174,9 @@ func toolChoiceParam(choice wireToolChoice) anthropicgo.ToolChoiceUnionParam {
 
 func transportGenerate(
 	client anthropicgo.Client,
-	control ReasoningControl,
 ) inference.Transport[generateWire, generateRaw] {
 	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
-		message, err := client.Messages.New(ctx, wireToParams(wire, control))
+		message, err := client.Messages.New(ctx, wireToParams(wire))
 		if err != nil {
 			return generateRaw{}, classifyError(err)
 		}

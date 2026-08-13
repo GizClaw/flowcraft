@@ -11,6 +11,9 @@ use (
 	./driver/kimi
 	./driver/bytedance
 	./examples/forge
+	./integrations/objstore
+	./integrations/sandbox
+	./integrations/sqlite
 	./memory
 	./memory/eval
 	./sdk

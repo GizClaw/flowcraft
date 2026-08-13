@@ -7,7 +7,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
-	"github.com/GizClaw/flowcraft/driver/openai"
 )
 
 // ResourceKind is the deployment resource kind implemented by the Azure
@@ -97,7 +96,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 }
 
 // openersFor binds one deployment to the operation openers its kind serves,
-// reusing the openai kernel drivers with the profile's Azure client.
+// through the self-hosted kernel drivers with the profile's Azure client.
 func openersFor(
 	spec Spec,
 	model ModelSpec,
@@ -115,13 +114,8 @@ func openersFor(
 		}
 		return material.newClients(spec), nil
 	}
-	caps := openai.Capabilities{
-		Vision:     model.Vision,
-		Reasoning:  model.Reasoning,
-		WebSearch:  model.WebSearch,
-		Dimensions: model.Dimensions,
-	}
-	switch modelKind(model.Kind) {
+	entry := entryFor(model)
+	switch entry.kind {
 	case kindGenerate:
 		return inference.Openers{
 			Generate: func(
@@ -132,7 +126,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openai.KernelGenerate(cls.api, id.Name, caps)
+				return openGenerate(cls, entry, id, ref.Profile)
 			},
 		}
 	case kindEmbed:
@@ -145,7 +139,7 @@ func openersFor(
 				if err != nil {
 					return nil, err
 				}
-				return openai.KernelEmbed(cls.api, id.Name, caps)
+				return openEmbed(cls, entry, id, ref.Profile)
 			},
 		}
 	case kindImage:
@@ -158,7 +152,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openai.KernelImage(cls.api, id.Name)
+				return openImage(cls, id, ref.Profile)
 			},
 		}
 	case kindTTS:
@@ -171,7 +165,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openai.KernelTTS(cls.api, id.Name)
+				return openTTS(cls, id, ref.Profile)
 			},
 		}
 	}

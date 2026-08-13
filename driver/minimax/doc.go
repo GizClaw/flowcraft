@@ -7,14 +7,12 @@
 // (https://api.minimaxi.com/anthropic for China,
 // https://api.minimax.io/anthropic internationally). Its thinking blocks
 // carry verification signatures that must round-trip verbatim — exactly
-// the anthropic driver's reasoning policy — so the generate pipeline binds
-// through the anthropic kernel (sdkx/inference/anthropic) rather than
-// forking a driver. The provider's OpenAI-compatible surface is
-// deliberately not used: there, thinking round-trips as free-form
-// reasoning_details with no signature verification, a strictly weaker
-// contract. Error classification inside the bound drivers is the
-// anthropic package's, so transport failures carry its "anthropic:"
-// message prefix.
+// the Messages protocol's reasoning policy — so the generate pipeline
+// hosts its own copy of the Messages kernel (compiler, transports, and
+// decoders) rather than importing another provider driver. The provider's
+// OpenAI-compatible surface is deliberately not used: there, thinking
+// round-trips as free-form reasoning_details with no signature
+// verification, a strictly weaker contract.
 //
 // The OpenAI-compatible surfaces (Chat Completions and Responses) were
 // evaluated and rejected: their reasoning round-trips are free-form text
@@ -66,9 +64,9 @@
 //     by default.
 //   - Thinking blocks decode into canonical reasoning parts with their
 //     signature; assistant turns hoist them first when context compiles
-//     back, and unsigned reasoning drops — the kernel's policy, which
-//     matches MiniMax's requirement to preserve thinking blocks
-//     unchanged across tool-use turns.
+//     back, and unsigned reasoning drops — the self-hosted kernel's
+//     policy, which matches MiniMax's requirement to preserve thinking
+//     blocks unchanged across tool-use turns.
 //   - Image input compiles for MiniMax-M3 (URL or base64) and rejects on
 //     the text-only M2.x series. Video input has no wire support in the
 //     kernel and rejects everywhere for now.

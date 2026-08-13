@@ -4,10 +4,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 )
 
-// openGenerate binds the generate pipeline for one catalog model through
-// the kernel: the openai provider is the kernel's first consumer, and
-// sibling providers (Azure OpenAI) bind the same drivers with their own
-// clients and capability declarations.
+// openGenerate binds the generate pipeline (unary + stream) for one
+// catalog model. The provider owns its kernel: the compile/transport/decode
+// stages live in this package, and openGenerate wires them for the model's
+// API mode (Responses by default, Chat Completions when spec.api is chat).
 func openGenerate(
 	cls *clients,
 	entry catalogEntry,
@@ -15,14 +15,19 @@ func openGenerate(
 	_ string,
 ) (inference.GenerateOperations, error) {
 	if entry.api == apiChat {
-		return KernelChatGenerate(cls.api, id.Name, Capabilities{
-			Vision:    entry.vision,
-			Reasoning: entry.reasoning,
-		})
+		return inference.BindGenerateOperations(
+			compileGenerate(id.Name, entry),
+			transportChatGenerate(cls.api),
+			decodeGenerate,
+			transportChatGenerateStream(cls.api),
+			decodeChatGenerateStream,
+		)
 	}
-	return KernelGenerate(cls.api, id.Name, Capabilities{
-		Vision:    entry.vision,
-		Reasoning: entry.reasoning,
-		WebSearch: entry.webSearch,
-	})
+	return inference.BindGenerateOperations(
+		compileGenerate(id.Name, entry),
+		transportGenerate(cls.api),
+		decodeGenerate,
+		transportGenerateStream(cls.api),
+		decodeGenerateStream,
+	)
 }

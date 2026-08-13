@@ -180,7 +180,9 @@ func openEmbed(
 	id inference.ModelID,
 	_ string,
 ) (inference.EmbedDriver, error) {
-	return KernelEmbed(cls.api, id.Name, Capabilities{
-		Dimensions: entry.dimensions,
-	})
+	return inference.BindEmbed(
+		compileEmbed(id.Name, entry),
+		transportEmbed(cls.api),
+		decodeEmbed,
+	)
 }

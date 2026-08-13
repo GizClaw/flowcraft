@@ -384,5 +384,11 @@ func openTTS(
 	id inference.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
-	return KernelTTS(cls.api, id.Name)
+	return inference.BindGenerateOperations(
+		compileTTS(id.Name),
+		transportTTS(cls.api),
+		decodeTTS,
+		transportTTSStream(cls.api),
+		decodeTTSStream,
+	)
 }
