@@ -1,9 +1,0 @@
-{
-  "summary": "Breaking cleanup: remove v0.4.x deprecated surfaces and land the unified runtime (engine into agent, llm/embedding/model into inference+message), the config.Factory/Source/Loader build protocol, and bubblewrap sandbox with network enforcement",
-  "releases": [
-    {
-      "module": "sdk",
-      "bump": "minor"
-    }
-  ]
-}

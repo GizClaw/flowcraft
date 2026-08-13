@@ -9,17 +9,40 @@ Release PR before their tags are published.
 
 ## Current Published State
 
-| Module   | Latest tag      | Notes                                                                                     |
-| -------- | --------------- | ----------------------------------------------------------------------------------------- |
-| `sdk`    | `sdk/v0.5.5`    | Core agent, engine, graph, LLM, tool, workspace, event, and telemetry primitives.         |
-| `memory` | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
-| `sdkx`   | `sdkx/v0.5.7`  | Provider/adaptor release pinned to `sdk v0.4.8` and `memory v0.1.7`.                      |
+| Module           | Latest tag      | Notes                                                                                     |
+| ---------------- | --------------- | ----------------------------------------------------------------------------------------- |
+| `core`           | `core/v0.1.0`   | Unified platform module: contracts, deploy, runtime, and built-in resources.              |
+| `driver/openai`  | `driver/openai/v0.1.0`  | OpenAI provider adapter.                                                        |
+| `driver/deepseek`| `driver/deepseek/v0.1.0` | DeepSeek provider adapter.                                                     |
+| `driver/*`       | `driver/<name>/v0.1.0`  | Remaining provider adapters (`azure`, `anthropic`, `minimax`, `qwen`, `kimi`, `bytedance`). |
+| `integrations/*` | `integrations/<name>/v0.1.0` | Object-store, sandbox, and SQLite integrations.                                |
+| `memory`         | `memory/v0.1.7` | Standalone memory-domain module: recall, history, knowledge, retrieval, text, and stores. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.0` - 2026-08-13
+
+### Changed
+
+- Introduced the `core` platform module (`github.com/GizClaw/flowcraft/core`)
+  containing agent, message, errdefs, resource, deploy, runtime, session,
+  event, graph, inference, memory contracts, tool, telemetry, workspace, and
+  sandbox packages.
+- Moved provider adapters to per-provider `driver/*` modules and
+  platform-specific sandbox/object-store/SQLite implementations to
+  `integrations/*`.
+- `deploy` now builds resources through `core/resource.Factory` and wires
+  agents/hooks after resource construction.
+- `runtime` now owns `core/runtime` and `core/runtime/session`.
+
+### Removed
+
+- Active `sdk` and `sdkx` documentation and examples were replaced by the
+  `core`/`driver`/`integrations` layout with no compatibility shims.
 
 ## `sdk/v0.5.5` - 2026-08-11
 

@@ -4,20 +4,11 @@ title: Sandbox
 ---
 # Sandbox Guide
 
-`sdk/sandbox` is the agent's execution boundary: where commands run,
-what they can reach (network), what they can see (env), how much they
-can consume (resources). Sandbox is **daemon-level shared policy**;
-per-run state lives in [`sdk/workspace`](workspace.md).
+`core/sandbox` is the command execution boundary. It defines `Runner`,
+`ExecOptions`, session support, and policy validation. Concrete backends are
+selected by deployment configuration.
 
-The split is deliberate: **sandbox is policy**, **workspace is state**.
-A sandbox executes commands under a fixed policy; a workspace holds
-the data those commands read and write. Scripts in a graph bind a
-sandbox for command execution and a workspace for filesystem
-operations — they are not interchangeable.
-
-## Concepts
-
-### The Runner interface
+## Runner interface
 
 ```go
 type Runner interface {
@@ -25,405 +16,34 @@ type Runner interface {
 }
 ```
 
-One method. Concrete runners differ in **where** the work happens
-(local process, bubblewrap namespace, seatbelt/macOS, container,
-microVM) but share the same `ExecOptions` surface so a caller can be
-retargeted between backends without changing call sites.
+Backends must reject any policy they cannot enforce rather than silently
+downgrade.
 
-Implementations MUST:
+## Deployment resource
 
-- Honour `ExecOptions.Timeout`.
-- Surface non-zero exits as `ExitCode` on `ExecResult` (return
-  `err == nil` for that case).
-- Reject any policy they cannot enforce with `errdefs.NotAvailable`
-  rather than silently downgrading the request.
-
-### Policy groups
-
-`ExecOptions` carries three policy groups beyond the obvious
-`WorkDir` / `Stdin` / `Timeout` knobs:
-
-| Group       | Type             | What it controls                               |
-| ----------- | ---------------- | ---------------------------------------------- |
-| `Env`       | `EnvPolicy`      | allow-list of host env vars + `Inject` map     |
-| `Net`       | `NetPolicy`      | mode (default, deny, allow via proxy — future) |
-| `Resources` | `ResourceLimits` | CPU / memory / disk caps + `MaxOutputBytes`    |
-
-`EnvPolicy.Allow` replaces the historical "inherit everything"
-behaviour: when `Allow` is nil, behaviour is the legacy "inherit";
-when it is non-nil, only listed variables pass through plus the
-`Inject` map. This is the recommended posture for any multi-tenant
-agent harness.
-
-`NetPolicy.Mode` is enforced at the runner level. `LocalRunner`
-only accepts `NetDefault`; non-default modes require a sandboxing
-backend (namespace-based, container-based, or microVM-based) that
-can actually enforce the policy at the kernel level. Trying to set
-`Net: NetDenyAll` on a `LocalRunner` returns `errdefs.NotAvailable` at
-`Exec` time, not a silent downgrade.
-
-`ResourceLimits` covers `MemoryBytes`, `CPUMillicores`,
-`DiskBytes`, and `MaxOutputBytes`. On unix, `LocalRunner` enforces
-group-wide memory and CPU-time caps with a sampling watcher and
-kills the whole process group on overflow. `DiskBytes` still needs
-a quota-capable backend and is rejected with `NotAvailable`.
-
-### Rules, SOCKS5, MITM, and unix sockets
-
-`NetPolicy` carries three optional refinements on top of `Mode` /
-`AllowHosts` / `Proxy`:
-
-- `Rules` are explicit host/port allow or deny rules. Host forms are
-  `example.com` (the domain and all subdomains), `*.example.com`
-  (subdomains only), `1.2.3.4`, and `10.0.0.0/8`. Deny rules are
-  evaluated first across the whole set and always win; `AllowHosts`
-  is compiled as trailing allow rules. When IP/CIDR rules exist the
-  proxy resolves hostnames locally and pins the dial to a validated
-  IP, so neither the upstream nor DNS rebinding can bypass them.
-- `Proxy` accepts `http://host:port` and `socks5://[user:pass@]
-  host:port`. SOCKS5 conversion happens host-side; the child still
-  speaks the plain HTTP proxy protocol to the enforcement proxy.
-  HTTP upstreams now also receive `Proxy-Authorization` on CONNECT.
-- `MITM` (opt-in) terminates TLS for CONNECT tunnels: the proxy signs
-  per-host leaf certificates from a temporary in-memory CA, runs
-  hooks (`OnConnect` / `OnRequest` / `OnResponse`), and injects the CA
-  into the child via `SSL_CERT_FILE` (bundle bind-mounted for bwrap,
-  host path for seatbelt). Both HTTP/1.1 and HTTP/2 clients are
-  terminated (ALPN offers h2 + http/1.1; h2-only clients like gRPC
-  work). Host selection is policy-driven: empty `hosts` MITMs
-  everything, `hosts` restricts the set, and `exclude_hosts` always
-  raw-tunnels (allow/deny rules still apply, content hooks do not).
-  Because pinned clients fail closed at TLS, deployments with
-  cert-pinning applications should list those destinations in
-  `exclude_hosts` — that is the explicit pass-through, never a silent
-  downgrade.
-- `UnixSockets` is an allow-list of host unix socket paths. bwrap
-  bind-mounts only the listed paths (missing paths fail `Start`
-  loudly); seatbelt rejects any non-empty list with `NotAvailable`.
-  The "default deny" for bwrap is namespace-visibility based: masked
-  directories (`/tmp`, and `/run` in isolated net modes) hide
-  everything else, while the host root remains read-only visible.
-
-All features are gated by `Enforcement` (`Socks5`, `MITM`,
-`UnixSocketPolicy`); the config builder rejects a policy the backend
-cannot enforce with `NotAvailable`, never by silently downgrading.
-
-Complete sandbox document exercising every knob:
-
-```yaml
-version: v1
-sandboxes:
-  coding:
-    backend: bwrap            # or seatbelt on macOS / local for dev
-    workspace: project
-    defaults:
-      timeout: 2m
-      env:
-        allow: [PATH, HOME, GOCACHE]
-        inject: { CI: "1" }
-      net:
-        mode: allow_list
-        rules:
-          - action: deny
-            host: "*.internal.example"
-          - action: allow
-            host: "example.com"
-            port: 443
-          - action: allow
-            host: "10.0.0.0/8"
-        unix_sockets: [/var/run/docker.sock]
-        mitm:
-          enabled: true
-          inspect_bodies: false
-          max_body_bytes: 65536
-          exclude_hosts: ["*.nopin.example"]
-      resources:
-        memory_bytes: 2147483648
-        cpu_millicores: 2000
-        max_output_bytes: 10485760
-    allowed_commands: [go, pytest, node]
-    approval:
-      interactive: true        # TTY session starts require approval
-      non_default_network: true
-      sensitive_commands: [rm]
-```
-
-The SOCKS5 variant only changes the proxy string — the child still
-speaks plain HTTP proxy to the enforcement proxy:
-
-```yaml
-      net:
-        mode: proxy
-        proxy: socks5://user:pass@proxy.example:1080
-        rules:
-          - action: deny
-            host: "*.blocked.example"
-```
-
-### Enforcement
-
-`EnforcementOf(r)` returns an `Enforcement` struct describing what
-the runner actually enforces vs what it would have to enforce
-under request. Inspect the honest policy surface before execution:
-
-```go
-e := sandbox.EnforcementOf(r)
-if !slices.Contains(e.NetModes, sandbox.NetDenyAll) {
-    return errors.New("sandbox cannot enforce net policy on this backend")
-}
-```
-
-`Enforcement` is informative, not authoritative — the only way to
-verify behaviour is to run the command. Use it to fail fast on
-misconfiguration, not to assert safety.
-
-## First sandbox
-
-```go
-runner := sandbox.NewLocalRunner("/var/agent/root")
-
-result, err := runner.Exec(ctx, "go", []string{"test", "./..."}, sandbox.ExecOptions{
-    WorkDir: "./project",
-    Timeout: 2 * time.Minute,
-    Env: sandbox.EnvPolicy{
-        Allow: []string{"PATH", "HOME", "GOFLAGS"},
-        Inject: map[string]string{"CI": "1"},
-    },
-    Net:       sandbox.NetPolicy{Mode: sandbox.NetDefault},
-    Resources: sandbox.ResourceLimits{
-        MemoryBytes:    2 << 30,    // 2 GiB
-        CPUMillicores:  2000,       // 2 cores
-        MaxOutputBytes: 10 << 20,   // 10 MiB
-    },
-})
-if err != nil { return err }
-if result.ExitCode != 0 {
-    return fmt.Errorf("tests failed: exit=%d stderr=%s", result.ExitCode, result.Stderr)
-}
-```
-
-`LocalRunner` runs the command in a child process group rooted at
-the configured root directory, with the env / net / resources
-policies you provided.
-
-## Runners
-
-| Runner                  | Platform             | Enforced                                                 | Use when                                                       |
-| ----------------------- | -------------------- | -------------------------------------------------------- | -------------------------------------------------------------- |
-| `LocalRunner`           | unix (process group) | env allow-list, memory + CPU-time group caps, output cap | per-host dev, single-tenant trusted code, fast iteration       |
-| `sdkx/sandbox/seatbelt` | macOS                | env allow-list, file/network confinement                 | macOS production, multi-tenant code                            |
-| `sdkx/sandbox/bwrap`    | Linux                | env allow-list, namespace-level FS/net, soft CPU/memory caps, network policy (allow_list/proxy) | Linux production, strong isolation, network policy enforcement |
-| Custom                  | any                  | depends                                                  | remote runners, microVM-backed runners, …                      |
-
-The choice is not "which is more secure" — every shipped runner
-makes the same trade-off about what it can enforce on its
-platform. The choice is "what does the host's kernel offer, and
-what policy axes matter to the workload."
-
-## Decorators and approval
-
-`Runner` is small enough that policy composes through decorators:
-
-```go
-runner := sandbox.AllowCommands(
-    sandbox.WithApproval(
-        sandbox.WithDefaults(local, defaults),
-        approveFunc,
-        myPredicates...,
-    ),
-    []string{"go", "pytest", "node"},
-)
-```
-
-`WithApproval` injects a predicate chain in front of every call:
-if any predicate matches, the host asks the approver; the
-approver returns `Allow` or `Deny` (approver errors are fail-closed).
-`AllowCommands` is
-the canonical predicate — only listed commands pass.
-
-`WithDefaults` merges a fixed `ExecOptions` into every call, and the merge is
-security-biased: policy fields (`Env.Allow`, `Net`, `Resources`) belong to
-the defaults and always win; `WorkDir` / `Stdin` fall back to defaults when
-unset; `Timeout` takes the smaller of the two; `Env.Inject` is a union with
-the caller winning on key collision.
-
-## Interactive and streaming sessions (`ProcessManager`)
-
-`Runner.Exec` is one-shot: it captures output and returns. For
-interactive shells, TUIs, or long-running processes that need to be
-driven and resumed, a runner may additionally implement
-`ProcessManager`:
-
-```go
-type ProcessManager interface {
-    Start(ctx context.Context, spec ProcessSpec) (Process, error)
-    List(ctx context.Context) ([]ProcessInfo, error)
-    Terminate(ctx context.Context, id string) error
-}
-```
-
-`ProcessSpec` reuses the same `ExecOptions` policy surface as `Exec`
-(`WorkDir`, `Env`, `Net`, `Resources`, `Timeout`) plus `Argv`, an
-optional caller-chosen `ID`, and `TTY`. There is no second env source:
-the process environment comes exclusively from `ExecOptions.Env`.
-Discover the capability with `ProcessManagerOf(r)` — the same
-conservative pattern as `EnforcementOf`; a runner that cannot spawn
-sessions fails `Start` with `errdefs.NotAvailable`, never by silently
-running a one-shot exec.
-
-Output is an append-only, byte-cursor log. Each `Read(ctx, afterSeq,
-maxBytes)` returns at most `maxBytes` bytes starting after the cursor,
-plus the next cursor and an `EOF` flag; a disconnected client resumes
-by reconnecting and reading from its last `NextSeq`. The log is bounded
-by `Resources.MaxOutputBytes` — when old output has been trimmed, reads
-that point into the gap fail with `ErrSequenceGap` instead of returning
-misleading partial data. TTY sessions merge stdout/stderr into one
-`ProcessStreamTTY` stream; pipe sessions carry separate
-`ProcessStreamStdout` / `ProcessStreamStderr` chunks.
-
-Policy is fixed once at `Start`: `Read` / `Write` / `Resize` never
-re-negotiate env, network, or resource caps. The decorators forward the
-capability with the same semantics as `Exec`:
-
-- `WithDefaults` merges `spec.Opts` through the security-biased merge.
-- `WithApproval` runs the predicate chain against `Argv[0]` and
-  surfaces `TTY=true` on the `ExecRequest`, so the approver sees it is
-  authorising a persistent command channel rather than one command.
-- `AllowCommands` gates `Argv[0]`; note that it cannot police input
-  typed inside an interactive shell afterwards — an approved
-  interactive session is an all-or-nothing command channel.
-
-In sandbox config, `approval.interactive: true` installs the
-`Interactive()` predicate, so every TTY session start crosses the
-approver before spawning. With no approver configured the chain fails
-closed, which is the recommended way to forbid interactive sessions
-entirely.
-
-`LocalRunner` (pipe or pty), `seatbelt`, and `bwrap` implement
-`ProcessManager`; the sandboxed backends run the session inside the
-same profile / namespace as `Exec`, including net enforcement and the
-host-side proxy for `allow_list` / `proxy` modes.
-
-### Signals and event push
-
-Processes expose two optional capabilities, discovered with the same
-`(T, bool)` pattern:
-
-- `ProcessSignalerOf(p)` finds `Signal(ctx, sig)`. P1 supports only
-  `interrupt` — true Ctrl-C semantics: a VINTR byte through the pty on
-  TTY sessions (the terminal driver signals the foreground process
-  group), SIGINT to the whole group on pipe sessions. The process may
-  catch the signal and continue; the session stays usable. A raw-mode
-  TTY (ISIG off) sees no signal — authentic Ctrl-C behaviour. After
-  the process exits or the session closes, `Signal` returns
-  `ErrProcessClosed`.
-- `ProcessEventSourceOf(p)` finds `Watch(ctx)`: a per-subscriber
-  bounded queue (256 events) that replays the retained output before
-  delivering live `ProcessEvent`s (output / exited / closed / lag).
-  The `Events()` channel closes on ctx cancellation, `watcher.Close()`,
-  or right after the session's `Closed` event. A slow subscriber
-  receives `ProcessEventLag` (with the first missed byte cursor) and
-  the watcher closes — recover with `Read(afterSeq=lag.Seq)` or
-  re-`Watch`; the pull `Read` path is unchanged.
-
-## Workspace vs Sandbox
-
-|             | Workspace                            | Sandbox                             |
-| ----------- | ------------------------------------ | ----------------------------------- |
-| Models      | files (data)                         | commands (behaviour)                |
-| Reaches     | persistence layer                    | kernel / namespace / microVM        |
-| Policy axis | path allow / deny                    | env / net / resources / approval    |
-| Bind by     | `deps.workspace: ws/<name>` in graph | `deps.sandbox: box/<name>` in graph |
-| Where       | `sdk/workspace`                      | `sdk/sandbox`                       |
-
-A graph script can read and write workspace paths; it executes
-commands through the sandbox. A script that needs both binds
-both `workspace` and `sandbox` deps.
-
-## Deploy integration
-
-`sandbox.Registry` is a first-party resource in deployment
-documents. The registry holds named sandboxes (each with a backend
-and settings) and exposes them as `ItemResolver` so graph agents
-bind `box/<name>`:
+The local runner is a no-isolation backend for trusted workflows:
 
 ```yaml
 resources:
-  sandboxes:
-    kind: sandbox.Registry
-    impl: yaml
-    deps: { workspaces: workspaces }
+  box:
+    kind: sandbox.Runner
+    impl: local
     settings:
-      file: ./sandboxes.yaml
+      root: ./sandbox
 ```
 
-```yaml
-# sandboxes.yaml
-version: v1
-sandboxes:
-  coding:
-    backend: local
-    workspace: project # → bind to workspaces/<name>
-    defaults:
-      timeout: 2m
-      env:
-        allow: [PATH, HOME, GOCACHE]
-        inject: { CI: "1" }
-      net: { mode: deny_all }
-      resources:
-        memory_bytes: 2147483648
-        cpu_millicores: 2000
-        max_output_bytes: 10485760
-```
+Platform backends are registered from integration modules:
 
-`local` is the only backend registered by default. Platform backends
-(`seatbelt` on macOS, `bwrap` on Linux) register themselves from their own
-packages; a document naming one without registering it fails the build.
+- `integrations/sandbox/bwrap` for Linux namespace isolation.
+- `integrations/sandbox/seatbelt` for macOS confinement.
 
-Graph binding:
+## Policy groups
 
-```yaml
-deps:
-  sandbox: sandboxes/coding
-```
+`ExecOptions` carries:
 
-The graph factory's `sandbox` dep contract is "optional, used by
-scripts that need command execution." See
-[deploy.md#engines](deploy.md#engines) for the full engine dep
-contract.
+- `WorkDir`, `Stdin`, `Timeout`;
+- `Env` allow-list/inject policy;
+- `Net` network policy;
+- `Resources` memory/cpu/output caps.
 
-## Testing
-
-`LocalRunner` is the natural choice for unit tests — fast, hermetic,
-and configurable. Test against a `t.TempDir()` and assert on the
-`ExecResult` exit code and output. For policy tests, build a
-`Runner` chain (predicate + approval + defaults + local) and assert
-on the per-layer behaviour: does the predicate match? does the
-approver's decision flow through? do the defaults apply when
-caller doesn't override?
-
-```go
-runner := sandbox.NewLocalRunner(t.TempDir())
-out, err := runner.Exec(ctx, "sh", []string{"-c", "echo hi"}, sandbox.ExecOptions{})
-if err != nil { t.Fatal(err) }
-if out.ExitCode != 0 || !strings.Contains(string(out.Stdout), "hi") {
-    t.Fatalf("unexpected: %+v", out)
-}
-```
-
-For higher-level conformance — "does this runner respect the
-contract that `NotAvailable` is returned for unenforceable policy?"
-— the shared suite lives in `sdk/sandbox` test files; per-backend
-suites are in `sdkx/sandbox/<backend>/`.
-
-## Further reading
-
-- Package contract: `sdk/sandbox/doc.go` (enforcement matrix),
-  `sdk/sandbox/sandbox.go` (Runner + ExecOptions + ExecResult),
-  `sdk/sandbox/decorator.go`, `sdk/sandbox/approval.go`,
-  `sdk/sandbox/enforcement.go`.
-- Backends: `sdkx/sandbox/seatbelt/doc.go`,
-  `sdkx/sandbox/bwrap/doc.go`.
-- Assembly: `sdk/sandbox/config/doc.go`, the `sandbox.Registry`
-  resource in [deploy.md](deploy.md#first-party-impls).
-- Sibling guide: [workspace.md](workspace.md) (policy vs state).
+See [workspace.md](workspace.md) for state storage.

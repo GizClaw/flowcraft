@@ -5,7 +5,7 @@
 **A modular Go toolkit for extensible AI applications, long-term memory, provider integrations, and local interactive workflows.**
 
 [![CI](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml/badge.svg)](https://github.com/GizClaw/flowcraft/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/sdk.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk)
+[![Go Reference](https://pkg.go.dev/badge/github.com/GizClaw/flowcraft/core.svg)](https://pkg.go.dev/github.com/GizClaw/flowcraft/core)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8.svg)](https://go.dev/dl/)
 
@@ -20,16 +20,17 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
 
 ## Modules
 
-- **`sdk`** — Core contracts: agent execution, graph, tool, model,
-  message, inference, memory capabilities, event bus, telemetry, workspace,
-  sandbox, scheduler, and delegation.
+- **`core`** — The single platform module: agent execution, graph, tool,
+  model, message, inference, memory contracts, event bus, telemetry,
+  workspace, sandbox, deployment/resource assembly, runtime, sessions, and
+  delegation contracts.
+- **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
+  ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
+- **`integrations/*`** — Platform-specific implementations: object-store
+  workspaces, sandbox backends (`bwrap`, `seatbelt`), and SQLite checkpoints.
 - **`memory`** — The flowcraft memory implementation: component, derive, and
   projection pipelines, retrieval, lifecycle maintenance, sources and views,
   and the background worker.
-- **`sdkx`** — Provider adapters and generic assembly layers: inference
-  providers (Anthropic, Azure, ByteDance, DeepSeek, Kimi, MiniMax, OpenAI,
-  Qwen), deploy + runtime assembly, tool and workspace configuration,
-  scheduler, and the memory assembly, hooks, and renderer.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
@@ -41,16 +42,16 @@ the layers they need.
 
 ## Memory architecture
 
-`sdk/memory` defines the memory capability contracts — `ContextProvider`,
+`core/memory` defines the memory capability contracts — `ContextProvider`,
 `TurnSink`, `DocumentSink`, `ContextRenderer`, `Scope`, and `Turn`. The
 `memory/` module is **one implementation** of those contracts: it owns its own
 settings schema, its own assembly factory, and its own background worker
-runtime integration. `sdkx/memory` provides only the generic glue: a
+runtime integration. `core/memory` also provides the generic glue: a
 `memory.Assembly` deploy resource that dispatches to implementations by
 `impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
 the GoTemplate context renderer.
 
-This mirrors the inference pattern: `sdkx/inference/config` is generic, and
+This mirrors the inference pattern: `core/inference` is generic, and
 each provider (`openai`, `deepseek`, …) is a registered factory. Memory
 implementations plug in the same way — `impl: flowcraft` selects the bundled
 implementation, and another implementation registers under its own name with
@@ -80,10 +81,10 @@ simulations. Command reference, scenario layout, and credentials live in
 
 ### Embed FlowCraft in a Go service
 
-Use `sdk` directly and add `memory` or `sdkx` when the application needs
-long-term memory, persistence, or provider adapters. Assemble a
-deployment from `deploy.yaml` with `sdkx/deploy`, run it with `sdkx/runtime`,
-and drive turns through `sdkx/runtime/session`:
+Use `core` directly and add `memory`, `driver/*`, or `integrations/*` when the
+application needs long-term memory, persistence, or provider adapters.
+Assemble a deployment from `deploy.yaml` with `core/deploy`, run it with
+`core/runtime`, and drive turns through `core/runtime/session`:
 
 ```go
 document, _ := deploy.Parse(deployYAML)
@@ -106,9 +107,9 @@ session contracts.
 
 ## Architecture
 
-The SDK defines the execution contracts: `sdk/agent` owns the execution
+`core` defines the execution contracts: `core/agent` owns the execution
 primitives (`Engine`, `Host`, `Board`, `Run`, `Interrupt`, `Checkpoint`),
-while `sdk/graph` compiles declarative graphs into `agent.Engine`
+while `core/graph` compiles declarative graphs into `agent.Engine`
 implementations. Memory and provider adapters compose those contracts
 without becoming dependencies of the core.
 
@@ -120,36 +121,38 @@ without becoming dependencies of the core.
              ┌─────────────┬─────────────┐
              ▼                           ▼
       ┌─────────────┐             ┌─────────────┐
-      │    sdkx/    │             │   memory/   │
-      │  deploy ·   │             │ component · │
-      │  runtime ·  │             │  derive ·   │
-      │ inference · │             │ projection  │
-      │   tool ·    │             │ retrieval · │
+      │ driver/*   │             │   memory/   │
+      │  inference │             │ component · │
+      │ providers  │             │  derive ·   │
+      │            │             │ projection  │
+      │            │             │ retrieval · │
       └──────┬──────┘             └──────┬──────┘
              └─────────────┬─────────────┘
                            ▼
                 ┌──────────────────────┐
-                │          sdk/        │
+                │         core/        │
                 │   agent · graph ·    │
                 │   tool · event ·     │
                 │  message · inference │
+                │  deploy · runtime    │
                 └──────────────────────┘
 ```
 
-**Layering rule:** execution contracts live in `sdk/agent` (`agent.Engine`,
+**Layering rule:** execution contracts live in `core/agent` (`agent.Engine`,
 `agent.Host`, `agent.Board`) and stay leaves of the core — agent does not
-import graph or tool packages. `sdk/graph` builds on those contracts and
+import graph or tool packages. `core/graph` builds on those contracts and
 returns an `agent.Engine`. Memory contracts live in the SDK, while
-implementations (the `memory/` module) and adapters (`sdkx/`) stay outside
+implementations (the `memory/` module) and adapters (`driver/*`, `integrations/*`) stay outside
 the core and depend on it, never the reverse.
 
 ## Module map
 
 | Path                                        | Role                                                                             | Distribution         |
 | ------------------------------------------- | -------------------------------------------------------------------------------- | -------------------- |
-| [`sdk`](sdk/)                               | Agent, graph, tool, model, message, inference, memory, event, telemetry          | Versioned Go module  |
+| [`core`](core/)                             | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
+| [`driver`](driver/)                         | Provider inference adapters                                                       | Versioned Go modules |
+| [`integrations`](integrations/)             | Platform-specific sandbox/object-store/checkpoint integrations                     | Versioned Go modules |
 | [`memory`](memory/)                         | Component, derive, projection, retrieval, lifecycle, worker, sources, views      | Versioned Go module  |
-| [`sdkx`](sdkx/)                             | Provider adapters + generic assembly (deploy, runtime, tool, memory, scheduler)  | Versioned Go module  |
 | [`examples/forge`](examples/forge/)         | Runnable local workspace demo                                                     | Examples            |
 | [`tools/releasegate`](tools/releasegate/)   | Release automation                                                               | Tools               |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs               | Codex skill         |
@@ -167,14 +170,14 @@ the core and depend on it, never the reverse.
   `sdk/memory` contracts, and its background worker integrates through its own
   runtime integration.
 
-### Streaming, durable, resumable (`sdk/agent`)
+### Streaming, durable, resumable (`core/agent`)
 
 - `Subject`-routed event bus — every step emits structured envelopes.
 - `Checkpoint` / `CheckpointStore` contracts — pause and resume an agent
   across restarts.
 - `Interrupt` / `Wait` semantics that compose cleanly with `context.Context`.
 
-### Unified inference runtime (`sdk/inference` + `sdkx/inference`)
+### Unified inference runtime (`core/inference` + `driver/*`)
 
 - One runtime for Generate / Embed / Transcription / Realtime, with exact
   `ModelRef` addressing and compile-time capability checks.
@@ -192,31 +195,31 @@ TUI, scripted tests with per-turn metrics, and raid × persona simulation. See
 The canonical reference is the per-package `doc.go` files, browsable on
 pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 
-- [Graph Runtime](docs/guides/graph.md) — `sdk/graph`: declarative DAG
+- [Graph Runtime](docs/guides/graph.md) — `core/graph`: declarative DAG
   engine, node I/O roles, parallel branches, custom node types.
-- [Tool System](docs/guides/tool.md) — `sdk/tool`: LLM function-calling
+- [Tool System](docs/guides/tool.md) — `core/tool`: LLM function-calling
   contract, the Registry / Catalog / Executor split, middleware chain, and
   the MCP bridge.
-- [Event Bus](docs/guides/event.md) — `sdk/event`: subject-routed
+- [Event Bus](docs/guides/event.md) — `core/event`: subject-routed
   publish/subscribe, in-process `MemoryBus`, host capability wiring,
   backpressure policies.
-- [Workspace](docs/guides/workspace.md) — `sdk/workspace`: per-run
+- [Workspace](docs/guides/workspace.md) — `core/workspace`: per-run
   filesystem abstraction, backends, capabilities, and the
   `state vs policy` split vs Sandbox.
-- [Sandbox](docs/guides/sandbox.md) — `sdk/sandbox`: agent execution
+- [Sandbox](docs/guides/sandbox.md) — `core/sandbox`: agent execution
   boundary, env / net / resources policy, runners (local / seatbelt /
   bwrap), decorators, and approval.
 - [Inference Runtime](docs/guides/inference.md) — unified Generate / Embed /
   Transcription / Realtime: deployment config, routing, extensions,
   streaming, media intents, hot reload.
-- [Deployment Assembly](docs/guides/deploy.md) — `sdkx/deploy`: one YAML
+- [Deployment Assembly](docs/guides/deploy.md) — `core/deploy`: one YAML
   document + one `Build` call to wire shared resources, named agents,
   engines, and lifecycle hooks.
-- [Application Runtime](docs/guides/runtime.md) — `sdkx/runtime` +
-  `sdkx/runtime/session`: process-level services and leased, interruptible
+- [Application Runtime](docs/guides/runtime.md) — `core/runtime` +
+  `core/runtime/session`: process-level services and leased, interruptible
   streaming sessions above a built deployment.
 - [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
-  `sdk/memory` contracts, the `memory/` implementation, and `sdkx/memory`
+  `core/memory` contracts, the `memory/` implementation, and `core/memory`
   deploy/runtime glue.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)
@@ -225,13 +228,13 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
 writing, validating, and troubleshooting FlowCraft deployment
 configuration: the deployment document (the filename is arbitrary;
 `deploy.yaml` is the convention), the `runtime` section,
-inference/workspace/sandbox/tool sub-documents, `sdk/memory` contracts,
+inference/workspace/sandbox/tool sub-documents, `core/memory` contracts,
 and graph JSON node wiring. The unreleased `memory/` implementation
 module is deliberately excluded from its examples and dependencies.
 
 The skill ships an L2 dry-run validator that pins the released
-`sdk`/`sdkx` module versions and builds your deployment through the real
-`sdkx/deploy` assembly layer with stub secrets — no network, no real
+`core`/`driver`/`integrations` module versions and builds your deployment
+through the real `core/deploy` assembly layer with stub secrets — no network, no real
 credentials:
 
 ```bash
@@ -256,13 +259,15 @@ skills.sh (`npx skills add GizClaw/flowcraft`).
 Reference material:
 
 - [`docs/`](docs/index.md) — docs landing page (guides + migration notes).
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdk](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdk) — core contracts.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/core](https://pkg.go.dev/github.com/GizClaw/flowcraft/core) — platform contracts.
 - [pkg.go.dev/github.com/GizClaw/flowcraft/memory](https://pkg.go.dev/github.com/GizClaw/flowcraft/memory) — memory implementation.
-- [pkg.go.dev/github.com/GizClaw/flowcraft/sdkx](https://pkg.go.dev/github.com/GizClaw/flowcraft/sdkx) — adapters and assembly.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai](https://pkg.go.dev/github.com/GizClaw/flowcraft/driver/openai) — example provider adapter.
+- [pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox](https://pkg.go.dev/github.com/GizClaw/flowcraft/integrations/sandbox) — sandbox backends.
 
 ## Status
 
-The active project surface is `sdk`, `memory`, `sdkx`, and the forge demo.
+The active project surface is `core`, `driver/*`, `integrations/*`, `memory`,
+and the forge demo.
 Library modules are released independently and remain pre-1.0. Durable
 execution contracts (checkpoints, interrupt/resume, scheduling), OTel
 instrumentation, and retrieval end-to-end coverage are maintained in-tree;
@@ -283,8 +288,8 @@ make ci            # vet + test for all in-tree modules
 make release-check # validate changesets and the pending release plan
 ```
 
-This repository is a Go workspace. Active members are `sdk`, `memory`,
-`sdkx`, and `examples/forge`; release tooling in `tools/releasegate` builds
+This repository is a Go workspace. Active members are `core`, `driver/*`,
+`integrations/*`, `memory`, and `examples/forge`; release tooling in `tools/releasegate` builds
 standalone with `GOWORK=off`.
 
 ## Contributing
@@ -298,7 +303,7 @@ Issues and pull requests are welcome. Before opening a PR:
    `refactor:`, `test:`, `chore:`).
 
 Library releases are declared explicitly with immutable `.release/*.json`
-changesets for `sdk`, `memory`, and `sdkx`; a changeset is optional for
+changesets for `core`, `driver/*`, `integrations/*`, and `memory`; a changeset is optional for
 ordinary PRs. After merge, automation aggregates pending summaries into a
 Release PR that updates `CHANGELOG.md`. Merging that PR runs isolated tidy,
 build, vet, and race-test gates before all planned tags are pushed atomically.

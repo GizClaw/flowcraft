@@ -20,30 +20,22 @@
 # ── Go source ──
 !go.mod
 !go.sum
-!go.work
 !core/
 !core/**
 !driver/
 !driver/**
 !examples/
 !examples/**
+!integrations/
+!integrations/**
 !memory/
 !memory/**
-!sdk/
-!sdk/**
-!sdkx/
-!sdkx/**
 !skills/
 !skills/**
 !tools/
 !tools/**
 !.release/
 !.release/**
-
-# ── Container ──
-!Dockerfile
-!.dockerignore
-!docker-compose*.yml
 
 # ── CI/CD ──
 !Makefile

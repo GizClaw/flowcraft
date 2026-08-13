@@ -1,6 +1,6 @@
 ---
 name: flowcraft-config
-description: Author, validate, and troubleshoot complete FlowCraft deployment configuration (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, sdk/memory contracts, and graph JSON node wiring). Use when writing or reviewing FlowCraft configs, assembling an agent deployment, adding runtime/session settings, building graph definitions, resolving config build failures ("not registered", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment template.
+description: Author, validate, and troubleshoot complete FlowCraft deployment configuration (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring). Use when writing or reviewing FlowCraft configs, assembling an agent deployment, adding runtime/session settings, building graph definitions, resolving config build failures ("not registered", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment template.
 ---
 
 # FlowCraft Config Authoring
@@ -25,8 +25,8 @@ the L2 dry-run harness and fix build failures against the reference cards.
    module's schema. Workspace before sandbox (sandbox deps a workspace
    registry). Memory implementation modules are app-registered and the
    flowcraft `memory/` module is not released yet — omit memory
-   implementation examples; `sdk/memory` contracts and `sdkx/memory`
-   hooks are fine to use.
+   implementation examples; `core/memory` contracts and hooks are fine
+   to use.
 4. **Write graph JSON.** Read [references/graph.md](references/graph.md).
    Model refs must use the nested `id` form; script nodes need `runtime`
    and `source`; wire edges back to the inference node after tool nodes.
@@ -35,7 +35,7 @@ the L2 dry-run harness and fix build failures against the reference cards.
    (or the installed copy's script). The validator pins the FlowCraft
    module versions in its `go.mod` and works standalone from any
    directory. It parses every sub-document, dry-builds the deployment
-   through the real `sdkx/deploy` assembly with first-party factories
+   through the real `core/deploy` assembly with first-party factories
    and stub secrets, decodes graph node configs statically, and
    cross-checks the runtime section. It never reads real credentials and
    never calls providers.
@@ -79,12 +79,12 @@ workflow.
 ## Compatibility and versioning
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
-requires `github.com/GizClaw/flowcraft/sdk v0.5.3` and
-`github.com/GizClaw/flowcraft/sdkx v0.5.5`; the schema cards in this
-skill document exactly that release pair. When FlowCraft releases a new
-version, bump the pins and reconcile the cards in the same change. The
-L2 harness registers the first-party surface only; document anything
-app-registered in the handoff.
+requires `github.com/GizClaw/flowcraft/core v0.1.0` plus the relevant
+`driver/*` and `integrations/*` modules; the schema cards in this skill
+document exactly that release. When FlowCraft releases a new version,
+bump the pins and reconcile the cards in the same change. The L2 harness
+registers the first-party surface only; document anything app-registered
+in the handoff.
 
 ## Reference index
 

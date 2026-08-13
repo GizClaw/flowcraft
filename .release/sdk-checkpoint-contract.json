@@ -1,9 +1,0 @@
-{
-  "summary": "Harden agent checkpoint contract: shared Validate/Clone, strict exec-id matching, graph spec-version drift detection, and a CheckpointStore conformance suite",
-  "releases": [
-    {
-      "module": "sdk",
-      "bump": "patch"
-    }
-  ]
-}
