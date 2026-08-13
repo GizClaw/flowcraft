@@ -26,23 +26,19 @@ const (
 // runtime form is [Agent], built from a Definition by the deployment
 // layer.
 type Definition struct {
-	Card     AgentCard     `json:"card,omitzero"`
-	Tools    []string      `json:"tools,omitempty"`
-	Engine   EngineRef     `json:"engine,omitzero"`
-	Deps     resource.Deps `json:"deps,omitempty"`
-	Policy   Policy        `json:"policy,omitzero"`
-	Prepare  []Hook        `json:"prepare,omitempty"`
-	Observe  []Hook        `json:"observe,omitempty"`
-	Referees []Hook        `json:"referees,omitempty"`
-	Commit   []Hook        `json:"commit,omitempty"`
+	Card     AgentCard `json:"card,omitzero"`
+	Tools    []string  `json:"tools,omitempty"`
+	Engine   EngineRef `json:"engine,omitzero"`
+	Policy   *Policy   `json:"policy,omitempty"`
+	Prepare  []Hook    `json:"prepare,omitempty"`
+	Observe  []Hook    `json:"observe,omitempty"`
+	Referees []Hook    `json:"referees,omitempty"`
+	Commit   []Hook    `json:"commit,omitempty"`
 }
 
 // Validate checks the definition DTO.
 func (d Definition) Validate() error {
 	if err := d.Card.Validate(); err != nil {
-		return err
-	}
-	if err := d.Deps.Validate(); err != nil {
 		return err
 	}
 	engineSet := d.Engine.Kind != "" || d.Engine.Impl != "" ||
@@ -52,7 +48,7 @@ func (d Definition) Validate() error {
 			return err
 		}
 	}
-	if d.Policy.MaxRevise < 0 {
+	if d.Policy != nil && d.Policy.MaxRevise < 0 {
 		return errdefs.Validationf(
 			"agent: policy.max_revise must not be negative")
 	}

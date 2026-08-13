@@ -98,6 +98,7 @@ func (g *Graph) TopoOrder() ([]string, error) {
 			indegree[dependent]--
 			if indegree[dependent] == 0 {
 				ready = append(ready, dependent)
+				sort.Strings(ready)
 			}
 		}
 	}

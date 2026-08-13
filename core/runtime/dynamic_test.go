@@ -167,6 +167,26 @@ func TestBuild_DynamicCatalogRejectsBadMappings(t *testing.T) {
 	}
 }
 
+func TestBuild_DynamicCatalogRejectsTypedNilAssembly(t *testing.T) {
+	reg := resource.NewRegistry()
+	reg.MustRegister(testEngineFactory{engine: noopEngine()})
+	reg.MustRegister(testResourceFactory{
+		spec:  resource.Spec{Kind: testEventKind, Impl: testEventImpl},
+		value: event.NewMemoryBus(),
+	})
+	reg.MustRegister(testResourceFactory{
+		spec:  resource.Spec{Kind: tool.AssemblyKind, Impl: "yaml"},
+		value: (*tool.Assembly)(nil),
+	})
+
+	doc := dynamicCatalogDoc(t, `      researcher: research_tools
+      assistant: research_tools
+`)
+	if _, err := NewBuilder(reg).Build(context.Background(), doc); err == nil {
+		t.Fatal("Build unexpectedly succeeded with a typed-nil tool assembly")
+	}
+}
+
 func assertDefinitions(
 	t *testing.T,
 	got []string,

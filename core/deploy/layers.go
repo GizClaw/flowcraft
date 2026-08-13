@@ -117,9 +117,24 @@ func mergeDocument(base, override Document) Document {
 	if override.Version != "" {
 		merged.Version = override.Version
 	}
+	merged.Runtime = mergeRuntime(base.Runtime, override.Runtime)
 	merged.Resources = mergeResources(base.Resources, override.Resources)
 	merged.Agents = mergeAgents(base.Agents, override.Agents)
 	return merged
+}
+
+func mergeRuntime(base, override *resource.Opaque) *resource.Opaque {
+	if override == nil {
+		return base
+	}
+	if base == nil {
+		return override
+	}
+	merged := resource.Opaque(mergeJSON(
+		json.RawMessage(*base),
+		json.RawMessage(*override),
+	))
+	return &merged
 }
 
 func mergeResources(base, override resource.Resources) resource.Resources {
@@ -182,7 +197,7 @@ func mergeAgent(base, override agent.Definition) agent.Definition {
 	if override.Tools != nil {
 		merged.Tools = override.Tools
 	}
-	merged.Deps = mergeDeps(base.Deps, override.Deps)
+	merged.Policy = mergePolicy(base.Policy, override.Policy)
 	merged.Engine = mergeEngineRef(base.Engine, override.Engine)
 	if override.Prepare != nil {
 		merged.Prepare = override.Prepare
@@ -197,6 +212,24 @@ func mergeAgent(base, override agent.Definition) agent.Definition {
 		merged.Commit = override.Commit
 	}
 	return merged
+}
+
+func mergePolicy(base, override *agent.Policy) *agent.Policy {
+	if override == nil {
+		return base
+	}
+	if base == nil {
+		policy := *override
+		return &policy
+	}
+	policy := *base
+	if override.MaxRevise != 0 {
+		policy.MaxRevise = override.MaxRevise
+	}
+	if override.ArtifactChannels != nil {
+		policy.ArtifactChannels = append([]string(nil), override.ArtifactChannels...)
+	}
+	return &policy
 }
 
 func mergeAgentCard(base, override agent.AgentCard) agent.AgentCard {

@@ -146,7 +146,7 @@ func revisingInstance(
 		Agents: map[string]agent.Definition{
 			"agent-a": {
 				Card:   agent.AgentCard{Name: "Agent A"},
-				Policy: agent.Policy{MaxRevise: 2},
+				Policy: &agent.Policy{MaxRevise: 2},
 				Engine: agent.EngineRef{Kind: "agent.Engine", Impl: "session-revise-test"},
 			},
 		},

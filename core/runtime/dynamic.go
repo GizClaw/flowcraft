@@ -56,7 +56,7 @@ func resolveDynamicCatalogAssemblies(
 			}
 			var typeOK bool
 			assembly, typeOK = value.(*tool.Assembly)
-			if !typeOK {
+			if !typeOK || assembly == nil {
 				return nil, errdefs.Validationf(
 					"runtime config dynamic_catalog.tools[%q]: resource %q is %T, want *tool.Assembly",
 					agentID, resourceName, value)

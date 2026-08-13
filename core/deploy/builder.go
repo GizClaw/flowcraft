@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"reflect"
 	"sort"
@@ -254,11 +255,16 @@ func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) 
 			return err
 		}
 
+		policy := agent.Policy{}
+		if def.Policy != nil {
+			policy = *def.Policy
+		}
+
 		result.agents[name] = &agent.Agent{
 			ID:       name,
 			Card:     def.Card,
 			Tools:    def.Tools,
-			Policy:   def.Policy,
+			Policy:   policy,
 			Engine:   engineContract,
 			Prepare:  prepare,
 			Observe:  observe,
@@ -449,7 +455,7 @@ func (r *Result) Close() error {
 }
 
 func closeAll(values map[string]any, order []string) error {
-	var first error
+	var errs []error
 	for i := len(order) - 1; i >= 0; i-- {
 		value, ok := values[order[i]]
 		if !ok {
@@ -462,11 +468,11 @@ func closeAll(values map[string]any, order []string) error {
 		if isNilValue(closer) {
 			continue
 		}
-		if err := closer.Close(); err != nil && first == nil {
-			first = err
+		if err := closer.Close(); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	return first
+	return errors.Join(errs...)
 }
 
 func isNilValue(value any) bool {

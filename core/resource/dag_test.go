@@ -47,6 +47,33 @@ func TestGraphTopoOrder(t *testing.T) {
 	}
 }
 
+func TestGraphTopoOrderDeterministic(t *testing.T) {
+	g := NewGraph()
+	for _, name := range []string{"a", "z", "b", "c", "m", "n"} {
+		var deps Deps
+		switch name {
+		case "b", "c":
+			deps = Deps{"dep": "a"}
+		case "m", "n":
+			deps = Deps{"dep": "z"}
+		}
+		if err := g.Add(name, resourceWithDeps(deps)); err != nil {
+			t.Fatalf("Add(%q): %v", name, err)
+		}
+	}
+
+	order, err := g.TopoOrder()
+	if err != nil {
+		t.Fatalf("TopoOrder: %v", err)
+	}
+	want := []string{"a", "b", "c", "z", "m", "n"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("TopoOrder = %v, want %v", order, want)
+		}
+	}
+}
+
 func TestGraphDuplicateNode(t *testing.T) {
 	g := NewGraph()
 	_ = g.Add("a", resourceWithDeps(nil))

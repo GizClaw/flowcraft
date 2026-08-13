@@ -79,6 +79,93 @@ agents:
 	}
 }
 
+func TestLoadLayersMergeRuntime(t *testing.T) {
+	layers := []deploy.Layer{
+		{
+			Priority: 0,
+			Name:     "base",
+			Source: inlineSource(`version: v1
+resources: {}
+runtime:
+  event_bus: events
+  sessions:
+    idle_timeout: 10m
+`),
+		},
+		{
+			Priority: 1,
+			Name:     "project",
+			Source: inlineSource(`runtime:
+  sessions:
+    idle_timeout: 1m
+`),
+		},
+	}
+	doc, _, err := deploy.LoadLayers(context.Background(), layers)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	if doc.Runtime == nil {
+		t.Fatal("merged document has no runtime section")
+	}
+	var runtime struct {
+		EventBus string `json:"event_bus"`
+		Sessions struct {
+			IdleTimeout string `json:"idle_timeout"`
+		} `json:"sessions"`
+	}
+	if err := resource.DecodeSettings(&runtime, json.RawMessage(*doc.Runtime)); err != nil {
+		t.Fatalf("decode runtime: %v", err)
+	}
+	if runtime.EventBus != "events" {
+		t.Fatalf("event_bus = %q, want events", runtime.EventBus)
+	}
+	if runtime.Sessions.IdleTimeout != "1m" {
+		t.Fatalf("idle_timeout = %q, want 1m", runtime.Sessions.IdleTimeout)
+	}
+}
+
+func TestLoadLayersMergeAgentPolicy(t *testing.T) {
+	layers := []deploy.Layer{
+		{
+			Priority: 0,
+			Name:     "base",
+			Source: inlineSource(`version: v1
+resources: {}
+agents:
+  tom:
+    card: {name: Tom}
+    policy:
+      max_revise: 2
+      artifact_channels: [draft]
+`),
+		},
+		{
+			Priority: 1,
+			Name:     "project",
+			Source: inlineSource(`agents:
+  tom:
+    policy:
+      max_revise: 5
+`),
+		},
+	}
+	doc, _, err := deploy.LoadLayers(context.Background(), layers)
+	if err != nil {
+		t.Fatalf("LoadLayers: %v", err)
+	}
+	got := doc.Agents["tom"].Policy
+	if got == nil {
+		t.Fatal("merged agent has no policy")
+	}
+	if got.MaxRevise != 5 {
+		t.Fatalf("max_revise = %d, want 5", got.MaxRevise)
+	}
+	if len(got.ArtifactChannels) != 1 || got.ArtifactChannels[0] != "draft" {
+		t.Fatalf("artifact_channels = %v, want [draft]", got.ArtifactChannels)
+	}
+}
+
 func TestLoadLayersPriorityOrder(t *testing.T) {
 	layers := []deploy.Layer{
 		{
