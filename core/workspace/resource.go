@@ -36,7 +36,20 @@ func (Factory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (Factory) New(_ context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[Settings](in.Settings)
+	opts := []resource.ExpandOption{
+		resource.ExpandEnv(),
+		resource.ExpandHome(),
+	}
+	base := in.Loader.BaseDir()
+	if base != "" {
+		abs, err := filepath.Abs(base)
+		if err != nil {
+			return nil, errdefs.Validationf(
+				"workspace: resolve base dir: %v", err)
+		}
+		opts = append(opts, resource.ExpandBase(abs))
+	}
+	settings, err := resource.DecodeTyped[Settings](in.Settings, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +57,8 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"workspace: settings.root is required")
 	}
-	if !filepath.IsAbs(settings.Root) && in.Loader != nil {
-		if base := in.Loader.BaseDir(); base != "" {
-			settings.Root = filepath.Join(base, settings.Root)
-		}
+	if !filepath.IsAbs(settings.Root) && base != "" {
+		settings.Root = filepath.Join(base, settings.Root)
 	}
 	local, err := NewLocalWorkspace(settings.Root)
 	if err != nil {
@@ -55,17 +66,17 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 	}
 	var value Workspace = local
 	if settings.Scoped != nil && settings.Scoped.Enabled {
-		var opts []ScopedOption
+		var scopedOpts []ScopedOption
 		if len(settings.Scoped.DenyRead) > 0 {
-			opts = append(opts, WithDenyRead(settings.Scoped.DenyRead...))
+			scopedOpts = append(scopedOpts, WithDenyRead(settings.Scoped.DenyRead...))
 		}
 		if len(settings.Scoped.AllowWrite) > 0 {
-			opts = append(opts, WithAllowWrite(settings.Scoped.AllowWrite...))
+			scopedOpts = append(scopedOpts, WithAllowWrite(settings.Scoped.AllowWrite...))
 		}
 		if len(settings.Scoped.MandatoryDeny) > 0 {
-			opts = append(opts, WithMandatoryDeny(settings.Scoped.MandatoryDeny...))
+			scopedOpts = append(scopedOpts, WithMandatoryDeny(settings.Scoped.MandatoryDeny...))
 		}
-		value = NewScopedWorkspace(value, opts...)
+		value = NewScopedWorkspace(value, scopedOpts...)
 	}
 	return value, nil
 }
