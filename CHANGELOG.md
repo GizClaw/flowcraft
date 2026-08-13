@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.3` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.3` - 2026-08-13
+
+### Changed
+
+- Add stream terminal signals and request-id telemetry, stamp usage model/latency, and enrich driver usage and audio support
 
 ## `core/v0.1.2` - 2026-08-13
 
