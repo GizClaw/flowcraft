@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -93,16 +95,172 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	if ctx == nil {
 		return nil, errdefs.Validationf("runtime session: Start context is required")
 	}
+	if err := validateSinks(sinks); err != nil {
+		return nil, err
+	}
+
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
+	release, err := s.interruptActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	activityHeld := true
+	defer func() {
+		if activityHeld {
+			release()
+		}
+	}()
+
+	runID, err := freshRunID()
+	if err != nil {
+		return nil, err
+	}
+	state, err := s.loadSessionState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var snapshot *agent.BoardSnapshot
+	if state != nil {
+		snapshot = state.Board
+	}
+	request.ContextID = s.key.ContextID
+	request.RunID = runID
+	turn, err := s.startTurnLocked(ctx, request, runID, nil, nil, snapshot, sinks)
+	if err != nil {
+		return nil, err
+	}
+	activityHeld = false
+	return turn, nil
+}
+
+// Resume re-executes the session's parked interrupted run. The parked
+// run is the most recent turn that ended without committing; its
+// checkpoint is loaded and replayed under the original run id and
+// request, so the engine picks up where it stopped instead of starting
+// fresh. A new user message MUST go through Start — Resume does not
+// carry a request.
+func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) {
+	if s == nil {
+		return nil, ErrSessionClosed
+	}
+	if ctx == nil {
+		return nil, errdefs.Validationf("runtime session: Resume context is required")
+	}
+	if err := validateSinks(sinks); err != nil {
+		return nil, err
+	}
+
+	s.startMu.Lock()
+	defer s.startMu.Unlock()
+
+	release, err := s.interruptActive(ctx)
+	if err != nil {
+		return nil, err
+	}
+	activityHeld := true
+	defer func() {
+		if activityHeld {
+			release()
+		}
+	}()
+
+	state, err := s.loadSessionState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil || state.ResumableRunID == "" {
+		return nil, errdefs.NotFoundf(
+			"runtime session: no interrupted run to resume")
+	}
+	runID := state.ResumableRunID
+	resumeFrom, resumeCtx, err := s.loadResumableCheckpoint(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	if resumeFrom == nil {
+		// The parked marker points at a run whose checkpoint is gone
+		// (store eviction, manual cleanup); drop the marker so the
+		// session does not stay stuck in a resumable state.
+		s.clearParkedRun(state)
+		return nil, errdefs.NotFoundf(
+			"runtime session: checkpoint for parked run %s is gone", runID)
+	}
+	if state.Request == nil {
+		return nil, errdefs.Validationf(
+			"runtime session: parked run %s has no stored request", runID)
+	}
+	request := *state.Request
+	request.ContextID = s.key.ContextID
+	request.RunID = runID
+	turn, err := s.startTurnLocked(ctx, request, runID, resumeFrom, resumeCtx, nil, sinks)
+	if err != nil {
+		return nil, err
+	}
+	activityHeld = false
+	return turn, nil
+}
+
+// Resumable reports whether a previous turn ended without committing
+// and can be replayed via Resume. It returns the parked run id.
+func (s *Session) Resumable(ctx context.Context) (string, bool, error) {
+	if s == nil || !s.resume || s.checkpoints == nil {
+		return "", false, nil
+	}
+	if ctx == nil {
+		return "", false, errdefs.Validationf(
+			"runtime session: Resumable context is required")
+	}
+	state, err := s.loadSessionState(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	if state == nil || state.ResumableRunID == "" {
+		return "", false, nil
+	}
+	return state.ResumableRunID, true, nil
+}
+
+// interruptActive stops any running turn and reserves one activity slot
+// for the incoming turn. The returned release MUST be called on every
+// path that does not install a turn; once a turn is installed the slot
+// belongs to the running turn and is released by turnFinished.
+func (s *Session) interruptActive(ctx context.Context) (func(), error) {
+	s.changeActivity(activityTurn, 1)
+	release := func() { s.changeActivity(activityTurn, -1) }
+
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		release()
+		return nil, ErrSessionClosed
+	}
+	old := s.active
+	s.mu.Unlock()
+	if old != nil {
+		_ = old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput})
+		_, _ = old.Wait(ctx)
+	}
+	if err := ctx.Err(); err != nil {
+		release()
+		return nil, errdefs.FromContext(err)
+	}
+	return release, nil
+}
+
+// validateSinks rejects structurally invalid sink specifications.
+func validateSinks(sinks []SinkSpec) error {
 	for _, spec := range sinks {
 		if err := spec.Validate(); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	seen := make(map[string]struct{}, len(sinks))
 	authorities := 0
 	for _, spec := range sinks {
 		if _, exists := seen[spec.ID]; exists {
-			return nil, errdefs.Validationf("runtime session: duplicate SinkSpec.ID %q", spec.ID)
+			return errdefs.Validationf("runtime session: duplicate SinkSpec.ID %q", spec.ID)
 		}
 		seen[spec.ID] = struct{}{}
 		if spec.Authority == AuthorityAuthoritative {
@@ -110,52 +268,27 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 		}
 	}
 	if authorities > 1 {
-		return nil, errdefs.Validationf("runtime session: at most one authoritative sink is allowed per turn")
+		return errdefs.Validationf("runtime session: at most one authoritative sink is allowed per turn")
 	}
+	return nil
+}
 
-	s.startMu.Lock()
-	startLocked := true
-	defer func() {
-		if startLocked {
-			s.startMu.Unlock()
-		}
-	}()
-
-	s.mu.Lock()
-	if s.closing {
-		s.mu.Unlock()
-		return nil, ErrSessionClosed
-	}
-	old := s.active
-	s.mu.Unlock()
-	s.changeActivity(activityTurn, 1)
-	activityHeld := true
-	defer func() {
-		if activityHeld {
-			s.changeActivity(activityTurn, -1)
-		}
-	}()
-	if old != nil {
-		_ = old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput})
-		_, _ = old.Wait(ctx)
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, errdefs.FromContext(err)
-	}
-
-	runID, err := s.nextRunID()
-	if err != nil {
-		return nil, err
-	}
-	resumeFrom, resumeCtx, err := s.loadResume(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	request.ContextID = s.key.ContextID
-	request.RunID = runID
+// startTurnLocked installs and asynchronously runs one turn. It must be
+// called with startMu held and with the caller's activity slot already
+// reserved. request.ContextID and request.RunID must already be set.
+func (s *Session) startTurnLocked(
+	ctx context.Context,
+	request agent.Request,
+	runID string,
+	resumeFrom *agent.Checkpoint,
+	resumeCtx *agent.ResumeContext,
+	snapshot *agent.BoardSnapshot,
+	sinks []SinkSpec,
+) (*Turn, error) {
 	turn := newTurn(s, runID, ctx)
 	turn.resumeFrom = resumeFrom
 	turn.resumeCtx = resumeCtx
+	turn.snapshot = snapshot
 	catalog, err := s.catalogFor(ctx)
 	if err != nil {
 		turn.cancel()
@@ -254,34 +387,169 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	turn.state = TurnRunning
 	turn.mu.Unlock()
 	s.mu.Unlock()
-	activityHeld = false
 
-	startLocked = false
-	s.startMu.Unlock()
 	s.notifySessionStarted(turn)
 	go turn.execute(s.instance, request)
 	return turn, nil
 }
 
-// nextRunID returns the stable run id for the session key when resume
-// is enabled, otherwise a fresh random id.
-func (s *Session) nextRunID() (string, error) {
-	if s.resume {
-		return stableRunID(s.key), nil
-	}
-	return randomID()
+// ---------- Session state and resume ----------
+
+// sessionState is the durable per-session record kept in the checkpoint
+// store under a reserved "session-" key. It is NOT a run checkpoint:
+//
+//   - Board holds the session's last committed board (conversation
+//     history). Every fresh Start seeds its run from this board so
+//     history carries across turns without re-identifying a run.
+//   - ResumableRunID names the most recent turn that ended without
+//     committing. Resume replays that specific execution from its
+//     checkpoint. Empty when no interrupted execution is parked.
+//   - Request is the original request of the parked run; Resume must
+//     re-execute under the same request (same task, same inputs).
+type sessionState struct {
+	ResumableRunID string               `json:"resumable_run_id,omitempty"`
+	Request        *agent.Request       `json:"request,omitempty"`
+	Board          *agent.BoardSnapshot `json:"-"`
 }
 
-// loadResume loads the checkpoint for runID when resume is enabled.
-// It returns nil, nil for a fresh start. A checkpoint whose engine
-// cannot resume is a configuration error, not a silent fresh run.
-func (s *Session) loadResume(
+// sessionStateID derives the durable key for one session's state. It is
+// stable across process restarts and never collides with run ids
+// ("run-" prefix) or prompt ids (bare hex).
+func sessionStateID(key Key) string {
+	sum := sha256.Sum256([]byte(key.AgentID + "\x00" + key.ContextID))
+	return "session-" + hex.EncodeToString(sum[:16])
+}
+
+// freshRunID returns a new run id for a fresh turn.
+func freshRunID() (string, error) {
+	var bytes [8]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", errdefs.Internal(fmt.Errorf("runtime session: allocate run id: %w", err))
+	}
+	return "run-" + hex.EncodeToString(bytes[:]), nil
+}
+
+// loadSessionState reads the session's durable state, or (nil, nil)
+// when resume is disabled, no store is wired, or no record exists yet.
+func (s *Session) loadSessionState(ctx context.Context) (*sessionState, error) {
+	if s == nil || !s.resume || s.checkpoints == nil {
+		return nil, nil
+	}
+	cp, err := s.checkpoints.Load(ctx, sessionStateID(s.key))
+	if err != nil {
+		return nil, fmt.Errorf("runtime session: load session state: %w", err)
+	}
+	if cp == nil {
+		return nil, nil
+	}
+	state := &sessionState{Board: cp.Board}
+	if len(cp.Payload) > 0 {
+		if err := json.Unmarshal(cp.Payload, state); err != nil {
+			return nil, fmt.Errorf("runtime session: decode session state: %w", err)
+		}
+	}
+	return state, nil
+}
+
+// saveSessionState persists the session state record. Best-effort: a
+// store failure leaves the previous record in place.
+func (s *Session) saveSessionState(state *sessionState) {
+	if s == nil || !s.resume || s.checkpoints == nil || state == nil {
+		return
+	}
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return
+	}
+	board := state.Board
+	if board == nil {
+		board = agent.NewBoard().Snapshot()
+	}
+	cp := agent.Checkpoint{
+		ExecID:     sessionStateID(s.key),
+		Board:      board,
+		Payload:    payload,
+		Attributes: map[string]string{"runtime.session.kind": "state"},
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	_ = s.checkpoints.Save(ctx, cp)
+}
+
+// clearParkedRun drops the resumable marker (e.g. the parked run's
+// checkpoint no longer exists) while preserving the committed board.
+func (s *Session) clearParkedRun(state *sessionState) {
+	if state == nil {
+		return
+	}
+	state.ResumableRunID = ""
+	state.Request = nil
+	s.saveSessionState(state)
+}
+
+// afterTurn updates session state after a turn reaches its terminal
+// state:
+//
+//   - Committed runs advance the session board and delete their run
+//     checkpoint; nothing stays parked.
+//   - Interrupted, canceled, failed, and aborted runs keep their
+//     checkpoint and park their run id + original request so Resume
+//     can replay them. The committed board is left untouched.
+func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
+	if s == nil || !s.resume || s.checkpoints == nil || turn == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	prev, err := s.loadSessionState(ctx)
+	if err != nil {
+		prev = nil
+	}
+	state := &sessionState{}
+	if prev != nil {
+		state.Board = prev.Board
+	}
+	if result != nil && result.Committed {
+		s.deleteCheckpoint(turn.runID)
+		if result.LastBoard != nil {
+			state.Board = result.LastBoard.Snapshot()
+		}
+		state.ResumableRunID = ""
+		state.Request = nil
+	} else {
+		state.ResumableRunID = turn.runID
+		request := turn.request
+		state.Request = &request
+	}
+	s.saveSessionState(state)
+}
+
+// deleteCheckpoint removes a committed run's checkpoint. Best-effort:
+// a failed delete leaves an orphaned checkpoint under a run id that no
+// session state references, which is harmless.
+func (s *Session) deleteCheckpoint(runID string) {
+	if s == nil || !s.resume || s.checkpoints == nil {
+		return
+	}
+	deleter, ok := s.checkpoints.(agent.CheckpointDeleter)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+	_ = deleter.Delete(ctx, runID)
+}
+
+// loadResumableCheckpoint loads and validates the parked run's
+// checkpoint. A missing checkpoint returns (nil, nil, nil) so the
+// caller can clear the stale marker.
+func (s *Session) loadResumableCheckpoint(
 	ctx context.Context,
 	runID string,
 ) (*agent.Checkpoint, *agent.ResumeContext, error) {
-	if !s.resume || s.checkpoints == nil {
-		return nil, nil, nil
-	}
 	cp, err := s.checkpoints.Load(ctx, runID)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
@@ -289,6 +557,11 @@ func (s *Session) loadResume(
 	}
 	if cp == nil {
 		return nil, nil, nil
+	}
+	if cp.ExecID != runID {
+		return nil, nil, errdefs.Validationf(
+			"runtime session: checkpoint exec id %q does not match parked run %q",
+			cp.ExecID, runID)
 	}
 	if !agent.IsResumable(s.instance.Engine) {
 		return nil, nil, errdefs.NotAvailablef(
@@ -308,35 +581,10 @@ func (s *Session) loadResume(
 	resumeCtx := agent.ResumeContext{
 		Attempt:      2,
 		StartedAt:    startedAt,
-		Signal:       "session",
+		Signal:       "resume",
 		CheckpointAt: cp.Timestamp,
 	}
 	return cp, &resumeCtx, nil
-}
-
-// cleanupCheckpoint removes a committed run's checkpoint so the next
-// turn starts fresh. Interrupted, failed, and canceled runs keep
-// theirs. Deletion is best-effort.
-func (s *Session) cleanupCheckpoint(runID string, result *agent.Result) {
-	if s == nil || !s.resume || s.checkpoints == nil ||
-		result == nil || !result.Committed {
-		return
-	}
-	deleter, ok := s.checkpoints.(agent.CheckpointDeleter)
-	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(
-		context.WithoutCancel(context.Background()), 5*time.Second)
-	defer cancel()
-	_ = deleter.Delete(ctx, runID)
-}
-
-// stableRunID derives the logical run id for one session key. It is
-// stable across process restarts so resume can find the checkpoint.
-func stableRunID(key Key) string {
-	sum := sha256.Sum256([]byte(key.AgentID + "\x00" + key.ContextID))
-	return "run-" + hex.EncodeToString(sum[:16])
 }
 
 // Key returns this Session's immutable identity.

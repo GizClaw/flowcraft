@@ -21,6 +21,8 @@ type Turn struct {
 
 	resumeFrom *agent.Checkpoint
 	resumeCtx  *agent.ResumeContext
+	snapshot   *agent.BoardSnapshot
+	request    agent.Request
 
 	interrupts chan agent.Interrupt
 	done       chan struct{}
@@ -94,6 +96,23 @@ func (t *Turn) State() TurnState {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.state
+}
+
+// Cancel immediately stops the turn by cancelling its execution
+// context. Unlike [Turn.Interrupt], which the engine only observes at
+// its next safe checkpoint, Cancel takes effect as soon as the engine
+// notices the context cancellation — typically while it is blocked in
+// I/O or an inference call.
+//
+// The run settles as [agent.StatusCanceled], a non-committed outcome:
+// with resume enabled the session parks the run and its checkpoint
+// stays resumable via [Session.Resume]. Cancel is idempotent and safe
+// to call after the turn has finished.
+func (t *Turn) Cancel() {
+	if t == nil {
+		return
+	}
+	t.cancel()
 }
 
 // Interrupt cooperatively asks the engine to stop. The first cause wins.
@@ -188,6 +207,9 @@ func (t *Turn) execute(instance *agent.Agent, request agent.Request) {
 	if t.resumeFrom != nil {
 		options = append(options, agent.WithResumeFrom(t.resumeFrom))
 	}
+	if t.snapshot != nil {
+		options = append(options, agent.WithPreparer(sessionHistoryPreparer(t.snapshot)))
+	}
 	t.mu.Lock()
 	hasAuthority := t.authorityID != ""
 	t.mu.Unlock()
@@ -201,8 +223,40 @@ func (t *Turn) execute(instance *agent.Agent, request agent.Request) {
 	if t.resumeCtx != nil {
 		execCtx = agent.WithResumeContext(t.runCtx, *t.resumeCtx)
 	}
+	t.request = request
 	result, err := agent.Execute(execCtx, *instance, nil, request, options...)
 	t.finish(result, err)
+}
+
+// sessionHistoryPreparer restores the session's last committed board
+// (conversation history) for a fresh turn, then merges the default
+// seed's new message and inputs on top. It is only used for fresh
+// starts; Resume passes the checkpoint board instead. Earlier links in
+// the Preparer chain run before this one, so their non-main-channel
+// output (retrieval, tool state, …) is overlaid on the restored board
+// rather than lost.
+func sessionHistoryPreparer(history *agent.BoardSnapshot) agent.Preparer {
+	return agent.PreparerFunc(func(
+		_ context.Context,
+		_ agent.Identity,
+		_ *agent.Request,
+		prev *agent.Board,
+	) (*agent.Board, error) {
+		board := agent.RestoreBoard(history)
+		for _, msg := range prev.Channel(agent.MainChannel) {
+			board.AppendChannelMessage(agent.MainChannel, msg)
+		}
+		for key, msgs := range prev.ChannelsCopy() {
+			if key == agent.MainChannel {
+				continue
+			}
+			board.SetChannel(key, msgs)
+		}
+		for key, value := range prev.Vars() {
+			board.SetVar(key, value)
+		}
+		return board, nil
+	})
 }
 
 func (t *Turn) finish(result *agent.Result, err error) {
@@ -254,7 +308,7 @@ func (t *Turn) finish(result *agent.Result, err error) {
 		detachCoordinator()
 	}
 	if t.session != nil {
-		t.session.cleanupCheckpoint(t.runID, result)
+		t.session.afterTurn(t, result)
 	}
 	if t.session != nil {
 		t.session.turnFinished(t, result, err)

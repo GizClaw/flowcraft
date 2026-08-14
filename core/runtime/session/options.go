@@ -130,9 +130,18 @@ func WithCheckpointStore(store agent.CheckpointStore) ManagerOption {
 	}
 }
 
-// WithResume enables session-level resume: each session key maps to a
-// stable run id, checkpoints are loaded before Start, and committed
-// checkpoints are deleted after completion.
+// WithResume enables session-level durability across turns:
+//
+//   - Every turn gets a fresh run id; conversation history carries
+//     over from the session's last committed board, persisted under a
+//     session-scoped key in the checkpoint store.
+//   - Turns that end without committing park their run id; Resume
+//     replays that specific interrupted execution from its checkpoint.
+//   - Committed turns delete their run checkpoint and advance the
+//     session board.
+//
+// It requires a checkpoint store ([WithCheckpointStore]) whose
+// implementation also satisfies [agent.CheckpointDeleter].
 func WithResume(enable bool) ManagerOption {
 	return func(options *managerOptions) error {
 		options.resume = enable

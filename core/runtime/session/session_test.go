@@ -410,6 +410,36 @@ func TestTurnWaitAndInterruptSemantics(t *testing.T) {
 	wg.Wait()
 }
 
+func TestTurnCancelImmediatelyStopsBlockedRun(t *testing.T) {
+	started := make(chan struct{})
+	engine := agent.EngineFunc(func(ctx context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
+		close(started)
+		// Simulate an engine stuck in a long call that never polls
+		// cooperative interrupts: only context cancellation can stop it.
+		<-ctx.Done()
+		return board, ctx.Err()
+	})
+	_, session, _, _ := newTurnSession(t, engine, turnHostFactory)
+
+	turn, err := session.Start(context.Background(), agent.Request{
+		Message: message.NewTextMessage(message.RoleUser, "hi"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	turn.Cancel()
+	turn.Cancel() // idempotent
+	result, err := turn.Wait(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != agent.StatusCanceled || turn.State() != TurnCanceled {
+		t.Fatalf("result status = %q, turn state = %q", result.Status, turn.State())
+	}
+}
+
 func TestAuthoritativeAckCommitsOnlyFrozenPrefix(t *testing.T) {
 	committed := make(chan string, 1)
 	engine := agent.EngineFunc(func(
