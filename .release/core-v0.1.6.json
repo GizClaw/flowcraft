@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): fresh run ids per turn, session-scoped committed history, explicit resume, and immediate Turn.Cancel",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
