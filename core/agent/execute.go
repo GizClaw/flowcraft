@@ -492,6 +492,11 @@ func applyOptions(ag Agent, opts []ExecuteOption) execConfig {
 			rc.committers = append(rc.committers, c)
 		}
 	}
+	for _, p := range ag.Prepare {
+		if p != nil {
+			rc.preparers = append(rc.preparers, p)
+		}
+	}
 	for _, o := range opts {
 		if o != nil {
 			o(&rc)

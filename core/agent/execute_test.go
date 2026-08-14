@@ -76,6 +76,49 @@ func TestRun_CleanCompletion_Defaults(t *testing.T) {
 	}
 }
 
+func TestRun_AgentPreparersRunBeforeEngine(t *testing.T) {
+	prepared := false
+	preparer := agent.PreparerFunc(func(
+		_ context.Context, _ agent.Identity, _ *agent.Request, prev *agent.Board,
+	) (*agent.Board, error) {
+		prepared = true
+		board := prev
+		if board == nil {
+			board = agent.NewBoard()
+		}
+		board.SetVar("world.prepped", "yes")
+		return board, nil
+	})
+	var engineSeen string
+	eng := agent.EngineFunc(func(
+		_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board,
+	) (*agent.Board, error) {
+		if v, ok := b.GetVar("world.prepped"); ok {
+			engineSeen, _ = v.(string)
+		}
+		b.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "ok"))
+		return b, nil
+	})
+	res, err := agent.Execute(context.Background(),
+		agent.Agent{
+			ID:      "a",
+			Prepare: []agent.Preparer{preparer},
+		}, eng, newReq("hi"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !prepared {
+		t.Fatal("Agent.Preparers did not run")
+	}
+	if engineSeen != "yes" {
+		t.Errorf("engine did not see preparer board var: %q", engineSeen)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Errorf("status = %q", res.Status)
+	}
+}
+
 func TestRun_RunIDPropagatesIntoEngineRun(t *testing.T) {
 	var seen string
 	eng := agent.EngineFunc(func(_ context.Context, r agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
