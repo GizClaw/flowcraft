@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.6` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.7` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.7` - 2026-08-14
+
+### Changed
+
+- fix(core): run Agent.Prepare hooks in Execute
 
 ## `core/v0.1.6` - 2026-08-14
 
