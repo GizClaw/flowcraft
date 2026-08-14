@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.5` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.6` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.6` - 2026-08-14
+
+### Changed
+
+- fix(core): fresh run ids per turn, session-scoped committed history, explicit resume, and immediate Turn.Cancel
 
 ## `core/v0.1.5` - 2026-08-13
 
