@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): run Agent.Prepare hooks in Execute",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
