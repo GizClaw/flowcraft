@@ -231,3 +231,62 @@ func TestFactoryRejectsExtensionsWithoutConfiguredDecoder(t *testing.T) {
 		t.Fatalf("Execute error = %v, want Validation for unregistered extension", err)
 	}
 }
+
+func TestFactoryWiresResponseFormatConfig(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: `{"answer":"42"}`},
+					}},
+				},
+				FinishReason: inference.FinishCompleted,
+			}
+		},
+	}
+	def, _ := json.Marshal(map[string]any{
+		"name":  "g",
+		"entry": "n1",
+		"nodes": []any{
+			map[string]any{
+				"id":   "n1",
+				"type": "inference",
+				"config": map[string]any{
+					"model": map[string]any{
+						"id":      map[string]any{"provider": "fake", "name": "echo"},
+						"profile": "default",
+					},
+					"response_format": map[string]any{
+						"kind": "json_schema",
+						"name": "answer",
+						"schema": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+							"required":   []any{"answer"},
+						},
+					},
+				},
+			},
+		},
+		"edges": []any{},
+	})
+	value, err := (graphresource.Factory{}).New(context.Background(), resource.Input{
+		Settings: []byte(`{"graph": ` + string(def) + `}`),
+		Deps: map[string]any{
+			"inference": fake.Assembly(t),
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := executeTestGraph(t, value.(*coregraph.Graph)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	response := fake.LastRequest().Input.Content.Intent.Text.Response
+	if response == nil || response.Kind != inference.ResponseJSONSchema ||
+		response.Name != "answer" || len(response.Schema) == 0 {
+		t.Fatalf("request response format = %#v, want json_schema answer", response)
+	}
+}

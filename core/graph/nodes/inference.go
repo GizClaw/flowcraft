@@ -70,6 +70,12 @@ type InferenceConfig struct {
 	ReasoningEnabled *bool                     `json:"reasoning_enabled,omitempty"`
 	ReasoningEffort  inference.ReasoningEffort `json:"reasoning_effort,omitempty"`
 
+	// ResponseFormat shapes the model's reply: text, json_object, or
+	// json_schema (name + schema). Providers that cannot honor the
+	// shape reject the request at compile time; the runtime re-validates
+	// the generated text against the schema before returning it.
+	ResponseFormat *inference.ResponseFormat `json:"response_format,omitempty"`
+
 	// Extensions names provider knobs in the shared {provider, id,
 	// fields} wire form (see inference.DecodeExtensions). Decoders are
 	// provider-carried: the deploy path aggregates them from the wired
@@ -257,6 +263,7 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 	}
 
 	text := &inference.TextIntent{
+		Response:         cfg.ResponseFormat,
 		ToolChoice:       cfg.ToolChoice,
 		Temperature:      cfg.Temperature,
 		TopP:             cfg.TopP,
