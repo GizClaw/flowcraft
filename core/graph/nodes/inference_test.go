@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
@@ -714,6 +715,139 @@ func TestInferenceNode_Extensions(t *testing.T) {
 	}
 	if ext, ok := exts[0].(testExtension); !ok || ext.CacheKey != "sess-1" {
 		t.Fatalf("extension = %+v (%T), want cache_key sess-1", exts[0], exts[0])
+	}
+}
+
+func TestInferenceNode_ResponseFormat_ReachesRequest(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: `{"answer":"42"}`},
+					}},
+				},
+				FinishReason: inference.FinishCompleted,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		ResponseFormat: &inference.ResponseFormat{
+			Kind: inference.ResponseJSONSchema,
+			Name: "answer",
+			Schema: json.RawMessage(
+				`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
+			),
+		},
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	req := fake.LastRequest()
+	response := req.Input.Content.Intent.Text.Response
+	if response == nil || response.Kind != inference.ResponseJSONSchema ||
+		response.Name != "answer" || len(response.Schema) == 0 {
+		t.Fatalf("request response format = %#v, want json_schema answer", response)
+	}
+	msgs := board.Channel(agent.MainChannel)
+	if text, ok := msgs[len(msgs)-1].Content.Parts[0].(message.TextPart); !ok ||
+		text.Text != `{"answer":"42"}` {
+		t.Fatalf("assistant message = %+v, want structured JSON", msgs[len(msgs)-1].Content.Parts[0])
+	}
+}
+
+func TestInferenceNode_ResponseFormat_Enforced(t *testing.T) {
+	cases := []struct {
+		name    string
+		format  *inference.ResponseFormat
+		respond string
+		want    string
+	}{
+		{
+			name:    "json_object rejects plain text",
+			respond: "ok",
+			format: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONObject,
+			},
+			want: "structured generate response is not valid JSON",
+		},
+		{
+			name:    "json_schema rejects non-conforming JSON",
+			respond: `{"answer":42}`,
+			format: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONSchema,
+				Name: "answer",
+				Schema: json.RawMessage(
+					`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
+				),
+			},
+			want: "does not match requested JSON schema",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &inferencetest.GenerateFake{
+				Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+					return inference.GenerateResponse{
+						Message: message.Message{
+							Role: message.RoleAssistant,
+							Content: message.Content{Parts: []message.Part{
+								message.TextPart{Text: tc.respond},
+							}},
+						},
+						FinishReason: inference.FinishCompleted,
+					}
+				},
+			}
+			reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+			g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+				Model:          ptr(inferencetest.DefaultFakeModel),
+				ResponseFormat: tc.format,
+			})
+			err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+			if err == nil || !strings.Contains(responseCause(err), tc.want) {
+				t.Fatalf("Execute error = %v, want containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// responseCause collects every layer of the error chain so assertions
+// can see the provider-response detail behind the kind/operation
+// envelope and its errdefs classification wrapper.
+func responseCause(err error) string {
+	var parts []string
+	for e := err; e != nil; {
+		parts = append(parts, e.Error())
+		var inferErr *inference.Error
+		if errors.As(e, &inferErr) && inferErr.Unwrap() != nil {
+			e = inferErr.Unwrap()
+			continue
+		}
+		e = errors.Unwrap(e)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func TestInferenceNode_ResponseFormat_RejectsInvalidSchema(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		ResponseFormat: &inference.ResponseFormat{
+			Kind:   inference.ResponseJSONSchema,
+			Name:   "answer",
+			Schema: json.RawMessage(`{"type":1}`),
+		},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !strings.Contains(responseCause(err), "schema") {
+		t.Fatalf("Execute error = %v, want schema validation failure", err)
 	}
 }
 
