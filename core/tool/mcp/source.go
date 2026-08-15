@@ -412,8 +412,10 @@ func (s *Source) connect(
 
 // attachSession installs a connected session, reconciles the server's
 // tool projection, and registers the server on the Source unless it is
-// already there (a reconnect). On failure the session is closed and
-// srv.session is cleared, so a retry starts from a clean state.
+// already there (a reconnect). On failure — reconcile, a concurrently
+// closed Source, or an already-attached name — the session is closed
+// and srv.session is cleared, so a retry starts from a clean state and
+// no live connection is orphaned.
 func (s *Source) attachSession(
 	ctx context.Context,
 	srv *server,
@@ -424,25 +426,35 @@ func (s *Source) attachSession(
 	srv.mu.Unlock()
 
 	if err := s.reconcile(ctx, srv); err != nil {
-		srv.mu.Lock()
-		if srv.session == session {
-			srv.session = nil
-		}
-		srv.mu.Unlock()
-		_ = session.Close()
+		abandonAttach(srv, session)
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
+		abandonAttach(srv, session)
 		return errdefs.NotAvailablef("mcp: source is closed")
 	}
 	if other, exists := s.servers[srv.name]; exists && other != srv {
+		abandonAttach(srv, session)
 		return errdefs.Validationf("mcp: server %q is already attached", srv.name)
 	}
 	s.servers[srv.name] = srv
 	return nil
+}
+
+// abandonAttach tears down a session that failed to attach. It clears
+// srv.session when it still points at the failed session and then
+// closes it, so every attachSession error path releases the connection
+// exactly once.
+func abandonAttach(srv *server, session *mcpsdk.ClientSession) {
+	srv.mu.Lock()
+	if srv.session == session {
+		srv.session = nil
+	}
+	srv.mu.Unlock()
+	_ = session.Close()
 }
 
 // reconcile re-lists the server's tools and updates its projection,
@@ -459,18 +471,7 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 		return errdefs.NotAvailablef("mcp: server %q: list tools: %v", srv.name, err)
 	}
 
-	next := make([]sdktool.Tool, 0, len(res.Tools)+2)
-	for _, mt := range res.Tools {
-		if mt == nil || mt.Name == "" {
-			continue
-		}
-		next = append(next, newAdaptedTool(srv, srv.qualify(mt.Name), mt))
-	}
-	if srv.resources {
-		for _, spec := range resourceToolSpecs(srv) {
-			next = append(next, spec.tool)
-		}
-	}
+	next := projectTools(srv, res.Tools, srv.resources)
 
 	srv.mu.Lock()
 	added, removed := diffTools(srv.tools, next)
@@ -479,6 +480,37 @@ func (s *Source) reconcile(ctx context.Context, srv *server) error {
 
 	s.publish(added, removed)
 	return nil
+}
+
+// projectTools renders a server's tool list into the local projection,
+// keeping the first occurrence of each qualified name. MCP requires
+// tool names to be unique, but a misbehaving server may still return
+// duplicates; deduplicating here keeps srv.tools, the publish deltas,
+// and Tools() consistent. Resource bridge tools are appended when
+// enabled and lose to a same-named server tool.
+func projectTools(srv *server, list []*mcpsdk.Tool, resources bool) []sdktool.Tool {
+	next := make([]sdktool.Tool, 0, len(list)+2)
+	seen := make(map[string]struct{}, len(list)+2)
+	add := func(name string, t sdktool.Tool) {
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		next = append(next, t)
+	}
+	for _, mt := range list {
+		if mt == nil || mt.Name == "" {
+			continue
+		}
+		name := srv.qualify(mt.Name)
+		add(name, newAdaptedTool(srv, name, mt))
+	}
+	if resources {
+		for _, spec := range resourceToolSpecs(srv) {
+			add(spec.tool.Definition().Name, spec.tool)
+		}
+	}
+	return next
 }
 
 // diffTools splits the move from old to next into additions and
@@ -585,7 +617,9 @@ func (s *Source) retryLoop(srv *server) {
 				go s.watch(srv)
 				return
 			}
-			_ = session.Close()
+			// attachSession owns the session on failure: every error
+			// path closes it and clears srv.session, so nothing to do
+			// here.
 			if errdefs.IsValidation(err) {
 				telemetry.Error(s.baseCtx, "mcp: server rejected attach, giving up",
 					otellog.String("server", srv.name),
