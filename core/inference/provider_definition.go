@@ -46,6 +46,13 @@ type ProviderDefinition struct {
 	Profiles []ProfileDefinition
 	Models   []ModelImplementation
 	Dynamic  *Openers
+	// ExtensionDecoders maps extension IDs (e.g. "generate_options")
+	// to the decoders this provider owns. Decoders are bound to the
+	// provider's deployment ID: decoding an entry named
+	// {provider: ID, id: ...} yields an extension whose ProviderID
+	// matches. Assembly aggregates them into "provider/extension"
+	// keys for the graph engine and script bridge.
+	ExtensionDecoders map[string]ExtensionDecoder
 }
 
 type profileEntry struct {

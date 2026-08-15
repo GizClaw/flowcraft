@@ -41,6 +41,10 @@ type GenerateFake struct {
 	StreamErr   error
 	StreamErrAt int
 
+	// ExtensionDecoders are carried on the fake provider definition,
+	// keyed by extension ID (see inference.ProviderDefinition).
+	ExtensionDecoders map[string]inference.ExtensionDecoder
+
 	mu       sync.Mutex
 	requests []inference.GenerateRequest
 }
@@ -110,7 +114,8 @@ func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 		t.Fatalf("BindGenerateOperations: %v", err)
 	}
 	definition := inference.ProviderDefinition{
-		ID: model.ID.Provider,
+		ID:                model.ID.Provider,
+		ExtensionDecoders: f.ExtensionDecoders,
 		Profiles: []inference.ProfileDefinition{{
 			ID:         model.Profile,
 			Operations: []inference.Operation{inference.OperationGenerate},

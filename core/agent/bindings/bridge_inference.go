@@ -1,13 +1,9 @@
 package bindings
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
-	"reflect"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -21,43 +17,19 @@ import (
 // identities fail with a validation error — scripts can only pick
 // from the menu the host explicit offers, never invent provider knobs.
 
-// ExtensionDecoder builds one typed extension from its script-facing
-// fields object. Decoding must be strict: unknown fields are typos,
-// not optional extras.
-type ExtensionDecoder func(fields json.RawMessage) (inference.Extension, error)
-
-// ExtensionDecoderFor adapts a factory for a provider's option struct
-// into an ExtensionDecoder. T must be a pointer type whose fields
-// carry the provider's JSON contract (e.g. func() *kimi.GenerateOptions).
-func ExtensionDecoderFor[T inference.Extension](factory func() T) ExtensionDecoder {
-	return func(fields json.RawMessage) (inference.Extension, error) {
-		ext := factory()
-		value := reflect.ValueOf(ext)
-		if !value.IsValid() || value.Kind() != reflect.Pointer || value.IsNil() {
-			return nil, errdefs.Internalf("extension factory returned %T, want a non-nil pointer", ext)
-		}
-		dec := json.NewDecoder(bytes.NewReader(fields))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(ext); err != nil {
-			return nil, errdefs.Validationf("extension fields: %v", err)
-		}
-		return ext, nil
-	}
-}
-
 // InferenceBridgeOption customizes NewInferenceBridge.
 type InferenceBridgeOption func(*inferenceBridgeConfig)
 
 type inferenceBridgeConfig struct {
-	extensions map[string]ExtensionDecoder
+	extensions map[string]inference.ExtensionDecoder
 }
 
 // WithExtensionDecoder registers the decoder for one
 // provider/extension identity pair, keyed "provider/id".
-func WithExtensionDecoder(provider, id string, decoder ExtensionDecoder) InferenceBridgeOption {
+func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecoder) InferenceBridgeOption {
 	return func(cfg *inferenceBridgeConfig) {
 		if cfg.extensions == nil {
-			cfg.extensions = make(map[string]ExtensionDecoder)
+			cfg.extensions = make(map[string]inference.ExtensionDecoder)
 		}
 		cfg.extensions[provider+"/"+id] = decoder
 	}
@@ -264,7 +236,7 @@ func newStreamHandle(ctx context.Context, stream inference.GenerateStream, trace
 // ownership lives with the caller, not the payload), so it is stripped
 // before the strict decode; "extensions" is stripped the same way and
 // resolved through the host-registered decoders.
-func parseInferenceGenerateCall(raw any, decoders map[string]ExtensionDecoder) (inference.ModelRef, inference.GenerateRequest, error) {
+func parseInferenceGenerateCall(raw any, decoders map[string]inference.ExtensionDecoder) (inference.ModelRef, inference.GenerateRequest, error) {
 	var ref inference.ModelRef
 	var req inference.GenerateRequest
 	obj, ok := raw.(map[string]any)
@@ -293,7 +265,7 @@ func parseInferenceGenerateCall(raw any, decoders map[string]ExtensionDecoder) (
 // parseInferenceRouteCall decodes a router-entry request: no model
 // key (rejected by the strict decode), extensions stripped and
 // resolved like the runtime entry.
-func parseInferenceRouteCall(raw any, decoders map[string]ExtensionDecoder, field string) (inference.GenerateRequest, error) {
+func parseInferenceRouteCall(raw any, decoders map[string]inference.ExtensionDecoder, field string) (inference.GenerateRequest, error) {
 	var req inference.GenerateRequest
 	obj, ok := raw.(map[string]any)
 	if !ok {
@@ -308,7 +280,7 @@ func parseInferenceRouteCall(raw any, decoders map[string]ExtensionDecoder, fiel
 // decodeRequestRest strips the bridge-level "extensions" key, strict-
 // decodes the remaining canonical wire into req, then resolves the
 // extensions through the host registry.
-func decodeRequestRest(obj map[string]any, req *inference.GenerateRequest, decoders map[string]ExtensionDecoder, field string) error {
+func decodeRequestRest(obj map[string]any, req *inference.GenerateRequest, decoders map[string]inference.ExtensionDecoder, field string) error {
 	extRaw, rest := splitExtensionsKey(obj)
 	if err := decodeStrictJSON(rest, req, field); err != nil {
 		return err
@@ -337,63 +309,17 @@ func splitExtensionsKey(obj map[string]any) (extRaw any, rest map[string]any) {
 	return extRaw, rest
 }
 
-// ExtensionEntry is the wire form of one extension reference: which
-// provider's which extension, plus its fields object. Shared by the
-// script bridge and graph nodes — anywhere a JSON document needs to
-// name a typed extension.
-type ExtensionEntry struct {
-	Provider string          `json:"provider"`
-	ID       string          `json:"id"`
-	Fields   json.RawMessage `json:"fields"`
-}
-
-// DecodeExtensions resolves entries into typed extensions via the
-// host-registered decoders. Unregistered identities are validation
-// errors: the host's registry is the whole menu. A decoder returning
-// an extension whose identity does not match the registered key is a
-// host wiring bug and surfaces as an internal error.
-func DecodeExtensions(entries []ExtensionEntry, decoders map[string]ExtensionDecoder, field string) (inference.Extensions, error) {
-	var extensions inference.Extensions
-	for i, entry := range entries {
-		entryField := fmt.Sprintf("%s[%d]", field, i)
-		if entry.Provider == "" || entry.ID == "" {
-			return nil, errdefs.Validationf("%s: provider and id are required", entryField)
-		}
-		key := entry.Provider + "/" + entry.ID
-		decoder, ok := decoders[key]
-		if !ok {
-			return nil, errdefs.Validationf("%s: extension %q is not registered by the host", entryField, key)
-		}
-		fields := entry.Fields
-		if len(fields) == 0 {
-			fields = json.RawMessage(`{}`)
-		}
-		extension, err := decoder(fields)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", entryField, err)
-		}
-		if extension.ProviderID() != entry.Provider || extension.ExtensionID() != entry.ID {
-			return nil, errdefs.Internalf(
-				"%s: decoder for %q returned extension %q/%q",
-				entryField, key, extension.ProviderID(), extension.ExtensionID(),
-			)
-		}
-		extensions = append(extensions, extension)
-	}
-	return extensions, nil
-}
-
 // decodeScriptExtensions resolves a script "extensions" array —
 // entries of {provider, id, fields} — into typed extensions via the
 // host-registered decoders. Strict decoding rejects unknown entry
 // keys as typos.
-func decodeScriptExtensions(raw any, decoders map[string]ExtensionDecoder, field string) (inference.Extensions, error) {
+func decodeScriptExtensions(raw any, decoders map[string]inference.ExtensionDecoder, field string) (inference.Extensions, error) {
 	if raw == nil {
 		return nil, nil
 	}
-	var entries []ExtensionEntry
+	var entries []inference.ExtensionEntry
 	if err := decodeStrictJSON(raw, &entries, field); err != nil {
 		return nil, err
 	}
-	return DecodeExtensions(entries, decoders, field)
+	return inference.DecodeExtensions(entries, decoders, field)
 }

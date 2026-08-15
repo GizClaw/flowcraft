@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/graph"
@@ -694,13 +693,13 @@ func TestInferenceNode_Extensions(t *testing.T) {
 	fake := &inferencetest.GenerateFake{}
 	reg := inferenceRegistry(t, InferenceNodeDeps{
 		Assembly: fake.Assembly(t),
-		Extensions: map[string]bindings.ExtensionDecoder{
-			"fake/generate_options": bindings.ExtensionDecoderFor(func() *testExtension { return &testExtension{} }),
+		Extensions: map[string]inference.ExtensionDecoder{
+			"fake/generate_options": inference.ExtensionDecoderFor(func() *testExtension { return &testExtension{} }),
 		},
 	})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
 		Model: ptr(inferencetest.DefaultFakeModel),
-		Extensions: []bindings.ExtensionEntry{{
+		Extensions: []inference.ExtensionEntry{{
 			Provider: "fake",
 			ID:       "generate_options",
 			Fields:   json.RawMessage(`{"cache_key":"sess-1"}`),
