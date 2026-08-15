@@ -252,6 +252,7 @@ func (stubWorkspace) Stat(context.Context, string) (fs.FileInfo, error) { return
 
 type stubRunner struct{}
 
+func (stubRunner) Close() error                       { return nil }
 func (stubRunner) Capabilities() sandbox.Capabilities { return sandbox.Capabilities{} }
 func (stubRunner) Start(context.Context, sandbox.SessionSpec) (sandbox.Session, error) {
 	return nil, errdefs.NotAvailablef("script node test: stub runner cannot start sessions")

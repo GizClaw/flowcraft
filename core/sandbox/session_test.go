@@ -134,3 +134,36 @@ func TestSessionSignal(t *testing.T) {
 		t.Fatalf("exit = %+v, want non-zero/signaled after interrupt", exit)
 	}
 }
+
+// TestRunnerCloseTerminatesSessions verifies that Runner.Close drains
+// every active session: after Close, no session started through the
+// runner is still running.
+func TestRunnerCloseTerminatesSessions(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	r := local.New(t.TempDir())
+
+	sess, err := r.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"sleep", "30"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait after Close: %v", err)
+	}
+	if exit.Code == 0 && exit.Reason == sandbox.SessionExited {
+		t.Fatalf("exit = %+v, want non-zero/signaled after runner Close", exit)
+	}
+
+	// A second Close must be safe and must not error.
+	if err := r.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}

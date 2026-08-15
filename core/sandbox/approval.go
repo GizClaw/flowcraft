@@ -234,6 +234,11 @@ func (r *approvalRunner) Capabilities() Capabilities {
 	return r.inner.Capabilities()
 }
 
+// Close forwards to the inner runner so lifecycle survives decoration.
+func (r *approvalRunner) Close() error {
+	return r.inner.Close()
+}
+
 // CommandPatterns returns a predicate that matches when the command's
 // base name glob-matches any of the patterns (e.g. "rm", "dd",
 // "git"). It inspects the command string only — a shell invocation

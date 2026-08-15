@@ -39,3 +39,8 @@ func (*Runner) List(context.Context) ([]sandbox.SessionInfo, error) {
 func (*Runner) Terminate(context.Context, string) error {
 	return errdefs.NotAvailablef("bwrap: not available on this platform")
 }
+
+// Close is unreachable outside Linux.
+func (*Runner) Close() error {
+	return errdefs.NotAvailablef("bwrap: not available on this platform")
+}

@@ -11,12 +11,22 @@ import (
 // an errdefs.NotAvailable error rather than silently downgrading the
 // request.
 //
+// Lifecycle is part of the contract, not a convention: Close releases
+// every resource the runner owns — active sessions, forked daemons,
+// sockets, backend state. Decorators MUST forward Close to their inner
+// runner so wrapping never hides the backend's cleanup.
+//
 // Capabilities is mandatory: it is the explicit, wire-safe declaration
 // of what this backend can do. Callers and tools never discover
 // features through interface assertions — unsupported operations on a
 // returned [Session] fail with errdefs.NotAvailable, and Capabilities
 // says up front why.
 type Runner interface {
+	// Close releases every resource owned by the runner. It must be
+	// safe to call more than once and when nothing was ever started;
+	// implementations should terminate active sessions rather than
+	// silently abandoning them.
+	Close() error
 	Capabilities() Capabilities
 	Start(ctx context.Context, spec SessionSpec) (Session, error)
 	List(ctx context.Context) ([]SessionInfo, error)

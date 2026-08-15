@@ -18,6 +18,10 @@ type fakeCommandRunner struct {
 	exitCode int
 }
 
+func (f *fakeCommandRunner) Close() error {
+	return nil
+}
+
 func (f *fakeCommandRunner) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{}
 }
@@ -37,6 +41,10 @@ func (f *fakeCommandRunner) Terminate(context.Context, string) error {
 // errorCommandRunner always fails — used to verify the bridge's error
 // translation branch (Go err → exit_code -1 + stderr).
 type errorCommandRunner struct{ err error }
+
+func (e *errorCommandRunner) Close() error {
+	return nil
+}
 
 func (e *errorCommandRunner) Capabilities() sandbox.Capabilities {
 	return sandbox.Capabilities{}

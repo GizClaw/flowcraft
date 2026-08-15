@@ -125,6 +125,13 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 	return r.registry().Terminate(ctx, id)
 }
 
+// Close implements core/sandbox.Runner: it terminates every session
+// started through this runner. Safe to call more than once and when the
+// runner never started anything.
+func (r *Runner) Close() error {
+	return r.registry().Close()
+}
+
 // registry returns the session registry, initialising it lazily so a
 // zero-value Runner still answers with NotAvailable instead of
 // panicking on a nil interface.
