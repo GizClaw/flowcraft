@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.8` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.9` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.9` - 2026-08-15
+
+### Changed
+
+- fix(core): make MCP Source.AddServer non-blocking so hung servers cannot stall host startup, with WithRequired and WaitReady for hosts that need readiness
 
 ## `core/v0.1.8` - 2026-08-15
 
