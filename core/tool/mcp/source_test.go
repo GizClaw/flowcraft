@@ -85,6 +85,15 @@ func (b *blockingTransport) Connect(ctx context.Context) (mcpsdk.Connection, err
 	return nil, ctx.Err()
 }
 
+// rejectingTransport fails every Connect with a peer rejection, which
+// connectError classifies as Validation: the server is there but will
+// not accept us, so retrying cannot fix it.
+type rejectingTransport struct{}
+
+func (rejectingTransport) Connect(context.Context) (mcpsdk.Connection, error) {
+	return nil, errors.New("unauthorized")
+}
+
 // TestMCPHelperProcess is a stdio MCP server executed as a child of
 // the test binary (the standard go test re-exec pattern). It is a
 // no-op unless FC_MCP_HELPER=1.
@@ -216,12 +225,114 @@ func TestSource_InitialConnectPublishesTools(t *testing.T) {
 	if err := src.AddServer(ctx, "mem", clientT); err != nil {
 		t.Fatalf("AddServer: %v", err)
 	}
-	if !reg.has("mem__mem_tool") {
-		t.Fatalf("mem__mem_tool not published; registrar has %v", reg.added)
-	}
+	waitFor(t, 5*time.Second, "first connect to publish tools", func() bool {
+		return reg.has("mem__mem_tool")
+	})
 	tools := src.Tools()
 	if len(tools) != 1 || tools[0].Definition().Name != "mem__mem_tool" {
 		t.Fatalf("Tools() = %v, want [mem__mem_tool]", tools)
+	}
+}
+
+// TestSource_AddServerDoesNotBlockOnHungServer is the regression test
+// for the startup stall: a server that accepts the transport but never
+// completes the handshake must not hold AddServer past a small bound,
+// even with a long per-attempt connect timeout.
+func TestSource_AddServerDoesNotBlockOnHungServer(t *testing.T) {
+	src := NewSource(WithConnectTimeout(5 * time.Second))
+	t.Cleanup(func() { _ = src.Close() })
+
+	start := time.Now()
+	if err := src.AddServer(context.Background(), "hung", &blockingTransport{}); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Fatalf("AddServer blocked for %v with a hung server, want immediate return", elapsed)
+	}
+}
+
+func TestSource_WaitReadyWaitsForFirstConnect(t *testing.T) {
+	src := NewSource(WithConnectTimeout(2 * time.Second))
+	t.Cleanup(func() { _ = src.Close() })
+	reg := newRecordingRegistrar()
+	src.Attach(reg)
+
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	server := mcpsdk.NewServer(
+		&mcpsdk.Implementation{Name: "mem", Version: "test"}, nil)
+	server.AddTool(&mcpsdk.Tool{
+		Name:        "mem_tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}}}, nil
+	})
+	go func() { _, _ = server.Connect(context.Background(), serverT, nil) }()
+
+	if err := src.AddServer(context.Background(), "mem", clientT); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	if err := src.WaitReady(context.Background(), "mem", 5*time.Second); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
+	if !reg.has("mem__mem_tool") {
+		t.Fatalf("tools not published after WaitReady; registrar has %v", reg.added)
+	}
+
+	// Once connected, WaitReady returns immediately.
+	if err := src.WaitReady(context.Background(), "mem", 0); err != nil {
+		t.Fatalf("WaitReady after connect: %v", err)
+	}
+}
+
+// TestSource_WaitReadyReturnsGiveUpError covers the new semantic
+// surface: a validation/rejection failure that used to return from
+// AddServer is now a background give-up, surfaced through WaitReady.
+func TestSource_WaitReadyReturnsGiveUpError(t *testing.T) {
+	src := NewSource(WithConnectTimeout(time.Second))
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(context.Background(), "bad", rejectingTransport{}, WithRequired()); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	err := src.WaitReady(context.Background(), "bad", 5*time.Second)
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("WaitReady = %v, want Validation", err)
+	}
+}
+
+func TestSource_WaitReadyTimesOut(t *testing.T) {
+	src := NewSource(WithConnectTimeout(5 * time.Second))
+	t.Cleanup(func() { _ = src.Close() })
+
+	if err := src.AddServer(context.Background(), "hung", &blockingTransport{}); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	err := src.WaitReady(context.Background(), "hung", 50*time.Millisecond)
+	if err == nil || !errdefs.IsTimeout(err) {
+		t.Fatalf("WaitReady = %v, want Timeout", err)
+	}
+}
+
+func TestSource_WaitReadyFailsWhenSourceCloses(t *testing.T) {
+	src := NewSource(WithConnectTimeout(5 * time.Second))
+
+	if err := src.AddServer(context.Background(), "hung", &blockingTransport{}); err != nil {
+		t.Fatalf("AddServer: %v", err)
+	}
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	err := src.WaitReady(context.Background(), "hung", time.Second)
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("WaitReady after Close = %v, want NotAvailable", err)
+	}
+}
+
+func TestSource_WaitReadyUnknownServer(t *testing.T) {
+	src := NewSource()
+	t.Cleanup(func() { _ = src.Close() })
+	if err := src.WaitReady(context.Background(), "nope", 0); !errdefs.IsValidation(err) {
+		t.Fatalf("WaitReady for unknown server = %v, want Validation", err)
 	}
 }
 

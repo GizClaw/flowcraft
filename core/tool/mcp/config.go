@@ -35,6 +35,7 @@ type ServerSpec struct {
 	HTTPTimeout *string           `json:"http_timeout,omitempty"`
 	Prefix      *string           `json:"prefix,omitempty"`
 	Resources   bool              `json:"resources,omitempty"`
+	Required    bool              `json:"required,omitempty"`
 }
 
 // Transport constants for ServerSpec.Transport.
@@ -211,6 +212,9 @@ func (s ServerSpec) options() []ServerOption {
 	}
 	if s.Resources {
 		opts = append(opts, WithResources(true))
+	}
+	if s.Required {
+		opts = append(opts, WithRequired())
 	}
 	return opts
 }
