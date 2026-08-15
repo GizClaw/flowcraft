@@ -70,7 +70,14 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 		profiles[profile.ID] = material
 	}
 
-	provider := inference.ProviderDefinition{ID: settings.ID}
+	provider := inference.ProviderDefinition{
+		ID: settings.ID,
+		ExtensionDecoders: map[string]inference.ExtensionDecoder{
+			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
+				return &GenerateOptions{Provider: settings.ID}
+			}),
+		},
+	}
 	for _, profile := range settings.Profiles {
 		provider.Profiles = append(
 			provider.Profiles,

@@ -42,3 +42,59 @@ func TestRegisterAddsMiniMaxProviderFactory(t *testing.T) {
 		t.Fatalf("factory %s/minimax missing", ResourceKind)
 	}
 }
+
+func TestProviderCarriesMusicOptionsDecoder(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "minimax",
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	decoder, ok := provider.ExtensionDecoders[extensionMusic]
+	if !ok {
+		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionMusic)
+	}
+
+	extensions, err := inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "minimax",
+		ID:       extensionMusic,
+		Fields:   json.RawMessage(`{"lyrics":"hello world","instrumental":true}`),
+	}}, map[string]inference.ExtensionDecoder{
+		"minimax/" + extensionMusic: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	options := extensions[0].(*MusicOptions)
+	if options.ProviderID() != "minimax" || options.Lyrics != "hello world" ||
+		options.Instrumental == nil || !*options.Instrumental {
+		t.Fatalf("decoded options = %#v", options)
+	}
+
+	value, err = Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "mm-prod",
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	decoder = value.(inference.ProviderDefinition).ExtensionDecoders[extensionMusic]
+	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "mm-prod",
+		ID:       extensionMusic,
+	}}, map[string]inference.ExtensionDecoder{
+		"mm-prod/" + extensionMusic: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	if options := extensions[0].(*MusicOptions); options.ProviderID() != "mm-prod" {
+		t.Fatalf("ProviderID = %q, want %q", options.ProviderID(), "mm-prod")
+	}
+}

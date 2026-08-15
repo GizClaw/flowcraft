@@ -64,3 +64,73 @@ func TestRegisterAddsAzureProviderFactory(t *testing.T) {
 		t.Fatalf("factory %s/azure missing", ResourceKind)
 	}
 }
+
+func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{"name": "gpt-5", "kind": "generate"}]
+			},
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	decoder, ok := provider.ExtensionDecoders[extensionGenerate]
+	if !ok {
+		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionGenerate)
+	}
+
+	extensions, err := inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "azure",
+		ID:       extensionGenerate,
+		Fields: json.RawMessage(`{
+			"web_search": {
+				"tool_choice": {"required": true},
+				"search_context_size": "high"
+			}
+		}`),
+	}}, map[string]inference.ExtensionDecoder{
+		"azure/" + extensionGenerate: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	options := extensions[0].(*GenerateOptions)
+	if options.ProviderID() != "azure" || options.WebSearch == nil ||
+		options.WebSearch.ToolChoice == nil || !options.WebSearch.ToolChoice.Required ||
+		options.WebSearch.SearchContextSize != "high" {
+		t.Fatalf("decoded options = %#v", options)
+	}
+
+	value, err = Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "az-prod",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{"name": "gpt-5", "kind": "generate"}]
+			},
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	decoder = value.(inference.ProviderDefinition).ExtensionDecoders[extensionGenerate]
+	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "az-prod",
+		ID:       extensionGenerate,
+	}}, map[string]inference.ExtensionDecoder{
+		"az-prod/" + extensionGenerate: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	if options := extensions[0].(*GenerateOptions); options.ProviderID() != "az-prod" {
+		t.Fatalf("ProviderID = %q, want %q", options.ProviderID(), "az-prod")
+	}
+}
