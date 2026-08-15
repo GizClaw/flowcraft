@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.10` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.11` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.11` - 2026-08-15
+
+### Changed
+
+- feat(core): dynamic agent registry for runtime agent register/unregister with lifecycle-aware cleanup; feat(core): expose response_format on graph inference node config
 
 ## `core/v0.1.10` - 2026-08-15
 
