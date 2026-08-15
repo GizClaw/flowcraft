@@ -53,7 +53,11 @@ the L2 dry-run harness and fix build failures against the reference cards.
    warnings flag names missing from the built catalog.
 7. **Hand off.** Report what was assembled, what L2 could not validate
    (app-registered kinds/hooks/sources), and the registration code the
-   host still needs.
+   host still needs. If the deployment relies on runtime agent
+   registration, call out that it needs the live registry API
+   (`Runtime.RegisterAgent` / `UnregisterAgent`; see
+   [references/runtime.md](references/runtime.md)) and any
+   `dynamic_catalog` `default`/`WithToolAssembly` requirement.
 
 ## Cross-file invariants
 
@@ -66,6 +70,9 @@ the L2 dry-run harness and fix build failures against the reference cards.
 - Agent `tools` is an allow-list, not a catalog declaration; `policy` is
   harness state, not engine settings.
 - Graph `model` refs: `model: {id: {provider, name}}`.
+- Runtime-registered agents reuse the deployment assembly path; their
+  names must not collide with deployed agents, and with a `dynamic_catalog`
+  they need a tool mapping or a `default`.
 
 ## Templates
 
@@ -77,7 +84,7 @@ workflow.
 ## Compatibility and versioning
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
-requires `github.com/GizClaw/flowcraft/core v0.1.0` plus the relevant
+requires `github.com/GizClaw/flowcraft/core v0.1.11` plus the relevant
 `driver/*` and `backends/*` modules; the schema cards in this skill
 document exactly that release. When FlowCraft releases a new version,
 bump the pins and reconcile the cards in the same change. The L2 harness

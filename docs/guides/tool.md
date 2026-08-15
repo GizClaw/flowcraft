@@ -15,6 +15,10 @@ directory, the executor dispatcher, and a middleware chain.
 | `Catalog` | read-side view (`Get`, `Definitions`) |
 | `Executor` | dispatches every call through middleware |
 
+`Registry.Add` / `Registry.Remove` register and unregister tools at
+runtime (removal closes `io.Closer` tools); deferred sources use this
+surface to publish tools discovered after construction.
+
 ## Tool contract
 
 ```go

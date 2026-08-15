@@ -26,6 +26,8 @@ defer app.Close()
 ```
 
 `Runtime` owns its `deploy.Result`, event router, and session manager.
+`Close` releases the deployment (resources and deployed agents), the
+session manager, and any dynamically registered agents.
 
 ## Subscribing to runtime events
 
@@ -44,7 +46,9 @@ Attachments are torn down when the Runtime closes, and `Attach` fails
 with `NotAvailable` afterwards. External attachments inherit the bus
 default backpressure (`DropNewest`); pass
 `event.WithAttachBackpressure` to override per subscription. See
-[prompt.md](prompt.md) for the prompt lifecycle events.
+[prompt.md](prompt.md) for the prompt lifecycle events, and the
+"Dynamic agent registry" section below for the `runtime.agent.*`
+lifecycle events published on dynamic registration/removal.
 
 ## Runtime config
 
@@ -72,7 +76,9 @@ Rules:
 - `checkpoint_store` is optional; it names an `agent.CheckpointStore`.
 - `sessions.resume` requires `checkpoint_store`.
 - `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources.
-  The reserved `default` key is an optional fallback.
+  The reserved `default` key is an optional fallback. The mapping is
+  live: dynamically registered agents may attach a tool assembly at
+  registration time (see below).
 - Buffer and concurrency fields are validated against hard upper bounds.
 
 ## Sessions
@@ -99,6 +105,58 @@ result, err := turn.Wait(ctx)
 
 `SinkSpec` controls streaming delivery, visibility, authority, and queue
 size. `delivery_concurrency` bounds in-flight sink callbacks.
+
+## Dynamic agent registry
+
+Agents are normally declared in the deployment document and fixed for the
+life of the `Runtime`. `Runtime` also exposes a live registry so agents
+can be registered and removed at runtime without rebuilding:
+
+```go
+instance, err := app.RegisterAgent(ctx, "qa", agent.Definition{
+    Card:   agent.AgentCard{Name: "Ticket QA"},
+    Engine: agent.EngineRef{Kind: "agent.Engine", Impl: "graph"},
+}, runtime.WithToolAssembly("shared_tools")) // optional tool catalog
+if err != nil {
+    return err
+}
+
+lease, err := app.Sessions().GetOrCreate(ctx, session.Key{
+    AgentID: "qa", ContextID: "user-7",
+})
+// ... Start / Wait, exactly like a deployed agent
+
+if err := app.UnregisterAgent(ctx, "qa",
+    runtime.WithRemoveTimeout(30*time.Second)); err != nil {
+    return err
+}
+```
+
+Semantics:
+
+- `RegisterAgent` runs the `Definition` through the same assembly path as
+  deployment (`deploy.BindAgent`: engine factory, dependency resolution,
+  hook construction and wiring). A name that collides with a deployed or
+  already-registered agent is a `Conflict`; assembly failures are
+  `Validation` and never leave a partial registration.
+- `UnregisterAgent` blocks new sessions for the agent, waits for active
+  turns to finish naturally (bounded by the caller context or
+  `WithRemoveTimeout`), then closes the agent's engine and hooks. On
+  timeout the agent stays registered and sessions stay intact; the call
+  is retryable. Unknown names are an idempotent no-op; deployed agents
+  cannot be removed at runtime (`Conflict`).
+- `Agent` / `AgentNames` are the live view: dynamically registered agents
+  plus the deployment snapshot.
+- With `dynamic_catalog` configured, a registration must either carry
+  `WithToolAssembly(<resource name>)` or be covered by the `default`
+  assembly — the same rule the build enforces for deployed agents.
+- Every successful register/remove publishes a lifecycle event under
+  `runtime.agent.<id>.registered` / `.removed` (subscribe with
+  `PatternAgentLifecycle()`); the payload carries `agent_id`, `name`, and
+  `description`.
+
+`Manager.RemoveAgent` / `Manager.ReopenAgent` are the session-manager
+level primitives behind removal and re-registration.
 
 ## Host decorators
 

@@ -15,6 +15,15 @@
 9. `tool.Assembly` with dynamic injection requires at least one tool source.
 10. Local sandbox is a no-isolation backend and should not be used for
     untrusted production execution.
+11. Runtime registration cannot reuse a deployed agent name (`Conflict`);
+    deployed agents can only be removed by changing the deployment
+    document.
+12. With `dynamic_catalog` configured and no `default`, runtime
+    registration must pass `WithToolAssembly`; otherwise registration is
+    rejected up front.
+13. `UnregisterAgent` waits for active turns; a stuck engine times out
+    (`WithRemoveTimeout` / ctx deadline) and the agent is left registered
+    — retry, don't assume removal happened.
 
 ## Error map
 
@@ -29,6 +38,9 @@
 | graph `unknown field "provider"` | flattened model ref | use nested `id` |
 | script node missing `runtime`/`source` | incomplete script config | add both fields |
 | dynamic catalog uncovered agent | no per-agent or default mapping | add `default` or map every agent |
+| `runtime: agent "x" is a deployed agent` | register/remove collides with a document agent | register under a new name, or change the deployment |
+| `dynamic catalog has no default; agent "x" needs WithToolAssembly` | runtime registration without a tool mapping | add `WithToolAssembly` or configure `default` |
+| removal `DeadlineExceeded` | active turn did not finish in time | wait/retry; the agent is still registered |
 
 ## Debug order
 

@@ -33,7 +33,8 @@ dependencies, and a `Loader` for `Source` references.
 
 `resource.Graph` validates named resources, resolves dependency refs, rejects
 cycles, and returns a stable topological order. `deploy.Builder` uses that
-order to construct resources and to close them in reverse order on failure.
+order to construct resources and to close them in reverse order on failure;
+`deploy.Result.Close` also closes each bound agent (engine and hooks).
 
 ### Loader and Source
 

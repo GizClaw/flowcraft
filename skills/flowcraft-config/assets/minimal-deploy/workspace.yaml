@@ -1,10 +1,8 @@
-version: v1
-workspaces:
-  project:
-    driver: local
-    settings:
-      root: workspace
-    scope:
-      deny_read: ["**/.env"]
-      allow_write: ["**"]
-      mandatory_deny: [".git/**"]
+# workspace.Workspace/local settings (referenced via
+# resources.ws.settings.file in deploy.yaml).
+root: ./workspace
+scoped:
+  enabled: true
+  deny_read: ["**/.env"]
+  allow_write: ["**"]
+  mandatory_deny: [".git/**"]

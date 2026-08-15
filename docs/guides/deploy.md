@@ -97,6 +97,12 @@ if err != nil {
 defer result.Close()
 ```
 
+`Result.Close` closes every built resource value in reverse construction
+order, then closes each bound agent (engine and lifecycle hooks). Agents
+can also be assembled individually at runtime via the exported
+`deploy.BindAgent` — the same path `core/runtime` uses for its live agent
+registry (see [runtime.md](runtime.md)).
+
 ## Layered configuration
 
 `deploy.LoadLayers` loads multiple `Layer` values, merges them in ascending

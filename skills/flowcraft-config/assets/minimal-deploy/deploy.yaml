@@ -8,16 +8,22 @@ resources:
       route_cache_size: 1024
 
   ws:
-    kind: workspace.Registry
-    impl: yaml
+    kind: workspace.Workspace
+    impl: local
     settings:
       file: ./workspace.yaml
 
-  infer:
-    kind: inference.Assembly
-    impl: yaml
+  provider:
+    kind: inference.Provider
+    impl: deepseek
     settings:
       file: ./inference.yaml
+
+  infer:
+    kind: inference.Assembly
+    impl: unified
+    deps:
+      provider: provider
 
 agents:
   assistant:
@@ -25,12 +31,13 @@ agents:
       name: Assistant
       description: Handles interactive requests with memory.
     engine:
-      kind: graph
+      kind: agent.Engine
+      impl: graph
+      deps:
+        inference: infer
+        workspace: ws
       settings:
         graph: {file: ./graphs/assistant.json}
-    deps:
-      inference: infer
-      workspace: ws/project
 
 runtime:
   event_bus: events
