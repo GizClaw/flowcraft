@@ -46,10 +46,15 @@ type Manager struct {
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
+	removed   map[string]struct{}
 	closed    bool
 	closeOnce sync.Once
 	closeErr  error
 }
+
+// agentDrainPollInterval is how often RemoveAgent re-checks whether
+// the target agent's sessions have become idle while draining.
+const agentDrainPollInterval = 10 * time.Millisecond
 
 // NewManager constructs a Session manager over borrowed runtime dependencies.
 func NewManager(
@@ -108,6 +113,7 @@ func NewManager(
 		observer:            opts.observer,
 		catalogProvider:     opts.catalogProvider,
 		entries:             make(map[Key]*managerEntry),
+		removed:             make(map[string]struct{}),
 	}, nil
 }
 
@@ -139,6 +145,10 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, ErrManagerClosed
+	}
+	if _, gone := m.removed[key.AgentID]; gone {
+		return nil, errdefs.NotFoundf(
+			"runtime session: agent %q is not deployed", key.AgentID)
 	}
 	if entry := m.entries[key]; entry != nil {
 		entry.leases++
@@ -190,7 +200,9 @@ func (m *Manager) release(key Key, session *Session) error {
 	}
 	entry.leases--
 	if entry.leases == 0 && session.isIdle() {
-		m.scheduleIdleTimerLocked(key, entry)
+		if _, gone := m.removed[key.AgentID]; !gone {
+			m.scheduleIdleTimerLocked(key, entry)
+		}
 	}
 	return nil
 }
@@ -211,12 +223,18 @@ func (m *Manager) activityChanged(key Key, session *Session) {
 		entry.timer.Stop()
 		entry.timer = nil
 	}
+	if _, gone := m.removed[key.AgentID]; gone {
+		return
+	}
 	if entry.leases == 0 && session.isIdle() {
 		m.scheduleIdleTimerLocked(key, entry)
 	}
 }
 
 func (m *Manager) scheduleIdleTimerLocked(key Key, entry *managerEntry) {
+	if _, gone := m.removed[key.AgentID]; gone {
+		return
+	}
 	entry.idleGeneration++
 	generation := entry.idleGeneration
 	session := entry.session
@@ -236,10 +254,115 @@ func (m *Manager) reclaim(key Key, session *Session, generation uint64) {
 		m.mu.Unlock()
 		return
 	}
+	if _, gone := m.removed[key.AgentID]; gone {
+		m.mu.Unlock()
+		return
+	}
 	delete(m.entries, key)
 	entry.timer = nil
 	m.mu.Unlock()
 	_ = session.close()
+}
+
+// RemoveAgent blocks new session activity for the named agent and
+// drains its live sessions: it waits (bounded by ctx) for every active
+// turn to finish naturally, then closes the now-idle sessions. On ctx
+// expiry the tombstone stays in place (new opens keep failing), the
+// sessions are left intact, and no partial removal state is produced —
+// callers may retry. Repeated calls are idempotent.
+func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
+	if m == nil {
+		return nil
+	}
+	if isNil(ctx) {
+		return errdefs.Validationf("runtime session: context is required")
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrManagerClosed
+	}
+	m.removed[name] = struct{}{}
+	// Stop idle-reclamation timers and invalidate in-flight callbacks so
+	// sessions are not reclaimed while we drain them.
+	for key, entry := range m.entries {
+		if key.AgentID != name {
+			continue
+		}
+		entry.idleGeneration++
+		if entry.timer != nil {
+			entry.timer.Stop()
+			entry.timer = nil
+		}
+	}
+	m.mu.Unlock()
+
+	if err := m.awaitAgentIdle(ctx, name); err != nil {
+		return err
+	}
+
+	var closing []*Session
+	m.mu.Lock()
+	for key, entry := range m.entries {
+		if key.AgentID != name {
+			continue
+		}
+		if entry.session.markClosing() {
+			closing = append(closing, entry.session)
+		}
+		delete(m.entries, key)
+	}
+	m.mu.Unlock()
+
+	for _, s := range closing {
+		s.notifySessionClosing(true)
+	}
+	var errs []error
+	for _, s := range closing {
+		if err := s.close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// ReopenAgent clears the tombstone left by RemoveAgent, re-admitting
+// session activity for the name. It is used when re-registering an
+// agent under the same ID.
+func (m *Manager) ReopenAgent(name string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	delete(m.removed, name)
+	m.mu.Unlock()
+}
+
+func (m *Manager) awaitAgentIdle(ctx context.Context, name string) error {
+	ticker := time.NewTicker(agentDrainPollInterval)
+	defer ticker.Stop()
+	for {
+		if m.agentIdle(name) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errdefs.FromContext(ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) agentIdle(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for key, entry := range m.entries {
+		if key.AgentID == name && !entry.session.isIdle() {
+			return false
+		}
+	}
+	return true
 }
 
 // Close stops reclamation, refuses new leases, and closes every Session.

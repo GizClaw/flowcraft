@@ -162,6 +162,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	}
 
 	var catalogProvider session.CatalogProvider
+	var liveCatalog *catalogRegistry
 	if cfg.DynamicCatalog != nil {
 		assemblies, resolveErr := resolveDynamicCatalogAssemblies(
 			doc, result, cfg.DynamicCatalog)
@@ -169,10 +170,12 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 			_ = result.Close()
 			return nil, resolveErr
 		}
-		catalogProvider = newDynamicCatalogProvider(assemblies)
+		liveCatalog = newCatalogRegistry(assemblies)
+		catalogProvider = liveCatalog
 	}
 
 	router := event.NewRouter(bus)
+	registry := newAgentRegistry(result)
 	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
@@ -193,24 +196,22 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		managerOptions = append(managerOptions,
 			session.WithCatalogProvider(catalogProvider))
 	}
-	manager, err := session.NewManager(
-		resultResolver{result: result}, hostFactory, router, managerOptions...)
+	manager, err := session.NewManager(registry, hostFactory, router, managerOptions...)
 	if err != nil {
 		_ = router.Close()
 		_ = result.Close()
 		return nil, fmt.Errorf("runtime create session manager: %w", err)
 	}
-	return &Runtime{manager: manager, router: router, result: result}, nil
-}
-
-// resultResolver adapts core deploy.Result to the session manager's
-// InstanceResolver (method name differs: Agent vs Instance).
-type resultResolver struct {
-	result *deploy.Result
-}
-
-func (r resultResolver) Instance(id string) (*agent.Agent, bool) {
-	return r.result.Agent(id)
+	return &Runtime{
+		manager:     manager,
+		router:      router,
+		result:      result,
+		registry:    registry,
+		liveCatalog: liveCatalog,
+		resources:   reg,
+		loader:      b.loader,
+		bus:         bus,
+	}, nil
 }
 
 func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {

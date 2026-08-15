@@ -501,3 +501,145 @@ func TestResultCloseReversesOrder(t *testing.T) {
 		t.Fatal("not all values were closed")
 	}
 }
+
+type closableAgentEngine struct {
+	closed bool
+}
+
+func (e *closableAgentEngine) Execute(
+	_ context.Context,
+	_ agent.Run,
+	_ agent.Host,
+	board *agent.Board,
+) (*agent.Board, error) {
+	return board, nil
+}
+
+func (e *closableAgentEngine) Close() error {
+	e.closed = true
+	return nil
+}
+
+type closableEngineFactory struct{ value *closableAgentEngine }
+
+func (f closableEngineFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: "engine.test", Impl: "close"}
+}
+
+func (f closableEngineFactory) New(context.Context, resource.Input) (any, error) {
+	return f.value, nil
+}
+
+type closableHook struct {
+	agent.BaseObserver
+	closed bool
+}
+
+func (h *closableHook) Close() error {
+	h.closed = true
+	return nil
+}
+
+type sequenceHookFactory struct {
+	value  *closableHook
+	calls  int
+	failOn int
+}
+
+func (f *sequenceHookFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: "hook.observe", Impl: "close"}
+}
+
+func (f *sequenceHookFactory) New(context.Context, resource.Input) (any, error) {
+	f.calls++
+	if f.failOn > 0 && f.calls == f.failOn {
+		return nil, errors.New("hook boom")
+	}
+	return f.value, nil
+}
+
+func TestBindAgentDoesNotMutateResult(t *testing.T) {
+	reg := resource.NewRegistry()
+	reg.MustRegister(engineFactory{})
+
+	result, err := deploy.NewBuilder(reg).Build(context.Background(), deploy.Document{Version: "v1"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = result.Close() }()
+
+	instance, err := deploy.BindAgent(context.Background(), reg, result, nil, "a", agent.Definition{
+		Card:   agent.AgentCard{Name: "A"},
+		Engine: agent.EngineRef{Kind: "engine.test", Impl: "graph"},
+	})
+	if err != nil {
+		t.Fatalf("BindAgent: %v", err)
+	}
+	if instance.ID != "a" {
+		t.Fatalf("instance ID = %q, want a", instance.ID)
+	}
+	if _, ok := result.Agent("a"); ok {
+		t.Fatal("BindAgent mutated result agents")
+	}
+}
+
+func TestBindAgentRollsBackOnHookFailure(t *testing.T) {
+	reg := resource.NewRegistry()
+	engine := &closableAgentEngine{}
+	hook := &closableHook{}
+	reg.MustRegister(closableEngineFactory{value: engine})
+	reg.MustRegister(&sequenceHookFactory{value: hook, failOn: 2})
+
+	result, err := deploy.NewBuilder(reg).Build(context.Background(), deploy.Document{Version: "v1"})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = result.Close() }()
+
+	_, err = deploy.BindAgent(context.Background(), reg, result, nil, "a", agent.Definition{
+		Card:    agent.AgentCard{Name: "A"},
+		Engine:  agent.EngineRef{Kind: "engine.test", Impl: "close"},
+		Observe: []agent.Hook{{Type: "close"}, {Type: "close"}},
+	})
+	if err == nil {
+		t.Fatal("BindAgent unexpectedly succeeded")
+	}
+	if !engine.closed {
+		t.Fatal("engine was not closed after hook failure")
+	}
+	if !hook.closed {
+		t.Fatal("wired hook was not closed during rollback")
+	}
+}
+
+func TestResultCloseClosesAgents(t *testing.T) {
+	reg := resource.NewRegistry()
+	engine := &closableAgentEngine{}
+	hook := &closableHook{}
+	reg.MustRegister(closableEngineFactory{value: engine})
+	reg.MustRegister(&sequenceHookFactory{value: hook})
+
+	doc := deploy.Document{
+		Version: "v1",
+		Agents: map[string]agent.Definition{
+			"a": {
+				Card:    agent.AgentCard{Name: "A"},
+				Engine:  agent.EngineRef{Kind: "engine.test", Impl: "close"},
+				Observe: []agent.Hook{{Type: "close"}},
+			},
+		},
+	}
+	result, err := deploy.NewBuilder(reg).Deploy(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	if err := result.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !engine.closed {
+		t.Fatal("agent engine was not closed by Result.Close")
+	}
+	if !hook.closed {
+		t.Fatal("agent hook was not closed by Result.Close")
+	}
+}

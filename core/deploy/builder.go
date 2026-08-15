@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"sort"
@@ -200,134 +201,204 @@ func (b *Builder) Deploy(ctx context.Context, doc Document) (*Result, error) {
 	return result, nil
 }
 
-// bindAgents constructs every [agent.Agent] from its Definition: the
-// engine from the registry (kind = EngineRef.Kind / Impl), then each
-// hook under "hook.<slot>". Hooks are wired (attached) before being
-// recorded on the agent.
+// bindAgents constructs every [agent.Agent] from its Definition and
+// records it on the result.
 func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) error {
 	for name, def := range doc.Agents {
-		engineFactory, ok := b.registry.Lookup(def.Engine.Kind, def.Engine.Impl)
-		if !ok {
-			return errdefs.Validationf(
-				"deploy: agent %q: no factory for engine %s/%s",
-				name, def.Engine.Kind, def.Engine.Impl)
-		}
-		if err := validateDeps(engineFactory, def.Engine.Deps); err != nil {
-			return errdefs.Validationf("deploy: agent %q engine: %v", name, err)
-		}
-		engineDeps, err := resolveDeps(result.values, def.Engine.Deps)
-		if err != nil {
-			return errdefs.Validationf("deploy: agent %q: %v", name, err)
-		}
-		engine, err := engineFactory.New(ctx, resource.Input{
-			Settings: def.Engine.Settings,
-			Deps:     engineDeps,
-			Loader:   b.loader,
-		})
-		if err != nil {
-			return errdefs.Validationf("deploy: agent %q engine: %v", name, err)
-		}
-		engineContract, ok := engine.(agent.Engine)
-		if !ok {
-			return errdefs.Validationf(
-				"deploy: agent %q: engine factory returned %T, want agent.Engine",
-				name, engine)
-		}
-
-		prepare, err := buildHookList[agent.Preparer](
-			b, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		instance, err := BindAgent(ctx, b.registry, result, b.loader, name, def)
 		if err != nil {
 			return err
 		}
-		observe, err := buildHookList[agent.Observer](
-			b, result, ctx, name, agent.HookSlotObserver, def.Observe)
-		if err != nil {
-			return err
-		}
-		referees, err := buildHookList[agent.Referee](
-			b, result, ctx, name, agent.HookSlotReferee, def.Referees)
-		if err != nil {
-			return err
-		}
-		commit, err := buildHookList[agent.Committer](
-			b, result, ctx, name, agent.HookSlotCommitter, def.Commit)
-		if err != nil {
-			return err
-		}
-
-		policy := agent.Policy{}
-		if def.Policy != nil {
-			policy = *def.Policy
-		}
-
-		result.agents[name] = &agent.Agent{
-			ID:       name,
-			Card:     def.Card,
-			Tools:    def.Tools,
-			Policy:   policy,
-			Engine:   engineContract,
-			Prepare:  prepare,
-			Observe:  observe,
-			Referees: referees,
-			Commit:   commit,
-		}
+		result.agents[name] = instance
 	}
 	return nil
 }
 
+// BindAgent assembles one [agent.Agent] from its Definition: the engine
+// from the registry (kind = EngineRef.Kind / Impl), then each hook under
+// "hook.<slot>", wiring [resource.Wireable] hooks before recording them
+// on the agent. It never mutates result (result.agents stays untouched),
+// so callers decide where the assembled agent is recorded — deployment
+// build records it on the Result, while core/runtime registers it in the
+// live agent registry.
+//
+// On failure, every component already constructed (engine and any wired
+// hooks) is closed in reverse order so a partial assembly never leaks
+// attached subscriptions or other resources.
+func BindAgent(
+	ctx context.Context,
+	reg *resource.Registry,
+	result *Result,
+	loader *resource.Loader,
+	name string,
+	def agent.Definition,
+) (*agent.Agent, error) {
+	if reg == nil {
+		return nil, errdefs.Validationf(
+			"deploy: agent %q: resource registry is required", name)
+	}
+	engineFactory, ok := reg.Lookup(def.Engine.Kind, def.Engine.Impl)
+	if !ok {
+		return nil, errdefs.Validationf(
+			"deploy: agent %q: no factory for engine %s/%s",
+			name, def.Engine.Kind, def.Engine.Impl)
+	}
+	if err := validateDeps(engineFactory, def.Engine.Deps); err != nil {
+		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
+	}
+	engineDeps, err := resolveDeps(result.values, def.Engine.Deps)
+	if err != nil {
+		return nil, errdefs.Validationf("deploy: agent %q: %v", name, err)
+	}
+
+	var constructed []any
+	fail := func(err error) (*agent.Agent, error) {
+		closeAgentParts(constructed)
+		return nil, err
+	}
+
+	engine, err := engineFactory.New(ctx, resource.Input{
+		Settings: def.Engine.Settings,
+		Deps:     engineDeps,
+		Loader:   loader,
+	})
+	if err != nil {
+		return fail(errdefs.Validationf("deploy: agent %q engine: %v", name, err))
+	}
+	engineContract, ok := engine.(agent.Engine)
+	if !ok {
+		return fail(errdefs.Validationf(
+			"deploy: agent %q: engine factory returned %T, want agent.Engine",
+			name, engine))
+	}
+	constructed = append(constructed, engineContract)
+
+	prepare, err := buildHookList[agent.Preparer](
+		reg, loader, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+	if err != nil {
+		return fail(err)
+	}
+	constructed = appendAny(constructed, prepare)
+
+	observe, err := buildHookList[agent.Observer](
+		reg, loader, result, ctx, name, agent.HookSlotObserver, def.Observe)
+	if err != nil {
+		return fail(err)
+	}
+	constructed = appendAny(constructed, observe)
+
+	referees, err := buildHookList[agent.Referee](
+		reg, loader, result, ctx, name, agent.HookSlotReferee, def.Referees)
+	if err != nil {
+		return fail(err)
+	}
+	constructed = appendAny(constructed, referees)
+
+	commit, err := buildHookList[agent.Committer](
+		reg, loader, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+	if err != nil {
+		return fail(err)
+	}
+
+	policy := agent.Policy{}
+	if def.Policy != nil {
+		policy = *def.Policy
+	}
+	return &agent.Agent{
+		ID:       name,
+		Card:     def.Card,
+		Tools:    def.Tools,
+		Policy:   policy,
+		Engine:   engineContract,
+		Prepare:  prepare,
+		Observe:  observe,
+		Referees: referees,
+		Commit:   commit,
+	}, nil
+}
+
 // buildHookList constructs every hook in one slot, type-asserting the
 // factory values to T (agent.Preparer / Observer / Referee /
-// Committer) and wiring [resource.Wireable] values before recording
-// them on the agent.
+// Committer) and wiring [resource.Wireable] values before recording them
+// on the agent. On failure every constructed hook is closed in reverse
+// order.
 func buildHookList[T any](
-	b *Builder,
+	reg *resource.Registry,
+	loader *resource.Loader,
 	result *Result,
 	ctx context.Context,
 	name, slot string,
 	entries []agent.Hook,
 ) ([]T, error) {
 	var values []T
+	var constructed []any
+	fail := func(err error) ([]T, error) {
+		closeAgentParts(constructed)
+		return nil, err
+	}
 	for i, entry := range entries {
 		kind := resource.Kind("hook." + slot)
-		factory, ok := b.registry.Lookup(kind, entry.Type)
+		factory, ok := reg.Lookup(kind, entry.Type)
 		if !ok {
-			return nil, errdefs.Validationf(
+			return fail(errdefs.Validationf(
 				"deploy: agent %q: no factory for hook %s/%s",
-				name, kind, entry.Type)
+				name, kind, entry.Type))
 		}
 		if err := validateDeps(factory, entry.Deps); err != nil {
-			return nil, errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
 		deps, err := resolveDeps(result.values, entry.Deps)
 		if err != nil {
-			return nil, errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
 		value, err := factory.New(ctx, resource.Input{
 			Settings: entry.Settings,
 			Deps:     deps,
-			Loader:   b.loader,
+			Loader:   loader,
 		})
 		if err != nil {
-			return nil, errdefs.Validationf(
-				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err)
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
+		constructed = append(constructed, value)
 		typed, ok := value.(T)
 		if !ok {
-			return nil, errdefs.Validationf(
+			return fail(errdefs.Validationf(
 				"deploy: agent %q: hook %s[%d] factory returned %T, want %T",
-				name, slot, i, value, *new(T))
+				name, slot, i, value, *new(T)))
 		}
 		if w, ok := value.(resource.Wireable); ok {
 			if err := w.Wire(ctx); err != nil {
-				return nil, errdefs.Validationf(
-					"deploy: agent %q: wire hook %s[%d]: %v", name, slot, i, err)
+				return fail(errdefs.Validationf(
+					"deploy: agent %q: wire hook %s[%d]: %v", name, slot, i, err))
 			}
 		}
 		values = append(values, typed)
 	}
 	return values, nil
+}
+
+func appendAny[T any](dst []any, values []T) []any {
+	for _, value := range values {
+		dst = append(dst, value)
+	}
+	return dst
+}
+
+// closeAgentParts closes every io.Closer among values in reverse order,
+// best-effort, skipping nil and typed-nil entries.
+func closeAgentParts(values []any) {
+	for i := len(values) - 1; i >= 0; i-- {
+		value := values[i]
+		if value == nil || isNilValue(value) {
+			continue
+		}
+		if closer, ok := value.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
 }
 
 // validateDeps checks document deps against the factory's declared
@@ -449,9 +520,26 @@ func (r *Result) AgentNames() []string {
 	return names
 }
 
-// Close closes every io.Closer value in reverse construction order.
+// Close closes every io.Closer resource value in reverse construction
+// order, then closes every bound agent (engine and lifecycle hooks).
 func (r *Result) Close() error {
-	return closeAll(r.values, r.order)
+	if r == nil {
+		return nil
+	}
+	var errs []error
+	if err := closeAll(r.values, r.order); err != nil {
+		errs = append(errs, err)
+	}
+	for _, name := range r.AgentNames() {
+		instance := r.agents[name]
+		if instance == nil {
+			continue
+		}
+		if err := instance.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("deploy: close agent %q: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func closeAll(values map[string]any, order []string) error {
