@@ -68,6 +68,11 @@ func (r *allowCommandsRunner) Capabilities() Capabilities {
 	return r.inner.Capabilities()
 }
 
+// Close forwards to the inner runner so lifecycle survives decoration.
+func (r *allowCommandsRunner) Close() error {
+	return r.inner.Close()
+}
+
 // WithDefaults returns a Runner that merges defaults into every Exec
 // call's ExecOptions before delegating to inner. It is the
 // composition seam that lets a runtime owner (typically a host
@@ -162,6 +167,11 @@ func (r *defaultsRunner) Terminate(ctx context.Context, id string) error {
 // which session features it provides.
 func (r *defaultsRunner) Capabilities() Capabilities {
 	return r.inner.Capabilities()
+}
+
+// Close forwards to the inner runner so lifecycle survives decoration.
+func (r *defaultsRunner) Close() error {
+	return r.inner.Close()
 }
 
 // merge applies the rules documented on [WithDefaults]. Kept on a

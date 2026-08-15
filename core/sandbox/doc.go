@@ -11,7 +11,10 @@
 // changing call sites. Every Runner declares [Capabilities] up front —
 // policy enforcement and session features — and every started [Session]
 // declares its own [SessionCapabilities], so tools never discover
-// abilities through interface assertions.
+// abilities through interface assertions. Lifecycle is part of the
+// contract too: every Runner implements Close, which terminates active
+// sessions and releases backend-owned resources, and the decorators
+// forward it so wrapping never hides the backend's cleanup.
 //
 // ExecOptions carries three policy groups beyond the obvious WorkDir /
 // Stdin / Timeout knobs:

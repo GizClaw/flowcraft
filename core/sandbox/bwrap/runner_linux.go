@@ -153,6 +153,12 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 	return r.sessions.Terminate(ctx, id)
 }
 
+// Close implements core/sandbox.Runner: it terminates every session
+// started through this runner. Safe to call more than once.
+func (r *Runner) Close() error {
+	return r.sessions.Close()
+}
+
 // spawnProcess is the core sandbox SessionStarter. It builds the bwrap
 // invocation from the SessionSpec and hands it to the shared session
 // implementation.

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
@@ -169,6 +170,28 @@ func (r *SessionRegistry) Terminate(ctx context.Context, id string) error {
 	}
 	r.mu.Unlock()
 	return nil
+}
+
+// Close terminates every session still tracked by the registry. It is
+// the lifecycle drain backends delegate to from [Runner.Close]: after
+// Close returns, no session started through this registry remains
+// running. Records are kept so List still reports what ran; repeated
+// calls are safe because Terminate skips already-exited sessions.
+func (r *SessionRegistry) Close() error {
+	r.mu.Lock()
+	ids := make([]string, 0, len(r.sessions))
+	for id := range r.sessions {
+		ids = append(ids, id)
+	}
+	r.mu.Unlock()
+
+	var errs []error
+	for _, id := range ids {
+		if err := r.Terminate(context.Background(), id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (r *SessionRegistry) remove(id string) {
