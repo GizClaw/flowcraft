@@ -42,8 +42,10 @@ func WithConflictPolicy(p ConflictPolicy) Option {
 
 // Registry aggregates tools from many [Source] values. It implements
 // [Catalog]; the underlying execution surface for an Executor is the
-// same value. A Registry is immutable after construction — sources
-// are a build-time concern, not a runtime one.
+// same value. The tool set is fixed at construction — sources are a
+// build-time concern — and changes at runtime only through the
+// [Registrar] surface (Add/Remove), which deferred sources use to
+// publish tools discovered after construction.
 //
 // A Registry is safe for concurrent use. Close releases every
 // contributed tool that implements io.Closer (deferred proxies
@@ -95,6 +97,34 @@ func NewRegistry(sources []Source, opts ...Option) (*Registry, error) {
 	return r, nil
 }
 
+// Add registers one tool at runtime. It follows the same duplicate
+// policy as construction and fails after Close.
+func (r *Registry) Add(t Tool) error {
+	if t == nil {
+		return errdefs.Validationf("tool: nil tool")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errdefs.NotAvailablef("tool: registry is closed")
+	}
+	return r.addLocked(t)
+}
+
+// Remove unregisters the named tool at runtime. Unknown names are
+// ignored; after Close it is a no-op.
+func (r *Registry) Remove(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+	for i, n := range r.order {
+		if n == name {
+			r.order = append(r.order[:i], r.order[i+1:]...)
+			break
+		}
+	}
+}
+
 func (r *Registry) add(t Tool) error {
 	def := t.Definition()
 	if strings.TrimSpace(def.Name) == "" {
@@ -102,6 +132,14 @@ func (r *Registry) add(t Tool) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.addLocked(t)
+}
+
+func (r *Registry) addLocked(t Tool) error {
+	def := t.Definition()
+	if strings.TrimSpace(def.Name) == "" {
+		return errdefs.Validationf("tool: tool definition name is required")
+	}
 	if _, exists := r.tools[def.Name]; exists {
 		if r.conflict == ConflictError {
 			return errdefs.Conflictf(
@@ -114,6 +152,8 @@ func (r *Registry) add(t Tool) error {
 	r.order = append(r.order, def.Name)
 	return nil
 }
+
+var _ Registrar = (*Registry)(nil)
 
 // Get implements Catalog. A deferred tool returns its proxy, which
 // serves the placeholder definition until first Execute.

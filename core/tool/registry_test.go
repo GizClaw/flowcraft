@@ -3,7 +3,9 @@ package tool_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -170,4 +172,107 @@ func TestRegistry_RejectsNilSourceAndBadLazyTool(t *testing.T) {
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("placeholder mismatch error = %v, want Validation", err)
 	}
+}
+
+func TestRegistry_AddRemoveAtRuntime(t *testing.T) {
+	reg, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := reg.Add(funcTool("late", "late")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, ok := reg.Get("late"); !ok {
+		t.Fatal("Get(late) missing after Add")
+	}
+	if !containsDefinition(reg.Definitions(), "late") {
+		t.Fatalf("Definitions after Add = %v", reg.Definitions())
+	}
+
+	reg.Remove("late")
+	if _, ok := reg.Get("late"); ok {
+		t.Fatal("Get(late) still present after Remove")
+	}
+	if reg.Len() != 0 {
+		t.Fatalf("Len = %d, want 0", reg.Len())
+	}
+}
+
+func TestRegistry_AddDuplicateRuntimeFollowsPolicy(t *testing.T) {
+	reg, err := tool.NewRegistry([]tool.Source{
+		source{tools: []tool.Tool{funcTool("dup", "first")}},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := reg.Add(funcTool("dup", "second")); !errdefs.IsConflict(err) {
+		t.Fatalf("Add duplicate error = %v, want Conflict", err)
+	}
+
+	overwrite, err := tool.NewRegistry(nil, tool.WithConflictPolicy(tool.ConflictOverwrite))
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := overwrite.Add(funcTool("dup", "runtime")); err != nil {
+		t.Fatalf("Add with overwrite: %v", err)
+	}
+	got, _ := overwrite.Get("dup")
+	if !strings.Contains(mustExecute(t, got), "runtime") {
+		t.Fatalf("overwritten runtime tool executes %q", mustExecute(t, got))
+	}
+}
+
+func TestRegistry_AddRejectsNilAndClosed(t *testing.T) {
+	reg, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	if err := reg.Add(nil); !errdefs.IsValidation(err) {
+		t.Fatalf("nil Add error = %v, want Validation", err)
+	}
+	if err := reg.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := reg.Add(funcTool("after", "close")); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Add after Close error = %v, want NotAvailable", err)
+	}
+	// Remove after Close is a documented no-op and must not panic.
+	reg.Remove("after")
+}
+
+func TestRegistry_ConcurrentAddRemove(t *testing.T) {
+	reg, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	const workers = 8
+	const perWorker = 50
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range perWorker {
+				name := fmt.Sprintf("t-%d-%d", w, i)
+				if err := reg.Add(funcTool(name, "x")); err != nil {
+					t.Errorf("Add %s: %v", name, err)
+					return
+				}
+				reg.Remove(name)
+			}
+		}()
+	}
+	wg.Wait()
+	if reg.Len() != 0 {
+		t.Fatalf("Len = %d, want 0 after concurrent add/remove", reg.Len())
+	}
+}
+
+func containsDefinition(defs []message.ToolDefinition, name string) bool {
+	for _, def := range defs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }

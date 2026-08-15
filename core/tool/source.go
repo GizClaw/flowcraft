@@ -22,6 +22,25 @@ type Source interface {
 	LazyTools() []LazyTool
 }
 
+// Registrar is the runtime mutation surface of a [Registry]. Sources
+// that discover tools after construction — an MCP server that connects
+// in the background, a refresh that re-lists remote tools — use it to
+// publish tools as they become available.
+type Registrar interface {
+	// Add registers one tool. Duplicate names follow the registry's
+	// ConflictPolicy; adding to a closed registry returns an error.
+	Add(t Tool) error
+	// Remove unregisters the named tool, if present.
+	Remove(name string)
+}
+
+// RegistryAttacher is an optional [Source] capability: the assembly
+// hands the built [Registry]'s [Registrar] to sources that need to
+// publish tools after construction (background connects, refresh).
+type RegistryAttacher interface {
+	Attach(r Registrar)
+}
+
 // LazyTool is a deferred tool descriptor contributed by a Source.
 // Name must equal Placeholder.Name; Load performs any network or
 // process work the tool needs.

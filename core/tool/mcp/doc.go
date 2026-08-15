@@ -37,8 +37,12 @@
 //	// reg now holds askuser plus filesystem__read_file, filesystem__write_file, ...
 //	exec := tool.NewExecutor(reg, mws...)
 //
-// AddServer is synchronous: once it returns, the registry is complete
-// for that server, so a host can finish wiring before serving traffic.
+// AddServer attempts to connect synchronously, and a server that is
+// reachable is complete before the call returns. A server that cannot
+// be reached is not a startup failure: the Source keeps retrying in
+// the background with exponential backoff and publishes the server's
+// tools to the registry the moment a connection succeeds. Hosts can
+// therefore finish wiring before every server is up.
 //
 // # Namespacing
 //
@@ -61,10 +65,11 @@
 // This package adds no cache of its own. The go-sdk maintains a TTL
 // cache for tools/list — with the TTL advertised by the server — and
 // invalidates it on a tools/list_changed notification. Source hooks
-// that notification to reconcile the registry: new and changed tools are
-// re-registered, vanished ones are unregistered, and other servers are
-// untouched. [Source.Refresh] does the same on demand, which is what
-// servers that never send the notification need.
+// The Source hooks the notification to reconcile the registry: new and
+// changed tools are added, vanished ones are removed, and other
+// servers are untouched. The same reconcile runs when a background
+// reconnect brings a server back, which is what servers that were down
+// at startup need.
 //
 // A tools/list failure leaves the previous projection in place. Making
 // the model abruptly lose sight of tools it was told about is worse than
@@ -74,10 +79,13 @@
 //
 // Each server owns its session and its slice of the registry. When a
 // server dies its tools return errdefs.NotAvailable naming that server;
-// other servers and every built-in tool keep working. [Source.Close]
-// releases all sessions, which for a stdio server means closing stdin,
-// waiting, then escalating to SIGTERM and SIGKILL as the MCP spec
-// prescribes — hosts never reap child processes themselves.
+// other servers and every built-in tool keep working. The Source also
+// reconnects a dead server in the background, and its tools are
+// re-published when it comes back. [Source.Close] cancels all
+// reconnection and releases every session, which for a stdio server
+// means closing stdin, waiting, then escalating to SIGTERM and SIGKILL
+// as the MCP spec prescribes — hosts never reap child processes
+// themselves.
 //
 // # Result rendering
 //
