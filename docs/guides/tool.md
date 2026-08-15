@@ -59,7 +59,13 @@ resources:
           tool_search: always
 ```
 
-MCP servers are registered as a `tool.Source/mcp` resource. Middleware lives
-in `core/tool/middleware`.
+MCP servers are registered as a `tool.Source/mcp` resource. Attach is
+best-effort: a server that is unreachable at startup is retried in the
+background with exponential backoff, and its tools are published to the
+registry the moment it connects. A server that dies later is
+reconnected the same way; its tools stay registered and calls fail with
+a per-server `NotAvailable` error until the connection is restored.
+Configuration errors (a rejected connection, an invalid spec) still
+fail the deployment. Middleware lives in `core/tool/middleware`.
 
 See [runtime.md](runtime.md) for per-session dynamic catalogs.

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -28,16 +29,39 @@ func Stdio(command string, args []string, env map[string]string) (mcpsdk.Transpo
 	if command == "" {
 		return nil, fmt.Errorf("mcp: stdio transport command is empty")
 	}
-	cmd := exec.Command(command, args...)
-	cmd.Stderr = os.Stderr
+	var envList []string
 	if len(env) > 0 {
-		cmd.Env = os.Environ()
+		envList = os.Environ()
 		for key, value := range env {
-			cmd.Env = append(cmd.Env, key+"="+value)
+			envList = append(envList, key+"="+value)
 		}
 	}
-	return &mcpsdk.CommandTransport{Command: cmd}, nil
+	return &reconnectableStdio{command: command, args: args, env: envList}, nil
 }
+
+// reconnectableStdio is a [mcpsdk.Transport] that spawns a fresh child
+// process on every Connect call. The SDK's CommandTransport wraps a
+// single *exec.Cmd and can therefore only be connected once; the
+// background reconnect path needs a transport that can be retried, so
+// each attempt builds a brand-new command and delegates to a fresh
+// CommandTransport (which owns the pipes and the SIGTERM/SIGKILL
+// shutdown sequence).
+type reconnectableStdio struct {
+	command string
+	args    []string
+	env     []string
+}
+
+func (t *reconnectableStdio) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	cmd := exec.Command(t.command, t.args...)
+	cmd.Stderr = os.Stderr
+	if t.env != nil {
+		cmd.Env = t.env
+	}
+	return (&mcpsdk.CommandTransport{Command: cmd}).Connect(ctx)
+}
+
+var _ mcpsdk.Transport = (*reconnectableStdio)(nil)
 
 // StreamableHTTP builds a transport that talks to a remote MCP server
 // over the streamable-HTTP binding: POST for requests, a standing SSE

@@ -92,3 +92,39 @@ func TestAssembly_CloseReleasesRegistry(t *testing.T) {
 		t.Fatalf("second Close: %v", err)
 	}
 }
+
+// attacherSource contributes one eager tool and publishes one runtime
+// tool through the Registrar the assembly hands it.
+type attacherSource struct {
+	attached bool
+}
+
+func (a *attacherSource) Tools() []tool.Tool {
+	return []tool.Tool{funcTool("eager", "eager")}
+}
+
+func (a *attacherSource) LazyTools() []tool.LazyTool { return nil }
+
+func (a *attacherSource) Attach(r tool.Registrar) {
+	a.attached = true
+	if err := r.Add(funcTool("runtime", "runtime")); err != nil {
+		panic(err)
+	}
+}
+
+func TestAssembly_AttachesRegistryToSources(t *testing.T) {
+	attacher := &attacherSource{}
+	assembly, err := tool.NewAssembly([]tool.Source{attacher})
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	if !attacher.attached {
+		t.Fatal("source never received the registrar")
+	}
+	if _, ok := assembly.Catalog().Get("runtime"); !ok {
+		t.Fatal("runtime-published tool missing from catalog")
+	}
+	if _, ok := assembly.Catalog().Get("eager"); !ok {
+		t.Fatal("eager tool missing from catalog")
+	}
+}
