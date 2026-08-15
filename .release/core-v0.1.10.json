@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): provider-carried extension decoders for graph inference node extensions — move the extension wire types into core/inference, carry decoders on ProviderDefinition, and aggregate them per configured provider so graph yaml extensions work without host-side registration",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}

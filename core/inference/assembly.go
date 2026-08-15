@@ -35,6 +35,21 @@ func (a *Assembly) Providers() []ProviderDefinition {
 	return providers
 }
 
+// ExtensionDecoders returns every configured provider's extension
+// decoders keyed "provider/extension" — the registry shape handed to
+// DecodeExtensions. Decoders are provider-carried, so the available
+// menu tracks the providers actually configured in the deployment
+// instead of host-side registration.
+func (a *Assembly) ExtensionDecoders() map[string]ExtensionDecoder {
+	decoders := make(map[string]ExtensionDecoder)
+	for providerID, def := range a.providers {
+		for extensionID, decoder := range def.ExtensionDecoders {
+			decoders[providerID+"/"+extensionID] = decoder
+		}
+	}
+	return decoders
+}
+
 // registryView freezes the provider catalog into the execution
 // registry on first use (idempotent, concurrent-safe).
 func (a *Assembly) registryView() (map[string]providerEntry, error) {

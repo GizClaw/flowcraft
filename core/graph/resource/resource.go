@@ -135,10 +135,16 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	}
 	if deps.inference != nil {
 		inferenceDeps.Assembly = deps.inference
+		inferenceDeps.Extensions = deps.inference.ExtensionDecoders()
 		scriptDeps.InferenceAssembly = deps.inference
 	}
 	if deps.router != nil {
 		inferenceDeps.Router = deps.router
+		if deps.inference == nil {
+			// A router-only deployment still needs the provider-carried
+			// decoders of its target assembly.
+			inferenceDeps.Extensions = deps.router.Target().ExtensionDecoders()
+		}
 		scriptDeps.InferenceRouter = deps.router
 	}
 	if deps.tools != nil {

@@ -7,7 +7,6 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/agent/bindings"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -71,9 +70,11 @@ type InferenceConfig struct {
 	ReasoningEnabled *bool                     `json:"reasoning_enabled,omitempty"`
 	ReasoningEffort  inference.ReasoningEffort `json:"reasoning_effort,omitempty"`
 
-	// Extensions names host-registered provider knobs in the shared
-	// {provider, id, fields} wire form (see bindings.DecodeExtensions).
-	Extensions []bindings.ExtensionEntry `json:"extensions,omitempty"`
+	// Extensions names provider knobs in the shared {provider, id,
+	// fields} wire form (see inference.DecodeExtensions). Decoders are
+	// provider-carried: the deploy path aggregates them from the wired
+	// inference assembly, so only configured providers are available.
+	Extensions []inference.ExtensionEntry `json:"extensions,omitempty"`
 }
 
 // InferenceNodeDeps wires the inference node's collaborators. Runtime
@@ -88,7 +89,9 @@ type InferenceNodeDeps struct {
 	Catalog tool.Catalog
 	// Extensions maps "provider/id" to decoders, the same registry
 	// shape the script bridge wires with bindings.WithExtensionDecoder.
-	Extensions map[string]bindings.ExtensionDecoder
+	// The deploy path populates it from the inference assembly's
+	// provider-carried decoders.
+	Extensions map[string]inference.ExtensionDecoder
 }
 
 // Inference returns the "inference" node type: one Generate call per
@@ -269,7 +272,7 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 		text.Tools = definitions
 	}
 
-	extensions, err := bindings.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
+	extensions, err := inference.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
 	if err != nil {
 		return req, err
 	}

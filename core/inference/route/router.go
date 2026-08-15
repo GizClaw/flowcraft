@@ -249,6 +249,11 @@ func (r *Router) ResetCircuitBreaker() {
 	}
 }
 
+// Target returns the router's underlying inference assembly.
+func (r *Router) Target() *inference.Assembly {
+	return r.target
+}
+
 // maxFallbackTargets bounds total targets tried for one request, counting the
 // initially selected target.
 const maxFallbackTargets = 8

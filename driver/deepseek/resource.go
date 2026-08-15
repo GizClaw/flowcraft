@@ -73,7 +73,10 @@ func Register(r *resource.Registry) error {
 // deployment provider config. It validates the provider Spec, merges the
 // model catalog, resolves every credential profile, and binds each catalog
 // model to the openers its kind serves. Unknown models fail closed: only
-// catalog models (built-in or declared via Spec.Models) are exposed.
+// catalog models (built-in or declared via Spec.Models) are exposed. The
+// definition carries the generate_options decoder bound to the deployment
+// provider ID, so graph yaml can enable provider knobs (web_search) without
+// host-side registration.
 func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, error) {
 	spec, err := decodeSpec(settings.Spec)
 	if err != nil {
@@ -115,7 +118,17 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 		profiles[profile.ID] = material
 	}
 
-	provider := inference.ProviderDefinition{ID: settings.ID}
+	provider := inference.ProviderDefinition{
+		ID: settings.ID,
+		ExtensionDecoders: map[string]inference.ExtensionDecoder{
+			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
+				// Bind the deployment provider ID: the identity check in
+				// DecodeExtensions compares against the wire provider, which
+				// for graph yaml is the configured provider ID.
+				return &GenerateOptions{Provider: settings.ID}
+			}),
+		},
+	}
 	for _, profile := range settings.Profiles {
 		provider.Profiles = append(
 			provider.Profiles,

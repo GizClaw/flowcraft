@@ -343,8 +343,8 @@ func (e testExtension) Validate() error { return nil }
 
 func (e testExtension) Clone() inference.Extension { return e }
 
-func testExtensionDecoder() ExtensionDecoder {
-	return ExtensionDecoderFor(func() *testExtension { return &testExtension{} })
+func testExtensionDecoder() inference.ExtensionDecoder {
+	return inference.ExtensionDecoderFor(func() *testExtension { return &testExtension{} })
 }
 
 func TestInferenceBridge_Generate_Extensions(t *testing.T) {
@@ -466,7 +466,7 @@ func TestInferenceBridge_Extensions_NonPointerFactory(t *testing.T) {
 	// A value-type factory satisfies the constraint at compile time
 	// but cannot be decoded into; the decoder must fail as a host
 	// wiring error, not a confusing script-facing validation error.
-	decoder := ExtensionDecoderFor(func() testExtension { return testExtension{} })
+	decoder := inference.ExtensionDecoderFor(func() testExtension { return testExtension{} })
 	_, err := decoder(json.RawMessage(`{}`))
 	if err == nil || !errdefs.IsInternal(err) {
 		t.Fatalf("non-pointer factory error = %v, want internal-classified", err)
