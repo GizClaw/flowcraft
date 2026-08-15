@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
@@ -68,25 +69,93 @@ func resolveDynamicCatalogAssemblies(
 	return assemblies, nil
 }
 
-// newDynamicCatalogProvider builds one tool session per Session over
-// the mapped assembly. The Session borrows the view and never closes
-// it.
-func newDynamicCatalogProvider(
-	assemblies map[string]*tool.Assembly,
-) session.CatalogProvider {
-	return session.CatalogProviderFunc(func(
-		ctx context.Context,
-		instance *agent.Agent,
-	) (tool.Session, error) {
-		assembly := assemblies[instance.ID]
-		if assembly == nil {
-			assembly = assemblies[dynamicCatalogDefaultAgent]
-		}
-		if assembly == nil {
-			return nil, errdefs.Internalf(
-				"runtime dynamic catalog: agent %q has no tool assembly",
-				instance.ID)
-		}
-		return assembly.NewSession(), nil
-	})
+// catalogRegistry is the live agentID → tool.Assembly mapping behind the
+// dynamic catalog. It is safe for concurrent use: the build-time mapping
+// is seeded once, then RegisterAgent/UnregisterAgent update it at runtime.
+// It implements session.CatalogProvider so the session manager consumes
+// it directly.
+type catalogRegistry struct {
+	mu         sync.RWMutex
+	assemblies map[string]*tool.Assembly
+	def        *tool.Assembly
 }
+
+func newCatalogRegistry(assemblies map[string]*tool.Assembly) *catalogRegistry {
+	c := &catalogRegistry{
+		assemblies: make(map[string]*tool.Assembly, len(assemblies)),
+	}
+	for id, assembly := range assemblies {
+		if id == dynamicCatalogDefaultAgent {
+			c.def = assembly
+			continue
+		}
+		c.assemblies[id] = assembly
+	}
+	return c
+}
+
+// NewCatalog implements session.CatalogProvider: one tool session per
+// Session over the mapped assembly, falling back to the default.
+func (c *catalogRegistry) NewCatalog(
+	_ context.Context,
+	instance *agent.Agent,
+) (tool.Session, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if instance == nil {
+		return nil, errdefs.Internalf(
+			"runtime dynamic catalog: nil agent instance")
+	}
+	c.mu.RLock()
+	assembly := c.assemblies[instance.ID]
+	def := c.def
+	c.mu.RUnlock()
+	if assembly == nil {
+		assembly = def
+	}
+	if assembly == nil {
+		return nil, errdefs.Internalf(
+			"runtime dynamic catalog: agent %q has no tool assembly",
+			instance.ID)
+	}
+	return assembly.NewSession(), nil
+}
+
+// Set updates the mapping for one agent (or the default when id is the
+// reserved default key).
+func (c *catalogRegistry) Set(id string, assembly *tool.Assembly) {
+	if c == nil || id == "" {
+		return
+	}
+	c.mu.Lock()
+	if id == dynamicCatalogDefaultAgent {
+		c.def = assembly
+	} else {
+		c.assemblies[id] = assembly
+	}
+	c.mu.Unlock()
+}
+
+// Delete removes the mapping for one agent. The default entry is never
+// removable.
+func (c *catalogRegistry) Delete(id string) {
+	if c == nil || id == "" || id == dynamicCatalogDefaultAgent {
+		return
+	}
+	c.mu.Lock()
+	delete(c.assemblies, id)
+	c.mu.Unlock()
+}
+
+// hasDefault reports whether a fallback tool assembly is configured.
+func (c *catalogRegistry) hasDefault() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.def != nil
+}
+
+var _ session.CatalogProvider = (*catalogRegistry)(nil)

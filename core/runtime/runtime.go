@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 )
 
@@ -17,6 +19,23 @@ type Runtime struct {
 	manager *session.Manager
 	router  *event.Router
 	result  *deploy.Result
+	// registry is the live agent view: dynamically registered agents
+	// plus a read-only fallback to the deployment snapshot.
+	registry *AgentRegistry
+	// liveCatalog is the mutable dynamic tool catalog; nil when the
+	// deployment has no dynamic_catalog section.
+	liveCatalog *catalogRegistry
+	// resources and loader are retained from the Builder so agents can
+	// be assembled at runtime with the same factories and source
+	// resolution as deployment time.
+	resources *resource.Registry
+	loader    *resource.Loader
+	bus       event.Bus
+
+	// lifecycleMu serializes RegisterAgent / UnregisterAgent / Close so
+	// a removal can never sweep away a concurrent registration.
+	lifecycleMu sync.Mutex
+	closed      bool
 
 	closeOnce sync.Once
 	closeErr  error
@@ -65,6 +84,24 @@ func (r *Runtime) Attach(
 	return r.router.Attach(ctx, pattern, sink, opts...)
 }
 
+// Agent resolves an agent by name from the live view (dynamically
+// registered first, then the deployment snapshot).
+func (r *Runtime) Agent(name string) (*agent.Agent, bool) {
+	if r == nil || r.registry == nil {
+		return nil, false
+	}
+	return r.registry.Agent(name)
+}
+
+// AgentNames returns the sorted union of deployed and dynamically
+// registered agent names.
+func (r *Runtime) AgentNames() []string {
+	if r == nil || r.registry == nil {
+		return nil
+	}
+	return r.registry.AgentNames()
+}
+
 // Close stops new session work, waits for active turns, and releases
 // all owned objects. Concurrent callers wait for and receive the same
 // aggregate result.
@@ -72,8 +109,11 @@ func (r *Runtime) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.lifecycleMu.Lock()
+	r.closed = true
+	r.lifecycleMu.Unlock()
 	r.closeOnce.Do(func() {
-		r.closeErr = closeOwned(r.manager, r.router, r.result)
+		r.closeErr = closeOwned(r.manager, r.router, r.result, r.registry)
 	})
 	return r.closeErr
 }
@@ -82,6 +122,7 @@ func closeOwned(
 	manager *session.Manager,
 	router *event.Router,
 	result *deploy.Result,
+	registry *AgentRegistry,
 ) error {
 	var errs []error
 	if manager != nil {
@@ -97,6 +138,11 @@ func closeOwned(
 	if result != nil {
 		if err := result.Close(); err != nil {
 			errs = append(errs, fmt.Errorf("runtime close deployment: %w", err))
+		}
+	}
+	if registry != nil {
+		if err := registry.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("runtime close agent registry: %w", err))
 		}
 	}
 	return errors.Join(errs...)
