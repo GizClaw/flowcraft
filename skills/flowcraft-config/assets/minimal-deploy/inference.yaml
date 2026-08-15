@@ -1,22 +1,8 @@
-version: v1
-providers:
-  - id: deepseek
-    driver: deepseek
-    profiles:
-      - secrets:
-          api_key: {resolver: env, key: DEEPSEEK_API_KEY}
-  - id: openai
-    driver: openai
-    profiles:
-      - operations: [embed]
-        secrets:
-          api_key: {resolver: env, key: OPENAI_API_KEY}
-route:
-  generate:
-    - tier: primary
-      targets:
-        - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
-  embed:
-    - tier: primary
-      targets:
-        - model: {id: {provider: openai, name: text-embedding-3-small}}
+# inference.Provider/deepseek settings (referenced via
+# resources.provider.settings.file in deploy.yaml).
+id: deepseek
+spec:
+  api: chat
+profiles:
+  - secrets:
+      api_key: ${env:DEEPSEEK_API_KEY}

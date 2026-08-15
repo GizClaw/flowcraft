@@ -69,3 +69,7 @@ by `PromptID` when the matching `PromptResolved` arrives. External
 attachments use the bus default backpressure (`DropNewest`), so a slow
 UI drops envelopes instead of blocking the run pipeline; pass
 `event.WithAttachBackpressure` to opt into a different policy.
+
+Runtime agent lifecycle events (`runtime.agent.*`, `PatternAgentLifecycle`)
+are published in a separate namespace — see
+[runtime.md](runtime.md) for dynamic registration/removal.

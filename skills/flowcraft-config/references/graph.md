@@ -42,7 +42,8 @@ File definitions are capped at 1 MiB.
 
 Common config fields: `model`, `messages_channel`, `system_prompt`,
 `output_key`, `usage_key`, `tool_pending_key`, `stream`, `tools`,
-`all_tools`, `temperature`, `max_output_tokens`, `extensions`.
+`all_tools`, `tool_choice`, `temperature`, `top_p`, `max_output_tokens`,
+`reasoning_enabled`, `reasoning_effort`, `response_format`, `extensions`.
 
 ### tool
 

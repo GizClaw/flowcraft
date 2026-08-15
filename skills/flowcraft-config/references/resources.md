@@ -8,15 +8,19 @@ Each factory owns its settings schema.
 ```yaml
 id: deepseek
 spec:
-  api: chat
+  api: chat             # "chat" (default) or "responses"
+  base_url: https://api.deepseek.com   # optional override
+  models:               # optional: declare/override catalog models
+    - {name: deepseek-v4-flash, kind: generate, reasoning: true, responses: true}
 profiles:
   - secrets:
-      api_key: {resolver: env, key: DEEPSEEK_API_KEY}
+      api_key: ${env:DEEPSEEK_API_KEY}
 ```
 
-Provider IDs and profile IDs must be identifiers. Secret values are resolved
-through the host's resolver registry. Provider drivers are registered from
-`driver/<name>`.
+Provider IDs and profile IDs must be identifiers. Secret values use the
+settings expansion syntax (`${env:NAME}` for an environment variable,
+`${base:rel}` / `~` / `${home:rel}` for paths); a missing variable fails
+the build. Provider drivers are registered from `driver/<name>`.
 
 ## inference assembly
 

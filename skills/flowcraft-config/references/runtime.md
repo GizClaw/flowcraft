@@ -33,9 +33,49 @@ runtime:
 - `sessions.max_sessions` limits distinct live session keys.
 - `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources; the
   reserved `default` key is an optional fallback. Every deployed agent must
-  be mapped directly or covered by `default`.
+  be mapped directly or covered by `default`. The mapping is live: agents
+  registered at runtime attach a tool assembly via `WithToolAssembly`
+  (see below) or fall back to `default`.
 - Runtime references do not require an `export` flag in the core schema.
+
+## Dynamic agent registration (core/v0.1.11+)
+
+Agents can be registered and removed at runtime without rebuilding:
+
+```go
+instance, err := app.RegisterAgent(ctx, "qa", agent.Definition{
+    Card:   agent.AgentCard{Name: "Ticket QA"},
+    Engine: agent.EngineRef{Kind: "agent.Engine", Impl: "graph"},
+}, runtime.WithToolAssembly("shared_tools")) // optional; needs dynamic_catalog
+if err != nil { /* Validation / Conflict / NotFound */ }
+
+// Sessions work exactly like deployed agents:
+lease, err := app.Sessions().GetOrCreate(ctx, session.Key{
+    AgentID: "qa", ContextID: "user-7",
+})
+
+// Removal drains active turns (bounded) before closing engine/hooks:
+if err := app.UnregisterAgent(ctx, "qa",
+    runtime.WithRemoveTimeout(30*time.Second)); err != nil {
+    /* DeadlineExceeded: registration restored, retryable */
+}
+```
+
+Rules:
+
+- `RegisterAgent` uses the same assembly path as deployment
+  (`deploy.BindAgent`); a name colliding with a deployed or registered
+  agent is `Conflict`, assembly failures are `Validation`.
+- `UnregisterAgent` blocks new sessions, waits for active turns (bounded
+  by ctx or `WithRemoveTimeout`), then releases engine/hooks. Unknown
+  names are an idempotent no-op; deployed agents cannot be removed at
+  runtime (`Conflict`).
+- With `dynamic_catalog` configured and no `default`, registration must
+  carry `WithToolAssembly(<resource name>)`.
+- `runtime.agent.<id>.registered` / `.removed` lifecycle events are
+  published on success (subscribe with `PatternAgentLifecycle()`).
 
 ## Sources of truth
 
-`core/runtime/config.go`, `core/runtime/doc.go`, `docs/guides/runtime.md`.
+`core/runtime/config.go`, `core/runtime/doc.go`, `core/runtime/lifecycle.go`,
+`docs/guides/runtime.md`.

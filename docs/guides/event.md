@@ -49,4 +49,8 @@ resources:
 The runtime host exposes the bus through `agent.EventBusProvider`.
 Runtime-level consumers can also subscribe through `Runtime.Attach`
 without resolving the resource themselves; the prompt lifecycle events
-are documented in [prompt.md](prompt.md).
+are documented in [prompt.md](prompt.md). Runtime agent lifecycle events
+(`runtime.agent.<id>.registered` / `.removed`, subscribe with
+`PatternAgentLifecycle()`) live in a separate namespace and are published
+on successful dynamic registration/removal (see
+[runtime.md](runtime.md)).
