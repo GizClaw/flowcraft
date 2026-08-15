@@ -19,7 +19,10 @@ import (
 // in the host's log stream rather than vanishing. Environment is the
 // caller's business: env entries are appended to the current
 // environment in "KEY=VALUE" form, so a caller can pass credentials
-// without exporting them process-wide.
+// without exporting them process-wide. The process environment is
+// re-read at every Connect, so a background reconnect sees the current
+// environment rather than a snapshot taken when the transport was
+// built; the caller-supplied env entries are captured at construction.
 //
 // Closing the session created from this transport closes the child's
 // stdin, waits, then escalates to SIGTERM and SIGKILL — the shutdown
@@ -29,14 +32,14 @@ func Stdio(command string, args []string, env map[string]string) (mcpsdk.Transpo
 	if command == "" {
 		return nil, fmt.Errorf("mcp: stdio transport command is empty")
 	}
-	var envList []string
+	var envCopy map[string]string
 	if len(env) > 0 {
-		envList = os.Environ()
+		envCopy = make(map[string]string, len(env))
 		for key, value := range env {
-			envList = append(envList, key+"="+value)
+			envCopy[key] = value
 		}
 	}
-	return &reconnectableStdio{command: command, args: args, env: envList}, nil
+	return &reconnectableStdio{command: command, args: args, env: envCopy}, nil
 }
 
 // reconnectableStdio is a [mcpsdk.Transport] that spawns a fresh child
@@ -45,20 +48,32 @@ func Stdio(command string, args []string, env map[string]string) (mcpsdk.Transpo
 // background reconnect path needs a transport that can be retried, so
 // each attempt builds a brand-new command and delegates to a fresh
 // CommandTransport (which owns the pipes and the SIGTERM/SIGKILL
-// shutdown sequence).
+// shutdown sequence). Each Connect rebuilds the child's environment
+// from the current process environment plus the caller's additions, so
+// reconnects never run against a stale snapshot.
 type reconnectableStdio struct {
 	command string
 	args    []string
-	env     []string
+	env     map[string]string
 }
 
-func (t *reconnectableStdio) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+// newCommand builds the child command for one connection attempt.
+func (t *reconnectableStdio) newCommand() *exec.Cmd {
 	cmd := exec.Command(t.command, t.args...)
 	cmd.Stderr = os.Stderr
 	if t.env != nil {
-		cmd.Env = t.env
+		// os.Environ returns a fresh slice each call, so appending the
+		// caller's entries is safe.
+		cmd.Env = os.Environ()
+		for key, value := range t.env {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
 	}
-	return (&mcpsdk.CommandTransport{Command: cmd}).Connect(ctx)
+	return cmd
+}
+
+func (t *reconnectableStdio) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	return (&mcpsdk.CommandTransport{Command: t.newCommand()}).Connect(ctx)
 }
 
 var _ mcpsdk.Transport = (*reconnectableStdio)(nil)

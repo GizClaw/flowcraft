@@ -313,3 +313,188 @@ func TestSource_ReconnectsAfterServerExit(t *testing.T) {
 		return err == nil && out == "ok"
 	})
 }
+
+// countingTransport wraps a transport and counts Close calls on every
+// connection it hands out, so tests can assert exactly when sessions
+// are torn down.
+type countingTransport struct {
+	inner  mcpsdk.Transport
+	mu     sync.Mutex
+	closes int
+}
+
+func (t *countingTransport) Connect(ctx context.Context) (mcpsdk.Connection, error) {
+	conn, err := t.inner.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &countingConn{Connection: conn, parent: t}, nil
+}
+
+func (t *countingTransport) closeCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closes
+}
+
+type countingConn struct {
+	mcpsdk.Connection
+	parent *countingTransport
+}
+
+func (c *countingConn) Close() error {
+	c.parent.mu.Lock()
+	c.parent.closes++
+	c.parent.mu.Unlock()
+	return c.Connection.Close()
+}
+
+// connectCountingServer spins up an in-memory MCP server and returns a
+// connected client session whose transport counts Close calls.
+func connectCountingServer(t *testing.T, src *Source, name string) (*server, *mcpsdk.ClientSession, *countingTransport) {
+	t.Helper()
+	clientT, serverT := mcpsdk.NewInMemoryTransports()
+	mcpServer := mcpsdk.NewServer(&mcpsdk.Implementation{Name: name, Version: "test"}, nil)
+	mcpServer.AddTool(&mcpsdk.Tool{
+		Name:        "mem_tool",
+		InputSchema: map[string]any{"type": "object"},
+	}, func(_ context.Context, _ *mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		return &mcpsdk.CallToolResult{
+			Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "ok"}},
+		}, nil
+	})
+	go func() { _, _ = mcpServer.Connect(context.Background(), serverT, nil) }()
+
+	counting := &countingTransport{inner: clientT}
+	srv := &server{
+		name:       name,
+		prefix:     name + DefaultPrefixSeparator,
+		transport:  counting,
+		cfg:        &serverConfig{prefix: name + DefaultPrefixSeparator, clientName: "flowcraft", clientVer: "v1"},
+		clientName: "flowcraft",
+		clientVer:  "v1",
+	}
+	session, err := src.connect(context.Background(), srv, srv.cfg)
+	if err != nil {
+		t.Fatalf("connect %q: %v", name, err)
+	}
+	return srv, session, counting
+}
+
+// TestAttachSessionClosesSessionWhenSourceClosed locks in the closed
+// branch of attachSession: a session that connected while the Source
+// was closing must not be orphaned, because AddServer's retry path is
+// a no-op once the source is closed.
+func TestAttachSessionClosesSessionWhenSourceClosed(t *testing.T) {
+	src := NewSource(WithConnectTimeout(2 * time.Second))
+	srv, session, counting := connectCountingServer(t, src, "mem")
+
+	if err := src.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	err := src.attachSession(context.Background(), srv, session)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("attachSession after Close = %v, want NotAvailable", err)
+	}
+	if got := counting.closeCount(); got != 1 {
+		t.Fatalf("session Close calls = %d, want 1 (orphaned session)", got)
+	}
+	srv.mu.Lock()
+	current := srv.session
+	srv.mu.Unlock()
+	if current != nil {
+		t.Fatal("srv.session still set after failed attach")
+	}
+}
+
+// TestAttachSessionClosesSessionWhenAlreadyAttached locks in the
+// duplicate branch: a second concurrent attach of the same server name
+// must close its own session rather than leak it.
+func TestAttachSessionClosesSessionWhenAlreadyAttached(t *testing.T) {
+	src := NewSource(WithConnectTimeout(2 * time.Second))
+	srv1, session1, _ := connectCountingServer(t, src, "mem")
+	if err := src.attachSession(context.Background(), srv1, session1); err != nil {
+		t.Fatalf("first attachSession: %v", err)
+	}
+
+	_, session2, counting2 := connectCountingServer(t, src, "mem")
+	srv2 := &server{
+		name:       "mem",
+		prefix:     "mem" + DefaultPrefixSeparator,
+		transport:  counting2,
+		cfg:        &serverConfig{prefix: "mem" + DefaultPrefixSeparator, clientName: "flowcraft", clientVer: "v1"},
+		clientName: "flowcraft",
+		clientVer:  "v1",
+	}
+	err := src.attachSession(context.Background(), srv2, session2)
+	if !errdefs.IsValidation(err) {
+		t.Fatalf("second attachSession = %v, want Validation", err)
+	}
+	if got := counting2.closeCount(); got != 1 {
+		t.Fatalf("duplicate session Close calls = %d, want 1 (orphaned session)", got)
+	}
+}
+
+// TestAttachSessionClosesSessionOnReconcileFailure verifies the
+// reconcile-failure path closes the session exactly once, which is
+// what makes retryLoop's own Close redundant.
+func TestAttachSessionClosesSessionOnReconcileFailure(t *testing.T) {
+	src := NewSource(WithConnectTimeout(2 * time.Second))
+	srv, session, counting := connectCountingServer(t, src, "mem")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := src.attachSession(ctx, srv, session)
+	if err == nil {
+		t.Fatal("attachSession with canceled context returned nil")
+	}
+	if got := counting.closeCount(); got != 1 {
+		t.Fatalf("session Close calls = %d, want 1", got)
+	}
+	srv.mu.Lock()
+	current := srv.session
+	srv.mu.Unlock()
+	if current != nil {
+		t.Fatal("srv.session still set after failed attach")
+	}
+}
+
+func TestProjectToolsDeduplicatesNames(t *testing.T) {
+	srv := &server{name: "s", prefix: "s" + DefaultPrefixSeparator}
+	dup := &mcpsdk.Tool{Name: "dup", InputSchema: map[string]any{"type": "object"}}
+	list := []*mcpsdk.Tool{
+		dup,
+		{Name: "other", InputSchema: map[string]any{"type": "object"}},
+		nil,
+		dup,
+		{Name: "", InputSchema: map[string]any{"type": "object"}},
+	}
+	tools := projectTools(srv, list, false)
+	if len(tools) != 2 {
+		t.Fatalf("projectTools returned %d tools, want 2 (deduped): %v", len(tools), toolNames(tools))
+	}
+	if tools[0].Definition().Name != "s"+DefaultPrefixSeparator+"dup" ||
+		tools[1].Definition().Name != "s"+DefaultPrefixSeparator+"other" {
+		t.Fatalf("projectTools = %v, want [s__dup s__other]", toolNames(tools))
+	}
+
+	// A server tool that collides with a resource bridge name wins; the
+	// projection must still be unique when resources are enabled.
+	withResource := []*mcpsdk.Tool{{Name: "list_resources", InputSchema: map[string]any{"type": "object"}}}
+	tools = projectTools(srv, withResource, true)
+	want := []string{
+		"s" + DefaultPrefixSeparator + "list_resources",
+		"s" + DefaultPrefixSeparator + "read_resource",
+	}
+	if len(tools) != 2 || tools[0].Definition().Name != want[0] || tools[1].Definition().Name != want[1] {
+		t.Fatalf("projectTools with resource collision = %v, want %v", toolNames(tools), want)
+	}
+}
+
+func toolNames(tools []sdktool.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tl := range tools {
+		names = append(names, tl.Definition().Name)
+	}
+	return names
+}

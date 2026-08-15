@@ -111,17 +111,28 @@ func (r *Registry) Add(t Tool) error {
 	return r.addLocked(t)
 }
 
-// Remove unregisters the named tool at runtime. Unknown names are
-// ignored; after Close it is a no-op.
+// Remove unregisters the named tool at runtime. If the removed tool
+// implements io.Closer, it is closed so runtime removals (e.g. a
+// shrunk MCP tool projection) release whatever resources the tool
+// holds; the close happens outside the registry lock and is
+// best-effort. Unknown names are ignored; after Close it is a no-op.
 func (r *Registry) Remove(name string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	t, ok := r.tools[name]
+	if !ok {
+		r.mu.Unlock()
+		return
+	}
 	delete(r.tools, name)
 	for i, n := range r.order {
 		if n == name {
 			r.order = append(r.order[:i], r.order[i+1:]...)
 			break
 		}
+	}
+	r.mu.Unlock()
+	if c, ok := t.(io.Closer); ok {
+		_ = c.Close()
 	}
 }
 

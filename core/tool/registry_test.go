@@ -198,6 +198,41 @@ func TestRegistry_AddRemoveAtRuntime(t *testing.T) {
 	}
 }
 
+func TestRegistry_RemoveClosesRemovedTool(t *testing.T) {
+	reg, err := tool.NewRegistry(nil)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	var closed atomic.Bool
+	removed := &closableTool{tool: funcTool("gone", "x"), closed: &closed}
+	if err := reg.Add(removed); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := reg.Add(funcTool("kept", "y")); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	reg.Remove("gone")
+	if !closed.Load() {
+		t.Fatal("removed tool was not closed")
+	}
+	if _, ok := reg.Get("gone"); ok {
+		t.Fatal("removed tool still registered")
+	}
+	if _, ok := reg.Get("kept"); !ok {
+		t.Fatal("unrelated tool was removed")
+	}
+
+	// Unknown names are ignored and never close anything.
+	reg.Remove("missing")
+	if _, ok := reg.Get("kept"); !ok {
+		t.Fatal("unknown-name Remove dropped a registered tool")
+	}
+	if reg.Len() != 1 {
+		t.Fatalf("Len = %d, want 1 after unknown-name Remove", reg.Len())
+	}
+}
+
 func TestRegistry_AddDuplicateRuntimeFollowsPolicy(t *testing.T) {
 	reg, err := tool.NewRegistry([]tool.Source{
 		source{tools: []tool.Tool{funcTool("dup", "first")}},
