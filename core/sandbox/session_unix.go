@@ -631,11 +631,7 @@ func (l *outputLog) close() {
 	for _, w := range subs {
 		w.deliver(SessionEvent{Seq: l.nextSeq, Type: SessionEventClosed})
 		w.once.Do(func() { close(w.ch) })
-		select {
-		case <-w.stop:
-		default:
-			close(w.stop)
-		}
+		w.stopOnce.Do(func() { close(w.stop) })
 	}
 	l.wakeReadersLocked()
 	l.mu.Unlock()
@@ -684,20 +680,17 @@ func (l *outputLog) removeSubscriber(w *watcher) {
 // one SessionEventLag (Seq = first missed byte cursor) and the
 // channel closes — the consumer recovers with Read(afterSeq).
 type watcher struct {
-	ch   chan SessionEvent
-	stop chan struct{}
-	once sync.Once
-	log  *outputLog
+	ch       chan SessionEvent
+	stop     chan struct{}
+	once     sync.Once
+	stopOnce sync.Once
+	log      *outputLog
 }
 
 func (w *watcher) Events() <-chan SessionEvent { return w.ch }
 
 func (w *watcher) Close() error {
-	select {
-	case <-w.stop:
-	default:
-		close(w.stop)
-	}
+	w.stopOnce.Do(func() { close(w.stop) })
 	return nil
 }
 
@@ -728,11 +721,7 @@ func (w *watcher) deliver(ev SessionEvent) bool {
 	default:
 	}
 	w.once.Do(func() { close(w.ch) })
-	select {
-	case <-w.stop:
-	default:
-		close(w.stop)
-	}
+	w.stopOnce.Do(func() { close(w.stop) })
 	return false
 }
 
