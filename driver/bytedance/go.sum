@@ -2,8 +2,8 @@ cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMT
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb h1:iS4tRKtteioA1ZDrUqn2tGkBjM4fiQeRoqJx6E3dD34=
 github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb/go.mod h1:4R3wUAZkYk1BSgzv+QVF+2SZPu3VDy8NvaQdNRYGgBs=
-github.com/GizClaw/flowcraft/core v0.1.4 h1:K1kFFifACdFxwtcCVBa9C6y9pL8nQwbRFbvpX+aHr2U=
-github.com/GizClaw/flowcraft/core v0.1.4/go.mod h1:t4e1E55RSCsZTDGLCKLeg0Qags72Y2Yz2ZtL3EyGy1k=
+github.com/GizClaw/flowcraft/core v0.1.10 h1:Z0NAbJfNRPME/9hR6zqHxOEx5h4ktCJtVxVBjm+bgFY=
+github.com/GizClaw/flowcraft/core v0.1.10/go.mod h1:t4e1E55RSCsZTDGLCKLeg0Qags72Y2Yz2ZtL3EyGy1k=
 github.com/avast/retry-go v3.0.0+incompatible/go.mod h1:XtSnn+n/sHqQIpZ10K1qAevBhOOCWBLXXy3hyiqqBrY=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
