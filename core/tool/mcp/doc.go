@@ -37,12 +37,16 @@
 //	// reg now holds askuser plus filesystem__read_file, filesystem__write_file, ...
 //	exec := tool.NewExecutor(reg, mws...)
 //
-// AddServer attempts to connect synchronously, and a server that is
-// reachable is complete before the call returns. A server that cannot
-// be reached is not a startup failure: the Source keeps retrying in
-// the background with exponential backoff and publishes the server's
-// tools to the registry the moment a connection succeeds. Hosts can
-// therefore finish wiring before every server is up.
+// AddServer never blocks on the network: it validates the
+// configuration, registers the server, and schedules the first
+// connection attempt to run immediately in the background. A server
+// that cannot be reached is not a startup failure — the Source keeps
+// retrying with exponential backoff and publishes the server's tools
+// to the registry the moment a connection succeeds — and a hung server
+// cannot stall the host past a background attempt. Hosts that need a
+// server up before proceeding mark it required and call
+// [Source.WaitReady]; everything else converges while the host keeps
+// starting.
 //
 // # Namespacing
 //

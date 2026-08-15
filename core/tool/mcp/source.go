@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,9 +25,9 @@ const DefaultPrefixSeparator = "__"
 // stall startup or a background retry forever.
 const DefaultConnectTimeout = 30 * time.Second
 
-// DefaultRetryBackoff is the delay before the first background
-// reconnection attempt. The delay doubles on each failure up to
-// DefaultRetryMaxBackoff.
+// DefaultRetryBackoff is the delay after a failed background connect
+// attempt before the next one. The first attempt runs immediately; the
+// delay doubles on each failure up to DefaultRetryMaxBackoff.
 const (
 	DefaultRetryBackoff    = time.Second
 	DefaultRetryMaxBackoff = 30 * time.Second
@@ -43,16 +42,18 @@ const DefaultLivenessInterval = 15 * time.Second
 // Source is a tool.Source that connects MCP servers and exposes their
 // tools as ordinary core/tool.Tool values.
 //
-// Connection is best-effort. AddServer attempts to connect and
-// discover tools immediately; a failure that is the server's fault —
-// unreachable, missing binary, timeout — schedules background
-// reconnection with exponential backoff instead of failing the host,
-// and the tools are published to the attached [sdktool.Registrar]
-// when the server comes up. A failure that is our configuration's
-// fault (validation, rejection) still returns an error to the caller.
-// Once connected, a server that dies is reconnected the same way: its
-// tools stay visible, and calls fail with per-server NotAvailable
-// until the connection is restored.
+// Connection is best-effort and runs entirely in the background.
+// AddServer validates and registers a server, schedules its first
+// connect attempt, and returns immediately; a failure that is the
+// server's fault — unreachable, missing binary, timeout — schedules
+// background reconnection with exponential backoff instead of failing
+// the host, and the tools are published to the attached
+// [sdktool.Registrar] when the server comes up. A failure that is our
+// configuration's fault (validation, rejection) is logged and the
+// connection is given up; hosts that need a server to be up can await
+// it explicitly with [Source.WaitReady]. Once connected, a server that
+// dies is reconnected the same way: its tools stay visible, and calls
+// fail with per-server NotAvailable until the connection is restored.
 type Source struct {
 	mu        sync.Mutex
 	servers   map[string]*server
@@ -140,10 +141,16 @@ func NewSource(opts ...SourceOption) *Source {
 // resource-bridge tools, for every server attached so far.
 func (s *Source) Tools() []sdktool.Tool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []sdktool.Tool
+	servers := make([]*server, 0, len(s.servers))
 	for _, srv := range s.servers {
+		servers = append(servers, srv)
+	}
+	s.mu.Unlock()
+	var out []sdktool.Tool
+	for _, srv := range servers {
+		srv.mu.Lock()
 		out = append(out, srv.tools...)
+		srv.mu.Unlock()
 	}
 	return out
 }
@@ -195,6 +202,14 @@ type server struct {
 	mu      sync.Mutex
 	session *mcpsdk.ClientSession
 	tools   []sdktool.Tool
+
+	// ready is closed exactly once, on the server's first terminal
+	// state: the first successful attach (readyErr nil) or a give-up
+	// in the background loop (readyErr set). WaitReady blocks on it.
+	// After Close, servers that never connected are woken with a
+	// NotAvailable error so waiters do not hang.
+	ready    chan struct{}
+	readyErr error
 }
 
 // currentSession returns the live session or a typed error if the
@@ -206,6 +221,31 @@ func (s *server) currentSession() (*mcpsdk.ClientSession, error) {
 		return nil, errdefs.NotAvailablef("mcp: server %q is not connected", s.name)
 	}
 	return s.session, nil
+}
+
+// readyState returns the server's readiness channel and terminal
+// error. A nil channel means the server reached its first terminal
+// state: readyErr nil means connected, non-nil means the background
+// loop gave up (or the source closed). An open channel means the first
+// connection attempt has not finished yet.
+func (s *server) readyState() (chan struct{}, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ready, s.readyErr
+}
+
+// markReady closes the readiness channel exactly once. A nil error
+// marks the first successful attach; a non-nil error marks a give-up
+// or Close so WaitReady fails fast instead of waiting out its timeout.
+func (s *server) markReady(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ready == nil {
+		return
+	}
+	s.readyErr = err
+	close(s.ready)
+	s.ready = nil
 }
 
 // qualify maps a server-side tool name to the registry key.
@@ -227,6 +267,7 @@ type serverConfig struct {
 	clientOpts  *mcpsdk.ClientOptions
 	onListError func(server string, err error)
 	resources   bool
+	required    bool
 }
 
 // WithPrefix overrides the namespace prefix applied to the server's tool
@@ -263,13 +304,27 @@ func WithResources(enabled bool) ServerOption {
 	return func(c *serverConfig) { c.resources = enabled }
 }
 
-// AddServer attaches one MCP server. It attempts to connect and
-// discover tools immediately; on a server-side failure (unreachable,
-// missing binary, timeout) the attempt is retried in the background
-// with backoff and AddServer returns nil, so a host can finish
-// starting up while the server converges. Validation failures — a
-// rejected connection, an invalid request, a duplicate name — are
-// configuration errors and are returned to the caller.
+// WithRequired marks a server as required. All servers connect and
+// retry the same way either way; the flag is for hosts that cannot
+// start without the server, which should mark it required and then
+// await [Source.WaitReady] so a background give-up (validation,
+// rejection, source closed) surfaces as an error instead of a silent
+// missing tool set.
+func WithRequired() ServerOption {
+	return func(c *serverConfig) { c.required = true }
+}
+
+// AddServer attaches one MCP server. It validates the configuration,
+// registers the server, schedules the first connection attempt to run
+// immediately in the background, and returns nil. No connect work runs
+// on the caller's critical path: a hung server stalls a background
+// attempt bounded by the per-attempt timeout, never the host.
+// Validation errors that used to return synchronously — a rejected
+// connection, an invalid request — are now logged and given up in the
+// background; only local configuration errors (empty name, nil
+// transport, duplicate name) and an already-canceled context are
+// returned to the caller. Hosts that require a server to be up should
+// call [Source.WaitReady].
 //
 // The transport must tolerate being connected more than once when a
 // background retry is needed; the Stdio and StreamableHTTP transports
@@ -285,6 +340,9 @@ func (s *Source) AddServer(
 	}
 	if transport == nil {
 		return errdefs.Validationf("mcp: server %q: transport is nil", name)
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("mcp: attach server %q: %w", name, err)
 	}
 
 	cfg := &serverConfig{
@@ -308,6 +366,7 @@ func (s *Source) AddServer(
 		clientOpts: cfg.clientOpts,
 		onListErr:  cfg.onListError,
 		resources:  cfg.resources,
+		ready:      make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -319,33 +378,58 @@ func (s *Source) AddServer(
 		s.mu.Unlock()
 		return errdefs.Validationf("mcp: server %q is already attached", name)
 	}
-	if _, pending := s.retrying[name]; pending {
-		s.mu.Unlock()
-		return errdefs.Validationf("mcp: server %q is already attached", name)
-	}
+	s.servers[name] = srv
 	s.mu.Unlock()
 
-	attemptCtx, cancel := context.WithTimeout(ctx, s.connectTimeout)
-	session, err := s.connect(attemptCtx, srv, cfg)
-	cancel()
-	if err != nil {
-		if fatalAttachError(ctx, err) {
-			return fmt.Errorf("mcp: attach server %q: %w", name, err)
+	s.scheduleRetry(srv)
+	return nil
+}
+
+// WaitReady blocks until the named server has connected and its tools
+// are published, or fails fast when the background loop gives up on it
+// (validation/rejection), the source closes, or timeout elapses. A
+// non-positive timeout waits only on ctx. Once a server has connected,
+// WaitReady returns nil immediately even if the connection later drops
+// and reconnects — the host-startup question is "is it up yet", not
+// "is it up right now".
+func (s *Source) WaitReady(ctx context.Context, name string, timeout time.Duration) error {
+	s.mu.Lock()
+	srv := s.servers[name]
+	closed := s.closed
+	s.mu.Unlock()
+	if srv == nil {
+		if closed {
+			return errdefs.NotAvailablef("mcp: source is closed")
 		}
-		s.scheduleRetry(srv)
+		return errdefs.Validationf("mcp: server %q is not attached", name)
+	}
+
+	ready, err := srv.readyState()
+	if ready == nil {
+		if err != nil {
+			return fmt.Errorf("mcp: server %q: %w", name, err)
+		}
 		return nil
 	}
 
-	reconcileCtx, cancel := context.WithTimeout(ctx, s.connectTimeout)
-	defer cancel()
-	if err := s.attachSession(reconcileCtx, srv, session); err != nil {
-		if fatalAttachError(ctx, err) {
-			return fmt.Errorf("mcp: attach server %q: %w", name, err)
-		}
-		s.scheduleRetry(srv)
-		return nil
+	waitCtx := ctx
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
 	}
-	go s.watch(srv)
+	select {
+	case <-ready:
+	case <-waitCtx.Done():
+		if ctx.Err() != nil {
+			return fmt.Errorf("mcp: server %q: %w", name, ctx.Err())
+		}
+		return errdefs.Timeoutf("mcp: server %q not ready within %s", name, timeout)
+	}
+
+	if _, err := srv.readyState(); err != nil {
+		return fmt.Errorf("mcp: server %q: %w", name, err)
+	}
 	return nil
 }
 
@@ -366,6 +450,7 @@ func (s *Source) Close() error {
 
 	var first error
 	for _, srv := range servers {
+		srv.markReady(errdefs.NotAvailablef("mcp: source is closed"))
 		srv.mu.Lock()
 		session := srv.session
 		srv.session = nil
@@ -560,22 +645,6 @@ func (s *Source) publish(added, removed []sdktool.Tool) {
 	}
 }
 
-// fatalAttachError reports whether a failed attach must surface to the
-// caller instead of being retried in the background: configuration
-// errors (validation/rejection) and a dead or canceled caller context.
-func fatalAttachError(ctx context.Context, err error) bool {
-	if err == nil {
-		return false
-	}
-	if errdefs.IsValidation(err) {
-		return true
-	}
-	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
-		return true
-	}
-	return false
-}
-
 // scheduleRetry starts a background reconnection loop for srv unless
 // one is already running or the source is closed.
 func (s *Source) scheduleRetry(srv *server) {
@@ -596,10 +665,13 @@ func (s *Source) scheduleRetry(srv *server) {
 // retryLoop reconnects srv with exponential backoff until it succeeds
 // or the source closes.
 func (s *Source) retryLoop(srv *server) {
-	backoff := s.retryInitial
+	// The first attempt runs immediately; backoff applies only after
+	// the first failure.
+	backoff := time.Duration(0)
 	for {
 		select {
 		case <-s.baseCtx.Done():
+			srv.markReady(errdefs.NotAvailablef("mcp: source is closed"))
 			s.clearRetrying(srv.name)
 			return
 		case <-time.After(backoff):
@@ -613,6 +685,7 @@ func (s *Source) retryLoop(srv *server) {
 			err = s.attachSession(reconcileCtx, srv, session)
 			cancel()
 			if err == nil {
+				srv.markReady(nil)
 				s.clearRetrying(srv.name)
 				go s.watch(srv)
 				return
@@ -621,13 +694,12 @@ func (s *Source) retryLoop(srv *server) {
 			// path closes it and clears srv.session, so nothing to do
 			// here.
 			if errdefs.IsValidation(err) {
-				telemetry.Error(s.baseCtx, "mcp: server rejected attach, giving up",
-					otellog.String("server", srv.name),
-					otellog.String(telemetry.AttrErrorMessage, err.Error()))
+				s.giveUp(srv, "server rejected attach, giving up", err)
 				s.clearRetrying(srv.name)
 				return
 			}
 			if s.baseCtx.Err() != nil {
+				srv.markReady(errdefs.NotAvailablef("mcp: source is closed"))
 				s.clearRetrying(srv.name)
 				return
 			}
@@ -640,13 +712,12 @@ func (s *Source) retryLoop(srv *server) {
 		if errdefs.IsValidation(err) {
 			// The peer is there but rejects us — retrying cannot fix a
 			// configuration problem, so stop instead of churning.
-			telemetry.Error(s.baseCtx, "mcp: server rejected connection, giving up",
-				otellog.String("server", srv.name),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+			s.giveUp(srv, "server rejected connection, giving up", err)
 			s.clearRetrying(srv.name)
 			return
 		}
 		if s.baseCtx.Err() != nil {
+			srv.markReady(errdefs.NotAvailablef("mcp: source is closed"))
 			s.clearRetrying(srv.name)
 			return
 		}
@@ -656,8 +727,26 @@ func (s *Source) retryLoop(srv *server) {
 	}
 }
 
+// giveUp logs a terminal background failure and wakes WaitReady
+// waiters with it. Required servers get an explicit mention so a host
+// that declared one knows its startup contract was not met.
+func (s *Source) giveUp(srv *server, msg string, err error) {
+	attrs := []otellog.KeyValue{
+		otellog.String("server", srv.name),
+		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	}
+	if srv.cfg.required {
+		attrs = append(attrs, otellog.Bool("required", true))
+	}
+	telemetry.Error(s.baseCtx, "mcp: "+msg, attrs...)
+	srv.markReady(err)
+}
+
 // nextBackoff doubles cur up to the configured maximum.
 func (s *Source) nextBackoff(cur time.Duration) time.Duration {
+	if cur <= 0 {
+		return s.retryInitial
+	}
 	next := cur * 2
 	if next > s.retryMax {
 		return s.retryMax

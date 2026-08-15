@@ -56,3 +56,28 @@ func TestParseSpecRejectsInvalidHTTPTimeout(t *testing.T) {
 		t.Fatal("ParseSpec accepted invalid http_timeout")
 	}
 }
+
+func TestParseSpecRequired(t *testing.T) {
+	spec, err := ParseSpec(json.RawMessage(`{
+		"servers": [{
+			"name": "db",
+			"transport": "stdio",
+			"command": "mcp-db",
+			"required": true
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("ParseSpec: %v", err)
+	}
+	if !spec.Servers[0].Required {
+		t.Fatal("Required not parsed from spec")
+	}
+
+	cfg := &serverConfig{}
+	for _, opt := range spec.Servers[0].options() {
+		opt(cfg)
+	}
+	if !cfg.required {
+		t.Fatal("WithRequired not wired from ServerSpec.options")
+	}
+}
