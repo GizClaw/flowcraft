@@ -17,6 +17,13 @@ import (
 // stall) must not wedge the manager forever.
 const registryWaitTimeout = 10 * time.Second
 
+// registryCloseTimeout bounds the whole Close drain. Terminate's own
+// state sync is capped by registryWaitTimeout, but the per-session
+// Terminate call has no deadline of its own; sharing one deadline
+// across Close guarantees a Session whose Terminate blocks cannot
+// wedge shutdown indefinitely.
+const registryCloseTimeout = 30 * time.Second
+
 // SessionStarter implements one backend's spawn: it turns a SessionSpec
 // into a launched Session. It is the injection seam shared by every
 // backend's Runner (local, remote, and future seatbelt/bwrap) so
@@ -56,6 +63,11 @@ type sessionRecord struct {
 	exited  bool
 	exit    SessionExit
 	err     error
+	// ready is closed once the spawn settles: the session is assigned
+	// (spawn succeeded) or the record was removed (spawn failed). It
+	// lets Close wait out a start race instead of failing on a session
+	// that is still starting.
+	ready chan struct{}
 }
 
 func (r *SessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session, error) {
@@ -70,7 +82,12 @@ func (r *SessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session,
 		id = xid.New().String()
 	}
 
-	rec := &sessionRecord{id: id, spec: spec, started: time.Now()}
+	rec := &sessionRecord{
+		id:      id,
+		spec:    spec,
+		started: time.Now(),
+		ready:   make(chan struct{}),
+	}
 	r.mu.Lock()
 	if _, exists := r.sessions[id]; exists {
 		r.mu.Unlock()
@@ -85,10 +102,12 @@ func (r *SessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session,
 	sess, err := r.starter(ctx, spec)
 	if err != nil {
 		r.remove(id)
+		close(rec.ready)
 		return nil, err
 	}
 	if sess == nil {
 		r.remove(id)
+		close(rec.ready)
 		return nil, errdefs.Internalf("sandbox: session starter returned a nil session")
 	}
 
@@ -96,6 +115,7 @@ func (r *SessionRegistry) Start(ctx context.Context, spec SessionSpec) (Session,
 	rec.session = sess
 	rec.pid = sess.PID()
 	r.mu.Unlock()
+	close(rec.ready)
 
 	go r.track(id, sess)
 	return &registrySession{inner: sess, reg: r, id: id}, nil
@@ -142,17 +162,20 @@ func (r *SessionRegistry) List(context.Context) ([]SessionInfo, error) {
 func (r *SessionRegistry) Terminate(ctx context.Context, id string) error {
 	r.mu.Lock()
 	rec := r.sessions[id]
-	r.mu.Unlock()
 	if rec == nil {
+		r.mu.Unlock()
 		return errdefs.NotFoundf("sandbox: unknown session id %q", id)
 	}
-	if rec.exited {
+	exited := rec.exited
+	session := rec.session
+	r.mu.Unlock()
+	if exited {
 		return nil
 	}
-	if rec.session == nil {
+	if session == nil {
 		return errdefs.NotAvailablef("sandbox: session %q is still starting", id)
 	}
-	if err := rec.session.Terminate(ctx); err != nil {
+	if err := session.Terminate(ctx); err != nil {
 		return err
 	}
 	// Synchronise the record: List must reflect the termination as soon
@@ -177,7 +200,22 @@ func (r *SessionRegistry) Terminate(ctx context.Context, id string) error {
 // Close returns, no session started through this registry remains
 // running. Records are kept so List still reports what ran; repeated
 // calls are safe because Terminate skips already-exited sessions.
+//
+// Close is bounded: the whole drain shares one deadline
+// (registryCloseTimeout) so a Session whose Terminate blocks cannot
+// wedge shutdown. Sessions still starting are waited on rather than
+// reported as NotAvailable, so a start race does not fail Close.
 func (r *SessionRegistry) Close() error {
+	return r.closeWithTimeout(registryCloseTimeout)
+}
+
+// closeWithTimeout is Close with an explicit overall budget. It is
+// split out so tests can exercise the deadline without waiting the
+// full registryCloseTimeout.
+func (r *SessionRegistry) closeWithTimeout(timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
 	r.mu.Lock()
 	ids := make([]string, 0, len(r.sessions))
 	for id := range r.sessions {
@@ -187,11 +225,45 @@ func (r *SessionRegistry) Close() error {
 
 	var errs []error
 	for _, id := range ids {
-		if err := r.Terminate(context.Background(), id); err != nil {
+		if err := r.closeOne(ctx, id); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// closeOne terminates one session for Close. When the session is still
+// starting (its record is published before the spawn returns), it waits
+// for the spawn to settle — bounded by ctx — so a start race does not
+// surface as a spurious NotAvailable error. A record that vanished in
+// the meantime (spawn failed, or the session was already closed) has
+// nothing to drain and is not an error.
+func (r *SessionRegistry) closeOne(ctx context.Context, id string) error {
+	r.mu.Lock()
+	rec := r.sessions[id]
+	starting := rec != nil && rec.session == nil && !rec.exited
+	r.mu.Unlock()
+
+	if rec == nil {
+		return nil
+	}
+	if starting {
+		select {
+		case <-rec.ready:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		r.mu.Lock()
+		rec = r.sessions[id]
+		r.mu.Unlock()
+		if rec == nil {
+			return nil
+		}
+	}
+	if err := r.Terminate(ctx, id); err != nil && !errdefs.IsNotFound(err) {
+		return err
+	}
+	return nil
 }
 
 func (r *SessionRegistry) remove(id string) {
