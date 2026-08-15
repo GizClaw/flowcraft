@@ -15,7 +15,3 @@ use (
 	./memory
 	./memory/eval
 )
-
-replace github.com/GizClaw/flowcraft/driver/deepseek v0.1.0 => ./driver/deepseek
-
-replace github.com/GizClaw/flowcraft/driver/openai v0.1.0 => ./driver/openai
