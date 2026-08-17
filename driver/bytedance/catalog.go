@@ -41,6 +41,14 @@ type catalogEntry struct {
 	// lifecycle: deprecated models stay routable but announce a replacement.
 	deprecated  bool
 	replacement string
+	// maxInputTokens caps the input context in tokens; zero means
+	// undeclared. Generate values mirror the family context window on
+	// the Volcengine Ark model detail pages; the official model list
+	// (https://www.volcengine.com/docs/82379/1330310) reports separate
+	// per-version max-input values (typically 224K or 256K, with 1M
+	// long-context tiers), so these entries are the family-level upper
+	// bound. Embedding values mirror the documented per-input limit.
+	maxInputTokens int
 }
 
 // catalog is the built-in model registry. Names are stable Volcengine model
@@ -52,36 +60,40 @@ type catalogEntry struct {
 var catalog = map[string]catalogEntry{
 	// Seed 2.1 (2026-06) — current flagship tier. The whole Seed 2.x line is
 	// natively multimodal (text/image/video in) with thinking support.
-	"doubao-seed-2-1-pro":   {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
-	"doubao-seed-2-1-turbo": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-1-pro":   {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
+	"doubao-seed-2-1-turbo": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
-	"doubao-seed-2-0-pro":  {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
-	"doubao-seed-2-0-lite": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
-	"doubao-seed-2-0-mini": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true},
-	"doubao-seed-2-0-code": {kind: kindGenerate, vision: true, reasoning: true, webSearch: true},
+	"doubao-seed-2-0-pro":  {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
+	"doubao-seed-2-0-lite": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
+	"doubao-seed-2-0-mini": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
+	"doubao-seed-2-0-code": {kind: kindGenerate, vision: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 
 	// Seed 1.x — superseded by the 2.x line; kept routable for existing
 	// deployments, announced as deprecated with a replacement.
 	"doubao-seed-1-8": {
 		kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
+		maxInputTokens: 256_000,
 	},
 	"doubao-seed-1-6": {
 		kind: kindGenerate, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-mini",
+		maxInputTokens: 256_000,
 	},
 	"doubao-seed-1-6-vision": {
 		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
+		maxInputTokens: 256_000,
 	},
 	"doubao-seed-1-6-flash": {
 		kind: kindGenerate, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-mini",
+		maxInputTokens: 256_000,
 	},
 
-	"doubao-embedding-large":  {kind: kindEmbed, dimensions: true},
-	"doubao-embedding-vision": {kind: kindEmbed, imageInput: true, dimensions: true},
+	"doubao-embedding-large":  {kind: kindEmbed, dimensions: true, maxInputTokens: 4_095},
+	"doubao-embedding-vision": {kind: kindEmbed, imageInput: true, dimensions: true, maxInputTokens: 8_191},
 
 	// Seedream image generation; 5.0/4.5 current, 4.0 superseded.
 	"doubao-seedream-5-0": {kind: kindImage},

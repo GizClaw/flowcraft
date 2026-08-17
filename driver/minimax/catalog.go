@@ -39,6 +39,10 @@ type catalogEntry struct {
 	// videoI2VOnly marks image-to-video models: the request must carry a
 	// first-frame image.
 	videoI2VOnly bool
+	// maxInputTokens caps the input context in tokens; zero means
+	// undeclared. M3 holds the 1M context and the M2.x series holds
+	// 204,800 per https://platform.minimaxi.com/docs/guides/text-generation.
+	maxInputTokens int
 }
 
 // catalog reflects MiniMax's lineup as of 2026-07. Sources:
@@ -54,14 +58,14 @@ type catalogEntry struct {
 // absent: the canonical audio intent is voice-shaped and has no honest
 // surface for lyrics/instrumental control.
 var catalog = map[string]catalogEntry{
-	"MiniMax-M3":             {kind: kindGenerate, vision: true, reasoning: true, reasoningDisable: true},
-	"MiniMax-M2.7":           {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2.7-highspeed": {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2.5":           {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2.5-highspeed": {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2.1":           {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2.1-highspeed": {kind: kindGenerate, reasoning: true},
-	"MiniMax-M2":             {kind: kindGenerate, reasoning: true},
+	"MiniMax-M3":             {kind: kindGenerate, vision: true, reasoning: true, reasoningDisable: true, maxInputTokens: 1_000_000},
+	"MiniMax-M2.7":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2.7-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2.5":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2.5-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2.1":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2.1-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M2":             {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
 
 	// Speech synthesis (t2a_v2): HD and turbo tiers.
 	"speech-2.8-hd":    {kind: kindTTS},

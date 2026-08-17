@@ -39,6 +39,11 @@ type catalogEntry struct {
 	// embedDimensions lists the vector sizes an embed model accepts; nil
 	// means the model takes no dimension parameter.
 	embedDimensions []int
+	// maxInputTokens caps the input context in tokens; zero means
+	// undeclared. Values mirror the published maximum input length
+	// (最大输入长度) on the per-model pages at
+	// https://www.alibabacloud.com/help/zh/model-studio/models.
+	maxInputTokens int
 }
 
 // catalog reflects the DashScope commercial lineup as of 2026-07.
@@ -51,29 +56,31 @@ type catalogEntry struct {
 // thinking on reject the shape. The legacy qwen-plus/turbo/flash/max
 // names stay text-only here — custom models declare through the spec.
 var catalog = map[string]catalogEntry{
-	"qwen3.8-max-preview": {kind: kindGenerate, vision: true, video: true, reasoning: true, reasoningEffort: true, preserveThinking: true, thinkingStreamOnly: true},
-	"qwen3.7-max":         {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true},
-	"qwen3.7-plus":        {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true},
-	"qwen3.7-flash":       {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true},
-	"qwen3-vl-plus":       {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true},
-	"qwen3-vl-flash":      {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true},
+	"qwen3.8-max-preview": {kind: kindGenerate, vision: true, video: true, reasoning: true, reasoningEffort: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 983_616},
+	"qwen3.7-max":         {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
+	"qwen3.7-plus":        {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
+	"qwen3.7-flash":       {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
+	"qwen3-vl-plus":       {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true, maxInputTokens: 260_096},
+	"qwen3-vl-flash":      {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true, maxInputTokens: 260_096},
 
-	"qwen-plus":  {kind: kindGenerate},
-	"qwen-turbo": {kind: kindGenerate},
-	"qwen-flash": {kind: kindGenerate},
-	"qwen-max":   {kind: kindGenerate},
+	"qwen-plus":  {kind: kindGenerate, maxInputTokens: 997_952},
+	"qwen-turbo": {kind: kindGenerate, maxInputTokens: 98_304},
+	"qwen-flash": {kind: kindGenerate, maxInputTokens: 997_952},
+	"qwen-max":   {kind: kindGenerate, maxInputTokens: 30_720},
 
 	// Embeddings. The multimodal model is served in the Beijing region
 	// only; text-embedding-v4 batches at most 10 rows per request.
 	"text-embedding-v4": {
 		kind:            kindEmbed,
 		embedDimensions: []int{2048, 1536, 1024, 768, 512, 256, 128, 64},
+		maxInputTokens:  8_192,
 	},
 	"qwen3-vl-embedding": {
 		kind:            kindEmbed,
 		vision:          true,
 		video:           true,
 		embedDimensions: []int{2560, 2048, 1536, 1024, 768, 512, 256},
+		maxInputTokens:  32_000,
 	},
 }
 

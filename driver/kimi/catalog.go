@@ -39,6 +39,11 @@ type catalogEntry struct {
 	// reasoning (kimi-k3, kimi-k2.7-code): traces round-trip natively and
 	// no knob exists to turn the behaviour off.
 	keepThinkingAlways bool
+	// maxInputTokens caps the input context in tokens; zero means
+	// undeclared. Values mirror the context windows published on
+	// https://platform.kimi.com/docs/models (moonshot-v1 variants state
+	// 8k/32k/128k).
+	maxInputTokens int
 }
 
 // catalog reflects Kimi's public API as of 2026-07.
@@ -59,6 +64,7 @@ var catalog = map[string]catalogEntry{
 		reasoningAlways:    true,
 		reasoningEffort:    true,
 		keepThinkingAlways: true,
+		maxInputTokens:     1_000_000,
 	},
 	"kimi-k2.7-code": {
 		kind:               kindGenerate,
@@ -66,6 +72,7 @@ var catalog = map[string]catalogEntry{
 		reasoning:          true,
 		reasoningAlways:    true,
 		keepThinkingAlways: true,
+		maxInputTokens:     256_000,
 	},
 	"kimi-k2.7-code-highspeed": {
 		kind:               kindGenerate,
@@ -73,28 +80,30 @@ var catalog = map[string]catalogEntry{
 		reasoning:          true,
 		reasoningAlways:    true,
 		keepThinkingAlways: true,
+		maxInputTokens:     256_000,
 	},
 	"kimi-k2.6": {
-		kind:         kindGenerate,
-		vision:       true,
-		reasoning:    true,
-		keepThinking: true,
+		kind:           kindGenerate,
+		vision:         true,
+		reasoning:      true,
+		keepThinking:   true,
+		maxInputTokens: 256_000,
 	},
 	"kimi-k2.5": {
-		kind:      kindGenerate,
-		vision:    true,
-		reasoning: true,
+		kind:           kindGenerate,
+		vision:         true,
+		reasoning:      true,
+		maxInputTokens: 256_000,
 	},
 
 	// moonshot-v1: text generation plus vision previews; the only family
 	// with sampling knobs and the only one without thinking.
-	"moonshot-v1-8k":                  {kind: kindGenerate, sampling: true},
-	"moonshot-v1-32k":                 {kind: kindGenerate, sampling: true},
-	"moonshot-v1-128k":                {kind: kindGenerate, sampling: true},
-	"moonshot-v1-auto":                {kind: kindGenerate, sampling: true},
-	"moonshot-v1-8k-vision-preview":   {kind: kindGenerate, sampling: true, vision: true},
-	"moonshot-v1-32k-vision-preview":  {kind: kindGenerate, sampling: true, vision: true},
-	"moonshot-v1-128k-vision-preview": {kind: kindGenerate, sampling: true, vision: true},
+	"moonshot-v1-8k":                  {kind: kindGenerate, sampling: true, maxInputTokens: 8_192},
+	"moonshot-v1-32k":                 {kind: kindGenerate, sampling: true, maxInputTokens: 32_768},
+	"moonshot-v1-128k":                {kind: kindGenerate, sampling: true, maxInputTokens: 131_072},
+	"moonshot-v1-8k-vision-preview":   {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 8_192},
+	"moonshot-v1-32k-vision-preview":  {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 32_768},
+	"moonshot-v1-128k-vision-preview": {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 131_072},
 }
 
 func (e catalogEntry) validate() error {

@@ -113,6 +113,29 @@ type ModelCapabilities struct {
 	HostedWebSearch bool `json:"hosted_web_search,omitempty"`
 }
 
+// ModelLimits declares numeric capacity limits of a model. A nil field
+// means the limit is undeclared rather than zero: the provider catalog did
+// not claim a value, so callers must not assume an upper bound.
+type ModelLimits struct {
+	// MaxInputTokens caps the tokens a request may feed to the model as
+	// input context (prompt plus any prior turns). Nil when the provider
+	// catalog does not declare a limit.
+	MaxInputTokens *int `json:"max_input_tokens,omitempty"`
+}
+
+func (l ModelLimits) Clone() ModelLimits {
+	return ModelLimits{
+		MaxInputTokens: clonePointer(l.MaxInputTokens),
+	}
+}
+
+func (l ModelLimits) Validate() error {
+	if l.MaxInputTokens != nil && *l.MaxInputTokens <= 0 {
+		return fmt.Errorf("max input tokens must be positive")
+	}
+	return nil
+}
+
 // ModelDescriptor is public discovery metadata. Operations must be derived
 // from the drivers registered for the model rather than maintained as a
 // separate capability declaration.
@@ -121,11 +144,13 @@ type ModelDescriptor struct {
 	Label        string            `json:"label,omitempty"`
 	Operations   []Operation       `json:"operations"`
 	Capabilities ModelCapabilities `json:"capabilities,omitzero"`
+	Limits       ModelLimits       `json:"limits,omitzero"`
 	Lifecycle    ModelLifecycle    `json:"lifecycle,omitzero"`
 }
 
 func (d ModelDescriptor) Clone() ModelDescriptor {
 	d.Operations = append([]Operation(nil), d.Operations...)
+	d.Limits = d.Limits.Clone()
 	d.Lifecycle = d.Lifecycle.Clone()
 	return d
 }
@@ -150,6 +175,9 @@ func (d ModelDescriptor) Validate() error {
 				"hosted web search requires the generate operation",
 			)
 		}
+	}
+	if err := d.Limits.Validate(); err != nil {
+		return err
 	}
 	return d.Lifecycle.ValidateFor(d.ID)
 }

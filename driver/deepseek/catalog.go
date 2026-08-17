@@ -36,6 +36,10 @@ type catalogEntry struct {
 	responses bool
 	// webSearch accepts the hosted web_search tool on the Responses API.
 	webSearch bool
+	// maxInputTokens caps the input context in tokens; zero means
+	// undeclared. Both V4 models carry the 1M context published on
+	// https://api-docs.deepseek.com/quick_start/pricing.
+	maxInputTokens int
 }
 
 // catalog reflects DeepSeek's public API as of 2026-08.
@@ -51,16 +55,18 @@ type catalogEntry struct {
 // landed after the initial flash-only launch.
 var catalog = map[string]catalogEntry{
 	"deepseek-v4-flash": {
-		kind:      kindGenerate,
-		reasoning: true,
-		responses: true,
-		webSearch: true,
+		kind:           kindGenerate,
+		reasoning:      true,
+		responses:      true,
+		webSearch:      true,
+		maxInputTokens: 1_000_000,
 	},
 	"deepseek-v4-pro": {
-		kind:      kindGenerate,
-		reasoning: true,
-		responses: true,
-		webSearch: true,
+		kind:           kindGenerate,
+		reasoning:      true,
+		responses:      true,
+		webSearch:      true,
+		maxInputTokens: 1_000_000,
 	},
 }
 
