@@ -21,10 +21,9 @@ name; this README documents only the flowcraft implementation.
 | `config/`          | settings schema, driver registries, assembly builder                         |
 | `runtime/`         | `sdkx/runtime` integration that starts the worker                            |
 
-The architecture is described in
-[docs/plans/2026-08-07-memory-storage-contract.md](../docs/plans/2026-08-07-memory-storage-contract.md)
-(Log + KV canonical substrate, item-level `SearchBackend`, plugin-preserving
-retrieval lanes).
+The architecture follows a Log + KV canonical substrate, item-level
+`SearchBackend`, and plugin-preserving retrieval lanes; see the
+[Memory Guide](../docs/guides/memory.md) for the canonical storage design.
 
 ## Building an assembly in Go
 

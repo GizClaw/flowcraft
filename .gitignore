@@ -13,7 +13,12 @@
 !CONTRIBUTING.md
 !CODE_OF_CONDUCT.md
 !docs/
-!docs/**
+!docs/_config.yml
+!docs/index.md
+!docs/guides/
+!docs/guides/**
+!docs/migrations/
+!docs/migrations/**
 
 # ── Go CI ──
 !.golangci.yml
