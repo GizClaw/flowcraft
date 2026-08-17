@@ -28,11 +28,32 @@ func fakeRouter(t *testing.T, runtime *inference.Assembly) *route.Router {
 	return router
 }
 
+func fakeEmbedRouter(t *testing.T, runtime *inference.Assembly) *route.Router {
+	t.Helper()
+	router, err := route.New(runtime, route.Selectors{
+		Embed: inferencetest.StaticEmbedSelector(inferencetest.DefaultFakeEmbedModel),
+	})
+	if err != nil {
+		t.Fatalf("route.New: %v", err)
+	}
+	return router
+}
+
 type inferenceAPI struct {
-	generate    func(raw any) (any, error)
-	route       func(raw any) (any, error)
-	stream      func(raw any) (any, error)
-	routeStream func(raw any) (any, error)
+	generate           func(raw any) (any, error)
+	route              func(raw any) (any, error)
+	explain            func(raw any) (any, error)
+	routeExplain       func(raw any) (any, error)
+	models             func() (any, error)
+	inspect            func(raw any) (any, error)
+	explainStream      func(raw any) (any, error)
+	routeExplainStream func(raw any) (any, error)
+	embed              func(raw any) (any, error)
+	routeEmbed         func(raw any) (any, error)
+	explainEmbed       func(raw any) (any, error)
+	routeExplainEmbed  func(raw any) (any, error)
+	stream             func(raw any) (any, error)
+	routeStream        func(raw any) (any, error)
 }
 
 func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Router, opts ...InferenceBridgeOption) inferenceAPI {
@@ -53,6 +74,46 @@ func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Ro
 	if !ok {
 		t.Fatalf("inference.route = %T", m["route"])
 	}
+	explainFn, ok := m["explain"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.explain = %T", m["explain"])
+	}
+	routeExplainFn, ok := m["routeExplain"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeExplain = %T", m["routeExplain"])
+	}
+	modelsFn, ok := m["models"].(func() (any, error))
+	if !ok {
+		t.Fatalf("inference.models = %T", m["models"])
+	}
+	inspectFn, ok := m["inspect"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.inspect = %T", m["inspect"])
+	}
+	explainStreamFn, ok := m["explainStream"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.explainStream = %T", m["explainStream"])
+	}
+	routeExplainStreamFn, ok := m["routeExplainStream"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeExplainStream = %T", m["routeExplainStream"])
+	}
+	embedFn, ok := m["embed"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.embed = %T", m["embed"])
+	}
+	routeEmbedFn, ok := m["routeEmbed"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeEmbed = %T", m["routeEmbed"])
+	}
+	explainEmbedFn, ok := m["explainEmbed"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.explainEmbed = %T", m["explainEmbed"])
+	}
+	routeExplainEmbedFn, ok := m["routeExplainEmbed"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeExplainEmbed = %T", m["routeExplainEmbed"])
+	}
 	streamFn, ok := m["stream"].(func(any) (any, error))
 	if !ok {
 		t.Fatalf("inference.stream = %T", m["stream"])
@@ -61,7 +122,22 @@ func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Ro
 	if !ok {
 		t.Fatalf("inference.routeStream = %T", m["routeStream"])
 	}
-	return inferenceAPI{generate: generate, route: routeFn, stream: streamFn, routeStream: routeStreamFn}
+	return inferenceAPI{
+		generate:           generate,
+		route:              routeFn,
+		explain:            explainFn,
+		routeExplain:       routeExplainFn,
+		models:             modelsFn,
+		inspect:            inspectFn,
+		explainStream:      explainStreamFn,
+		routeExplainStream: routeExplainStreamFn,
+		embed:              embedFn,
+		routeEmbed:         routeEmbedFn,
+		explainEmbed:       explainEmbedFn,
+		routeExplainEmbed:  routeExplainEmbedFn,
+		stream:             streamFn,
+		routeStream:        routeStreamFn,
+	}
 }
 
 // streamHandle mirrors the script-facing iterator triple.
@@ -105,6 +181,14 @@ func userInput(text string) map[string]any {
 		"content": map[string]any{
 			"parts":  []any{map[string]any{"type": "text", "text": text}},
 			"intent": map[string]any{"text": map[string]any{}},
+		},
+	}
+}
+
+func embedItem(text string) map[string]any {
+	return map[string]any{
+		"content": map[string]any{
+			"parts": []any{map[string]any{"type": "text", "text": text}},
 		},
 	}
 }
@@ -253,6 +337,395 @@ func TestInferenceBridge_Route_NoRouter(t *testing.T) {
 	_, err := api.route(map[string]any{"input": userInput("hi")})
 	if err == nil || !errdefs.IsNotAvailable(err) {
 		t.Fatalf("unwired route error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_Explain_RoundTrip(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.explain(map[string]any{
+		"model": fakeModelJSON(),
+		"input": userInput("hi"),
+	})
+	if err != nil {
+		t.Fatalf("explain: %v", err)
+	}
+	explanation, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("explanation = %T, want object", out)
+	}
+	if explanation["Operation"] != string(inference.OperationGenerate) {
+		t.Fatalf("explanation.Operation = %v, want %q",
+			explanation["Operation"], inference.OperationGenerate)
+	}
+	model, ok := explanation["Model"].(map[string]any)
+	if !ok || model["id"] == nil {
+		t.Fatalf("explanation.Model = %v, want model identity", explanation["Model"])
+	}
+	// Explain compiles locally: the compiler ran, but no transport
+	// execution produced a response.
+	if reqs := fake.Requests(); len(reqs) != 1 {
+		t.Fatalf("explain compiled requests = %d, want 1", len(reqs))
+	}
+}
+
+func TestInferenceBridge_Explain_NoRuntime(t *testing.T) {
+	api := newInferenceAPI(t, nil, nil)
+	_, err := api.explain(map[string]any{
+		"model": fakeModelJSON(),
+		"input": userInput("hi"),
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired explain error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_RouteExplain_RoundTrip(t *testing.T) {
+	limit := 128_000
+	fake := &inferencetest.GenerateFake{
+		Descriptor: inference.ModelDescriptor{
+			ID: inferencetest.DefaultFakeModel.ID,
+			Limits: inference.ModelLimits{
+				MaxInputTokens: &limit,
+			},
+		},
+	}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
+
+	out, err := api.routeExplain(map[string]any{"input": userInput("hi")})
+	if err != nil {
+		t.Fatalf("routeExplain: %v", err)
+	}
+	obj, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplain result = %T, want object", out)
+	}
+	if _, ok := obj["explanation"].(map[string]any); !ok {
+		t.Fatalf("routeExplain.explanation = %T, want object", obj["explanation"])
+	}
+	decision, ok := obj["decision"].(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplain.decision = %T, want object", obj["decision"])
+	}
+	selected, ok := decision["selected"].(map[string]any)
+	if !ok || selected["id"] == nil {
+		t.Fatalf("routeExplain.decision.selected = %v, want model identity", decision["selected"])
+	}
+	limits, ok := obj["limits"].(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplain.limits = %T, want object", obj["limits"])
+	}
+	if limits["max_input_tokens"] != float64(limit) {
+		t.Fatalf("routeExplain.limits.max_input_tokens = %v, want %d",
+			limits["max_input_tokens"], limit)
+	}
+	// One compile for the routed preflight; no transport execution.
+	if reqs := fake.Requests(); len(reqs) != 1 {
+		t.Fatalf("routeExplain compiled requests = %d, want 1", len(reqs))
+	}
+}
+
+func TestInferenceBridge_RouteExplain_RejectsModelKey(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
+
+	_, err := api.routeExplain(map[string]any{
+		"model": fakeModelJSON(),
+		"input": userInput("hi"),
+	})
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("routeExplain with model key error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceBridge_RouteExplain_NoRouter(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	_, err := api.routeExplain(map[string]any{"input": userInput("hi")})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired routeExplain error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_Models_RoundTrip(t *testing.T) {
+	limit := 128_000
+	fake := &inferencetest.GenerateFake{
+		Descriptor: inference.ModelDescriptor{
+			ID: inferencetest.DefaultFakeModel.ID,
+			Limits: inference.ModelLimits{
+				MaxInputTokens: &limit,
+			},
+		},
+	}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.models()
+	if err != nil {
+		t.Fatalf("models: %v", err)
+	}
+	models, ok := out.([]any)
+	if !ok || len(models) != 1 {
+		t.Fatalf("models = %T (%v), want one descriptor", out, out)
+	}
+	descriptor, ok := models[0].(map[string]any)
+	if !ok {
+		t.Fatalf("model descriptor = %T, want object", models[0])
+	}
+	limits, ok := descriptor["limits"].(map[string]any)
+	if !ok || limits["max_input_tokens"] != float64(limit) {
+		t.Fatalf("descriptor limits = %v, want max_input_tokens %d", descriptor["limits"], limit)
+	}
+}
+
+func TestInferenceBridge_Models_NoRuntime(t *testing.T) {
+	api := newInferenceAPI(t, nil, nil)
+	_, err := api.models()
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired models error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_Inspect_RoundTrip(t *testing.T) {
+	limit := 64_000
+	fake := &inferencetest.GenerateFake{
+		Descriptor: inference.ModelDescriptor{
+			ID: inferencetest.DefaultFakeModel.ID,
+			Limits: inference.ModelLimits{
+				MaxInputTokens: &limit,
+			},
+		},
+	}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.inspect(fakeModelJSON())
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	descriptor, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("descriptor = %T, want object", out)
+	}
+	limits, ok := descriptor["limits"].(map[string]any)
+	if !ok || limits["max_input_tokens"] != float64(limit) {
+		t.Fatalf("descriptor limits = %v, want max_input_tokens %d", descriptor["limits"], limit)
+	}
+}
+
+func TestInferenceBridge_Inspect_UnknownModel(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	_, err := api.inspect(map[string]any{
+		"id": map[string]any{"provider": "fake", "name": "ghost"},
+	})
+	if err == nil {
+		t.Fatal("inspect of unknown model should fail")
+	}
+}
+
+func TestInferenceBridge_ExplainStream_RoundTrip(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.explainStream(map[string]any{
+		"model": fakeModelJSON(),
+		"input": userInput("hi"),
+	})
+	if err != nil {
+		t.Fatalf("explainStream: %v", err)
+	}
+	explanation, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("explanation = %T, want object", out)
+	}
+	if explanation["Operation"] != string(inference.OperationGenerate) {
+		t.Fatalf("explanation.Operation = %v, want %q",
+			explanation["Operation"], inference.OperationGenerate)
+	}
+}
+
+func TestInferenceBridge_RouteExplainStream_RoundTrip(t *testing.T) {
+	limit := 128_000
+	fake := &inferencetest.GenerateFake{
+		Descriptor: inference.ModelDescriptor{
+			ID: inferencetest.DefaultFakeModel.ID,
+			Limits: inference.ModelLimits{
+				MaxInputTokens: &limit,
+			},
+		},
+	}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeRouter(t, runtime))
+
+	out, err := api.routeExplainStream(map[string]any{"input": userInput("hi")})
+	if err != nil {
+		t.Fatalf("routeExplainStream: %v", err)
+	}
+	obj, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplainStream result = %T, want object", out)
+	}
+	if _, ok := obj["explanation"].(map[string]any); !ok {
+		t.Fatalf("routeExplainStream.explanation = %T, want object", obj["explanation"])
+	}
+	decision, ok := obj["decision"].(map[string]any)
+	if !ok || decision["selected"] == nil {
+		t.Fatalf("routeExplainStream.decision = %v, want selected model", obj["decision"])
+	}
+	limits, ok := obj["limits"].(map[string]any)
+	if !ok || limits["max_input_tokens"] != float64(limit) {
+		t.Fatalf("routeExplainStream.limits = %v, want max_input_tokens %d",
+			obj["limits"], limit)
+	}
+}
+
+func TestInferenceBridge_Embed_RoundTrip(t *testing.T) {
+	fake := &inferencetest.EmbedFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.embed(map[string]any{
+		"model": map[string]any{
+			"id":      map[string]any{"provider": "fake", "name": "embed"},
+			"profile": "default",
+		},
+		"items": []any{embedItem("hello")},
+	})
+	if err != nil {
+		t.Fatalf("embed: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("embed response = %T, want object", out)
+	}
+	embeddings, ok := resp["embeddings"].([]any)
+	if !ok || len(embeddings) != 1 {
+		t.Fatalf("embeddings = %v, want one vector", resp["embeddings"])
+	}
+}
+
+func TestInferenceBridge_Embed_NoRuntime(t *testing.T) {
+	api := newInferenceAPI(t, nil, nil)
+	_, err := api.embed(map[string]any{
+		"model": map[string]any{
+			"id": map[string]any{"provider": "fake", "name": "embed"},
+		},
+		"items": []any{embedItem("hello")},
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired embed error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_RouteEmbed_RoundTrip(t *testing.T) {
+	fake := &inferencetest.EmbedFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeEmbedRouter(t, runtime))
+
+	out, err := api.routeEmbed(map[string]any{
+		"items": []any{embedItem("hello")},
+	})
+	if err != nil {
+		t.Fatalf("routeEmbed: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeEmbed response = %T, want object", out)
+	}
+	if _, ok := resp["embeddings"].([]any); !ok {
+		t.Fatalf("embeddings = %T, want array", resp["embeddings"])
+	}
+	trace, ok := resp["trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace missing or %T, want object", resp["trace"])
+	}
+	executed, ok := trace["executed"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace.executed = %T, want object", trace["executed"])
+	}
+	id, ok := executed["id"].(map[string]any)
+	if !ok || id["provider"] != "fake" || id["name"] != "embed" {
+		t.Fatalf("trace.executed.id = %v, want fake/embed", executed["id"])
+	}
+}
+
+func TestInferenceBridge_RouteEmbed_RejectsModelKey(t *testing.T) {
+	fake := &inferencetest.EmbedFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeEmbedRouter(t, runtime))
+
+	_, err := api.routeEmbed(map[string]any{
+		"model": map[string]any{
+			"id": map[string]any{"provider": "fake", "name": "embed"},
+		},
+		"items": []any{embedItem("hello")},
+	})
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("routeEmbed with model key error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceBridge_ExplainEmbed_RoundTrip(t *testing.T) {
+	fake := &inferencetest.EmbedFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.explainEmbed(map[string]any{
+		"model": map[string]any{
+			"id":      map[string]any{"provider": "fake", "name": "embed"},
+			"profile": "default",
+		},
+		"items": []any{embedItem("hello")},
+	})
+	if err != nil {
+		t.Fatalf("explainEmbed: %v", err)
+	}
+	explanation, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("explanation = %T, want object", out)
+	}
+	if explanation["Operation"] != string(inference.OperationEmbed) {
+		t.Fatalf("explanation.Operation = %v, want %q",
+			explanation["Operation"], inference.OperationEmbed)
+	}
+}
+
+func TestInferenceBridge_RouteExplainEmbed_RoundTrip(t *testing.T) {
+	limit := 8_192
+	fake := &inferencetest.EmbedFake{
+		Descriptor: inference.ModelDescriptor{
+			ID: inferencetest.DefaultFakeEmbedModel.ID,
+			Limits: inference.ModelLimits{
+				MaxInputTokens: &limit,
+			},
+		},
+	}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeEmbedRouter(t, runtime))
+
+	out, err := api.routeExplainEmbed(map[string]any{
+		"items": []any{embedItem("hello")},
+	})
+	if err != nil {
+		t.Fatalf("routeExplainEmbed: %v", err)
+	}
+	obj, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplainEmbed result = %T, want object", out)
+	}
+	if _, ok := obj["explanation"].(map[string]any); !ok {
+		t.Fatalf("routeExplainEmbed.explanation = %T, want object", obj["explanation"])
+	}
+	decision, ok := obj["decision"].(map[string]any)
+	if !ok || decision["selected"] == nil {
+		t.Fatalf("routeExplainEmbed.decision = %v, want selected model", obj["decision"])
+	}
+	limits, ok := obj["limits"].(map[string]any)
+	if !ok || limits["max_input_tokens"] != float64(limit) {
+		t.Fatalf("routeExplainEmbed.limits = %v, want max_input_tokens %d",
+			obj["limits"], limit)
 	}
 }
 

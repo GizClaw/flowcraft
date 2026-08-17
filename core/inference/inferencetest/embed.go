@@ -23,6 +23,10 @@ type EmbedFake struct {
 	// Model is the ref the runtime resolves. Defaults to
 	// DefaultFakeEmbedModel.
 	Model inference.ModelRef
+	// Descriptor overrides the model's discovery metadata. The zero
+	// value falls back to {ID: Model.ID}, so tests can declare limits
+	// or lifecycle without rebuilding the provider.
+	Descriptor inference.ModelDescriptor
 	// Respond answers Embed calls. Default: one unit-length vector per
 	// request item.
 	Respond func(inference.EmbedRequest) inference.EmbedResponse
@@ -72,6 +76,10 @@ func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 	if err != nil {
 		t.Fatalf("BindEmbed: %v", err)
 	}
+	descriptor := f.Descriptor
+	if descriptor.ID.Provider == "" {
+		descriptor = inference.ModelDescriptor{ID: model.ID}
+	}
 
 	definition := inference.ProviderDefinition{
 		ID: model.ID.Provider,
@@ -80,7 +88,7 @@ func (f *EmbedFake) Assembly(t *testing.T) *inference.Assembly {
 			Operations: []inference.Operation{inference.OperationEmbed},
 		}},
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{ID: model.ID},
+			Descriptor: descriptor,
 			Openers: inference.Openers{
 				Embed: func(_ context.Context, _ inference.ModelRef) (inference.EmbedDriver, error) {
 					return driver, nil

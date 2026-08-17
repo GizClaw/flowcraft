@@ -27,6 +27,10 @@ type GenerateFake struct {
 	// Model is the ref the runtime resolves. Defaults to
 	// DefaultFakeModel.
 	Model inference.ModelRef
+	// Descriptor overrides the model's discovery metadata. The zero
+	// value falls back to {ID: Model.ID}, so tests can declare limits
+	// or lifecycle without rebuilding the provider.
+	Descriptor inference.ModelDescriptor
 	// Respond answers unary Generate calls. Default: a one-part "ok"
 	// text message with inference.FinishCompleted.
 	Respond func(inference.GenerateRequest) inference.GenerateResponse
@@ -113,6 +117,10 @@ func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 	if err != nil {
 		t.Fatalf("BindGenerateOperations: %v", err)
 	}
+	descriptor := f.Descriptor
+	if descriptor.ID.Provider == "" {
+		descriptor = inference.ModelDescriptor{ID: model.ID}
+	}
 	definition := inference.ProviderDefinition{
 		ID:                model.ID.Provider,
 		ExtensionDecoders: f.ExtensionDecoders,
@@ -121,7 +129,7 @@ func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 			Operations: []inference.Operation{inference.OperationGenerate},
 		}},
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{ID: model.ID},
+			Descriptor: descriptor,
 			Openers: inference.Openers{
 				Generate: func(_ context.Context, _ inference.ModelRef) (inference.GenerateOperations, error) {
 					return operations, nil
@@ -181,6 +189,26 @@ func StaticGenerateSelector(ref inference.ModelRef) route.GenerateSelector {
 type generateSelectorFunc func(context.Context, inference.GenerateRequest) (route.Decision, error)
 
 func (f generateSelectorFunc) SelectGenerate(ctx context.Context, req inference.GenerateRequest) (route.Decision, error) {
+	return f(ctx, req)
+}
+
+// StaticEmbedSelector returns a route.EmbedSelector that always
+// selects ref on the primary tier — the smallest router wiring for
+// tests that need the embed route path without a policy engine.
+func StaticEmbedSelector(ref inference.ModelRef) route.EmbedSelector {
+	return embedSelectorFunc(func(context.Context, inference.EmbedRequest) (route.Decision, error) {
+		return route.Decision{
+			Operation: inference.OperationEmbed,
+			Tier:      "primary",
+			Proposed:  ref,
+			Selected:  ref,
+		}, nil
+	})
+}
+
+type embedSelectorFunc func(context.Context, inference.EmbedRequest) (route.Decision, error)
+
+func (f embedSelectorFunc) SelectEmbed(ctx context.Context, req inference.EmbedRequest) (route.Decision, error) {
 	return f(ctx, req)
 }
 

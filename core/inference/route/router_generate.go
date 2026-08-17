@@ -101,6 +101,25 @@ func (r *Router) ExplainGenerate(
 	return explanation, decision, err
 }
 
+// ExplainGenerateStream explains the selected target's Generate stream
+// compilation without provider I/O.
+func (r *Router) ExplainGenerateStream(
+	ctx context.Context,
+	request inference.GenerateRequest,
+) (inference.Explanation, Decision, error) {
+	snapshot := request.Clone()
+	decision, err := r.selectGenerate(ctx, snapshot)
+	if err != nil {
+		return inference.Explanation{}, Decision{}, err
+	}
+	explanation, err := r.target.ExplainGenerateStream(
+		ctx,
+		decision.Selected,
+		snapshot,
+	)
+	return explanation, decision, err
+}
+
 func (r *Router) selectGenerate(
 	ctx context.Context,
 	snapshot inference.GenerateRequest,
