@@ -89,6 +89,32 @@ including failures) and `chat_log.txt`.
 `scenarios/personas/<name>/` are full workspace templates used by
 `forge test-auto` as the second agent in the simulation.
 
+## Plugins
+
+Forge is the reference host for the
+[`backends/plugin`](../../backends/plugin/README.md) shell: a workspace
+`deploy.yaml` may carry a top-level `plugins` section, and forge strips it
+before the strict deployment parse, loads the plugin set with
+`plugin.Loader` (layer and service slots both wired), merges the plugin
+layers over the deployment document, and builds the runtime on top.
+
+```yaml
+plugins:
+  dirs: [./plugins]
+  enabled: [acme.hello-layer]
+```
+
+The shipped [`plugins/acme.hello-layer`](plugins/acme.hello-layer/)
+demonstrates the zero-code declaration slot: it contributes one
+`event.Bus` resource and needs no process. Relative plugin dirs resolve
+against the workspace directory, so a plugin directory copied into a
+workspace (`./plugins/...`) works as-is.
+
+Service-slot plugins (stdio/http JSON-RPC) are wired through
+`remote.NewPlugin`; the process starts lazily on the first resource
+construction. The wiring is exercised end to end by
+`internal/app/plugins_test.go`.
+
 ## Credentials
 
 Provider credentials are read from environment variables declared by the

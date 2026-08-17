@@ -18,6 +18,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+
+	"github.com/GizClaw/flowcraft/backends/plugin"
 )
 
 // App owns one built runtime.
@@ -33,6 +35,7 @@ type App struct {
 	usageCacheRead  atomic.Int64
 	usageCacheWrite atomic.Int64
 	usageCalls      atomic.Int64
+	plugins         *plugin.Set
 }
 
 // Info is the small metadata read out of the native documents for
@@ -51,7 +54,11 @@ func Open(ctx context.Context, workspaceDir string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	doc, err := deploy.Parse(raw)
+	rest, pluginsCfg, err := splitPluginsSection(raw)
+	if err != nil {
+		return nil, err
+	}
+	doc, err := deploy.Parse(rest)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +70,7 @@ func Open(ctx context.Context, workspaceDir string) (*App, error) {
 		return nil, err
 	}
 	a := &App{info: info, dir: workspaceDir}
-	rt, err := buildRuntimeFromDocument(ctx, a, doc)
+	rt, err := buildRuntimeFromDocument(ctx, a, workspaceDir, rest, pluginsCfg)
 	if err != nil {
 		return nil, err
 	}
@@ -73,10 +80,17 @@ func Open(ctx context.Context, workspaceDir string) (*App, error) {
 
 // Close shuts the runtime down.
 func (a *App) Close() error {
-	if a == nil || a.rt == nil {
+	if a == nil {
 		return nil
 	}
-	return a.rt.Close()
+	var errs []error
+	if a.rt != nil {
+		errs = append(errs, a.rt.Close())
+	}
+	if a.plugins != nil {
+		errs = append(errs, a.plugins.Close())
+	}
+	return errors.Join(errs...)
 }
 
 // Info returns the workspace metadata.
@@ -130,7 +144,11 @@ func Inspect(workspaceDir string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	doc, err := deploy.Parse(raw)
+	rest, _, err := splitPluginsSection(raw)
+	if err != nil {
+		return Info{}, err
+	}
+	doc, err := deploy.Parse(rest)
 	if err != nil {
 		return Info{}, err
 	}

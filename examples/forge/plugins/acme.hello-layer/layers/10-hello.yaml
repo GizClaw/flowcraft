@@ -1,0 +1,7 @@
+# A partial deployment fragment contributed by the plugin. It merges
+# over the workspace deploy.yaml and is resolved by forge's own
+# registry at build time, exactly like any other deploy.Layer.
+resources:
+  greeting:
+    kind: event.Bus
+    impl: memory
