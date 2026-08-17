@@ -48,6 +48,38 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 //     router's selector/fallback chain chooses the target; the
 //     response gains a "trace" key with the route.Trace projection.
 //
+//   - explain(request): one exact-model Assembly.ExplainGenerate call.
+//     Same request shape as generate (model key required); returns the
+//     canonical Explanation wire JSON with no provider I/O, so scripts
+//     can preflight a request against one concrete model.
+//
+//   - routeExplain(request): one Router.ExplainGenerate call. Same
+//     shape as route (no model key); returns {explanation, decision,
+//     limits} where decision records the selected model and limits is
+//     that model's declared ModelLimits — scripts can compare the
+//     pending context against max_input_tokens before executing.
+//
+//   - models(): one Assembly.Models call. Returns the full catalog of
+//     ModelDescriptor wire JSON (id, capabilities, limits, lifecycle),
+//     so scripts can enumerate what the host registered.
+//
+//   - inspect(model): one Assembly.InspectModel call. The argument is
+//     a ModelRef wire JSON ({id: {provider, name}, profile?}); returns
+//     that model's ModelDescriptor.
+//
+//   - embed(request) / routeEmbed(request): the Embed twins of
+//     generate/route — exact model (model key required) vs router
+//     selection (no model key, response gains "trace").
+//
+//   - explainEmbed(request) / routeExplainEmbed(request): the Embed
+//     twins of explain/routeExplain; routeExplainEmbed returns
+//     {explanation, decision, limits} for the selected embed model.
+//
+//   - explainStream(request) / routeExplainStream(request): the
+//     Generate-stream twins of explain/routeExplain — local stream
+//     compilation without opening a provider stream;
+//     routeExplainStream returns {explanation, decision, limits}.
+//
 //   - stream(request) / routeStream(request): the streaming twins of
 //     the above. Both return an iterator handle:
 //
@@ -94,7 +126,11 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if assembly == nil {
 					return nil, errdefs.NotAvailablef("inference.generate: no assembly wired")
 				}
-				ref, req, err := parseInferenceGenerateCall(raw, cfg.extensions)
+				ref, req, err := parseInferenceGenerateCall(
+					raw,
+					cfg.extensions,
+					"inference.generate",
+				)
 				if err != nil {
 					return nil, err
 				}
@@ -108,10 +144,15 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if router == nil {
 					return nil, errdefs.NotAvailablef("inference.route: no router wired")
 				}
-				req, err := parseInferenceRouteCall(raw, cfg.extensions, "inference.route")
+				req, extensions, err := parseInferenceRouteCall[inference.GenerateRequest](
+					raw,
+					cfg.extensions,
+					"inference.route",
+				)
 				if err != nil {
 					return nil, err
 				}
+				req.Extensions = extensions
 				resp, trace, err := router.Generate(ctx, req)
 				if err != nil {
 					return nil, err
@@ -120,22 +161,204 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				obj, ok := out.(map[string]any)
-				if !ok {
-					return nil, errdefs.Internalf("inference.route: response projection is %T, want object", out)
+				return attachTrace(out, trace, "inference.route")
+			},
+			"explain": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.explain: no assembly wired")
 				}
-				traceJSON, err := toScriptJSON(trace, "inference.route trace")
+				ref, req, err := parseInferenceGenerateCall(
+					raw,
+					cfg.extensions,
+					"inference.explain",
+				)
 				if err != nil {
 					return nil, err
 				}
-				obj["trace"] = traceJSON
-				return obj, nil
+				explanation, err := assembly.ExplainGenerate(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(explanation, "inference.explain response")
+			},
+			"routeExplain": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeExplain: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.GenerateRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeExplain",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				explanation, decision, err := router.ExplainGenerate(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return routeExplainResult(
+					router,
+					explanation,
+					decision,
+					"inference.routeExplain",
+				)
+			},
+			"models": func() (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.models: no assembly wired")
+				}
+				return toScriptJSON(assembly.Models(), "inference.models response")
+			},
+			"inspect": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.inspect: no assembly wired")
+				}
+				var ref inference.ModelRef
+				if err := decodeStrictJSON(raw, &ref, "inference.inspect.model"); err != nil {
+					return nil, err
+				}
+				descriptor, err := assembly.InspectModel(ref)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(descriptor, "inference.inspect response")
+			},
+			"explainStream": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.explainStream: no assembly wired")
+				}
+				ref, req, err := parseInferenceGenerateCall(
+					raw,
+					cfg.extensions,
+					"inference.explainStream",
+				)
+				if err != nil {
+					return nil, err
+				}
+				explanation, err := assembly.ExplainGenerateStream(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(explanation, "inference.explainStream response")
+			},
+			"routeExplainStream": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeExplainStream: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.GenerateRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeExplainStream",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				explanation, decision, err := router.ExplainGenerateStream(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return routeExplainResult(
+					router,
+					explanation,
+					decision,
+					"inference.routeExplainStream",
+				)
+			},
+			"embed": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.embed: no assembly wired")
+				}
+				ref, req, err := parseInferenceEmbedCall(
+					raw,
+					cfg.extensions,
+					"inference.embed",
+				)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := assembly.Embed(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(resp, "inference.embed response")
+			},
+			"routeEmbed": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeEmbed: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.EmbedRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeEmbed",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				resp, trace, err := router.Embed(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				out, err := toScriptJSON(resp, "inference.routeEmbed response")
+				if err != nil {
+					return nil, err
+				}
+				return attachTrace(out, trace, "inference.routeEmbed")
+			},
+			"explainEmbed": func(raw any) (any, error) {
+				if assembly == nil {
+					return nil, errdefs.NotAvailablef("inference.explainEmbed: no assembly wired")
+				}
+				ref, req, err := parseInferenceEmbedCall(
+					raw,
+					cfg.extensions,
+					"inference.explainEmbed",
+				)
+				if err != nil {
+					return nil, err
+				}
+				explanation, err := assembly.ExplainEmbed(ctx, ref, req)
+				if err != nil {
+					return nil, err
+				}
+				return toScriptJSON(explanation, "inference.explainEmbed response")
+			},
+			"routeExplainEmbed": func(raw any) (any, error) {
+				if router == nil {
+					return nil, errdefs.NotAvailablef("inference.routeExplainEmbed: no router wired")
+				}
+				req, extensions, err := parseInferenceRouteCall[inference.EmbedRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeExplainEmbed",
+				)
+				if err != nil {
+					return nil, err
+				}
+				req.Extensions = extensions
+				explanation, decision, err := router.ExplainEmbed(ctx, req)
+				if err != nil {
+					return nil, err
+				}
+				return routeExplainResult(
+					router,
+					explanation,
+					decision,
+					"inference.routeExplainEmbed",
+				)
 			},
 			"stream": func(raw any) (any, error) {
 				if assembly == nil {
 					return nil, errdefs.NotAvailablef("inference.stream: no assembly wired")
 				}
-				ref, req, err := parseInferenceGenerateCall(raw, cfg.extensions)
+				ref, req, err := parseInferenceGenerateCall(
+					raw,
+					cfg.extensions,
+					"inference.stream",
+				)
 				if err != nil {
 					return nil, err
 				}
@@ -149,10 +372,15 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if router == nil {
 					return nil, errdefs.NotAvailablef("inference.routeStream: no router wired")
 				}
-				req, err := parseInferenceRouteCall(raw, cfg.extensions, "inference.routeStream")
+				req, extensions, err := parseInferenceRouteCall[inference.GenerateRequest](
+					raw,
+					cfg.extensions,
+					"inference.routeStream",
+				)
 				if err != nil {
 					return nil, err
 				}
+				req.Extensions = extensions
 				stream, trace, err := router.GenerateStream(ctx, req)
 				if err != nil {
 					return nil, err
@@ -230,24 +458,31 @@ func newStreamHandle(ctx context.Context, stream inference.GenerateStream, trace
 	}
 }
 
-// parseInferenceGenerateCall splits the script-facing generate request
-// into the model target and the canonical GenerateRequest. "model" is
-// a bridge-level key (the wire request has no model field — routing
-// ownership lives with the caller, not the payload), so it is stripped
-// before the strict decode; "extensions" is stripped the same way and
-// resolved through the host-registered decoders.
-func parseInferenceGenerateCall(raw any, decoders map[string]inference.ExtensionDecoder) (inference.ModelRef, inference.GenerateRequest, error) {
+// parseInferenceGenerateCall splits the script-facing generate-family
+// request into the model target and the canonical GenerateRequest.
+// "model" is a bridge-level key (the wire request has no model field —
+// routing ownership lives with the caller, not the payload), so it is
+// stripped before the strict decode; "extensions" is stripped the same
+// way and resolved through the host-registered decoders.
+func parseInferenceGenerateCall(
+	raw any,
+	decoders map[string]inference.ExtensionDecoder,
+	field string,
+) (inference.ModelRef, inference.GenerateRequest, error) {
 	var ref inference.ModelRef
 	var req inference.GenerateRequest
 	obj, ok := raw.(map[string]any)
 	if !ok {
-		return ref, req, errdefs.Validationf("inference.generate: expected an object, got %T", raw)
+		return ref, req, errdefs.Validationf("%s: expected an object, got %T", field, raw)
 	}
 	modelRaw, ok := obj["model"]
 	if !ok || modelRaw == nil {
-		return ref, req, errdefs.Validationf("inference.generate: model is required (use inference.route for router-chosen targets)")
+		return ref, req, errdefs.Validationf(
+			"%s: model is required (use the route entry point for router-chosen targets)",
+			field,
+		)
 	}
-	if err := decodeStrictJSON(modelRaw, &ref, "inference.generate.model"); err != nil {
+	if err := decodeStrictJSON(modelRaw, &ref, field+".model"); err != nil {
 		return ref, req, err
 	}
 	rest := make(map[string]any, len(obj)-1)
@@ -256,41 +491,133 @@ func parseInferenceGenerateCall(raw any, decoders map[string]inference.Extension
 			rest[k] = v
 		}
 	}
-	if err := decodeRequestRest(rest, &req, decoders, "inference.generate"); err != nil {
+	extensions, err := decodeRequestRest(rest, &req, decoders, field)
+	if err != nil {
 		return ref, req, err
 	}
+	req.Extensions = extensions
 	return ref, req, nil
 }
 
-// parseInferenceRouteCall decodes a router-entry request: no model
-// key (rejected by the strict decode), extensions stripped and
-// resolved like the runtime entry.
-func parseInferenceRouteCall(raw any, decoders map[string]inference.ExtensionDecoder, field string) (inference.GenerateRequest, error) {
-	var req inference.GenerateRequest
+// parseInferenceEmbedCall splits the script-facing embed-family
+// request into the model target and the canonical EmbedRequest. It
+// mirrors parseInferenceGenerateCall: "model" and "extensions" are
+// bridge-level keys stripped before the strict decode.
+func parseInferenceEmbedCall(
+	raw any,
+	decoders map[string]inference.ExtensionDecoder,
+	field string,
+) (inference.ModelRef, inference.EmbedRequest, error) {
+	var ref inference.ModelRef
+	var req inference.EmbedRequest
 	obj, ok := raw.(map[string]any)
 	if !ok {
-		return req, errdefs.Validationf("%s: expected an object, got %T", field, raw)
+		return ref, req, errdefs.Validationf("%s: expected an object, got %T", field, raw)
 	}
-	if err := decodeRequestRest(obj, &req, decoders, field); err != nil {
-		return req, err
+	modelRaw, ok := obj["model"]
+	if !ok || modelRaw == nil {
+		return ref, req, errdefs.Validationf(
+			"%s: model is required (use the route entry point for router-chosen targets)",
+			field,
+		)
 	}
-	return req, nil
+	if err := decodeStrictJSON(modelRaw, &ref, field+".model"); err != nil {
+		return ref, req, err
+	}
+	rest := make(map[string]any, len(obj)-1)
+	for k, v := range obj {
+		if k != "model" {
+			rest[k] = v
+		}
+	}
+	extensions, err := decodeRequestRest(rest, &req, decoders, field)
+	if err != nil {
+		return ref, req, err
+	}
+	req.Extensions = extensions
+	return ref, req, nil
+}
+
+// attachTrace adds a route.Trace projection to a script-facing
+// response object under "trace".
+func attachTrace(out any, trace route.Trace, field string) (any, error) {
+	obj, ok := out.(map[string]any)
+	if !ok {
+		return nil, errdefs.Internalf(
+			"%s: response projection is %T, want object",
+			field,
+			out,
+		)
+	}
+	traceJSON, err := toScriptJSON(trace, field+" trace")
+	if err != nil {
+		return nil, err
+	}
+	obj["trace"] = traceJSON
+	return obj, nil
+}
+
+// routeExplainResult projects an explanation plus the selected model's
+// declared limits into the script-facing {explanation, decision,
+// limits} shape shared by every route*Explain entry point.
+func routeExplainResult(
+	router *route.Router,
+	explanation inference.Explanation,
+	decision route.Decision,
+	field string,
+) (any, error) {
+	descriptor, err := router.Target().InspectModel(decision.Selected)
+	if err != nil {
+		return nil, errdefs.Internalf("%s: inspect selected model: %v", field, err)
+	}
+	out, err := toScriptJSON(map[string]any{
+		"explanation": explanation,
+		"decision":    decision,
+		"limits":      descriptor.Limits,
+	}, field+" response")
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// parseInferenceRouteCall decodes a router-entry request: no model key
+// (rejected by the strict decode), extensions stripped and resolved
+// like the runtime entry. The caller assigns the resolved extensions
+// to req.Extensions.
+func parseInferenceRouteCall[T any](
+	raw any,
+	decoders map[string]inference.ExtensionDecoder,
+	field string,
+) (T, inference.Extensions, error) {
+	var req T
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return req, nil, errdefs.Validationf("%s: expected an object, got %T", field, raw)
+	}
+	extensions, err := decodeRequestRest(obj, &req, decoders, field)
+	if err != nil {
+		return req, nil, err
+	}
+	return req, extensions, nil
 }
 
 // decodeRequestRest strips the bridge-level "extensions" key, strict-
-// decodes the remaining canonical wire into req, then resolves the
-// extensions through the host registry.
-func decodeRequestRest(obj map[string]any, req *inference.GenerateRequest, decoders map[string]inference.ExtensionDecoder, field string) error {
+// decodes the remaining canonical wire into req, and resolves the
+// extensions through the host registry. The caller assigns the
+// resolved extensions to req.Extensions (the wire structs keep the
+// field JSON-hidden).
+func decodeRequestRest[T any](
+	obj map[string]any,
+	req *T,
+	decoders map[string]inference.ExtensionDecoder,
+	field string,
+) (inference.Extensions, error) {
 	extRaw, rest := splitExtensionsKey(obj)
 	if err := decodeStrictJSON(rest, req, field); err != nil {
-		return err
+		return nil, err
 	}
-	extensions, err := decodeScriptExtensions(extRaw, decoders, field+".extensions")
-	if err != nil {
-		return err
-	}
-	req.Extensions = extensions
-	return nil
+	return decodeScriptExtensions(extRaw, decoders, field+".extensions")
 }
 
 // splitExtensionsKey pulls the bridge-level "extensions" key out of a
