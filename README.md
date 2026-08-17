@@ -149,6 +149,7 @@ the core and depend on it, never the reverse.
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
+| [`skills/flowcraft-plugin`](skills/flowcraft-plugin/) | Codex skill for authoring, loading, and troubleshooting FlowCraft plugins                | Codex skill          |
 
 ## Highlights
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "FlowCraft Plugin Authoring"
+  short_description: "Author, load, and troubleshoot FlowCraft plugins"
+  default_prompt: "Use $flowcraft-plugin to author a plugin.yaml and wire it into a FlowCraft deployment (layer/service slots, enabled whitelist), then validate it."
