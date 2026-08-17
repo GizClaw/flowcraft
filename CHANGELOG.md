@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.11` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.12` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.12` - 2026-08-17
+
+### Changed
+
+- feat(core): declare per-model max input token limits through ModelDescriptor.ModelLimits and fill driver catalogs from official documentation; fix(core): make sandbox watcher close race-safe
 
 ## `core/v0.1.11` - 2026-08-15
 
