@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.12` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.13` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.13` - 2026-08-17
+
+### Changed
+
+- feat(core): expose inference explain, embed, and model-catalog entry points in the script bridge — inference.models/inspect, the embed family (embed/routeEmbed/explainEmbed/routeExplainEmbed), stream preflight (explainStream/routeExplainStream with a public Router.ExplainGenerateStream), with route-level explain responses carrying the selected model's declared limits
 
 ## `core/v0.1.12` - 2026-08-17
 
