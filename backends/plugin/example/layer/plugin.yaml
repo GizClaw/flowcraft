@@ -1,0 +1,7 @@
+name: acme.hello-layer
+version: 1.0.0
+description: "A zero-code declaration-layer plugin: it contributes a deploy.Layer only."
+artifacts:
+  - type: layer
+    path: layers/10-hello.yaml
+    priority: 100

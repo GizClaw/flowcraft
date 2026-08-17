@@ -12,6 +12,7 @@ use (
 	./driver/bytedance
 	./examples/forge
 	./backends/checkpoint
+	./backends/plugin
 	./memory
 	./memory/eval
 )
