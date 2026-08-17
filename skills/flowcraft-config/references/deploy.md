@@ -1,8 +1,11 @@
 # Deploy document schema
 
 Owned by `core/deploy`. `deploy.Parse` strictly decodes JSON or YAML and
-validates the document shape. Resource factories are registered explicitly
-by the host.
+validates the document shape. The L2 validator runs exactly this:
+`core/deploy.Parse` plus `core/runtime.DecodeConfig` when a `runtime`
+section exists. It does not resolve factories, settings `file`/`embed`
+references, or kind semantics — resource factories are registered
+explicitly by the host, and the host build is where those checks happen.
 
 ## Top-level
 
@@ -25,6 +28,8 @@ runtime: {<opaque, decoded strictly by core/runtime>} # optional
 
 `settings` accepts inline JSON/YAML-compatible content, `{file: path}`, or
 `{embed: name}`. A file/embed reference must be the whole settings subtree.
+The validator never resolves these references; resolution and strict
+settings decoding happen in the host build.
 
 ## Ref
 
@@ -63,15 +68,21 @@ the core schema. Agent hooks use factory kind `hook.<slot>`.
 | --- | --- | --- |
 | `event.Bus` | `memory` | `core/event` |
 | `workspace.Workspace` | `local` | `core/workspace` |
-| `sandbox.Runner` | `local` | `core/sandbox` |
+| `sandbox.Runner` | `local`, `bwrap`, `seatbelt` | `core/sandbox/{local,bwrap,seatbelt}` |
 | `inference.Provider` | `openai`, `deepseek`, `qwen`, ... | `driver/<name>` |
 | `inference.Assembly` | `unified` | `core/inference` |
+| `inference.Router` | `unified` | `core/inference/route` |
+| `tool.Registry` | `memory` | `core/tool` |
 | `tool.Source` | app/provider-specific | host/app |
 | `tool.Assembly` | `memory` | `core/tool` |
 | `agent.ScriptRuntime` | `js`, `lua` | `core/agent/scriptrt/{jsrt,luart}` |
 | `agent.Engine` | `graph` | `core/graph/resource` |
 | `delegation.Service` | `local` | `core/delegation` |
-| `agent.CheckpointStore` | workspace/sqlite | `core/agent/checkpoint/workspace`, `backends/checkpoint/sqlite` |
+| `checkpoint.Store` | `workspace` | `core/agent/checkpoint/workspace` |
+| `agent.CheckpointStore` | `sqlite` | `backends/checkpoint/sqlite` |
+
+The table is informational: the validator accepts any kind that fits the
+resource envelope, and only the host build can construct these factories.
 
 Engine dependencies must match the graph engine's declared dep names:
 `inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`.

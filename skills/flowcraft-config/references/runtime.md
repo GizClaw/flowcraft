@@ -2,7 +2,7 @@
 
 Owned by `core/runtime`. `deploy.Parse` preserves the subtree opaquely;
 `runtime.DecodeConfig` decodes it strictly. `event_bus` is required when a
-`runtime` section exists.
+`runtime` section exists (the validator enforces this).
 
 ```yaml
 runtime:
@@ -24,19 +24,24 @@ runtime:
 
 ## Rules
 
-- `event_bus` must name an `event.Bus` resource.
-- `checkpoint_store`, when present, must name an `agent.CheckpointStore`.
-- `sessions.resume: true` requires `checkpoint_store`.
+- `event_bus` must name a resource whose built value implements the
+  `event.Bus` contract (validator: field required; host build: resolves
+  the name against the built resources).
+- `checkpoint_store`, when present, must name a resource whose built
+  value implements the `agent.CheckpointStore` contract — the document
+  kind can be `checkpoint.Store` (workspace) or `agent.CheckpointStore`
+  (sqlite) (host build resolves it; the validator checks `resume` rules).
+- `sessions.resume: true` requires `checkpoint_store` — **validator**.
 - `sessions.sink_buffer`, `delivery_concurrency`,
   `speculative_buffer_events`, and `speculative_buffer_bytes` are validated
-  against hard upper bounds.
+  against hard upper bounds — **validator**.
 - `sessions.max_sessions` limits distinct live session keys.
 - `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources; the
   reserved `default` key is an optional fallback. Every deployed agent must
-  be mapped directly or covered by `default`. The mapping is live: agents
-  registered at runtime attach a tool assembly via `WithToolAssembly`
-  (see below) or fall back to `default`.
-- Runtime references do not require an `export` flag in the core schema.
+  be mapped directly or covered by `default` (host build/runtime
+  registration; the validator only checks the map is non-empty). The
+  mapping is live: agents registered at runtime attach a tool assembly via
+  `WithToolAssembly` (see below) or fall back to `default`.
 
 ## Dynamic agent registration (core/v0.1.11+)
 

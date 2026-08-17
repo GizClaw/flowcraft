@@ -2,45 +2,57 @@
 
 ## Common pitfalls
 
-1. Agent engine deps belong under `engine.deps`, not top-level `agent.deps`.
-2. `runtime.event_bus` is required when `runtime` exists.
-3. `sessions.resume: true` requires `checkpoint_store`.
-4. Graph model refs must use `model: {id: {provider, name}}`.
+The validator (`validate-config.sh`) is structural only: it enforces the
+subset marked **validator**. Everything else surfaces only when the host
+builds the deployment with its own factory registry, or at runtime.
+
+1. Agent engine deps belong under `engine.deps`, not top-level
+   `agent.deps` — **validator** (unknown field).
+2. `runtime.event_bus` is required when `runtime` exists — **validator**.
+3. `sessions.resume: true` requires `checkpoint_store` — **validator**.
+4. Graph model refs must use `model: {id: {provider, name}}` — host build.
 5. Script nodes need `runtime` and `source`; `runtime` must match the bound
-   script runtime.
-6. Resource settings file/embed refs must be the whole settings subtree.
-7. Runtime buffer/concurrency settings have hard upper bounds.
-8. Dynamic catalog mappings must cover every deployed agent directly or with
-   `default`.
-9. `tool.Assembly` with dynamic injection requires at least one tool source.
+   script runtime — host build.
+6. Resource settings file/embed refs must be the whole settings subtree —
+   host build.
+7. Runtime buffer/concurrency settings have hard upper bounds —
+   **validator**.
+8. Dynamic catalog mappings must cover every deployed agent directly or
+   with `default` — host build/runtime registration.
+9. `tool.Assembly` with dynamic injection requires at least one tool
+   source — host build.
 10. Local sandbox is a no-isolation backend and should not be used for
     untrusted production execution.
 11. Runtime registration cannot reuse a deployed agent name (`Conflict`);
     deployed agents can only be removed by changing the deployment
-    document.
+    document — runtime API.
 12. With `dynamic_catalog` configured and no `default`, runtime
     registration must pass `WithToolAssembly`; otherwise registration is
-    rejected up front.
+    rejected up front — runtime API.
 13. `UnregisterAgent` waits for active turns; a stuck engine times out
     (`WithRemoveTimeout` / ctx deadline) and the agent is left registered
-    — retry, don't assume removal happened.
+    — retry, don't assume removal happened — runtime API.
 
 ## Error map
 
-| Error | Likely cause | Fix |
-| --- | --- | --- |
-| no factory for `kind/impl` | typo or missing registration | fix kind/impl and register factory |
-| dep references missing resource | bad resource name | use an exact resource key |
-| dependency cycle | circular `deps` | break the cycle |
-| undeclared dep | document dep not in `Spec.Deps` | fix dep name or factory spec |
-| `runtime config: event_bus is required` | missing runtime `event_bus` | add an `event.Bus` resource and reference |
-| `sessions.resume requires checkpoint_store` | resume enabled without store | add store or set resume false |
-| graph `unknown field "provider"` | flattened model ref | use nested `id` |
-| script node missing `runtime`/`source` | incomplete script config | add both fields |
-| dynamic catalog uncovered agent | no per-agent or default mapping | add `default` or map every agent |
-| `runtime: agent "x" is a deployed agent` | register/remove collides with a document agent | register under a new name, or change the deployment |
-| `dynamic catalog has no default; agent "x" needs WithToolAssembly` | runtime registration without a tool mapping | add `WithToolAssembly` or configure `default` |
-| removal `DeadlineExceeded` | active turn did not finish in time | wait/retry; the agent is still registered |
+| Error | Caught by | Likely cause | Fix |
+| --- | --- | --- | --- |
+| `config utils: decode ... unknown field "x"` | validator | extra field outside the document schema | remove it or use a documented field |
+| `deployment document: version is required` | validator | missing `version: v1` | add the version field |
+| `resource: kind is required` | validator | resource entry without `kind` | add `kind` |
+| `runtime config: event_bus is required` | validator | missing runtime `event_bus` | add an `event.Bus` resource and reference |
+| `sessions.resume requires checkpoint_store` | validator | resume enabled without store | add store or set resume false |
+| graph structural errors (`entry`, duplicate node id, edge to unknown node) | validator | malformed graph definition | fix the graph JSON |
+| no factory for `kind/impl` | host build | typo or missing registration | fix kind/impl and register factory |
+| dep references missing resource | host build | bad resource name | use an exact resource key |
+| dependency cycle | host build | circular `deps` | break the cycle |
+| undeclared dep | host build | document dep not in `Spec.Deps` | fix dep name or factory spec |
+| graph `unknown field "provider"` | host build | flattened model ref | use nested `id` |
+| script node missing `runtime`/`source` | host build | incomplete script config | add both fields |
+| dynamic catalog uncovered agent | host build/runtime | no per-agent or default mapping | add `default` or map every agent |
+| `runtime: agent "x" is a deployed agent` | runtime API | register/remove collides with a document agent | register under a new name, or change the deployment |
+| `dynamic catalog has no default; agent "x" needs WithToolAssembly` | runtime API | runtime registration without a tool mapping | add `WithToolAssembly` or configure `default` |
+| removal `DeadlineExceeded` | runtime API | active turn did not finish in time | wait/retry; the agent is still registered |
 
 ## Debug order
 
