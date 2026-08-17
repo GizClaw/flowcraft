@@ -1,7 +1,9 @@
 # Resource sub-documents
 
 Sub-documents are attached through `settings: {file: ...}` or inline content.
-Each factory owns its settings schema.
+Each factory owns its settings schema. Standalone `--type` validation is
+syntax-only (strict YAML conversion, single document); settings semantics
+are checked when the host build decodes them through the factory.
 
 ## inference provider
 
