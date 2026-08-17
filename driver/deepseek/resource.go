@@ -142,14 +142,18 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 		entry := models[name]
 		entry.api = spec.apiMode()
 		id := inference.ModelID{Provider: settings.ID, Name: name}
-		provider.Models = append(provider.Models, inference.ModelImplementation{
-			Descriptor: inference.ModelDescriptor{
-				ID: id,
-				Capabilities: inference.ModelCapabilities{
-					HostedWebSearch: entry.api == apiResponses && entry.webSearch,
-				},
+		descriptor := inference.ModelDescriptor{
+			ID: id,
+			Capabilities: inference.ModelCapabilities{
+				HostedWebSearch: entry.api == apiResponses && entry.webSearch,
 			},
-			Openers: openersFor(spec, entry, profiles, id),
+		}
+		if entry.maxInputTokens > 0 {
+			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
+		}
+		provider.Models = append(provider.Models, inference.ModelImplementation{
+			Descriptor: descriptor,
+			Openers:    openersFor(spec, entry, profiles, id),
 		})
 	}
 	return provider, nil

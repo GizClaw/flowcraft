@@ -10,47 +10,58 @@ type catalogEntry struct {
 	replacement      string
 	reasoningLevels  bool
 	reasoningDisable bool
+	// maxInputTokens caps the input context (system + messages + tools)
+	// in tokens; zero means undeclared. Values mirror the context window
+	// published on https://platform.claude.com/docs/en/about-claude/models.
+	maxInputTokens int
 }
 
 // catalog is the built-in model list, aligned with the Claude lineup of
 // July 2026.
 var catalog = map[string]catalogEntry{
-	"claude-fable-5":  {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true},
-	"claude-opus-5":   {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true},
-	"claude-sonnet-5": {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true},
+	"claude-fable-5":  {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true, maxInputTokens: 1_000_000},
+	"claude-opus-5":   {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true, maxInputTokens: 1_000_000},
+	"claude-sonnet-5": {vision: true, reasoning: true, reasoningLevels: true, reasoningDisable: true, maxInputTokens: 1_000_000},
 	"claude-haiku-4-5": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
+		maxInputTokens: 200_000,
 	},
 	"claude-haiku-4-5-20251001": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
+		maxInputTokens: 200_000,
 	},
 
 	"claude-opus-4-8": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
 		deprecated: true, replacement: "claude-opus-5",
+		maxInputTokens: 1_000_000,
 	},
 	"claude-opus-4-7": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
 		deprecated: true, replacement: "claude-opus-5",
+		maxInputTokens: 1_000_000,
 	},
 	"claude-sonnet-4-6": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
 		deprecated: true, replacement: "claude-sonnet-5",
+		maxInputTokens: 1_000_000,
 	},
 	"claude-sonnet-4-5": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
 		deprecated: true, replacement: "claude-sonnet-5",
+		maxInputTokens: 200_000,
 	},
 	"claude-opus-4-1": {
 		vision: true, reasoning: true,
 		reasoningLevels: true, reasoningDisable: true,
 		deprecated: true, replacement: "claude-opus-5",
+		maxInputTokens: 200_000,
 	},
 }
 

@@ -131,6 +131,9 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 				descriptor.Lifecycle.Replacement = &replacement
 			}
 		}
+		if entry.maxInputTokens > 0 {
+			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
 			Openers:    openersFor(spec, entry, profiles, id),

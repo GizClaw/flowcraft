@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): declare per-model max input token limits through ModelDescriptor.ModelLimits and fill driver catalogs from official documentation; fix(core): make sandbox watcher close race-safe",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}

@@ -95,8 +95,12 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	for _, name := range sortedNames(models) {
 		entry := models[name]
 		id := inference.ModelID{Provider: settings.ID, Name: name}
+		descriptor := inference.ModelDescriptor{ID: id}
+		if entry.maxInputTokens > 0 {
+			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
-			Descriptor: inference.ModelDescriptor{ID: id},
+			Descriptor: descriptor,
 			Openers:    openersFor(spec, entry, profiles, id),
 		})
 	}
