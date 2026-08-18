@@ -2,6 +2,8 @@ package bindings
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 )
@@ -14,6 +16,8 @@ import (
 //   - getVars()        → map[string]any
 //   - hasVar(key)      → bool
 //   - deleteVar(key)
+//   - resolve(str)         → any       (typed ${board.*} expansion)
+//   - resolveString(str)   → string    (text ${board.*} expansion)
 //
 // Channels (typed conversation history; multimodal-aware via the
 // message.Message projection in project.go):
@@ -40,6 +44,23 @@ func NewBoardBridge(board *agent.Board) BindingFunc {
 			"deleteVar": func(key string) { board.DeleteVar(key) },
 			"getVars":   func() map[string]any { return board.Vars() },
 			"hasVar":    func(key string) bool { _, ok := board.GetVar(key); return ok },
+
+			"resolve": func(s string) (any, error) {
+				return board.ResolveString(s)
+			},
+			"resolveString": func(s string) (string, error) {
+				v, err := board.ResolveString(s)
+				if err != nil {
+					return "", err
+				}
+				if str, ok := v.(string); ok {
+					return str, nil
+				}
+				if b, err := json.Marshal(v); err == nil {
+					return string(b), nil
+				}
+				return fmt.Sprintf("%v", v), nil
+			},
 
 			"channel": func(name string) ([]any, error) {
 				return messagesToScript(board.Channel(name))

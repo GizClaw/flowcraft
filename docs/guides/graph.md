@@ -55,10 +55,18 @@ A `*Graph` is an `agent.Engine`.
 ```
 
 `condition` and `skip_condition` use expr-lang expressions over board
-variables. `${board.<name>}` references inside config strings resolve before
-node decode, so `system_prompt` may interpolate upstream output. Node types
-must be registered in the registry passed to `Build`; an unregistered type
-fails `Build`, not `GraphDefinition.Validate`.
+variables. `${board.<path>}` references inside config strings resolve before
+node decode, so `system_prompt` may interpolate upstream output. Paths are
+dot-separated: `${board.user.name}` reads var `user` and then its `name`
+field (an exact variable named `user.name` wins). Nested lookup walks maps
+with string keys (`map[string]any`, `map[string]string`, ...) and exported
+struct fields. An optional default follows a colon (`${board.limit:3}`); a
+reference standing alone keeps the variable's typed value, and defaults that
+are valid JSON literals keep their type. Referencing a missing variable is a
+validation error unless a default is given — prefix with a backslash
+(`\${board.x}`) to emit literal text. Node types must be registered in the
+registry passed to `Build`; an unregistered type fails `Build`, not
+`GraphDefinition.Validate`.
 
 ## Engine settings (`agent.Engine/graph`)
 

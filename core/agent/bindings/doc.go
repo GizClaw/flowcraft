@@ -10,9 +10,8 @@
 //
 // Existing bridges:
 //
-//   - board: scoped copy-on-read view of the engine board (namespace =
-//     node ID), with resolve/resolveString for ${board.<name>}
-//     interpolation
+//   - board: direct read/write view of the engine board, with
+//     resolve/resolveString for ${board.<name>} interpolation
 //
 //   - expr: boolean expression evaluation with the same interpolation
 //
@@ -52,12 +51,15 @@
 //
 // # Interpolation
 //
-// Strings that embed ${board.<name>} are expanded by the board bridge
-// against a scoped view of the board. ExprHost uses the same mechanism
-// for condition expressions, so conditions written in YAML and script
-// literals share one interpolation path. Undefined references fail
-// hard: the template resolver returns a validation error and the
-// binding surfaces it rather than substituting a sentinel.
+// Config values that carry ${board.<path>} references are expanded by
+// the graph kernel before the script node decodes, so scripts see
+// resolved values in their config global. Scripts can also expand
+// references dynamically through the board bridge's resolve (typed)
+// and resolveString (text) helpers. References support dot paths
+// (${board.user.name}), an optional default (${board.x:default}), and
+// fail with a validation error when the referenced variable is missing
+// and no default is given. Prefix a reference with a backslash
+// (\${board.x}) to emit it literally.
 //
 // # Env shape
 //
