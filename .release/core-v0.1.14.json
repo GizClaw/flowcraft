@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): add runtime generation reload with multi-bus ownership and epoch-pinned sessions (Runtime.Reload, per-generation host factories/catalogs, dynamic agent drain/rebind); expose built deployment resources via Runtime.Resource; move delegation host wrapping out of runtime to an opt-in deployment-aware host factory decorator (WithResultHostFactory + core/delegation/hostwrap), so delegation services are no longer auto-exposed on turn hosts",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
