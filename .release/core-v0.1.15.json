@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): lift board ref syntax into agent.Board — ${board.<path>} dot-path resolution through nested string-keyed maps and exported struct fields, typed JSON-literal defaults (${board.x:default}), fail-fast validation for missing references with \\${board.x} escaping, and json.Decoder.UseNumber config decoding to preserve integer precision; agent.Board gains Resolve/ResolveString, ContainsBoardRef, ExtractBoardRefs, and BoardRefMarker, the board bridge exposes board.resolve/board.resolveString, and graph.ContainsRef/graph.ExtractRefs become deprecated wrappers",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
