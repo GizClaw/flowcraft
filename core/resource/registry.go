@@ -1,6 +1,10 @@
 package resource
 
-import "github.com/GizClaw/flowcraft/core/errdefs"
+import (
+	"sync"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+)
 
 // Key is the unique (Kind, Impl) identity of a factory in a registry.
 type Key struct {
@@ -12,6 +16,7 @@ type Key struct {
 // resource module registers its factories explicitly; there is no
 // global state.
 type Registry struct {
+	mu        sync.RWMutex
 	factories map[Key]Factory
 }
 
@@ -31,6 +36,8 @@ func (r *Registry) Register(f Factory) error {
 		return err
 	}
 	key := Key{Kind: spec.Kind, Impl: spec.Impl}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if _, dup := r.factories[key]; dup {
 		return errdefs.Conflictf(
 			"resource registry: factory %s/%s already registered",
@@ -50,12 +57,16 @@ func (r *Registry) MustRegister(f Factory) {
 // Lookup returns the factory for kind/impl. An empty impl matches a
 // factory registered with an empty impl.
 func (r *Registry) Lookup(kind Kind, impl string) (Factory, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	f, ok := r.factories[Key{Kind: kind, Impl: impl}]
 	return f, ok
 }
 
 // Specs returns the registered factory specs in unspecified order.
 func (r *Registry) Specs() []Spec {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	specs := make([]Spec, 0, len(r.factories))
 	for _, f := range r.factories {
 		specs = append(specs, f.Spec())

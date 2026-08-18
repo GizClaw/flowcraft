@@ -72,27 +72,27 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		res := doc.Resources[name]
 		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
 		if !ok {
-			_ = closeAll(values, order)
+			_ = closeAll(values, order, nil)
 			return nil, errdefs.Validationf(
 				"deploy: resource %q: no factory for %s/%s",
 				name, res.Kind, res.Impl)
 		}
 		if err := validateDeps(factory, res.Deps); err != nil {
-			_ = closeAll(values, order)
+			_ = closeAll(values, order, nil)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		settings := res.Settings
 		if b.loader != nil {
 			settings, err = resolveSettings(ctx, b.loader, settings)
 			if err != nil {
-				_ = closeAll(values, order)
+				_ = closeAll(values, order, nil)
 				return nil, errdefs.Validationf(
 					"deploy: resource %q: %v", name, err)
 			}
 		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
-			_ = closeAll(values, order)
+			_ = closeAll(values, order, nil)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		value, err := factory.New(ctx, resource.Input{
@@ -101,7 +101,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 			Loader:   b.loader,
 		})
 		if err != nil {
-			_ = closeAll(values, order)
+			_ = closeAll(values, order, nil)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		values[name] = value
@@ -483,9 +483,35 @@ func resolveDeps(values map[string]any, deps resource.Deps) (map[string]any, err
 // Result owns the built resource values in construction order.
 // The caller closes it (or the runtime layer closes it) when done.
 type Result struct {
-	values map[string]any
-	order  []string
-	agents map[string]*agent.Agent
+	values   map[string]any
+	order    []string
+	agents   map[string]*agent.Agent
+	detached map[string]struct{}
+}
+
+// Detach marks resource names as caller-owned: Result.Close will not
+// close them, and the caller takes over their lifecycle. It is used by
+// the runtime to reject a reload whose event bus factory returned the
+// current generation's bus without letting the aborted result close a
+// bus another generation still uses.
+func (r *Result) Detach(names ...string) {
+	if r == nil || len(names) == 0 {
+		return
+	}
+	if r.detached == nil {
+		r.detached = make(map[string]struct{}, len(names))
+	}
+	for _, name := range names {
+		r.detached[name] = struct{}{}
+	}
+}
+
+func (r *Result) isDetached(name string) bool {
+	if r == nil || r.detached == nil {
+		return false
+	}
+	_, ok := r.detached[name]
+	return ok
 }
 
 // Value returns the built resource registered under name.
@@ -527,7 +553,7 @@ func (r *Result) Close() error {
 		return nil
 	}
 	var errs []error
-	if err := closeAll(r.values, r.order); err != nil {
+	if err := closeAll(r.values, r.order, r); err != nil {
 		errs = append(errs, err)
 	}
 	for _, name := range r.AgentNames() {
@@ -542,10 +568,14 @@ func (r *Result) Close() error {
 	return errors.Join(errs...)
 }
 
-func closeAll(values map[string]any, order []string) error {
+func closeAll(values map[string]any, order []string, result *Result) error {
 	var errs []error
 	for i := len(order) - 1; i >= 0; i-- {
-		value, ok := values[order[i]]
+		name := order[i]
+		if result != nil && result.isDetached(name) {
+			continue
+		}
+		value, ok := values[name]
 		if !ok {
 			continue
 		}

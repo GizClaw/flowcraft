@@ -13,6 +13,11 @@ import (
 // namespace.
 const agentLifecyclePrefix = "runtime.agent."
 
+// runtimeRebuildPrefix is the subject root for runtime generation
+// reload events. Like the agent lifecycle subjects, it sits outside the
+// engine-owned "agent.run.*" namespace.
+const runtimeRebuildPrefix = "runtime.rebuild."
+
 // SubjectAgentRegistered returns the subject for a successful dynamic
 // registration:
 //
@@ -34,6 +39,38 @@ func PatternAgentLifecycle() event.Pattern {
 	return event.Pattern(agentLifecyclePrefix + ">")
 }
 
+// SubjectRuntimeRebuildStarted is published when a Reload begins
+// building the next generation.
+func SubjectRuntimeRebuildStarted() event.Subject {
+	return event.Subject(runtimeRebuildPrefix + "started")
+}
+
+// SubjectRuntimeRebuildCompleted is published after a Reload atomically
+// swapped the current generation.
+func SubjectRuntimeRebuildCompleted() event.Subject {
+	return event.Subject(runtimeRebuildPrefix + "completed")
+}
+
+// SubjectRuntimeRebuildFailed is published when a Reload aborts before
+// any swap; the previous generation keeps serving.
+func SubjectRuntimeRebuildFailed() event.Subject {
+	return event.Subject(runtimeRebuildPrefix + "failed")
+}
+
+// PatternRuntimeRebuild matches every runtime generation reload event.
+func PatternRuntimeRebuild() event.Pattern {
+	return event.Pattern(runtimeRebuildPrefix + ">")
+}
+
+// RuntimeRebuildEvent is the payload of runtime.rebuild.* events.
+type RuntimeRebuildEvent struct {
+	GenerationID         uint64   `json:"generation_id"`
+	PreviousGenerationID uint64   `json:"previous_generation_id,omitempty"`
+	ReboundAgents        []string `json:"rebound_agents,omitempty"`
+	DrainedAgents        []string `json:"drained_agents,omitempty"`
+	Error                string   `json:"error,omitempty"`
+}
+
 // AgentLifecycleEvent is the payload of runtime.agent.* lifecycle
 // events. It intentionally carries only identity and card summary, so
 // the envelope stays small.
@@ -48,7 +85,7 @@ type AgentLifecycleEvent struct {
 func (r *Runtime) publishLifecycleEvent(
 	ctx context.Context,
 	subject event.Subject,
-	payload AgentLifecycleEvent,
+	payload any,
 ) {
 	if r == nil || r.bus == nil || isNilContext(ctx) {
 		return

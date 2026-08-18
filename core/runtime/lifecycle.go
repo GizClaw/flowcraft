@@ -148,7 +148,11 @@ func (r *Runtime) RegisterAgent(
 	if r.liveCatalog != nil {
 		r.liveCatalog.Set(name, assembly)
 	}
-	if err := r.registry.Put(name, instance); err != nil {
+	if err := r.registry.Put(name, dynamicAgentEntry{
+		instance:     instance,
+		definition:   def,
+		toolAssembly: options.toolResource,
+	}); err != nil {
 		_ = instance.Close()
 		return nil, err
 	}
@@ -199,7 +203,7 @@ func (r *Runtime) UnregisterAgent(
 		return errdefs.NotAvailablef("runtime: closed")
 	}
 
-	instance, ok := r.registry.Delete(name)
+	entry, ok := r.registry.Delete(name)
 	if !ok {
 		if _, deployed := r.result.Agent(name); deployed {
 			return errdefs.Conflictf(
@@ -219,19 +223,19 @@ func (r *Runtime) UnregisterAgent(
 		// Drain failed (usually a deadline): keep the tombstone so new
 		// sessions stay blocked, restore the agent so the registration
 		// is still visible, and let the caller retry.
-		_ = r.registry.Put(name, instance)
+		_ = r.registry.Put(name, entry)
 		return err
 	}
 	if r.liveCatalog != nil {
 		r.liveCatalog.Delete(name)
 	}
-	if err := instance.Close(); err != nil {
+	if err := entry.instance.Close(); err != nil {
 		return err
 	}
 	r.publishLifecycleEvent(ctx, SubjectAgentRemoved(name), AgentLifecycleEvent{
 		AgentID:     name,
-		Name:        instance.Card.Name,
-		Description: instance.Card.Description,
+		Name:        entry.instance.Card.Name,
+		Description: entry.instance.Card.Description,
 	})
 	return nil
 }

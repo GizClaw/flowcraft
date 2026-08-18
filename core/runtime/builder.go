@@ -176,6 +176,16 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 
 	router := event.NewRouter(bus)
 	registry := newAgentRegistry(result)
+	initial := &Generation{
+		id:          1,
+		doc:         doc,
+		registry:    registry,
+		result:      result,
+		bus:         bus,
+		hostFactory: hostFactory,
+		resolver:    generationResolver{registry: registry, result: result},
+		catalog:     liveCatalog,
+	}
 	managerOptions := []session.ManagerOption{
 		session.WithIdleTimeout(cfg.Sessions.IdleTimeout),
 		session.WithSinkBufferSize(cfg.Sessions.SinkBuffer),
@@ -196,21 +206,24 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		managerOptions = append(managerOptions,
 			session.WithCatalogProvider(catalogProvider))
 	}
-	manager, err := session.NewManager(registry, hostFactory, router, managerOptions...)
+	manager, err := session.NewManager(initial.resolver, hostFactory, router, managerOptions...)
 	if err != nil {
 		_ = router.Close()
 		_ = result.Close()
 		return nil, fmt.Errorf("runtime create session manager: %w", err)
 	}
 	return &Runtime{
-		manager:     manager,
-		router:      router,
-		result:      result,
-		registry:    registry,
-		liveCatalog: liveCatalog,
-		resources:   reg,
-		loader:      b.loader,
-		bus:         bus,
+		manager:       manager,
+		router:        router,
+		result:        result,
+		registry:      registry,
+		liveCatalog:   liveCatalog,
+		resources:     reg,
+		loader:        b.loader,
+		bus:           bus,
+		hostDecorator: b.hostDecorator,
+		current:       initial,
+		nextGenID:     1,
 	}, nil
 }
 

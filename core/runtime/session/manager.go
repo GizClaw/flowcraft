@@ -30,8 +30,6 @@ type managerEntry struct {
 // It borrows its resolver, HostFactory, and event router and never
 // closes them.
 type Manager struct {
-	resolver            InstanceResolver
-	hostFactory         HostFactory
 	router              *event.Router
 	idleTimeout         time.Duration
 	sinkBuffer          int
@@ -39,10 +37,13 @@ type Manager struct {
 	speculativeBytes    int
 	deliveryConcurrency int
 	maxSessions         int
-	checkpoints         agent.CheckpointStore
-	resume              bool
 	observer            SessionObserver
-	catalogProvider     CatalogProvider
+
+	// deps is the current epoch's execution snapshot; epochs tracks
+	// every live (current or retired-but-referenced) epoch.
+	deps     Deps
+	epochSeq uint64
+	epochs   map[uint64]*epochState
 
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
@@ -98,9 +99,7 @@ func NewManager(
 				"runtime session: resume requires a checkpoint store that implements CheckpointDeleter")
 		}
 	}
-	return &Manager{
-		resolver:            resolver,
-		hostFactory:         hostFactory,
+	m := &Manager{
 		router:              router,
 		idleTimeout:         opts.idleTimeout,
 		sinkBuffer:          opts.sinkBuffer,
@@ -108,13 +107,48 @@ func NewManager(
 		speculativeBytes:    opts.speculativeBytes,
 		deliveryConcurrency: opts.deliveryConcurrency,
 		maxSessions:         opts.maxSessions,
-		checkpoints:         opts.checkpoints,
-		resume:              opts.resume,
 		observer:            opts.observer,
-		catalogProvider:     opts.catalogProvider,
 		entries:             make(map[Key]*managerEntry),
 		removed:             make(map[string]struct{}),
-	}, nil
+		epochSeq:            1,
+		epochs:              make(map[uint64]*epochState),
+	}
+	m.initEpoch(resolver, hostFactory, opts.catalogProvider,
+		opts.checkpoints, opts.resume)
+	return m, nil
+}
+
+func (m *Manager) initEpoch(
+	resolver InstanceResolver,
+	hostFactory HostFactory,
+	catalogProvider CatalogProvider,
+	checkpoints agent.CheckpointStore,
+	resume bool,
+) {
+	m.epochs[1] = &epochState{
+		deps: Deps{
+			Resolver:        resolver,
+			HostFactory:     hostFactory,
+			CatalogProvider: catalogProvider,
+			Checkpoints:     checkpoints,
+			Resume:          resume,
+			Epoch:           1,
+		},
+	}
+	m.deps = m.epochs[1].deps
+}
+
+// currentDeps returns the current epoch's dependency snapshot. It is
+// used by session-level operations that run outside a turn (e.g.
+// Resumable); turn-scoped operations must use the epoch acquired at
+// Start so a concurrent swap cannot tear them.
+func (m *Manager) currentDeps() Deps {
+	if m == nil {
+		return Deps{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.deps
 }
 
 // Open returns an independent Lease over the Session identified by key.
@@ -164,18 +198,18 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 			"runtime session: max sessions reached (%d)", m.maxSessions)
 	}
 
-	instance, ok := m.resolver.Instance(key.AgentID)
+	instance, ok := m.deps.Resolver.Instance(key.AgentID)
 	if !ok {
 		return nil, errdefs.NotFoundf("runtime session: agent %q is not deployed", key.AgentID)
 	}
 	if instance == nil {
-		return nil, errdefs.Internalf("runtime session: resolver returned a nil instance for agent %q", key.AgentID)
+		return nil, errdefs.Internalf(
+			"runtime session: resolver returned a nil instance for agent %q",
+			key.AgentID)
 	}
 	session := newSession(
-		key, instance, m.hostFactory, m.router, m.sinkBuffer,
+		key, m, m.router, m.sinkBuffer,
 		m.speculativeEvents, m.speculativeBytes, m.deliveryConcurrency,
-		m.checkpoints, m.resume,
-		m.catalogProvider,
 		func(changed *Session) {
 			m.activityChanged(key, changed)
 		},

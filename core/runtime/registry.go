@@ -1,7 +1,6 @@
 package runtime
 
 import (
-	"errors"
 	"sort"
 	"sync"
 
@@ -10,6 +9,15 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
+// dynamicAgentEntry is the bookkeeping record of one dynamically
+// registered agent: the assembled instance plus everything Reload needs
+// to re-bind it against a new generation.
+type dynamicAgentEntry struct {
+	instance     *agent.Agent
+	definition   agent.Definition
+	toolAssembly string // WithToolAssembly resource name; "" = none/default
+}
+
 // AgentRegistry is the runtime-live, concurrency-safe agent view.
 // Dynamically registered agents live in its own map; statically deployed
 // agents are served as a read-only fallback from the deployment result.
@@ -17,20 +25,15 @@ import (
 // both kinds through one seam.
 type AgentRegistry struct {
 	mu       sync.RWMutex
-	agents   map[string]*agent.Agent
+	agents   map[string]dynamicAgentEntry
 	deployed *deploy.Result
 }
 
 func newAgentRegistry(deployed *deploy.Result) *AgentRegistry {
 	return &AgentRegistry{
-		agents:   make(map[string]*agent.Agent),
+		agents:   make(map[string]dynamicAgentEntry),
 		deployed: deployed,
 	}
-}
-
-// Instance implements session.InstanceResolver.
-func (r *AgentRegistry) Instance(id string) (*agent.Agent, bool) {
-	return r.Agent(id)
 }
 
 // Agent resolves a dynamically registered agent first, then falls back
@@ -40,10 +43,10 @@ func (r *AgentRegistry) Agent(id string) (*agent.Agent, bool) {
 		return nil, false
 	}
 	r.mu.RLock()
-	instance, ok := r.agents[id]
+	entry, ok := r.agents[id]
 	r.mu.RUnlock()
 	if ok {
-		return instance, true
+		return entry.instance, true
 	}
 	if r.deployed != nil {
 		return r.deployed.Agent(id)
@@ -76,12 +79,66 @@ func (r *AgentRegistry) AgentNames() []string {
 	return names
 }
 
+// Dynamic returns the live instance registered under id, or ok=false.
+// It is the dynamic-only view used by per-generation resolvers.
+func (r *AgentRegistry) Dynamic(id string) (*agent.Agent, bool) {
+	if r == nil {
+		return nil, false
+	}
+	r.mu.RLock()
+	entry, ok := r.agents[id]
+	r.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	return entry.instance, true
+}
+
+// Entries returns a defensive copy of every dynamic registration.
+func (r *AgentRegistry) Entries() map[string]dynamicAgentEntry {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]dynamicAgentEntry, len(r.agents))
+	for id, entry := range r.agents {
+		out[id] = entry
+	}
+	return out
+}
+
+// Replace atomically swaps the dynamic view and the deployed fallback.
+// It is the Reload commit path; callers must hold lifecycleMu.
+func (r *AgentRegistry) Replace(
+	entries map[string]dynamicAgentEntry,
+	deployed *deploy.Result,
+) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.agents = entries
+	r.deployed = deployed
+	r.mu.Unlock()
+}
+
+// dynamicInstances projects a registry entry snapshot into the
+// instance-only map a generation adopts at swap/close time.
+func dynamicInstances(entries map[string]dynamicAgentEntry) map[string]*agent.Agent {
+	out := make(map[string]*agent.Agent, len(entries))
+	for name, entry := range entries {
+		out[name] = entry.instance
+	}
+	return out
+}
+
 // Put registers a dynamically registered agent, rejecting duplicates.
-func (r *AgentRegistry) Put(id string, instance *agent.Agent) error {
+func (r *AgentRegistry) Put(id string, entry dynamicAgentEntry) error {
 	if r == nil {
 		return errdefs.Validationf("runtime: agent registry is nil")
 	}
-	if id == "" || instance == nil {
+	if id == "" || entry.instance == nil {
 		return errdefs.Validationf(
 			"runtime: agent registry Put requires an id and a non-nil agent")
 	}
@@ -90,44 +147,29 @@ func (r *AgentRegistry) Put(id string, instance *agent.Agent) error {
 	if _, exists := r.agents[id]; exists {
 		return errdefs.Conflictf("runtime: agent %q is already registered", id)
 	}
-	r.agents[id] = instance
+	r.agents[id] = entry
 	return nil
 }
 
-// Delete removes and returns a dynamically registered agent. Deployed
+// Delete removes and returns a dynamically registered entry. Deployed
 // agents are not affected and return ok=false.
-func (r *AgentRegistry) Delete(id string) (*agent.Agent, bool) {
+func (r *AgentRegistry) Delete(id string) (dynamicAgentEntry, bool) {
 	if r == nil {
-		return nil, false
+		return dynamicAgentEntry{}, false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	instance, ok := r.agents[id]
+	entry, ok := r.agents[id]
 	if !ok {
-		return nil, false
+		return dynamicAgentEntry{}, false
 	}
 	delete(r.agents, id)
-	return instance, true
+	return entry, true
 }
 
-// Close closes every dynamically registered agent. Deployed agents are
-// owned (and closed) by deploy.Result, so they are left untouched.
+// Close is retained for API compatibility but is a no-op: dynamic
+// instances are owned by the generation that adopted them and closed by
+// Generation.close, so closing them here would double-close.
 func (r *AgentRegistry) Close() error {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	instances := make([]*agent.Agent, 0, len(r.agents))
-	for _, instance := range r.agents {
-		instances = append(instances, instance)
-	}
-	r.mu.RUnlock()
-
-	var errs []error
-	for _, instance := range instances {
-		if err := instance.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return nil
 }

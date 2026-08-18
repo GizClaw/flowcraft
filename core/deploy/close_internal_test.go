@@ -18,6 +18,7 @@ func TestCloseAllJoinsErrors(t *testing.T) {
 			"b": closeErr{err: second},
 		},
 		[]string{"a", "b"},
+		nil,
 	)
 	if err == nil {
 		t.Fatal("closeAll returned nil, want joined errors")

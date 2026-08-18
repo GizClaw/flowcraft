@@ -18,6 +18,15 @@ type Turn struct {
 	runID   string
 	runCtx  context.Context
 	cancel  context.CancelFunc
+	// release drops the epoch reference acquired at Start/Resume. It is
+	// idempotent and invoked exactly when the turn stops using its
+	// epoch's dependencies (in finish, or on startTurnLocked failure).
+	release func()
+	// checkpoints and resume are the turn's epoch durability settings,
+	// pinned so afterTurn writes session state to the store the turn
+	// started on even across a generation swap.
+	checkpoints agent.CheckpointStore
+	resume      bool
 
 	resumeFrom *agent.Checkpoint
 	resumeCtx  *agent.ResumeContext
@@ -312,6 +321,9 @@ func (t *Turn) finish(result *agent.Result, err error) {
 	}
 	if t.session != nil {
 		t.session.turnFinished(t, result, err)
+	}
+	if t.release != nil {
+		t.release()
 	}
 	close(t.done)
 }
