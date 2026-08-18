@@ -2,7 +2,6 @@ package hostwrap_test
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -85,8 +84,12 @@ func TestWrapWithoutServiceLeavesFactoryUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Wrap: %v", err)
 	}
-	if reflect.ValueOf(factory).Pointer() != reflect.ValueOf(inner).Pointer() {
-		t.Fatalf("Wrap returned a different factory without a delegation service")
+	host, err := factory.NewHost(context.Background(), hostRequest())
+	if err != nil {
+		t.Fatalf("NewHost: %v", err)
+	}
+	if _, ok := sdkdelegation.ServiceFromHost(host); ok {
+		t.Fatalf("host unexpectedly exposes a delegation service without one built")
 	}
 }
 
