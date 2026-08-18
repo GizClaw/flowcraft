@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.15` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.16` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.16` - 2026-08-18
+
+### Changed
+
+- feat(core): support env scalars in settings decode — add resource.Int/Bool/Float64/Int64 scalar settings types that accept JSON literals or strings, so ${env:NAME} expansion can feed numeric and boolean fields; runtime session config, MCP tool server specs, workspace scoped settings, and A2A history_length now decode through the env-aware settings path with strict unknown-field rejection and clear validation errors for unparseable strings; also harden env restore error checks in runtime config tests
 
 ## `core/v0.1.15` - 2026-08-18
 
