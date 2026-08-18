@@ -163,4 +163,19 @@ level primitives behind removal and re-registration.
 `runtime.Builder.WithHostFactory` wraps the base host factory. The decorator
 must delegate any method it does not override.
 
+`runtime.Builder.WithResultHostFactory` wraps the factory a second time with
+access to the fully assembled deployment, after `WithHostFactory` has run.
+This is the seam for deployment-built, run-scoped services: applications opt
+in and decide which services to expose on every turn host, and the runtime
+itself stays neutral to them. For example, exposing a delegation service:
+
+```go
+builder.WithResultHostFactory(func(result *deploy.Result, factory session.HostFactory) (session.HostFactory, error) {
+    return hostwrap.Wrap(factory, result) // delegation.Service onto every turn host
+})
+```
+
+The decorator is retained across reloads and re-applied to each new
+generation's host factory with that generation's deployment.
+
 See [deploy.md](deploy.md) and [resource.md](resource.md).

@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
-	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -22,15 +21,23 @@ import (
 // agent.HostFuncs{Inner: base, ...}.
 type HostFactoryDecorator func(session.HostFactory) (session.HostFactory, error)
 
+// ResultHostFactoryDecorator wraps the runtime's host factory with access to
+// the fully assembled deployment. It runs after any HostFactoryDecorator, so
+// the deployment-aware layer sits outermost and can expose deployment-built
+// services (e.g. delegation) on every turn host. The result is borrowed only
+// for the duration of the call.
+type ResultHostFactoryDecorator func(result *deploy.Result, factory session.HostFactory) (session.HostFactory, error)
+
 // Builder transactionally assembles one Runtime over a resource
 // registry. It is single-use.
 type Builder struct {
 	reg *resource.Registry
 
-	mu            sync.Mutex
-	used          bool
-	hostDecorator HostFactoryDecorator
-	loader        *resource.Loader
+	mu                  sync.Mutex
+	used                bool
+	hostDecorator       HostFactoryDecorator
+	resultHostDecorator ResultHostFactoryDecorator
+	loader              *resource.Loader
 }
 
 // NewBuilder creates a Runtime builder over a resource registry. The
@@ -59,6 +66,28 @@ func (b *Builder) WithHostFactory(decorator HostFactoryDecorator) error {
 		return errdefs.Validationf("runtime host factory decorator is already set")
 	}
 	b.hostDecorator = decorator
+	return nil
+}
+
+// WithResultHostFactory installs a decorator that runs after WithHostFactory
+// with access to the fully assembled deployment. It is rejected when nil or
+// after Build starts.
+func (b *Builder) WithResultHostFactory(decorator ResultHostFactoryDecorator) error {
+	if b == nil {
+		return errdefs.Validationf("runtime Builder is nil")
+	}
+	if decorator == nil {
+		return errdefs.Validationf("runtime result host factory decorator is nil")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used {
+		return ErrBuilderUsed
+	}
+	if b.resultHostDecorator != nil {
+		return errdefs.Validationf("runtime result host factory decorator is already set")
+	}
+	b.resultHostDecorator = decorator
 	return nil
 }
 
@@ -155,10 +184,17 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 				"runtime host factory decorator returned nil")
 		}
 	}
-	hostFactory, err = wrapDelegation(hostFactory, result)
-	if err != nil {
-		_ = result.Close()
-		return nil, err
+	if b.resultHostDecorator != nil {
+		hostFactory, err = b.resultHostDecorator(result, hostFactory)
+		if err != nil {
+			_ = result.Close()
+			return nil, fmt.Errorf("runtime decorate host factory with deployment: %w", err)
+		}
+		if isNil(hostFactory) {
+			_ = result.Close()
+			return nil, errdefs.Internalf(
+				"runtime result host factory decorator returned nil")
+		}
 	}
 
 	var catalogProvider session.CatalogProvider
@@ -213,17 +249,18 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		return nil, fmt.Errorf("runtime create session manager: %w", err)
 	}
 	return &Runtime{
-		manager:       manager,
-		router:        router,
-		result:        result,
-		registry:      registry,
-		liveCatalog:   liveCatalog,
-		resources:     reg,
-		loader:        b.loader,
-		bus:           bus,
-		hostDecorator: b.hostDecorator,
-		current:       initial,
-		nextGenID:     1,
+		manager:             manager,
+		router:              router,
+		result:              result,
+		registry:            registry,
+		liveCatalog:         liveCatalog,
+		resources:           reg,
+		loader:              b.loader,
+		bus:                 bus,
+		hostDecorator:       b.hostDecorator,
+		resultHostDecorator: b.resultHostDecorator,
+		current:             initial,
+		nextGenID:           1,
 	}, nil
 }
 
@@ -241,45 +278,6 @@ func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {
 			field, name, value, reflect.TypeFor[T]())
 	}
 	return typed, nil
-}
-
-// wrapDelegation exposes a delegation.Service found among the built
-// resources on every turn host via delegation.WithService.
-func wrapDelegation(
-	hostFactory session.HostFactory,
-	result *deploy.Result,
-) (session.HostFactory, error) {
-	var service delegation.Service
-	for _, name := range result.Names() {
-		value, _ := result.Value(name)
-		if candidate, ok := value.(delegation.Service); ok && !isNil(candidate) {
-			if !isNil(service) {
-				return nil, errdefs.Conflictf(
-					"runtime: multiple delegation services built (%s)", name)
-			}
-			service = candidate
-		}
-	}
-	if isNil(service) {
-		return hostFactory, nil
-	}
-	return delegationHostFactory{inner: hostFactory, service: service}, nil
-}
-
-type delegationHostFactory struct {
-	inner   session.HostFactory
-	service delegation.Service
-}
-
-func (f delegationHostFactory) NewHost(
-	ctx context.Context,
-	request session.HostRequest,
-) (agent.Host, error) {
-	host, err := f.inner.NewHost(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	return delegation.WithService(host, f.service), nil
 }
 
 func isNilContext(ctx context.Context) bool {

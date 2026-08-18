@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/delegation"
+	"github.com/GizClaw/flowcraft/core/delegation/hostwrap"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -52,6 +53,14 @@ func TestBuilderIsSingleUse(t *testing.T) {
 	}); !errors.Is(err, ErrBuilderUsed) {
 		t.Fatalf("WithHostFactory after Build error = %v, want ErrBuilderUsed", err)
 	}
+	if err := builder.WithResultHostFactory(func(
+		*deploy.Result,
+		session.HostFactory,
+	) (session.HostFactory, error) {
+		return nil, nil
+	}); !errors.Is(err, ErrBuilderUsed) {
+		t.Fatalf("WithResultHostFactory after Build error = %v, want ErrBuilderUsed", err)
+	}
 }
 
 func TestWithHostFactoryValidation(t *testing.T) {
@@ -65,6 +74,75 @@ func TestWithHostFactoryValidation(t *testing.T) {
 	}
 	if err := builder.WithHostFactory(decorator); !errdefs.IsValidation(err) {
 		t.Fatalf("duplicate decorator error = %v, want validation", err)
+	}
+}
+
+func TestWithResultHostFactoryValidation(t *testing.T) {
+	builder := NewBuilder(resource.NewRegistry())
+	if err := builder.WithResultHostFactory(nil); !errdefs.IsValidation(err) {
+		t.Fatalf("nil decorator error = %v, want validation", err)
+	}
+	decorator := func(
+		*deploy.Result,
+		session.HostFactory,
+	) (session.HostFactory, error) {
+		return nil, nil
+	}
+	if err := builder.WithResultHostFactory(decorator); err != nil {
+		t.Fatalf("first decorator: %v", err)
+	}
+	if err := builder.WithResultHostFactory(decorator); !errdefs.IsValidation(err) {
+		t.Fatalf("duplicate decorator error = %v, want validation", err)
+	}
+}
+
+func TestBuildAppliesResultHostFactoryDecorator(t *testing.T) {
+	var received *deploy.Result
+	var applied bool
+	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
+	builder := NewBuilder(reg)
+	if err := builder.WithResultHostFactory(func(
+		result *deploy.Result,
+		factory session.HostFactory,
+	) (session.HostFactory, error) {
+		received = result
+		applied = true
+		return factory, nil
+	}); err != nil {
+		t.Fatalf("WithResultHostFactory: %v", err)
+	}
+
+	app, err := builder.Build(context.Background(), baseRuntimeDoc(t))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = app.Close() }()
+
+	if !applied || received == nil {
+		t.Fatalf("result host factory decorator not applied (applied=%v, result=%v)", applied, received)
+	}
+	if len(received.Names()) == 0 {
+		t.Fatalf("decorator received empty deployment")
+	}
+	if result := runTurn(t, app.Sessions(), "bot", "conv"); result.Status != agent.StatusCompleted {
+		t.Fatalf("result status = %q", result.Status)
+	}
+}
+
+func TestBuildAbortsOnResultHostFactoryError(t *testing.T) {
+	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
+	builder := NewBuilder(reg)
+	if err := builder.WithResultHostFactory(func(
+		*deploy.Result,
+		session.HostFactory,
+	) (session.HostFactory, error) {
+		return nil, errdefs.Validationf("boom")
+	}); err != nil {
+		t.Fatalf("WithResultHostFactory: %v", err)
+	}
+	_, err := builder.Build(context.Background(), baseRuntimeDoc(t))
+	if err == nil || !errdefs.IsValidation(err) || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("Build error = %v, want wrapped validation error containing boom", err)
 	}
 }
 
@@ -319,7 +397,7 @@ func (s *fakeDelegationService) Get(context.Context, string) (delegation.Respons
 	return delegation.Response{}, nil
 }
 
-func TestBuildWrapsDelegationService(t *testing.T) {
+func TestBuildWrapsDelegationServiceWhenRequested(t *testing.T) {
 	service := &fakeDelegationService{id: "local"}
 	var got delegation.Service
 	engine := agent.EngineFunc(func(
@@ -345,7 +423,16 @@ func TestBuildWrapsDelegationService(t *testing.T) {
 		Kind: delegation.ServiceKind, Impl: "local",
 	}
 
-	app, err := NewBuilder(reg).Build(context.Background(), doc)
+	builder := NewBuilder(reg)
+	if err := builder.WithResultHostFactory(func(
+		result *deploy.Result,
+		factory session.HostFactory,
+	) (session.HostFactory, error) {
+		return hostwrap.Wrap(factory, result)
+	}); err != nil {
+		t.Fatalf("WithResultHostFactory: %v", err)
+	}
+	app, err := builder.Build(context.Background(), doc)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -356,6 +443,40 @@ func TestBuildWrapsDelegationService(t *testing.T) {
 	}
 	if got != service {
 		t.Fatalf("engine received service %p, want %p", got, service)
+	}
+}
+
+func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
+	service := &fakeDelegationService{id: "local"}
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		if _, ok := delegation.ServiceFromHost(host); ok {
+			return board, errors.New("delegation service unexpectedly exposed on host")
+		}
+		return board, nil
+	})
+	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
+	reg.MustRegister(testResourceFactory{
+		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "local"},
+		value: service,
+	})
+	doc := baseRuntimeDoc(t)
+	doc.Resources["delegation"] = resource.Resource{
+		Kind: delegation.ServiceKind, Impl: "local",
+	}
+
+	app, err := NewBuilder(reg).Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = app.Close() }()
+
+	if result := runTurn(t, app.Sessions(), "bot", "conv"); result.Status != agent.StatusCompleted {
+		t.Fatalf("result status = %q", result.Status)
 	}
 }
 
@@ -380,29 +501,6 @@ func TestBuildBindsDelegationDirectory(t *testing.T) {
 	}
 	if len(targets) != 1 || targets[0].ID != "bot" {
 		t.Fatalf("bound targets = %+v, want [bot]", targets)
-	}
-}
-
-func TestBuildRejectsMultipleDelegationServices(t *testing.T) {
-	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(testResourceFactory{
-		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "a"},
-		value: &fakeDelegationService{id: "a"},
-	})
-	reg.MustRegister(testResourceFactory{
-		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "b"},
-		value: &fakeDelegationService{id: "b"},
-	})
-	doc := baseRuntimeDoc(t)
-	doc.Resources["delegation_a"] = resource.Resource{
-		Kind: delegation.ServiceKind, Impl: "a",
-	}
-	doc.Resources["delegation_b"] = resource.Resource{
-		Kind: delegation.ServiceKind, Impl: "b",
-	}
-	if _, err := NewBuilder(reg).Build(context.Background(), doc); err == nil ||
-		!strings.Contains(err.Error(), "multiple delegation services") {
-		t.Fatalf("Build error = %v, want multiple delegation services conflict", err)
 	}
 }
 

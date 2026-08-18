@@ -35,6 +35,10 @@ type Runtime struct {
 	// rebuild a host factory for a new deployment generation with the
 	// exact same decoration policy.
 	hostDecorator HostFactoryDecorator
+	// resultHostDecorator is retained from the Builder so a later Reload
+	// re-applies the deployment-aware decoration to the new generation's
+	// host factory.
+	resultHostDecorator ResultHostFactoryDecorator
 	// current is the active deployment generation. Reload replaces it
 	// atomically; Close retires and closes it.
 	current *Generation
