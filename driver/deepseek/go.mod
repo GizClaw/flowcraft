@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/deepseek
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.12
+	github.com/GizClaw/flowcraft/core v0.1.16
 	github.com/openai/openai-go/v3 v3.50.0
 )
 
