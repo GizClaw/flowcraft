@@ -2,6 +2,8 @@ package resource
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -49,5 +51,66 @@ func TestRegistrySpecs(t *testing.T) {
 	r.MustRegister(fakeFactory{spec: Spec{Kind: "tool.Assembly", Impl: "yaml"}})
 	if got := len(r.Specs()); got != 2 {
 		t.Fatalf("Specs() = %d entries, want 2", got)
+	}
+}
+
+// TestRegistryConcurrentAccess runs concurrent Register / Lookup / Specs
+// to prove the registry is safe under -race. Registration is host-owned,
+// so distinct (kind, impl) keys are used to keep the writes legal.
+func TestRegistryConcurrentAccess(t *testing.T) {
+	r := NewRegistry()
+	const writers = 8
+	const perWriter = 64
+	const readers = 8
+
+	// Seed a base set every reader keeps looking up while writers add
+	// new keys concurrently. New keys are asserted after the writers
+	// finish; lookups of not-yet-registered keys are expected misses.
+	for i := 0; i < 16; i++ {
+		r.MustRegister(fakeFactory{
+			spec: Spec{Kind: Kind(fmt.Sprintf("base.%d", i)), Impl: "impl"},
+		})
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(writers + readers)
+	for w := 0; w < writers; w++ {
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWriter; i++ {
+				kind := Kind(fmt.Sprintf("kind.%d.%d", w, i))
+				if err := r.Register(fakeFactory{
+					spec: Spec{Kind: kind, Impl: "impl"},
+				}); err != nil {
+					t.Errorf("Register(%s): %v", kind, err)
+					return
+				}
+			}
+		}(w)
+	}
+	for rIdx := 0; rIdx < readers; rIdx++ {
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < perWriter*2; i++ {
+				base := Kind(fmt.Sprintf("base.%d", i%16))
+				if _, ok := r.Lookup(base, "impl"); !ok {
+					t.Errorf("Lookup(%s) = not found", base)
+					return
+				}
+				_ = r.Specs()
+			}
+		}(rIdx)
+	}
+	wg.Wait()
+	if got := len(r.Specs()); got != writers*perWriter+16 {
+		t.Fatalf("Specs() = %d entries, want %d", got, writers*perWriter+16)
+	}
+	for w := 0; w < writers; w++ {
+		for i := 0; i < perWriter; i++ {
+			kind := Kind(fmt.Sprintf("kind.%d.%d", w, i))
+			if _, ok := r.Lookup(kind, "impl"); !ok {
+				t.Fatalf("Lookup(%s) = not found after writers finished", kind)
+			}
+		}
 	}
 }

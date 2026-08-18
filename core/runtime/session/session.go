@@ -29,16 +29,12 @@ const (
 // deployment and event-routing dependencies from the runtime.
 type Session struct {
 	key                 Key
-	instance            *agent.Agent
-	hostFactory         HostFactory
+	manager             *Manager
 	router              *event.Router
 	sinkBuffer          int
 	speculativeEvents   int
 	speculativeBytes    int
 	deliveryConcurrency int
-	checkpoints         agent.CheckpointStore
-	resume              bool
-	catalogProvider     CatalogProvider
 
 	startMu        sync.Mutex
 	mu             sync.Mutex
@@ -48,6 +44,7 @@ type Session struct {
 	active         *Turn
 	closing        bool
 	catalog        sdktool.Session
+	catalogEpoch   uint64
 	activityNotify func(*Session)
 	observer       SessionObserver
 	closeOnce      sync.Once
@@ -56,31 +53,23 @@ type Session struct {
 
 func newSession(
 	key Key,
-	instance *agent.Agent,
-	hostFactory HostFactory,
+	manager *Manager,
 	router *event.Router,
 	sinkBuffer int,
 	speculativeEvents int,
 	speculativeBytes int,
 	deliveryConcurrency int,
-	checkpoints agent.CheckpointStore,
-	resume bool,
-	catalogProvider CatalogProvider,
 	activityNotify func(*Session),
 	observer SessionObserver,
 ) *Session {
 	return &Session{
 		key:                 key,
-		instance:            instance,
-		hostFactory:         hostFactory,
+		manager:             manager,
 		router:              router,
 		sinkBuffer:          sinkBuffer,
 		speculativeEvents:   speculativeEvents,
 		speculativeBytes:    speculativeBytes,
 		deliveryConcurrency: deliveryConcurrency,
-		checkpoints:         checkpoints,
-		resume:              resume,
-		catalogProvider:     catalogProvider,
 		activityNotify:      activityNotify,
 		observer:            observer,
 	}
@@ -102,6 +91,19 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 
+	// Pin this turn to one epoch: every dependency the turn uses comes
+	// from this snapshot, so a concurrent generation swap cannot tear it.
+	deps, epochRelease, err := s.manager.beginEpoch()
+	if err != nil {
+		return nil, err
+	}
+	epochHeld := true
+	defer func() {
+		if epochHeld {
+			epochRelease()
+		}
+	}()
+
 	release, err := s.interruptActive(ctx)
 	if err != nil {
 		return nil, err
@@ -117,7 +119,7 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	if err != nil {
 		return nil, err
 	}
-	state, err := s.loadSessionState(ctx)
+	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
 	if err != nil {
 		return nil, err
 	}
@@ -127,10 +129,12 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	}
 	request.ContextID = s.key.ContextID
 	request.RunID = runID
-	turn, err := s.startTurnLocked(ctx, request, runID, nil, nil, snapshot, sinks)
+	turn, err := s.startTurnLocked(
+		ctx, request, runID, deps, epochRelease, nil, nil, snapshot, sinks)
 	if err != nil {
 		return nil, err
 	}
+	epochHeld = false
 	activityHeld = false
 	return turn, nil
 }
@@ -155,6 +159,17 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
 
+	deps, epochRelease, err := s.manager.beginEpoch()
+	if err != nil {
+		return nil, err
+	}
+	epochHeld := true
+	defer func() {
+		if epochHeld {
+			epochRelease()
+		}
+	}()
+
 	release, err := s.interruptActive(ctx)
 	if err != nil {
 		return nil, err
@@ -166,7 +181,7 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 		}
 	}()
 
-	state, err := s.loadSessionState(ctx)
+	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +190,18 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 			"runtime session: no interrupted run to resume")
 	}
 	runID := state.ResumableRunID
-	resumeFrom, resumeCtx, err := s.loadResumableCheckpoint(ctx, runID)
+	instance, ok := deps.Resolver.Instance(s.key.AgentID)
+	if !ok {
+		return nil, errdefs.NotFoundf(
+			"runtime session: agent %q is not deployed", s.key.AgentID)
+	}
+	if instance == nil {
+		return nil, errdefs.Internalf(
+			"runtime session: resolver returned a nil instance for agent %q",
+			s.key.AgentID)
+	}
+	resumeFrom, resumeCtx, err := s.loadResumableCheckpoint(
+		ctx, runID, instance, deps.Checkpoints, deps.Resume)
 	if err != nil {
 		return nil, err
 	}
@@ -183,7 +209,7 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 		// The parked marker points at a run whose checkpoint is gone
 		// (store eviction, manual cleanup); drop the marker so the
 		// session does not stay stuck in a resumable state.
-		s.clearParkedRun(state)
+		s.clearParkedRun(state, deps.Checkpoints, deps.Resume)
 		return nil, errdefs.NotFoundf(
 			"runtime session: checkpoint for parked run %s is gone", runID)
 	}
@@ -194,10 +220,12 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 	request := *state.Request
 	request.ContextID = s.key.ContextID
 	request.RunID = runID
-	turn, err := s.startTurnLocked(ctx, request, runID, resumeFrom, resumeCtx, nil, sinks)
+	turn, err := s.startTurnLocked(
+		ctx, request, runID, deps, epochRelease, resumeFrom, resumeCtx, nil, sinks)
 	if err != nil {
 		return nil, err
 	}
+	epochHeld = false
 	activityHeld = false
 	return turn, nil
 }
@@ -205,14 +233,18 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 // Resumable reports whether a previous turn ended without committing
 // and can be replayed via Resume. It returns the parked run id.
 func (s *Session) Resumable(ctx context.Context) (string, bool, error) {
-	if s == nil || !s.resume || s.checkpoints == nil {
+	if s == nil {
+		return "", false, nil
+	}
+	deps := s.manager.currentDeps()
+	if !deps.Resume || deps.Checkpoints == nil {
 		return "", false, nil
 	}
 	if ctx == nil {
 		return "", false, errdefs.Validationf(
 			"runtime session: Resumable context is required")
 	}
-	state, err := s.loadSessionState(ctx)
+	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
 	if err != nil {
 		return "", false, err
 	}
@@ -280,18 +312,38 @@ func (s *Session) startTurnLocked(
 	ctx context.Context,
 	request agent.Request,
 	runID string,
+	deps Deps,
+	epochRelease func(),
 	resumeFrom *agent.Checkpoint,
 	resumeCtx *agent.ResumeContext,
 	snapshot *agent.BoardSnapshot,
 	sinks []SinkSpec,
 ) (*Turn, error) {
 	turn := newTurn(s, runID, ctx)
+	turn.release = epochRelease
+	turn.checkpoints = deps.Checkpoints
+	turn.resume = deps.Resume
 	turn.resumeFrom = resumeFrom
 	turn.resumeCtx = resumeCtx
 	turn.snapshot = snapshot
-	catalog, err := s.catalogFor(ctx)
+	instance, ok := deps.Resolver.Instance(s.key.AgentID)
+	if !ok {
+		turn.cancel()
+		epochRelease()
+		return nil, errdefs.NotFoundf(
+			"runtime session: agent %q is not deployed", s.key.AgentID)
+	}
+	if instance == nil {
+		turn.cancel()
+		epochRelease()
+		return nil, errdefs.Internalf(
+			"runtime session: resolver returned a nil instance for agent %q",
+			s.key.AgentID)
+	}
+	catalog, err := s.catalogFor(ctx, deps, instance)
 	if err != nil {
 		turn.cancel()
+		epochRelease()
 		return nil, err
 	}
 	if catalog != nil {
@@ -305,15 +357,18 @@ func (s *Session) startTurnLocked(
 	}
 	if err := hostRequest.Validate(); err != nil {
 		turn.cancel()
+		epochRelease()
 		return nil, err
 	}
-	host, err := s.hostFactory.NewHost(turn.runCtx, hostRequest)
+	host, err := deps.HostFactory.NewHost(turn.runCtx, hostRequest)
 	if err != nil {
 		turn.cancel()
+		epochRelease()
 		return nil, err
 	}
 	if isNil(host) {
 		turn.cancel()
+		epochRelease()
 		return nil, errdefs.Internalf("runtime session: HostFactory returned nil Host")
 	}
 	turn.host = host
@@ -366,6 +421,7 @@ func (s *Session) startTurnLocked(
 			attachment.detach(attachErr)
 		}
 		turn.cancel()
+		epochRelease()
 		return nil, attachErr
 	}
 	turn.coordinator = coordinator
@@ -380,6 +436,7 @@ func (s *Session) startTurnLocked(
 			attachment.detach(ErrSessionClosed)
 		}
 		turn.cancel()
+		epochRelease()
 		return nil, ErrSessionClosed
 	}
 	s.active = turn
@@ -389,7 +446,7 @@ func (s *Session) startTurnLocked(
 	s.mu.Unlock()
 
 	s.notifySessionStarted(turn)
-	go turn.execute(s.instance, request)
+	go turn.execute(instance, request)
 	return turn, nil
 }
 
@@ -431,11 +488,15 @@ func freshRunID() (string, error) {
 
 // loadSessionState reads the session's durable state, or (nil, nil)
 // when resume is disabled, no store is wired, or no record exists yet.
-func (s *Session) loadSessionState(ctx context.Context) (*sessionState, error) {
-	if s == nil || !s.resume || s.checkpoints == nil {
+func (s *Session) loadSessionState(
+	ctx context.Context,
+	checkpoints agent.CheckpointStore,
+	resume bool,
+) (*sessionState, error) {
+	if s == nil || !resume || checkpoints == nil {
 		return nil, nil
 	}
-	cp, err := s.checkpoints.Load(ctx, sessionStateID(s.key))
+	cp, err := checkpoints.Load(ctx, sessionStateID(s.key))
 	if err != nil {
 		return nil, fmt.Errorf("runtime session: load session state: %w", err)
 	}
@@ -453,8 +514,12 @@ func (s *Session) loadSessionState(ctx context.Context) (*sessionState, error) {
 
 // saveSessionState persists the session state record. Best-effort: a
 // store failure leaves the previous record in place.
-func (s *Session) saveSessionState(state *sessionState) {
-	if s == nil || !s.resume || s.checkpoints == nil || state == nil {
+func (s *Session) saveSessionState(
+	state *sessionState,
+	checkpoints agent.CheckpointStore,
+	resume bool,
+) {
+	if s == nil || !resume || checkpoints == nil || state == nil {
 		return
 	}
 	payload, err := json.Marshal(state)
@@ -474,18 +539,22 @@ func (s *Session) saveSessionState(state *sessionState) {
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
-	_ = s.checkpoints.Save(ctx, cp)
+	_ = checkpoints.Save(ctx, cp)
 }
 
 // clearParkedRun drops the resumable marker (e.g. the parked run's
 // checkpoint no longer exists) while preserving the committed board.
-func (s *Session) clearParkedRun(state *sessionState) {
+func (s *Session) clearParkedRun(
+	state *sessionState,
+	checkpoints agent.CheckpointStore,
+	resume bool,
+) {
 	if state == nil {
 		return
 	}
 	state.ResumableRunID = ""
 	state.Request = nil
-	s.saveSessionState(state)
+	s.saveSessionState(state, checkpoints, resume)
 }
 
 // afterTurn updates session state after a turn reaches its terminal
@@ -497,13 +566,14 @@ func (s *Session) clearParkedRun(state *sessionState) {
 //     checkpoint and park their run id + original request so Resume
 //     can replay them. The committed board is left untouched.
 func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
-	if s == nil || !s.resume || s.checkpoints == nil || turn == nil {
+	if s == nil || turn == nil ||
+		!turn.resume || turn.checkpoints == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
-	prev, err := s.loadSessionState(ctx)
+	prev, err := s.loadSessionState(ctx, turn.checkpoints, turn.resume)
 	if err != nil {
 		prev = nil
 	}
@@ -512,7 +582,7 @@ func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
 		state.Board = prev.Board
 	}
 	if result != nil && result.Committed {
-		s.deleteCheckpoint(turn.runID)
+		s.deleteCheckpoint(turn.runID, turn.checkpoints)
 		if result.LastBoard != nil {
 			state.Board = result.LastBoard.Snapshot()
 		}
@@ -523,17 +593,20 @@ func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
 		request := turn.request
 		state.Request = &request
 	}
-	s.saveSessionState(state)
+	s.saveSessionState(state, turn.checkpoints, turn.resume)
 }
 
 // deleteCheckpoint removes a committed run's checkpoint. Best-effort:
 // a failed delete leaves an orphaned checkpoint under a run id that no
 // session state references, which is harmless.
-func (s *Session) deleteCheckpoint(runID string) {
-	if s == nil || !s.resume || s.checkpoints == nil {
+func (s *Session) deleteCheckpoint(
+	runID string,
+	checkpoints agent.CheckpointStore,
+) {
+	if checkpoints == nil {
 		return
 	}
-	deleter, ok := s.checkpoints.(agent.CheckpointDeleter)
+	deleter, ok := checkpoints.(agent.CheckpointDeleter)
 	if !ok {
 		return
 	}
@@ -549,8 +622,14 @@ func (s *Session) deleteCheckpoint(runID string) {
 func (s *Session) loadResumableCheckpoint(
 	ctx context.Context,
 	runID string,
+	instance *agent.Agent,
+	checkpoints agent.CheckpointStore,
+	resume bool,
 ) (*agent.Checkpoint, *agent.ResumeContext, error) {
-	cp, err := s.checkpoints.Load(ctx, runID)
+	if !resume || checkpoints == nil {
+		return nil, nil, nil
+	}
+	cp, err := checkpoints.Load(ctx, runID)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
 			"runtime session: load checkpoint %s: %w", runID, err)
@@ -563,12 +642,12 @@ func (s *Session) loadResumableCheckpoint(
 			"runtime session: checkpoint exec id %q does not match parked run %q",
 			cp.ExecID, runID)
 	}
-	if !agent.IsResumable(s.instance.Engine) {
+	if !agent.IsResumable(instance.Engine) {
 		return nil, nil, errdefs.NotAvailablef(
 			"runtime session: engine %T does not support resume but checkpoint %s exists",
-			s.instance.Engine, runID)
+			instance.Engine, runID)
 	}
-	if resumer, ok := agent.AsResumer(s.instance.Engine); ok {
+	if resumer, ok := agent.AsResumer(instance.Engine); ok {
 		if err := resumer.CanResume(*cp); err != nil {
 			return nil, nil, fmt.Errorf(
 				"runtime session: checkpoint %s is not resumable: %w", runID, err)
@@ -682,21 +761,29 @@ func (s *Session) close() error {
 	return s.closeErr
 }
 
-// catalogFor returns the session catalog, creating it once via the
-// provider on the first Start. Start is serialized by startMu, so the
-// creation path is race-free; the defensive branch handles a provider
-// shared with code paths outside this Session.
-func (s *Session) catalogFor(ctx context.Context) (sdktool.Session, error) {
+// catalogFor returns the session catalog for one epoch, creating it via
+// the epoch's provider on first use. A catalog cached for a previous
+// epoch is not reused: after a generation swap the session must build
+// its injection view against the new epoch's assembly. Start is
+// serialized by startMu, so the creation path is race-free; the
+// defensive branch handles a provider shared with code paths outside
+// this Session.
+func (s *Session) catalogFor(
+	ctx context.Context,
+	deps Deps,
+	instance *agent.Agent,
+) (sdktool.Session, error) {
 	s.mu.Lock()
 	catalog := s.catalog
+	epoch := s.catalogEpoch
 	s.mu.Unlock()
-	if catalog != nil {
+	if catalog != nil && epoch == deps.Epoch {
 		return catalog, nil
 	}
-	if s.catalogProvider == nil {
+	if deps.CatalogProvider == nil {
 		return nil, nil
 	}
-	catalog, err := s.catalogProvider.NewCatalog(ctx, s.instance)
+	catalog, err := deps.CatalogProvider.NewCatalog(ctx, instance)
 	if err != nil {
 		return nil, err
 	}
@@ -705,8 +792,9 @@ func (s *Session) catalogFor(ctx context.Context) (sdktool.Session, error) {
 			"runtime session: CatalogProvider returned a nil catalog")
 	}
 	s.mu.Lock()
-	if s.catalog == nil {
+	if s.catalog == nil || s.catalogEpoch != deps.Epoch {
 		s.catalog = catalog
+		s.catalogEpoch = deps.Epoch
 	}
 	s.mu.Unlock()
 	return catalog, nil

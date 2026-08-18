@@ -332,7 +332,7 @@ func parkRun(
 		ResumableRunID: runID,
 		Request:        req,
 		Board:          agent.NewBoard().Snapshot(),
-	})
+	}, store, true)
 }
 
 type resumeProbeEngine struct {

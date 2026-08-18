@@ -31,6 +31,15 @@ type Runtime struct {
 	resources *resource.Registry
 	loader    *resource.Loader
 	bus       event.Bus
+	// hostDecorator is retained from the Builder so a later Reload can
+	// rebuild a host factory for a new deployment generation with the
+	// exact same decoration policy.
+	hostDecorator HostFactoryDecorator
+	// current is the active deployment generation. Reload replaces it
+	// atomically; Close retires and closes it.
+	current *Generation
+	// nextGenID allocates generation ids.
+	nextGenID uint64
 
 	// lifecycleMu serializes RegisterAgent / UnregisterAgent / Close so
 	// a removal can never sweep away a concurrent registration.
@@ -113,7 +122,10 @@ func (r *Runtime) Close() error {
 	r.closed = true
 	r.lifecycleMu.Unlock()
 	r.closeOnce.Do(func() {
-		r.closeErr = closeOwned(r.manager, r.router, r.result, r.registry)
+		if r.current != nil {
+			r.current.freeze(dynamicInstances(r.registry.Entries()))
+		}
+		r.closeErr = closeOwned(r.manager, r.router, r.current)
 	})
 	return r.closeErr
 }
@@ -121,8 +133,7 @@ func (r *Runtime) Close() error {
 func closeOwned(
 	manager *session.Manager,
 	router *event.Router,
-	result *deploy.Result,
-	registry *AgentRegistry,
+	current *Generation,
 ) error {
 	var errs []error
 	if manager != nil {
@@ -135,14 +146,9 @@ func closeOwned(
 			errs = append(errs, fmt.Errorf("runtime close stream router: %w", err))
 		}
 	}
-	if result != nil {
-		if err := result.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("runtime close deployment: %w", err))
-		}
-	}
-	if registry != nil {
-		if err := registry.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("runtime close agent registry: %w", err))
+	if current != nil {
+		if err := current.close(); err != nil {
+			errs = append(errs, fmt.Errorf("runtime close generation: %w", err))
 		}
 	}
 	return errors.Join(errs...)
