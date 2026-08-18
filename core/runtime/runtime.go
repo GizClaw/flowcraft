@@ -35,6 +35,10 @@ type Runtime struct {
 	// rebuild a host factory for a new deployment generation with the
 	// exact same decoration policy.
 	hostDecorator HostFactoryDecorator
+	// resultHostDecorator is retained from the Builder so a later Reload
+	// re-applies the deployment-aware decoration to the new generation's
+	// host factory.
+	resultHostDecorator ResultHostFactoryDecorator
 	// current is the active deployment generation. Reload replaces it
 	// atomically; Close retires and closes it.
 	current *Generation
@@ -109,6 +113,20 @@ func (r *Runtime) AgentNames() []string {
 		return nil
 	}
 	return r.registry.AgentNames()
+}
+
+// Resource borrows the current generation's built deployment resource
+// value by deployment name. Like Agent, it resolves through the live
+// view: after a Reload it returns the new generation's value, and the
+// retired generation's values are closed with it. Callers borrow the
+// value and must not close it. For values the application must own the
+// lifecycle of (or keep across reloads), construct them outside the
+// runtime and inject them through the resource registry instead.
+func (r *Runtime) Resource(name string) (any, bool) {
+	if r == nil || r.current == nil || r.current.result == nil {
+		return nil, false
+	}
+	return r.current.result.Value(name)
 }
 
 // Close stops new session work, waits for active turns, and releases

@@ -50,6 +50,27 @@ default backpressure (`DropNewest`); pass
 "Dynamic agent registry" section below for the `runtime.agent.*`
 lifecycle events published on dynamic registration/removal.
 
+## Accessing deployment resources
+
+`Runtime.Resource` borrows a built resource value by its deployment
+name from the current generation, mirroring `Agent` for the resource
+view:
+
+```go
+db, ok := app.Resource("db")
+if !ok {
+    return errors.New("deployment has no db resource")
+}
+```
+
+Values are borrowed: the Runtime owns the deployment and closes
+resources when it closes, and a `Reload` retires the previous
+generation's values. Use this for access to deployment-built services
+such as a database pool. If the application must own a value's
+lifecycle or keep it across reloads, construct it outside the runtime
+and inject it through a resource factory registered in the registry
+instead.
+
 ## Runtime config
 
 ```yaml
@@ -162,5 +183,20 @@ level primitives behind removal and re-registration.
 
 `runtime.Builder.WithHostFactory` wraps the base host factory. The decorator
 must delegate any method it does not override.
+
+`runtime.Builder.WithResultHostFactory` wraps the factory a second time with
+access to the fully assembled deployment, after `WithHostFactory` has run.
+This is the seam for deployment-built, run-scoped services: applications opt
+in and decide which services to expose on every turn host, and the runtime
+itself stays neutral to them. For example, exposing a delegation service:
+
+```go
+builder.WithResultHostFactory(func(result *deploy.Result, factory session.HostFactory) (session.HostFactory, error) {
+    return hostwrap.Wrap(factory, result) // delegation.Service onto every turn host
+})
+```
+
+The decorator is retained across reloads and re-applied to each new
+generation's host factory with that generation's deployment.
 
 See [deploy.md](deploy.md) and [resource.md](resource.md).

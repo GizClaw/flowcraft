@@ -278,6 +278,153 @@ func TestRuntimeReloadSwapsGenerationWithInFlightTurn(t *testing.T) {
 	}
 }
 
+const markerEngineKind = "marker-engine"
+
+type generationMarker interface {
+	GenerationMarker() int
+}
+
+// markerHost tags a host with the generation whose result-aware decorator
+// produced it, without replacing any underlying capability.
+type markerHost struct {
+	agent.Host
+	gen int
+}
+
+func (h markerHost) GenerationMarker() int  { return h.gen }
+func (h markerHost) UnwrapHost() agent.Host { return h.Host }
+
+type markerEngineFactory struct {
+	markers chan int
+}
+
+func (f markerEngineFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: markerEngineKind}
+}
+
+func (f markerEngineFactory) New(context.Context, resource.Input) (any, error) {
+	return agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		marker := 0
+		if m, ok := host.(generationMarker); ok {
+			marker = m.GenerationMarker()
+		}
+		select {
+		case f.markers <- marker:
+		default:
+		}
+		board.AppendChannelMessage(
+			agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "ok"))
+		return board, nil
+	}), nil
+}
+
+func TestRuntimeReloadReappliesResultHostDecorator(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	engine := &markerEngineFactory{markers: make(chan int, 8)}
+	reg := resource.NewRegistry()
+	reg.MustRegister(engine)
+	reg.MustRegister(event.NewFactory())
+
+	builder := NewBuilder(reg)
+	var calls atomic.Int64
+	var mu sync.Mutex
+	var results []*deploy.Result
+	if err := builder.WithResultHostFactory(func(
+		result *deploy.Result,
+		factory session.HostFactory,
+	) (session.HostFactory, error) {
+		gen := int(calls.Add(1))
+		mu.Lock()
+		results = append(results, result)
+		mu.Unlock()
+		return session.HostFactoryFunc(func(
+			ctx context.Context,
+			request session.HostRequest,
+		) (agent.Host, error) {
+			host, err := factory.NewHost(ctx, request)
+			if err != nil {
+				return nil, err
+			}
+			return markerHost{Host: host, gen: gen}, nil
+		}), nil
+	}); err != nil {
+		t.Fatalf("WithResultHostFactory: %v", err)
+	}
+
+	doc1 := reloadDoc(t, `  bot:
+    card: {name: Bot}
+    engine: {kind: marker-engine}
+`, "")
+	app, err := builder.Build(ctx, doc1)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 1); marker != 1 {
+		t.Fatalf("generation 1 turn marker = %d, want 1", marker)
+	}
+
+	doc2 := reloadDoc(t, `  bot:
+    card: {name: Bot v2}
+    engine: {kind: marker-engine}
+`, "")
+	if _, err := app.Reload(ctx, doc2); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	if marker := runMarkerTurn(t, ctx, app, engine.markers, 2); marker != 2 {
+		t.Fatalf("generation 2 turn marker = %d, want 2", marker)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(results) != 2 {
+		t.Fatalf("decorator calls = %d, want 2 (one per generation)", len(results))
+	}
+	if results[0] == results[1] {
+		t.Fatalf("decorator received the same result for both generations")
+	}
+}
+
+func runMarkerTurn(
+	t *testing.T,
+	ctx context.Context,
+	app *Runtime,
+	markers <-chan int,
+	wantCall int,
+) int {
+	t.Helper()
+	lease, err := app.Sessions().Open(ctx, session.Key{
+		AgentID: "bot", ContextID: "ctx",
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { _ = lease.Close() })
+	turn, err := lease.Session().Start(ctx, agent.Request{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if _, err := turn.Wait(ctx); err != nil {
+		t.Fatalf("turn %d Wait: %v", wantCall, err)
+	}
+	select {
+	case marker := <-markers:
+		return marker
+	case <-ctx.Done():
+		t.Fatalf("marker %d not observed: %v", wantCall, ctx.Err())
+		return 0
+	}
+}
+
 func TestRuntimeReloadAllowsBusConfigChange(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

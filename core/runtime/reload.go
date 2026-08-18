@@ -183,9 +183,16 @@ func (r *Runtime) Reload(
 				"runtime reload host factory decorator returned nil"))
 		}
 	}
-	hostFactory, err = wrapDelegation(hostFactory, newResult)
-	if err != nil {
-		return nil, abort(err)
+	if r.resultHostDecorator != nil {
+		hostFactory, err = r.resultHostDecorator(newResult, hostFactory)
+		if err != nil {
+			return nil, abort(fmt.Errorf(
+				"runtime reload decorate host factory with deployment: %w", err))
+		}
+		if isNil(hostFactory) {
+			return nil, abort(errdefs.Internalf(
+				"runtime reload result host factory decorator returned nil"))
+		}
 	}
 
 	// Resolve the new generation's dynamic tool catalog.
