@@ -62,7 +62,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		option.WithBaseURL(baseURL),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, option.WithMaxRetries(sdkMaxRetries(*spec.HTTPRetries)))
+		options = append(options,
+			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
 	}
 	return &clients{api: openaigo.NewClient(options...)}
 }

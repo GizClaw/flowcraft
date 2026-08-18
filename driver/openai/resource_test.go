@@ -35,6 +35,26 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	}
 }
 
+func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
+	t.Setenv("OPENAI_TEST_HTTP_RETRIES", "3")
+	settings, err := resource.DecodeTyped[ResourceSettings](
+		json.RawMessage(`{
+			"id": "openai",
+			"spec": {"http_retries": "${env:OPENAI_TEST_HTTP_RETRIES}"}
+		}`),
+		resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("DecodeTyped: %v", err)
+	}
+	spec, err := decodeSpec(settings.Spec)
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	if spec.HTTPRetries == nil || int(*spec.HTTPRetries) != 3 {
+		t.Fatalf("HTTPRetries = %v, want 3", spec.HTTPRetries)
+	}
+}
+
 func TestResourceFactoryRejectsMissingIDAndSecret(t *testing.T) {
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{"profiles":[]}`),

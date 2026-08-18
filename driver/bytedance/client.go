@@ -128,7 +128,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		utils.WithResponseHeaderTimeout(defaultResponseHeaderTimeout),
 	}
 	if spec.HTTPRetries != nil {
-		httpOptions = append(httpOptions, utils.WithRetryAttempts(*spec.HTTPRetries))
+		httpOptions = append(httpOptions,
+			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	if spec.BaseURL != "" {
 		options = append(options, arkruntime.WithBaseUrl(spec.BaseURL))

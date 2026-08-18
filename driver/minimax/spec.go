@@ -26,9 +26,9 @@ type Spec struct {
 	// Zero disables transport retries so the route Router owns the full
 	// retry budget; nil keeps the httpkit default. The Anthropic Messages
 	// surface rides the vendor SDK and is not governed by this field.
-	HTTPRetries *int `json:"http_retries,omitempty"`
+	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// VideoPollIntervalMillis paces video task polling; defaults to 5000.
-	VideoPollIntervalMillis int `json:"video_poll_interval_millis,omitempty"`
+	VideoPollIntervalMillis resource.Int `json:"video_poll_interval_millis,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
 	// catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`

@@ -13,7 +13,7 @@ type Spec struct {
 	BaseURL string `json:"base_url,omitempty"`
 	// HTTPRetries bounds wire-level retries inside one logical inference
 	// attempt, including the first.
-	HTTPRetries *int `json:"http_retries,omitempty"`
+	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Models declares custom models or overrides built-in catalog entries.
 	Models []ModelSpec `json:"models,omitempty"`
 }
