@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 const (
@@ -64,13 +65,13 @@ type configWire struct {
 }
 
 type sessionConfigWire struct {
-	IdleTimeout             *string `json:"idle_timeout,omitempty"`
-	SinkBuffer              *int    `json:"sink_buffer,omitempty"`
-	SpeculativeBufferEvents *int    `json:"speculative_buffer_events,omitempty"`
-	SpeculativeBufferBytes  *int    `json:"speculative_buffer_bytes,omitempty"`
-	DeliveryConcurrency     *int    `json:"delivery_concurrency,omitempty"`
-	MaxSessions             *int    `json:"max_sessions,omitempty"`
-	Resume                  *bool   `json:"resume,omitempty"`
+	IdleTimeout             *string        `json:"idle_timeout,omitempty"`
+	SinkBuffer              *resource.Int  `json:"sink_buffer,omitempty"`
+	SpeculativeBufferEvents *resource.Int  `json:"speculative_buffer_events,omitempty"`
+	SpeculativeBufferBytes  *resource.Int  `json:"speculative_buffer_bytes,omitempty"`
+	DeliveryConcurrency     *resource.Int  `json:"delivery_concurrency,omitempty"`
+	MaxSessions             *resource.Int  `json:"max_sessions,omitempty"`
+	Resume                  *resource.Bool `json:"resume,omitempty"`
 }
 
 type dynamicCatalogConfigWire struct {
@@ -83,7 +84,7 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 		return Config{}, errdefs.Validationf("runtime config: runtime section is required")
 	}
 	var wire configWire
-	if err := doc.Runtime.Decode(&wire); err != nil {
+	if err := resource.DecodeSettings(&wire, doc.Runtime.Bytes(), resource.ExpandEnv()); err != nil {
 		return Config{}, errdefs.Validation(fmt.Errorf("runtime config: decode: %w", err))
 	}
 	cfg := Config{
@@ -121,7 +122,7 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.sink_buffer must be between 1 and %d",
 				maxSinkBuffer)
 		}
-		cfg.Sessions.SinkBuffer = *wire.Sessions.SinkBuffer
+		cfg.Sessions.SinkBuffer = int(*wire.Sessions.SinkBuffer)
 	}
 	if wire.Sessions.SpeculativeBufferEvents != nil {
 		if *wire.Sessions.SpeculativeBufferEvents <= 0 ||
@@ -130,7 +131,7 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.speculative_buffer_events must be between 1 and %d",
 				maxSpeculativeBufferEvents)
 		}
-		cfg.Sessions.SpeculativeBufferEvents = *wire.Sessions.SpeculativeBufferEvents
+		cfg.Sessions.SpeculativeBufferEvents = int(*wire.Sessions.SpeculativeBufferEvents)
 	}
 	if wire.Sessions.SpeculativeBufferBytes != nil {
 		if *wire.Sessions.SpeculativeBufferBytes <= 0 ||
@@ -139,7 +140,7 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.speculative_buffer_bytes must be between 1 and %d",
 				maxSpeculativeBufferBytes)
 		}
-		cfg.Sessions.SpeculativeBufferBytes = *wire.Sessions.SpeculativeBufferBytes
+		cfg.Sessions.SpeculativeBufferBytes = int(*wire.Sessions.SpeculativeBufferBytes)
 	}
 	if wire.Sessions.DeliveryConcurrency != nil {
 		if *wire.Sessions.DeliveryConcurrency <= 0 ||
@@ -148,17 +149,17 @@ func DecodeConfig(doc deploy.Document) (Config, error) {
 				"runtime config: sessions.delivery_concurrency must be between 1 and %d",
 				maxDeliveryConcurrency)
 		}
-		cfg.Sessions.DeliveryConcurrency = *wire.Sessions.DeliveryConcurrency
+		cfg.Sessions.DeliveryConcurrency = int(*wire.Sessions.DeliveryConcurrency)
 	}
 	if wire.Sessions.MaxSessions != nil {
 		if *wire.Sessions.MaxSessions <= 0 {
 			return Config{}, errdefs.Validationf(
 				"runtime config: sessions.max_sessions must be positive")
 		}
-		cfg.Sessions.MaxSessions = *wire.Sessions.MaxSessions
+		cfg.Sessions.MaxSessions = int(*wire.Sessions.MaxSessions)
 	}
 	if wire.Sessions.Resume != nil {
-		cfg.Sessions.Resume = *wire.Sessions.Resume
+		cfg.Sessions.Resume = bool(*wire.Sessions.Resume)
 	}
 	if cfg.Sessions.Resume && cfg.CheckpointStore == "" {
 		return Config{}, errdefs.Validationf(

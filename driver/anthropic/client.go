@@ -50,7 +50,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		options = append(options, option.WithBaseURL(spec.BaseURL))
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, option.WithMaxRetries(sdkMaxRetries(*spec.HTTPRetries)))
+		options = append(options,
+			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
 	}
 	return &clients{api: anthropicgo.NewClient(options...)}
 }

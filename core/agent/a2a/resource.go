@@ -84,7 +84,8 @@ func (f *Factory) New(ctx context.Context, in resource.Input) (any, error) {
 	}
 	engineOpts = append(engineOpts, WithPollInterval(pollInterval))
 	if parsed.HistoryLength != nil {
-		engineOpts = append(engineOpts, WithHistoryLength(*parsed.HistoryLength))
+		engineOpts = append(engineOpts,
+			WithHistoryLength(int(*parsed.HistoryLength)))
 	}
 	if len(parsed.AcceptedOutputModes) > 0 {
 		engineOpts = append(engineOpts, WithAcceptedOutputModes(parsed.AcceptedOutputModes...))
@@ -119,7 +120,7 @@ type settings struct {
 	// PollInterval is the tasks/get polling cadence (Go duration string).
 	PollInterval string `json:"poll_interval,omitempty"`
 	// HistoryLength limits remote history carried by task responses.
-	HistoryLength *int `json:"history_length,omitempty"`
+	HistoryLength *resource.Int `json:"history_length,omitempty"`
 	// AcceptedOutputModes constrains remote output modalities.
 	AcceptedOutputModes []string `json:"accepted_output_modes,omitempty"`
 	// PreferredTransports orders transport selection (jsonrpc|grpc|http+json).

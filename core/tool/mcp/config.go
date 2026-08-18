@@ -34,8 +34,8 @@ type ServerSpec struct {
 	Headers     map[string]string `json:"headers,omitempty"`
 	HTTPTimeout *string           `json:"http_timeout,omitempty"`
 	Prefix      *string           `json:"prefix,omitempty"`
-	Resources   bool              `json:"resources,omitempty"`
-	Required    bool              `json:"required,omitempty"`
+	Resources   resource.Bool     `json:"resources,omitempty"`
+	Required    resource.Bool     `json:"required,omitempty"`
 }
 
 // Transport constants for ServerSpec.Transport.

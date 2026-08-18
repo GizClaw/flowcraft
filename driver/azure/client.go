@@ -55,7 +55,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		azure.WithAPIKey(m.apiKey),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, sdkMaxRetriesOption(*spec.HTTPRetries))
+		options = append(options,
+			sdkMaxRetriesOption(int(*spec.HTTPRetries)))
 	}
 	return &clients{api: openaigo.NewClient(options...)}
 }

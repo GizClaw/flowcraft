@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -103,6 +104,83 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecodeConfig_EnvExpansion(t *testing.T) {
+	t.Run("string field from env", func(t *testing.T) {
+		t.Setenv("FLOWCRAFT_TEST_IDLE_TIMEOUT", "45s")
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  sessions:
+    idle_timeout: ${env:FLOWCRAFT_TEST_IDLE_TIMEOUT}
+`)
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if cfg.Sessions.IdleTimeout != 45*time.Second {
+			t.Fatalf("IdleTimeout = %v, want 45s", cfg.Sessions.IdleTimeout)
+		}
+	})
+
+	t.Run("string map field from env", func(t *testing.T) {
+		t.Setenv("FLOWCRAFT_TEST_EVENT_BUS", "events")
+		doc := parseRuntimeDocument(t, "  event_bus: ${env:FLOWCRAFT_TEST_EVENT_BUS}\n")
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if cfg.EventBus != "events" {
+			t.Fatalf("EventBus = %q, want events", cfg.EventBus)
+		}
+	})
+
+	t.Run("missing env fails", func(t *testing.T) {
+		key := "FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT"
+		if value, ok := os.LookupEnv(key); ok {
+			t.Cleanup(func() { _ = os.Setenv(key, value) })
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatalf("unset %s: %v", key, err)
+			}
+		}
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  sessions:
+    idle_timeout: ${env:FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT}
+`)
+		if _, err := DecodeConfig(doc); err == nil {
+			t.Fatal("DecodeConfig unexpectedly succeeded with missing env")
+		}
+	})
+
+	t.Run("numeric field from env", func(t *testing.T) {
+		t.Setenv("FLOWCRAFT_TEST_SINK_BUFFER", "17")
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  sessions:
+    sink_buffer: ${env:FLOWCRAFT_TEST_SINK_BUFFER}
+`)
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if cfg.Sessions.SinkBuffer != 17 {
+			t.Fatalf("SinkBuffer = %d, want 17", cfg.Sessions.SinkBuffer)
+		}
+	})
+
+	t.Run("bool field from env", func(t *testing.T) {
+		t.Setenv("FLOWCRAFT_TEST_RESUME", "true")
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  checkpoint_store: cps
+  sessions:
+    resume: ${env:FLOWCRAFT_TEST_RESUME}
+`)
+		cfg, err := DecodeConfig(doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if !cfg.Sessions.Resume {
+			t.Fatal("Resume = false, want true")
+		}
+	})
 }
 
 func TestDecodeConfig_DynamicCatalog(t *testing.T) {

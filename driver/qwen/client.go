@@ -72,7 +72,8 @@ func (m profileMaterial) newClient(spec Spec) *dashClient {
 		utils.WithResponseHeaderTimeout(5 * time.Minute),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, utils.WithRetryAttempts(*spec.HTTPRetries))
+		options = append(options,
+			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	return &dashClient{
 		http: utils.NewHttpClient(options...),

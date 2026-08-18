@@ -34,7 +34,8 @@ func newMediaClient(key, base string, spec Spec) *mediaClient {
 		utils.WithResponseHeaderTimeout(5 * time.Minute),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, utils.WithRetryAttempts(*spec.HTTPRetries))
+		options = append(options,
+			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	return &mediaClient{
 		http: utils.NewHttpClient(options...),

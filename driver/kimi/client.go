@@ -56,7 +56,8 @@ func (m profileMaterial) newClient(spec Spec) *kimiClient {
 		utils.WithResponseHeaderTimeout(5 * time.Minute),
 	}
 	if spec.HTTPRetries != nil {
-		options = append(options, utils.WithRetryAttempts(*spec.HTTPRetries))
+		options = append(options,
+			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
 	return &kimiClient{
 		baseURL: baseURL,

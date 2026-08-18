@@ -41,14 +41,14 @@ type Spec struct {
 	// HTTPRetries bounds wire-level HTTP retries on the Ark and Doubao
 	// speech HTTP clients. Zero disables transport retries so the route
 	// Router owns the full retry budget; nil keeps the httpkit default.
-	HTTPRetries *int `json:"http_retries,omitempty"`
+	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Region selects the Ark service region.
 	Region string `json:"region,omitempty"`
 	// VideoPollIntervalMillis paces content-generation task polls (Seedance
 	// video). It tunes client-side waiting only — nothing is sent upstream —
 	// so it lives in the deployment Spec, not in a per-request extension.
 	// Unset defaults to defaultVideoPollInterval.
-	VideoPollIntervalMillis *int64 `json:"video_poll_interval_millis,omitempty"`
+	VideoPollIntervalMillis *resource.Int64 `json:"video_poll_interval_millis,omitempty"`
 	// Models declares additional models beyond the built-in catalog or
 	// overrides catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`

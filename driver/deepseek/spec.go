@@ -26,7 +26,7 @@ type Spec struct {
 	// attempt, including the first. Zero disables SDK-internal retries so
 	// the route Router owns the full retry budget; nil keeps the openai-go
 	// default (two retries).
-	HTTPRetries *int `json:"http_retries,omitempty"`
+	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
 	// catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`

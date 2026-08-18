@@ -19,10 +19,10 @@ type Settings struct {
 // [ScopedWorkspace]. The switch is explicit: the scope is applied only
 // when Enabled is true.
 type ScopedSettings struct {
-	Enabled       bool     `json:"enabled"`
-	DenyRead      []string `json:"deny_read,omitempty"`
-	AllowWrite    []string `json:"allow_write,omitempty"`
-	MandatoryDeny []string `json:"mandatory_deny,omitempty"`
+	Enabled       resource.Bool `json:"enabled"`
+	DenyRead      []string      `json:"deny_read,omitempty"`
+	AllowWrite    []string      `json:"allow_write,omitempty"`
+	MandatoryDeny []string      `json:"mandatory_deny,omitempty"`
 }
 
 // Factory builds a local directory workspace as the
