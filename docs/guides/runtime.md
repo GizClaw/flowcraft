@@ -50,6 +50,27 @@ default backpressure (`DropNewest`); pass
 "Dynamic agent registry" section below for the `runtime.agent.*`
 lifecycle events published on dynamic registration/removal.
 
+## Accessing deployment resources
+
+`Runtime.Resource` borrows a built resource value by its deployment
+name from the current generation, mirroring `Agent` for the resource
+view:
+
+```go
+db, ok := app.Resource("db")
+if !ok {
+    return errors.New("deployment has no db resource")
+}
+```
+
+Values are borrowed: the Runtime owns the deployment and closes
+resources when it closes, and a `Reload` retires the previous
+generation's values. Use this for access to deployment-built services
+such as a database pool. If the application must own a value's
+lifecycle or keep it across reloads, construct it outside the runtime
+and inject it through a resource factory registered in the registry
+instead.
+
 ## Runtime config
 
 ```yaml
