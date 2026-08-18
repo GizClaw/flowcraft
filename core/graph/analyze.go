@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Warning is a non-fatal build-time finding about the graph's
@@ -191,7 +192,14 @@ func checkUnresolvedReferences(nodes map[string]*nodeSlot, order []string) []War
 			continue // malformed config already fails Build elsewhere
 		}
 		for _, ref := range ExtractRefs(cfg) {
-			if !provided[ref] {
+			// A nested path counts as provided when any node writes its
+			// root segment (e.g. ${board.user.name} is satisfied by a
+			// write to "user").
+			root := ref
+			if i := strings.IndexByte(ref, '.'); i >= 0 {
+				root = ref[:i]
+			}
+			if !provided[ref] && !provided[root] {
 				warnings = append(warnings, Warning{
 					Kind:   WarningUnresolvedReference,
 					NodeID: id,
