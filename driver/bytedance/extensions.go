@@ -213,6 +213,14 @@ type ImageOptions struct {
 	// WebSearch attaches the web search tool (Seedream generations that
 	// support tools only).
 	WebSearch *bool `json:"web_search,omitempty"`
+	// LayerDecomposition asks Seedream 5.0 pro to decompose the input image
+	// into one base image and up to 16 independently editable layers.
+	// Requires an input image and resolution-level sizing.
+	LayerDecomposition *bool `json:"layer_decomposition,omitempty"`
+	// Background controls the output alpha channel: "transparent" or
+	// "opaque". Seedream 5.0 pro image-to-image only, with exactly one
+	// input image that has an alpha channel.
+	Background string `json:"background,omitempty"`
 }
 
 // ImageOptimizePrompt configures provider-side prompt rewriting.
@@ -250,6 +258,12 @@ func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 	if o.WebSearch != nil {
 		fields = append(fields, "web_search")
 	}
+	if o.LayerDecomposition != nil {
+		fields = append(fields, "layer_decomposition")
+	}
+	if o.Background != "" {
+		fields = append(fields, "background")
+	}
 	return fields
 }
 
@@ -284,9 +298,20 @@ func (o ImageOptions) Validate() error {
 		}
 	}
 	switch o.SizeToken {
-	case "", "1k", "2k", "4k", "adaptive":
+	case "", "1k", "1.5k", "2k", "3k", "4k", "adaptive":
 	default:
-		return fmt.Errorf("size_token must be 1k, 2k, 4k, or adaptive, not %q", o.SizeToken)
+		return fmt.Errorf(
+			"size_token must be 1k, 1.5k, 2k, 3k, 4k, or adaptive, not %q",
+			o.SizeToken,
+		)
+	}
+	switch o.Background {
+	case "", "transparent", "opaque":
+	default:
+		return fmt.Errorf("background must be transparent or opaque, not %q", o.Background)
+	}
+	if o.LayerDecomposition != nil && *o.LayerDecomposition && o.Background != "" {
+		return fmt.Errorf("background and layer decomposition are mutually exclusive")
 	}
 	return nil
 }
@@ -297,6 +322,7 @@ func (o ImageOptions) Clone() inference.Extension {
 	o.Sequential = clonePointer(o.Sequential)
 	o.SequentialMaxImages = clonePointer(o.SequentialMaxImages)
 	o.WebSearch = clonePointer(o.WebSearch)
+	o.LayerDecomposition = clonePointer(o.LayerDecomposition)
 	if o.OptimizePrompt != nil {
 		optimize := *o.OptimizePrompt
 		o.OptimizePrompt = &optimize

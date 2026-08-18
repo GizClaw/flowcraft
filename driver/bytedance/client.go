@@ -2,6 +2,7 @@ package bytedance
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -25,6 +26,9 @@ const (
 	// defaultClientTimeout is the whole-request budget (mirrors the SDK
 	// default of 10m).
 	defaultClientTimeout = 10 * time.Minute
+	// defaultArkBaseURL mirrors the SDK's default when the profile does not
+	// override it; the raw images path derives its URL from the same value.
+	defaultArkBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 )
 
 // profileMaterial is one credential profile after secret resolution: the
@@ -47,6 +51,13 @@ type clients struct {
 	// endpoints binds model names to this account's deployment addresses
 	// (ProfileSpec.Endpoints); empty maps resolve to the catalog name.
 	endpoints map[string]string
+	// Raw request support: the pinned SDK cannot encode every official
+	// parameter (image layer_decomposition/background), so the image
+	// transport falls back to a direct POST carrying the same credentials,
+	// base URL, and HTTP client.
+	apiKey     string
+	baseURL    string
+	httpClient *http.Client
 }
 
 // endpoint resolves the wire address for one catalog model within this
@@ -121,6 +132,13 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 // and speech drivers fail with a clear error when opened.
 func (m profileMaterial) newClients(spec Spec) *clients {
 	built := &clients{endpoints: m.spec.Endpoints}
+	built.apiKey = m.apiKey
+	built.baseURL = spec.BaseURL
+	if built.baseURL == "" {
+		built.baseURL = defaultArkBaseURL
+	} else {
+		built.baseURL = strings.TrimSuffix(built.baseURL, "/")
+	}
 	options := []arkruntime.ConfigOption{}
 	httpOptions := []utils.Option{
 		utils.WithHTTP2(),
@@ -131,6 +149,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		httpOptions = append(httpOptions,
 			utils.WithRetryAttempts(int(*spec.HTTPRetries)))
 	}
+	httpClient := utils.NewHttpClient(httpOptions...)
+	built.httpClient = httpClient
 	if spec.BaseURL != "" {
 		options = append(options, arkruntime.WithBaseUrl(spec.BaseURL))
 	}
@@ -138,7 +158,7 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		options = append(options, arkruntime.WithRegion(spec.Region))
 	}
 	options = append(options,
-		arkruntime.WithHTTPClient(utils.NewHttpClient(httpOptions...)),
+		arkruntime.WithHTTPClient(httpClient),
 		// SDK-internal retries are disabled; the retry transport above owns
 		// replayable transient failures so attempts do not multiply.
 		arkruntime.WithRetryTimes(0),

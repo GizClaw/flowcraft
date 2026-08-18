@@ -1,18 +1,26 @@
 package bytedance
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
-	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
+
+// generateImagesPath is the Ark images endpoint suffix; the SDK appends the
+// same path to its base URL.
+const generateImagesPath = "/images/generations"
 
 // Image generation runs on the Ark images endpoint (seedream). The prompt is
 // the request's text; image parts become image-to-image references. The API
@@ -37,6 +45,10 @@ type imageWire struct {
 	sequential     bool // grouped generation in one call
 	sequentialMax  *int
 	webSearch      bool
+	// Official parameters the pinned SDK request struct cannot encode
+	// (Seedream 5.0 pro only). They force the raw request path.
+	layerDecomposition *bool
+	background         string
 }
 
 type wireOptimizePrompt struct {
@@ -234,6 +246,43 @@ func compileImageOptions(
 	if options.WebSearch != nil && *options.WebSearch {
 		wire.webSearch = true
 	}
+	if options.LayerDecomposition != nil && *options.LayerDecomposition {
+		switch {
+		case len(wire.references) == 0:
+			ledger.reject(
+				field("layer_decomposition"),
+				"layer decomposition requires an input image",
+			)
+		case wire.sequential:
+			ledger.reject(
+				field("layer_decomposition"),
+				"layer decomposition is not supported with sequential generation",
+			)
+		case image != nil && image.Size != nil:
+			ledger.reject(
+				field("layer_decomposition"),
+				"layer decomposition supports resolution levels only; use size_token instead of explicit dimensions",
+			)
+		default:
+			wire.layerDecomposition = options.LayerDecomposition
+		}
+	}
+	if options.Background != "" {
+		switch {
+		case len(wire.references) != 1:
+			ledger.reject(
+				field("background"),
+				"background requires exactly one input image with an alpha channel",
+			)
+		case wire.sequential:
+			ledger.reject(
+				field("background"),
+				"background is not supported with sequential generation",
+			)
+		default:
+			wire.background = options.Background
+		}
+	}
 }
 
 // arkSizeToken normalizes the named size tier to the provider's casing.
@@ -241,12 +290,10 @@ func arkSizeToken(token string) string {
 	if token == "adaptive" {
 		return "adaptive"
 	}
-	return strings.ToUpper(token) // 1k | 2k | 4k
+	return strings.ToUpper(token) // 1k | 1.5k | 2k | 3k | 4k
 }
 
-func transportImage(
-	client *arkruntime.Client,
-) inference.Transport[imageWire, imageRaw] {
+func transportImage(cls *clients) inference.Transport[imageWire, imageRaw] {
 	return func(ctx context.Context, wire imageWire) (imageRaw, error) {
 		raw := imageRaw{mediaType: media.ImageFormat(wire.format).MediaType()}
 		// Grouped generation returns its whole set from one call; only the
@@ -259,7 +306,7 @@ func transportImage(
 			if err := ctx.Err(); err != nil {
 				return imageRaw{}, err
 			}
-			single, err := generateOneImage(ctx, client, wire)
+			single, err := generateOneImage(ctx, cls, wire)
 			if err != nil {
 				return imageRaw{}, err
 			}
@@ -274,7 +321,7 @@ func transportImage(
 
 func generateOneImage(
 	ctx context.Context,
-	client *arkruntime.Client,
+	cls *clients,
 	wire imageWire,
 ) (imageRaw, error) {
 	request := arkmodel.GenerateImagesRequest{
@@ -330,10 +377,47 @@ func generateOneImage(
 			Type: arkmodel.ToolTypeWebSearch,
 		}}
 	}
-	response, err := client.GenerateImages(ctx, request)
-	if err != nil {
-		return imageRaw{}, classifyError(err)
+	if wire.layerDecomposition == nil && wire.background == "" {
+		response, err := cls.ark.GenerateImages(ctx, request)
+		if err != nil {
+			return imageRaw{}, classifyError(err)
+		}
+		return imageRawFromResponse(response)
 	}
+	body, err := imageRequestMap(request)
+	if err != nil {
+		return imageRaw{}, errdefs.Validation(fmt.Errorf("bytedance: image request: %w", err))
+	}
+	if wire.layerDecomposition != nil {
+		body["layer_decomposition"] = *wire.layerDecomposition
+	}
+	if wire.background != "" {
+		body["background"] = wire.background
+	}
+	response, err := cls.postImagesRaw(ctx, body)
+	if err != nil {
+		return imageRaw{}, err
+	}
+	return imageRawFromResponse(response)
+}
+
+// imageRequestMap serializes the SDK request exactly as GenerateImages would,
+// so the raw path carries the same wire body plus the fields the pinned SDK
+// struct cannot encode.
+func imageRequestMap(request arkmodel.GenerateImagesRequest) (map[string]any, error) {
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		return nil, err
+	}
+	var body map[string]any
+	if err := json.Unmarshal(encoded, &body); err != nil {
+		return nil, err
+	}
+	return body, nil
+}
+
+// imageRawFromResponse folds an ImagesResponse into the transport raw shape.
+func imageRawFromResponse(response arkmodel.ImagesResponse) (imageRaw, error) {
 	if failure := response.Error; failure != nil {
 		return imageRaw{}, classifyResponseError(failure.Code, failure.Message)
 	}
@@ -349,6 +433,74 @@ func generateOneImage(
 		raw.totalTokens = usage.TotalTokens
 	}
 	return raw, nil
+}
+
+// postImagesRaw issues a raw POST to the Ark images endpoint. The pinned SDK
+// request struct cannot encode layer_decomposition/background, so requests
+// carrying those fields take this path, reusing the profile's API key, base
+// URL, and retry/timeout HTTP client so behavior matches the SDK path.
+func (c *clients) postImagesRaw(
+	ctx context.Context,
+	body map[string]any,
+) (arkmodel.ImagesResponse, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return arkmodel.ImagesResponse{}, err
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		c.baseURL+generateImagesPath,
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return arkmodel.ImagesResponse{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.apiKey)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return arkmodel.ImagesResponse{}, errdefs.NotAvailable(
+			fmt.Errorf("bytedance: image request: %w", err),
+		)
+	}
+	defer func() { _ = response.Body.Close() }()
+	requestID := response.Header.Get(arkmodel.ClientRequestHeader)
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return arkmodel.ImagesResponse{}, imageRawError(
+			response.StatusCode, requestID, response.Body,
+		)
+	}
+	var images arkmodel.ImagesResponse
+	if err := json.NewDecoder(response.Body).Decode(&images); err != nil {
+		return arkmodel.ImagesResponse{}, errdefs.NotAvailable(
+			fmt.Errorf("bytedance: decode image response: %w", err),
+		)
+	}
+	return images, nil
+}
+
+// imageRawError classifies a failed raw image request the same way the SDK
+// does: the JSON error envelope wins when present, status-code taxonomy
+// otherwise.
+func imageRawError(status int, requestID string, body io.Reader) error {
+	var envelope arkmodel.ErrorResponse
+	if err := json.NewDecoder(body).Decode(&envelope); err != nil || envelope.Error == nil {
+		return errdefs.WithRequestID(
+			classifyHTTPStatus(
+				status,
+				"",
+				"",
+				fmt.Errorf("bytedance: image request failed with status %d", status),
+			),
+			requestID,
+		)
+	}
+	failure := envelope.Error
+	failure.HTTPStatusCode = status
+	failure.RequestId = requestID
+	return classifyError(failure)
 }
 
 func decodeImage(
@@ -450,8 +602,7 @@ func openImage(
 	id inference.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
-	ark, err := cls.requireArk(profile)
-	if err != nil {
+	if _, err := cls.requireArk(profile); err != nil {
 		return inference.GenerateOperations{}, err
 	}
 	if err := cls.requireArkAPIKey(profile, "Seedream image generation"); err != nil {
@@ -459,7 +610,7 @@ func openImage(
 	}
 	unary, err := inference.BindGenerate(
 		compileImage(cls.endpoint(id.Name)),
-		transportImage(ark),
+		transportImage(cls),
 		decodeImage,
 	)
 	if err != nil {
