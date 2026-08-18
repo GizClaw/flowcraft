@@ -137,8 +137,10 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
 	t.Run("missing env fails", func(t *testing.T) {
 		key := "FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT"
 		if value, ok := os.LookupEnv(key); ok {
-			t.Cleanup(func() { os.Setenv(key, value) })
-			os.Unsetenv(key)
+			t.Cleanup(func() { _ = os.Setenv(key, value) })
+			if err := os.Unsetenv(key); err != nil {
+				t.Fatalf("unset %s: %v", key, err)
+			}
 		}
 		doc := parseRuntimeDocument(t, `  event_bus: events
   sessions:
