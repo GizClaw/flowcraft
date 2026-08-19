@@ -29,8 +29,8 @@ func TestRegister(t *testing.T) {
 	if spec.Kind != "agent.Engine" || spec.Impl != "graph" {
 		t.Fatalf("spec = %+v", spec)
 	}
-	if len(spec.Deps) != 6 {
-		t.Fatalf("deps = %+v, want 6", spec.Deps)
+	if len(spec.Deps) != 7 {
+		t.Fatalf("deps = %+v, want 7", spec.Deps)
 	}
 }
 
