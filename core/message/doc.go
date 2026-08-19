@@ -17,4 +17,10 @@
 // The media subpackage holds the operation-neutral Source / Format types
 // that ride inside multimodal Parts (images, audio, video). They are DTOs
 // for the same reason and live here for the same reason.
+//
+// Live media rides the same Part model: media.Stream / media.Pipe define a
+// bounded pull transport, and a stream-backed Audio/Video Source is how a
+// part exists while it is in flight. Streams are never serialized and never
+// enter durable context or history — MaterializeContent converts them back
+// into inline-byte parts at the commit boundary.
 package message
