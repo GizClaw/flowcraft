@@ -249,9 +249,12 @@ a no-op host, so scripts can call them unconditionally.
 | `tool_call`   | JSON string or `{id, name, arguments}`       | tool call part delta           |
 | `tool_result` | `{tool_call_id, content, is_error}`          | tool result part delta         |
 | `part`        | canonical part wire object (`{"type": ...}`) | arbitrary `message.Part` delta |
-| anything else | —                                            | passthrough delta of that type |
+| anything else | any value                                    | passthrough delta; raw payload rides under `payload` |
 
 Emission is fire-and-forget: publish failures are dropped, not thrown.
+Payloads that do not decode into the type's required shape (e.g. a
+`tool_call` without `id`) are skipped instead of published as empty
+deltas.
 
 ### `run`
 
@@ -361,7 +364,8 @@ Each event is a map with `event`, `envelope_id`, `id`, `subject`, `time`,
 `run_id`, `node_id`, `agent_id`, plus payload fields. Lifecycle events are
 `step.started` / `step.ended` (status `success` or `error`) /
 `step.skipped`; stream deltas arrive as `event: "stream.delta"` with
-`type` / `part` / `speculative` / `branch_id` fields.
+`type` / `part` / `speculative` / `branch_id` fields, plus `payload`
+carrying the raw value of forward-compatible custom emit types.
 
 ```js
 var iter = stream.subscribe_node({ node_id: "planner" });

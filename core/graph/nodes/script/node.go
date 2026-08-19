@@ -149,46 +149,57 @@ func decodeScriptConfig(raw json.RawMessage) (ScriptConfig, error) {
 // scriptEmitter adapts graph's per-node stream-delta channel to the
 // host bridge's StreamEmitter. The bridge's emit is fire-and-forget,
 // so publish failures are dropped here — matching the emitter's void
-// contract.
+// contract. Known event types whose payload fails to decode are
+// skipped entirely rather than published as empty deltas.
 type scriptEmitter struct{ ec graph.ExecutionContext }
 
 func (e scriptEmitter) Emit(eventType string, payload any) {
-	delta := agent.StreamDeltaPayload{}
 	switch eventType {
 	case "token":
-		delta = agent.StreamDeltaPayload{
+		_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
 			Type: agent.StreamDeltaPart,
 			Part: message.TextPart{Text: stringifyPayload(payload)},
-		}
+		})
 	case "tool_call":
 		if call, ok := payloadToToolCall(payload); ok {
-			delta = agent.StreamDeltaPayload{
+			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolCallPart{Call: call},
-			}
+			})
 		}
 	case "tool_result":
 		if result, ok := payloadToToolResult(payload); ok {
-			delta = agent.StreamDeltaPayload{
+			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolResultPart{Result: result},
-			}
+			})
 		}
 	case "part":
 		// Generic part event: the payload is a canonical part wire
 		// object (e.g. {"type":"image","source":...}), so scripts can
 		// emit any message.Part kind.
 		if part, ok := payloadToPart(payload); ok {
-			delta = agent.StreamDeltaPayload{
+			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: part,
-			}
+			})
 		}
 	default:
-		// Forward-compatible event types pass through unchanged.
-		delta = agent.StreamDeltaPayload{Type: agent.StreamDeltaType(eventType)}
+		// Forward-compatible event types pass through with the raw
+		// payload riding under StreamDeltaPayload.Payload, so the
+		// script's value survives to stream consumers. Values that
+		// cannot be marshalled are dropped — nothing representable
+		// could be published anyway.
+		raw, ok := marshalPayload(payload)
+		if !ok {
+			return
+		}
+		delta := agent.StreamDeltaPayload{Type: agent.StreamDeltaType(eventType)}
+		if payload != nil {
+			delta.Payload = raw
+		}
+		_ = e.ec.EmitStreamDelta(delta)
 	}
-	_ = e.ec.EmitStreamDelta(delta)
 }
 
 // payloadToPart decodes a canonical part wire object (a map or JSON

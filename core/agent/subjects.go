@@ -305,6 +305,7 @@ const (
 //	provider_outputs          ProviderOutputs  —
 //	parallel_branch_accept    ForkID, BranchID —
 //	parallel_branch_cancel    ForkID, BranchID Reason
+//	(forward-compatible)      Payload          —
 //
 // Speculative data deltas (part, finish, provider_outputs)
 // additionally require both ForkID and BranchID. Non-speculative data
@@ -315,6 +316,13 @@ type StreamDeltaPayload struct {
 	// Type discriminates the payload variant. See StreamDeltaType
 	// constants for the standard values.
 	Type StreamDeltaType `json:"type"`
+
+	// Payload carries the raw script-supplied value for
+	// forward-compatible / custom event types (host.emit with an
+	// unrecognized type). Standard types decode their fields directly
+	// and leave this empty. Opaque to the stream protocol; consumers
+	// decode it against the event type's own schema.
+	Payload json.RawMessage `json:"payload,omitempty"`
 
 	// Part carries one canonical output part. Required on "part".
 	// Wire-encoded with the same type discriminator as
@@ -366,6 +374,7 @@ type ProviderOutputEnvelope struct {
 func (p StreamDeltaPayload) MarshalJSON() ([]byte, error) {
 	wire := struct {
 		Type            StreamDeltaType          `json:"type"`
+		Payload         json.RawMessage          `json:"payload,omitempty"`
 		Part            json.RawMessage          `json:"part,omitempty"`
 		Speculative     bool                     `json:"speculative,omitempty"`
 		ForkID          string                   `json:"fork_id,omitempty"`
@@ -380,6 +389,9 @@ func (p StreamDeltaPayload) MarshalJSON() ([]byte, error) {
 		BranchID: p.BranchID, Reason: p.Reason,
 		FinishReason: p.FinishReason, RequestID: p.RequestID,
 		ResponseID: p.ResponseID, ProviderOutputs: p.ProviderOutputs,
+	}
+	if len(p.Payload) > 0 {
+		wire.Payload = p.Payload
 	}
 	if p.Part != nil {
 		raw, err := message.MarshalPart(p.Part)
@@ -396,6 +408,7 @@ func (p StreamDeltaPayload) MarshalJSON() ([]byte, error) {
 func (p *StreamDeltaPayload) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		Type            StreamDeltaType          `json:"type"`
+		Payload         json.RawMessage          `json:"payload"`
 		Part            json.RawMessage          `json:"part"`
 		Speculative     bool                     `json:"speculative"`
 		ForkID          string                   `json:"fork_id"`
@@ -410,6 +423,7 @@ func (p *StreamDeltaPayload) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	p.Type = wire.Type
+	p.Payload = wire.Payload
 	p.Speculative = wire.Speculative
 	p.ForkID = wire.ForkID
 	p.BranchID = wire.BranchID

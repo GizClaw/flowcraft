@@ -591,6 +591,14 @@ func decodeEnvelopePayloadMap(env event.Envelope) map[string]any {
 
 func streamDeltaPayloadToMap(p agent.StreamDeltaPayload) map[string]any {
 	out := map[string]any{"type": string(p.Type)}
+	if len(p.Payload) > 0 {
+		var raw any
+		if json.Unmarshal(p.Payload, &raw) == nil {
+			out["payload"] = raw
+		} else {
+			out["payload"] = string(p.Payload)
+		}
+	}
 	if p.Part != nil {
 		raw, err := message.MarshalPart(p.Part)
 		if err == nil {

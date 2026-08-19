@@ -56,7 +56,8 @@ type StreamEmitter interface {
 //   - host.emit is the high-level node-stream channel. Callers adapt
 //     it to their emitter (e.g. graph's EmitStreamDelta); payloads
 //     should decode cleanly into agent.StreamDeltaPayload — passing a
-//     bare value is wrapped by the adapter, not here.
+//     bare value is wrapped by the adapter, not here. Unknown event
+//     types carry the raw payload in the delta's "payload" field.
 //
 // The bridge does NOT own the agent.Host nor the StreamEmitter; the
 // caller (typically a script node) feeds it whatever ctx.Host /
