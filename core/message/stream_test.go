@@ -79,6 +79,36 @@ func TestMaterializeAudioStreamIntoInlinePart(t *testing.T) {
 	}
 }
 
+func TestMaterializeAudioStreamFallsBackToPartFormat(t *testing.T) {
+	format := media.AudioFormat{
+		Encoding:     media.AudioEncodingPCM16,
+		SampleRateHz: 1000,
+		Channels:     1,
+	}
+	pipe := message.NewPartPipe(1)
+	itemSource, err := media.NewAudioBytes([]byte("abcd"), "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	pipe.Send(message.AudioPart{Source: itemSource})
+	pipe.Close()
+	streamSource, err := media.NewAudioStream(pipe, "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioStream: %v", err)
+	}
+	materialized, err := message.MaterializeContent(context.Background(),
+		message.Content{Parts: []message.Part{
+			message.AudioPart{Source: streamSource, Format: &format},
+		}})
+	if err != nil {
+		t.Fatalf("MaterializeContent: %v", err)
+	}
+	audio := materialized.Parts[0].(message.AudioPart)
+	if audio.Format == nil || *audio.Format != format {
+		t.Fatalf("materialized format = %v, want part format %v", audio.Format, format)
+	}
+}
+
 func TestMaterializeVideoStreamIntoInlinePart(t *testing.T) {
 	chunk := func(data string) message.Part {
 		source, err := media.NewVideoBytes([]byte(data), "video/mp4")

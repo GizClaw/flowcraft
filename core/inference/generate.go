@@ -107,13 +107,22 @@ func (r GenerateRequest) Clone() GenerateRequest {
 }
 
 func (r GenerateRequest) Validate() error {
-	for i, message := range r.Context {
-		if err := message.Validate(); err != nil {
+	for i, msg := range r.Context {
+		if err := msg.Validate(); err != nil {
 			return fmt.Errorf("context message %d: %w", i, err)
+		}
+		if message.HasStreamSource(msg.Content) {
+			return fmt.Errorf(
+				"context message %d: stream media sources are not allowed in context",
+				i,
+			)
 		}
 	}
 	if err := r.Input.Validate(); err != nil {
 		return fmt.Errorf("generate input: %w", err)
+	}
+	if message.HasStreamSource(r.Input.Content.Content) {
+		return fmt.Errorf("generate input: stream media sources are not allowed")
 	}
 	return r.Extensions.Validate()
 }

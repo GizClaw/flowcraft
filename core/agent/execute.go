@@ -284,6 +284,21 @@ func Execute(
 		res.Err = ctxErr
 		res.Committed = false
 	}
+	// History forbids stream-backed media sources: a message that is about
+	// to become conversation history materializes each stream into the
+	// existing inline-byte parts before it is stored or handed to
+	// observers. This runs exactly once, on the final committed result —
+	// never per attempt, so a revise retry still sees the live stream.
+	if res.Committed {
+		if err := materializeHistory(ctx, res.LastBoard); err != nil {
+			res.Committed = false
+			res.State["finalize_reason"] = "history_materialize_failed"
+			if obs != nil {
+				obs.OnRunEnd(ctx, id, res)
+			}
+			return res, fmt.Errorf("agent: materialize history: %w", err)
+		}
+	}
 	if res.Committed && len(rc.committers) > 0 {
 		commitRes := res
 		if rc.commitViewProvider != nil {
@@ -303,6 +318,14 @@ func Execute(
 					obs.OnRunEnd(ctx, id, res)
 				}
 				return res, errdefs.Validationf("agent: CommitViewProvider returned nil board")
+			}
+			if err := materializeHistory(ctx, view.LastBoard); err != nil {
+				res.Committed = false
+				res.State["finalize_reason"] = "commit_view_failed"
+				if obs != nil {
+					obs.OnRunEnd(ctx, id, res)
+				}
+				return res, fmt.Errorf("agent: materialize commit view: %w", err)
 			}
 			projected := *res
 			// The commit projection is a self-contained board produced by
@@ -335,6 +358,35 @@ func materializeResult(res *Result, board *Board, artifactChannels []string, see
 	res.LastBoard = board
 	res.Messages = newAssistantMessages(board, seedLen)
 	res.Artifacts = collectArtifacts(board, artifactChannels)
+}
+
+// materializeHistory converts every stream-backed media source on the board
+// into its durable part form (see message.MaterializeContent) so no live
+// stream handle ever becomes conversation history. Boards without stream
+// sources are left untouched.
+func materializeHistory(ctx context.Context, board *Board) error {
+	if board == nil {
+		return nil
+	}
+	channels := board.ChannelsCopy()
+	for name, msgs := range channels {
+		changed := false
+		for i := range msgs {
+			if !message.HasStreamSource(msgs[i].Content) {
+				continue
+			}
+			content, err := message.MaterializeContent(ctx, msgs[i].Content)
+			if err != nil {
+				return fmt.Errorf("channel %q: %w", name, err)
+			}
+			msgs[i].Content = content
+			changed = true
+		}
+		if changed {
+			board.SetChannel(name, msgs)
+		}
+	}
+	return nil
 }
 
 // itoa is a zero-alloc small-int formatter used for the attempt

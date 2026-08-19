@@ -162,6 +162,10 @@ func materializeAudioPart(ctx context.Context, part AudioPart) ([]Part, error) {
 	if data.Len() == 0 {
 		return nil, fmt.Errorf("materialize audio: stream produced no audio data")
 	}
+	// Stream items may omit the format when the enclosing part declared it.
+	if format == nil {
+		format = clonePointer(part.Format)
+	}
 	mediaType := ""
 	if format != nil {
 		mediaType = format.Encoding.MediaType()

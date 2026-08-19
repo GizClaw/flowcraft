@@ -22,8 +22,9 @@ import (
 // RetryPolicies holds one optional retry policy per operation. A nil entry
 // disables retry for that operation (the pre-resilience behavior).
 type RetryPolicies struct {
-	Generate *RetryPolicy
-	Embed    *RetryPolicy
+	Generate      *RetryPolicy
+	Embed         *RetryPolicy
+	Transcription *RetryPolicy
 }
 
 func (p RetryPolicies) policyFor(operation inference.Operation) *RetryPolicy {
@@ -32,6 +33,8 @@ func (p RetryPolicies) policyFor(operation inference.Operation) *RetryPolicy {
 		return p.Generate
 	case inference.OperationEmbed:
 		return p.Embed
+	case inference.OperationTranscription:
+		return p.Transcription
 	default:
 		return nil
 	}

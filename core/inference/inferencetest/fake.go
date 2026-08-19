@@ -212,6 +212,51 @@ func (f embedSelectorFunc) SelectEmbed(ctx context.Context, req inference.EmbedR
 	return f(ctx, req)
 }
 
+// StaticTranscribeSelector returns a route.TranscribeSelector that always
+// selects ref on the primary tier — the smallest router wiring for tests
+// that need the unary transcription route path.
+func StaticTranscribeSelector(ref inference.ModelRef) route.TranscribeSelector {
+	return transcribeSelectorFunc(func(context.Context, inference.TranscriptionRequest) (route.Decision, error) {
+		return route.Decision{
+			Operation: inference.OperationTranscription,
+			Tier:      "primary",
+			Proposed:  ref,
+			Selected:  ref,
+		}, nil
+	})
+}
+
+type transcribeSelectorFunc func(context.Context, inference.TranscriptionRequest) (route.Decision, error)
+
+func (f transcribeSelectorFunc) SelectTranscribe(
+	ctx context.Context,
+	req inference.TranscriptionRequest,
+) (route.Decision, error) {
+	return f(ctx, req)
+}
+
+// StaticTranscribeSessionSelector returns a route.TranscriptionSessionSelector
+// that always selects ref on the primary tier.
+func StaticTranscribeSessionSelector(ref inference.ModelRef) route.TranscriptionSessionSelector {
+	return transcribeSessionSelectorFunc(func(context.Context, inference.TranscriptionSessionRequest) (route.Decision, error) {
+		return route.Decision{
+			Operation: inference.OperationTranscription,
+			Tier:      "primary",
+			Proposed:  ref,
+			Selected:  ref,
+		}, nil
+	})
+}
+
+type transcribeSessionSelectorFunc func(context.Context, inference.TranscriptionSessionRequest) (route.Decision, error)
+
+func (f transcribeSessionSelectorFunc) SelectTranscribeSession(
+	ctx context.Context,
+	req inference.TranscriptionSessionRequest,
+) (route.Decision, error) {
+	return f(ctx, req)
+}
+
 // eventStream is a ProviderStream over canned events.
 type eventStream struct {
 	events []inference.GenerateStreamEvent

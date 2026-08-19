@@ -12,10 +12,14 @@ import (
 )
 
 type Selectors struct {
-	Generate         GenerateSelector
-	GenerateFallback GenerateFallbackPolicy
-	Embed            EmbedSelector
-	EmbedFallback    EmbedFallbackPolicy
+	Generate                  GenerateSelector
+	GenerateFallback          GenerateFallbackPolicy
+	Embed                     EmbedSelector
+	EmbedFallback             EmbedFallbackPolicy
+	Transcribe                TranscribeSelector
+	TranscribeFallback        TranscribeFallbackPolicy
+	TranscribeSession         TranscriptionSessionSelector
+	TranscribeSessionFallback TranscriptionSessionFallbackPolicy
 }
 
 // Decision is the selector output before inference execution. Proposed records
@@ -164,7 +168,9 @@ func New(
 		return nil, errdefs.Validationf("inference assembly is required")
 	}
 	if isNilInterface(selectors.Generate) &&
-		isNilInterface(selectors.Embed) {
+		isNilInterface(selectors.Embed) &&
+		isNilInterface(selectors.Transcribe) &&
+		isNilInterface(selectors.TranscribeSession) {
 		return nil, errdefs.Validationf("at least one route selector is required")
 	}
 	orphans := []struct {
@@ -174,6 +180,8 @@ func New(
 	}{
 		{inference.OperationGenerate, selectors.Generate, selectors.GenerateFallback},
 		{inference.OperationEmbed, selectors.Embed, selectors.EmbedFallback},
+		{inference.OperationTranscription, selectors.Transcribe, selectors.TranscribeFallback},
+		{inference.OperationTranscription, selectors.TranscribeSession, selectors.TranscribeSessionFallback},
 	}
 	for _, orphan := range orphans {
 		if !isNilInterface(orphan.fallback) && isNilInterface(orphan.selector) {
@@ -236,6 +244,22 @@ func validateRetryPolicies(
 		}
 		if err := entry.policy.validate(); err != nil {
 			return errdefs.Validationf("%s retry policy: %v", entry.operation, err)
+		}
+	}
+	if policies.Transcription != nil {
+		// Transcription pools serve both the unary and session selectors,
+		// so one retry policy covers either surface.
+		if isNilInterface(selectors.Transcribe) &&
+			isNilInterface(selectors.TranscribeSession) {
+			return errdefs.Validationf(
+				"transcription retry policy requires a transcription selector",
+			)
+		}
+		if err := policies.Transcription.validate(); err != nil {
+			return errdefs.Validationf(
+				"transcription retry policy: %v",
+				err,
+			)
 		}
 	}
 	return nil

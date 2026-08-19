@@ -208,6 +208,86 @@ func (a *Assembly) ExplainEmbed(
 	return driver.Explain(ctx, ref, req)
 }
 
+// Transcribe executes one unary transcription request against the model
+// addressed by ref.
+func (a *Assembly) Transcribe(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionRequest,
+) (TranscriptionResponse, error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return TranscriptionResponse{}, err
+	}
+	if operations.Unary == nil {
+		return TranscriptionResponse{}, NewError(
+			UnsupportedOperation, OperationTranscription, "",
+			fmt.Errorf("model %q has no unary transcription driver", ref.ID.Name),
+		)
+	}
+	return operations.Unary.Execute(ctx, ref, req)
+}
+
+// ExplainTranscribe runs the compiler for a unary transcription request
+// without provider I/O.
+func (a *Assembly) ExplainTranscribe(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionRequest,
+) (Explanation, error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return Explanation{}, err
+	}
+	if operations.Unary == nil {
+		return Explanation{}, NewError(
+			UnsupportedOperation, OperationTranscription, "",
+			fmt.Errorf("model %q has no unary transcription driver", ref.ID.Name),
+		)
+	}
+	return operations.Unary.Explain(ctx, ref, req)
+}
+
+// TranscribeSession opens a duplex transcription session against the model
+// addressed by ref. Audio is fed through the returned session after open.
+func (a *Assembly) TranscribeSession(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionSessionRequest,
+) (TranscriptionSession, error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if operations.Session == nil {
+		return nil, NewError(
+			UnsupportedOperation, OperationTranscription, "",
+			fmt.Errorf("model %q has no transcription session driver", ref.ID.Name),
+		)
+	}
+	return operations.Session.Open(ctx, ref, req)
+}
+
+// ExplainTranscribeSession compiles a transcription session request without
+// provider I/O.
+func (a *Assembly) ExplainTranscribeSession(
+	ctx context.Context,
+	ref ModelRef,
+	req TranscriptionSessionRequest,
+) (Explanation, error) {
+	operations, err := a.openTranscribe(ctx, ref)
+	if err != nil {
+		return Explanation{}, err
+	}
+	if operations.Session == nil {
+		return Explanation{}, NewError(
+			UnsupportedOperation, OperationTranscription, "",
+			fmt.Errorf("model %q has no transcription session driver", ref.ID.Name),
+		)
+	}
+	return operations.Session.Explain(ctx, ref, req)
+}
+
 func (a *Assembly) openGenerate(
 	ctx context.Context,
 	ref ModelRef,
@@ -244,6 +324,25 @@ func (a *Assembly) openEmbed(
 		return nil, err
 	}
 	return model.Openers.Embed(ctx, ref)
+}
+
+func (a *Assembly) openTranscribe(
+	ctx context.Context,
+	ref ModelRef,
+) (TranscribeOperations, error) {
+	entry, model, err := a.lookupEntry(ref, OperationTranscription)
+	if err != nil {
+		return TranscribeOperations{}, err
+	}
+	if model.Openers.Transcribe == nil {
+		return TranscribeOperations{}, NewError(
+			UnsupportedOperation, OperationTranscription, "",
+			fmt.Errorf("model %q has no transcribe openers", ref.ID.Name))
+	}
+	if err := entry.checkProfile(ref, OperationTranscription); err != nil {
+		return TranscribeOperations{}, err
+	}
+	return model.Openers.Transcribe(ctx, ref)
 }
 
 func (a *Assembly) lookupEntry(
