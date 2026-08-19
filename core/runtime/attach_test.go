@@ -51,7 +51,7 @@ func TestRuntimeAttachDeliversPromptLifecycle(t *testing.T) {
 	})
 	reg := resource.NewRegistry()
 	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(attachEngineFactory{engine: engine})
+	reg.MustRegister(attachEngineFactory{engine: withRunEnd(engine)})
 
 	doc := parseRuntimeDoc(t, `version: v1
 resources:
@@ -154,14 +154,14 @@ func TestRuntimeAttachFailsAfterClose(t *testing.T) {
 
 	reg := resource.NewRegistry()
 	reg.MustRegister(event.NewFactory())
-	reg.MustRegister(attachEngineFactory{engine: agent.EngineFunc(func(
+	reg.MustRegister(attachEngineFactory{engine: withRunEnd(agent.EngineFunc(func(
 		_ context.Context,
 		_ agent.Run,
 		_ agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
 		return board, nil
-	})})
+	}))})
 
 	doc := parseRuntimeDoc(t, `version: v1
 resources:

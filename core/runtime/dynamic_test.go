@@ -50,7 +50,7 @@ runtime:
 
 func catalogEngine(t *testing.T, got chan<- []string) agent.Engine {
 	t.Helper()
-	return agent.EngineFunc(func(
+	return withRunEnd(agent.EngineFunc(func(
 		ctx context.Context,
 		_ agent.Run,
 		_ agent.Host,
@@ -67,7 +67,7 @@ func catalogEngine(t *testing.T, got chan<- []string) agent.Engine {
 		}
 		got <- names
 		return board, nil
-	})
+	}))
 }
 
 func TestBuild_DynamicCatalogMapsToolsPerAgent(t *testing.T) {

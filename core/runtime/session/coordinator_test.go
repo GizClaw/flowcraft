@@ -402,9 +402,24 @@ func TestTurnWithoutAuthorityDoesNotRetainConfirmedTokens(t *testing.T) {
 	}
 }
 
-func TestStreamCoordinatorFinalizeTimesOutWithoutAttemptBoundary(t *testing.T) {
+func TestStreamCoordinatorFinalizeWithoutSinksDoesNotWait(t *testing.T) {
 	turn := newTurn(nil, "run-missing-attempt-end", context.Background())
 	coordinator := newStreamCoordinator(turn, nil, nil, 8, 1024)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := coordinator.finalize(ctx, &agent.Result{
+		Status:   agent.StatusCompleted,
+		Attempts: 1,
+	}, nil)
+	if err != nil {
+		t.Fatalf("finalize with no sinks returned error = %v, want nil", err)
+	}
+}
+
+func TestStreamCoordinatorFinalizeTimesOutWithSinksWithoutAttemptBoundary(t *testing.T) {
+	turn := newTurn(nil, "run-missing-attempt-end", context.Background())
+	sink := &queuedSink{spec: SinkSpec{ID: "confirmed", QueueSize: 8}}
+	coordinator := newStreamCoordinator(turn, nil, []*queuedSink{sink}, 8, 1024)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	err := coordinator.finalize(ctx, &agent.Result{

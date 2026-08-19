@@ -223,6 +223,13 @@ type logicalRunEndPayload struct {
 // finalize emits the one externally visible logical run end. It is
 // idempotent because finish and shutdown paths may converge.
 func (c *streamCoordinator) finalize(ctx context.Context, result *agent.Result, runErr error) error {
+	// With no raw or confirmed sinks there is nothing to drain and no
+	// consumer for the logical run end, so the attempt wait is pure
+	// overhead: an engine that never publishes run-end would otherwise
+	// stall the turn by the full drain budget with no observable effect.
+	if len(c.raw) == 0 && len(c.confirmed) == 0 {
+		return nil
+	}
 	expectedAttempts := 1
 	if result != nil && result.Attempts > 0 {
 		expectedAttempts = result.Attempts

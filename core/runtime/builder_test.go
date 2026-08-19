@@ -220,7 +220,7 @@ func TestBuildRejectsInvalidCheckpointStore(t *testing.T) {
 
 func TestBuildWiresCheckpointStoreResource(t *testing.T) {
 	store := &recordingCheckpointStore{}
-	engine := agent.EngineFunc(func(
+	engine := withRunEnd(agent.EngineFunc(func(
 		ctx context.Context,
 		run agent.Run,
 		host agent.Host,
@@ -234,7 +234,7 @@ func TestBuildWiresCheckpointStoreResource(t *testing.T) {
 			return board, err
 		}
 		return board, nil
-	})
+	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), store, engine)
 	app, err := NewBuilder(reg).Build(context.Background(), baseRuntimeDoc(t))
 	if err != nil {
@@ -255,7 +255,7 @@ func TestBuildWiresCheckpointStoreResource(t *testing.T) {
 }
 
 func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
-	engine := agent.EngineFunc(func(
+	engine := withRunEnd(agent.EngineFunc(func(
 		ctx context.Context,
 		_ agent.Run,
 		host agent.Host,
@@ -269,7 +269,7 @@ func TestWithHostFactoryWrapsBaseHostAndReportsUsage(t *testing.T) {
 			return board, err
 		}
 		return board, nil
-	})
+	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
 	builder := NewBuilder(reg)
 
@@ -400,7 +400,7 @@ func (s *fakeDelegationService) Get(context.Context, string) (delegation.Respons
 func TestBuildWrapsDelegationServiceWhenRequested(t *testing.T) {
 	service := &fakeDelegationService{id: "local"}
 	var got delegation.Service
-	engine := agent.EngineFunc(func(
+	engine := withRunEnd(agent.EngineFunc(func(
 		_ context.Context,
 		_ agent.Run,
 		host agent.Host,
@@ -412,7 +412,7 @@ func TestBuildWrapsDelegationServiceWhenRequested(t *testing.T) {
 		}
 		got = svc
 		return board, nil
-	})
+	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
 	reg.MustRegister(testResourceFactory{
 		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "local"},
@@ -448,7 +448,7 @@ func TestBuildWrapsDelegationServiceWhenRequested(t *testing.T) {
 
 func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
 	service := &fakeDelegationService{id: "local"}
-	engine := agent.EngineFunc(func(
+	engine := withRunEnd(agent.EngineFunc(func(
 		_ context.Context,
 		_ agent.Run,
 		host agent.Host,
@@ -458,7 +458,7 @@ func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
 			return board, errors.New("delegation service unexpectedly exposed on host")
 		}
 		return board, nil
-	})
+	}))
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, engine)
 	reg.MustRegister(testResourceFactory{
 		spec:  resource.Spec{Kind: delegation.ServiceKind, Impl: "local"},
