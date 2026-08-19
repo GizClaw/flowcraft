@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.18` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.19` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.19` - 2026-08-19
+
+### Changed
+
+- feat(core): custom graph node types as deployment resources — new graph.NodeType resource kind with a script impl (declarative type/source/reads/writes and the full script bridge surface via the shared RunScript helper), the agent.Engine/graph factory mounts custom types through an optional node_type Many dep and registers them before Build with typed-nil and duplicate-mount guards, NodeTypeRegistrar/ConfigFileRefFields contracts let host/plugin Go node types opt into registration and config file-ref materialization, and Role gains JSON tags for declarative I/O roles
 
 ## `core/v0.1.18` - 2026-08-19
 
