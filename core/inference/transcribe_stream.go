@@ -85,7 +85,10 @@ func FeedTranscription(
 // TranscribeStream opens a duplex transcription session against the model
 // addressed by ref, feeds the live part stream into it, drains the session
 // to EOF, and returns the final transcript. Callers that want partials as
-// they arrive use TranscribeSession plus FeedTranscription directly.
+// they arrive use TranscribeSession plus FeedTranscription directly. When
+// the session supports explicit end-of-input (TranscriptionSessionFinisher),
+// the stream's end is signaled before draining so continuous sessions
+// terminate deterministically.
 func (a *Assembly) TranscribeStream(
 	ctx context.Context,
 	ref ModelRef,
@@ -98,6 +101,14 @@ func (a *Assembly) TranscribeStream(
 	}
 	if err := FeedTranscription(ctx, session, req.InputFormat, stream); err != nil {
 		return TranscriptionResponse{}, err
+	}
+	if finisher, ok := session.(TranscriptionSessionFinisher); ok {
+		if err := finisher.FinishInput(ctx); err != nil {
+			return TranscriptionResponse{}, fmt.Errorf(
+				"transcribe stream finish input: %w",
+				err,
+			)
+		}
 	}
 	for {
 		if _, err := session.Next(ctx); err != nil {

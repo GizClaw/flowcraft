@@ -90,6 +90,7 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 //
 //     var s = inference.transcribeSession(req)   // input_format + model
 //     s.send({data: <base64>, sequence: 1})      // media.AudioChunk
+//     s.finish()                                 // end-of-input (optional)
 //     var ev
 //     while ((ev = s.next()) !== null) { ... }   // partial/final events
 //     var resp = s.result()                      // TranscriptionResponse
@@ -97,10 +98,13 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 //     s.close()
 //
 //     send() feeds audio chunks; next() projects TranscriptionSessionEvent
-//     wire JSON and returns null at EOF; result() yields the accumulated
-//     TranscriptionResponse; interrupt() terminates the session abnormally;
-//     close() exits early. routeTranscribeSession attaches "trace" to the
-//     result object, mirroring routeTranscribe.
+//     wire JSON and returns null at EOF; finish() signals that no more audio
+//     is coming where the provider supports it (a no-op otherwise), which is
+//     how continuous sessions reach EOF after multiple final events;
+//     result() yields the accumulated TranscriptionResponse; interrupt()
+//     terminates the session abnormally; close() exits early.
+//     routeTranscribeSession attaches "trace" to the result object, mirroring
+//     routeTranscribe.
 //
 //   - explainStream(request) / routeExplainStream(request): the
 //     Generate-stream twins of explain/routeExplain — local stream
@@ -697,6 +701,18 @@ func newTranscriptionSessionHandle(
 		},
 		"interrupt": func() error {
 			return session.Interrupt()
+		},
+		"finish": func() error {
+			if done {
+				return nil
+			}
+			finisher, ok := session.(inference.TranscriptionSessionFinisher)
+			if !ok {
+				return errdefs.Validationf(
+					"inference.transcribeSession.finish: session does not support explicit end-of-input",
+				)
+			}
+			return finisher.FinishInput(ctx)
 		},
 		"close": func() error {
 			done = true
