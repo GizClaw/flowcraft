@@ -58,12 +58,20 @@ type catalogEntry struct {
 // Unknown models fail closed: the factory only exposes models listed here or
 // declared via Spec.Models.
 var catalog = map[string]catalogEntry{
+	// Doubao Seed Evolving (2026-07) — rapidly iterating Coding & Agent
+	// line, updated weekly. Long 1M context; natively multimodal with
+	// thinking and the full hosted tool surface.
+	"doubao-seed-evolving": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 1_024_000},
+
 	// Seed 2.1 (2026-06) — current flagship tier. The whole Seed 2.x line is
 	// natively multimodal (text/image/video in) with thinking support.
 	"doubao-seed-2-1-pro":   {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 	"doubao-seed-2-1-turbo": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
+	// The 260215 lite revision retired in 2026-05, but the 260428 revision
+	// stays live (and is Ark's recommended audio-understanding model), so
+	// the stable family name remains routable.
 	"doubao-seed-2-0-pro":  {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 	"doubao-seed-2-0-lite": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
 	"doubao-seed-2-0-mini": {kind: kindGenerate, vision: true, video: true, reasoning: true, webSearch: true, maxInputTokens: 256_000},
@@ -76,28 +84,19 @@ var catalog = map[string]catalogEntry{
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 		maxInputTokens: 256_000,
 	},
-	"doubao-seed-1-6": {
-		kind: kindGenerate, reasoning: true, webSearch: true,
-		deprecated: true, replacement: "doubao-seed-2-0-mini",
-		maxInputTokens: 256_000,
-	},
 	"doubao-seed-1-6-vision": {
 		kind: kindGenerate, vision: true, reasoning: true, webSearch: true,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		maxInputTokens: 256_000,
-	},
-	"doubao-seed-1-6-flash": {
-		kind: kindGenerate, reasoning: true, webSearch: true,
-		deprecated: true, replacement: "doubao-seed-2-0-mini",
 		maxInputTokens: 256_000,
 	},
 
 	"doubao-embedding-large":  {kind: kindEmbed, dimensions: true, maxInputTokens: 4_095},
 	"doubao-embedding-vision": {kind: kindEmbed, imageInput: true, dimensions: true, maxInputTokens: 8_191},
 
-	// Seedream image generation; 5.0/4.5 current, 4.0 superseded.
-	"doubao-seedream-5-0": {kind: kindImage},
-	"doubao-seedream-4-5": {kind: kindImage},
+	// Seedream image generation; 5.0-pro/5.0/4.5 current, 4.0 superseded.
+	"doubao-seedream-5-0-pro": {kind: kindImage},
+	"doubao-seedream-5-0":     {kind: kindImage},
+	"doubao-seedream-4-5":     {kind: kindImage},
 	"doubao-seedream-4-0": {
 		kind:       kindImage,
 		deprecated: true, replacement: "doubao-seedream-5-0",
@@ -105,7 +104,9 @@ var catalog = map[string]catalogEntry{
 
 	// Seedance video generation, served by the async content-generation task
 	// API behind the unary contract. 2.0 is the current line; fast/mini cap
-	// at 720p. 1.x stays routable for existing deployments.
+	// at 720p. 2.5 is the current flagship (1080p, 30s narrative). 1.x
+	// stays routable for existing deployments.
+	"doubao-seedance-2-5":      {kind: kindVideo, maxResolution: "1080p"},
 	"doubao-seedance-2-0":      {kind: kindVideo, maxResolution: "4k"},
 	"doubao-seedance-2-0-fast": {kind: kindVideo, maxResolution: "720p"},
 	"doubao-seedance-2-0-mini": {kind: kindVideo, maxResolution: "720p"},
@@ -127,9 +128,12 @@ var catalog = map[string]catalogEntry{
 	},
 
 	// Logical names for speech families; the wire address (resource ID or
-	// fixed upstream model version) is resolved per driver. ASR and realtime
-	// families are absent until core exposes those operation surfaces.
-	"doubao-tts-2-0": {kind: kindTTS},
+	// fixed upstream model version) is resolved per driver. The ASR family
+	// defaults to the SAUC V2 streaming endpoint when the profile does not
+	// map the model to an account resource ID; realtime remains absent until
+	// core exposes that operation surface.
+	"doubao-tts-2-0":  {kind: kindTTS},
+	"doubao-seed-asr": {kind: kindASR},
 }
 
 // mergedCatalog overlays Spec.Models onto the built-in catalog and returns

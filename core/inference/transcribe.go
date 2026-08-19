@@ -224,6 +224,16 @@ type TranscriptionSession interface {
 	Close() error
 }
 
+// TranscriptionSessionFinisher is an optional session capability: after the
+// caller has no more audio, FinishInput asks the provider to finalize the
+// session so draining Next reaches io.EOF and Result yields the accumulated
+// transcript. Providers whose wire protocol ends sessions on its own need
+// not implement it — callers detect support with a type assertion, and
+// calling FinishInput on a session without the capability is a no-op.
+type TranscriptionSessionFinisher interface {
+	FinishInput(context.Context) error
+}
+
 // TranscriptionSessionDecoder converts provider-native session events into
 // canonical TranscriptionSessionEvents. Implementations must support
 // concurrent calls; sessions serialize decoder use themselves.
@@ -582,6 +592,41 @@ func (s *decodedTranscriptionSession[RawEvent]) Send(
 	}
 	s.mu.Unlock()
 	return s.raw.Send(ctx, chunk)
+}
+
+// FinishInput tells the provider no more audio will arrive so it can
+// finalize the session; callers then drain Next to io.EOF before Result.
+// Providers without the capability keep the call a no-op.
+func (s *decodedTranscriptionSession[RawEvent]) FinishInput(
+	ctx context.Context,
+) error {
+	s.mu.Lock()
+	if s.done {
+		err := s.resultErr
+		if err == nil {
+			err = NewError(
+				OperationInterrupted,
+				OperationTranscription,
+				"",
+				fmt.Errorf("transcription session ended"),
+			)
+		}
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	finisher, ok := s.raw.(TranscriptionSessionFinisher)
+	if !ok {
+		return nil
+	}
+	if err := finisher.FinishInput(ctx); err != nil {
+		return newProviderError(
+			OperationTranscription,
+			s.model.ID.Provider,
+			err,
+		)
+	}
+	return nil
 }
 
 func (s *decodedTranscriptionSession[RawEvent]) Next(

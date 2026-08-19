@@ -22,8 +22,15 @@
 //   - Generate AudioIntent: Doubao TTS 2.0 HTTP chunked synthesis (seed-tts).
 //   - Embed: Ark embeddings (doubao-embedding text; multimodal embedding for
 //     vision-capable variants).
-//   - Transcription and realtime are intentionally absent: core/inference
-//     does not expose those operation surfaces yet.
+//   - Transcription: Doubao ASR V2 SAUC WebSocket recognition (seed-asr).
+//     Whole-file Transcribe feeds the complete inline audio into a streaming
+//     session inside the transport; TranscribeSession is the duplex live
+//     form with continuous multi-utterance partial/final events, word
+//     timing, and barge-in Interrupt. Sessions stay open across finals;
+//     explicit end-of-input (FinishInput / the bridge's finish()) sends the
+//     ASR final packet so draining terminates and Result returns the
+//     accumulated transcript. Realtime is intentionally absent:
+//     core/inference does not expose that operation surface yet.
 //
 // Provider-specific settings ride on requests as typed extensions, one
 // options struct per operation family: GenerateOptions (service tier,

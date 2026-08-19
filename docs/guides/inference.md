@@ -98,6 +98,13 @@ Both shapes address the same `ModelRef` and share the Transcription route
 pools. Drivers that only serve one shape leave the other opener nil and the
 assembly reports `UnsupportedOperation` for it.
 
+Sessions may emit multiple `Final` events for continuous recognition. A
+provider session can expose the optional `TranscriptionSessionFinisher`
+capability: callers that have no more audio call `FinishInput`, then drain
+`Next` to `io.EOF` and read `Result`. `TranscribeStream` performs that
+end-of-input handshake automatically after the source stream ends; the
+script bridge exposes it as the session handle's `finish()`.
+
 Live input rides the part-stream transport: `FeedTranscription` pumps a
 `message.Stream[Part]` into an open session (audio parts become chunks with
 monotonic sequence; EOF ends feeding; a stream failure interrupts the

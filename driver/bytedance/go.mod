@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb
-	github.com/GizClaw/flowcraft/core v0.1.16
+	github.com/GizClaw/flowcraft/core v0.1.17
 	github.com/volcengine/volcengine-go-sdk v1.2.14
 )
 

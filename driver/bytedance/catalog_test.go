@@ -28,6 +28,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 		}
 	}
 	checks := map[string]int{
+		"doubao-seed-evolving":    1_024_000,
 		"doubao-seed-2-1-pro":     256_000,
 		"doubao-seed-1-6-vision":  256_000,
 		"doubao-embedding-large":  4_095,
