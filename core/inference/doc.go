@@ -9,10 +9,14 @@
 //     generate_input.go, generate_intent.go, generate_output.go,
 //     generate_driver.go
 //   - Embed domain: embedding.go
+//   - Transcribe domain: transcribe.go (unary whole-file recognition and
+//     the duplex TranscriptionSession), transcribe_stream.go (live
+//     message.Stream input pumped into a session)
 //   - Resource layer: assembly.go (the inference.Assembly resource
 //     with execution), route/ (the inference.Router decorator:
 //     tiers, selectors, retry/backoff, circuit breaker, trace)
 //
-// The execution runtime (Runtime over a provider registry) and the
-// Router resource are deferred; they land here in later milestones.
+// Realtime — the fourth workload — is reserved in the operation enum and
+// field ledger but has no request/session surface yet; it lands in a later
+// milestone.
 package inference

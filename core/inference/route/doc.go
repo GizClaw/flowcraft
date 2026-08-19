@@ -1,4 +1,5 @@
-// Package route provides optional model selection above inference.Runtime.
+// Package route provides optional model selection above the inference
+// Assembly (inference.Assembly).
 //
 // It owns deployment-defined tiers, normalized model scores, operation-specific
 // target pools, selector contracts, and route traces. It does not declare model

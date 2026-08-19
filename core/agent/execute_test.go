@@ -2,6 +2,7 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -47,6 +49,66 @@ func TestRun_EmptyAgentIDRejected(t *testing.T) {
 	}
 	if res != nil {
 		t.Errorf("expected nil result on infrastructure error, got %+v", res)
+	}
+}
+
+func TestRun_CommittedBoardMaterializesStreamSources(t *testing.T) {
+	format := media.AudioFormat{
+		Encoding:     media.AudioEncodingPCM16,
+		SampleRateHz: 1000,
+		Channels:     1,
+	}
+	chunk, err := media.NewAudioBytes([]byte("abcd"), "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	pipe := message.NewPartPipe(1)
+	pipe.Send(message.AudioPart{Source: chunk, Format: &format})
+	pipe.Close()
+	stream, err := message.NewAudioStream(pipe, "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioStream: %v", err)
+	}
+	req := agent.Request{Message: message.Message{
+		Role: message.RoleUser,
+		Content: message.Content{Parts: []message.Part{
+			message.AudioPart{Source: stream},
+		}},
+	}}
+	engine := agent.EngineFunc(func(
+		_ context.Context, _ agent.Run, _ agent.Host, b *agent.Board,
+	) (*agent.Board, error) {
+		b.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "heard you"))
+		return b, nil
+	})
+	res, err := agent.Execute(context.Background(),
+		agent.Agent{ID: "a"}, engine, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != agent.StatusCompleted {
+		t.Fatalf("Status = %q, want completed", res.Status)
+	}
+	msgs := res.LastBoard.Channel(agent.MainChannel)
+	if len(msgs) != 2 {
+		t.Fatalf("main channel has %d messages, want 2", len(msgs))
+	}
+	user := msgs[0]
+	if message.HasStreamSource(user.Content) {
+		t.Fatal("committed history still carries a stream source")
+	}
+	audio, ok := user.Content.Parts[0].(message.AudioPart)
+	if !ok {
+		t.Fatalf("committed user part = %T, want AudioPart", user.Content.Parts[0])
+	}
+	if got := string(audio.Source.Bytes()); got != "abcd" {
+		t.Fatalf("committed audio bytes = %q, want \"abcd\"", got)
+	}
+	// Materialized history must be serializable: stream handles cannot
+	// cross the durable boundary.
+	if _, err := json.Marshal(res.LastBoard.Snapshot()); err != nil {
+		t.Fatalf("committed board is not serializable: %v", err)
 	}
 }
 

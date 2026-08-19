@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -199,5 +200,79 @@ func (s *routeGenerateStream) Close() error {
 	err := s.inner.Close()
 	s.finish(inference.Metadata{}, errdefs.Validationf(
 		"inference route: stream closed before completion"))
+	return err
+}
+
+// routeTranscriptionSession defers the route span close from session-open
+// time to session completion, mirroring routeGenerateStream. A session may
+// also end through Interrupt (barge-in), which reports the interruption to
+// the span.
+type routeTranscriptionSession struct {
+	inner      inference.TranscriptionSession
+	ctx        context.Context
+	span       trace.Span
+	operation  inference.Operation
+	routeTrace Trace
+	once       sync.Once
+}
+
+func wrapRouteTranscriptionSession(
+	ctx context.Context,
+	span trace.Span,
+	operation inference.Operation,
+	routeTrace Trace,
+	inner inference.TranscriptionSession,
+) inference.TranscriptionSession {
+	return &routeTranscriptionSession{
+		inner:      inner,
+		ctx:        ctx,
+		span:       span,
+		operation:  operation,
+		routeTrace: routeTrace,
+	}
+}
+
+func (s *routeTranscriptionSession) finish(
+	metadata inference.Metadata,
+	err error,
+) {
+	s.once.Do(func() {
+		recordRoute(s.ctx, s.span, s.operation, s.routeTrace, metadata, err)
+	})
+}
+
+func (s *routeTranscriptionSession) Send(
+	ctx context.Context,
+	chunk media.AudioChunk,
+) error {
+	return s.inner.Send(ctx, chunk)
+}
+
+func (s *routeTranscriptionSession) Next(
+	ctx context.Context,
+) (inference.TranscriptionSessionEvent, error) {
+	event, err := s.inner.Next(ctx)
+	if err != nil && !errors.Is(err, io.EOF) {
+		s.finish(inference.Metadata{}, err)
+	}
+	return event, err
+}
+
+func (s *routeTranscriptionSession) Result() (inference.TranscriptionResponse, error) {
+	response, err := s.inner.Result()
+	s.finish(response.Metadata, err)
+	return response, err
+}
+
+func (s *routeTranscriptionSession) Interrupt() error {
+	err := s.inner.Interrupt()
+	s.finish(inference.Metadata{}, err)
+	return err
+}
+
+func (s *routeTranscriptionSession) Close() error {
+	err := s.inner.Close()
+	s.finish(inference.Metadata{}, errdefs.Validationf(
+		"inference route: transcription session closed before completion"))
 	return err
 }

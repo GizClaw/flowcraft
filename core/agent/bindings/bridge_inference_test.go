@@ -39,21 +39,39 @@ func fakeEmbedRouter(t *testing.T, runtime *inference.Assembly) *route.Router {
 	return router
 }
 
+func fakeTranscribeRouter(t *testing.T, runtime *inference.Assembly) *route.Router {
+	t.Helper()
+	router, err := route.New(runtime, route.Selectors{
+		Transcribe:        inferencetest.StaticTranscribeSelector(inferencetest.DefaultFakeTranscribeModel),
+		TranscribeSession: inferencetest.StaticTranscribeSessionSelector(inferencetest.DefaultFakeTranscribeModel),
+	})
+	if err != nil {
+		t.Fatalf("route.New: %v", err)
+	}
+	return router
+}
+
 type inferenceAPI struct {
-	generate           func(raw any) (any, error)
-	route              func(raw any) (any, error)
-	explain            func(raw any) (any, error)
-	routeExplain       func(raw any) (any, error)
-	models             func() (any, error)
-	inspect            func(raw any) (any, error)
-	explainStream      func(raw any) (any, error)
-	routeExplainStream func(raw any) (any, error)
-	embed              func(raw any) (any, error)
-	routeEmbed         func(raw any) (any, error)
-	explainEmbed       func(raw any) (any, error)
-	routeExplainEmbed  func(raw any) (any, error)
-	stream             func(raw any) (any, error)
-	routeStream        func(raw any) (any, error)
+	generate               func(raw any) (any, error)
+	route                  func(raw any) (any, error)
+	explain                func(raw any) (any, error)
+	routeExplain           func(raw any) (any, error)
+	models                 func() (any, error)
+	inspect                func(raw any) (any, error)
+	explainStream          func(raw any) (any, error)
+	routeExplainStream     func(raw any) (any, error)
+	embed                  func(raw any) (any, error)
+	routeEmbed             func(raw any) (any, error)
+	explainEmbed           func(raw any) (any, error)
+	routeExplainEmbed      func(raw any) (any, error)
+	stream                 func(raw any) (any, error)
+	routeStream            func(raw any) (any, error)
+	transcribe             func(raw any) (any, error)
+	routeTranscribe        func(raw any) (any, error)
+	explainTranscribe      func(raw any) (any, error)
+	routeExplainTranscribe func(raw any) (any, error)
+	transcribeSession      func(raw any) (any, error)
+	routeTranscribeSession func(raw any) (any, error)
 }
 
 func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Router, opts ...InferenceBridgeOption) inferenceAPI {
@@ -122,21 +140,51 @@ func newInferenceAPI(t *testing.T, runtime *inference.Assembly, router *route.Ro
 	if !ok {
 		t.Fatalf("inference.routeStream = %T", m["routeStream"])
 	}
+	transcribeFn, ok := m["transcribe"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.transcribe = %T", m["transcribe"])
+	}
+	routeTranscribeFn, ok := m["routeTranscribe"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeTranscribe = %T", m["routeTranscribe"])
+	}
+	explainTranscribeFn, ok := m["explainTranscribe"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.explainTranscribe = %T", m["explainTranscribe"])
+	}
+	routeExplainTranscribeFn, ok := m["routeExplainTranscribe"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeExplainTranscribe = %T", m["routeExplainTranscribe"])
+	}
+	transcribeSessionFn, ok := m["transcribeSession"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.transcribeSession = %T", m["transcribeSession"])
+	}
+	routeTranscribeSessionFn, ok := m["routeTranscribeSession"].(func(any) (any, error))
+	if !ok {
+		t.Fatalf("inference.routeTranscribeSession = %T", m["routeTranscribeSession"])
+	}
 	return inferenceAPI{
-		generate:           generate,
-		route:              routeFn,
-		explain:            explainFn,
-		routeExplain:       routeExplainFn,
-		models:             modelsFn,
-		inspect:            inspectFn,
-		explainStream:      explainStreamFn,
-		routeExplainStream: routeExplainStreamFn,
-		embed:              embedFn,
-		routeEmbed:         routeEmbedFn,
-		explainEmbed:       explainEmbedFn,
-		routeExplainEmbed:  routeExplainEmbedFn,
-		stream:             streamFn,
-		routeStream:        routeStreamFn,
+		generate:               generate,
+		route:                  routeFn,
+		explain:                explainFn,
+		routeExplain:           routeExplainFn,
+		models:                 modelsFn,
+		inspect:                inspectFn,
+		explainStream:          explainStreamFn,
+		routeExplainStream:     routeExplainStreamFn,
+		embed:                  embedFn,
+		routeEmbed:             routeEmbedFn,
+		explainEmbed:           explainEmbedFn,
+		routeExplainEmbed:      routeExplainEmbedFn,
+		stream:                 streamFn,
+		routeStream:            routeStreamFn,
+		transcribe:             transcribeFn,
+		routeTranscribe:        routeTranscribeFn,
+		explainTranscribe:      explainTranscribeFn,
+		routeExplainTranscribe: routeExplainTranscribeFn,
+		transcribeSession:      transcribeSessionFn,
+		routeTranscribeSession: routeTranscribeSessionFn,
 	}
 }
 
@@ -168,10 +216,79 @@ func openStream(t *testing.T, raw any) streamHandle {
 	return streamHandle{next: next, result: result, close: closeFn}
 }
 
+// sessionHandle mirrors the script-facing transcription session handle.
+type sessionHandle struct {
+	send      func(any) error
+	next      func() (any, error)
+	result    func() (any, error)
+	interrupt func() error
+	close     func() error
+}
+
+func openSession(t *testing.T, raw any) sessionHandle {
+	t.Helper()
+	m, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("session handle = %T, want map[string]any", raw)
+	}
+	send, ok := m["send"].(func(any) error)
+	if !ok {
+		t.Fatalf("session.send = %T", m["send"])
+	}
+	next, ok := m["next"].(func() (any, error))
+	if !ok {
+		t.Fatalf("session.next = %T", m["next"])
+	}
+	result, ok := m["result"].(func() (any, error))
+	if !ok {
+		t.Fatalf("session.result = %T", m["result"])
+	}
+	interrupt, ok := m["interrupt"].(func() error)
+	if !ok {
+		t.Fatalf("session.interrupt = %T", m["interrupt"])
+	}
+	closeFn, ok := m["close"].(func() error)
+	if !ok {
+		t.Fatalf("session.close = %T", m["close"])
+	}
+	return sessionHandle{
+		send:      send,
+		next:      next,
+		result:    result,
+		interrupt: interrupt,
+		close:     closeFn,
+	}
+}
+
 func fakeModelJSON() map[string]any {
 	return map[string]any{
 		"id":      map[string]any{"provider": "fake", "name": "echo"},
 		"profile": "default",
+	}
+}
+
+func fakeTranscribeModelJSON() map[string]any {
+	return map[string]any{
+		"id":      map[string]any{"provider": "fake", "name": "transcribe"},
+		"profile": "default",
+	}
+}
+
+func transcribeAudioJSON() map[string]any {
+	return map[string]any{
+		"kind":       "inline",
+		"data":       []byte{1, 2, 3, 4},
+		"media_type": "audio/wav",
+	}
+}
+
+func transcribeSessionJSON() map[string]any {
+	return map[string]any{
+		"input_format": map[string]any{
+			"encoding":       "pcm16",
+			"sample_rate_hz": 16000,
+			"channels":       1,
+		},
 	}
 }
 
@@ -888,6 +1005,349 @@ func TestInferenceBridge_Extensions_StrictFields(t *testing.T) {
 	})
 	if err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("typo fields error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceBridge_Transcribe_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.transcribe(map[string]any{
+		"model": fakeTranscribeModelJSON(),
+		"audio": transcribeAudioJSON(),
+	})
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("transcribe response = %T, want object", out)
+	}
+	if resp["text"] != "ok" {
+		t.Fatalf("text = %v, want %q", resp["text"], "ok")
+	}
+}
+
+func TestInferenceBridge_Transcribe_NoRuntime(t *testing.T) {
+	api := newInferenceAPI(t, nil, nil)
+	_, err := api.transcribe(map[string]any{
+		"model": fakeTranscribeModelJSON(),
+		"audio": transcribeAudioJSON(),
+	})
+	if err == nil || !errdefs.IsNotAvailable(err) {
+		t.Fatalf("unwired transcribe error = %v, want NotAvailable", err)
+	}
+}
+
+func TestInferenceBridge_RouteTranscribe_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime))
+
+	out, err := api.routeTranscribe(map[string]any{
+		"audio": transcribeAudioJSON(),
+	})
+	if err != nil {
+		t.Fatalf("routeTranscribe: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeTranscribe response = %T, want object", out)
+	}
+	trace, ok := resp["trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace missing or %T, want object", resp["trace"])
+	}
+	executed, ok := trace["executed"].(map[string]any)
+	if !ok {
+		t.Fatalf("trace.executed = %T, want object", trace["executed"])
+	}
+	id, ok := executed["id"].(map[string]any)
+	if !ok || id["provider"] != "fake" || id["name"] != "transcribe" {
+		t.Fatalf("trace.executed.id = %v, want fake/transcribe", executed["id"])
+	}
+}
+
+func TestInferenceBridge_RouteTranscribe_RejectsModelKey(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime))
+
+	_, err := api.routeTranscribe(map[string]any{
+		"model": fakeTranscribeModelJSON(),
+		"audio": transcribeAudioJSON(),
+	})
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("routeTranscribe with model key error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceBridge_Transcribe_Extensions(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil,
+		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
+
+	_, err := api.transcribe(map[string]any{
+		"model": fakeTranscribeModelJSON(),
+		"audio": transcribeAudioJSON(),
+		"extensions": []any{map[string]any{
+			"provider": "fake",
+			"id":       "generate_options",
+			"fields":   map[string]any{"cache_key": "sess-1"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("transcribe with extensions: %v", err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 1 || len(reqs[0].Extensions) != 1 {
+		t.Fatalf("provider saw %+v, want one extension", reqs)
+	}
+	ext, ok := reqs[0].Extensions[0].(testExtension)
+	if !ok || ext.CacheKey != "sess-1" {
+		t.Fatalf("extension = %+v (%T), want cache_key sess-1", reqs[0].Extensions[0], reqs[0].Extensions[0])
+	}
+}
+
+func TestInferenceBridge_RouteTranscribe_Extensions(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime),
+		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
+
+	_, err := api.routeTranscribe(map[string]any{
+		"audio": transcribeAudioJSON(),
+		"extensions": []any{map[string]any{
+			"provider": "fake",
+			"id":       "generate_options",
+			"fields":   map[string]any{"cache_key": "sess-2"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("routeTranscribe with extensions: %v", err)
+	}
+	reqs := fake.Requests()
+	if len(reqs) != 1 || len(reqs[0].Extensions) != 1 {
+		t.Fatalf("router forwarded %+v, want one extension", reqs)
+	}
+	if ext, ok := reqs[0].Extensions[0].(testExtension); !ok || ext.CacheKey != "sess-2" {
+		t.Fatalf("extension = %+v (%T), want cache_key sess-2", reqs[0].Extensions[0], reqs[0].Extensions[0])
+	}
+}
+
+func TestInferenceBridge_TranscribeSession_Extensions(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil,
+		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
+
+	_, err := api.transcribeSession(map[string]any{
+		"model":        fakeTranscribeModelJSON(),
+		"input_format": transcribeSessionJSON()["input_format"],
+		"extensions": []any{map[string]any{
+			"provider": "fake",
+			"id":       "generate_options",
+			"fields":   map[string]any{"cache_key": "sess-3"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("transcribeSession with extensions: %v", err)
+	}
+	reqs := fake.SessionRequests()
+	if len(reqs) != 1 || len(reqs[0].Extensions) != 1 {
+		t.Fatalf("provider saw %+v, want one session extension", reqs)
+	}
+	if ext, ok := reqs[0].Extensions[0].(testExtension); !ok || ext.CacheKey != "sess-3" {
+		t.Fatalf("extension = %+v (%T), want cache_key sess-3", reqs[0].Extensions[0], reqs[0].Extensions[0])
+	}
+}
+
+func TestInferenceBridge_RouteTranscribeSession_Extensions(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime),
+		WithExtensionDecoder("fake", "generate_options", testExtensionDecoder()))
+
+	raw := transcribeSessionJSON()
+	raw["extensions"] = []any{map[string]any{
+		"provider": "fake",
+		"id":       "generate_options",
+		"fields":   map[string]any{"cache_key": "sess-4"},
+	}}
+	_, err := api.routeTranscribeSession(raw)
+	if err != nil {
+		t.Fatalf("routeTranscribeSession with extensions: %v", err)
+	}
+	// Route session open compiles twice: the Explain preflight and the
+	// actual open. Both must carry the extension.
+	reqs := fake.SessionRequests()
+	if len(reqs) != 2 {
+		t.Fatalf("router forwarded %d session requests, want 2", len(reqs))
+	}
+	for _, req := range reqs {
+		if len(req.Extensions) != 1 {
+			t.Fatalf("session request extensions = %+v, want one", req.Extensions)
+		}
+		if ext, ok := req.Extensions[0].(testExtension); !ok || ext.CacheKey != "sess-4" {
+			t.Fatalf("extension = %+v (%T), want cache_key sess-4",
+				req.Extensions[0], req.Extensions[0])
+		}
+	}
+}
+
+func TestInferenceBridge_ExplainTranscribe_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.explainTranscribe(map[string]any{
+		"model": fakeTranscribeModelJSON(),
+		"audio": transcribeAudioJSON(),
+	})
+	if err != nil {
+		t.Fatalf("explainTranscribe: %v", err)
+	}
+	explanation, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("explanation = %T, want object", out)
+	}
+	if explanation["Operation"] != string(inference.OperationTranscription) {
+		t.Fatalf("explanation.Operation = %v, want %q",
+			explanation["Operation"], inference.OperationTranscription)
+	}
+}
+
+func TestInferenceBridge_RouteExplainTranscribe_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime))
+
+	out, err := api.routeExplainTranscribe(map[string]any{
+		"audio": transcribeAudioJSON(),
+	})
+	if err != nil {
+		t.Fatalf("routeExplainTranscribe: %v", err)
+	}
+	resp, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("routeExplainTranscribe response = %T, want object", out)
+	}
+	if _, ok := resp["explanation"].(map[string]any); !ok {
+		t.Fatalf("explanation = %T, want object", resp["explanation"])
+	}
+	if _, ok := resp["decision"].(map[string]any); !ok {
+		t.Fatalf("decision = %T, want object", resp["decision"])
+	}
+	if _, ok := resp["limits"].(map[string]any); !ok {
+		t.Fatalf("limits = %T, want object", resp["limits"])
+	}
+}
+
+func TestInferenceBridge_TranscribeSession_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.transcribeSession(map[string]any{
+		"model":        fakeTranscribeModelJSON(),
+		"input_format": transcribeSessionJSON()["input_format"],
+	})
+	if err != nil {
+		t.Fatalf("transcribeSession: %v", err)
+	}
+	handle := openSession(t, out)
+	if err := handle.send(map[string]any{
+		"data":     []byte{0, 0},
+		"sequence": 1,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	for {
+		event, err := handle.next()
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if event == nil {
+			break
+		}
+	}
+	result, err := handle.result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	resp, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want object", result)
+	}
+	if resp["text"] != "ok" {
+		t.Fatalf("text = %v, want %q", resp["text"], "ok")
+	}
+	if err := handle.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestInferenceBridge_RouteTranscribeSession_RoundTrip(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	runtime := fake.Assembly(t)
+	api := newInferenceAPI(t, runtime, fakeTranscribeRouter(t, runtime))
+
+	out, err := api.routeTranscribeSession(transcribeSessionJSON())
+	if err != nil {
+		t.Fatalf("routeTranscribeSession: %v", err)
+	}
+	handle := openSession(t, out)
+	if err := handle.send(map[string]any{"data": []byte{0, 0}}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	for {
+		event, err := handle.next()
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if event == nil {
+			break
+		}
+	}
+	result, err := handle.result()
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	resp, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want object", result)
+	}
+	if _, ok := resp["trace"].(map[string]any); !ok {
+		t.Fatalf("trace missing or %T, want object", resp["trace"])
+	}
+	if err := handle.close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestInferenceBridge_TranscribeSession_Interrupt(t *testing.T) {
+	fake := &inferencetest.TranscriptionFake{}
+	api := newInferenceAPI(t, fake.Assembly(t), nil)
+
+	out, err := api.transcribeSession(map[string]any{
+		"model":        fakeTranscribeModelJSON(),
+		"input_format": transcribeSessionJSON()["input_format"],
+	})
+	if err != nil {
+		t.Fatalf("transcribeSession: %v", err)
+	}
+	handle := openSession(t, out)
+	if err := handle.send(map[string]any{"data": []byte{0, 0}}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := handle.interrupt(); err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	if _, err := handle.next(); err == nil {
+		t.Fatal("next after interrupt succeeded, want interruption error")
+	}
+	if _, err := handle.result(); err == nil {
+		t.Fatal("result after interrupt succeeded, want interruption error")
+	}
+	if err := handle.close(); err != nil {
+		t.Fatalf("close: %v", err)
 	}
 }
 

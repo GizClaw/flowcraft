@@ -3,6 +3,7 @@ package a2a
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -56,6 +57,9 @@ func a2aPartFromMediaSource(src interface {
 		out := a2aprotocol.NewFileURLPart(a2aprotocol.URL(src.URL()), src.MediaType())
 		out.Filename = name
 		return out, true, nil
+	case media.SourceStream:
+		return nil, false, fmt.Errorf(
+			"stream media sources cannot be converted to A2A")
 	default:
 		out := a2aprotocol.NewRawPart(src.Bytes())
 		out.MediaType = src.MediaType()

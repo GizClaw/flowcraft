@@ -21,11 +21,16 @@ import (
 func (p Policy) Selectors() Selectors {
 	generate := newPolicyRoute(inference.OperationGenerate, p.Generate)
 	embed := newPolicyRoute(inference.OperationEmbed, p.Embed)
+	transcribe := newPolicyRoute(inference.OperationTranscription, p.Transcription)
 	return Selectors{
-		Generate:         generate,
-		GenerateFallback: generate,
-		Embed:            embed,
-		EmbedFallback:    embed,
+		Generate:                  generate,
+		GenerateFallback:          generate,
+		Embed:                     embed,
+		EmbedFallback:             embed,
+		Transcribe:                transcribe,
+		TranscribeFallback:        transcribe,
+		TranscribeSession:         transcribe,
+		TranscribeSessionFallback: transcribe,
 	}
 }
 
@@ -117,6 +122,36 @@ func (r *policyRoute) SelectEmbed(
 func (r *policyRoute) NextEmbed(
 	_ context.Context,
 	_ inference.EmbedRequest,
+	attempt Attempt,
+) (inference.ModelRef, bool, error) {
+	return r.nextTarget(attempt)
+}
+
+func (r *policyRoute) SelectTranscribe(
+	context.Context,
+	inference.TranscriptionRequest,
+) (Decision, error) {
+	return r.selectTarget()
+}
+
+func (r *policyRoute) NextTranscribe(
+	_ context.Context,
+	_ inference.TranscriptionRequest,
+	attempt Attempt,
+) (inference.ModelRef, bool, error) {
+	return r.nextTarget(attempt)
+}
+
+func (r *policyRoute) SelectTranscribeSession(
+	context.Context,
+	inference.TranscriptionSessionRequest,
+) (Decision, error) {
+	return r.selectTarget()
+}
+
+func (r *policyRoute) NextTranscribeSession(
+	_ context.Context,
+	_ inference.TranscriptionSessionRequest,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
 	return r.nextTarget(attempt)

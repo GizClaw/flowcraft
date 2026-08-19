@@ -33,14 +33,15 @@
 //     call ids, definitions for wire-ready tool declarations
 //     (see NewToolBridge)
 //
-//   - inference: single-shot LLM generation — generate resolves an
-//     explicit model through the inference.Runtime, route defers
-//     target selection to a route.Router and adds a routing trace;
-//     stream/routeStream are the pull-based iterator twins whose
-//     accumulated result matches the unary shape. Requests and
-//     responses are the canonical GenerateRequest / GenerateResponse
-//     wire JSON, and multi-turn tool loops are orchestrated in
-//     script-land (see NewInferenceBridge)
+//   - inference: canonical inference operations — generate/embed/
+//     transcribe resolve an explicit model through the
+//     inference.Assembly, route variants defer target selection to a
+//     route.Router and add a routing trace; stream/routeStream are the
+//     pull-based iterator twins whose accumulated result matches the
+//     unary shape, and transcribeSession/routeTranscribeSession open a
+//     duplex session handle (send/next/result/interrupt/close). Requests
+//     and responses are the canonical wire JSON, and multi-turn tool
+//     loops are orchestrated in script-land (see NewInferenceBridge)
 //
 //   - runtime: named sub-script execution via runtime.execScript,
 //     with nested-exec capability probing (see NewRuntimeBridge)

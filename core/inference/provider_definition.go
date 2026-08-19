@@ -16,11 +16,16 @@ type (
 	// OpenEmbed materializes an embedding driver. It follows OpenGenerate's
 	// runtime-owned context and local, bounded construction contract.
 	OpenEmbed func(context.Context, ModelRef) (EmbedDriver, error)
+	// OpenTranscribe materializes transcription operations (unary and/or
+	// duplex session). It follows OpenGenerate's runtime-owned context and
+	// local, bounded construction contract.
+	OpenTranscribe func(context.Context, ModelRef) (TranscribeOperations, error)
 )
 
 type Openers struct {
-	Generate OpenGenerate
-	Embed    OpenEmbed
+	Generate   OpenGenerate
+	Embed      OpenEmbed
+	Transcribe OpenTranscribe
 }
 
 // ModelImplementation binds descriptive metadata to the operation openers that
@@ -206,6 +211,9 @@ func (openers Openers) Operations() []Operation {
 	}
 	if openers.Embed != nil {
 		operations = append(operations, OperationEmbed)
+	}
+	if openers.Transcribe != nil {
+		operations = append(operations, OperationTranscription)
 	}
 	return operations
 }

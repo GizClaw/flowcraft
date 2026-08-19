@@ -132,14 +132,16 @@ func (p Pool) Validate() error {
 type Policy struct {
 	Generate       []Pool                `json:"generate,omitempty"`
 	Embed          []Pool                `json:"embed,omitempty"`
+	Transcription  []Pool                `json:"transcription,omitempty"`
 	Retry          *RetryConfig          `json:"retry,omitempty"`
 	CircuitBreaker *CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
 }
 
 func (p Policy) Clone() Policy {
 	cloned := Policy{
-		Generate: clonePools(p.Generate),
-		Embed:    clonePools(p.Embed),
+		Generate:      clonePools(p.Generate),
+		Embed:         clonePools(p.Embed),
+		Transcription: clonePools(p.Transcription),
 	}
 	if p.Retry != nil {
 		retry := p.Retry.Clone()
@@ -153,7 +155,7 @@ func (p Policy) Clone() Policy {
 }
 
 func (p Policy) Validate() error {
-	total := len(p.Generate) + len(p.Embed)
+	total := len(p.Generate) + len(p.Embed) + len(p.Transcription)
 	if total == 0 {
 		return fmt.Errorf("route policy has no pools")
 	}
@@ -163,6 +165,7 @@ func (p Policy) Validate() error {
 	}{
 		{operation: inference.OperationGenerate, pools: p.Generate},
 		{operation: inference.OperationEmbed, pools: p.Embed},
+		{operation: inference.OperationTranscription, pools: p.Transcription},
 	}
 	for _, entry := range operations {
 		seen := make(map[Tier]struct{}, len(entry.pools))
@@ -200,6 +203,8 @@ func hasPools(policy Policy) func(inference.Operation) bool {
 			return len(policy.Generate) > 0
 		case inference.OperationEmbed:
 			return len(policy.Embed) > 0
+		case inference.OperationTranscription:
+			return len(policy.Transcription) > 0
 		default:
 			return false
 		}
@@ -208,8 +213,9 @@ func hasPools(policy Policy) func(inference.Operation) bool {
 
 // RetryConfig is the JSON-only deployment form of RetryPolicies.
 type RetryConfig struct {
-	Generate *RetryPolicyConfig `json:"generate,omitempty"`
-	Embed    *RetryPolicyConfig `json:"embed,omitempty"`
+	Generate      *RetryPolicyConfig `json:"generate,omitempty"`
+	Embed         *RetryPolicyConfig `json:"embed,omitempty"`
+	Transcription *RetryPolicyConfig `json:"transcription,omitempty"`
 }
 
 // UnmarshalJSON enforces the JSON-only DTO boundary strictly: unknown fields
@@ -228,8 +234,9 @@ func (c *RetryConfig) UnmarshalJSON(data []byte) error {
 
 func (c RetryConfig) Clone() RetryConfig {
 	return RetryConfig{
-		Generate: c.Generate.Clone(),
-		Embed:    c.Embed.Clone(),
+		Generate:      c.Generate.Clone(),
+		Embed:         c.Embed.Clone(),
+		Transcription: c.Transcription.Clone(),
 	}
 }
 
@@ -240,6 +247,7 @@ func (c RetryConfig) validate(hasPools func(inference.Operation) bool) error {
 	}{
 		{inference.OperationGenerate, c.Generate},
 		{inference.OperationEmbed, c.Embed},
+		{inference.OperationTranscription, c.Transcription},
 	}
 	for _, entry := range entries {
 		if entry.config == nil {
@@ -267,6 +275,9 @@ func (c RetryConfig) policies() (RetryPolicies, error) {
 	}
 	if out.Embed, err = c.Embed.policy(); err != nil {
 		return RetryPolicies{}, fmt.Errorf("embed retry policy: %w", err)
+	}
+	if out.Transcription, err = c.Transcription.policy(); err != nil {
+		return RetryPolicies{}, fmt.Errorf("transcription retry policy: %w", err)
 	}
 	return out, nil
 }
