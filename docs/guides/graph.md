@@ -249,12 +249,16 @@ a no-op host, so scripts can call them unconditionally.
 | `tool_call`   | JSON string or `{id, name, arguments}`       | tool call part delta           |
 | `tool_result` | `{tool_call_id, content, is_error}`          | tool result part delta         |
 | `part`        | canonical part wire object (`{"type": ...}`) | arbitrary `message.Part` delta |
+| `finish`      | `{finish_reason, request_id?, response_id?}` | finish delta with typed fields |
+| `provider_outputs` | `[{provider, extension, value}]`        | provider_outputs delta         |
 | anything else | any value                                    | passthrough delta; raw payload rides under `payload` |
 
 Emission is fire-and-forget: publish failures are dropped, not thrown.
 Payloads that do not decode into the type's required shape (e.g. a
 `tool_call` without `id`) are skipped instead of published as empty
-deltas.
+deltas. `finish` requires `finish_reason`; `provider_outputs` requires
+a non-empty array with `provider` / `extension` / `value` on every
+entry.
 
 ### `run`
 

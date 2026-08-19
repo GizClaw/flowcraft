@@ -73,6 +73,26 @@ func waitForGen(t *testing.T, runs <-chan int64, want int64) {
 	t.Fatalf("engine generation %d not observed", want)
 }
 
+// waitForEngineRun blocks until the gated engine reports one run and
+// returns the observed generation. Multi-agent builds instantiate engines
+// in resource order, which is not deterministic, so tests must not couple
+// a wait to a specific generation number — any run from the turn under test
+// is enough to know it reached the engine and is blocked on the gate.
+func waitForEngineRun(t *testing.T, runs <-chan int64) int64 {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case got := <-runs:
+			return got
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	t.Fatalf("engine run not observed")
+	return 0
+}
+
 // recordedBusFactory records every bus it builds so tests can publish
 // on the exact old/new generation buses.
 type recordedBusFactory struct {
@@ -669,7 +689,7 @@ func TestRuntimeReloadDrainTimeoutClearsTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start(extra): %v", err)
 	}
-	waitForGen(t, f.runs, 2)
+	waitForEngineRun(t, f.runs)
 
 	reloadCtx, cancelReload := context.WithTimeout(
 		context.Background(), 100*time.Millisecond)
