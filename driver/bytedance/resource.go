@@ -106,7 +106,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	slices.Sort(names)
 	for _, name := range names {
 		entry := models[name]
-		if entry.kind == kindASR || entry.kind == kindRealtime {
+		if entry.kind == kindRealtime {
 			return inference.ProviderDefinition{}, fmt.Errorf(
 				"bytedance provider %q: model %q kind %q is not supported by core inference yet",
 				settings.ID,
@@ -225,6 +225,19 @@ func openersFor(
 					return inference.GenerateOperations{}, err
 				}
 				return openTTS(cls, spec, id, model.Profile)
+			},
+		}
+	case kindASR:
+		return inference.Openers{
+			Transcribe: func(
+				_ context.Context,
+				model inference.ModelRef,
+			) (inference.TranscribeOperations, error) {
+				cls, err := open(model.Profile)
+				if err != nil {
+					return inference.TranscribeOperations{}, err
+				}
+				return openASR(cls, id, model.Profile)
 			},
 		}
 	}

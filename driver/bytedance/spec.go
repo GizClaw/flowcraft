@@ -161,8 +161,8 @@ func (m ModelSpec) Validate() error {
 		return fmt.Errorf("invalid model name %q", m.Name)
 	}
 	switch modelKind(m.Kind) {
-	case kindGenerate, kindEmbed, kindImage, kindVideo, kindTTS:
-	case kindASR, kindRealtime:
+	case kindGenerate, kindEmbed, kindImage, kindVideo, kindTTS, kindASR:
+	case kindRealtime:
 		return fmt.Errorf("model %q kind %q is not supported by core inference yet", m.Name, m.Kind)
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
