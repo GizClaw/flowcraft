@@ -24,15 +24,36 @@ const (
 	testStoreImpl  = "test"
 )
 
+// withRunEnd wraps an engine so it publishes the engine contract's
+// required run-end event after Execute returns. Stub engines built
+// from agent.EngineFunc never publish it themselves, and without the
+// event the session's stream coordinator waits out its full drain
+// budget on every turn.
+func withRunEnd(engine agent.Engine) agent.Engine {
+	return agent.EngineFunc(func(ctx context.Context, run agent.Run, host agent.Host, board *agent.Board) (*agent.Board, error) {
+		board, err := engine.Execute(ctx, run, host, board)
+		publishCtx := context.WithoutCancel(ctx)
+		envelope, envelopeErr := event.NewEnvelope(publishCtx, agent.SubjectRunEnd(run.RunID), nil)
+		if envelopeErr == nil {
+			envelope.SetRunID(run.RunID)
+			envelopeErr = host.Publish(publishCtx, envelope)
+		}
+		if err != nil {
+			return board, err
+		}
+		return board, envelopeErr
+	})
+}
+
 func noopEngine() agent.Engine {
-	return agent.EngineFunc(func(
+	return withRunEnd(agent.EngineFunc(func(
 		_ context.Context,
 		_ agent.Run,
 		_ agent.Host,
 		board *agent.Board,
 	) (*agent.Board, error) {
 		return board, nil
-	})
+	}))
 }
 
 type testEngineFactory struct {

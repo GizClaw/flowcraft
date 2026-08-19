@@ -7,10 +7,20 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	otellog "go.opentelemetry.io/otel/log"
+
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
+
+// finalizeErrorStateKey is recorded on the turn result state when the
+// engine never published its required run-end event, so the stream
+// drain budget was consumed and the turn's sinks were detached without
+// seeing the logical run end. Callers can distinguish this contract
+// violation from a healthy turn by checking the key.
+const finalizeErrorStateKey = "session.finalize_error"
 
 // Turn is one asynchronous execution owned by a Session.
 type Turn struct {
@@ -299,6 +309,9 @@ func (t *Turn) finish(result *agent.Result, err error) {
 		)
 		finalizeErr = coordinator.finalize(finalizeCtx, result, err)
 		cancel()
+		if finalizeErr != nil {
+			t.recordFinalizeTimeout(result, finalizeErr)
+		}
 	}
 	for _, attachment := range attachments {
 		if result == nil || runEndFailed || finalizeErr != nil {
@@ -326,6 +339,24 @@ func (t *Turn) finish(result *agent.Result, err error) {
 		t.release()
 	}
 	close(t.done)
+}
+
+// recordFinalizeTimeout makes a missing run-end diagnosable: the engine
+// did not publish its required terminal event within the drain budget,
+// so the turn result carries the reason and telemetry emits a warning.
+// The drain timeout itself is not returned from Wait because the turn
+// outcome (result/status) already settled; it is recorded instead.
+func (t *Turn) recordFinalizeTimeout(result *agent.Result, finalizeErr error) {
+	if result.State == nil {
+		result.State = make(map[string]any)
+	}
+	result.State[finalizeErrorStateKey] = finalizeErr.Error()
+	telemetry.WarnErr(
+		context.WithoutCancel(t.runCtx),
+		"runtime session: engine did not publish run-end; turn stream drain timed out",
+		finalizeErr,
+		otellog.String(telemetry.AttrRunID, t.runID),
+	)
 }
 
 func (t *Turn) configureAuthority(spec SinkSpec, queueSize int, sink *queuedSink) {

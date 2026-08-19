@@ -299,6 +299,72 @@ func TestTurnWaitDrainsSinkThroughRunEnd(t *testing.T) {
 	}
 }
 
+func TestTurnRecordsFinalizeTimeoutWhenEngineOmitsRunEnd(t *testing.T) {
+	engine := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
+		return board, nil
+	})
+	bus := event.NewMemoryBus()
+	router := event.NewRouter(bus)
+	instance := &agent.Agent{ID: "agent-a", Engine: engine}
+	manager, err := NewManager(
+		&testResolver{instances: map[string]*agent.Agent{"agent-a": instance}},
+		turnHostFactory(bus),
+		router,
+		WithIdleTimeout(time.Minute),
+		WithSinkBufferSize(8),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := manager.Open(context.Background(), Key{AgentID: "agent-a", ContextID: "ctx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = lease.Close()
+		_ = manager.Close()
+		_ = router.Close()
+		_ = bus.Close()
+	})
+
+	detached := make(chan error, 1)
+	turn, err := lease.Session().Start(
+		context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
+		SinkSpec{
+			ID:        "drain",
+			QueueSize: 8,
+			Sink: agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+				return nil
+			}),
+			OnDetach: func(err error) { detached <- err },
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), defaultAttemptDrainTimeout+2*time.Second)
+	defer cancel()
+	result, err := turn.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if result.Status != agent.StatusCompleted {
+		t.Fatalf("status = %q, want completed", result.Status)
+	}
+	if result.State == nil || result.State[finalizeErrorStateKey] == nil {
+		t.Fatalf("result state missing %q: %#v", finalizeErrorStateKey, result.State)
+	}
+	select {
+	case detachErr := <-detached:
+		if !errdefs.IsTimeout(detachErr) {
+			t.Fatalf("sink detach error = %v, want timeout", detachErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sink was not detached after missing run-end")
+	}
+}
+
 func TestTurnWaitDoesNotBlockForeverOnStuckSink(t *testing.T) {
 	engine := agent.EngineFunc(func(_ context.Context, _ agent.Run, _ agent.Host, board *agent.Board) (*agent.Board, error) {
 		return board, nil
