@@ -26,6 +26,31 @@ type Registry struct {
 	fallback FallbackHandler
 }
 
+// NodeTypeRegistrar binds one or more node types into a Registry.
+//
+// It is the contract between the graph kernel and resource-built
+// custom node types: a value implementing this interface can be
+// produced by any resource factory (core/graph/resource's
+// "graph.NodeType" kind, a host package, a plugin) and mounted into
+// the graph engine as a "node_type" dependency. The engine factory
+// calls Register on every such dependency before Build, so custom
+// node types participate in the normal resource DAG — they can carry
+// their own deps, be shared across agents, and be validated at
+// deployment time like any other resource.
+type NodeTypeRegistrar interface {
+	Register(*Registry) error
+}
+
+// ConfigFileRefFields is implemented by [NodeTypeRegistrar]s whose
+// node configs may carry structured source references ({"file": ...}
+// or {"embed": ...}). The graph engine factory materializes those
+// references before Build so the kernel stays filesystem-free.
+type ConfigFileRefFields interface {
+	// FileRefFields returns, per registered node type name, the config
+	// field names that may hold a source reference.
+	FileRefFields() map[string][]string
+}
+
 // NewRegistry returns an empty Registry.
 func NewRegistry() *Registry {
 	return &Registry{types: make(map[string]*erasedType)}

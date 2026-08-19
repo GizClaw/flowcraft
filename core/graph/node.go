@@ -47,10 +47,10 @@ const (
 // means non-empty (reads) resp. grown since invocation (writes).
 // Missing optional slots are skipped silently.
 type Role struct {
-	Kind      RoleKind
-	Name      string
-	ConfigKey string
-	Required  bool
+	Kind      RoleKind `json:"kind"`
+	Name      string   `json:"name,omitempty"`
+	ConfigKey string   `json:"config_key,omitempty"`
+	Required  bool     `json:"required,omitempty"`
 }
 
 // Meta is the static descriptor of a node type, supplied once at

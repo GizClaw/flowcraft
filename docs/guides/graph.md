@@ -190,6 +190,85 @@ depends on the engine's deps:
 | `shell`     | `sandbox` dep                           | sandboxed command execution          |
 | `runtime`   | always                                  | nested sub-script execution          |
 
+### Custom node types (`graph.NodeType`)
+
+Beyond the three built-ins, node types are deployment resources. A resource of
+kind `graph.NodeType` produces a value implementing
+`graph.NodeTypeRegistrar`; the graph engine factory registers every `node_type`
+dependency into the engine's registry before `Build`, so the graph definition
+can reference the type by name.
+
+Because a custom node type is a resource, it participates in the normal
+resource DAG: it can declare its own deps (script runtime, tools, workspace,
+...), is built exactly once, and can be shared by several agents. The engine
+accepts the deps under the `node_type` name or `node_type.<suffix>` keys (the
+`Many` dep form, like `tool.*` sources).
+
+#### Script-backed impl (`graph.NodeType/script`)
+
+The built-in script impl defines the node behaviour as an embedded script that
+runs on the bound `agent.ScriptRuntime` with exactly the same bridges as the
+built-in `script` node. The node's config in the graph definition is the
+script's `config` global (board references still resolve first), and the
+script writes/reads the board like any script node.
+
+| Settings field | Meaning                                                                       |
+| -------------- | ----------------------------------------------------------------------------- |
+| `type`         | the node type name graphs reference (must not collide with built-ins or other mounted types) |
+| `source`       | handler source: inline string or `{file: ...}` / `{embed: ...}` (required)    |
+| `desc`         | optional human-readable type description                                      |
+| `reads` / `writes` | static I/O roles (`kind: var|messages`, `name` or `config_key`, `required`); enforced at Build and invocation |
+
+Deps of `graph.NodeType/script`: `script_runtime` (required), plus optional
+`tools`, `inference`, `router`, `workspace`, `sandbox` enabling the same
+globals the built-in script node unlocks (`tools`, `inference`, `fs`, `shell`).
+
+```yaml
+resources:
+  greet:
+    kind: graph.NodeType
+    impl: script
+    deps:
+      script_runtime: js
+    settings:
+      type: greet
+      source: board.setVar("greeting", "hi " + config.name)
+      writes:
+        - kind: var
+          name: greeting
+          required: true
+
+agent:
+  asst:
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps:
+        node_type.greet: greet
+```
+
+The graph can then use the type like any other:
+
+```json
+{
+  "name": "greeter",
+  "entry": "hello",
+  "nodes": [
+    {
+      "id": "hello",
+      "type": "greet",
+      "config": { "name": "${board.user}" }
+    }
+  ],
+  "edges": []
+}
+```
+
+Go-backed custom node types follow the same contract: a host or plugin
+registers a `graph.NodeType` resource factory whose value implements
+`graph.NodeTypeRegistrar` (typically by calling `graph.RegisterType` with a
+closure capturing the resource's deps). The engine wires them identically.
+
 ### `board`
 
 Direct read/write of the engine board.

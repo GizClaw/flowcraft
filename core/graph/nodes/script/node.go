@@ -89,40 +89,53 @@ func NewNode(deps ScriptNodeDeps) graph.NodeType[ScriptConfig] {
 			if name == "" {
 				name = ec.NodeID
 			}
-			info, _ := agent.RunInfoFromContext(ec.Context)
-
-			// Subscriptions opened mid-script are bound to the script's
-			// lifetime: the cleanup registry rides the context the
-			// bridges bind against and Exec receives, then flushes when
-			// Exec returns — subscriptions never outlive the node
-			// invocation.
-			execCtx, cleanups := withStreamCleanup(ec.Context)
-			defer cleanups.flush()
-
-			env := bindings.NewEnvBuilder(cfg.Config).
-				Add(
-					bindings.NewBoardBridge(board),
-					bindings.NewExprBridge(),
-					bindings.NewHostBridge(ec.Host, name, scriptEmitter{ec}),
-					bindings.NewRunInfoBridge(),
-					bindings.NewToolBridge(deps.ToolDispatcher, deps.ToolCatalog, deps.ToolOptions...),
-					bindings.NewInferenceBridge(deps.InferenceAssembly, deps.InferenceRouter, deps.InferenceOptions...),
-					newNodeBridge(ec.NodeID, ec.NodeType),
-					newStreamBridge(info.RunID, ec.Host),
-					newParallelBridge(),
-				).
-				AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace)).
-				AddIf(deps.CommandRunner != nil, bindings.NewShellBridge(deps.CommandRunner, deps.ShellOptions...)).
-				AddLate(bindings.NewRuntimeBridge(runtime)).
-				Build(execCtx)
-
-			sig, err := runtime.Exec(execCtx, name, cfg.Source, env)
-			if err != nil {
-				return err
-			}
-			return agent.SignalToError(sig)
+			return RunScript(ec, board, deps, runtime, name, cfg.Source, cfg.Config)
 		},
 	}
+}
+
+// RunScript assembles a fresh script environment with the standard
+// bridges — board, expr, host, run, tools, inference, node, stream,
+// parallel — plus the opt-in fs/shell globals when deps wire
+// Workspace/CommandRunner, executes source, and maps control signals
+// to Go errors via agent.SignalToError.
+//
+// It is shared by the built-in "script" node and script-backed custom
+// node types (core/graph/resource's graph.NodeType/script), so custom
+// nodes get exactly the same bridge surface as the built-in script
+// node.
+func RunScript(ec graph.ExecutionContext, board *agent.Board, deps ScriptNodeDeps, runtime agent.ScriptRuntime, name, source string, config map[string]any) error {
+	info, _ := agent.RunInfoFromContext(ec.Context)
+
+	// Subscriptions opened mid-script are bound to the script's
+	// lifetime: the cleanup registry rides the context the bridges
+	// bind against and Exec receives, then flushes when Exec returns —
+	// subscriptions never outlive the node invocation.
+	execCtx, cleanups := withStreamCleanup(ec.Context)
+	defer cleanups.flush()
+
+	env := bindings.NewEnvBuilder(config).
+		Add(
+			bindings.NewBoardBridge(board),
+			bindings.NewExprBridge(),
+			bindings.NewHostBridge(ec.Host, name, scriptEmitter{ec}),
+			bindings.NewRunInfoBridge(),
+			bindings.NewToolBridge(deps.ToolDispatcher, deps.ToolCatalog, deps.ToolOptions...),
+			bindings.NewInferenceBridge(deps.InferenceAssembly, deps.InferenceRouter, deps.InferenceOptions...),
+			newNodeBridge(ec.NodeID, ec.NodeType),
+			newStreamBridge(info.RunID, ec.Host),
+			newParallelBridge(),
+		).
+		AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace)).
+		AddIf(deps.CommandRunner != nil, bindings.NewShellBridge(deps.CommandRunner, deps.ShellOptions...)).
+		AddLate(bindings.NewRuntimeBridge(runtime)).
+		Build(execCtx)
+
+	sig, err := runtime.Exec(execCtx, name, source, env)
+	if err != nil {
+		return err
+	}
+	return agent.SignalToError(sig)
 }
 
 func Register(reg *graph.Registry, deps ScriptNodeDeps) error {

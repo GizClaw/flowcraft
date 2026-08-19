@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,6 +35,7 @@ const (
 	DepWorkspace     = "workspace"
 	DepSandbox       = "sandbox"
 	DepScriptRuntime = "script_runtime"
+	DepNodeType      = "node_type"
 
 	defaultScriptRuntimeName = "js"
 )
@@ -86,6 +88,7 @@ func (Factory) Spec() res.Spec {
 			{Name: DepWorkspace, Type: "workspace.Workspace"},
 			{Name: DepSandbox, Type: "sandbox.Runner"},
 			{Name: DepScriptRuntime, Type: "agent.ScriptRuntime"},
+			{Name: DepNodeType, Type: "graph.NodeTypeRegistrar", Many: true},
 		},
 	}
 }
@@ -103,11 +106,15 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: settings.graph: %v", err)
 	}
-	definition, err := loadDefinition(ctx, in, src)
+	deps, err := decodeDependencies(in.Deps)
 	if err != nil {
 		return nil, err
 	}
-	deps, err := decodeDependencies(in.Deps)
+	customs, err := collectNodeTypes(in)
+	if err != nil {
+		return nil, err
+	}
+	definition, err := loadDefinition(ctx, in, src, mergeFileRefFields(customs))
 	if err != nil {
 		return nil, err
 	}
@@ -164,6 +171,11 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 	if err := scriptnode.Register(registry, scriptDeps); err != nil {
 		return nil, err
 	}
+	for _, custom := range customs {
+		if err := custom.registrar.Register(registry); err != nil {
+			return nil, err
+		}
+	}
 
 	options, err := settings.Build.options()
 	if err != nil {
@@ -174,10 +186,18 @@ func (Factory) New(ctx context.Context, in res.Input) (any, error) {
 
 // Register adds the graph engine factory to r.
 func Register(r *res.Registry) error {
-	return r.Register(Factory{})
+	if err := r.Register(Factory{}); err != nil {
+		return err
+	}
+	return r.Register(ScriptNodeTypeFactory{})
 }
 
-func loadDefinition(ctx context.Context, in res.Input, src res.Source) (*coregraph.GraphDefinition, error) {
+func loadDefinition(
+	ctx context.Context,
+	in res.Input,
+	src res.Source,
+	customFileFields map[string][]string,
+) (*coregraph.GraphDefinition, error) {
 	data, err := resolveSource(ctx, in, src)
 	if err != nil {
 		return nil, err
@@ -186,7 +206,7 @@ func loadDefinition(ctx context.Context, in res.Input, src res.Source) (*coregra
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: decode definition: %v", err)
 	}
-	if err := materializeConfigFileRefs(ctx, in, &definition); err != nil {
+	if err := materializeConfigFileRefs(ctx, in, &definition, customFileFields); err != nil {
 		return nil, err
 	}
 	return &definition, nil
@@ -220,20 +240,32 @@ func configFileFields(nodeType string) []string {
 	}
 }
 
-func materializeConfigFileRefs(ctx context.Context, in res.Input, definition *coregraph.GraphDefinition) error {
+func materializeConfigFileRefs(
+	ctx context.Context,
+	in res.Input,
+	definition *coregraph.GraphDefinition,
+	customFileFields map[string][]string,
+) error {
 	for index := range definition.Nodes {
 		node := &definition.Nodes[index]
 		if len(node.Config) == 0 {
 			continue
 		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(node.Config, &fields); err != nil {
+		var configFields map[string]json.RawMessage
+		if err := json.Unmarshal(node.Config, &configFields); err != nil {
 			return errdefs.Validationf(
 				"graph engine: node %q config: %v", node.ID, err)
 		}
 		changed := false
-		for _, field := range configFileFields(node.Type) {
-			raw, ok := fields[field]
+		refFields := configFileFields(node.Type)
+		refFields = append(refFields, customFileFields[node.Type]...)
+		seen := make(map[string]bool, len(refFields))
+		for _, field := range refFields {
+			if seen[field] {
+				continue
+			}
+			seen[field] = true
+			raw, ok := configFields[field]
 			if !ok || len(raw) == 0 || raw[0] != '{' {
 				continue
 			}
@@ -255,11 +287,11 @@ func materializeConfigFileRefs(ctx context.Context, in res.Input, definition *co
 				return errdefs.Internalf(
 					"graph engine: node %q config.%s: %v", node.ID, field, err)
 			}
-			fields[field] = content
+			configFields[field] = content
 			changed = true
 		}
 		if changed {
-			merged, err := json.Marshal(fields)
+			merged, err := json.Marshal(configFields)
 			if err != nil {
 				return errdefs.Internalf(
 					"graph engine: node %q config: %v", node.ID, err)
@@ -286,6 +318,11 @@ func decodeDependencies(raw map[string]any) (dependencies, error) {
 		DepWorkspace: true, DepSandbox: true, DepScriptRuntime: true,
 	}
 	for name := range raw {
+		if name == DepNodeType || strings.HasPrefix(name, DepNodeType+".") {
+			// Custom node types ride the Many dep; the engine factory
+			// collects them separately in collectNodeTypes.
+			continue
+		}
 		if !known[name] {
 			return out, errdefs.Validationf("graph engine: unknown dep %q", name)
 		}
@@ -310,6 +347,86 @@ func decodeDependencies(raw map[string]any) (dependencies, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+type customNodeType struct {
+	registrar coregraph.NodeTypeRegistrar
+	value     any
+}
+
+// collectNodeTypes validates the engine's Many "node_type" deps and
+// returns them in deterministic (sorted key) order. It rejects plain
+// and typed-nil registrars, and reports a node type resource that is
+// mounted under more than one dep key.
+func collectNodeTypes(in res.Input) ([]customNodeType, error) {
+	keys := make([]string, 0, len(in.Deps))
+	for key := range in.Deps {
+		if key == DepNodeType || strings.HasPrefix(key, DepNodeType+".") {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	out := make([]customNodeType, 0, len(keys))
+	mounted := make(map[string]string) // registrar identity -> first dep key
+	for _, key := range keys {
+		value := in.Deps[key]
+		if value == nil {
+			return nil, errdefs.Validationf("graph engine: dep %q is nil", key)
+		}
+		registrar, ok := value.(coregraph.NodeTypeRegistrar)
+		if !ok {
+			return nil, errdefs.Validationf(
+				"graph engine: dep %q is %T, want graph.NodeTypeRegistrar", key, value)
+		}
+		if isNilValue(registrar) {
+			return nil, errdefs.Validationf("graph engine: dep %q is a typed nil", key)
+		}
+		if identity, has := registrarIdentity(value); has {
+			if first, dup := mounted[identity]; dup {
+				return nil, errdefs.Conflictf(
+					"graph engine: node type resource mounted twice (%s and %s)",
+					first, key)
+			}
+			mounted[identity] = key
+		}
+		out = append(out, customNodeType{registrar: registrar, value: value})
+	}
+	return out, nil
+}
+
+// registrarIdentity returns a stable identity for pointer-backed
+// registrar values, used to detect the same node type resource being
+// mounted under multiple dep keys. Non-pointer values (structs) have
+// no identity and fall back to duplicate-type-name detection at
+// registration time.
+func registrarIdentity(value any) (string, bool) {
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Map,
+		reflect.Pointer, reflect.Slice, reflect.UnsafePointer:
+		return fmt.Sprintf("%s:%d", rv.Type(), rv.Pointer()), true
+	default:
+		return "", false
+	}
+}
+
+// mergeFileRefFields collects, per custom node type name, the config
+// fields that may carry structured source references. Built-in types
+// are covered by configFileFields; custom registrars opt in via
+// [coregraph.ConfigFileRefFields].
+func mergeFileRefFields(customs []customNodeType) map[string][]string {
+	merged := make(map[string][]string)
+	for _, custom := range customs {
+		fields, ok := custom.value.(coregraph.ConfigFileRefFields)
+		if !ok {
+			continue
+		}
+		for typeName, names := range fields.FileRefFields() {
+			merged[typeName] = append(merged[typeName], names...)
+		}
+	}
+	return merged
 }
 
 func optionalDep[T any](raw map[string]any, name string) (T, error) {
