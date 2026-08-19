@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): add transcription session finisher — transcription sessions expose the optional TranscriptionSessionFinisher capability: FinishInput signals end-of-input so continuous sessions reach io.EOF after multiple final events, decoded sessions pass it through as a no-op when the provider lacks the capability, TranscribeStream performs the handshake automatically after the source stream ends, and the script bridge inference.transcribeSession handle gains finish() with a Validation error when the provider lacks the capability",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
