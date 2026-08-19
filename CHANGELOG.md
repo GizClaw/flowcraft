@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.16` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.17` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.17` - 2026-08-19
+
+### Changed
+
+- feat(core): add first-class transcription with live part-stream input — unary Transcribe and duplex TranscribeSession join Generate/Embed as core/inference workloads with ModelRef addressing, route pools, retries, circuit breakers, session telemetry, provider SPI via Openers.Transcribe, agent bindings (transcribe/explainTranscribe/transcribeSession), and live message.Stream[Part] input through FeedTranscription/TranscribeStream, backed by the live media-stream transport (media.Stream/media.Pipe, stream-backed audio/video sources, MaterializeContent conversion) with stream subscription projection; feat(core): first-class finish and provider_outputs script emit types decode into typed StreamDeltaFinish/StreamDeltaProviderOutputs envelopes, with invalid payloads skipping emission; fix(core): keep raw payloads on script bridge host.emit deltas (StreamDeltaPayload.payload) instead of dropping them, and skip invalid tool_call/tool_result/part payloads rather than publishing empty deltas; chore(core): lower module Go version to 1.25 to match the dependency floor
 
 ## `core/v0.1.16` - 2026-08-18
 
