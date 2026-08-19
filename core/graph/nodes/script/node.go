@@ -184,6 +184,22 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 				Part: part,
 			})
 		}
+	case "finish":
+		// Terminal generation signal: typed like the inference node's
+		// finish delta so stream consumers see finish_reason /
+		// request_id / response_id at the top level.
+		if delta, ok := payloadToFinish(payload); ok {
+			_ = e.ec.EmitStreamDelta(delta)
+		}
+	case "provider_outputs":
+		// Final provider-owned observational outputs, one envelope per
+		// output — the same shape the inference node emits.
+		if outputs, ok := payloadToProviderOutputs(payload); ok {
+			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+				Type:            agent.StreamDeltaProviderOutputs,
+				ProviderOutputs: outputs,
+			})
+		}
 	default:
 		// Forward-compatible event types pass through with the raw
 		// payload riding under StreamDeltaPayload.Payload, so the
@@ -200,6 +216,67 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		}
 		_ = e.ec.EmitStreamDelta(delta)
 	}
+}
+
+// payloadToFinish decodes a script-supplied finish payload into the
+// typed finish delta. Accepted shape: an object with finish_reason
+// (required) and optional request_id / response_id.
+func payloadToFinish(payload any) (agent.StreamDeltaPayload, bool) {
+	raw, ok := marshalPayload(payload)
+	if !ok {
+		return agent.StreamDeltaPayload{}, false
+	}
+	var wire struct {
+		FinishReason string `json:"finish_reason"`
+		RequestID    string `json:"request_id"`
+		ResponseID   string `json:"response_id"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return agent.StreamDeltaPayload{}, false
+	}
+	if wire.FinishReason == "" {
+		return agent.StreamDeltaPayload{}, false
+	}
+	return agent.StreamDeltaPayload{
+		Type:         agent.StreamDeltaFinish,
+		FinishReason: wire.FinishReason,
+		RequestID:    wire.RequestID,
+		ResponseID:   wire.ResponseID,
+	}, true
+}
+
+// payloadToProviderOutputs decodes a script-supplied provider_outputs
+// payload into wire envelopes. Accepted shape: a non-empty array of
+// {provider, extension, value} objects; value is opaque and rides as
+// raw JSON.
+func payloadToProviderOutputs(payload any) ([]agent.ProviderOutputEnvelope, bool) {
+	raw, ok := marshalPayload(payload)
+	if !ok {
+		return nil, false
+	}
+	var wire []struct {
+		Provider  string          `json:"provider"`
+		Extension string          `json:"extension"`
+		Value     json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return nil, false
+	}
+	if len(wire) == 0 {
+		return nil, false
+	}
+	out := make([]agent.ProviderOutputEnvelope, 0, len(wire))
+	for _, entry := range wire {
+		if entry.Provider == "" || entry.Extension == "" || len(entry.Value) == 0 {
+			return nil, false
+		}
+		out = append(out, agent.ProviderOutputEnvelope{
+			Provider:  entry.Provider,
+			Extension: entry.Extension,
+			Value:     entry.Value,
+		})
+	}
+	return out, true
 }
 
 // payloadToPart decodes a canonical part wire object (a map or JSON

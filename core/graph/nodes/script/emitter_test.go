@@ -201,3 +201,62 @@ func TestScriptEmitter_PassthroughReachesStreamSubscription(t *testing.T) {
 		t.Fatalf("Execute: %v", err)
 	}
 }
+
+func TestScriptEmitter_FinishDelta(t *testing.T) {
+	deltas := captureEmits(t, func(env *agent.ScriptEnv) {
+		emit := env.Bindings["host"].(map[string]any)["emit"].(func(string, any))
+		emit("finish", map[string]any{
+			"finish_reason": "completed",
+			"request_id":    "r1",
+			"response_id":   "s1",
+		})
+		emit("finish", map[string]any{})                    // missing finish_reason
+		emit("finish", map[string]any{"finish_reason": ""}) // empty finish_reason
+	})
+	if len(deltas) != 1 {
+		t.Fatalf("emitted %d deltas, want only the valid finish delta", len(deltas))
+	}
+	delta := deltas[0]
+	if delta.Type != agent.StreamDeltaFinish {
+		t.Fatalf("delta type = %q, want %q", delta.Type, agent.StreamDeltaFinish)
+	}
+	if delta.FinishReason != "completed" || delta.RequestID != "r1" || delta.ResponseID != "s1" {
+		t.Fatalf("finish delta = %+v, want typed fields", delta)
+	}
+	if delta.Payload != nil {
+		t.Fatalf("finish payload must not ride under the passthrough payload field, got %s", delta.Payload)
+	}
+}
+
+func TestScriptEmitter_ProviderOutputsDelta(t *testing.T) {
+	deltas := captureEmits(t, func(env *agent.ScriptEnv) {
+		emit := env.Bindings["host"].(map[string]any)["emit"].(func(string, any))
+		emit("provider_outputs", []any{
+			map[string]any{"provider": "openai", "extension": "citations", "value": map[string]any{"a": 1}},
+			map[string]any{"provider": "search", "extension": "results", "value": []any{1, 2}},
+		})
+		emit("provider_outputs", []any{})                                                       // empty
+		emit("provider_outputs", []any{map[string]any{"provider": "x"}})                        // missing extension
+		emit("provider_outputs", map[string]any{"provider": "x", "extension": "y", "value": 1}) // not an array
+	})
+	if len(deltas) != 1 {
+		t.Fatalf("emitted %d deltas, want only the valid provider_outputs delta", len(deltas))
+	}
+	delta := deltas[0]
+	if delta.Type != agent.StreamDeltaProviderOutputs {
+		t.Fatalf("delta type = %q, want %q", delta.Type, agent.StreamDeltaProviderOutputs)
+	}
+	outputs := delta.ProviderOutputs
+	if len(outputs) != 2 {
+		t.Fatalf("provider outputs = %+v, want 2 envelopes", outputs)
+	}
+	if outputs[0].Provider != "openai" || outputs[0].Extension != "citations" || string(outputs[0].Value) != `{"a":1}` {
+		t.Fatalf("output[0] = %+v", outputs[0])
+	}
+	if outputs[1].Provider != "search" || outputs[1].Extension != "results" || string(outputs[1].Value) != `[1,2]` {
+		t.Fatalf("output[1] = %+v", outputs[1])
+	}
+	if delta.Payload != nil {
+		t.Fatalf("provider_outputs must not ride under the passthrough payload field, got %s", delta.Payload)
+	}
+}
