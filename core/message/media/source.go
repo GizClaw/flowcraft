@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime"
 	"net/url"
+	"reflect"
 	"strings"
 )
 
@@ -17,11 +18,16 @@ type SourceKind string
 const (
 	SourceURL    SourceKind = "url"
 	SourceInline SourceKind = "inline"
+	// SourceStream marks a live, pull-based source of typed items (see
+	// [Stream]). It is the transport form of a media part: valid while a
+	// message is in flight, never in durable context or history — callers
+	// materialize it (message.MaterializeContent) before storage.
+	SourceStream SourceKind = "stream"
 )
 
 func (k SourceKind) Validate() error {
 	switch k {
-	case SourceURL, SourceInline:
+	case SourceURL, SourceInline, SourceStream:
 		return nil
 	default:
 		return fmt.Errorf("unknown media source kind %q", k)
@@ -33,6 +39,11 @@ type source struct {
 	url       string
 	data      []byte
 	mediaType string
+	// stream carries the live [Stream] handle for stream-kind sources. It
+	// is stored as any because the item type is caller-defined; the typed
+	// constructors (NewAudioStream / NewVideoStream) keep the
+	// instantiation at the call site.
+	stream any
 }
 
 type (
@@ -106,6 +117,23 @@ func NewVideoBytes(data []byte, mediaType string) (VideoSource, error) {
 	return VideoSource{source: value}, err
 }
 
+// NewAudioStream wraps a live, pull-based stream as an audio source. The
+// stream's item type is caller-defined (the message package instantiates it
+// as message.Stream, i.e. media.Stream[Part]); mediaType declares the audio
+// codec family and is required.
+func NewAudioStream[T any](stream Stream[T], mediaType string) (AudioSource, error) {
+	value, err := newStream(stream, mediaType, "audio/")
+	return AudioSource{source: value}, err
+}
+
+// NewVideoStream wraps a live, pull-based stream as a video source. The
+// stream's item type is caller-defined; mediaType declares the video
+// container family and is required.
+func NewVideoStream[T any](stream Stream[T], mediaType string) (VideoSource, error) {
+	value, err := newStream(stream, mediaType, "video/")
+	return VideoSource{source: value}, err
+}
+
 func newURL(rawURL, mediaType, prefix string) (source, error) {
 	parsed, err := url.ParseRequestURI(rawURL)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
@@ -116,6 +144,22 @@ func newURL(rawURL, mediaType, prefix string) (source, error) {
 		return source{}, err
 	}
 	value := source{kind: SourceURL, url: rawURL, mediaType: normalized}
+	return value, value.Validate()
+}
+
+func newStream[T any](stream Stream[T], mediaType, prefix string) (source, error) {
+	if isNilStream(stream) {
+		return source{}, fmt.Errorf("stream media source requires a stream")
+	}
+	normalized, err := normalizeMediaType(mediaType, prefix, true)
+	if err != nil {
+		return source{}, err
+	}
+	value := source{
+		kind:      SourceStream,
+		stream:    stream,
+		mediaType: normalized,
+	}
 	return value, value.Validate()
 }
 
@@ -140,7 +184,7 @@ func validateMediaType(value, prefix string, required bool) error {
 func normalizeMediaType(value, prefix string, required bool) (string, error) {
 	if value == "" {
 		if required {
-			return "", fmt.Errorf("inline media source media type is required")
+			return "", fmt.Errorf("media source media type is required")
 		}
 		return "", nil
 	}
@@ -155,7 +199,11 @@ func validateTypedSource(value source, prefix string) error {
 	if err := value.Validate(); err != nil {
 		return err
 	}
-	return validateMediaType(value.mediaType, prefix, value.kind == SourceInline)
+	return validateMediaType(
+		value.mediaType,
+		prefix,
+		value.kind == SourceInline || value.kind == SourceStream,
+	)
 }
 
 func unmarshalTypedSource(data []byte, target *source, prefix string) error {
@@ -169,7 +217,7 @@ func unmarshalTypedSource(data []byte, target *source, prefix string) error {
 	normalized, err := normalizeMediaType(
 		value.mediaType,
 		prefix,
-		value.kind == SourceInline,
+		value.kind == SourceInline || value.kind == SourceStream,
 	)
 	if err != nil {
 		return err
@@ -182,6 +230,13 @@ func unmarshalTypedSource(data []byte, target *source, prefix string) error {
 func (s source) Kind() SourceKind { return s.kind }
 func (s source) URL() string      { return s.url }
 func (s source) Bytes() []byte    { return bytes.Clone(s.data) }
+
+// Stream returns the live item stream carried by a stream-kind source, or
+// nil for URL and inline sources. The concrete item type is
+// caller-defined; a message.Stream caller asserts the returned handle to
+// message.Stream.
+func (s source) Stream() any { return s.stream }
+
 func (s source) MediaType() string {
 	return s.mediaType
 }
@@ -207,6 +262,13 @@ func (s source) Validate() error {
 		if s.mediaType == "" {
 			return fmt.Errorf("inline media source media type is required")
 		}
+	case SourceStream:
+		if isNilStream(s.stream) || s.url != "" || len(s.data) != 0 {
+			return fmt.Errorf("stream media source has invalid payload")
+		}
+		if s.mediaType == "" {
+			return fmt.Errorf("stream media source media type is required")
+		}
 	default:
 		return s.kind.Validate()
 	}
@@ -216,6 +278,9 @@ func (s source) Validate() error {
 func (s source) MarshalJSON() ([]byte, error) {
 	if err := s.Validate(); err != nil {
 		return nil, err
+	}
+	if s.kind == SourceStream {
+		return nil, fmt.Errorf("stream media source cannot be serialized")
 	}
 	return json.Marshal(struct {
 		Kind      SourceKind `json:"kind"`
@@ -246,6 +311,18 @@ func (s *source) UnmarshalJSON(data []byte) error {
 	}
 	*s = candidate
 	return nil
+}
+
+func isNilStream(value any) bool {
+	if value == nil {
+		return true
+	}
+	switch v := reflect.ValueOf(value); v.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return v.IsNil()
+	}
+	return false
 }
 
 func decodeStrict(data []byte, value any) error {

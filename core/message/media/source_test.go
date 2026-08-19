@@ -1,7 +1,9 @@
 package media
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +89,88 @@ func TestInlineImageCopiesInput(t *testing.T) {
 	copyOut[0] = 'X'
 	if got := string(source.Bytes()); got != "secret image" {
 		t.Fatalf("source bytes mutated through returned slice: %q", got)
+	}
+}
+
+func TestStreamSourcesCarryLiveStreams(t *testing.T) {
+	pipe := NewPipe[string](1)
+	if !pipe.Send("live") {
+		t.Fatal("pipe rejected its first item")
+	}
+	audio, err := NewAudioStream[string](pipe, "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioStream: %v", err)
+	}
+	if audio.Kind() != SourceStream {
+		t.Fatalf("audio kind = %q, want %q", audio.Kind(), SourceStream)
+	}
+	if audio.MediaType() != "audio/pcm" {
+		t.Fatalf("audio media type = %q", audio.MediaType())
+	}
+	stream, ok := audio.Stream().(Stream[string])
+	if !ok {
+		t.Fatalf("audio Stream() = %T, want Stream[string]", audio.Stream())
+	}
+	value, err := stream.Read(context.Background())
+	if err != nil || value != "live" {
+		t.Fatalf("stream read = (%q, %v)", value, err)
+	}
+
+	video, err := NewVideoStream[string](pipe, "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoStream: %v", err)
+	}
+	if video.Kind() != SourceStream || video.MediaType() != "video/mp4" {
+		t.Fatalf("video stream source = kind %q type %q", video.Kind(), video.MediaType())
+	}
+}
+
+func TestStreamSourcesRejectBadInput(t *testing.T) {
+	if _, err := NewAudioStream[string](nil, "audio/pcm"); err == nil {
+		t.Fatal("audio stream accepted a nil stream")
+	}
+	var nilPipe *Pipe[string]
+	if _, err := NewAudioStream[string](nilPipe, "audio/pcm"); err == nil {
+		t.Fatal("audio stream accepted a typed nil stream")
+	}
+	pipe := NewPipe[string](0)
+	if _, err := NewAudioStream[string](pipe, ""); err == nil {
+		t.Fatal("audio stream accepted an empty media type")
+	}
+	if _, err := NewAudioStream[string](pipe, "video/mp4"); err == nil {
+		t.Fatal("audio stream accepted a video media type")
+	}
+	if _, err := NewVideoStream[string](pipe, "image/jpeg"); err == nil {
+		t.Fatal("video stream accepted an image media type")
+	}
+}
+
+func TestStreamSourcesAreNotSerializable(t *testing.T) {
+	pipe := NewPipe[string](0)
+	audio, err := NewAudioStream[string](pipe, "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioStream: %v", err)
+	}
+	if _, err := json.Marshal(audio); err == nil ||
+		!strings.Contains(err.Error(), "cannot be serialized") {
+		t.Fatalf("Marshal(stream source) = %v, want serialization error", err)
+	}
+	if err := json.Unmarshal([]byte(`{"kind":"stream","media_type":"audio/pcm"}`), &audio); err == nil {
+		t.Fatal("Unmarshal accepted a stream-kind wire source without a stream")
+	}
+}
+
+func TestStreamSourceCloneSharesLiveHandle(t *testing.T) {
+	pipe := NewPipe[string](0)
+	audio, err := NewAudioStream[string](pipe, "audio/pcm")
+	if err != nil {
+		t.Fatalf("NewAudioStream: %v", err)
+	}
+	clone := audio.Clone()
+	if clone.Kind() != SourceStream {
+		t.Fatalf("clone kind = %q", clone.Kind())
+	}
+	if clone.Stream() != audio.Stream() {
+		t.Fatal("clone does not share the live stream handle")
 	}
 }
