@@ -12,6 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+
+	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
+	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 )
 
 func compileImageRequest(parts []message.Part, options ImageOptions) inference.GenerateRequest {
@@ -261,6 +264,7 @@ func TestTransportImageRawCarriesExtendedFields(t *testing.T) {
 		if request.Header.Get("Authorization") != "Bearer sk-test" {
 			t.Errorf("Authorization = %q, want Bearer sk-test", request.Header.Get("Authorization"))
 		}
+		writer.Header().Set(arkmodel.ClientRequestHeader, "req-raw")
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = writer.Write([]byte(`{
 			"model": "ep-test",
@@ -291,8 +295,64 @@ func TestTransportImageRawCarriesExtendedFields(t *testing.T) {
 	if len(raw.images) != 1 || raw.images[0].url != "https://example.com/out.png" {
 		t.Fatalf("raw.images = %#v, want one url image", raw.images)
 	}
+	if raw.requestID != "req-raw" {
+		t.Fatalf("raw.requestID = %q, want req-raw", raw.requestID)
+	}
 	if raw.outputTokens != 100 || raw.totalTokens != 100 {
 		t.Fatalf("usage = %#v, want 100/100", raw)
+	}
+}
+
+func TestTransportImageSDKRequestID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != generateImagesPath {
+			t.Errorf("path = %q, want %q", request.URL.Path, generateImagesPath)
+		}
+		writer.Header().Set(arkmodel.ClientRequestHeader, "req-sdk")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"model": "ep-test",
+			"created": 1,
+			"data": [{"url": "https://example.com/out.png", "size": "2048x2048"}],
+			"usage": {"generated_images": 1, "output_tokens": 100, "total_tokens": 100}
+		}`))
+	}))
+	defer server.Close()
+
+	client := arkruntime.NewClientWithApiKey(
+		"sk-test",
+		arkruntime.WithBaseUrl(server.URL),
+		arkruntime.WithHTTPClient(server.Client()),
+		arkruntime.WithRetryTimes(0),
+	)
+	cls := &clients{ark: client}
+	raw, err := transportImage(cls)(context.Background(), imageWire{
+		model:    "ep-test",
+		prompt:   "a cat",
+		count:    1,
+		delivery: "url",
+	})
+	if err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	if raw.requestID != "req-sdk" {
+		t.Fatalf("raw.requestID = %q, want req-sdk", raw.requestID)
+	}
+}
+
+func TestDecodeImageMetadata(t *testing.T) {
+	raw := imageRaw{
+		images:      []rawImage{{url: "https://example.com/out.png"}},
+		mediaType:   "image/png",
+		requestID:   "req-test",
+		inputTokens: 1,
+	}
+	response, err := decodeImage(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("decodeImage: %v", err)
+	}
+	if response.Metadata.RequestID != "req-test" {
+		t.Fatalf("metadata request id = %q, want req-test", response.Metadata.RequestID)
 	}
 }
 

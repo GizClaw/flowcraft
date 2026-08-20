@@ -60,7 +60,11 @@ type imageRaw struct {
 	images []rawImage
 	// mediaType is the negotiated output format's media type; the provider
 	// does not echo it, so the compiler-negotiated value is the truthful one.
-	mediaType    string
+	mediaType string
+	// requestID is the provider-echoed request identifier from the response
+	// header (X-Client-Request-Id). Empty when the endpoint does not return
+	// one.
+	requestID    string
 	inputTokens  int64
 	outputTokens int64
 	totalTokens  int64
@@ -314,6 +318,7 @@ func transportImage(cls *clients) inference.Transport[imageWire, imageRaw] {
 			raw.inputTokens += single.inputTokens
 			raw.outputTokens += single.outputTokens
 			raw.totalTokens += single.totalTokens
+			raw.requestID = single.requestID
 		}
 		return raw, nil
 	}
@@ -421,7 +426,7 @@ func imageRawFromResponse(response arkmodel.ImagesResponse) (imageRaw, error) {
 	if failure := response.Error; failure != nil {
 		return imageRaw{}, classifyResponseError(failure.Code, failure.Message)
 	}
-	raw := imageRaw{}
+	raw := imageRaw{requestID: response.Header().Get(arkmodel.ClientRequestHeader)}
 	for _, image := range response.Data {
 		raw.images = append(raw.images, rawImage{
 			url: derefString(image.Url),
@@ -478,6 +483,9 @@ func (c *clients) postImagesRaw(
 			fmt.Errorf("bytedance: decode image response: %w", err),
 		)
 	}
+	// The SDK path attaches response headers onto the decoded struct; do the
+	// same here so the caller can read the echoed request id uniformly.
+	images.SetHeader(response.Header)
 	return images, nil
 }
 
@@ -540,6 +548,7 @@ func decodeImage(
 			TotalTokens:     raw.totalTokens,
 			GeneratedImages: &generated,
 		},
+		Metadata: inference.Metadata{RequestID: raw.requestID},
 	}, nil
 }
 
