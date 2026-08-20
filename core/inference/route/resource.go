@@ -46,7 +46,7 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	router, err := New(target, policy.Selectors(), options...)
+	router, err := New(target, policy.Selectors(target), options...)
 	if err != nil {
 		return nil, errdefs.Validationf("inference router: %v", err)
 	}

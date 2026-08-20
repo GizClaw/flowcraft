@@ -67,16 +67,49 @@ func routeDecode() inference.Decoder[routeRaw, inference.GenerateResponse] {
 	}
 }
 
+func imageRouteDecode() inference.Decoder[routeRaw, inference.GenerateResponse] {
+	return func(_ context.Context, _ routeRaw) (inference.GenerateResponse, error) {
+		source, err := media.NewImageURL("https://example.com/out.png", "image/png")
+		if err != nil {
+			return inference.GenerateResponse{}, err
+		}
+		return inference.GenerateResponse{
+			Message: message.Message{
+				Role: message.RoleAssistant,
+				Content: message.Content{Parts: []message.Part{
+					message.ImagePart{Source: source},
+				}},
+			},
+			FinishReason: inference.FinishCompleted,
+			Usage: inference.Usage{
+				InputTokens:  3,
+				OutputTokens: 4,
+				TotalTokens:  7,
+			},
+		}, nil
+	}
+}
+
 func providerDefinition(
 	t *testing.T,
 	id string,
 	fail bool,
 ) inference.ProviderDefinition {
+	return providerDefinitionWithOutputs(t, id, fail, nil, routeDecode())
+}
+
+func providerDefinitionWithOutputs(
+	t *testing.T,
+	id string,
+	fail bool,
+	outputs []message.PartKind,
+	decode inference.Decoder[routeRaw, inference.GenerateResponse],
+) inference.ProviderDefinition {
 	t.Helper()
 	driver, err := inference.BindGenerate(
 		routeCompiler(),
 		routeTransport(fail),
-		routeDecode(),
+		decode,
 	)
 	if err != nil {
 		t.Fatalf("BindGenerate: %v", err)
@@ -85,7 +118,8 @@ func providerDefinition(
 		ID: id,
 		Models: []inference.ModelImplementation{{
 			Descriptor: inference.ModelDescriptor{
-				ID: inference.ModelID{Provider: id, Name: "model-1"},
+				ID:           inference.ModelID{Provider: id, Name: "model-1"},
+				Capabilities: inference.ModelCapabilities{Outputs: outputs},
 			},
 			Openers: inference.Openers{
 				Generate: func(
@@ -100,12 +134,24 @@ func providerDefinition(
 
 func newRouteAssembly(t *testing.T) *inference.Assembly {
 	t.Helper()
+	return assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.bad":  providerDefinition(t, "bad", true),
+		"provider.good": providerDefinition(t, "good", false),
+	})
+}
+
+func assemblyWithProviders(
+	t *testing.T,
+	providers map[string]inference.ProviderDefinition,
+) *inference.Assembly {
+	t.Helper()
+	deps := make(map[string]any, len(providers))
+	for name, definition := range providers {
+		deps[name] = definition
+	}
 	factory := inference.Factory{}
 	value, err := factory.New(context.Background(), resource.Input{
-		Deps: map[string]any{
-			"provider.bad":  providerDefinition(t, "bad", true),
-			"provider.good": providerDefinition(t, "good", false),
-		},
+		Deps: deps,
 	})
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
@@ -152,7 +198,7 @@ func TestRouterGenerateFallsBackAcrossPools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Options: %v", err)
 	}
-	router, err := New(assembly, policy.Selectors(), options...)
+	router, err := New(assembly, policy.Selectors(assembly), options...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -496,7 +542,7 @@ func TestRouterTranscribeFallsBackAcrossPools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Options: %v", err)
 	}
-	router, err := New(assembly, policy.Selectors(), options...)
+	router, err := New(assembly, policy.Selectors(assembly), options...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -529,7 +575,7 @@ func TestRouterTranscribeSessionOpens(t *testing.T) {
 			}},
 		}},
 	}
-	router, err := New(assembly, policy.Selectors())
+	router, err := New(assembly, policy.Selectors(assembly))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -612,7 +658,7 @@ func TestRouterTranscribeStream(t *testing.T) {
 			}},
 		}},
 	}
-	router, err := New(assembly, policy.Selectors())
+	router, err := New(assembly, policy.Selectors(assembly))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -669,7 +715,7 @@ func TestRouterTranscribeRetriesSameTarget(t *testing.T) {
 	}
 	router, err := New(
 		assembly,
-		policy.Selectors(),
+		policy.Selectors(assembly),
 		append(options, noopSleeper())...,
 	)
 	if err != nil {
@@ -723,7 +769,7 @@ func TestRouterTranscribeCircuitBreakerSkipsOpenTarget(t *testing.T) {
 	}
 	router, err := New(
 		assembly,
-		policy.Selectors(),
+		policy.Selectors(assembly),
 		append(options, noopSleeper())...,
 	)
 	if err != nil {
@@ -752,6 +798,215 @@ func TestRouterTranscribeCircuitBreakerSkipsOpenTarget(t *testing.T) {
 		trace.Attempts[0].Outcome != AttemptOutcomeSkipped ||
 		trace.Attempts[0].Circuit != "open" {
 		t.Fatalf("second attempts = %+v, want circuit-open skip", trace.Attempts)
+	}
+}
+
+func TestRouterGenerateSelectsCapableTargetForIntent(t *testing.T) {
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.text": providerDefinitionWithOutputs(
+			t, "text", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+		"provider.image": providerDefinitionWithOutputs(
+			t, "image", false,
+			[]message.PartKind{message.PartImage},
+			imageRouteDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{
+			{Tier: "text", Targets: []Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "text", Name: "model-1"},
+				},
+			}}},
+			{Tier: "image", Targets: []Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "image", Name: "model-1"},
+				},
+			}}},
+		},
+	}
+	router, err := New(assembly, policy.Selectors(assembly))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	textResponse, textTrace, err := router.Generate(
+		context.Background(), routeRequest(),
+	)
+	if err != nil {
+		t.Fatalf("text Generate: %v", err)
+	}
+	if textResponse.Usage.TotalTokens != 7 {
+		t.Fatalf("text usage = %+v", textResponse.Usage)
+	}
+	if textTrace.Executed.ID.Provider != "text" {
+		t.Fatalf("text executed = %+v, want the text model", textTrace.Executed)
+	}
+
+	imageRequest := routeRequest()
+	imageRequest.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+	imageResponse, imageTrace, err := router.Generate(
+		context.Background(), imageRequest,
+	)
+	if err != nil {
+		t.Fatalf("image Generate: %v", err)
+	}
+	if imageResponse.Usage.TotalTokens != 7 {
+		t.Fatalf("image usage = %+v", imageResponse.Usage)
+	}
+	if imageTrace.Executed.ID.Provider != "image" {
+		t.Fatalf(
+			"image executed = %+v, want the image model without fallback",
+			imageTrace.Executed,
+		)
+	}
+	if len(imageTrace.Fallbacks) != 0 {
+		t.Fatalf("image fallbacks = %+v, want none", imageTrace.Fallbacks)
+	}
+}
+
+func TestRouterGenerateUndeclaredOutputsKeepsDeclaredOrder(t *testing.T) {
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.first":  providerDefinition(t, "first", false),
+		"provider.second": providerDefinition(t, "second", false),
+	})
+	policy := Policy{
+		Generate: []Pool{
+			{Tier: "primary", Targets: []Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "first", Name: "model-1"},
+				},
+			}}},
+			{Tier: "fallback", Targets: []Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "second", Name: "model-1"},
+				},
+			}}},
+		},
+	}
+	router, err := New(assembly, policy.Selectors(assembly))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	response, trace, err := router.Generate(context.Background(), routeRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v", response.Usage)
+	}
+	if trace.Executed.ID.Provider != "first" {
+		t.Fatalf(
+			"executed = %+v, want the first declared target (undeclared outputs do not filter)",
+			trace.Executed,
+		)
+	}
+}
+
+func TestRouterGenerateDedupsRepeatedModelsAcrossTiers(t *testing.T) {
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.bad": providerDefinition(t, "bad", true),
+		"provider.good": providerDefinitionWithOutputs(
+			t, "good", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+	})
+	repeated := inference.ModelRef{
+		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	}
+	good := inference.ModelRef{
+		ID: inference.ModelID{Provider: "good", Name: "model-1"},
+	}
+	policy := Policy{
+		Generate: []Pool{
+			{Tier: "high", Targets: []Target{{Model: repeated}}},
+			{Tier: "medium", Targets: []Target{{Model: repeated}}},
+			{Tier: "low", Targets: []Target{{Model: repeated}}},
+			{Tier: "image", Targets: []Target{{Model: good}}},
+		},
+		Retry: &RetryConfig{
+			Generate: &RetryPolicyConfig{
+				MaxAttempts:              1,
+				Retryable:                []RetryableClass{RetryableUnavailable},
+				FallbackOnRetryExhausted: true,
+			},
+		},
+	}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	response, trace, err := router.Generate(context.Background(), routeRequest())
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v, want fallback response", response.Usage)
+	}
+	if len(trace.Fallbacks) != 1 ||
+		trace.Fallbacks[0].From.ID.Provider != "bad" ||
+		trace.Fallbacks[0].To.ID.Provider != "good" {
+		t.Fatalf(
+			"fallbacks = %+v, want one hop from the repeated model to the distinct target",
+			trace.Fallbacks,
+		)
+	}
+	if trace.Executed.ID.Provider != "good" {
+		t.Fatalf(
+			"executed = %+v, want the distinct good target",
+			trace.Executed,
+		)
+	}
+	badExecutions := 0
+	for _, attempt := range trace.Attempts {
+		if attempt.Phase != AttemptPhaseExecute {
+			continue
+		}
+		if attempt.Target.ID.Provider == "bad" {
+			badExecutions++
+		}
+	}
+	if badExecutions != 1 {
+		t.Fatalf(
+			"bad model executed %d times, want exactly once (duplicates collapsed)",
+			badExecutions,
+		)
+	}
+}
+
+func TestRouterGenerateNoRouteWhenNoDeclaredTargetServesIntent(t *testing.T) {
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.text": providerDefinitionWithOutputs(
+			t, "text", false,
+			[]message.PartKind{message.PartText},
+			routeDecode(),
+		),
+	})
+	policy := Policy{
+		Generate: []Pool{
+			{Tier: "text", Targets: []Target{{
+				Model: inference.ModelRef{
+					ID: inference.ModelID{Provider: "text", Name: "model-1"},
+				},
+			}}},
+		},
+	}
+	router, err := New(assembly, policy.Selectors(assembly))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := routeRequest()
+	request.Input.Content.Intent = inference.Intent{Image: &inference.ImageIntent{}}
+	if _, _, err := router.Generate(context.Background(), request); !IsKind(err, NoRoute) {
+		t.Fatalf("Generate = %v, want no-route", err)
 	}
 }
 
@@ -785,7 +1040,7 @@ func TestRouterTranscribeSessionRetriesOpen(t *testing.T) {
 	}
 	router, err := New(
 		assembly,
-		policy.Selectors(),
+		policy.Selectors(assembly),
 		append(options, noopSleeper())...,
 	)
 	if err != nil {
@@ -847,7 +1102,7 @@ func TestRouterTranscribeSessionFallsBackAfterRetryExhausted(t *testing.T) {
 	}
 	router, err := New(
 		assembly,
-		policy.Selectors(),
+		policy.Selectors(assembly),
 		append(options, noopSleeper())...,
 	)
 	if err != nil {
@@ -893,7 +1148,7 @@ func TestRouterTranscribeSessionCircuitBreakerSkipsOpenTarget(t *testing.T) {
 	}
 	router, err := New(
 		assembly,
-		policy.Selectors(),
+		policy.Selectors(assembly),
 		append(options, noopSleeper())...,
 	)
 	if err != nil {

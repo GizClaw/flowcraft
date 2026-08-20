@@ -3,25 +3,33 @@ package route
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 // Selectors derives routing behavior from the policy using declared order:
-// every selector picks the first target of the operation's first pool, and
-// every fallback policy advances to the next declared target, crossing pool
-// boundaries. Scores remain deployment metadata for custom selectors and do
-// not affect this behavior. The Transcription pools serve both the unary
-// Transcribe selector and the transcription session selector.
+// every selector picks the first compatible target of the operation's pools,
+// and every fallback policy advances to the next declared target, crossing
+// pool boundaries. Generate selection consults assembly descriptors and skips
+// targets whose declared output capabilities cannot serve the request intent;
+// Embed/Transcribe selection stays order-based. Repeated model references
+// across tiers are collapsed at build time so fallback never returns a
+// previously attempted target. Scores remain deployment metadata for custom
+// selectors and do not affect this behavior. The Transcription pools serve
+// both the unary Transcribe selector and the transcription session selector.
 //
 // The returned Selectors hold flattened copies of the policy's targets, so
 // later mutation of the Policy does not affect routing. An operation with no
 // configured pools yields selectors that fail with NoRoute at call time;
 // callers are expected to Validate (or ValidateFor) the policy first.
-func (p Policy) Selectors() Selectors {
-	generate := newPolicyRoute(inference.OperationGenerate, p.Generate)
-	embed := newPolicyRoute(inference.OperationEmbed, p.Embed)
-	transcribe := newPolicyRoute(inference.OperationTranscription, p.Transcription)
+// assembly is the same inference assembly the router executes against; it may
+// be nil to disable capability filtering (order-only selection).
+func (p Policy) Selectors(assembly *inference.Assembly) Selectors {
+	generate := newPolicyRoute(inference.OperationGenerate, p.Generate, assembly)
+	embed := newPolicyRoute(inference.OperationEmbed, p.Embed, assembly)
+	transcribe := newPolicyRoute(inference.OperationTranscription, p.Transcription, assembly)
 	return Selectors{
 		Generate:                  generate,
 		GenerateFallback:          generate,
@@ -39,6 +47,7 @@ func (p Policy) Selectors() Selectors {
 type policyRoute struct {
 	operation inference.Operation
 	targets   []policyTarget
+	target    *inference.Assembly
 }
 
 type policyTarget struct {
@@ -49,10 +58,16 @@ type policyTarget struct {
 func newPolicyRoute(
 	operation inference.Operation,
 	pools []Pool,
+	assembly *inference.Assembly,
 ) *policyRoute {
-	route := &policyRoute{operation: operation}
+	route := &policyRoute{operation: operation, target: assembly}
+	seen := make(map[inference.ModelRef]struct{})
 	for _, pool := range pools {
 		for _, target := range pool.Targets {
+			if _, ok := seen[target.Model]; ok {
+				continue
+			}
+			seen[target.Model] = struct{}{}
 			route.targets = append(route.targets, policyTarget{
 				tier:  pool.Tier,
 				model: target.Model,
@@ -98,10 +113,69 @@ func (r *policyRoute) nextTarget(
 }
 
 func (r *policyRoute) SelectGenerate(
-	context.Context,
-	inference.GenerateRequest,
+	_ context.Context,
+	request inference.GenerateRequest,
 ) (Decision, error) {
-	return r.selectTarget()
+	if len(r.targets) == 0 {
+		return Decision{}, NewError(
+			NoRoute,
+			r.operation,
+			fmt.Errorf("route policy has no %s pools", r.operation),
+		)
+	}
+	requested := request.Input.Content.Intent.OutputKinds()
+	for _, target := range r.targets {
+		supported, err := r.supportsOutputs(target.model, requested)
+		if err != nil {
+			return Decision{}, err
+		}
+		if !supported {
+			continue
+		}
+		return Decision{
+			Operation: r.operation,
+			Tier:      target.tier,
+			Proposed:  target.model,
+			Selected:  target.model,
+		}, nil
+	}
+	return Decision{}, NewError(
+		NoRoute,
+		r.operation,
+		fmt.Errorf(
+			"no %s pool target declares output kinds %v",
+			r.operation,
+			requested,
+		),
+	)
+}
+
+// supportsOutputs reports whether the model can serve every requested output
+// kind. Targets whose descriptor declares no output capabilities are treated
+// as undeclared rather than unsupported: filtering would break deployments
+// until every provider publishes capabilities, and preflight remains the
+// final arbiter for undeclared models.
+func (r *policyRoute) supportsOutputs(
+	model inference.ModelRef,
+	requested []message.PartKind,
+) (bool, error) {
+	if r.target == nil || len(requested) == 0 {
+		return true, nil
+	}
+	descriptor, err := r.target.InspectModel(model)
+	if err != nil {
+		return false, err
+	}
+	outputs := descriptor.Capabilities.Outputs
+	if len(outputs) == 0 {
+		return true, nil
+	}
+	for _, kind := range requested {
+		if !slices.Contains(outputs, kind) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (r *policyRoute) NextGenerate(
