@@ -52,6 +52,85 @@ reg.MustRegister(deepseek.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
 
+## Custom models and capability declaration
+
+Drivers ship built-in model catalogs. To add a model outside the catalog — or
+override a catalog entry entirely — declare it in the provider `spec.models`.
+`kind` selects the compiler family (`generate`, `image`, `tts`, `embed`) and
+`capabilities` declares what the model accepts and produces:
+
+```yaml
+resources:
+  provider:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: openai
+      profiles:
+        - id: default
+          secrets:
+            api_key: ${env:OPENAI_API_KEY}
+      spec:
+        models:
+          - name: gpt-5.6-x
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
+              hosted_web_search: true
+              reasoning: always
+          - name: my-image
+            kind: image
+            capabilities:
+              inputs: [text]
+              outputs: [image]
+          - name: my-tts
+            kind: tts
+            capabilities:
+              inputs: [text]
+              outputs: [audio]
+          - name: my-embed
+            kind: embed
+            dimensions: true
+```
+
+`kind` is an implementation discriminator — which compiler to bind — not a
+capability declaration. Each family contract requires declared outputs to
+match it, so kind and capabilities cannot drift:
+
+| kind       | compiler surface | required output |
+|------------|------------------|-----------------|
+| `generate` | chat/responses   | `text`          |
+| `image`    | images API       | `image`         |
+| `tts`      | speech API       | `audio`         |
+| `embed`    | embeddings API   | none (outputs must be empty) |
+
+`capabilities.inputs` and `capabilities.outputs` use the canonical content
+kinds: `text`, `image`, `audio`, `video`, `file`, `data`, `tool_call`,
+`tool_result`, `reasoning`. Outputs are restricted to the four output
+modalities (`text`, `image`, `audio`, `video`). `hosted_web_search` marks
+provider-side web search tool support. `reasoning` declares the reasoning
+control capability: `always` (reasoning on, effort adjustable, cannot be
+disabled), `toggle` (switchable), or omitted for no reasoning channel.
+
+A model that declares no capabilities is treated as undeclared rather than
+unsupported: routing keeps order-based selection and preflight remains the
+final arbiter. Models with declared outputs participate in capability-aware
+routing — an `ImageIntent` request selects a target whose `outputs` include
+`image` instead of failing preflight on a text model. A minimal text-only
+model only needs its output declared:
+
+```yaml
+          - name: my-plain
+            kind: generate
+            capabilities:
+              outputs: [text]
+```
+
+The provider spec is strictly decoded, so the removed `vision`,
+`web_search`, and `reasoning` fields must move into `capabilities` — unknown
+keys are rejected at build time.
+
 ## Streaming
 
 `GenerateStream` returns a stream of deltas plus the final result. Streaming
