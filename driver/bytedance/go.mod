@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb
 	github.com/GizClaw/flowcraft/core v0.1.22
-	github.com/volcengine/volcengine-go-sdk v1.2.14
+	github.com/volcengine/volcengine-go-sdk v1.2.48
 )
 
 require (
@@ -17,6 +17,7 @@ require (
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
+	github.com/klauspost/compress v1.13.5 // indirect
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
