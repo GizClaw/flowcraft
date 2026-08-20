@@ -1,9 +1,9 @@
 module github.com/GizClaw/flowcraft/driver/openai
 
-go 1.26.0
+go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.16
+	github.com/GizClaw/flowcraft/core v0.1.20
 	github.com/openai/openai-go/v3 v3.50.0
 )
 
