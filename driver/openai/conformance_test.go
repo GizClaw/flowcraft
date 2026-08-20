@@ -528,6 +528,26 @@ func TestConformanceImageCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
+				Name: "URL reference image has no upload channel",
+				Request: func() inference.GenerateRequest {
+					request := imageRequest()
+					source, err := media.NewImageURL(
+						"https://example.com/reference.png",
+						"image/png",
+					)
+					if err != nil {
+						t.Fatalf("NewImageURL: %v", err)
+					}
+					request.Input.Content.Parts = append(
+						request.Input.Content.Parts,
+						message.ImagePart{Source: source},
+					)
+					return request
+				},
+				Field: inference.FieldGenerateInputImage,
+				Kind:  inference.UnsupportedFeature,
+			},
+			{
 				Name: "text intent alongside image",
 				Request: func() inference.GenerateRequest {
 					request := imageRequest()

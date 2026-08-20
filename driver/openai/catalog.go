@@ -104,17 +104,17 @@ var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-terra": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-luna": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 1_050_000,
 	},
 	// Generate — previous generations, superseded but available.
@@ -157,6 +157,7 @@ var catalog = map[string]catalogEntry{
 	"gpt-4.1-nano": {
 		kind:           kindGenerate,
 		capabilities:   generateChatCapabilities().WithInputs(message.PartImage),
+		deprecated:     true, replacement: "gpt-5.6-luna",
 		maxInputTokens: 1_047_576,
 	},
 
@@ -173,7 +174,7 @@ var catalog = map[string]catalogEntry{
 	"gpt-image-2": {
 		kind: kindImage,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText).
+			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"gpt-image-1": {
