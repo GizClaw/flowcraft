@@ -1,9 +1,9 @@
 module github.com/GizClaw/flowcraft/driver/qwen
 
-go 1.26.0
+go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.16
+	github.com/GizClaw/flowcraft/core v0.1.20
 	go.opentelemetry.io/otel/log v0.16.0
 )
 
