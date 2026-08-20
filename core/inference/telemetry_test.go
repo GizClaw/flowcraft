@@ -101,10 +101,10 @@ func TestAssemblyGenerateSuccessRecordsIDsOnActiveSpan(t *testing.T) {
 		t.Fatalf("ended spans = %d, want 1 (outer only, no nested inference span)", len(spans))
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMRequestID); !ok || got.AsString() != "req-1" {
-		t.Fatalf("llm.request.id = %q/%v, want req-1", got, ok)
+		t.Fatalf("llm.request.id = %q/%v, want req-1", got.AsString(), ok)
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMResponseID); !ok || got.AsString() != "resp-1" {
-		t.Fatalf("llm.response.id = %q/%v, want resp-1", got, ok)
+		t.Fatalf("llm.response.id = %q/%v, want resp-1", got.AsString(), ok)
 	}
 	assertUsageAttrs(t, spans[0])
 }
@@ -129,7 +129,7 @@ func TestAssemblyGenerateFailureRecordsRequestIDOnActiveSpan(t *testing.T) {
 		t.Fatalf("ended spans = %d, want 1", len(spans))
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMRequestID); !ok || got.AsString() != "req-err-1" {
-		t.Fatalf("llm.request.id = %q/%v, want req-err-1", got, ok)
+		t.Fatalf("llm.request.id = %q/%v, want req-err-1", got.AsString(), ok)
 	}
 	if _, ok := spanAttr(spans[0], telemetry.AttrLLMResponseID); ok {
 		t.Fatal("llm.response.id should be absent on failure")
@@ -159,16 +159,16 @@ func TestAssemblyGenerateStandaloneCreatesInferenceSpan(t *testing.T) {
 		t.Fatalf("span name = %q, want inference.generate", spans[0].Name())
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMRequestID); !ok || got.AsString() != "req-1" {
-		t.Fatalf("llm.request.id = %q/%v, want req-1", got, ok)
+		t.Fatalf("llm.request.id = %q/%v, want req-1", got.AsString(), ok)
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMResponseID); !ok || got.AsString() != "resp-1" {
-		t.Fatalf("llm.response.id = %q/%v, want resp-1", got, ok)
+		t.Fatalf("llm.response.id = %q/%v, want resp-1", got.AsString(), ok)
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMProvider); !ok || got.AsString() != "fake" {
-		t.Fatalf("llm.provider = %q/%v, want fake", got, ok)
+		t.Fatalf("llm.provider = %q/%v, want fake", got.AsString(), ok)
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMModel); !ok || got.AsString() != "model-1" {
-		t.Fatalf("llm.model = %q/%v, want model-1", got, ok)
+		t.Fatalf("llm.model = %q/%v, want model-1", got.AsString(), ok)
 	}
 	assertUsageAttrs(t, spans[0])
 }
@@ -267,10 +267,10 @@ func TestTelemetryGenerateStreamRecordsIDsAtResult(t *testing.T) {
 		t.Fatalf("ended spans = %d, want 1", len(spans))
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMRequestID); !ok || got.AsString() != "req-1" {
-		t.Fatalf("llm.request.id = %q/%v, want req-1", got, ok)
+		t.Fatalf("llm.request.id = %q/%v, want req-1", got.AsString(), ok)
 	}
 	if got, ok := spanAttr(spans[0], telemetry.AttrLLMResponseID); !ok || got.AsString() != "resp-1" {
-		t.Fatalf("llm.response.id = %q/%v, want resp-1", got, ok)
+		t.Fatalf("llm.response.id = %q/%v, want resp-1", got.AsString(), ok)
 	}
 	assertUsageAttrs(t, spans[0])
 }
