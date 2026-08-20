@@ -34,7 +34,7 @@ jobs:
           import json, os, pathlib, re, subprocess
 
           def module_dirs():
-              dirs = ["core", "memory", "memory/eval", "examples/forge"]
+              dirs = ["core", "examples/forge"]
               dirs += [str(p.parent) for p in pathlib.Path("backends").glob("*/go.mod")]
               dirs += [str(p.parent) for p in pathlib.Path("driver").glob("*/go.mod")]
               return sorted(set(dirs))
@@ -162,7 +162,7 @@ jobs:
           go-version: "1.26"
       - name: gofmt -s check
         run: |
-          diff=$(gofmt -s -l core driver backends memory memory/eval examples/forge)
+          diff=$(gofmt -s -l core driver backends examples/forge)
           if [ -n "$diff" ]; then
             echo "Files not formatted:"
             echo "$diff"
