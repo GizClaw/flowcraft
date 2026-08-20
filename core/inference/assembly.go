@@ -120,7 +120,11 @@ func (a *Assembly) Generate(
 			UnsupportedOperation, OperationGenerate, "",
 			fmt.Errorf("model %q has no unary generate driver", ref.ID.Name))
 	}
-	return operations.Unary.Execute(ctx, ref, req)
+	ctx, call := startInferenceCall(ctx, OperationGenerate, ref)
+	response, err := operations.Unary.Execute(ctx, ref, req)
+	call.stampUsage(&response.Usage)
+	call.finish(response.Metadata, response.Usage, err)
+	return response, err
 }
 
 // ExplainGenerate runs the compiler for a unary generate request
@@ -158,7 +162,16 @@ func (a *Assembly) GenerateStream(
 			UnsupportedOperation, OperationGenerate, "",
 			fmt.Errorf("model %q has no streaming generate driver", ref.ID.Name))
 	}
-	return operations.Stream.Stream(ctx, ref, req)
+	ctx, call := startInferenceCall(ctx, OperationGenerate, ref)
+	stream, err := operations.Stream.Stream(ctx, ref, req)
+	if err != nil {
+		call.finish(Metadata{}, Usage{}, err)
+		return nil, err
+	}
+	return &telemetryGenerateStream{
+		inner: stream,
+		tel:   call,
+	}, nil
 }
 
 // ExplainGenerateStream runs the compiler for a generate stream
@@ -191,7 +204,11 @@ func (a *Assembly) Embed(
 	if err != nil {
 		return EmbedResponse{}, err
 	}
-	return driver.Execute(ctx, ref, req)
+	ctx, call := startInferenceCall(ctx, OperationEmbed, ref)
+	response, err := driver.Execute(ctx, ref, req)
+	call.recordEmbedUsage(ctx, response.Usage)
+	call.finish(response.Metadata, Usage{}, err)
+	return response, err
 }
 
 // ExplainEmbed runs the compiler for an embedding request without
@@ -225,7 +242,11 @@ func (a *Assembly) Transcribe(
 			fmt.Errorf("model %q has no unary transcription driver", ref.ID.Name),
 		)
 	}
-	return operations.Unary.Execute(ctx, ref, req)
+	ctx, call := startInferenceCall(ctx, OperationTranscription, ref)
+	response, err := operations.Unary.Execute(ctx, ref, req)
+	call.stampUsage(&response.Usage)
+	call.finish(response.Metadata, response.Usage, err)
+	return response, err
 }
 
 // ExplainTranscribe runs the compiler for a unary transcription request
@@ -265,7 +286,16 @@ func (a *Assembly) TranscribeSession(
 			fmt.Errorf("model %q has no transcription session driver", ref.ID.Name),
 		)
 	}
-	return operations.Session.Open(ctx, ref, req)
+	ctx, call := startInferenceCall(ctx, OperationTranscription, ref)
+	session, err := operations.Session.Open(ctx, ref, req)
+	if err != nil {
+		call.finish(Metadata{}, Usage{}, err)
+		return nil, err
+	}
+	return &telemetryTranscriptionSession{
+		inner: session,
+		tel:   call,
+	}, nil
 }
 
 // ExplainTranscribeSession compiles a transcription session request without

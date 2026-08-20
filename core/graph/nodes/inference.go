@@ -143,6 +143,12 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 	if err != nil {
 		return err
 	}
+	// Mirror the provider request / response identifiers and token
+	// usage onto the node span after a successful call so
+	// llm.request.id / llm.response.id / llm.tokens.* are visible in
+	// otel even when the call did not go through a router (failure ids
+	// already ride the error chain via execute.go).
+	inference.RecordLLMTelemetry(ec.Context, resp.Metadata, resp.Usage, nil)
 	if len(cfg.Tools) > 0 || cfg.AllTools {
 		if catalog := roundCatalog(ec.Context, cfg, deps); catalog != nil {
 			if advancer, ok := catalog.(roundAdvancer); ok {

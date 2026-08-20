@@ -18,7 +18,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
 // The node tests run full Build→Execute cycles over the canned
@@ -922,5 +927,95 @@ func TestInferenceNode_StreamResultFailureCommitsPartialExactlyOnce(t *testing.T
 	}
 	if msgs[1].Role != message.RoleAssistant || msgs[1].Content.Text() != "partial" {
 		t.Fatalf("partial message = %+v", msgs[1])
+	}
+}
+
+func TestInferenceNode_SuccessRecordsRequestIDOnNodeSpan(t *testing.T) {
+	prev := otel.GetTracerProvider()
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	otel.SetTracerProvider(tp)
+	t.Cleanup(func() {
+		_ = tp.Shutdown(context.Background())
+		otel.SetTracerProvider(prev)
+	})
+
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role:    message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{message.TextPart{Text: "ok"}}},
+				},
+				FinishReason: inference.FinishCompleted,
+				Metadata: inference.Metadata{
+					RequestID:  "req-node-ok",
+					ResponseID: "resp-node-ok",
+				},
+				Usage: inference.Usage{
+					InputTokens:  10,
+					OutputTokens: 3,
+					TotalTokens:  13,
+					Model:        inferencetest.DefaultFakeModel,
+				},
+			}
+		},
+	}
+	// Routed path: the assembly-level telemetry records onto the route
+	// span, so request/response ids reaching the node span must come
+	// from the node's own RecordLLMIDs call.
+	runtime := fake.Assembly(t)
+	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var nodeSpan sdktrace.ReadOnlySpan
+	for _, span := range rec.Ended() {
+		if span.Name() == "node.inference.execute" {
+			nodeSpan = span
+			break
+		}
+	}
+	if nodeSpan == nil {
+		t.Fatal("node span not found")
+	}
+	var requestID, responseID string
+	var haveRequest, haveResponse bool
+	for _, kv := range nodeSpan.Attributes() {
+		switch kv.Key {
+		case telemetry.AttrLLMRequestID:
+			requestID, haveRequest = kv.Value.AsString(), true
+		case telemetry.AttrLLMResponseID:
+			responseID, haveResponse = kv.Value.AsString(), true
+		}
+	}
+	if !haveRequest || requestID != "req-node-ok" {
+		t.Fatalf("node span llm.request.id = %q/%v, want req-node-ok", requestID, haveRequest)
+	}
+	if !haveResponse || responseID != "resp-node-ok" {
+		t.Fatalf("node span llm.response.id = %q/%v, want resp-node-ok", responseID, haveResponse)
+	}
+	var inputTokens, outputTokens, totalTokens int64
+	var haveInput, haveOutput, haveTotal bool
+	for _, kv := range nodeSpan.Attributes() {
+		switch kv.Key {
+		case telemetry.AttrLLMInputTokens:
+			inputTokens, haveInput = kv.Value.AsInt64(), true
+		case telemetry.AttrLLMOutputTokens:
+			outputTokens, haveOutput = kv.Value.AsInt64(), true
+		case telemetry.AttrLLMTotalTokens:
+			totalTokens, haveTotal = kv.Value.AsInt64(), true
+		}
+	}
+	if !haveInput || inputTokens != 10 {
+		t.Fatalf("node span llm.tokens.input = %d/%v, want 10", inputTokens, haveInput)
+	}
+	if !haveOutput || outputTokens != 3 {
+		t.Fatalf("node span llm.tokens.output = %d/%v, want 3", outputTokens, haveOutput)
+	}
+	if !haveTotal || totalTokens != 13 {
+		t.Fatalf("node span llm.tokens.total = %d/%v, want 13", totalTokens, haveTotal)
 	}
 }
