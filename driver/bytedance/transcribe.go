@@ -545,6 +545,9 @@ func decodeTranscribe(
 	if raw.duration > 0 {
 		duration := int64(raw.duration)
 		response.DurationMillis = &duration
+		// Mirror the spend dimension onto the usage envelope so
+		// inference telemetry emits inference.audio.duration_ms.
+		response.Usage.AudioDurationMillis = &duration
 	}
 	return response, nil
 }

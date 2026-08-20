@@ -385,6 +385,10 @@ func TestDecodeTranscribe(t *testing.T) {
 	if response.DurationMillis == nil || *response.DurationMillis != 800 {
 		t.Fatalf("duration = %v", response.DurationMillis)
 	}
+	if response.Usage.AudioDurationMillis == nil ||
+		*response.Usage.AudioDurationMillis != 800 {
+		t.Fatalf("usage audio duration = %v", response.Usage.AudioDurationMillis)
+	}
 	if response.Metadata.RequestID != "req-1" {
 		t.Fatalf("request id = %q", response.Metadata.RequestID)
 	}
