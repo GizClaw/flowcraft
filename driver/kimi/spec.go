@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -27,16 +28,16 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves. Capability flags OR
+// ModelSpec declares one model the deployment serves. Capability lists union
 // onto the catalog entry of the same name (or a fresh generate entry for
-// unknown names): a spec model can widen a model's surface, never narrow
-// it below what the catalog already promises.
+// unknown names): a spec model can widen a model's surface, never narrow it
+// below what the catalog already promises.
 type ModelSpec struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Vision    bool   `json:"vision,omitempty"`
-	Video     bool   `json:"video,omitempty"`
-	Reasoning bool   `json:"reasoning,omitempty"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Capabilities declares the model's input/output content kinds and the
+	// reasoning control capability.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -49,7 +50,7 @@ func (m ModelSpec) Validate() error {
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return nil
+	return m.Capabilities.Validate()
 }
 
 // Validate checks the provider spec for structural sanity.
