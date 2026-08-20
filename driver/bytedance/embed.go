@@ -3,6 +3,7 @@ package bytedance
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -60,7 +61,7 @@ func compileEmbed(
 		ledger := newLedger(inference.OperationEmbed, request.ActiveFields())
 		wire := embedWire{
 			model:      endpoint,
-			multimodal: entry.imageInput,
+			multimodal: slices.Contains(entry.capabilities.Inputs, message.PartImage),
 			dimensions: request.Dimensions,
 		}
 		if request.Dimensions != nil && !entry.dimensions {
@@ -94,7 +95,7 @@ func compileEmbed(
 					}
 					text.WriteString(string(value.Value))
 				case message.ImagePart:
-					if !entry.imageInput {
+					if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
 						ledger.reject(
 							inference.FieldEmbedItemImage,
 							"model embeds text only",

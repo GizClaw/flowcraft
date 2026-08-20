@@ -106,20 +106,10 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	slices.Sort(names)
 	for _, name := range names {
 		entry := models[name]
-		if entry.kind == kindRealtime {
-			return inference.ProviderDefinition{}, fmt.Errorf(
-				"bytedance provider %q: model %q kind %q is not supported by core inference yet",
-				settings.ID,
-				name,
-				entry.kind,
-			)
-		}
 		id := inference.ModelID{Provider: settings.ID, Name: name}
 		descriptor := inference.ModelDescriptor{
-			ID: id,
-			Capabilities: inference.ModelCapabilities{
-				HostedWebSearch: entry.webSearch,
-			},
+			ID:           id,
+			Capabilities: entry.capabilities,
 		}
 		if entry.deprecated {
 			descriptor.Lifecycle.Status = inference.ModelStatusDeprecated

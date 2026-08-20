@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -407,7 +408,7 @@ func compileGenerateOptions(
 		wire.maxToolCalls = options.MaxToolCalls
 	}
 	if options.WebSearch != nil {
-		if !entry.webSearch {
+		if !entry.capabilities.HostedWebSearch {
 			ledger.reject(
 				inference.ExtensionField("web_search").Qualify(options),
 				"model does not support hosted web search",
@@ -456,7 +457,7 @@ func compileMessage(
 		case message.TextPart:
 			content = append(content, wireContent{kind: wireContentText, text: value.Text})
 		case message.ImagePart:
-			if !entry.vision {
+			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
@@ -465,7 +466,7 @@ func compileMessage(
 				uri:  sourceURI(value.Source),
 			})
 		case message.VideoPart:
-			if !entry.video {
+			if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
 				ledger.reject(fields[message.PartVideo], "model does not accept video input")
 				continue
 			}
@@ -602,17 +603,24 @@ func compileIntent(
 	wire.temperature = text.Temperature
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
-		if !entry.reasoning {
+		switch {
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		} else {
+		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+			!*text.ReasoningEnabled:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model cannot disable thinking",
+			)
+		default:
 			wire.thinking = text.ReasoningEnabled
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if !entry.reasoning {
+		if entry.capabilities.Reasoning == inference.ReasoningNone {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
