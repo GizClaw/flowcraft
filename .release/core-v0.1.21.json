@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): allow array-rooted structured generate responses — json_schema output validation no longer forces the top-level JSON value to be an object; schemas rooted at other shapes such as arrays of objects now validate output against the schema directly, while json_object continues to require a top-level object",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}

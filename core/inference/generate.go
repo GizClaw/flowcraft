@@ -631,10 +631,10 @@ func validateGenerateText(output string, format *ResponseFormat) error {
 	if err := decodeStrict([]byte(output), &value); err != nil {
 		return fmt.Errorf("structured generate response is not valid JSON: %w", err)
 	}
-	if _, ok := value.(map[string]any); !ok {
-		return fmt.Errorf("structured generate response must be a JSON object")
-	}
-	if format.Kind != ResponseJSONSchema {
+	if format.Kind == ResponseJSONObject {
+		if _, ok := value.(map[string]any); !ok {
+			return fmt.Errorf("structured generate response must be a JSON object")
+		}
 		return nil
 	}
 	compiler := newInMemoryJSONSchemaCompiler()
