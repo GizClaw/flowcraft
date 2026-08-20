@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -318,7 +319,7 @@ func compileGenerate(
 		wire := generateWire{
 			model:            model,
 			stream:           shape == inference.GenerateExecutionStream,
-			includeReasoning: entry.reasoning,
+			includeReasoning: entry.capabilities.Reasoning != inference.ReasoningNone,
 		}
 
 		// Context messages → items. System stays a native system-role item;
@@ -366,7 +367,7 @@ func compileGenerateOptions(
 	if options.WebSearch == nil {
 		return
 	}
-	if !entry.webSearch {
+	if !entry.capabilities.HostedWebSearch {
 		ledger.reject(
 			inference.ExtensionField("web_search").Qualify(options),
 			"model does not support hosted web search",
@@ -416,7 +417,7 @@ func compileMessage(
 		case message.TextPart:
 			content = append(content, wireContent{kind: wireContentText, text: value.Text})
 		case message.ImagePart:
-			if !entry.vision {
+			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
@@ -476,7 +477,7 @@ func compileReasoning(
 		ledger.reject(field, "reasoning parts belong to assistant context")
 		return
 	}
-	if !entry.reasoning {
+	if entry.capabilities.Reasoning == inference.ReasoningNone {
 		ledger.drop(field, "model has no reasoning channel")
 		return
 	}
@@ -591,21 +592,28 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case !entry.reasoning:
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no reasoning to switch",
 			)
-		case !*text.ReasoningEnabled:
+		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"openai reasoning models cannot disable reasoning",
+			)
+		case entry.capabilities.Reasoning == inference.ReasoningToggle &&
+			!*text.ReasoningEnabled:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"reasoning cannot be disabled through this provider",
 			)
 		}
 		// enabled == true is a no-op: reasoning models reason by default.
 	}
 	if text.ReasoningEffort != "" {
-		if !entry.reasoning {
+		if entry.capabilities.Reasoning == inference.ReasoningNone {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
