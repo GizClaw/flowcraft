@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.20` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.21` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.21` - 2026-08-20
+
+### Changed
+
+- fix(core): allow array-rooted structured generate responses — json_schema output validation no longer forces the top-level JSON value to be an object; schemas rooted at other shapes such as arrays of objects now validate output against the schema directly, while json_object continues to require a top-level object
 
 ## `core/v0.1.20` - 2026-08-20
 
