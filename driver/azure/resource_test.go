@@ -3,9 +3,12 @@ package azure
 import (
 	"context"
 	"encoding/json"
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -16,7 +19,7 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 			"id": "azure",
 			"spec": {
 				"endpoint": "https://example.openai.azure.com",
-				"models": [{"name": "gpt-5", "kind": "generate"}]
+				"models": [{"name": "gpt-5", "kind": "generate", "capabilities": {"outputs": ["text"]}}]
 			},
 			"profiles": [{
 				"id": "default",
@@ -71,7 +74,7 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 			"id": "azure",
 			"spec": {
 				"endpoint": "https://example.openai.azure.com",
-				"models": [{"name": "gpt-5", "kind": "generate"}]
+				"models": [{"name": "gpt-5", "kind": "generate", "capabilities": {"outputs": ["text"]}}]
 			},
 			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
 		}`),
@@ -112,7 +115,7 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 			"id": "az-prod",
 			"spec": {
 				"endpoint": "https://example.openai.azure.com",
-				"models": [{"name": "gpt-5", "kind": "generate"}]
+				"models": [{"name": "gpt-5", "kind": "generate", "capabilities": {"outputs": ["text"]}}]
 			},
 			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
 		}`),
@@ -132,5 +135,65 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 	}
 	if options := extensions[0].(*GenerateOptions); options.ProviderID() != "az-prod" {
 		t.Fatalf("ProviderID = %q, want %q", options.ProviderID(), "az-prod")
+	}
+}
+
+func TestModelCapabilitiesPublish(t *testing.T) {
+	t.Setenv("AZURE_TEST_KEY", "sk-test")
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{
+					"name": "gpt-5",
+					"kind": "generate",
+					"capabilities": {
+						"inputs": ["text", "image", "data", "tool_call", "tool_result"],
+						"outputs": ["text"],
+						"hosted_web_search": true,
+						"reasoning": "always"
+					}
+				}]
+			},
+			"profiles": [{
+				"id": "default",
+				"secrets": {"api_key": "${env:AZURE_TEST_KEY}"}
+			}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	capabilities := provider.Models[0].Descriptor.Capabilities
+	if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) ||
+		!slices.Contains(capabilities.Inputs, message.PartImage) ||
+		!capabilities.HostedWebSearch ||
+		capabilities.Reasoning != inference.ReasoningAlways {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+}
+
+func TestSpecRejectsFamilyContractViolation(t *testing.T) {
+	_, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{
+					"name": "img",
+					"kind": "image",
+					"capabilities": {"outputs": ["text"]}
+				}]
+			},
+			"profiles": [{
+				"id": "default",
+				"secrets": {"api_key": "sk-test"}
+			}]
+		}`),
+	})
+	if err == nil {
+		t.Fatal("image deployment with text output unexpectedly accepted")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -32,19 +33,19 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves. Kind is the only
-// discriminator the compiler needs beyond the catalog defaults; the
-// capability flags describe the deployment's declared model.
+// ModelSpec declares one model the deployment serves. Capabilities mirror
+// the built-in catalog shape: content kinds, hosted web search, and the
+// reasoning control capability. Responses is a wire-surface fact and stays a
+// separate flag.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Reasoning enables the thinking/effort controls and reasoning traces.
-	Reasoning bool `json:"reasoning,omitempty"`
+	// Capabilities declares the model's input/output content kinds, hosted
+	// web search support, and reasoning control capability.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 	// Responses declares Responses API support (deepseek-v4-flash and
 	// deepseek-v4-pro).
 	Responses bool `json:"responses,omitempty"`
-	// WebSearch declares hosted web_search support on the Responses API.
-	WebSearch bool `json:"web_search,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -57,7 +58,7 @@ func (m ModelSpec) Validate() error {
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return nil
+	return m.Capabilities.Validate()
 }
 
 // Validate checks the provider spec for structural sanity.

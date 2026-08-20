@@ -5,6 +5,7 @@ package openai
 // decoding are both exercised.
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -191,6 +192,101 @@ func TestImageTransport(t *testing.T) {
 	}
 	if part.Source.Kind() != media.SourceInline || len(part.Source.Bytes()) != len(png) {
 		t.Fatalf("image source = %v bytes", len(part.Source.Bytes()))
+	}
+	_ = capture.body(0)
+}
+
+func TestImageEditTransport(t *testing.T) {
+	// 1x1 transparent PNG reference image.
+	png, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, capture := newCapturedOpenAI(t, func(
+		w http.ResponseWriter,
+		r *http.Request,
+		body map[string]any,
+	) {
+		if r.URL.Path != "/images/edits" {
+			t.Errorf("path = %s, want /images/edits", r.URL.Path)
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+			return
+		}
+		files := r.MultipartForm.File["image[]"]
+		if len(files) != 1 {
+			t.Errorf("image files = %d, want 1", len(files))
+			return
+		}
+		file, err := files[0].Open()
+		if err != nil {
+			t.Errorf("open image file: %v", err)
+			return
+		}
+		defer func() { _ = file.Close() }()
+		data, err := io.ReadAll(file)
+		if err != nil {
+			t.Errorf("read image file: %v", err)
+			return
+		}
+		if !bytes.Equal(data, png) {
+			t.Errorf("uploaded image bytes = %d, want %d", len(data), len(png))
+		}
+		if prompt := r.MultipartForm.Value["prompt"]; len(prompt) != 1 ||
+			prompt[0] != "make it a red circle" {
+			t.Errorf("prompt = %v", r.MultipartForm.Value["prompt"])
+		}
+		w.Header().Set("Content-Type", "application/json")
+		payload, _ := json.Marshal(map[string]any{
+			"data":  []map[string]any{{"b64_json": base64.StdEncoding.EncodeToString(png)}},
+			"usage": map[string]any{"input_tokens": 12, "output_tokens": 0},
+		})
+		_, _ = fmt.Fprint(w, string(payload))
+	})
+	defer server.Close()
+	cls := testClients(t, server)
+
+	source, err := media.NewImageBytes(png, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	request := inference.GenerateRequest{
+		Input: inference.GenerateInput{
+			Role: inference.InputRoleUser,
+			Content: inference.InputContent{
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "make it a red circle"},
+					message.ImagePart{Source: source},
+				}},
+				Intent: inference.Intent{Image: &inference.ImageIntent{}},
+			},
+		},
+	}
+	compiled, err := compileImage("gpt-image-2")(
+		context.Background(),
+		openaiModel("gpt-image-2"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compileImage: %v", err)
+	}
+	if len(compiled.Wire.images) != 1 {
+		t.Fatalf("wire images = %d, want 1", len(compiled.Wire.images))
+	}
+	raw, err := transportImage(cls.api)(context.Background(), compiled.Wire)
+	if err != nil {
+		t.Fatalf("transportImage: %v", err)
+	}
+	response, err := decodeImage(context.Background(), raw)
+	if err != nil {
+		t.Fatalf("decodeImage: %v", err)
+	}
+	if len(response.Message.Content.Parts) != 1 {
+		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
 	}
 	_ = capture.body(0)
 }

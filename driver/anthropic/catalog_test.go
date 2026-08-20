@@ -1,9 +1,12 @@
 package anthropic
 
 import (
+	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
@@ -40,5 +43,42 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 			t.Errorf("model %q: max input tokens = %v, want %d",
 				name, descriptor.Limits.MaxInputTokens, want)
 		}
+	}
+}
+
+func TestCatalogPublishesCapabilities(t *testing.T) {
+	provider, err := buildProvider(ResourceSettings{ID: "anthropic"})
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	for _, model := range provider.Models {
+		capabilities := model.Descriptor.Capabilities
+		if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) {
+			t.Fatalf("%s outputs = %v, want text", model.Descriptor.ID.Name, capabilities.Outputs)
+		}
+		if !slices.Contains(capabilities.Inputs, message.PartImage) {
+			t.Fatalf("%s inputs = %v, want image input", model.Descriptor.ID.Name, capabilities.Inputs)
+		}
+		want := inference.ReasoningToggle
+		switch model.Descriptor.ID.Name {
+		case "claude-fable-5", "claude-mythos-5":
+			want = inference.ReasoningAlways
+		}
+		if capabilities.Reasoning != want {
+			t.Fatalf("%s reasoning = %q, want %q",
+				model.Descriptor.ID.Name, capabilities.Reasoning, want)
+		}
+	}
+}
+
+func TestMergedCatalogRejectsMissingTextOutput(t *testing.T) {
+	spec, err := decodeSpec([]byte(
+		`{"models":[{"name":"m","capabilities":{"inputs":["text"]}}]}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	if _, err := mergedCatalog(spec); err == nil {
+		t.Fatal("mergedCatalog unexpectedly accepted a model without text output")
 	}
 }

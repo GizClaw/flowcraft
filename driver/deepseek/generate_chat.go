@@ -323,17 +323,24 @@ func compileChatIntent(
 	wire.temperature = clonePointer(text.Temperature)
 	wire.topP = clonePointer(text.TopP)
 	if text.ReasoningEnabled != nil {
-		if !entry.reasoning {
+		switch {
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		} else {
+		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+			!*text.ReasoningEnabled:
+			ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				"model cannot disable thinking",
+			)
+		default:
 			wire.thinking = clonePointer(text.ReasoningEnabled)
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if !entry.reasoning {
+		if entry.capabilities.Reasoning == inference.ReasoningNone {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",

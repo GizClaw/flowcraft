@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -31,12 +32,10 @@ type Spec struct {
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"` // generate | embed | image | tts
-	// Vision accepts image input parts (generate only).
-	Vision bool `json:"vision,omitempty"`
-	// Reasoning accepts reasoning effort and summary knobs (generate only).
-	Reasoning bool `json:"reasoning,omitempty"`
-	// WebSearch accepts the hosted web_search tool (generate only).
-	WebSearch bool `json:"web_search,omitempty"`
+	// Capabilities declares the deployment's input/output content kinds,
+	// hosted web search support, and reasoning control capability, validated
+	// against the kind's compiler contract.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 	// Dimensions accepts the embed dimensions knob (embed only).
 	Dimensions bool `json:"dimensions,omitempty"`
 }
@@ -87,33 +86,15 @@ func (s Spec) Validate() error {
 				model.Kind,
 			)
 		}
-		if model.Vision && modelKind(model.Kind) != kindGenerate {
-			return fmt.Errorf(
-				"azure: deployment %q sets vision on kind %q",
-				model.Name,
-				model.Kind,
-			)
-		}
-		if model.Reasoning && modelKind(model.Kind) != kindGenerate {
-			return fmt.Errorf(
-				"azure: deployment %q sets reasoning on kind %q",
-				model.Name,
-				model.Kind,
-			)
-		}
-		if model.WebSearch && modelKind(model.Kind) != kindGenerate {
-			return fmt.Errorf(
-				"azure: deployment %q sets web_search on kind %q",
-				model.Name,
-				model.Kind,
-			)
-		}
 		if model.Dimensions && modelKind(model.Kind) != kindEmbed {
 			return fmt.Errorf(
 				"azure: deployment %q sets dimensions on kind %q",
 				model.Name,
 				model.Kind,
 			)
+		}
+		if err := entryFor(model).validate(); err != nil {
+			return fmt.Errorf("azure: deployment %q: %w", model.Name, err)
 		}
 	}
 	return nil

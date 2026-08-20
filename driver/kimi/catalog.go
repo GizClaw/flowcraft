@@ -3,31 +3,28 @@ package kimi
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type modelKind string
 
 const kindGenerate modelKind = "generate"
 
-// catalogEntry declares what one catalog model accepts. The zero value is
-// the bare text surface: the compiler rejects every channel the entry
-// omits, so a model never silently accepts a feature it may not serve.
+// catalogEntry declares what one catalog model accepts. capabilities is the
+// single capability fact source: input/output content kinds and the reasoning
+// control capability. sampling, reasoningEffort, keepThinking, and
+// keepThinkingAlways are control capabilities that no capability kind
+// expresses and stay separate flags.
 type catalogEntry struct {
-	kind modelKind
-	// vision accepts image input parts (URL or Base64 data URI).
-	vision bool
-	// video accepts video input parts (URL or Base64 data URI).
-	video bool
+	kind         modelKind
+	capabilities inference.ModelCapabilities
 	// sampling accepts the moonshot-v1 sampling knobs (temperature,
 	// top_p); the K3 / K2.x request schemas carry none.
 	sampling bool
-	// reasoning accepts the thinking control (enabled/disabled toggle, or
-	// the always-on k3 effort dial) and emits reasoning_content traces.
-	reasoning bool
-	// reasoningAlways marks models whose thinking cannot be switched off:
-	// ReasoningEnabled=false rejects (kimi-k3, kimi-k2.7-code).
-	reasoningAlways bool
 	// reasoningEffort marks models with the top-level reasoning_effort
 	// dial (kimi-k3 only); elsewhere an explicit effort drops with a
 	// reason.
@@ -53,74 +50,96 @@ type catalogEntry struct {
 //
 // The retired kimi-k2 series (offline 2026-05-25) and kimi-latest /
 // kimi-thinking-preview are deliberately absent. Video input is declared
-// for kimi-k3 only: the K2.x multimodal entries are documented for image
-// understanding, and video comprehension is a k3 capability.
+// for kimi-k3, kimi-k2.7-code, and kimi-k2.6 (official docs: "均支持文本、
+// 图片与视频输入"); kimi-k2.5 and the moonshot-v1 family are documented
+// for image understanding only.
 var catalog = map[string]catalogEntry{
 	"kimi-k3": {
-		kind:               kindGenerate,
-		vision:             true,
-		video:              true,
-		reasoning:          true,
-		reasoningAlways:    true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningAlways),
 		reasoningEffort:    true,
 		keepThinkingAlways: true,
 		maxInputTokens:     1_000_000,
 	},
 	"kimi-k2.7-code": {
-		kind:               kindGenerate,
-		vision:             true,
-		reasoning:          true,
-		reasoningAlways:    true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
 		maxInputTokens:     256_000,
 	},
 	"kimi-k2.7-code-highspeed": {
-		kind:               kindGenerate,
-		vision:             true,
-		reasoning:          true,
-		reasoningAlways:    true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
 		maxInputTokens:     256_000,
 	},
 	"kimi-k2.6": {
-		kind:           kindGenerate,
-		vision:         true,
-		reasoning:      true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
 		keepThinking:   true,
 		maxInputTokens: 256_000,
 	},
 	"kimi-k2.5": {
-		kind:           kindGenerate,
-		vision:         true,
-		reasoning:      true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage).
+			WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 256_000,
 	},
 
 	// moonshot-v1: text generation plus vision previews; the only family
 	// with sampling knobs and the only one without thinking.
-	"moonshot-v1-8k":                  {kind: kindGenerate, sampling: true, maxInputTokens: 8_192},
-	"moonshot-v1-32k":                 {kind: kindGenerate, sampling: true, maxInputTokens: 32_768},
-	"moonshot-v1-128k":                {kind: kindGenerate, sampling: true, maxInputTokens: 131_072},
-	"moonshot-v1-8k-vision-preview":   {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 8_192},
-	"moonshot-v1-32k-vision-preview":  {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 32_768},
-	"moonshot-v1-128k-vision-preview": {kind: kindGenerate, sampling: true, vision: true, maxInputTokens: 131_072},
+	"moonshot-v1-8k":                  {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 8_192},
+	"moonshot-v1-32k":                 {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 32_768},
+	"moonshot-v1-128k":                {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 131_072},
+	"moonshot-v1-8k-vision-preview":   {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 8_192},
+	"moonshot-v1-32k-vision-preview":  {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 32_768},
+	"moonshot-v1-128k-vision-preview": {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 131_072},
 }
 
 func (e catalogEntry) validate() error {
 	if e.kind != kindGenerate {
 		return fmt.Errorf("unsupported kind %q", e.kind)
 	}
-	if e.keepThinkingAlways && !e.reasoningAlways {
+	if err := e.capabilities.Validate(); err != nil {
+		return err
+	}
+	if !slices.Contains(e.capabilities.Outputs, message.PartText) {
+		return fmt.Errorf("generate family must declare text output")
+	}
+	if e.keepThinkingAlways && e.capabilities.Reasoning != inference.ReasoningAlways {
 		return fmt.Errorf("always-preserved thinking requires always-on thinking")
 	}
-	if e.reasoningEffort && !e.reasoning {
+	if e.reasoningEffort && e.capabilities.Reasoning == inference.ReasoningNone {
 		return fmt.Errorf("reasoning effort requires reasoning")
 	}
 	return nil
 }
 
+// generateChatCapabilities is the capability declaration for the Kimi text
+// compiler family: text/data/tool parts in, text out.
+func generateChatCapabilities() inference.ModelCapabilities {
+	return inference.ModelCapabilities{
+		Inputs: []message.PartKind{
+			message.PartText,
+			message.PartData,
+			message.PartToolCall,
+			message.PartToolResult,
+		},
+		Outputs: []message.PartKind{message.PartText},
+	}
+}
+
 // mergedCatalog overlays the built-in catalog with the spec's model
-// declarations: capability flags OR onto the same-named catalog entry,
+// declarations: capability lists union onto the same-named catalog entry,
 // and unknown names extend the catalog as bare generate models.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
@@ -136,15 +155,38 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		if entry.kind == "" {
 			entry.kind = kindGenerate
 		}
-		entry.vision = entry.vision || declared.Vision
-		entry.video = entry.video || declared.Video
-		entry.reasoning = entry.reasoning || declared.Reasoning
+		entry.capabilities.Inputs = unionKinds(
+			entry.capabilities.Inputs,
+			declared.Capabilities.Inputs,
+		)
+		entry.capabilities.Outputs = unionKinds(
+			entry.capabilities.Outputs,
+			declared.Capabilities.Outputs,
+		)
+		entry.capabilities.HostedWebSearch =
+			entry.capabilities.HostedWebSearch || declared.Capabilities.HostedWebSearch
+		if declared.Capabilities.Reasoning != inference.ReasoningNone {
+			entry.capabilities.Reasoning = declared.Capabilities.Reasoning
+		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", declared.Name, err)
 		}
 		models[declared.Name] = entry
 	}
 	return models, nil
+}
+
+// unionKinds appends any kind from addition that is not already present in
+// base, preserving base order. Spec declarations overlay catalog entries
+// additively.
+func unionKinds(base, addition []message.PartKind) []message.PartKind {
+	result := append([]message.PartKind(nil), base...)
+	for _, kind := range addition {
+		if !slices.Contains(result, kind) {
+			result = append(result, kind)
+		}
+	}
+	return result
 }
 
 // sortedNames returns catalog names in deterministic order so factory

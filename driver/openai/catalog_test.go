@@ -72,9 +72,9 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !flagship.Capabilities.HostedWebSearch {
 		t.Fatal("gpt-5.6-sol must declare hosted web search")
 	}
-	if flagship.Capabilities.Reasoning != inference.ReasoningAlways {
+	if flagship.Capabilities.Reasoning != inference.ReasoningToggle {
 		t.Fatalf(
-			"gpt-5.6-sol reasoning = %q, want always",
+			"gpt-5.6-sol reasoning = %q, want toggle",
 			flagship.Capabilities.Reasoning,
 		)
 	}
@@ -82,6 +82,11 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	nano := descriptors["gpt-4.1-nano"]
 	if nano.Capabilities.HostedWebSearch {
 		t.Fatal("gpt-4.1-nano must not declare hosted web search")
+	}
+	if nano.Lifecycle.Status != inference.ModelStatusDeprecated ||
+		nano.Lifecycle.Replacement == nil ||
+		nano.Lifecycle.Replacement.Name != "gpt-5.6-luna" {
+		t.Fatalf("gpt-4.1-nano lifecycle = %+v", nano.Lifecycle)
 	}
 	if !slices.Contains(nano.Capabilities.Inputs, message.PartImage) {
 		t.Fatalf("gpt-4.1-nano inputs = %v, want image input", nano.Capabilities.Inputs)
@@ -99,7 +104,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		[]message.PartKind{message.PartImage},
 	) || !reflect.DeepEqual(
 		image.Capabilities.Inputs,
-		[]message.PartKind{message.PartText},
+		[]message.PartKind{message.PartText, message.PartImage},
 	) {
 		t.Fatalf("gpt-image-2 capabilities = %+v", image.Capabilities)
 	}

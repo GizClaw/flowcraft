@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -35,10 +36,12 @@ type Spec struct {
 
 // ModelSpec declares one model the deployment serves.
 type ModelSpec struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Vision    bool   `json:"vision,omitempty"`
-	Reasoning bool   `json:"reasoning,omitempty"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Capabilities declares the model's input/output content kinds and the
+	// reasoning control capability. Spec declarations overlay catalog
+	// entries additively (inputs/outputs union, reasoning overrides).
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 // ProfileSpec carries per-profile overrides; currently empty.
@@ -55,7 +58,7 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return nil
+	return m.Capabilities.Validate()
 }
 
 func (s Spec) Validate() error {

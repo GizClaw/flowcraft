@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -21,10 +22,9 @@ type Spec struct {
 // ModelSpec declares one catalog overlay entry.
 type ModelSpec struct {
 	Name string `json:"name"`
-	// Vision accepts image input parts.
-	Vision bool `json:"vision,omitempty"`
-	// Reasoning accepts the reasoning effort knob.
-	Reasoning bool `json:"reasoning,omitempty"`
+	// Capabilities declares the model's input/output content kinds and the
+	// reasoning control capability.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 func (s Spec) Validate() error {

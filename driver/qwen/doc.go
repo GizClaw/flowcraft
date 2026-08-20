@@ -62,7 +62,7 @@
 // qwen3.8 hybrid-thinking multimodal models, the Qwen3-VL pair, and the
 // legacy text-only qwen-plus / turbo / flash / max, plus the two
 // embedding models above. Deployments declare additional models through
-// the spec (name, kind, vision, reasoning). Media output (image /
+// the spec (name, kind, capabilities). Media output (image /
 // speech / video generation) lives in dedicated DashScope SKUs, not this
 // driver.
 //

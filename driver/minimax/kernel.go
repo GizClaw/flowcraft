@@ -14,14 +14,12 @@ import (
 func bindGenerate(
 	client anthropicgo.Client,
 	model string,
-	vision, reasoning, reasoningDisable bool,
+	capabilities inference.ModelCapabilities,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
 		compileGenerate(model, catalogEntry{
-			kind:             kindGenerate,
-			vision:           vision,
-			reasoning:        reasoning,
-			reasoningDisable: reasoningDisable,
+			kind:         kindGenerate,
+			capabilities: capabilities,
 		}),
 		transportGenerate(client),
 		decodeGenerate,

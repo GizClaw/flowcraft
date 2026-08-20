@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -300,7 +301,7 @@ func compileMessage(
 		case message.TextPart:
 			wire.appendBlock(role, wireBlock{kind: wireBlockText, text: value.Text})
 		case message.ImagePart:
-			if !entry.vision {
+			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
@@ -476,12 +477,13 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case !entry.reasoning:
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case !*text.ReasoningEnabled && !entry.reasoningDisable:
+		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model cannot disable thinking",
@@ -492,13 +494,12 @@ func compileIntent(
 		}
 	}
 	if text.ReasoningEffort != "" {
-		switch {
-		case !entry.reasoning:
+		if entry.capabilities.Reasoning == inference.ReasoningNone {
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		default:
+		} else {
 			// MiniMax's Messages dialect is binary thinking: the level
 			// cannot be honored, but the request for reasoning itself is —
 			// turn thinking on and report the loss.

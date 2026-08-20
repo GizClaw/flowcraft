@@ -89,14 +89,13 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	}
 	for _, model := range spec.Models {
 		id := inference.ModelID{Provider: settings.ID, Name: model.Name}
+		entry := entryFor(model)
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: inference.ModelDescriptor{
-				ID: id,
-				Capabilities: inference.ModelCapabilities{
-					HostedWebSearch: model.WebSearch,
-				},
+				ID:           id,
+				Capabilities: entry.capabilities,
 			},
-			Openers: openersFor(spec, model, profiles, id),
+			Openers: openersFor(spec, entry, profiles, id),
 		})
 	}
 	return provider, nil
@@ -106,7 +105,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 // through the self-hosted kernel drivers with the profile's Azure client.
 func openersFor(
 	spec Spec,
-	model ModelSpec,
+	entry catalogEntry,
 	profiles map[string]profileMaterial,
 	id inference.ModelID,
 ) inference.Openers {
@@ -121,7 +120,6 @@ func openersFor(
 		}
 		return material.newClients(spec), nil
 	}
-	entry := entryFor(model)
 	switch entry.kind {
 	case kindGenerate:
 		return inference.Openers{

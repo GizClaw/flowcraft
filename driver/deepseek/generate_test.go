@@ -84,19 +84,18 @@ func (s *capturedServer) captured() map[string]any {
 
 func chatEntry() catalogEntry {
 	return catalogEntry{
-		kind:      kindGenerate,
-		api:       apiChat,
-		reasoning: true,
+		kind:         kindGenerate,
+		api:          apiChat,
+		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
 	}
 }
 
 func responsesEntry() catalogEntry {
 	return catalogEntry{
-		kind:      kindGenerate,
-		api:       apiResponses,
-		reasoning: true,
-		responses: true,
-		webSearch: true,
+		kind:         kindGenerate,
+		api:          apiResponses,
+		capabilities: generateChatCapabilities().WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		responses:    true,
 	}
 }
 

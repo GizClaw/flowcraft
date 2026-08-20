@@ -3,7 +3,11 @@ package deepseek
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type modelKind string
@@ -18,28 +22,55 @@ const (
 	apiResponses apiMode = "responses"
 )
 
-// catalogEntry declares what one catalog model accepts. The zero value is
-// the bare text surface: the compiler rejects every channel the entry
-// omits, so a model never silently accepts a feature it may not serve.
+// catalogEntry declares what one catalog model accepts. capabilities is the
+// single capability fact source: input/output content kinds, hosted web
+// search, and the reasoning control capability. api, declared, and responses
+// are wire-surface facts, not content capabilities, and stay separate flags.
 type catalogEntry struct {
-	kind modelKind
+	kind         modelKind
+	capabilities inference.ModelCapabilities
 	// api is the provider-level generate surface selected by Spec.API.
 	api apiMode
 	// declared marks a Spec.Models entry (as opposed to a built-in catalog
 	// model). Responses-mode filtering treats declared entries fail-fast.
 	declared bool
-	// reasoning accepts the thinking/effort knobs and emits reasoning
-	// traces.
-	reasoning bool
 	// responses accepts the Responses API surface. Chat completions work
 	// for every catalog model; responses is per-model.
 	responses bool
-	// webSearch accepts the hosted web_search tool on the Responses API.
-	webSearch bool
 	// maxInputTokens caps the input context in tokens; zero means
 	// undeclared. Both V4 models carry the 1M context published on
 	// https://api-docs.deepseek.com/quick_start/pricing.
 	maxInputTokens int
+}
+
+// validate enforces the generate family contract: the compiler only serves
+// text output, so kind and capabilities cannot drift.
+func (e catalogEntry) validate() error {
+	if err := e.capabilities.Validate(); err != nil {
+		return err
+	}
+	if e.kind != kindGenerate {
+		return fmt.Errorf("unsupported kind %q", e.kind)
+	}
+	if !slices.Contains(e.capabilities.Outputs, message.PartText) {
+		return fmt.Errorf("generate family must declare text output")
+	}
+	return nil
+}
+
+// generateChatCapabilities is the capability declaration for the DeepSeek
+// text compiler family: text/data/tool parts in, text out. DeepSeek
+// consumes no image/audio/video input.
+func generateChatCapabilities() inference.ModelCapabilities {
+	return inference.ModelCapabilities{
+		Inputs: []message.PartKind{
+			message.PartText,
+			message.PartData,
+			message.PartToolCall,
+			message.PartToolResult,
+		},
+		Outputs: []message.PartKind{message.PartText},
+	}
 }
 
 // catalog reflects DeepSeek's public API as of 2026-08.
@@ -55,17 +86,19 @@ type catalogEntry struct {
 // landed after the initial flash-only launch.
 var catalog = map[string]catalogEntry{
 	"deepseek-v4-flash": {
-		kind:           kindGenerate,
-		reasoning:      true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithHostedWebSearch().
+			WithReasoning(inference.ReasoningToggle),
 		responses:      true,
-		webSearch:      true,
 		maxInputTokens: 1_000_000,
 	},
 	"deepseek-v4-pro": {
-		kind:           kindGenerate,
-		reasoning:      true,
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithHostedWebSearch().
+			WithReasoning(inference.ReasoningToggle),
 		responses:      true,
-		webSearch:      true,
 		maxInputTokens: 1_000_000,
 	},
 }
@@ -79,11 +112,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
 		entry := catalogEntry{
-			kind:      modelKind(declared.Kind),
-			reasoning: declared.Reasoning,
-			responses: declared.Responses,
-			webSearch: declared.WebSearch,
-			declared:  true,
+			kind:         modelKind(declared.Kind),
+			capabilities: declared.Capabilities,
+			responses:    declared.Responses,
+			declared:     true,
 		}
 		if entry.kind == "" {
 			if existing, exists := models[declared.Name]; exists {
@@ -92,19 +124,14 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 				entry.kind = kindGenerate
 			}
 		}
-		if err := entry.validate(); err != nil {
-			return nil, fmt.Errorf("model %q: %w", declared.Name, err)
-		}
 		models[declared.Name] = entry
 	}
-	return models, nil
-}
-
-func (e catalogEntry) validate() error {
-	if e.kind != kindGenerate {
-		return fmt.Errorf("unsupported kind %q", e.kind)
+	for name, entry := range models {
+		if err := entry.validate(); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
+		}
 	}
-	return nil
+	return models, nil
 }
 
 // sortedNames returns catalog names in deterministic order so factory

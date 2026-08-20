@@ -94,7 +94,10 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	for _, name := range names {
 		entry := models[name]
 		id := inference.ModelID{Provider: settings.ID, Name: name}
-		descriptor := inference.ModelDescriptor{ID: id}
+		descriptor := inference.ModelDescriptor{
+			ID:           id,
+			Capabilities: entry.capabilities,
+		}
 		if entry.deprecated {
 			descriptor.Lifecycle.Status = inference.ModelStatusDeprecated
 			if entry.replacement != "" {
