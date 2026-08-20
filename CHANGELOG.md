@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.19` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.20` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.20` - 2026-08-20
+
+### Changed
+
+- fix(core): skip session drain wait without sinks and surface missing run-end — the stream coordinator no longer waits the drain timeout when a turn has no sinks, and a timed-out drain records session.finalize_error plus a telemetry warning instead of silently swallowing the missing run-end; feat(core): record inference request ids and token usage in OTel telemetry — per-call Assembly instrumentation emitting executions.total, errors.total, duration.seconds, tokens.input, tokens.output, and tokens.input.cached metrics plus llm.request.id / llm.response.id, llm.tokens.*, llm.latency.ms, llm.cost.micros, inference.error_kind, inference.embed.items, and inference.audio.duration_ms span attributes, with usage Model/LatencyMs stamped at the Assembly boundary and the graph inference node mirroring ids and usage onto its node span on success
 
 ## `core/v0.1.19` - 2026-08-19
 
