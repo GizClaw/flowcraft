@@ -774,6 +774,14 @@ func TestInferenceNode_ResponseFormat_Enforced(t *testing.T) {
 		want    string
 	}{
 		{
+			name:    "json_object rejects array",
+			respond: `["a","b"]`,
+			format: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONObject,
+			},
+			want: "structured generate response must be a JSON object",
+		},
+		{
 			name:    "json_object rejects plain text",
 			respond: "ok",
 			format: &inference.ResponseFormat{
@@ -789,6 +797,18 @@ func TestInferenceNode_ResponseFormat_Enforced(t *testing.T) {
 				Name: "answer",
 				Schema: json.RawMessage(
 					`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
+				),
+			},
+			want: "does not match requested JSON schema",
+		},
+		{
+			name:    "json_schema array root rejects object",
+			respond: `{"a":"b"}`,
+			format: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONSchema,
+				Name: "answer",
+				Schema: json.RawMessage(
+					`{"type":"array","items":{"type":"string"}}`,
 				),
 			},
 			want: "does not match requested JSON schema",
@@ -819,6 +839,42 @@ func TestInferenceNode_ResponseFormat_Enforced(t *testing.T) {
 				t.Fatalf("Execute error = %v, want containing %q", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestInferenceNode_ResponseFormat_ArraySchema(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: `["a","b"]`},
+					}},
+				},
+				FinishReason: inference.FinishCompleted,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		ResponseFormat: &inference.ResponseFormat{
+			Kind: inference.ResponseJSONSchema,
+			Name: "answer",
+			Schema: json.RawMessage(
+				`{"type":"array","items":{"type":"string"}}`,
+			),
+		},
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	msgs := board.Channel(agent.MainChannel)
+	if text, ok := msgs[len(msgs)-1].Content.Parts[0].(message.TextPart); !ok ||
+		text.Text != `["a","b"]` {
+		t.Fatalf("assistant message = %+v, want array JSON", msgs[len(msgs)-1].Content.Parts[0])
 	}
 }
 
