@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 
@@ -740,12 +741,15 @@ func TestInferenceNode_ResponseFormat_ReachesRequest(t *testing.T) {
 	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
 		Model: ptr(inferencetest.DefaultFakeModel),
-		ResponseFormat: &inference.ResponseFormat{
-			Kind: inference.ResponseJSONSchema,
-			Name: "answer",
-			Schema: json.RawMessage(
-				`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
-			),
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Response: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONSchema,
+				Name: "answer",
+				Schema: json.RawMessage(
+					`{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}`,
+				),
+			},
+		},
 		},
 	})
 	board := userBoard()
@@ -831,8 +835,10 @@ func TestInferenceNode_ResponseFormat_Enforced(t *testing.T) {
 			}
 			reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
 			g := singleNodeGraph(t, reg, "inference", InferenceConfig{
-				Model:          ptr(inferencetest.DefaultFakeModel),
-				ResponseFormat: tc.format,
+				Model: ptr(inferencetest.DefaultFakeModel),
+				Intent: &inference.Intent{
+					Text: &inference.TextIntent{Response: tc.format},
+				},
 			})
 			err := executeGraph(t, g, agent.NoopHost{}, userBoard())
 			if err == nil || !strings.Contains(responseCause(err), tc.want) {
@@ -859,12 +865,15 @@ func TestInferenceNode_ResponseFormat_ArraySchema(t *testing.T) {
 	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
 		Model: ptr(inferencetest.DefaultFakeModel),
-		ResponseFormat: &inference.ResponseFormat{
-			Kind: inference.ResponseJSONSchema,
-			Name: "answer",
-			Schema: json.RawMessage(
-				`{"type":"array","items":{"type":"string"}}`,
-			),
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Response: &inference.ResponseFormat{
+				Kind: inference.ResponseJSONSchema,
+				Name: "answer",
+				Schema: json.RawMessage(
+					`{"type":"array","items":{"type":"string"}}`,
+				),
+			},
+		},
 		},
 	})
 	board := userBoard()
@@ -900,15 +909,229 @@ func TestInferenceNode_ResponseFormat_RejectsInvalidSchema(t *testing.T) {
 	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
 		Model: ptr(inferencetest.DefaultFakeModel),
-		ResponseFormat: &inference.ResponseFormat{
-			Kind:   inference.ResponseJSONSchema,
-			Name:   "answer",
-			Schema: json.RawMessage(`{"type":1}`),
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Response: &inference.ResponseFormat{
+				Kind:   inference.ResponseJSONSchema,
+				Name:   "answer",
+				Schema: json.RawMessage(`{"type":1}`),
+			},
+		},
 		},
 	})
 	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
 	if err == nil || !strings.Contains(responseCause(err), "schema") {
 		t.Fatalf("Execute error = %v, want schema validation failure", err)
+	}
+}
+
+func TestInferenceNode_Intent_ImageReachesRequest(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						imagePart(t, "https://x/1.png"),
+						imagePart(t, "https://x/2.png"),
+					}},
+				},
+				FinishReason: inference.FinishCompleted,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		Intent: &inference.Intent{
+			Image: &inference.ImageIntent{Count: ptr(2)},
+		},
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	intent := fake.LastRequest().Input.Content.Intent
+	if intent.Image == nil || intent.Image.Count == nil || *intent.Image.Count != 2 {
+		t.Fatalf("image intent = %+v, want count 2", intent.Image)
+	}
+	if intent.Text != nil {
+		t.Fatalf("text intent = %+v, want nil for an image-only request", intent.Text)
+	}
+}
+
+func imagePart(t *testing.T, rawURL string) message.ImagePart {
+	t.Helper()
+	src, err := media.NewImageURL(rawURL, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	return message.ImagePart{Source: src}
+}
+
+func TestInferenceNode_Intent_TextControlsReachRequest(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Temperature:      ptr(0.7),
+			TopP:             ptr(0.9),
+			MaxOutputTokens:  ptr(512),
+			ReasoningEnabled: ptr(true),
+			ReasoningEffort:  inference.ReasoningHigh,
+		}},
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	text := fake.LastRequest().Input.Content.Intent.Text
+	if text.Temperature == nil || *text.Temperature != 0.7 {
+		t.Fatalf("temperature = %+v, want 0.7", text.Temperature)
+	}
+	if text.TopP == nil || *text.TopP != 0.9 {
+		t.Fatalf("top_p = %+v, want 0.9", text.TopP)
+	}
+	if text.MaxOutputTokens == nil || *text.MaxOutputTokens != 512 {
+		t.Fatalf("max_output_tokens = %+v, want 512", text.MaxOutputTokens)
+	}
+	if text.ReasoningEnabled == nil || !*text.ReasoningEnabled {
+		t.Fatalf("reasoning_enabled = %+v, want true", text.ReasoningEnabled)
+	}
+	if text.ReasoningEffort != inference.ReasoningHigh {
+		t.Fatalf("reasoning_effort = %q, want high", text.ReasoningEffort)
+	}
+}
+
+func TestInferenceNode_Intent_ToolsMergeIntoTextIntent(t *testing.T) {
+	catalog := toolCatalog(t, tool.FuncTool(
+		message.ToolDefinition{
+			Name:        "search",
+			Description: "search the web",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		},
+		func(_ context.Context, args string) (string, error) {
+			return "sunny:" + args, nil
+		},
+	))
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.ToolCall{
+							ID:        "call_1",
+							Name:      "search",
+							Arguments: json.RawMessage(`{"q":"weather"}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t), Catalog: catalog})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		Tools: []string{"search"},
+		ToolChoice: &inference.ToolChoice{
+			Kind: inference.ToolChoiceNamed,
+			Name: "search",
+		},
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Temperature: ptr(0.7),
+		}},
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	text := fake.LastRequest().Input.Content.Intent.Text
+	if text.Temperature == nil || *text.Temperature != 0.7 {
+		t.Fatalf("temperature = %+v, want 0.7", text.Temperature)
+	}
+	if len(text.Tools) != 1 || text.Tools[0].Name != "search" {
+		t.Fatalf("intent tools = %+v, want search", text.Tools)
+	}
+	if text.ToolChoice == nil || text.ToolChoice.Kind != inference.ToolChoiceNamed ||
+		text.ToolChoice.Name != "search" {
+		t.Fatalf("tool_choice = %+v, want named search", text.ToolChoice)
+	}
+}
+
+func TestInferenceNode_Intent_NonTextWithToolsRejected(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Tools:  []string{"search"},
+		Intent: &inference.Intent{Image: &inference.ImageIntent{}},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !errdefs.IsValidation(err) ||
+		!strings.Contains(err.Error(), "no text modality") {
+		t.Fatalf("Execute error = %v, want validation about missing text modality", err)
+	}
+}
+
+func TestInferenceNode_Intent_DoubleToolDeclarationRejected(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		Tools: []string{"search"},
+		Intent: &inference.Intent{Text: &inference.TextIntent{
+			Tools: []message.ToolDefinition{{Name: "search"}},
+		}},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !errdefs.IsValidation(err) ||
+		!strings.Contains(err.Error(), "declared both") {
+		t.Fatalf("Execute error = %v, want validation about double tool declaration", err)
+	}
+}
+
+func TestInferenceNode_Intent_EmptyRejected(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Intent: &inference.Intent{},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !errdefs.IsValidation(err) ||
+		!strings.Contains(err.Error(), "requires text, image, audio, or video") {
+		t.Fatalf("Execute error = %v, want validation about empty intent", err)
+	}
+}
+
+func TestInferenceNode_RejectsLegacyTextKnobs(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	_, err := graph.Build(&graph.GraphDefinition{
+		Name:  "test-graph",
+		Entry: "n",
+		Nodes: []graph.NodeDefinition{{
+			ID:   "n",
+			Type: "inference",
+			Config: mustConfig(t, map[string]any{
+				"model": map[string]any{
+					"id": map[string]any{"provider": "fake", "name": "fake-1"},
+				},
+				"temperature": 0.7,
+			}),
+		}},
+	}, reg)
+	if err == nil || !strings.Contains(err.Error(), "unknown config field") ||
+		!strings.Contains(err.Error(), "temperature") {
+		t.Fatalf("Build error = %v, want unknown-field rejection for temperature", err)
 	}
 }
 

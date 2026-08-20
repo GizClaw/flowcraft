@@ -78,18 +78,20 @@ nodes:
 - id: select_speaker
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speaker_select_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: speaker_select_text
-    reasoning_enabled: true
     stream: false
     system_prompt:
       file: graphs/prompts/select_speaker.txt
-    reasoning_effort: high
 - id: shape_story_turn
   type: script
   config:
@@ -105,78 +107,88 @@ nodes:
 - id: narrator
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speech_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: tmp_speech_text
-    reasoning_enabled: true
     stream: true
     system_prompt:
       file: graphs/prompts/narrator.txt
-    reasoning_effort: high
 - id: role_wukong
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speech_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: tmp_speech_text
-    reasoning_enabled: true
     stream: true
     system_prompt:
       file: graphs/prompts/role_wukong.txt
-    reasoning_effort: high
 - id: role_tangseng
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speech_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: tmp_speech_text
-    reasoning_enabled: true
     stream: true
     system_prompt:
       file: graphs/prompts/role_tangseng.txt
-    reasoning_effort: high
 - id: role_bajie
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speech_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: tmp_speech_text
-    reasoning_enabled: true
     stream: true
     system_prompt:
       file: graphs/prompts/role_bajie.txt
-    reasoning_effort: high
 - id: role_monster
   type: inference
   config:
-    max_output_tokens: 1024
+    intent:
+      text:
+        max_output_tokens: 1024
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: speech_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
     output_key: tmp_speech_text
-    reasoning_enabled: true
     stream: true
     system_prompt:
       file: graphs/prompts/role_monster.txt
-    reasoning_effort: high
 - id: update_state
   type: script
   config:
