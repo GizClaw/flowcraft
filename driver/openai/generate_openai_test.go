@@ -274,7 +274,7 @@ func TestFactoryCustomModelWebSearchCapability(t *testing.T) {
 	input := ResourceSettings{
 		ID: "openai",
 		Spec: json.RawMessage(
-			`{"models":[{"name":"my-search","kind":"generate","web_search":true}]}`,
+			`{"models":[{"name":"my-search","kind":"generate","capabilities":{"hosted_web_search":true,"outputs":["text"]}}]}`,
 		),
 		Profiles: []ProfileSettings{{
 			ID:      "default",
@@ -610,7 +610,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 
 	t.Run("reasoning on model without reasoning channel drops", func(t *testing.T) {
 		spec, err := decodeSpec([]byte(
-			`{"models":[{"name":"my-plain-model","kind":"generate"}]}`,
+			`{"models":[{"name":"my-plain-model","kind":"generate","capabilities":{"outputs":["text"]}}]}`,
 		))
 		if err != nil {
 			t.Fatalf("decodeSpec: %v", err)

@@ -19,7 +19,9 @@ func TestChatCompileRejectsWebSearch(t *testing.T) {
 		GenerateOptions{WebSearch: &GenerateWebSearch{}},
 	}
 	compiled, err := compileGenerate("gpt-5.6-sol", catalogEntry{
-		kind: kindGenerate, api: apiChat, webSearch: true,
+		kind:         kindGenerate,
+		api:          apiChat,
+		capabilities: inference.ModelCapabilities{HostedWebSearch: true},
 	})(context.Background(), openaiModel("gpt-5.6-sol"), request, inference.GenerateExecutionUnary)
 	if err == nil || !strings.Contains(err.Error(), "web_search") {
 		t.Fatalf("compile error = %v, want web_search rejection", err)

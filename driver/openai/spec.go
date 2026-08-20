@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -40,17 +41,17 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model outside the built-in catalog. Capability
-// flags are only meaningful for the matching kind.
+// ModelSpec declares one model outside the built-in catalog. Capabilities
+// mirror the built-in catalog shape: content kinds, hosted web search, and
+// the reasoning control capability (validated against the kind's compiler
+// contract at merge time). Dimensions is the one control capability that no
+// capability kind expresses and stays a separate flag.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Vision (generate) allows image input parts.
-	Vision bool `json:"vision,omitempty"`
-	// Reasoning (generate) enables the reasoning effort control.
-	Reasoning bool `json:"reasoning,omitempty"`
-	// WebSearch (generate) enables the hosted web_search tool.
-	WebSearch bool `json:"web_search,omitempty"`
+	// Capabilities declares the model's input/output content kinds, hosted
+	// web search support, and reasoning control capability.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 	// Dimensions (embed) allows custom output dimensions.
 	Dimensions bool `json:"dimensions,omitempty"`
 }
@@ -111,7 +112,7 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
-	return nil
+	return m.Capabilities.Validate()
 }
 
 func decodeSpec(raw []byte) (Spec, error) {
