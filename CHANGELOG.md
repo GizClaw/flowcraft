@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.21` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.22` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.22` - 2026-08-20
+
+### Changed
+
+- feat(core): declare model content capabilities and reasoning kind — ModelCapabilities gains explicit input/output content kinds (message.PartKind), a ReasoningKind control capability, and fluent With* composition, with PartKind validation and Intent.OutputKinds centralizing intent-to-content mapping while undeclared providers keep order-based routing; feat(core): route generate by declared output capabilities — the unified generate selector skips targets whose declared outputs cannot serve the request intent, and repeated model references across tiers collapse at build time so fallback never reattempts a failed target; feat(core): expose canonical intent envelope on graph inference node — the node accepts the canonical inference.Intent wire form (text/image/audio/video) through an intent config field, removing the TextIntent sugar knobs in favor of intent.text.* (BREAKING CHANGE: legacy text knobs are rejected at build time)
 
 ## `core/v0.1.21` - 2026-08-20
 
