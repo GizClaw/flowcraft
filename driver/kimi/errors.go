@@ -39,7 +39,8 @@ func classifyError(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errdefs.Timeout(fmt.Errorf("kimi: %w", err))
 	}
-	if netErr, ok := errors.AsType[net.Error](err); ok {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
 		if netErr.Timeout() {
 			return errdefs.Timeout(fmt.Errorf("kimi: %w", err))
 		}
