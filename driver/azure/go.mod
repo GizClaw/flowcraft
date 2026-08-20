@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/azure
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.20
+	github.com/GizClaw/flowcraft/core v0.1.22
 	github.com/openai/openai-go/v3 v3.50.0
 )
 
