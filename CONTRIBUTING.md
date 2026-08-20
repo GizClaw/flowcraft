@@ -21,8 +21,8 @@ Keep changes within module boundaries.
 
 ## Modules and dependency order
 
-The independently versioned library modules are `core`, `driver/*`,
-`backends/*`, and `memory`.
+The independently versioned library modules are `core`, `driver/*`, and
+`backends/*`.
 The Go workspace also includes `examples/forge` (the runnable local demo, not
 released), while `tools/releasegate` builds with `GOWORK=off` against pinned
 releases.
@@ -30,14 +30,13 @@ releases.
 Module dependency order:
 
 ```text
-core -> driver/* / backends/* -> memory
+core -> driver/* / backends/*
 ```
 
 - `core` is the platform module and depends on nothing in-tree.
 - `driver/*` provides provider inference adapters over `core`.
 - `backends/*` provides platform-specific sandbox/object-store/SQLite
   backends over `core`.
-- `memory` is one implementation of the `core/memory` contracts.
 
 ## Declaring a module release
 
@@ -98,12 +97,10 @@ the next push to `main` or a manual workflow dispatch.
 ## Working in the workspace
 
 - `make ci` runs `vet` + `test` across `core`, `driver/*`, `backends/*`,
-  `memory`, and
-  `examples/forge`.
+  and `examples/forge`.
 - `make fmt` / `make tidy` normalize formatting and module files everywhere.
 - Changes to `core` contracts may break `driver/*`, `backends/*`,
-  `examples/forge`, or `memory`;
-  `make ci` covers them in-tree.
+  or `examples/forge`; `make ci` covers them in-tree.
 - The forge demo's scenarios are native deployment documents; changes to the
   assembly or runtime surface should be exercised with a demo run
   (`cd examples/forge && go run . test -test werewolf/opening_setup`).

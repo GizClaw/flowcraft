@@ -153,13 +153,8 @@ the core and depend on it, never the reverse.
 
 ## Highlights
 
-### Hybrid memory that actually recalls (`core/memory`)
+### Memory contracts (`core/memory`)
 
-- Three-lane retrieval (BM25 + vector + entity), fused via **Reciprocal Rank
-  Fusion** (K=60), then re-weighted by entity-overlap boost, supersede decay,
-  and time decay.
-- Canonical source → derived view → rebuildable projection → hydrated context,
-  with deterministic packing and durable outbox commits.
 - Memory as a pluggable implementation: concrete implementations are
   app-registered behind the `core/memory` contracts.
 

@@ -8,14 +8,13 @@ SHELL := /bin/bash
 BACKEND_MODULES := $(patsubst %/go.mod,%,$(wildcard backends/*/go.mod))
 DRIVER_MODULES := $(patsubst %/go.mod,%,$(wildcard driver/*/go.mod))
 
-MODULES_WORK := core $(BACKEND_MODULES) $(DRIVER_MODULES) memory examples/forge
+MODULES_WORK := core $(BACKEND_MODULES) $(DRIVER_MODULES) examples/forge
 
 # Modules gated by CI's gofmt -s + golangci-lint lanes.
-MODULES_LINT := core $(BACKEND_MODULES) $(DRIVER_MODULES) memory memory/eval
+MODULES_LINT := core $(BACKEND_MODULES) $(DRIVER_MODULES)
 
-# `make fmt` mirrors the CI gofmt -s gate; memory/eval is included here
-# even though it is not part of MODULES_WORK (vet/test run).
-ALL_MODULES := $(MODULES_WORK) memory/eval
+# `make fmt` mirrors the CI gofmt -s gate.
+ALL_MODULES := $(MODULES_WORK)
 
 # `set -e` inside the for-loop body so a failure in any submodule stops the
 # loop. The previous form (` ( cd $$m && ... ) `) silently swallowed errors
@@ -40,13 +39,6 @@ help:
 	@echo "  make release-preflight  Verify planned modules stay tidy when released together."
 	@echo "  make release-preflight-write  Apply preflight tidy results to go.mod/go.sum."
 	@echo "  make release-changelog  Aggregate pending changesets into CHANGELOG.md."
-	@echo ""
-	@echo "  make eval              Hermetic memory retrieval eval (memory/eval module)."
-	@echo "  make eval-smoke        Compatibility alias for the hermetic memory eval."
-	@echo "  make test-quality      Alias of 'make eval' kept for compatibility with"
-	@echo "                         the pre-eval/ migration entry point."
-	@echo ""
-	@echo "The memory eval uses fixed fixtures and requires no network or credentials."
 
 .PHONY: vet
 vet:
@@ -96,16 +88,3 @@ release-preflight-write:
 .PHONY: release-changelog
 release-changelog:
 	@cd tools/releasegate && GOWORK=off go run . changelog --repo ../.. --write
-
-# Credential-free retrieval quality evaluation over real memory components.
-.PHONY: eval
-eval:
-	@cd memory/eval && go test ./... -count=1 -v
-
-# Compatibility target retained after removal of the old top-level eval module.
-.PHONY: eval-smoke
-eval-smoke: eval
-
-# Backwards-compat alias for the former quality target.
-.PHONY: test-quality
-test-quality: eval

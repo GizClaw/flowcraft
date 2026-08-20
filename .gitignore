@@ -35,8 +35,6 @@
 !examples/**
 !backends/
 !backends/**
-!memory/
-!memory/**
 !skills/
 !skills/**
 !tools/

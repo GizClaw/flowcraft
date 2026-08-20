@@ -1,6 +1,6 @@
 # golangci-lint configuration (schema v2).
 #
-# CI scope today: sdk, memory, memory/eval, sdkx (see .github/workflows/ci.yml).
+# CI scope today: sdk, sdkx (see .github/workflows/ci.yml).
 # examples/forge and tools/releasegate are intentionally not gated yet.
 #
 # The enabled set mirrors golangci-lint's "standard" linters, made explicit so
