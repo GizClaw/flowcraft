@@ -20,7 +20,8 @@ func classifyError(err error) error {
 	if classified := errdefs.FromContext(err); errdefs.HasClassification(classified) {
 		return classified
 	}
-	if apiErr, ok := errors.AsType[*openaigo.Error](err); ok {
+	var apiErr *openaigo.Error
+	if errors.As(err, &apiErr) {
 		classified := classifyHTTPStatus(apiErr.StatusCode, err)
 		if apiErr.Response != nil {
 			classified = errdefs.WithRequestID(
