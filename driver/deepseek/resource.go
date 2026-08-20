@@ -143,10 +143,8 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 		entry.api = spec.apiMode()
 		id := inference.ModelID{Provider: settings.ID, Name: name}
 		descriptor := inference.ModelDescriptor{
-			ID: id,
-			Capabilities: inference.ModelCapabilities{
-				HostedWebSearch: entry.api == apiResponses && entry.webSearch,
-			},
+			ID:           id,
+			Capabilities: entry.capabilities,
 		}
 		if entry.maxInputTokens > 0 {
 			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens

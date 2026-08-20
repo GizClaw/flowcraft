@@ -82,7 +82,10 @@ func TestResponsesProviderAllowsDeclaredOverride(t *testing.T) {
 					"name": "deepseek-v4-flash",
 					"kind": "generate",
 					"responses": true,
-					"web_search": true
+					"capabilities": {
+						"outputs": ["text"],
+						"hosted_web_search": true
+					}
 				}]
 			},
 			"profiles": [{
