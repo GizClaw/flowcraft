@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/minimax
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.20
+	github.com/GizClaw/flowcraft/core v0.1.22
 	github.com/anthropics/anthropic-sdk-go v1.61.0
 )
 

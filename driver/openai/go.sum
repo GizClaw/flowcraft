@@ -1,5 +1,5 @@
-github.com/GizClaw/flowcraft/core v0.1.20 h1:hWF2rN0ChBbqOmBRg7CvqYAY72/9JMiqxXPV5aOlehk=
-github.com/GizClaw/flowcraft/core v0.1.20/go.mod h1:ivaKWysWMtv3j0fj4059RWiSP8kNXBFDYDaFD80Gr74=
+github.com/GizClaw/flowcraft/core v0.1.22 h1:b5X1OHWk6y8Zcqw+QsqgAlDUCj8kDvNdv09epEeyISY=
+github.com/GizClaw/flowcraft/core v0.1.22/go.mod h1:ivaKWysWMtv3j0fj4059RWiSP8kNXBFDYDaFD80Gr74=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
