@@ -266,7 +266,7 @@ func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
 // a complete ledger on plain text.
 func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
 	spec, err := decodeSpec([]byte(
-		`{"models":[{"name":"my-plain-model","kind":"generate"}]}`,
+		`{"models":[{"name":"my-plain-model","kind":"generate","capabilities":{"outputs":["text"]}}]}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)

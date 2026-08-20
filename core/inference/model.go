@@ -3,6 +3,8 @@ package inference
 import (
 	"fmt"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type Operation string
@@ -102,15 +104,127 @@ func (l ModelLifecycle) ValidateFor(model ModelID) error {
 	return nil
 }
 
-// ModelCapabilities describes optional feature bits a model can serve.
-// Zero is the conservative declaration: every feature the struct omits is
-// treated as unsupported until a provider declares it.
+// ReasoningKind declares a model's reasoning control capability. Zero is the
+// conservative declaration: a model without a declared reasoning capability
+// has no reasoning channel or reasoning controls.
+type ReasoningKind string
+
+const (
+	ReasoningNone   ReasoningKind = ""
+	ReasoningAlways ReasoningKind = "always"
+	ReasoningToggle ReasoningKind = "toggle"
+)
+
+func (k ReasoningKind) Validate() error {
+	switch k {
+	case ReasoningNone, ReasoningAlways, ReasoningToggle:
+		return nil
+	default:
+		return fmt.Errorf("unknown reasoning kind %q", k)
+	}
+}
+
+// ModelCapabilities describes optional feature bits and content kinds a model
+// can serve. Zero is the conservative declaration: every feature the struct
+// omits is treated as unsupported until a provider declares it.
 type ModelCapabilities struct {
+	// Inputs lists the canonical content part kinds the model accepts as
+	// request input (text, image, audio, video, tool calls, ...). Providers
+	// that do not declare inputs leave the capability unknown rather than
+	// asserted absent; routing falls back to operation support and preflight
+	// remains the final arbiter.
+	Inputs []message.PartKind `json:"inputs,omitempty"`
+	// Outputs lists the canonical content part kinds the model can produce as
+	// output. Only the output modalities (text, image, audio, video) are
+	// representable; routing prefers targets whose declared outputs cover the
+	// request intent and skips declared-incompatible tiers. Empty outputs are
+	// undeclared and do not filter routing.
+	Outputs []message.PartKind `json:"outputs,omitempty"`
+	// Reasoning declares the model's reasoning control capability: whether it
+	// has a reasoning channel and whether reasoning can be switched or its
+	// effort adjusted. Empty (ReasoningNone) is the conservative default.
+	Reasoning ReasoningKind `json:"reasoning,omitempty"`
 	// HostedWebSearch marks provider-side web_search tool support. It is
 	// discovery metadata for hosts; the search configuration itself still
 	// rides on GenerateRequest.Extensions as a provider GenerateOptions
 	// extension.
 	HostedWebSearch bool `json:"hosted_web_search,omitempty"`
+}
+
+// Clone returns a defensive copy of the capabilities: the returned value
+// shares no backing array with the receiver.
+func (c ModelCapabilities) Clone() ModelCapabilities {
+	c.Inputs = append([]message.PartKind(nil), c.Inputs...)
+	c.Outputs = append([]message.PartKind(nil), c.Outputs...)
+	return c
+}
+
+// WithInputs returns a copy of the capabilities with the given input content
+// kinds appended. The result shares no backing array with the receiver, so
+// calls compose safely.
+func (c ModelCapabilities) WithInputs(kinds ...message.PartKind) ModelCapabilities {
+	c.Inputs = append(append([]message.PartKind(nil), c.Inputs...), kinds...)
+	return c
+}
+
+// WithOutputs returns a copy of the capabilities with the given output
+// content kinds appended. The result shares no backing array with the
+// receiver, so calls compose safely.
+func (c ModelCapabilities) WithOutputs(kinds ...message.PartKind) ModelCapabilities {
+	c.Outputs = append(append([]message.PartKind(nil), c.Outputs...), kinds...)
+	return c
+}
+
+// WithReasoning returns a copy of the capabilities with the reasoning control
+// capability set.
+func (c ModelCapabilities) WithReasoning(kind ReasoningKind) ModelCapabilities {
+	c.Reasoning = kind
+	return c
+}
+
+// WithHostedWebSearch returns a copy of the capabilities with hosted web
+// search marked supported.
+func (c ModelCapabilities) WithHostedWebSearch() ModelCapabilities {
+	c.HostedWebSearch = true
+	return c
+}
+
+func (c ModelCapabilities) Validate() error {
+	if err := c.Reasoning.Validate(); err != nil {
+		return err
+	}
+	seenInputs := make(map[message.PartKind]struct{}, len(c.Inputs))
+	for _, kind := range c.Inputs {
+		if err := kind.Validate(); err != nil {
+			return fmt.Errorf("input content kind: %w", err)
+		}
+		if _, ok := seenInputs[kind]; ok {
+			return fmt.Errorf("duplicate input content kind %q", kind)
+		}
+		seenInputs[kind] = struct{}{}
+	}
+	seenOutputs := make(map[message.PartKind]struct{}, len(c.Outputs))
+	for _, kind := range c.Outputs {
+		if !isOutputModality(kind) {
+			return fmt.Errorf("output content kind %q is not a representable output modality", kind)
+		}
+		if _, ok := seenOutputs[kind]; ok {
+			return fmt.Errorf("duplicate output content kind %q", kind)
+		}
+		seenOutputs[kind] = struct{}{}
+	}
+	return nil
+}
+
+// isOutputModality reports whether the content kind is a representable output
+// modality: the four kinds the generate intent can request.
+func isOutputModality(kind message.PartKind) bool {
+	switch kind {
+	case message.PartText, message.PartImage, message.PartAudio, message.PartVideo:
+		return true
+	default:
+		return false
+	}
 }
 
 // ModelLimits declares numeric capacity limits of a model. A nil field
@@ -150,6 +264,7 @@ type ModelDescriptor struct {
 
 func (d ModelDescriptor) Clone() ModelDescriptor {
 	d.Operations = append([]Operation(nil), d.Operations...)
+	d.Capabilities = d.Capabilities.Clone()
 	d.Limits = d.Limits.Clone()
 	d.Lifecycle = d.Lifecycle.Clone()
 	return d
@@ -175,6 +290,9 @@ func (d ModelDescriptor) Validate() error {
 				"hosted web search requires the generate operation",
 			)
 		}
+	}
+	if err := d.Capabilities.Validate(); err != nil {
+		return err
 	}
 	if err := d.Limits.Validate(); err != nil {
 		return err

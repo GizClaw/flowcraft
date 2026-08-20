@@ -415,3 +415,24 @@ func TestNormalizePart(t *testing.T) {
 		}
 	})
 }
+
+func TestPartKindValidate(t *testing.T) {
+	for _, kind := range []message.PartKind{
+		message.PartText,
+		message.PartImage,
+		message.PartAudio,
+		message.PartVideo,
+		message.PartFile,
+		message.PartData,
+		message.PartToolCall,
+		message.PartToolResult,
+		message.PartReasoning,
+	} {
+		if err := kind.Validate(); err != nil {
+			t.Fatalf("kind %q: %v", kind, err)
+		}
+	}
+	if err := (message.PartKind("audio_cassette")).Validate(); err == nil {
+		t.Fatal("unknown kind unexpectedly accepted")
+	}
+}

@@ -22,6 +22,17 @@ const (
 	PartReasoning  PartKind = "reasoning"
 )
 
+// Validate reports whether k is one of the canonical content part kinds.
+func (k PartKind) Validate() error {
+	switch k {
+	case PartText, PartImage, PartAudio, PartVideo, PartFile, PartData,
+		PartToolCall, PartToolResult, PartReasoning:
+		return nil
+	default:
+		return fmt.Errorf("unknown content part kind %q", k)
+	}
+}
+
 // Part is the sealed canonical content union. Each operation validates which
 // kinds it accepts; for example, Embed currently accepts only text and image.
 type Part interface {
