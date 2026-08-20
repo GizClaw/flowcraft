@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -36,10 +37,12 @@ type Spec struct {
 
 // ModelSpec declares one model the deployment serves.
 type ModelSpec struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Vision    bool   `json:"vision,omitempty"`
-	Reasoning bool   `json:"reasoning,omitempty"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// Capabilities declares the model's input/output content kinds and the
+	// reasoning control capability, validated against the kind's compiler
+	// contract at merge time.
+	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -56,7 +59,7 @@ func (m ModelSpec) Validate() error {
 		modelKind(m.Kind) != kindMusic {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return nil
+	return m.Capabilities.Validate()
 }
 
 // Validate checks the provider spec for structural sanity.

@@ -3,7 +3,11 @@ package minimax
 import (
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type modelKind string
@@ -16,22 +20,13 @@ const (
 	kindMusic    modelKind = "music"
 )
 
-// catalogEntry declares what one catalog model accepts. The zero value is
-// the bare text surface: the compiler rejects every channel the entry
-// omits, so a model never silently accepts a feature it may not serve.
+// catalogEntry declares what one catalog model accepts. capabilities is the
+// single capability fact source: input/output content kinds and the reasoning
+// control capability. video10s, videoHD, and videoI2VOnly are control
+// capabilities that no capability kind expresses and stay separate flags.
 type catalogEntry struct {
-	kind modelKind
-	// vision accepts image input parts (MiniMax-M3 only; M2.x is
-	// text-only).
-	vision bool
-	// reasoning accepts the reasoning intent and emits thinking traces.
-	// Every M-series model reasons; M3 keeps thinking off unless asked,
-	// M2.x thinks unconditionally.
-	reasoning bool
-	// reasoningDisable can force thinking off: MiniMax-M3 honors
-	// thinking: {type: "disabled"}, the M2.x series does not and rejects
-	// a disable request at compile time.
-	reasoningDisable bool
+	kind         modelKind
+	capabilities inference.ModelCapabilities
 	// video10s accepts 10-second durations at 768P.
 	video10s bool
 	// videoHD accepts 1080P resolution.
@@ -45,6 +40,51 @@ type catalogEntry struct {
 	maxInputTokens int
 }
 
+// validate enforces the family contract: the compiler bound by kind can only
+// serve the output modalities it produces, so kind and capabilities cannot
+// drift.
+func (e catalogEntry) validate() error {
+	if err := e.capabilities.Validate(); err != nil {
+		return err
+	}
+	switch e.kind {
+	case kindGenerate:
+		if !slices.Contains(e.capabilities.Outputs, message.PartText) {
+			return fmt.Errorf("generate family must declare text output")
+		}
+	case kindImage:
+		if !slices.Contains(e.capabilities.Outputs, message.PartImage) {
+			return fmt.Errorf("image family must declare image output")
+		}
+	case kindTTS, kindMusic:
+		if !slices.Contains(e.capabilities.Outputs, message.PartAudio) {
+			return fmt.Errorf("%s family must declare audio output", e.kind)
+		}
+	case kindVideo:
+		if !slices.Contains(e.capabilities.Outputs, message.PartVideo) {
+			return fmt.Errorf("video family must declare video output")
+		}
+	default:
+		return fmt.Errorf("unsupported kind %q", e.kind)
+	}
+	return nil
+}
+
+// generateChatCapabilities is the common capability declaration for the
+// MiniMax Messages compiler family. Individual entries add image input when
+// the model has vision and the reasoning kind the model serves.
+func generateChatCapabilities() inference.ModelCapabilities {
+	return inference.ModelCapabilities{
+		Inputs: []message.PartKind{
+			message.PartText,
+			message.PartData,
+			message.PartToolCall,
+			message.PartToolResult,
+		},
+		Outputs: []message.PartKind{message.PartText},
+	}
+}
+
 // catalog reflects MiniMax's lineup as of 2026-07. Sources:
 //   - https://platform.minimaxi.com/docs/api-reference/api-overview
 //   - https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
@@ -54,43 +94,164 @@ type catalogEntry struct {
 // All generate entries speak the binary-thinking dialect: any requested
 // reasoning effort compiles to thinking: {type: "adaptive"} — the endpoint
 // has no effort levels. MiniMax-M3 holds a 1M token context; the M2.x
-// series holds 204,800. Music generation (music-3.0) is deliberately
-// absent: the canonical audio intent is voice-shaped and has no honest
-// surface for lyrics/instrumental control.
+// series holds 204,800. Music generation (music-3.0) serves the canonical
+// audio intent with lyrics/format through MusicOptions; music-cover stays
+// out because it has no honest surface in that intent.
 var catalog = map[string]catalogEntry{
-	"MiniMax-M3":             {kind: kindGenerate, vision: true, reasoning: true, reasoningDisable: true, maxInputTokens: 1_000_000},
-	"MiniMax-M2.7":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2.7-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2.5":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2.5-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2.1":           {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2.1-highspeed": {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
-	"MiniMax-M2":             {kind: kindGenerate, reasoning: true, maxInputTokens: 204_800},
+	"MiniMax-M3": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage).
+			WithReasoning(inference.ReasoningToggle),
+		maxInputTokens: 1_000_000,
+	},
+	"MiniMax-M2.7": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2.7-highspeed": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2.5": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2.5-highspeed": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2.1": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2.1-highspeed": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
+	"MiniMax-M2": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithReasoning(inference.ReasoningAlways),
+		maxInputTokens: 204_800,
+	},
 
 	// Speech synthesis (t2a_v2): HD and turbo tiers.
-	"speech-2.8-hd":    {kind: kindTTS},
-	"speech-2.8-turbo": {kind: kindTTS},
-	"speech-2.6-hd":    {kind: kindTTS},
-	"speech-2.6-turbo": {kind: kindTTS},
-	"speech-02-hd":     {kind: kindTTS},
-	"speech-02-turbo":  {kind: kindTTS},
+	"speech-2.8-hd": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"speech-2.8-turbo": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"speech-2.6-hd": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"speech-2.6-turbo": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"speech-02-hd": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"speech-02-turbo": {
+		kind: kindTTS,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
 
 	// Image generation.
-	"image-01":      {kind: kindImage},
-	"image-01-live": {kind: kindImage},
+	"image-01": {
+		kind: kindImage,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage).
+			WithOutputs(message.PartImage),
+	},
+	"image-01-live": {
+		kind: kindImage,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage).
+			WithOutputs(message.PartImage),
+	},
 
 	// Video generation (async task API). Hailuo-2.3-Fast is image-to-video
 	// only; the 2.3/02 pair runs 10s at 768P and 6s at 1080P.
-	"MiniMax-Hailuo-2.3":      {kind: kindVideo, video10s: true, videoHD: true},
-	"MiniMax-Hailuo-2.3-Fast": {kind: kindVideo, videoI2VOnly: true},
-	"MiniMax-Hailuo-02":       {kind: kindVideo, video10s: true, videoHD: true},
+	"MiniMax-Hailuo-2.3": {
+		kind: kindVideo,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage).
+			WithOutputs(message.PartVideo),
+		video10s: true,
+		videoHD:  true,
+	},
+	"MiniMax-Hailuo-2.3-Fast": {
+		kind: kindVideo,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage).
+			WithOutputs(message.PartVideo),
+		videoI2VOnly: true,
+	},
+	"MiniMax-Hailuo-02": {
+		kind: kindVideo,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage).
+			WithOutputs(message.PartVideo),
+		video10s: true,
+		videoHD:  true,
+	},
 
 	// Music generation (text-to-music; music-cover stays out — see
 	// music.go). The -free tiers are rate-limited gratis twins.
-	"music-3.0":      {kind: kindMusic},
-	"music-3.0-free": {kind: kindMusic},
-	"music-2.6":      {kind: kindMusic},
-	"music-2.6-free": {kind: kindMusic},
+	"music-3.0": {
+		kind: kindMusic,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"music-3.0-free": {
+		kind: kindMusic,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"music-2.6": {
+		kind: kindMusic,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
+	"music-2.6-free": {
+		kind: kindMusic,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithOutputs(message.PartAudio),
+	},
 }
 
 // mergedCatalog overlays the built-in catalog with the spec's model
@@ -102,9 +263,8 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
 		entry := catalogEntry{
-			kind:      modelKind(declared.Kind),
-			vision:    declared.Vision,
-			reasoning: declared.Reasoning,
+			kind:         modelKind(declared.Kind),
+			capabilities: declared.Capabilities,
 		}
 		if entry.kind == "" {
 			if existing, exists := models[declared.Name]; exists {
@@ -113,21 +273,14 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 				entry.kind = kindGenerate
 			}
 		}
-		if err := entry.validate(); err != nil {
-			return nil, fmt.Errorf("model %q: %w", declared.Name, err)
-		}
 		models[declared.Name] = entry
 	}
-	return models, nil
-}
-
-func (e catalogEntry) validate() error {
-	switch e.kind {
-	case kindGenerate, kindImage, kindTTS, kindVideo, kindMusic:
-		return nil
-	default:
-		return fmt.Errorf("unsupported kind %q", e.kind)
+	for name, entry := range models {
+		if err := entry.validate(); err != nil {
+			return nil, fmt.Errorf("model %q: %w", name, err)
+		}
 	}
+	return models, nil
 }
 
 // sortedNames returns catalog names in deterministic order so factory

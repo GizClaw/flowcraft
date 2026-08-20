@@ -20,8 +20,6 @@ func openGenerate(
 	return bindGenerate(
 		cls.api,
 		id.Name,
-		entry.vision,
-		entry.reasoning,
-		entry.reasoningDisable,
+		entry.capabilities,
 	)
 }
