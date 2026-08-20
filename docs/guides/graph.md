@@ -93,7 +93,7 @@ node needs `tools`, a script node needs `script_runtime`. `workspace` and
 
 ## Node types
 
-### `inference` — single-shot LLM generation
+### `inference` — single-shot generation
 
 Runs one `Generate` call: the channel tail is the current turn's input, the
 assistant message (tool calls included) is appended to the same channel.
@@ -112,10 +112,7 @@ onto `tool_pending_key` and the graph routes onward.
 | `tools`                                  | named catalog tools the model may call this turn                                                                  |
 | `all_tools`                              | send the catalog's entire visible set; with `tools`, names are declared `RequiredByName` and must exist           |
 | `tool_choice`                            | constrain when/which tools are called                                                                             |
-| `temperature` / `top_p`                  | sampling controls                                                                                                 |
-| `max_output_tokens`                      | output token cap                                                                                                  |
-| `reasoning_enabled` / `reasoning_effort` | universal reasoning switch / depth                                                                                |
-| `response_format`                        | `text`, `json_object`, or `json_schema` (name + schema); generated text is re-validated against the schema        |
+| `intent`                                 | canonical execution envelope: `{text, image, audio, video}` with per-modality controls (see below)                |
 | `extensions`                             | provider knobs in the `{provider, id, fields}` wire form, resolved via the assembly's decoders                    |
 
 Behavior:
@@ -124,11 +121,34 @@ Behavior:
   the request context. An empty channel or wrong role is a validation error.
 - `model` uses the wired `inference.Assembly`; no `model` requires the
   `inference.Router` (selector/fallback chain picks the target).
+- `intent` is the authoritative execution envelope and covers every
+  generation modality: text controls (`response`, `max_output_tokens`,
+  `tools`, `tool_choice`, `temperature`, `top_p`, `reasoning_enabled`,
+  `reasoning_effort`), image (`size`, `aspect_ratio`, `count`, `seed`,
+  `output_format`, `delivery`), audio/tts (`voice`, `format`, `speed`,
+  `count`), and video (`duration_millis`, `resolution`, `aspect_ratio`,
+  `seed`, `watermark`). When `intent` is absent the node defaults to plain
+  text generation. `tools` / `all_tools` / `tool_choice` remain node-level
+  sugar: they resolve the wired catalog into `intent.text.tools` /
+  `intent.text.tool_choice` and may not be combined with an intent that
+  declares those fields itself. Modality combinations a provider cannot
+  honor (image with sampling controls, tts with tools, …) are rejected by
+  the provider's compiler.
 - With `tools`/`all_tools` configured the tools dep's catalog must be wired;
   unknown names fail the node.
 - Usage is reported to the host on every call. In stream mode a mid-stream
   failure commits the buffered partial text to the board and reports the
   last usage snapshot before propagating the error.
+
+```json
+{
+  "type": "inference",
+  "model": { "id": { "provider": "openai", "name": "gpt-image-1" } },
+  "intent": {
+    "image": { "size": { "width": 1024, "height": 1024 }, "count": 2 }
+  }
+}
+```
 
 ### `tool` — batch tool execution
 

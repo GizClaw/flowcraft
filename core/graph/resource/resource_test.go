@@ -258,13 +258,17 @@ func TestFactoryWiresResponseFormatConfig(t *testing.T) {
 						"id":      map[string]any{"provider": "fake", "name": "echo"},
 						"profile": "default",
 					},
-					"response_format": map[string]any{
-						"kind": "json_schema",
-						"name": "answer",
-						"schema": map[string]any{
-							"type":       "object",
-							"properties": map[string]any{"answer": map[string]any{"type": "string"}},
-							"required":   []any{"answer"},
+					"intent": map[string]any{
+						"text": map[string]any{
+							"response": map[string]any{
+								"kind": "json_schema",
+								"name": "answer",
+								"schema": map[string]any{
+									"type":       "object",
+									"properties": map[string]any{"answer": map[string]any{"type": "string"}},
+									"required":   []any{"answer"},
+								},
+							},
 						},
 					},
 				},

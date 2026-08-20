@@ -433,294 +433,336 @@ nodes:
 - id: wolf_discuss
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: wolf_team_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/wolf_discuss.txt
 - id: wolf_decide
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: wolf_team_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/wolf_decide.txt
 - id: witch_decide
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: witch_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/witch_decide.txt
 - id: seer_decide
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seer_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/seer_decide.txt
 - id: hunter_decide
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: hunter_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/hunter_decide.txt
 - id: seat_1_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_1_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_2_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_2_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_3_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_3_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_4_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_4_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_5_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_5_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_6_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_6_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_7_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_7_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_8_speak
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_8_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: true
     system_prompt:
       file: graphs/prompts/seat_speak.txt
 - id: seat_1_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_1_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_2_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_2_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_3_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_3_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_4_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_4_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_5_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_5_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_6_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_6_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_7_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_7_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt
 - id: seat_8_vote
   type: inference
   config:
+    intent:
+      text:
+        max_output_tokens: 2048
+        reasoning_enabled: true
+        reasoning_effort: high
     messages_channel: seat_8_vote_channel
     model:
       id:
         name: deepseek-v4-flash
         provider: deepseek
-    max_output_tokens: 2048
-    reasoning_enabled: true
-    reasoning_effort: high
     stream: false
     system_prompt:
       file: graphs/prompts/vote_decide.txt

@@ -62,19 +62,18 @@ type InferenceConfig struct {
 	// set, the names are declared to the catalog as RequiredByName via
 	// an optional interface and must still exist.
 	AllTools bool `json:"all_tools,omitempty"`
-	// The remaining knobs ride the text intent verbatim.
-	ToolChoice       *inference.ToolChoice     `json:"tool_choice,omitempty"`
-	Temperature      *float64                  `json:"temperature,omitempty"`
-	TopP             *float64                  `json:"top_p,omitempty"`
-	MaxOutputTokens  *int                      `json:"max_output_tokens,omitempty"`
-	ReasoningEnabled *bool                     `json:"reasoning_enabled,omitempty"`
-	ReasoningEffort  inference.ReasoningEffort `json:"reasoning_effort,omitempty"`
+	// ToolChoice constrains when/which tools are called and rides the
+	// text intent next to Tools.
+	ToolChoice *inference.ToolChoice `json:"tool_choice,omitempty"`
 
-	// ResponseFormat shapes the model's reply: text, json_object, or
-	// json_schema (name + schema). Providers that cannot honor the
-	// shape reject the request at compile time; the runtime re-validates
-	// the generated text against the schema before returning it.
-	ResponseFormat *inference.ResponseFormat `json:"response_format,omitempty"`
+	// Intent is the canonical execution envelope: one or more of the
+	// text, image, audio, and video modalities with their controls
+	// (see inference.Intent). It is authoritative — when set, the
+	// node builds the request from it directly. Tools / AllTools /
+	// ToolChoice stay node-level sugar that resolves the wired catalog
+	// into intent.text.tools / intent.text.tool_choice. When Intent is
+	// absent the node defaults to plain text generation.
+	Intent *inference.Intent `json:"intent,omitempty"`
 
 	// Extensions names provider knobs in the shared {provider, id,
 	// fields} wire form (see inference.DecodeExtensions). Decoders are
@@ -107,7 +106,7 @@ type InferenceNodeDeps struct {
 func Inference(deps InferenceNodeDeps) graph.NodeType[InferenceConfig] {
 	return graph.NodeType[InferenceConfig]{
 		Meta: graph.Meta{
-			Desc: "single-shot LLM generation: channel tail in, one assistant message out",
+			Desc: "single-shot generation (text, image, audio, video): channel tail in, one assistant message out",
 			Reads: []graph.Role{
 				{Kind: graph.RoleMessages, ConfigKey: "messages_channel"},
 			},
@@ -240,7 +239,7 @@ func emitGenerationTerminal(ec graph.ExecutionContext, resp inference.GenerateRe
 
 // buildGenerateRequest splits the channel tail into context + current
 // input — the exact shape GenerateRequest demands — and attaches the
-// configured text intent and extensions.
+// configured intent and extensions.
 func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, deps InferenceNodeDeps) (inference.GenerateRequest, error) {
 	var req inference.GenerateRequest
 	messages := board.Channel(channel)
@@ -268,21 +267,9 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 		)
 	}
 
-	text := &inference.TextIntent{
-		Response:         cfg.ResponseFormat,
-		ToolChoice:       cfg.ToolChoice,
-		Temperature:      cfg.Temperature,
-		TopP:             cfg.TopP,
-		MaxOutputTokens:  cfg.MaxOutputTokens,
-		ReasoningEnabled: cfg.ReasoningEnabled,
-		ReasoningEffort:  cfg.ReasoningEffort,
-	}
-	if len(cfg.Tools) > 0 || cfg.AllTools {
-		definitions, err := toolDefinitions(ec.Context, cfg.Tools, deps.Catalog, cfg.AllTools)
-		if err != nil {
-			return req, err
-		}
-		text.Tools = definitions
+	intent, err := resolveIntent(ec.Context, cfg, deps)
+	if err != nil {
+		return req, err
 	}
 
 	extensions, err := inference.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
@@ -296,11 +283,51 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 			Role: inputRole,
 			Content: inference.InputContent{
 				Content: last.Content,
-				Intent:  inference.Intent{Text: text},
+				Intent:  intent,
 			},
 		},
 		Extensions: extensions,
 	}, nil
+}
+
+// resolveIntent assembles the invocation's canonical execution
+// envelope. The intent config is authoritative; the legacy tools /
+// all_tools / tool_choice knobs are node-level sugar that resolve the
+// wired catalog into intent.text.tools / intent.text.tool_choice. When
+// no intent is configured the node keeps the historical behavior: a
+// text intent, tools-first when tools are configured. The assembled
+// intent is validated here so configuration errors surface before any
+// provider I/O.
+func resolveIntent(ctx context.Context, cfg InferenceConfig, deps InferenceNodeDeps) (inference.Intent, error) {
+	var intent inference.Intent
+	if cfg.Intent != nil {
+		intent = cfg.Intent.Clone()
+	} else {
+		// Default shape: plain text generation.
+		intent.Text = &inference.TextIntent{}
+	}
+	if len(cfg.Tools) > 0 || cfg.AllTools || cfg.ToolChoice != nil {
+		if intent.Text == nil {
+			return intent, errdefs.Validationf(
+				"inference node: tools/tool_choice configured but intent has no text modality")
+		}
+		if len(intent.Text.Tools) > 0 || intent.Text.ToolChoice != nil {
+			return intent, errdefs.Validationf(
+				"inference node: tools/tool_choice declared both in intent and via node config")
+		}
+		if len(cfg.Tools) > 0 || cfg.AllTools {
+			definitions, err := toolDefinitions(ctx, cfg.Tools, deps.Catalog, cfg.AllTools)
+			if err != nil {
+				return intent, err
+			}
+			intent.Text.Tools = definitions
+		}
+		intent.Text.ToolChoice = cfg.ToolChoice
+	}
+	if err := intent.Validate(); err != nil {
+		return intent, errdefs.Validationf("inference node: intent: %v", err)
+	}
+	return intent, nil
 }
 
 func toolDefinitions(ctx context.Context, names []string, catalog tool.Catalog, allTools bool) ([]message.ToolDefinition, error) {
