@@ -2,9 +2,39 @@ package inference
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/GizClaw/flowcraft/core/message"
 )
+
+func TestIntentOutputKinds(t *testing.T) {
+	if kinds := (Intent{}).OutputKinds(); len(kinds) != 0 {
+		t.Fatalf("empty intent kinds = %v, want none", kinds)
+	}
+	if kinds := (Intent{Text: &TextIntent{}}).OutputKinds(); !reflect.DeepEqual(
+		kinds,
+		[]message.PartKind{message.PartText},
+	) {
+		t.Fatalf("text intent kinds = %v", kinds)
+	}
+	all := Intent{
+		Text:  &TextIntent{},
+		Image: &ImageIntent{},
+		Audio: &AudioIntent{},
+		Video: &VideoIntent{},
+	}
+	want := []message.PartKind{
+		message.PartText,
+		message.PartImage,
+		message.PartAudio,
+		message.PartVideo,
+	}
+	if kinds := all.OutputKinds(); !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("all intent kinds = %v, want %v", kinds, want)
+	}
+}
 
 func TestValidateGenerateText(t *testing.T) {
 	arraySchema := json.RawMessage(

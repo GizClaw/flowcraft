@@ -61,6 +61,27 @@ func (i Intent) Validate() error {
 	return nil
 }
 
+// OutputKinds returns the output content kinds this intent requests, in
+// canonical part order: text, image, audio, video. It is the single mapping
+// from the intent structure to the message content vocabulary; response
+// validation and capability-aware routing share it.
+func (i Intent) OutputKinds() []message.PartKind {
+	kinds := make([]message.PartKind, 0, 4)
+	if i.Text != nil {
+		kinds = append(kinds, message.PartText)
+	}
+	if i.Image != nil {
+		kinds = append(kinds, message.PartImage)
+	}
+	if i.Audio != nil {
+		kinds = append(kinds, message.PartAudio)
+	}
+	if i.Video != nil {
+		kinds = append(kinds, message.PartVideo)
+	}
+	return kinds
+}
+
 // TextIntent declares text output and owns every control that governs
 // text generation: response shaping, tool calling, sampling, and the
 // reasoning trace. A TextIntent carrying only tools is the tools-first

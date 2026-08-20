@@ -394,6 +394,10 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	}
 	intent := request.Input.Content.Intent
 	toolsRequested := intent.Text != nil && intent.Text.toolsRequested()
+	requested := make(map[message.PartKind]struct{}, 4)
+	for _, kind := range intent.OutputKinds() {
+		requested[kind] = struct{}{}
+	}
 	var text strings.Builder
 	textParts := 0
 	var images []message.ImagePart
@@ -407,13 +411,13 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 		}
 		switch value := normalized.(type) {
 		case message.TextPart:
-			if intent.Text == nil {
+			if _, ok := requested[message.PartText]; !ok {
 				return fmt.Errorf("generate response contains unrequested text")
 			}
 			textParts++
 			text.WriteString(value.Text)
 		case message.ImagePart:
-			if intent.Image == nil {
+			if _, ok := requested[message.PartImage]; !ok {
 				return fmt.Errorf("generate response contains unrequested image")
 			}
 			images = append(images, value)
@@ -421,7 +425,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				return fmt.Errorf("generate image %d: %w", len(images)-1, err)
 			}
 		case message.AudioPart:
-			if intent.Audio == nil {
+			if _, ok := requested[message.PartAudio]; !ok {
 				return fmt.Errorf("generate response contains unrequested audio")
 			}
 			audio = append(audio, value)
@@ -429,7 +433,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 				return fmt.Errorf("generate audio %d: %w", len(audio)-1, err)
 			}
 		case message.VideoPart:
-			if intent.Video == nil {
+			if _, ok := requested[message.PartVideo]; !ok {
 				return fmt.Errorf("generate response contains unrequested video")
 			}
 			videos = append(videos, value)

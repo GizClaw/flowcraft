@@ -2,10 +2,12 @@ package inference_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 func TestModelLimitsValidate(t *testing.T) {
@@ -56,6 +58,153 @@ func TestModelDescriptorClonePreservesLimits(t *testing.T) {
 			"clone shares max input tokens pointer: original = %d",
 			*original.Limits.MaxInputTokens,
 		)
+	}
+}
+
+func TestModelCapabilitiesValidate(t *testing.T) {
+	capabilities := inference.ModelCapabilities{
+		Inputs:  []message.PartKind{message.PartText, message.PartImage},
+		Outputs: []message.PartKind{message.PartText},
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("valid capabilities: %v", err)
+	}
+
+	for _, outputs := range [][]message.PartKind{
+		{message.PartToolCall},
+		{message.PartFile, message.PartImage},
+		{message.PartText, message.PartText},
+		{message.PartImage, message.PartText, message.PartImage},
+	} {
+		if err := (inference.ModelCapabilities{Outputs: outputs}).Validate(); err == nil {
+			t.Fatalf("outputs %v unexpectedly accepted", outputs)
+		}
+	}
+
+	for _, inputs := range [][]message.PartKind{
+		{message.PartText, message.PartText},
+		{"unknown_kind"},
+	} {
+		if err := (inference.ModelCapabilities{Inputs: inputs}).Validate(); err == nil {
+			t.Fatalf("inputs %v unexpectedly accepted", inputs)
+		}
+	}
+
+	for _, reasoning := range []inference.ReasoningKind{
+		inference.ReasoningAlways,
+		inference.ReasoningToggle,
+	} {
+		if err := (inference.ModelCapabilities{
+			Reasoning: reasoning,
+		}).Validate(); err != nil {
+			t.Fatalf("reasoning %q: %v", reasoning, err)
+		}
+	}
+	if err := (inference.ModelCapabilities{
+		Reasoning: "sometimes",
+	}).Validate(); err == nil {
+		t.Fatal("unknown reasoning kind unexpectedly accepted")
+	}
+}
+
+func TestReasoningKindValidate(t *testing.T) {
+	for _, kind := range []inference.ReasoningKind{
+		inference.ReasoningNone,
+		inference.ReasoningAlways,
+		inference.ReasoningToggle,
+	} {
+		if err := kind.Validate(); err != nil {
+			t.Fatalf("kind %q: %v", kind, err)
+		}
+	}
+	if err := (inference.ReasoningKind("sometimes")).Validate(); err == nil {
+		t.Fatal("unknown reasoning kind unexpectedly accepted")
+	}
+}
+
+func TestModelCapabilitiesCloneDoesNotShareSlices(t *testing.T) {
+	original := inference.ModelCapabilities{
+		Inputs:  []message.PartKind{message.PartText, message.PartImage},
+		Outputs: []message.PartKind{message.PartText},
+	}
+	clone := original.Clone()
+	clone.Inputs[0] = message.PartAudio
+	clone.Outputs[0] = message.PartImage
+	if original.Inputs[0] != message.PartText || original.Outputs[0] != message.PartText {
+		t.Fatalf(
+			"clone shares capability slices: original = %+v",
+			original,
+		)
+	}
+}
+
+func TestModelCapabilitiesBuilders(t *testing.T) {
+	capabilities := inference.ModelCapabilities{}.
+		WithInputs(message.PartText, message.PartImage).
+		WithInputs(message.PartData).
+		WithOutputs(message.PartText).
+		WithReasoning(inference.ReasoningAlways).
+		WithHostedWebSearch()
+	wantInputs := []message.PartKind{
+		message.PartText,
+		message.PartImage,
+		message.PartData,
+	}
+	if !reflect.DeepEqual(capabilities.Inputs, wantInputs) {
+		t.Fatalf("inputs = %v, want %v", capabilities.Inputs, wantInputs)
+	}
+	if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) {
+		t.Fatalf("outputs = %v", capabilities.Outputs)
+	}
+	if capabilities.Reasoning != inference.ReasoningAlways ||
+		!capabilities.HostedWebSearch {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestModelCapabilitiesBuildersDoNotAlias(t *testing.T) {
+	base := inference.ModelCapabilities{}.WithInputs(message.PartText)
+	extended := base.WithInputs(message.PartImage)
+	if len(base.Inputs) != 1 || base.Inputs[0] != message.PartText {
+		t.Fatalf("base inputs mutated by builder: %v", base.Inputs)
+	}
+	_ = extended
+}
+
+func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
+	original := inference.ModelDescriptor{
+		ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},
+		Operations: []inference.Operation{inference.OperationGenerate},
+		Capabilities: inference.ModelCapabilities{
+			Inputs:  []message.PartKind{message.PartText, message.PartImage},
+			Outputs: []message.PartKind{message.PartText},
+		},
+	}
+	clone := original.Clone()
+	clone.Capabilities.Inputs[1] = message.PartAudio
+	clone.Capabilities.Outputs[0] = message.PartImage
+	if original.Capabilities.Inputs[1] != message.PartImage ||
+		original.Capabilities.Outputs[0] != message.PartText {
+		t.Fatalf(
+			"descriptor clone shares capability slices: original = %+v",
+			original.Capabilities,
+		)
+	}
+}
+
+func TestModelDescriptorValidateRejectsNonOutputModality(t *testing.T) {
+	descriptor := inference.ModelDescriptor{
+		ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},
+		Operations: []inference.Operation{inference.OperationGenerate},
+		Capabilities: inference.ModelCapabilities{
+			Outputs: []message.PartKind{message.PartToolCall},
+		},
+	}
+	if err := descriptor.Validate(); err == nil {
+		t.Fatal("tool_call output unexpectedly accepted")
 	}
 }
 
