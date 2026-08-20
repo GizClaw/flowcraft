@@ -155,9 +155,9 @@ var catalog = map[string]catalogEntry{
 	},
 	// gpt-4.1-nano has no hosted web_search tool.
 	"gpt-4.1-nano": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage),
-		deprecated:     true, replacement: "gpt-5.6-luna",
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage),
+		deprecated:   true, replacement: "gpt-5.6-luna",
 		maxInputTokens: 1_047_576,
 	},
 

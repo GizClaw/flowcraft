@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -279,7 +280,7 @@ func (c *compiler) userMessage(
 			text := typed.Text
 			items = append(items, wireContentItem{Text: &text})
 		case message.ImagePart:
-			if !c.entry.vision {
+			if !slices.Contains(c.entry.capabilities.Inputs, message.PartImage) {
 				c.ledger.reject(
 					partFields[message.PartImage],
 					fmt.Sprintf("model %s does not accept image input", c.model),
@@ -288,7 +289,7 @@ func (c *compiler) userMessage(
 			}
 			items = append(items, wireContentItem{Image: imageValue(typed.Source)})
 		case message.VideoPart:
-			if !c.entry.video {
+			if !slices.Contains(c.entry.capabilities.Inputs, message.PartVideo) {
 				c.ledger.reject(
 					partFields[message.PartVideo],
 					fmt.Sprintf("model %s does not accept video input", c.model),
@@ -502,12 +503,19 @@ func (c *compiler) tools(text *inference.TextIntent) {
 // rejects the switch field itself.
 func (c *compiler) reasoning(text *inference.TextIntent) {
 	if text.ReasoningEnabled != nil {
-		if !c.entry.reasoning {
+		switch {
+		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		} else {
+		case c.entry.capabilities.Reasoning == inference.ReasoningAlways &&
+			!*text.ReasoningEnabled:
+			c.ledger.reject(
+				inference.FieldGenerateIntentReasoningEnabled,
+				fmt.Sprintf("model %s always thinks; thinking cannot be disabled", c.model),
+			)
+		default:
 			if *text.ReasoningEnabled && c.entry.thinkingStreamOnly && !c.stream {
 				c.ledger.reject(
 					inference.FieldGenerateIntentReasoningEnabled,
@@ -520,7 +528,7 @@ func (c *compiler) reasoning(text *inference.TextIntent) {
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case !c.entry.reasoning:
+		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
@@ -585,7 +593,7 @@ func (c *compiler) intents(request inference.GenerateRequest) {
 func (c *compiler) extensions() {
 	o := c.options
 	if o.ThinkingBudget != nil {
-		if !c.entry.reasoning {
+		if c.entry.capabilities.Reasoning == inference.ReasoningNone {
 			c.ledger.reject(
 				inference.ExtensionField("thinking_budget").Qualify(o),
 				fmt.Sprintf("model %s has no thinking budget", c.model),

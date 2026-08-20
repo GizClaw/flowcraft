@@ -2,6 +2,10 @@ package qwen
 
 import (
 	"fmt"
+	"slices"
+
+	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type modelKind string
@@ -11,21 +15,14 @@ const (
 	kindEmbed    modelKind = "embed"
 )
 
-// catalogEntry declares what one catalog model accepts. The zero value is
-// the bare text surface: the compiler rejects every channel the entry
-// omits, so a model never silently accepts a feature it may not serve.
+// catalogEntry declares what one catalog model accepts. capabilities is the
+// single capability fact source: input/output content kinds and the reasoning
+// control capability. reasoningEffort, preserveThinking, thinkingStreamOnly,
+// and embedDimensions are control capabilities that no capability kind
+// expresses and stay separate flags.
 type catalogEntry struct {
-	kind modelKind
-	// vision accepts image input parts; multimodal models ride the
-	// multimodal-generation endpoint rather than text-generation, and the
-	// multimodal-embedding endpoint rather than text-embedding.
-	vision bool
-	// video accepts video input parts (frame lists or files) on the
-	// multimodal endpoint.
-	video bool
-	// reasoning accepts the thinking switch (enable_thinking) and emits
-	// reasoning_content traces.
-	reasoning bool
+	kind         modelKind
+	capabilities inference.ModelCapabilities
 	// reasoningEffort accepts the reasoning_effort levels
 	// (qwen3.8-max-preview only); other thinking models take
 	// thinking_budget through the extension instead.
@@ -52,33 +49,83 @@ type catalogEntry struct {
 //   - https://www.alibabacloud.com/help/zh/model-studio/models
 //
 // The qwen3.7/qwen3.8 commercial models are multimodal and hybrid-thinking;
-// thinking mode is stream-only server-side, so unary compiles with
-// thinking on reject the shape. The legacy qwen-plus/turbo/flash/max
-// names stay text-only here — custom models declare through the spec.
+// qwen3.8-max-preview is thinking-only (DashScope rejects enable_thinking
+// false with a 400), while the rest can toggle. Thinking mode is stream-only
+// server-side, so unary compiles with thinking on reject the shape. The
+// legacy qwen-plus/turbo/flash/max names stay text-only here — custom models
+// declare through the spec.
 var catalog = map[string]catalogEntry{
-	"qwen3.8-max-preview": {kind: kindGenerate, vision: true, video: true, reasoning: true, reasoningEffort: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 983_616},
-	"qwen3.7-max":         {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
-	"qwen3.7-plus":        {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
-	"qwen3.7-flash":       {kind: kindGenerate, vision: true, video: true, reasoning: true, preserveThinking: true, thinkingStreamOnly: true, maxInputTokens: 991_808},
-	"qwen3-vl-plus":       {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true, maxInputTokens: 260_096},
-	"qwen3-vl-flash":      {kind: kindGenerate, vision: true, video: true, reasoning: true, thinkingStreamOnly: true, maxInputTokens: 260_096},
+	"qwen3.8-max-preview": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningAlways),
+		reasoningEffort:    true,
+		preserveThinking:   true,
+		thinkingStreamOnly: true,
+		maxInputTokens:     983_616,
+	},
+	"qwen3.7-max": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
+		preserveThinking:   true,
+		thinkingStreamOnly: true,
+		maxInputTokens:     991_808,
+	},
+	"qwen3.7-plus": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
+		preserveThinking:   true,
+		thinkingStreamOnly: true,
+		maxInputTokens:     991_808,
+	},
+	"qwen3.7-flash": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
+		preserveThinking:   true,
+		thinkingStreamOnly: true,
+		maxInputTokens:     991_808,
+	},
+	"qwen3-vl-plus": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
+		thinkingStreamOnly: true,
+		maxInputTokens:     260_096,
+	},
+	"qwen3-vl-flash": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage, message.PartVideo).
+			WithReasoning(inference.ReasoningToggle),
+		thinkingStreamOnly: true,
+		maxInputTokens:     260_096,
+	},
 
-	"qwen-plus":  {kind: kindGenerate, maxInputTokens: 997_952},
-	"qwen-turbo": {kind: kindGenerate, maxInputTokens: 98_304},
-	"qwen-flash": {kind: kindGenerate, maxInputTokens: 997_952},
-	"qwen-max":   {kind: kindGenerate, maxInputTokens: 30_720},
+	"qwen-plus":  {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952},
+	"qwen-turbo": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 98_304},
+	"qwen-flash": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952},
+	"qwen-max":   {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 30_720},
 
 	// Embeddings. The multimodal model is served in the Beijing region
 	// only; text-embedding-v4 batches at most 10 rows per request.
 	"text-embedding-v4": {
 		kind:            kindEmbed,
+		capabilities:    inference.ModelCapabilities{}.WithInputs(message.PartText),
 		embedDimensions: []int{2048, 1536, 1024, 768, 512, 256, 128, 64},
 		maxInputTokens:  8_192,
 	},
 	"qwen3-vl-embedding": {
-		kind:            kindEmbed,
-		vision:          true,
-		video:           true,
+		kind: kindEmbed,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText, message.PartImage, message.PartVideo),
 		embedDimensions: []int{2560, 2048, 1536, 1024, 768, 512, 256},
 		maxInputTokens:  32_000,
 	},
@@ -88,15 +135,44 @@ func (e catalogEntry) validate() error {
 	if e.kind != kindGenerate && e.kind != kindEmbed {
 		return fmt.Errorf("unsupported kind %q", e.kind)
 	}
-	if e.kind == kindEmbed && (e.reasoning || e.reasoningEffort || e.preserveThinking || e.thinkingStreamOnly) {
+	if err := e.capabilities.Validate(); err != nil {
+		return err
+	}
+	if e.kind == kindGenerate && !slices.Contains(e.capabilities.Outputs, message.PartText) {
+		return fmt.Errorf("generate family must declare text output")
+	}
+	if e.kind == kindEmbed && len(e.capabilities.Outputs) != 0 {
+		return fmt.Errorf("embed family declares no generate output")
+	}
+	if e.kind == kindEmbed && e.capabilities.Reasoning != inference.ReasoningNone {
+		return fmt.Errorf("embed model cannot declare reasoning")
+	}
+	if e.kind == kindEmbed && (e.reasoningEffort || e.preserveThinking || e.thinkingStreamOnly) {
 		return fmt.Errorf("embed model cannot declare thinking flags")
 	}
 	return nil
 }
 
+// generateChatCapabilities is the capability declaration for the Qwen text
+// compiler family: text/data/tool parts in, text out.
+func generateChatCapabilities() inference.ModelCapabilities {
+	return inference.ModelCapabilities{
+		Inputs: []message.PartKind{
+			message.PartText,
+			message.PartData,
+			message.PartToolCall,
+			message.PartToolResult,
+		},
+		Outputs: []message.PartKind{message.PartText},
+	}
+}
+
 // multimodal reports whether the model rides the multimodal-generation
 // endpoint rather than text-generation.
-func (e catalogEntry) multimodal() bool { return e.vision || e.video }
+func (e catalogEntry) multimodal() bool {
+	return slices.Contains(e.capabilities.Inputs, message.PartImage) ||
+		slices.Contains(e.capabilities.Inputs, message.PartVideo)
+}
 
 // mergedCatalog overlays the spec's declared models on the built-in
 // catalog. Unknown kinds are rejected at build time; custom models get the
@@ -123,12 +199,36 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 				entry.kind = kindGenerate
 			}
 		}
-		entry.vision = entry.vision || model.Vision
-		entry.reasoning = entry.reasoning || model.Reasoning
+		entry.capabilities.Inputs = unionKinds(
+			entry.capabilities.Inputs,
+			model.Capabilities.Inputs,
+		)
+		entry.capabilities.Outputs = unionKinds(
+			entry.capabilities.Outputs,
+			model.Capabilities.Outputs,
+		)
+		entry.capabilities.HostedWebSearch =
+			entry.capabilities.HostedWebSearch || model.Capabilities.HostedWebSearch
+		if model.Capabilities.Reasoning != inference.ReasoningNone {
+			entry.capabilities.Reasoning = model.Capabilities.Reasoning
+		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", model.Name, err)
 		}
 		merged[model.Name] = entry
 	}
 	return merged, nil
+}
+
+// unionKinds appends any kind from addition that is not already present in
+// base, preserving base order. Spec declarations overlay catalog entries
+// additively.
+func unionKinds(base, addition []message.PartKind) []message.PartKind {
+	result := append([]message.PartKind(nil), base...)
+	for _, kind := range addition {
+		if !slices.Contains(result, kind) {
+			result = append(result, kind)
+		}
+	}
+	return result
 }
