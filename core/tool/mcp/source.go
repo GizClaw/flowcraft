@@ -511,18 +511,18 @@ func (s *Source) attachSession(
 	srv.mu.Unlock()
 
 	if err := s.reconcile(ctx, srv); err != nil {
-		abandonAttach(srv, session)
+		abandonAttach(ctx, srv, session)
 		return err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		abandonAttach(srv, session)
+		abandonAttach(ctx, srv, session)
 		return errdefs.NotAvailablef("mcp: source is closed")
 	}
 	if other, exists := s.servers[srv.name]; exists && other != srv {
-		abandonAttach(srv, session)
+		abandonAttach(ctx, srv, session)
 		return errdefs.Validationf("mcp: server %q is already attached", srv.name)
 	}
 	s.servers[srv.name] = srv
@@ -533,13 +533,16 @@ func (s *Source) attachSession(
 // srv.session when it still points at the failed session and then
 // closes it, so every attachSession error path releases the connection
 // exactly once.
-func abandonAttach(srv *server, session *mcpsdk.ClientSession) {
+func abandonAttach(ctx context.Context, srv *server, session *mcpsdk.ClientSession) {
 	srv.mu.Lock()
 	if srv.session == session {
 		srv.session = nil
 	}
 	srv.mu.Unlock()
-	_ = session.Close()
+	if err := session.Close(); err != nil {
+		telemetry.WarnErr(ctx, "mcp: close abandoned server session failed", err,
+			otellog.String("mcp.server", srv.name))
+	}
 }
 
 // reconcile re-lists the server's tools and updates its projection,

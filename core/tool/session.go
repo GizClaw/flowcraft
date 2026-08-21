@@ -6,6 +6,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // Session is the per-run / per-conversation injection view over a
@@ -114,13 +115,17 @@ func (s *dynamicSession) AdvanceTurn() {
 
 func (s *dynamicSession) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
 	if s.policy.SearchWithLoad {
-		_ = s.Load(ctx)
+		if err := s.Load(ctx); err != nil {
+			telemetry.WarnErr(ctx, "tool session: preload for search failed", err)
+		}
 	}
 	return s.search(ctx, query, limit)
 }
 
 func (s *dynamicSession) SearchWithLoad(ctx context.Context, query string, limit int) ([]SearchHit, error) {
-	_ = s.Load(ctx)
+	if err := s.Load(ctx); err != nil {
+		telemetry.WarnErr(ctx, "tool session: preload for search failed", err)
+	}
 	return s.search(ctx, query, limit)
 }
 
