@@ -21,7 +21,11 @@ model := inference.ModelRef{
 ```
 
 The runtime never picks or replaces a model. Optional routing is provided by
-`core/inference/route`.
+`core/inference/route`. Route selection consults the providers' declared
+model capabilities: targets whose declared output kinds cannot serve the
+request intent are skipped, while models with undeclared capabilities are
+treated as undeclared (not unsupported) — preflight remains the final
+arbiter for those.
 
 ## Deployment config
 
@@ -44,13 +48,72 @@ resources:
       provider: provider
 ```
 
-Provider implementations live in `driver/<name>` modules. The application
-registers the desired provider factories:
+Provider implementations are registered by the application from provider
+driver modules:
 
 ```go
 reg.MustRegister(deepseek.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
+
+## Routing
+
+Optional target selection is an `inference.Router` resource. It consumes
+one `inference.Assembly` as its `target` dep and reads the route policy
+from its own `settings`:
+
+```yaml
+resources:
+  router:
+    kind: inference.Router
+    impl: unified
+    deps:
+      target: infer
+    settings:
+      generate:
+        - tier: fast
+          targets:
+            - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+              score: {quality: 0.8, speed: 0.9}
+      retry:
+        generate:
+          max_attempts: 2
+          max_total_attempts: 5
+          backoff:
+            kind: exponential   # fixed | exponential (default)
+            initial: 100ms
+            max: 2s
+            multiplier: 2
+            jitter: full        # none | equal | full (default)
+          retryable: [rate_limit, timeout, unavailable]
+          fallback_on_retry_exhausted: true
+      circuit_breaker:
+        failure_threshold: 5      # consecutive transient failures; default 5
+        recovery_window: 30s      # open-circuit window; default 30s
+        half_open_max_probes: 1   # concurrent probes while half-open; default 1
+```
+
+The policy has three operation areas — `generate`, `embed`, and
+`transcription` — each a list of `tier` pools. A pool is an allowlist of
+exact `model` targets plus optional normalized `score` signals
+(`quality` / `economy` / `speed` / `reliability`, all in `[0, 1]`).
+Scores guide selection only; they never claim a request is executable.
+
+- Route selection is capability-aware: targets whose declared output kinds
+  cannot serve the request intent are skipped, while targets with
+  undeclared capabilities are treated as undeclared (not unsupported) —
+  preflight remains the final arbiter.
+- The `retry` section configures per-operation retries (same-target), each
+  with `max_attempts`, an optional `max_total_attempts`, a `backoff`
+  curve, an explicit `retryable` class list (`rate_limit`, `timeout`,
+  `unavailable`), and `fallback_on_retry_exhausted`. A retry section
+  requires its operation to have pools.
+- `circuit_breaker` opens a per-target circuit after consecutive transient
+  failures, probes while half-open, and skips attempts while open.
+- At build time every configured target is validated against the assembly:
+  it must exist, not be retired, and expose the operation. A graph engine
+  wires the router through its `router` dep when inference nodes omit an
+  explicit `model`.
 
 ## Streaming
 

@@ -44,6 +44,8 @@ resources:
   events:
     kind: event.Bus
     impl: memory
+    settings:
+      route_cache_size: 1024  # optional: positive caps the subject route cache, zero disables it
 ```
 
 The runtime host exposes the bus through `agent.EventBusProvider`.
@@ -52,5 +54,6 @@ without resolving the resource themselves; the prompt lifecycle events
 are documented in [prompt.md](prompt.md). Runtime agent lifecycle events
 (`runtime.agent.<id>.registered` / `.removed`, subscribe with
 `PatternAgentLifecycle()`) live in a separate namespace and are published
-on successful dynamic registration/removal (see
-[runtime.md](runtime.md)).
+on successful dynamic registration/removal, and generation reloads publish
+`runtime.rebuild.started` / `.completed` / `.failed` (`PatternRuntimeRebuild()`)
+— see [runtime.md](runtime.md).

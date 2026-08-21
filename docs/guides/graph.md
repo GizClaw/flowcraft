@@ -91,6 +91,33 @@ Engine deps are derived from the definition: an inference node needs the
 node needs `tools`, a script node needs `script_runtime`. `workspace` and
 `sandbox` are optional and unlock the script `fs` / `shell` globals (below).
 
+## Script runtimes
+
+Script nodes run on a bound `agent.ScriptRuntime` resource named by the
+engine's `script_runtime_name` (default `js`). The core runtimes:
+
+```yaml
+resources:
+  js:
+    kind: agent.ScriptRuntime
+    impl: js
+    settings:
+      pool_size: 4              # positive; number of pooled VMs
+      max_call_stack_size: 512  # js only; positive call-stack bound
+      max_exec_time: 30s        # Go duration; zero disables the cap
+
+  lua:
+    kind: agent.ScriptRuntime
+    impl: lua
+    settings:
+      pool_size: 4
+      max_exec_time: 30s
+```
+
+Implementations live in `core/agent/scriptrt/{jsrt,luart}`. A runtime that
+cannot nest sub-scripts degrades `runtime.execScript` to a `not_available`
+signal instead of panicking (see below).
+
 ## Node types
 
 ### `inference` — single-shot generation
@@ -300,10 +327,16 @@ Direct read/write of the engine board.
 | `board.deleteVar(key)`           | —                                                                 |
 | `board.getVars()`                | `map`                                                             |
 | `board.hasVar(key)`              | `bool`                                                            |
+| `board.resolve(str)`             | `any` — typed `${board.*}` expansion                              |
+| `board.resolveString(str)`       | `string` — text `${board.*}` expansion                            |
 | `board.channel(name)`            | `array` of message objects (never null)                           |
 | `board.setChannel(name, msgs)`   | throws on validation errors                                       |
 | `board.appendChannel(name, msg)` | throws on validation errors                                       |
 | `board.MAIN_CHANNEL`             | the reserved default channel name (use it instead of the literal) |
+
+`resolve` / `resolveString` run the same `${board.*}` expansion the
+engine applies to node config strings: missing references error unless a
+default is given, and `resolveString` renders non-string values to text.
 
 Messages use the inference wire format: `{role, content: {parts: [...]}}`
 with parts like `{"type": "text", "text": "..."}` or
@@ -419,10 +452,24 @@ script-land (check `finish_reason`, call the message's tool parts via
 | `inference.explainEmbed(request)` / `inference.routeExplainEmbed(request)`   | embedding twins of explain/routeExplain                                 |
 | `inference.explainStream(request)` / `inference.routeExplainStream(request)` | local stream preflight without opening a provider stream                |
 | `inference.stream(request)` / `inference.routeStream(request)`               | streaming twins returning `{next, result, close}`                       |
+| `inference.transcribe(request)` / `inference.routeTranscribe(request)`       | whole-audio transcription; route twin gains `trace`                     |
+| `inference.explainTranscribe(request)` / `inference.routeExplainTranscribe(request)` | transcription preflight (exact model vs router); route twin returns `{explanation, decision, limits}` |
+| `inference.transcribeSession(request)` / `inference.routeTranscribeSession(request)` | duplex session handle `{send, next, result, interrupt, finish, close}`; route twin attaches `trace` to the result |
 
 Stream handle: `next()` returns one event or `null` at EOF, `result()`
 returns the accumulated `GenerateResponse` after `next()` returned `null`,
 and `close()` abandons a stream early (idempotent).
+
+Transcription session handle:
+
+| Method              | Behavior                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| `session.send(chunk)`   | feeds one `media.AudioChunk` wire JSON (`{data, sequence}`); fails once the session ended    |
+| `session.next()`        | one `TranscriptionSessionEvent`, or `null` at normal end; errors terminate the iteration     |
+| `session.result()`      | the accumulated `TranscriptionResponse` (same shape as `transcribe`); only after `next()` → `null` |
+| `session.interrupt()`   | terminates abnormally (barge-in); surfaces from the next `next()` / `result()`               |
+| `session.finish()`      | explicit end-of-input (`FinishInput`); errors when the provider session lacks the capability |
+| `session.close()`       | idempotent early exit                                                                        |
 
 Extensions ride a bridge-level `extensions` array of
 `{provider, id, fields}`, resolved through decoders the host registered

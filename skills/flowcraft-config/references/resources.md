@@ -13,7 +13,14 @@ spec:
   api: chat             # "chat" (default) or "responses"
   base_url: https://api.deepseek.com   # optional override
   models:               # optional: declare/override catalog models
-    - {name: deepseek-v4-flash, kind: generate, reasoning: true, responses: true}
+    - name: deepseek-v4-flash
+      kind: generate
+      capabilities:     # optional: content kinds, hosted web search, reasoning control
+        inputs: [text, data, tool_call, tool_result]
+        outputs: [text]
+        reasoning: toggle   # "always" or "toggle"
+        hosted_web_search: true
+      responses: true
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}
@@ -22,7 +29,11 @@ profiles:
 Provider IDs and profile IDs must be identifiers. Secret values use the
 settings expansion syntax (`${env:NAME}` for an environment variable,
 `${base:rel}` / `~` / `${home:rel}` for paths); a missing variable fails
-the build. Provider drivers are registered from `driver/<name>`.
+the build. Model capabilities mirror the built-in catalog shape and are
+validated by the driver; routing prefers targets whose declared outputs
+cover the request intent and skips declared-incompatible tiers. Provider
+drivers are registered by the host application from provider driver
+modules (outside `core/`).
 
 ## inference assembly
 
@@ -36,8 +47,46 @@ infer:
     provider: provider
 ```
 
-Routing settings are factory-owned; optional route policy is configured in the
-assembly settings.
+Routing is an optional `inference.Router` resource; see below.
+
+## inference router
+
+The router consumes one assembly as its `target` dep and reads the route
+policy from its own `settings`:
+
+```yaml
+router:
+  kind: inference.Router
+  impl: unified
+  deps:
+    target: infer
+  settings:
+    generate:
+      - tier: fast
+        targets:
+          - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+            score: {quality: 0.8, speed: 0.9}
+    retry:
+      generate:
+        max_attempts: 2
+        max_total_attempts: 5
+        backoff: {kind: exponential, initial: 100ms, max: 2s, multiplier: 2, jitter: full}
+        retryable: [rate_limit, timeout, unavailable]
+        fallback_on_retry_exhausted: true
+    circuit_breaker:
+      failure_threshold: 5      # consecutive transient failures; default 5
+      recovery_window: 30s      # default 30s
+      half_open_max_probes: 1   # default 1
+```
+
+`generate` / `embed` / `transcription` each list `tier` pools of exact
+`model` targets plus optional `score` signals (`quality` / `economy` /
+`speed` / `reliability`, all in `[0, 1]`); scores guide selection only.
+Selection skips targets whose declared output capabilities cannot serve
+the request intent; undeclared capabilities are treated as undeclared, not
+unsupported. `retry` (per-operation, requires pools) and `circuit_breaker`
+configure resilience. Build-time validation checks every target exists,
+is not retired, and exposes the operation.
 
 ## workspace
 
@@ -55,11 +104,26 @@ Relative roots resolve against the deployment loader's base directory.
 ## sandbox
 
 ```yaml
-root: ./sandbox
+box:
+  kind: sandbox.Runner
+  impl: local
+  settings:
+    root: ./sandbox
 ```
 
-The local runner accepts a root. Platform backends (`bwrap`, `seatbelt`) are
-registered from `core/sandbox/{bwrap,seatbelt}`.
+The local runner is no-isolation and takes only `root`. The isolation
+backends (`bwrap`, `seatbelt`) share a larger settings surface:
+
+```yaml
+box:
+  kind: sandbox.Runner
+  impl: bwrap            # or seatbelt
+  settings:
+    root: ./sandbox
+    binary: /usr/bin/bwrap    # optional; resolved against the root
+    writable_paths: [./out]   # optional; paths the sandbox may write
+    extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
+```
 
 ## tool source / assembly
 
@@ -79,10 +143,174 @@ tools:
         tool_search: always
 ```
 
+The `middleware` impl is the same assembly with a settings-declared
+middleware chain; the `memory` impl rejects the `middlewares` key:
+
+```yaml
+tools:
+  kind: tool.Assembly
+  impl: middleware
+  deps:
+    tool: sim
+  settings:
+    middlewares:
+      recover: {enabled: true}
+      timeout: {default: 30s}
+      concurrency: {limit: 8}
+    dynamic: {default: deferred, exposures: {tool_search: always}}
+```
+
+Each middleware entry is optional; absent entries are skipped. `recover`
+converts tool panics into error results, `timeout.default` bounds each
+call (calls that already carry a deadline pass through), and
+`concurrency.limit` caps in-flight executions.
+
+MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
+with background reconnection, and `required: true` marks a server the host
+should `WaitReady` on:
+
+```yaml
+sim:
+  kind: tool.Source
+  impl: mcp
+  settings:
+    servers:
+      - name: filesystem
+        transport: stdio           # stdio | http
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem"]
+        env: {TOKEN: ${env:MCP_TOKEN}}
+        prefix: fs                  # tool namespace; default "<name>__"
+        resources: true             # bridge list_resources / read_resource tools
+        required: true
+      - name: remote
+        transport: http
+        url: https://mcp.example.com/mcp
+        headers: {Authorization: "Bearer ${env:MCP_TOKEN}"}
+        http_timeout: 30s
+```
+
 ## memory
 
 Memory implementations are app-registered. `core/memory` supplies contracts
-and hooks; each implementation owns its settings document.
+and hooks; each implementation owns its settings document. The core hooks
+bind the whole assembly as their `memory` dep:
+
+```yaml
+agents:
+  assistant:
+    prepare:
+      - type: memory.context       # hook.prepare seed hook
+        deps:
+          memory: memories
+        settings:
+          query: {literal: "relevant prior conversation"}  # or board / current_message / recent_only
+          scope: {runtime_id: memories, user_id: user-1, agent_id: assistant}
+          conversation_id: conv-1  # optional; defaults to the request ContextID
+          dataset_ids: [docs]      # optional
+          budget: {max_tokens: 2000, max_items: 50, max_chars: 8000}
+          min_score: 0.5
+          output: memory_items     # required; non-reserved board var
+          render: {output: memory_text, gotmpl: {max_chars: 8000}}
+    commit:
+      - type: memory.turn          # hook.commit durable finalizer
+        deps:
+          memory: memories
+        settings:
+          scope: {runtime_id: memories, user_id: user-1, agent_id: assistant}
+          conversation_id: conv-1  # optional; defaults to the request ContextID
+          channel: main            # optional; defaults to the main channel
+```
+
+`memory.context` requires exactly one `query` source and a non-reserved
+`output` var; recall is hard-partitioned by scope. `memory.turn` commits
+the turn's channel idempotently per run id.
+
+## event bus
+
+```yaml
+events:
+  kind: event.Bus
+  impl: memory
+  settings:
+    route_cache_size: 1024  # optional: positive caps the route cache, zero disables it
+```
+
+## script runtime
+
+```yaml
+js:
+  kind: agent.ScriptRuntime
+  impl: js
+  settings:
+    pool_size: 4              # positive; number of pooled VMs
+    max_call_stack_size: 512  # js only; positive call-stack bound
+    max_exec_time: 30s        # Go duration; zero disables the cap
+
+lua:
+  kind: agent.ScriptRuntime
+  impl: lua
+  settings:
+    pool_size: 4
+    max_exec_time: 30s
+```
+
+Script runtimes are wired into a graph engine as the `script_runtime` dep
+(see [graph.md](graph.md)).
+
+## delegation
+
+```yaml
+dir:
+  kind: delegation.Directory
+  impl: local   # no settings; binds the deployment's agents at wire time
+
+prov:
+  kind: delegation.SessionProvider
+  impl: random  # no settings; fresh ContextID per delegation, never persists
+
+svc:
+  kind: delegation.Service
+  impl: local
+  deps:
+    directory: dir
+    # backend: async            # optional delegation.AsyncBackend; absent = sync-only
+    # session_provider: prov    # optional identity policy
+  settings:
+    max_concurrency: 4          # positive; default 4
+    max_depth: 8                # positive; default 8
+    timeout: 5m                 # Go duration; zero leaves the caller's context
+    idempotency_retention: 24h  # positive; how long responses stay replayable
+    defer_workers: true         # start async workers on Start instead of at build
+
+dtools:
+  kind: tool.Source
+  impl: delegation
+  deps:
+    directory: dir  # no settings; exposes delegate / delegation_status / delegation_targets
+```
+
+Expose the service on every turn host with
+`runtime.Builder.WithResultHostFactory` plus `delegation/hostwrap`; the
+directory binds the current deployment generation, so reloads delegate
+against the new generation's agents.
+
+## checkpoint store
+
+```yaml
+cps:
+  kind: checkpoint.Store
+  impl: workspace
+  deps:
+    workspace: ws
+  settings:
+    prefix: agent/checkpoints  # optional; default "agent/checkpoints"
+```
+
+`runtime.checkpoint_store` names a resource implementing the
+`agent.CheckpointStore` contract; `sessions.resume` requires one (see
+[runtime.md](runtime.md)). Alternative backends are app-registered outside
+`core/` and own their settings schema.
 
 ## graph
 

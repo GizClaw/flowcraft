@@ -69,17 +69,18 @@ the core schema. Agent hooks use factory kind `hook.<slot>`.
 | `event.Bus` | `memory` | `core/event` |
 | `workspace.Workspace` | `local` | `core/workspace` |
 | `sandbox.Runner` | `local`, `bwrap`, `seatbelt` | `core/sandbox/{local,bwrap,seatbelt}` |
-| `inference.Provider` | `openai`, `deepseek`, `qwen`, ... | `driver/<name>` |
+| `inference.Provider` | `openai`, `deepseek`, `qwen`, ... | core contract; impls registered from provider drivers |
 | `inference.Assembly` | `unified` | `core/inference` |
 | `inference.Router` | `unified` | `core/inference/route` |
 | `tool.Registry` | `memory` | `core/tool` |
 | `tool.Source` | app/provider-specific | host/app |
-| `tool.Assembly` | `memory` | `core/tool` |
+| `tool.Assembly` | `memory`, `middleware` | `core/tool`, `core/tool/middleware` |
 | `agent.ScriptRuntime` | `js`, `lua` | `core/agent/scriptrt/{jsrt,luart}` |
 | `agent.Engine` | `graph` | `core/graph/resource` |
 | `delegation.Service` | `local` | `core/delegation` |
+| `delegation.Directory` | `local` | `core/delegation` |
+| `delegation.SessionProvider` | `random` | `core/delegation` |
 | `checkpoint.Store` | `workspace` | `core/agent/checkpoint/workspace` |
-| `agent.CheckpointStore` | `sqlite` | `backends/checkpoint/sqlite` |
 
 The table is informational: the validator accepts any kind that fits the
 resource envelope, and only the host build can construct these factories.
