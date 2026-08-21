@@ -87,6 +87,21 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 	return nil
 }
 
+// BindDeployment implements resource.DeploymentBinder: the directory
+// resource binds itself to the assembled deployment once agents are
+// ready. Binding is idempotent per instance (see Bind).
+func (d *LocalDirectory) BindDeployment(deployment any) error {
+	if d == nil {
+		return errdefs.Validationf("local delegation directory: nil receiver")
+	}
+	view, ok := deployment.(Deployment)
+	if !ok || isNilInterface(deployment) {
+		return errdefs.Validationf(
+			"local delegation directory: deployment is not a read-only deployment view")
+	}
+	return d.Bind(view)
+}
+
 // List returns targets in deploy.Result.InstanceNames order.
 func (d *LocalDirectory) List(context.Context) ([]Target, error) {
 	if d == nil {

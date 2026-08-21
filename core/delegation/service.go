@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/runtime/session"
 )
 
 const (
@@ -88,6 +90,7 @@ type serviceConfig struct {
 	timeout              time.Duration
 	idempotencyRetention time.Duration
 	workerHost           agent.Host
+	sessionProvider      SessionProvider
 	deferWorkers         bool
 }
 
@@ -165,6 +168,19 @@ func WithWorkerHost(host agent.Host) Option {
 	}
 }
 
+// WithSessionProvider sets the identity policy for delegated subagent
+// sessions. When nil and a session manager is bound, the service mints a
+// fresh ContextID per delegation.
+func WithSessionProvider(provider SessionProvider) Option {
+	return func(config *serviceConfig) error {
+		if isNilInterface(provider) {
+			return errdefs.Validationf("local delegation: session provider is nil")
+		}
+		config.sessionProvider = provider
+		return nil
+	}
+}
+
 // WithDeferredWorkers defers asynchronous worker startup until Start. This is
 // useful when a lifecycle owner must finish binding all dependencies before
 // background work begins.
@@ -200,7 +216,13 @@ type LocalService struct {
 	workerCtx    context.Context
 	cancelWorker context.CancelFunc
 	workerHost   agent.Host
-	workers      sync.WaitGroup
+	// sessionProvider is the identity policy for subagent sessions. It is
+	// immutable after construction.
+	sessionProvider SessionProvider
+	// sessionManager is bound by the runtime through ManagerBinder before
+	// the service serves traffic; writes are serialized by stateMu.
+	sessionManager *session.Manager
+	workers        sync.WaitGroup
 
 	closeOnce  sync.Once
 	closeErr   error
@@ -247,6 +269,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 		maxConcurrency:       config.maxConcurrency,
 		maxDepth:             config.maxDepth,
 		timeout:              config.timeout,
+		sessionProvider:      config.sessionProvider,
 		slots:                make(chan struct{}, config.maxConcurrency),
 		idempotencyRetention: config.idempotencyRetention,
 		asyncRetention:       asyncRetention,
@@ -271,23 +294,36 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 	return service, nil
 }
 
-// BindDeployment implements resource.DeploymentBinder: it binds the
-// assembled deployment into the service's directory once agents are
-// ready. The deployment view is the read-only interface exposed by
-// *deploy.Result; binding is idempotent.
-func (s *LocalService) BindDeployment(deployment any) error {
+// BindSessionManager implements session.ManagerBinder: the runtime hands
+// this service the session manager that owns subagent session lifecycle.
+// Binding is set-once: a second bind is a conflict. The write is
+// serialized by stateMu; reads happen through sessionManager.
+func (s *LocalService) BindSessionManager(manager *session.Manager) error {
 	if s == nil {
 		return errdefs.Validationf("local delegation: nil service")
 	}
-	if s.directory == nil {
-		return errdefs.Internalf("local delegation: service has no directory")
+	if manager == nil {
+		return errdefs.Validationf("local delegation: session manager is nil")
 	}
-	view, ok := deployment.(Deployment)
-	if !ok || isNilInterface(deployment) {
-		return errdefs.Validationf(
-			"local delegation: deployment is not a read-only deployment view")
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.sessionManager != nil {
+		return errdefs.Conflictf(
+			"local delegation: session manager is already bound")
 	}
-	return s.directory.Bind(view)
+	s.sessionManager = manager
+	return nil
+}
+
+// boundSessionManager returns the bound session manager, or nil when the
+// runtime never bound one (legacy execution path).
+func (s *LocalService) boundSessionManager() *session.Manager {
+	if s == nil {
+		return nil
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.sessionManager
 }
 
 // Start begins asynchronous workers when the backend supports WorkSource.
@@ -628,6 +664,94 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	if err := s.checkDepth(req.Depth); err != nil {
 		return Response{}, err
 	}
+	if _, err := s.directory.Lookup(ctx, req.Request.Target); err != nil {
+		return Response{}, err
+	}
+
+	// Identity rule: with no provider and no bound manager the ContextID
+	// stays empty (legacy, fully compatible); with a provider, or once a
+	// manager is bound, a ContextID is always set.
+	manager := s.boundSessionManager()
+	key, hasKey, persistent := session.Key{}, false, false
+	if provider := s.sessionProvider; provider != nil {
+		contextID, err := provider.CreateContextID(ctx, req)
+		if err != nil {
+			return Response{}, err
+		}
+		if strings.TrimSpace(contextID) == "" {
+			return Response{}, errdefs.Validationf(
+				"local delegation: session provider returned an empty context id")
+		}
+		key = session.Key{AgentID: req.Request.Target, ContextID: contextID}
+		hasKey = true
+		persistent = provider.Persistent()
+	}
+	if manager == nil {
+		return s.runAtLegacy(ctx, req, reuseSlot, key, hasKey)
+	}
+	if !hasKey {
+		key = session.Key{AgentID: req.Request.Target, ContextID: newContextID()}
+	}
+
+	// Timeout and delegation metadata (caller/depth) both hang off
+	// execCtx; Start must see them so nested delegations keep their depth
+	// and the service timeout bounds the subagent turn.
+	execCtx := context.WithValue(ctx, delegationContextKey{}, delegationMetadata{
+		caller: req.Request.Target,
+		depth:  req.Depth,
+		leased: true,
+	})
+	cancel := func() {}
+	if s.timeout > 0 {
+		execCtx, cancel = context.WithTimeout(execCtx, s.timeout)
+	}
+	defer cancel()
+
+	if !reuseSlot {
+		select {
+		case s.slots <- struct{}{}:
+			defer func() { <-s.slots }()
+		case <-execCtx.Done():
+			return canceledResponse("", execCtx.Err()), nil
+		}
+	}
+
+	lease, err := manager.GetOrCreate(execCtx, key)
+	if err != nil {
+		return Response{}, err
+	}
+	defer func() { _ = lease.Close() }()
+
+	turn, err := lease.Session().StartWithOptions(execCtx, agent.Request{
+		ContextID: key.ContextID,
+		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
+		Inputs:    metadataInputs(req),
+	}, s.delegationStartOptions(persistent)...)
+	if err != nil {
+		return Response{}, err
+	}
+
+	result, err := waitTurnCancelOnDone(execCtx, turn)
+	if err != nil {
+		return canceledOrFailedResponse(err), nil
+	}
+	return responseFromTurn(result, key.ContextID), nil
+}
+
+// runAtLegacy executes a delegated run without session lifecycle: plain
+// agent.Execute with an empty ContextID unless the identity policy
+// supplied one. It keeps the historical host-propagation behavior (sync
+// inherits the caller host, async uses the worker host).
+func (s *LocalService) runAtLegacy(
+	ctx context.Context,
+	req AsyncRequest,
+	reuseSlot bool,
+	key session.Key,
+	hasKey bool,
+) (Response, error) {
+	if err := s.checkDepth(req.Depth); err != nil {
+		return Response{}, err
+	}
 	instance, err := s.directory.Lookup(ctx, req.Request.Target)
 	if err != nil {
 		return Response{}, err
@@ -655,6 +779,9 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 
 	agentRequest := agent.Request{
 		Message: message.NewTextMessage(message.RoleUser, req.Request.Input),
+	}
+	if hasKey {
+		agentRequest.ContextID = key.ContextID
 	}
 	if len(req.Request.Metadata) > 0 {
 		agentRequest.Inputs = make(map[string]any, len(req.Request.Metadata))
@@ -748,6 +875,109 @@ func responseFromAgent(result *agent.Result) Response {
 		}
 	}
 	return response
+}
+
+// responseFromTurn maps a session turn's terminal result to a delegation
+// response, mirroring responseFromAgent and backfilling the subagent
+// session identity for boards and resume tooling.
+func responseFromTurn(result *agent.Result, contextID string) Response {
+	response := responseFromAgent(result)
+	if response.Metadata == nil {
+		response.Metadata = make(map[string]string, 1)
+	}
+	response.Metadata["delegation.session_id"] = contextID
+	return response
+}
+
+// delegationStartOptions builds the session options for a delegated
+// subagent turn: questions to the user are refused (never block), and
+// non-persistent identities run the turn ephemeral so no session state or
+// run checkpoint is ever written.
+func (s *LocalService) delegationStartOptions(persistent bool) []session.StartOption {
+	options := []session.StartOption{
+		session.WithAskUserOverride(refuseSubagentAskUser),
+	}
+	if !persistent {
+		options = append(options, session.WithEphemeral())
+	}
+	return options
+}
+
+// refuseSubagentAskUser is the default subagent asker: subagents never
+// interrupt the user, so questions fail fast instead of blocking forever
+// on an unattended prompt.
+func refuseSubagentAskUser(context.Context, agent.UserPrompt) (agent.UserReply, error) {
+	return agent.UserReply{}, errdefs.NotAvailablef(
+		"local delegation: subagent cannot ask the user")
+}
+
+// turnCancelWaitTimeout bounds how long a canceled delegation turn may
+// take to reach its terminal state before the caller gives up.
+const turnCancelWaitTimeout = 5 * time.Second
+
+// waitTurnCancelOnDone waits for a turn's terminal result. On ctx
+// cancellation it explicitly cancels the turn and waits again with a
+// fresh context (Turn.Wait with the canceled ctx would return
+// immediately), so the caller maps a settled canceled result instead of
+// leaking the raw context error. A turn that already settled with a real
+// terminal error (e.g. a seed or referee infrastructure failure) is
+// final and is returned as-is, never relabeled as a canceled wait.
+func waitTurnCancelOnDone(ctx context.Context, turn *session.Turn) (*agent.Result, error) {
+	result, err := turn.Wait(ctx)
+	if err == nil {
+		return result, nil
+	}
+	if isTerminalTurn(turn) {
+		waitCtx, cancel := context.WithTimeout(
+			context.Background(), turnCancelWaitTimeout)
+		defer cancel()
+		return turn.Wait(waitCtx)
+	}
+	turn.Cancel()
+	waitCtx, cancel := context.WithTimeout(context.Background(), turnCancelWaitTimeout)
+	defer cancel()
+	result, err = turn.Wait(waitCtx)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"local delegation: wait for canceled turn: %w", err)
+	}
+	return result, nil
+}
+
+// isTerminalTurn reports whether the turn reached a settled terminal
+// state. session.TurnState's terminal predicate is unexported, so the
+// stable exported state constants are checked here.
+func isTerminalTurn(turn *session.Turn) bool {
+	switch turn.State() {
+	case session.TurnCompleted, session.TurnInterrupted,
+		session.TurnCanceled, session.TurnFailed, session.TurnAborted:
+		return true
+	default:
+		return false
+	}
+}
+
+// canceledOrFailedResponse classifies a session-path failure: context
+// cancellation or timeout maps to a canceled response; anything else
+// (e.g. a session that closed mid-run) maps to a failed response.
+func canceledOrFailedResponse(err error) Response {
+	if errdefs.IsAborted(err) || errdefs.IsTimeout(err) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return canceledResponse("", err)
+	}
+	return Response{ID: newID(), Status: StatusFailed, Error: err.Error()}
+}
+
+// metadataInputs converts request metadata into agent request inputs.
+func metadataInputs(req AsyncRequest) map[string]any {
+	if len(req.Request.Metadata) == 0 {
+		return nil
+	}
+	inputs := make(map[string]any, len(req.Request.Metadata))
+	for key, value := range req.Request.Metadata {
+		inputs[key] = value
+	}
+	return inputs
 }
 
 func canceledResponse(id string, cause error) Response {

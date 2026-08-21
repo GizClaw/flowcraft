@@ -248,6 +248,12 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		_ = result.Close()
 		return nil, fmt.Errorf("runtime create session manager: %w", err)
 	}
+	if err := bindSessionManagers(manager, result); err != nil {
+		_ = manager.Close()
+		_ = router.Close()
+		_ = result.Close()
+		return nil, fmt.Errorf("runtime bind session managers: %w", err)
+	}
 	return &Runtime{
 		manager:             manager,
 		router:              router,
@@ -262,6 +268,40 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		current:             initial,
 		nextGenID:           1,
 	}, nil
+}
+
+// bindSessionManagers hands the Runtime's single session manager to every
+// deployment value that needs it (e.g. the delegation service). At most
+// one binder is allowed per deployment (v1 constraint, aligned with
+// delegation hostwrap's single-service rule), and each binder accepts the
+// manager exactly once.
+func bindSessionManagers(manager *session.Manager, result *deploy.Result) error {
+	if manager == nil || result == nil {
+		return errdefs.Internalf(
+			"runtime: bind session managers requires a manager and result")
+	}
+	var bound string
+	for _, name := range result.Names() {
+		value, ok := result.Value(name)
+		if !ok {
+			continue
+		}
+		binder, ok := value.(session.ManagerBinder)
+		if !ok {
+			continue
+		}
+		if bound != "" {
+			return errdefs.Conflictf(
+				"runtime: multiple session manager binders (%s and %s)",
+				bound, name)
+		}
+		if err := binder.BindSessionManager(manager); err != nil {
+			return fmt.Errorf(
+				"runtime: bind session manager to %q: %w", name, err)
+		}
+		bound = name
+	}
+	return nil
 }
 
 func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {

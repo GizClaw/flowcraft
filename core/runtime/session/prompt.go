@@ -80,6 +80,9 @@ func (t *Turn) Reply(ctx context.Context, promptID string, reply agent.UserReply
 }
 
 func (t *Turn) askUser(ctx context.Context, prompt agent.UserPrompt) (agent.UserReply, error) {
+	if t.askUserOverride != nil {
+		return t.askUserOverride(ctx, prompt)
+	}
 	if ctx == nil {
 		return agent.UserReply{}, errdefs.Validationf("runtime session: AskUser context is required")
 	}

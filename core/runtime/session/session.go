@@ -36,15 +36,20 @@ type Session struct {
 	speculativeBytes    int
 	deliveryConcurrency int
 
-	startMu        sync.Mutex
-	mu             sync.Mutex
-	activeTurns    int
-	activePrompts  int
-	attachedSinks  int
-	active         *Turn
-	closing        bool
-	catalog        sdktool.Session
-	catalogEpoch   uint64
+	startMu       sync.Mutex
+	mu            sync.Mutex
+	activeTurns   int
+	activePrompts int
+	attachedSinks int
+	active        *Turn
+	closing       bool
+	catalog       sdktool.Session
+	catalogEpoch  uint64
+	// ephemeral is a session-level property fixed by the first Start:
+	// ephemeral sessions never persist session state or run checkpoints.
+	// Writes happen under startMu; reads use mu (see isEphemeral).
+	ephemeral      bool
+	ephemeralSet   bool
 	activityNotify func(*Session)
 	observer       SessionObserver
 	closeOnce      sync.Once
@@ -78,18 +83,39 @@ func newSession(
 // Start installs and asynchronously executes a new turn. A previous turn is
 // interrupted and fully finalized before the replacement is constructed.
 func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...SinkSpec) (*Turn, error) {
+	return s.start(ctx, request, startConfig{sinks: sinks})
+}
+
+// StartWithOptions is Start with option-based configuration: stream sinks,
+// an AskUser override, and the ephemeral session property. The plain Start
+// signature is unchanged for existing callers.
+func (s *Session) StartWithOptions(ctx context.Context, request agent.Request, opts ...StartOption) (*Turn, error) {
+	config, err := applyStartOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	return s.start(ctx, request, config)
+}
+
+func (s *Session) start(ctx context.Context, request agent.Request, config startConfig) (*Turn, error) {
 	if s == nil {
 		return nil, ErrSessionClosed
 	}
 	if ctx == nil {
 		return nil, errdefs.Validationf("runtime session: Start context is required")
 	}
-	if err := validateSinks(sinks); err != nil {
+	if err := validateSinks(config.sinks); err != nil {
 		return nil, err
 	}
 
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
+
+	// The ephemeral property is fixed by the first Start and must be set
+	// before loadSessionState so seeding and host wrapping can rely on it.
+	if err := s.setEphemeralProperty(config.ephemeral); err != nil {
+		return nil, err
+	}
 
 	// Pin this turn to one epoch: every dependency the turn uses comes
 	// from this snapshot, so a concurrent generation swap cannot tear it.
@@ -119,18 +145,20 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 	if err != nil {
 		return nil, err
 	}
-	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
-	if err != nil {
-		return nil, err
-	}
 	var snapshot *agent.BoardSnapshot
-	if state != nil {
-		snapshot = state.Board
+	if !s.isEphemeral() {
+		state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
+		if err != nil {
+			return nil, err
+		}
+		if state != nil {
+			snapshot = state.Board
+		}
 	}
 	request.ContextID = s.key.ContextID
 	request.RunID = runID
 	turn, err := s.startTurnLocked(
-		ctx, request, runID, deps, epochRelease, nil, nil, snapshot, sinks)
+		ctx, request, runID, deps, epochRelease, nil, nil, snapshot, &config)
 	if err != nil {
 		return nil, err
 	}
@@ -146,18 +174,41 @@ func (s *Session) Start(ctx context.Context, request agent.Request, sinks ...Sin
 // fresh. A new user message MUST go through Start — Resume does not
 // carry a request.
 func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) {
+	return s.resume(ctx, startConfig{sinks: sinks})
+}
+
+// ResumeWithOptions is Resume with option-based configuration. WithEphemeral
+// is rejected: the session ephemeral property is fixed by the first Start.
+func (s *Session) ResumeWithOptions(ctx context.Context, opts ...StartOption) (*Turn, error) {
+	config, err := applyStartOptions(opts)
+	if err != nil {
+		return nil, err
+	}
+	if config.ephemeralSet {
+		return nil, errdefs.Validationf(
+			"runtime session: ResumeWithOptions cannot change the session ephemeral property")
+	}
+	return s.resume(ctx, config)
+}
+
+func (s *Session) resume(ctx context.Context, config startConfig) (*Turn, error) {
 	if s == nil {
 		return nil, ErrSessionClosed
 	}
 	if ctx == nil {
 		return nil, errdefs.Validationf("runtime session: Resume context is required")
 	}
-	if err := validateSinks(sinks); err != nil {
+	if err := validateSinks(config.sinks); err != nil {
 		return nil, err
 	}
 
 	s.startMu.Lock()
 	defer s.startMu.Unlock()
+
+	if s.isEphemeral() {
+		return nil, errdefs.NotFoundf(
+			"runtime session: ephemeral session has no resumable state")
+	}
 
 	deps, epochRelease, err := s.manager.beginEpoch()
 	if err != nil {
@@ -221,7 +272,7 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 	request.ContextID = s.key.ContextID
 	request.RunID = runID
 	turn, err := s.startTurnLocked(
-		ctx, request, runID, deps, epochRelease, resumeFrom, resumeCtx, nil, sinks)
+		ctx, request, runID, deps, epochRelease, resumeFrom, resumeCtx, nil, &config)
 	if err != nil {
 		return nil, err
 	}
@@ -234,6 +285,9 @@ func (s *Session) Resume(ctx context.Context, sinks ...SinkSpec) (*Turn, error) 
 // and can be replayed via Resume. It returns the parked run id.
 func (s *Session) Resumable(ctx context.Context) (string, bool, error) {
 	if s == nil {
+		return "", false, nil
+	}
+	if s.isEphemeral() {
 		return "", false, nil
 	}
 	deps := s.manager.currentDeps()
@@ -317,7 +371,7 @@ func (s *Session) startTurnLocked(
 	resumeFrom *agent.Checkpoint,
 	resumeCtx *agent.ResumeContext,
 	snapshot *agent.BoardSnapshot,
-	sinks []SinkSpec,
+	config *startConfig,
 ) (*Turn, error) {
 	turn := newTurn(s, runID, ctx)
 	turn.release = epochRelease
@@ -326,6 +380,7 @@ func (s *Session) startTurnLocked(
 	turn.resumeFrom = resumeFrom
 	turn.resumeCtx = resumeCtx
 	turn.snapshot = snapshot
+	turn.askUserOverride = config.askUser
 	instance, ok := deps.Resolver.Instance(s.key.AgentID)
 	if !ok {
 		turn.cancel()
@@ -371,12 +426,15 @@ func (s *Session) startTurnLocked(
 		epochRelease()
 		return nil, errdefs.Internalf("runtime session: HostFactory returned nil Host")
 	}
+	if s.isEphemeral() {
+		host = ephemeralHost{Host: host}
+	}
 	turn.host = host
 
-	attachments := make([]*queuedSink, 0, len(sinks))
-	raw := make([]*queuedSink, 0, len(sinks))
-	confirmed := make([]*queuedSink, 0, len(sinks))
-	for _, spec := range sinks {
+	attachments := make([]*queuedSink, 0, len(config.sinks))
+	raw := make([]*queuedSink, 0, len(config.sinks))
+	confirmed := make([]*queuedSink, 0, len(config.sinks))
+	for _, spec := range config.sinks {
 		size := spec.QueueSize
 		if size == 0 {
 			size = s.sinkBuffer
@@ -567,7 +625,7 @@ func (s *Session) clearParkedRun(
 //     can replay them. The committed board is left untouched.
 func (s *Session) afterTurn(turn *Turn, result *agent.Result) {
 	if s == nil || turn == nil ||
-		!turn.resume || turn.checkpoints == nil {
+		s.isEphemeral() || !turn.resume || turn.checkpoints == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(
@@ -715,6 +773,34 @@ func (s *Session) isIdle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.idleLocked()
+}
+
+// isEphemeral reports whether the session was created as an ephemeral
+// session: no session-state or run-checkpoint persistence, no history
+// seeding, and no resumable state.
+func (s *Session) isEphemeral() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ephemeral
+}
+
+// setEphemeralProperty fixes the session ephemeral property. It must be
+// called with startMu held, before loadSessionState. Mixing ephemeral and
+// persistent starts on the same session is rejected so a later turn can
+// never resurrect state a session chose to discard.
+func (s *Session) setEphemeralProperty(ephemeral bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ephemeralSet && s.ephemeral != ephemeral {
+		return errdefs.Validationf(
+			"runtime session: mixing ephemeral and persistent starts on the same session is not allowed")
+	}
+	s.ephemeral = ephemeral
+	s.ephemeralSet = true
+	return nil
 }
 
 func (s *Session) idleLocked() bool {
