@@ -149,6 +149,9 @@ func (r *Runtime) Reload(
 	if err := bindSessionManagers(r.manager, newResult); err != nil {
 		return nil, abort(err)
 	}
+	if err := bindTargetSources(r.registry, newResult); err != nil {
+		return nil, abort(err)
+	}
 
 	// Resolve the new generation's system resources and validate the
 	// resume contract. The bus and checkpoint store may change
@@ -327,7 +330,9 @@ func (r *Runtime) Reload(
 	// Freeze the retiring generation, swap the live view, and commit.
 	oldGen := r.current
 	if oldGen != nil {
-		oldGen.freeze(dynamicInstances(entries))
+		adopted := dynamicInstances(entries)
+		oldGen.freeze(adopted)
+		freezeTargetViews(oldGen.result, adopted)
 	}
 	newGen := &Generation{
 		id:          newGenID,

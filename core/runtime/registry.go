@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -93,6 +94,24 @@ func (r *AgentRegistry) Dynamic(id string) (*agent.Agent, bool) {
 	}
 	return entry.instance, true
 }
+
+// DynamicNames implements delegation.TargetSource: the sorted dynamic
+// registration ids.
+func (r *AgentRegistry) DynamicNames() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	names := make([]string, 0, len(r.agents))
+	for name := range r.agents {
+		names = append(names, name)
+	}
+	r.mu.RUnlock()
+	sort.Strings(names)
+	return names
+}
+
+var _ delegation.TargetSource = (*AgentRegistry)(nil)
 
 // Entries returns a defensive copy of every dynamic registration.
 func (r *AgentRegistry) Entries() map[string]dynamicAgentEntry {
