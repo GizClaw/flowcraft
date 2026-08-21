@@ -12,8 +12,11 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/workspace"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // ScriptConfig is the config of the "script" node type. Decoding is
@@ -166,23 +169,30 @@ func decodeScriptConfig(raw json.RawMessage) (ScriptConfig, error) {
 // skipped entirely rather than published as empty deltas.
 type scriptEmitter struct{ ec graph.ExecutionContext }
 
+func (e scriptEmitter) emit(delta agent.StreamDeltaPayload) {
+	if err := e.ec.EmitStreamDelta(delta); err != nil {
+		telemetry.WarnErr(e.ec.Context, "script node: stream delta publish failed", err,
+			otellog.String(telemetry.AttrNodeID, e.ec.NodeID))
+	}
+}
+
 func (e scriptEmitter) Emit(eventType string, payload any) {
 	switch eventType {
 	case "token":
-		_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+		e.emit(agent.StreamDeltaPayload{
 			Type: agent.StreamDeltaPart,
 			Part: message.TextPart{Text: stringifyPayload(payload)},
 		})
 	case "tool_call":
 		if call, ok := payloadToToolCall(payload); ok {
-			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+			e.emit(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolCallPart{Call: call},
 			})
 		}
 	case "tool_result":
 		if result, ok := payloadToToolResult(payload); ok {
-			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+			e.emit(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: message.ToolResultPart{Result: result},
 			})
@@ -192,7 +202,7 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		// object (e.g. {"type":"image","source":...}), so scripts can
 		// emit any message.Part kind.
 		if part, ok := payloadToPart(payload); ok {
-			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+			e.emit(agent.StreamDeltaPayload{
 				Type: agent.StreamDeltaPart,
 				Part: part,
 			})
@@ -202,13 +212,13 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		// finish delta so stream consumers see finish_reason /
 		// request_id / response_id at the top level.
 		if delta, ok := payloadToFinish(payload); ok {
-			_ = e.ec.EmitStreamDelta(delta)
+			e.emit(delta)
 		}
 	case "provider_outputs":
 		// Final provider-owned observational outputs, one envelope per
 		// output — the same shape the inference node emits.
 		if outputs, ok := payloadToProviderOutputs(payload); ok {
-			_ = e.ec.EmitStreamDelta(agent.StreamDeltaPayload{
+			e.emit(agent.StreamDeltaPayload{
 				Type:            agent.StreamDeltaProviderOutputs,
 				ProviderOutputs: outputs,
 			})
@@ -227,7 +237,7 @@ func (e scriptEmitter) Emit(eventType string, payload any) {
 		if payload != nil {
 			delta.Payload = raw
 		}
-		_ = e.ec.EmitStreamDelta(delta)
+		e.emit(delta)
 	}
 }
 
