@@ -18,6 +18,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+
+	"github.com/openai/openai-go/v3"
 )
 
 func TestGenerateUnaryToolCalls(t *testing.T) {
@@ -271,6 +273,23 @@ func TestImageCompilerSizeRules(t *testing.T) {
 	}
 }
 
+// TestImageOpsBind guards the core binding contract: the image wire must
+// stay concrete (no media sources, whose stream field is an interface), so
+// opening image operations succeeds.
+func TestImageOpsBind(t *testing.T) {
+	driver, err := inference.BindGenerate(
+		compileImage("gpt-image-2"),
+		transportImage(openai.Client{}),
+		decodeImage,
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	if driver == nil {
+		t.Fatal("BindGenerate returned a nil driver")
+	}
+}
+
 func TestImageEditTransport(t *testing.T) {
 	// 1x1 transparent PNG reference image.
 	png, err := base64.StdEncoding.DecodeString(
@@ -295,6 +314,9 @@ func TestImageEditTransport(t *testing.T) {
 		if len(files) != 1 {
 			t.Errorf("image files = %d, want 1", len(files))
 			return
+		}
+		if contentType := files[0].Header.Get("Content-Type"); contentType != "image/png" {
+			t.Errorf("image content type = %q, want image/png", contentType)
 		}
 		file, err := files[0].Open()
 		if err != nil {

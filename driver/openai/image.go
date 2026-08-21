@@ -32,8 +32,27 @@ type imageWire struct {
 	format string // png | jpeg | webp
 	// images are inline reference images for image-to-image edits; empty
 	// means a text-only generation.
-	images []media.ImageSource
+	images []wireImage
 }
+
+// wireImage is a concrete inline image payload: raw bytes plus the media
+// type the compiler validated. Only inline sources reach the wire — URL and
+// stream sources are rejected at compile time — so the source kind is
+// constant and stays off the wire to satisfy the concrete-wire binding
+// contract (core rejects wires containing interface values).
+type wireImage struct {
+	data      []byte
+	mediaType string
+}
+
+// imageFile is a multipart file part that carries the image's media type;
+// the openai-go multipart encoder reads ContentType() when present.
+type imageFile struct {
+	*bytes.Reader
+	contentType string
+}
+
+func (f imageFile) ContentType() string { return f.contentType }
 
 type imageRaw struct {
 	images [][]byte
@@ -108,7 +127,10 @@ func compileImage(
 						)
 						continue
 					}
-					wire.images = append(wire.images, value.Source)
+					wire.images = append(wire.images, wireImage{
+						data:      value.Source.Bytes(),
+						mediaType: value.Source.BaseMediaType(),
+					})
 				default:
 					ledger.reject(
 						fields[part.Kind()],
@@ -230,8 +252,11 @@ func transportImage(
 			response, err = client.Images.Generate(ctx, params)
 		} else {
 			readers := make([]io.Reader, 0, len(wire.images))
-			for _, source := range wire.images {
-				readers = append(readers, bytes.NewReader(source.Bytes()))
+			for _, image := range wire.images {
+				readers = append(readers, imageFile{
+					Reader:      bytes.NewReader(image.data),
+					contentType: image.mediaType,
+				})
 			}
 			params := openai.ImageEditParams{
 				Model:  openai.ImageModel(wire.model),

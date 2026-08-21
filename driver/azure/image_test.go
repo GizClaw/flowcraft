@@ -17,6 +17,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+
+	"github.com/openai/openai-go/v3"
 )
 
 // ---------------------------------------------------------------------------
@@ -252,6 +254,23 @@ func TestImageCompilerSizeRules(t *testing.T) {
 	}
 }
 
+// TestImageOpsBind guards the core binding contract: the image wire must
+// stay concrete (no media sources, whose stream field is an interface), so
+// opening image operations succeeds.
+func TestImageOpsBind(t *testing.T) {
+	driver, err := inference.BindGenerate(
+		compileImage("gpt-image-1"),
+		transportImage(openai.Client{}),
+		decodeImage,
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	if driver == nil {
+		t.Fatal("BindGenerate returned a nil driver")
+	}
+}
+
 func TestImageEditTransport(t *testing.T) {
 	source, err := media.NewImageBytes(testPNG, "image/png")
 	if err != nil {
@@ -274,6 +293,9 @@ func TestImageEditTransport(t *testing.T) {
 		if len(files) != 1 {
 			t.Errorf("image files = %d, want 1", len(files))
 			return
+		}
+		if contentType := files[0].Header.Get("Content-Type"); contentType != "image/png" {
+			t.Errorf("image content type = %q, want image/png", contentType)
 		}
 		file, err := files[0].Open()
 		if err != nil {
@@ -364,6 +386,12 @@ func TestImageEditTransportMask(t *testing.T) {
 			t.Errorf("mask files = %d, want 1", len(masks))
 			return
 		}
+		if contentType := files[0].Header.Get("Content-Type"); contentType != "image/png" {
+			t.Errorf("image content type = %q, want image/png", contentType)
+		}
+		if contentType := masks[0].Header.Get("Content-Type"); contentType != "image/png" {
+			t.Errorf("mask content type = %q, want image/png", contentType)
+		}
 		readPart := func(header *multipart.FileHeader) []byte {
 			t.Helper()
 			file, err := header.Open()
@@ -423,9 +451,10 @@ func TestImageEditTransportMask(t *testing.T) {
 	if len(compiled.Wire.images) != 1 {
 		t.Fatalf("wire images = %d, want 1", len(compiled.Wire.images))
 	}
-	if compiled.Wire.mask.Kind() != media.SourceInline ||
-		!bytes.Equal(compiled.Wire.mask.Bytes(), testPNG) {
-		t.Fatalf("wire mask = %+v", compiled.Wire.mask)
+	if !bytes.Equal(compiled.Wire.mask.data, testPNG) ||
+		compiled.Wire.mask.mediaType != "image/png" {
+		t.Fatalf("wire mask = %d bytes / %q, want %d bytes / image/png",
+			len(compiled.Wire.mask.data), compiled.Wire.mask.mediaType, len(testPNG))
 	}
 	raw, err := transportImage(cls.api)(context.Background(), compiled.Wire)
 	if err != nil {
