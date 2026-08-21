@@ -22,7 +22,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/workspace"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const defaultPrefix = "agent/checkpoints"
@@ -87,7 +90,10 @@ func (s *Store) Save(ctx context.Context, cp agent.Checkpoint) error {
 		return fmt.Errorf("workspace checkpoint: write temp: %w", err)
 	}
 	if err := s.ws.Rename(ctx, tmp, s.livePath(cp.ExecID)); err != nil {
-		_ = s.ws.Delete(ctx, tmp)
+		if derr := s.ws.Delete(ctx, tmp); derr != nil {
+			telemetry.WarnErr(ctx, "workspace checkpoint: cleanup temp after publish failure failed", derr,
+				otellog.String("workspace.checkpoint.exec", cp.ExecID))
+		}
 		return fmt.Errorf("workspace checkpoint: publish %s: %w", cp.ExecID, err)
 	}
 	return nil

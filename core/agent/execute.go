@@ -11,6 +11,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Execute executes one turn of ag against eng with the given req.
@@ -124,6 +127,21 @@ func Execute(
 	toolAllowList = append([]string(nil), toolAllowList...)
 	obs := composeObservers(rc.hooks)
 
+	runLogAttrs := func() []otellog.KeyValue {
+		attrs := []otellog.KeyValue{
+			otellog.String(telemetry.AttrAgentID, id.AgentID),
+			otellog.String(telemetry.AttrRunID, id.RunID),
+		}
+		if id.TaskID != "" {
+			attrs = append(attrs, otellog.String(telemetry.AttrTaskID, id.TaskID))
+		}
+		if id.ConversationID != "" {
+			attrs = append(attrs, otellog.String(telemetry.AttrConversationID, id.ConversationID))
+		}
+		return attrs
+	}
+	telemetry.Info(ctx, "agent run started", runLogAttrs()...)
+
 	// Revise loop: each iteration is one Execute attempt
 	// followed by Referee chain. Loop exits when a Referee does
 	// not ask for revise OR the attempt counter reaches the
@@ -147,9 +165,11 @@ func Execute(
 		// error so callers do not silently see stale Messages.
 		board, err := seedBoard(ctx, id, &req, rc.preparers)
 		if err != nil {
+			logRunError(ctx, id, "agent run seed failed", err)
 			return nil, fmt.Errorf("agent: seed board (attempt %d): %w", attempt, err)
 		}
 		if board == nil {
+			logRunError(ctx, id, "agent run seed returned nil board", errdefs.Validationf("agent: Preparer chain returned nil board"))
 			return nil, errdefs.Validationf("agent: Preparer chain returned nil board")
 		}
 		// Messages at or before this index are seed/context, never output
@@ -267,6 +287,10 @@ func Execute(
 		if obs != nil {
 			obs.OnRunRevise(ctx, id, res, attempt+1)
 		}
+		attrs := append(runLogAttrs(),
+			otellog.Int("agent.attempt", attempt),
+			otellog.String(telemetry.AttrRunStatus, string(res.Status)))
+		telemetry.Warn(ctx, "agent run revised and will retry", attrs...)
 	}
 
 	if execDecided {
@@ -275,6 +299,7 @@ func Execute(
 		if obs != nil {
 			obs.OnRunEnd(ctx, id, res)
 		}
+		logRunError(ctx, id, "agent run referee failed", decErr)
 		return res, decErr
 	}
 
@@ -296,6 +321,7 @@ func Execute(
 			if obs != nil {
 				obs.OnRunEnd(ctx, id, res)
 			}
+			logRunError(ctx, id, "agent run history materialize failed", err)
 			return res, fmt.Errorf("agent: materialize history: %w", err)
 		}
 	}
@@ -309,6 +335,7 @@ func Execute(
 				if obs != nil {
 					obs.OnRunEnd(ctx, id, res)
 				}
+				logRunError(ctx, id, "agent run commit view failed", err)
 				return res, fmt.Errorf("agent: provide commit view: %w", err)
 			}
 			if view.LastBoard == nil {
@@ -317,6 +344,8 @@ func Execute(
 				if obs != nil {
 					obs.OnRunEnd(ctx, id, res)
 				}
+				logRunError(ctx, id, "agent run commit view returned nil board",
+					errdefs.Validationf("agent: CommitViewProvider returned nil board"))
 				return res, errdefs.Validationf("agent: CommitViewProvider returned nil board")
 			}
 			if err := materializeHistory(ctx, view.LastBoard); err != nil {
@@ -325,6 +354,7 @@ func Execute(
 				if obs != nil {
 					obs.OnRunEnd(ctx, id, res)
 				}
+				logRunError(ctx, id, "agent run commit view materialize failed", err)
 				return res, fmt.Errorf("agent: materialize commit view: %w", err)
 			}
 			projected := *res
@@ -340,6 +370,7 @@ func Execute(
 			if obs != nil {
 				obs.OnRunEnd(ctx, id, res)
 			}
+			logRunError(ctx, id, "agent run commit failed", err)
 			return res, fmt.Errorf("agent: commit result: %w", err)
 		}
 	}
@@ -347,8 +378,57 @@ func Execute(
 	if obs != nil {
 		obs.OnRunEnd(ctx, id, res)
 	}
+	logRunOutcome(ctx, id, res, runLogAttrs)
 
 	return res, nil
+}
+
+// logRunError records an infrastructure failure that turns Execute into
+// a (nil/partial result, err) return. Callers already receive the error,
+// so the log record carries the correlation attributes for dashboards.
+func logRunError(ctx context.Context, id Identity, msg string, err error) {
+	if err == nil {
+		return
+	}
+	attrs := []otellog.KeyValue{
+		otellog.String(telemetry.AttrAgentID, id.AgentID),
+		otellog.String(telemetry.AttrRunID, id.RunID),
+		otellog.String(telemetry.AttrErrorMessage, err.Error()),
+	}
+	if id.TaskID != "" {
+		attrs = append(attrs, otellog.String(telemetry.AttrTaskID, id.TaskID))
+	}
+	telemetry.Error(ctx, msg, attrs...)
+}
+
+// logRunOutcome records the terminal status of one Execute call so the
+// agent layer is visible in logs even when the engine logs nothing.
+func logRunOutcome(ctx context.Context, id Identity, res *Result, base func() []otellog.KeyValue) {
+	if res == nil {
+		return
+	}
+	attrs := append(base(), otellog.String(telemetry.AttrRunStatus, string(res.Status)))
+	attrs = append(attrs,
+		otellog.Int("agent.attempts", res.Attempts),
+		otellog.Bool("agent.committed", res.Committed))
+	if res.Err != nil {
+		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, res.Err.Error()))
+	}
+	switch res.Status {
+	case StatusCompleted:
+		telemetry.Info(ctx, "agent run completed", attrs...)
+	case StatusInterrupted:
+		if res.Cause != "" {
+			attrs = append(attrs, otellog.String("agent.cause", string(res.Cause)))
+		}
+		telemetry.Warn(ctx, "agent run interrupted", attrs...)
+	case StatusCanceled:
+		telemetry.Warn(ctx, "agent run canceled", attrs...)
+	case StatusAborted:
+		telemetry.Error(ctx, "agent run aborted", attrs...)
+	default:
+		telemetry.Error(ctx, "agent run failed", attrs...)
+	}
 }
 
 // materializeResult derives every board-backed Result field from board.
