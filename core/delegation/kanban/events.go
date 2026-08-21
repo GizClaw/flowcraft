@@ -6,6 +6,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const (
@@ -106,7 +109,11 @@ func (b *Board) publish(ctx context.Context, snapshot *Card) {
 	if b.scopeID != "" {
 		SetKanbanScopeID(&envelope, b.scopeID)
 	}
-	_ = b.bus.Publish(ctx, envelope)
+	if err := b.bus.Publish(ctx, envelope); err != nil {
+		telemetry.WarnErr(ctx, "delegation kanban: card event publish failed", err,
+			otellog.String("event.subject", string(envelope.Subject)),
+			otellog.String("delegation.card", snapshot.ID))
+	}
 }
 
 const cardSubjectPrefix = "delegation.kanban.card."

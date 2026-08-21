@@ -10,6 +10,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // ConflictPolicy decides what happens when two sources contribute a
@@ -132,7 +135,10 @@ func (r *Registry) Remove(name string) {
 	}
 	r.mu.Unlock()
 	if c, ok := t.(io.Closer); ok {
-		_ = c.Close()
+		if err := c.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "tool registry: close removed tool failed", err,
+				otellog.String(telemetry.AttrToolName, name))
+		}
 	}
 }
 
@@ -295,6 +301,10 @@ func (p *lazyProxy) load(ctx context.Context) (Tool, error) {
 	}
 	p.inner, p.err = p.spec.Load(ctx)
 	p.loaded = true
+	if p.err != nil {
+		telemetry.WarnErr(ctx, "tool registry: lazy tool load failed", p.err,
+			otellog.String(telemetry.AttrToolName, p.spec.Name))
+	}
 	return p.inner, p.err
 }
 

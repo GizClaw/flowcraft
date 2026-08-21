@@ -9,8 +9,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	doubaospeech "github.com/GizClaw/doubao-speech-go"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Speech recognition runs on the Doubao ASR V2 SAUC WebSocket endpoint
@@ -270,9 +272,16 @@ func transportTranscribe(
 			asrConfig(wire),
 		)
 		if err != nil {
-			return transcribeRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "transcribe", "", classified, "", "")
+			return transcribeRaw{}, classified
 		}
-		defer func() { _ = session.Close() }()
+		defer func() {
+			if cerr := session.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "bytedance: close transcription session failed", cerr,
+					otellog.String(telemetry.AttrLLMProvider, providerID))
+			}
+		}()
 
 		for offset := 0; offset < len(wire.audio); offset += asrChunkSize {
 			end := min(offset+asrChunkSize, len(wire.audio))
@@ -282,14 +291,18 @@ func transportTranscribe(
 				wire.audio[offset:end],
 				isLast,
 			); err != nil {
-				return transcribeRaw{}, classifyError(err)
+				classified := classifyError(err)
+				logInferenceCall(ctx, "transcribe", "", classified, "", "")
+				return transcribeRaw{}, classified
 			}
 		}
 
 		raw := transcribeRaw{}
 		for result, err := range session.Recv() {
 			if err != nil {
-				return transcribeRaw{}, classifyError(err)
+				classified := classifyError(err)
+				logInferenceCall(ctx, "transcribe", "", classified, "", "")
+				return transcribeRaw{}, classified
 			}
 			if result == nil {
 				continue
@@ -301,14 +314,18 @@ func transportTranscribe(
 				requestID:  result.ReqID,
 			}
 			if result.IsFinal {
+				logInferenceCall(ctx, "transcribe", "", nil, raw.requestID, "")
 				return raw, nil
 			}
 		}
 		if raw.text == "" && len(raw.utterances) == 0 {
-			return transcribeRaw{}, fmt.Errorf(
+			noResultErr := fmt.Errorf(
 				"bytedance: transcription produced no result",
 			)
+			logInferenceCall(ctx, "transcribe", "", noResultErr, "", "")
+			return transcribeRaw{}, noResultErr
 		}
+		logInferenceCall(ctx, "transcribe", "", nil, raw.requestID, "")
 		return raw, nil
 	}
 }

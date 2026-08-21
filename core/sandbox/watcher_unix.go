@@ -175,19 +175,33 @@ func (w *GroupCapsWatcher) run() {
 func (w *GroupCapsWatcher) killGroup() {
 	// The child leads its own group (Setpgid), so pid == pgid.
 	//
+	// The kill itself is the enforcement event: a memory/CPU cap trip or
+	// a sampling failure silently stopping the group is exactly what an
+	// operator needs to see in logs, so record it before delivery.
+	attrs := []otellog.KeyValue{
+		otellog.String("sandbox.pgid", strconv.Itoa(w.pgid)),
+	}
+	if rp := w.killReason.Load(); rp != nil {
+		attrs = append(attrs, otellog.String("sandbox.kill_reason", *rp))
+	}
+	if sp := w.sampleErr.Load(); sp != nil {
+		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, (*sp).Error()))
+	}
+	telemetry.Warn(w.ctx, "sandbox: process group killed by resource watcher", attrs...)
+
 	// A failed SIGKILL is rare but consequential: the cap we tripped
 	// then stops being enforced. Surface it as a warning so an operator
 	// can see the child was left running unconstrained.
 	if err := syscall.Kill(-w.pgid, syscall.SIGKILL); err != nil {
-		attrs := []otellog.KeyValue{
+		killAttrs := []otellog.KeyValue{
 			otellog.String("sandbox.pgid", strconv.Itoa(w.pgid)),
 		}
 		if rp := w.killReason.Load(); rp != nil {
-			attrs = append(attrs, otellog.String("sandbox.kill_reason", *rp))
+			killAttrs = append(killAttrs, otellog.String("sandbox.kill_reason", *rp))
 		}
 		telemetry.WarnErr(w.ctx,
 			"sandbox: failed to deliver SIGKILL to process group",
-			err, attrs...)
+			err, killAttrs...)
 	}
 }
 

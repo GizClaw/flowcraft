@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 )
 
@@ -87,7 +88,11 @@ func Exec(
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = sess.Close() }()
+	defer func() {
+		if cerr := sess.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "sandbox: close session after exec failed", cerr)
+		}
+	}()
 
 	if len(opts.Stdin) > 0 {
 		if err := sess.Write(ctx, opts.Stdin); err != nil {

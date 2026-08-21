@@ -12,6 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const (
@@ -609,6 +612,9 @@ func (b *Board) evictLocked() {
 			if card.Status.IsTerminal() && now.Sub(card.UpdatedAt) > b.cardTTL {
 				b.removeCardLocked(card)
 				b.statusCount[card.Status]--
+				telemetry.Debug(b.ctx, "delegation kanban: card evicted by ttl",
+					otellog.String("delegation.scope", b.scopeID),
+					otellog.String("delegation.card", card.ID))
 				continue
 			}
 			kept = append(kept, card)
@@ -624,6 +630,9 @@ func (b *Board) evictLocked() {
 		if excess > 0 && card.Status.IsTerminal() {
 			b.removeCardLocked(card)
 			b.statusCount[card.Status]--
+			telemetry.Debug(b.ctx, "delegation kanban: card evicted by card cap",
+				otellog.String("delegation.scope", b.scopeID),
+				otellog.String("delegation.card", card.ID))
 			excess--
 			continue
 		}
@@ -676,6 +685,9 @@ func (b *Board) expireRetainedLocked(now time.Time) {
 		if key != "" && b.idempotency[key] == retained {
 			delete(b.idempotency, key)
 		}
+		telemetry.Debug(b.ctx, "delegation kanban: retained result expired",
+			otellog.String("delegation.scope", b.scopeID),
+			otellog.String("delegation.card", id))
 	}
 }
 

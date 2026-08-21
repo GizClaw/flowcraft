@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"golang.org/x/net/http2"
 )
@@ -298,7 +299,10 @@ func (t *retryTransport) RoundTrip(request *http.Request) (*http.Response, error
 		if response != nil && response.Body != nil {
 			// Drain so the pooled connection can be reused.
 			_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4*1024))
-			_ = response.Body.Close()
+			if err := response.Body.Close(); err != nil {
+				telemetry.WarnErr(request.Context(),
+					"httpkit: close drained response body failed", err)
+			}
 		}
 
 		delay := t.backoff(attempt, response)

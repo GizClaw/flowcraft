@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // HostFactoryDecorator wraps the runtime's built-in base host factory.
@@ -153,7 +154,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 
 	bus, err := resolveValue[event.Bus](result, cfg.EventBus, "event_bus")
 	if err != nil {
-		_ = result.Close()
+		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, err
 	}
 	var checkpoints agent.CheckpointStore
@@ -161,25 +162,25 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		checkpoints, err = resolveValue[agent.CheckpointStore](
 			result, cfg.CheckpointStore, "checkpoint_store")
 		if err != nil {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, err
 		}
 	}
 
 	baseHostFactory, err := newBaseHostFactory(bus, checkpoints)
 	if err != nil {
-		_ = result.Close()
+		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, err
 	}
 	hostFactory := baseHostFactory
 	if b.hostDecorator != nil {
 		hostFactory, err = b.hostDecorator(baseHostFactory)
 		if err != nil {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, fmt.Errorf("runtime decorate base host factory: %w", err)
 		}
 		if isNil(hostFactory) {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, errdefs.Internalf(
 				"runtime host factory decorator returned nil")
 		}
@@ -187,11 +188,11 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	if b.resultHostDecorator != nil {
 		hostFactory, err = b.resultHostDecorator(result, hostFactory)
 		if err != nil {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, fmt.Errorf("runtime decorate host factory with deployment: %w", err)
 		}
 		if isNil(hostFactory) {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, errdefs.Internalf(
 				"runtime result host factory decorator returned nil")
 		}
@@ -203,7 +204,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		assemblies, resolveErr := resolveDynamicCatalogAssemblies(
 			doc, result, cfg.DynamicCatalog)
 		if resolveErr != nil {
-			_ = result.Close()
+			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, resolveErr
 		}
 		liveCatalog = newCatalogRegistry(assemblies)
@@ -244,14 +245,14 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	}
 	manager, err := session.NewManager(initial.resolver, hostFactory, router, managerOptions...)
 	if err != nil {
-		_ = router.Close()
-		_ = result.Close()
+		logBuildCleanup(ctx, "close partial router", router.Close())
+		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, fmt.Errorf("runtime create session manager: %w", err)
 	}
 	if err := bindSessionManagers(manager, result); err != nil {
-		_ = manager.Close()
-		_ = router.Close()
-		_ = result.Close()
+		logBuildCleanup(ctx, "close partial session manager", manager.Close())
+		logBuildCleanup(ctx, "close partial router", router.Close())
+		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, fmt.Errorf("runtime bind session managers: %w", err)
 	}
 	return &Runtime{
@@ -340,4 +341,13 @@ func isNil(value any) bool {
 	default:
 		return false
 	}
+}
+
+// logBuildCleanup records a best-effort teardown error on a failed Build
+// so partially constructed resources are visible in telemetry.
+func logBuildCleanup(ctx context.Context, msg string, err error) {
+	if err == nil {
+		return
+	}
+	telemetry.WarnErr(ctx, "runtime build: "+msg, err)
 }

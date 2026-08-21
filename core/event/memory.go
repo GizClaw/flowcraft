@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -385,7 +387,7 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 			case <-ctx.Done():
 				sub.senders.Done()
 				// Re-acquire to keep the loop invariant before bailing.
-				b.fireObserver(env, delivers, drops)
+				b.fireObserver(ctx, env, delivers, drops)
 				return errdefs.FromContext(ctx.Err())
 			}
 			sub.senders.Done()
@@ -393,7 +395,7 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 			// b.closed may have flipped; if so, stop scanning.
 			if b.closed {
 				b.mu.RUnlock()
-				b.fireObserver(env, delivers, drops)
+				b.fireObserver(ctx, env, delivers, drops)
 				return ErrBusClosed
 			}
 			continue
@@ -452,13 +454,22 @@ func (b *MemoryBus) Publish(ctx context.Context, env Envelope) error {
 	}
 	b.mu.RUnlock()
 
-	b.fireObserver(env, delivers, drops)
+	b.fireObserver(ctx, env, delivers, drops)
 	return nil
 }
 
 // fireObserver invokes the configured observer outside any bus lock.
-func (b *MemoryBus) fireObserver(env Envelope, delivers []deliverCb, drops []dropCb) {
+func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []deliverCb, drops []dropCb) {
 	if b.observer == nil {
+		// Without an observer the drop is otherwise invisible: log a
+		// Debug record so buffer-full / closed drops stay diagnosable
+		// without paying the cost on the hot path.
+		if len(drops) > 0 {
+			telemetry.Debug(ctx, "event memory: envelope dropped, no observer attached",
+				otellog.String("event.subject", string(env.Subject)),
+				otellog.Int("event.drops", len(drops)),
+				otellog.String("event.drop_reasons", summarizeDropReasons(drops)))
+		}
 		return
 	}
 	b.observer.OnPublish(env)
@@ -468,6 +479,23 @@ func (b *MemoryBus) fireObserver(env Envelope, delivers []deliverCb, drops []dro
 	for _, d := range drops {
 		b.observer.OnDrop(d.subID, env, d.reason)
 	}
+}
+
+func summarizeDropReasons(drops []dropCb) string {
+	seen := make(map[DropReason]int, len(drops))
+	for _, d := range drops {
+		seen[d.reason]++
+	}
+	keys := make([]DropReason, 0, len(seen))
+	for reason := range seen {
+		keys = append(keys, reason)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	var parts []string
+	for _, reason := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", reason, seen[reason]))
+	}
+	return strings.Join(parts, ",")
 }
 
 // Subscribe creates a subscription. pattern is validated; ctx cancellation

@@ -233,9 +233,17 @@ func transportGenerate(
 	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
 		response, err := client.Responses.New(ctx, wireToParams(wire))
 		if err != nil {
-			return generateRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			return generateRaw{}, classified
 		}
-		return responseToRaw(response)
+		raw, err := responseToRaw(response)
+		if err != nil {
+			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			return generateRaw{}, err
+		}
+		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		return raw, nil
 	}
 }
 

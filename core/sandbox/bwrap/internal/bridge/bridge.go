@@ -100,7 +100,7 @@ func run(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 127
 	}
 
-	go acceptLoop(ln, *sock)
+	go acceptLoop(ln, *sock, stderr)
 
 	// Propagate the command's exit status (bash-compatible 128+signal).
 	if err := c.Wait(); err != nil {
@@ -152,25 +152,38 @@ func childEnv(port int) []string {
 
 // acceptLoop forwards each accepted loopback connection over a fresh
 // unix-socket connection to the host proxy.
-func acceptLoop(ln net.Listener, sock string) {
+func acceptLoop(ln net.Listener, sock string, stderr io.Writer) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go forward(conn, sock)
+		go forward(conn, sock, stderr)
 	}
 }
 
 // forward pipes one TCP connection to one UDS connection (the host
 // proxy treats each UDS connection as one client connection).
-func forward(tcp net.Conn, sock string) {
-	defer func() { _ = tcp.Close() }()
+func forward(tcp net.Conn, sock string, stderr io.Writer) {
+	defer func() {
+		if err := tcp.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close tcp: %v\n", err)
+		}
+	}()
 	uds, err := net.Dial("unix", sock)
 	if err != nil {
 		return
 	}
-	defer func() { _ = uds.Close() }()
-	go func() { _, _ = io.Copy(uds, tcp); _ = uds.Close() }()
+	defer func() {
+		if err := uds.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close uds: %v\n", err)
+		}
+	}()
+	go func() {
+		_, _ = io.Copy(uds, tcp)
+		if err := uds.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close uds after copy: %v\n", err)
+		}
+	}()
 	_, _ = io.Copy(tcp, uds)
 }

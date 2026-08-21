@@ -796,13 +796,16 @@ func transportGenerate(
 		defaultPreserveThinking(&wire)
 		var envelope dashResponse
 		if err := client.postJSON(ctx, wire.Path, wire, &envelope); err != nil {
+			logInferenceCall(ctx, "generate", wire.Model, err, "", "")
 			return dashResponse{}, err
 		}
 		if err := classifyEnvelope(
 			envelope.Code, envelope.Message, envelope.RequestID,
 		); err != nil {
+			logInferenceCall(ctx, "generate", wire.Model, err, "", "")
 			return dashResponse{}, err
 		}
+		logInferenceCall(ctx, "generate", wire.Model, nil, envelope.RequestID, "")
 		return envelope, nil
 	}
 }

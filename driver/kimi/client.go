@@ -12,7 +12,10 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const defaultBaseURL = "https://api.moonshot.cn/v1"
@@ -106,7 +109,12 @@ func (c *kimiClient) postJSON(ctx context.Context, body any, out any) error {
 	if err != nil {
 		return classifyError(err)
 	}
-	defer func() { _ = response.Body.Close() }()
+	defer func() {
+		if cerr := response.Body.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "kimi: close response body failed", cerr,
+				otellog.String(telemetry.AttrLLMProvider, providerID))
+		}
+	}()
 	payload, err := io.ReadAll(response.Body)
 	if err != nil {
 		return errdefs.NotAvailable(fmt.Errorf("kimi: read response: %w", err))

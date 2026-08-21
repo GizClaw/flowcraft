@@ -11,6 +11,9 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const defaultMaxBytes = 1 << 20
@@ -77,7 +80,7 @@ func (l *Loader) Load(ctx context.Context, src Source) ([]byte, error) {
 	}
 }
 
-func (l *Loader) loadFile(_ context.Context, name string) ([]byte, error) {
+func (l *Loader) loadFile(ctx context.Context, name string) ([]byte, error) {
 	if l.baseDir == "" {
 		return nil, errdefs.Validationf(
 			"resource loader: file source requires a base dir")
@@ -97,7 +100,12 @@ func (l *Loader) loadFile(_ context.Context, name string) ([]byte, error) {
 		return nil, errdefs.Forbiddenf(
 			"resource loader: open base dir: %v", err)
 	}
-	defer func() { _ = root.Close() }()
+	defer func() {
+		if cerr := root.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "resource loader: close base dir failed", cerr,
+				otellog.String("resource.source", name))
+		}
+	}()
 	data, err := root.ReadFile(clean)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {

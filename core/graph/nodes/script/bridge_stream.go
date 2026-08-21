@@ -28,10 +28,11 @@ type streamCleanupKey struct{}
 type streamCleanupRegistry struct {
 	mu       sync.Mutex
 	cleanups []func() error
+	ctx      context.Context
 }
 
 func withStreamCleanup(ctx context.Context) (context.Context, *streamCleanupRegistry) {
-	reg := &streamCleanupRegistry{}
+	reg := &streamCleanupRegistry{ctx: ctx}
 	return context.WithValue(ctx, streamCleanupKey{}, reg), reg
 }
 
@@ -60,7 +61,9 @@ func (r *streamCleanupRegistry) flush() {
 	r.cleanups = nil
 	r.mu.Unlock()
 	for i := len(cleanups) - 1; i >= 0; i-- {
-		_ = cleanups[i]()
+		if err := cleanups[i](); err != nil {
+			telemetry.WarnErr(r.ctx, "script stream: cleanup failed", err)
+		}
 	}
 }
 

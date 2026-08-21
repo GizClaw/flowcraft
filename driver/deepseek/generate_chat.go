@@ -494,9 +494,17 @@ func transportChatGenerate(
 		params, overrides := wireToChatParams(wire)
 		response, err := client.Chat.Completions.New(ctx, params, overrides...)
 		if err != nil {
-			return generateRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			return generateRaw{}, classified
 		}
-		return chatCompletionToRaw(response)
+		raw, err := chatCompletionToRaw(response)
+		if err != nil {
+			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			return generateRaw{}, err
+		}
+		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		return raw, nil
 	}
 }
 
@@ -633,8 +641,11 @@ func transportChatGenerateStream(
 				"deepseek: nil stream handle (provider misbehaviour)")
 		}
 		if err := stream.Err(); err != nil {
-			return nil, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			return nil, classified
 		}
+		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &chatStream{
 			stream:        stream,
 			reasoningPart: -1,
@@ -666,7 +677,9 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 		}
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
-				return streamRaw{}, classifyError(err)
+				classified := classifyError(err)
+				logInferenceStream(ctx, "generate", "", classified, "")
+				return streamRaw{}, classified
 			}
 			s.end()
 			continue

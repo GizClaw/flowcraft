@@ -128,7 +128,9 @@ func transportEmbed(
 		}
 		response, err := client.Embeddings.New(ctx, params)
 		if err != nil {
-			return embedRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "embed", wire.model, classified, "", "")
+			return embedRaw{}, classified
 		}
 		vectors := make([][]float32, len(response.Data))
 		for _, item := range response.Data {
@@ -144,10 +146,12 @@ func transportEmbed(
 			}
 			vectors[item.Index] = vector
 		}
-		return embedRaw{
+		raw := embedRaw{
 			vectors:     vectors,
 			inputTokens: response.Usage.TotalTokens,
-		}, nil
+		}
+		logInferenceCall(ctx, "embed", wire.model, nil, "", "")
+		return raw, nil
 	}
 }
 

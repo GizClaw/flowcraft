@@ -70,6 +70,24 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		} else {
 			span.SetStatus(codes.Ok, status)
 		}
+		if runErr != nil {
+			runLogAttrs := []otellog.KeyValue{
+				otellog.String(telemetry.AttrGraphName, g.name),
+				otellog.String(telemetry.AttrRunID, run.RunID),
+				otellog.String(telemetry.AttrErrorMessage, runErr.Error()),
+			}
+			runLogAttrs = append(runLogAttrs, runScopeLogAttrs(run)...)
+			switch {
+			case isInterruptedErr(runErr):
+				telemetry.Warn(ctx, "graph execution interrupted", runLogAttrs...)
+			case errdefs.IsTimeout(runErr):
+				telemetry.Warn(ctx, "graph execution timed out", runLogAttrs...)
+			case errdefs.IsAborted(runErr):
+				telemetry.Error(ctx, "graph execution aborted", runLogAttrs...)
+			default:
+				telemetry.Error(ctx, "graph execution failed", runLogAttrs...)
+			}
+		}
 		span.End()
 		recordGraphExec(ctx, g, run, status, time.Since(graphStart))
 	}()
@@ -80,7 +98,11 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 		defer cancel()
 	}
 
-	_ = publishRunEvent(ctx, host, g, run, agent.SubjectRunStart(run.RunID), nil)
+	if err := publishRunEvent(ctx, host, g, run, agent.SubjectRunStart(run.RunID), nil); err != nil {
+		telemetry.WarnErr(ctx, "graph: run start event publish failed", err,
+			otellog.String(telemetry.AttrGraphName, g.name),
+			otellog.String(telemetry.AttrRunID, run.RunID))
+	}
 	defer func() {
 		publishCtx, cancel := context.WithTimeout(
 			context.WithoutCancel(ctx),
@@ -160,13 +182,6 @@ func (g *Graph) Execute(ctx context.Context, run agent.Run, host agent.Host, boa
 				g.name, g.maxIterations)
 		}
 		if err := g.executeWave(ctx, run, host, board, wave, iterations); err != nil {
-			errorLogAttrs := []otellog.KeyValue{
-				otellog.String(telemetry.AttrGraphName, g.name),
-				otellog.String(telemetry.AttrRunID, run.RunID),
-				otellog.String(telemetry.AttrErrorMessage, err.Error()),
-			}
-			errorLogAttrs = append(errorLogAttrs, runScopeLogAttrs(run)...)
-			telemetry.Error(ctx, "graph execution failed", errorLogAttrs...)
 			return retBoard, err
 		}
 		if ctx.Err() != nil {
@@ -295,6 +310,11 @@ func (g *Graph) invokeNode(ctx context.Context, run agent.Run, host agent.Host, 
 		if invokeErr == nil || !isRetryable(invokeErr) || attempt >= g.maxNodeRetries {
 			break
 		}
+		telemetry.Debug(ctx, "graph node attempt failed, will retry",
+			otellog.String(telemetry.AttrGraphName, g.name),
+			otellog.String(telemetry.AttrNodeID, nodeID),
+			otellog.Int("graph.node.attempt", attempt+1),
+			otellog.String(telemetry.AttrErrorMessage, invokeErr.Error()))
 		// Roll the board back to the pre-attempt state so a retried
 		// node never sees its own half-written vars or duplicated
 		// messages. The final attempt's writes stay for diagnostics.

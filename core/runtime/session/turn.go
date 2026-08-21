@@ -565,5 +565,9 @@ func terminalState(result *agent.Result, err error) TurnState {
 }
 
 func (t *Turn) shutdown() {
-	_ = t.Interrupt(agent.Interrupt{Cause: agent.CauseHostShutdown})
+	if err := t.Interrupt(agent.Interrupt{Cause: agent.CauseHostShutdown}); err != nil {
+		telemetry.WarnErr(context.WithoutCancel(t.runCtx),
+			"runtime session: interrupt turn on host shutdown failed", err,
+			otellog.String(telemetry.AttrRunID, t.runID))
+	}
 }

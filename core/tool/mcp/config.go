@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -90,11 +91,15 @@ func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
 	for _, srv := range parsed.Servers {
 		transport, err := srv.transport(f.httpClient)
 		if err != nil {
-			_ = source.Close()
+			if cerr := source.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "mcp: close partial source after transport failure", cerr)
+			}
 			return nil, err
 		}
 		if err := source.AddServer(ctx, srv.Name, transport, srv.options()...); err != nil {
-			_ = source.Close()
+			if cerr := source.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "mcp: close partial source after attach failure", cerr)
+			}
 			return nil, fmt.Errorf("mcp: attach server %q: %w", srv.Name, err)
 		}
 	}
