@@ -211,9 +211,9 @@ func TestConformanceImageCompiler(t *testing.T) {
 			if wire.model != "gpt-image-1" || wire.prompt != "draw a rocket" {
 				t.Fatalf("wire = %+v", wire)
 			}
-			if len(wire.images) != 0 || wire.mask.Kind() != "" {
+			if len(wire.images) != 0 || len(wire.mask.data) != 0 {
 				t.Fatalf("wire reference images = %d, mask = %q",
-					len(wire.images), wire.mask.Kind())
+					len(wire.images), len(wire.mask.data))
 			}
 		},
 		Rejections: []inferencetest.CompilerRejection[inference.GenerateRequest]{
