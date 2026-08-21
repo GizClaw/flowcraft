@@ -2,10 +2,12 @@ package runtime
 
 import (
 	"context"
-	"log"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // agentLifecyclePrefix is the subject root for runtime agent lifecycle
@@ -92,10 +94,12 @@ func (r *Runtime) publishLifecycleEvent(
 	}
 	envelope, err := event.NewEnvelope(ctx, subject, payload)
 	if err != nil {
-		log.Printf("runtime: lifecycle event %q: %v", subject, err)
+		telemetry.WarnErr(ctx, "runtime: lifecycle event envelope failed", err,
+			otellog.String("event.subject", string(subject)))
 		return
 	}
 	if err := r.bus.Publish(ctx, envelope); err != nil {
-		log.Printf("runtime: lifecycle event %q: %v", subject, err)
+		telemetry.WarnErr(ctx, "runtime: lifecycle event publish failed", err,
+			otellog.String("event.subject", string(subject)))
 	}
 }

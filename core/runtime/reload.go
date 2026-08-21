@@ -10,7 +10,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 type reloadOptions struct{}
@@ -89,9 +92,15 @@ func (r *Runtime) Reload(
 	}
 	r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildStarted(),
 		RuntimeRebuildEvent{GenerationID: newGenID})
+	telemetry.Info(ctx, "runtime reload started",
+		otellog.Int64("runtime.generation.id", int64(newGenID)),
+		otellog.Int64("runtime.generation.previous", int64(previousID)))
 	fail := func(err error) (*ReloadResult, error) {
 		r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildFailed(),
 			RuntimeRebuildEvent{GenerationID: newGenID, Error: err.Error()})
+		telemetry.Error(ctx, "runtime reload failed",
+			otellog.Int64("runtime.generation.id", int64(newGenID)),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return nil, err
 	}
 	if err := doc.Validate(); err != nil {
@@ -121,9 +130,15 @@ func (r *Runtime) Reload(
 		for _, name := range drainAttempted {
 			r.manager.ReopenAgent(name)
 		}
-		_ = newResult.Close()
+		if cerr := newResult.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "runtime reload: close partial deployment after abort", cerr,
+				otellog.Int64("runtime.generation.id", int64(newGenID)))
+		}
 		r.publishLifecycleEvent(ctx, SubjectRuntimeRebuildFailed(),
 			RuntimeRebuildEvent{GenerationID: newGenID, Error: err.Error()})
+		telemetry.Error(ctx, "runtime reload aborted",
+			otellog.Int64("runtime.generation.id", int64(newGenID)),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 
@@ -224,7 +239,11 @@ func (r *Runtime) Reload(
 	newEntries := make(map[string]dynamicAgentEntry, len(entries))
 	closeRebound := func() {
 		for _, name := range sortedKeys(rebound) {
-			_ = rebound[name].Close()
+			if cerr := rebound[name].Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "runtime reload: close rebound agent after abort", cerr,
+					otellog.String(telemetry.AttrAgentID, name),
+					otellog.Int64("runtime.generation.id", int64(newGenID)))
+			}
 		}
 	}
 	for _, name := range sortedKeys(entries) {
@@ -341,7 +360,10 @@ func (r *Runtime) Reload(
 		// Belt and braces: AddBus is all-or-nothing, so the new bus is
 		// never attached on error; removing it here keeps the invariant
 		// even if a future router change makes AddBus partial.
-		_ = r.router.RemoveBus(newBus)
+		if rerr := r.router.RemoveBus(newBus); rerr != nil {
+			telemetry.WarnErr(ctx, "runtime reload: remove unattached bus after abort", rerr,
+				otellog.Int64("runtime.generation.id", int64(newGenID)))
+		}
 		r.registry.Replace(entries, oldGen.result)
 		closeRebound()
 		return nil, abort(fmt.Errorf("runtime reload attach bus: %w", err))
@@ -359,15 +381,24 @@ func (r *Runtime) Reload(
 	}
 	if err := r.manager.SwapDeps(deps, func(_ uint64, _ session.Deps) {
 		if oldGen != nil && oldGen.bus != nil {
-			_ = r.router.RemoveBus(oldGen.bus)
+			if rerr := r.router.RemoveBus(oldGen.bus); rerr != nil {
+				telemetry.WarnErr(ctx, "runtime reload: unsubscribe retired generation bus", rerr,
+					otellog.Int64("runtime.generation.id", int64(newGenID)))
+			}
 		}
-		_ = oldGen.close()
+		if cerr := oldGen.close(); cerr != nil {
+			telemetry.WarnErr(ctx, "runtime reload: close retired generation", cerr,
+				otellog.Int64("runtime.generation.id", int64(newGenID)))
+		}
 	}); err != nil {
 		// Unreachable under lifecycleMu (Close holds it); roll back.
 		if oldGen != nil {
 			oldGen.unfreeze()
 		}
-		_ = r.router.RemoveBus(newBus)
+		if rerr := r.router.RemoveBus(newBus); rerr != nil {
+			telemetry.WarnErr(ctx, "runtime reload: remove new bus after swap failure", rerr,
+				otellog.Int64("runtime.generation.id", int64(newGenID)))
+		}
 		r.registry.Replace(entries, oldGen.result)
 		closeRebound()
 		return nil, abort(errdefs.Internalf(
@@ -389,6 +420,11 @@ func (r *Runtime) Reload(
 			ReboundAgents:        reboundNames,
 			DrainedAgents:        drained,
 		})
+	telemetry.Info(ctx, "runtime reload completed",
+		otellog.Int64("runtime.generation.id", int64(newGenID)),
+		otellog.Int64("runtime.generation.previous", int64(previousID)),
+		otellog.Int("runtime.reload.rebound_agents", len(reboundNames)),
+		otellog.Int("runtime.reload.drained_agents", len(drained)))
 	return &ReloadResult{
 		GenerationID:  newGenID,
 		PreviousID:    previousID,

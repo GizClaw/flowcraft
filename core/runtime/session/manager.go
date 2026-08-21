@@ -10,6 +10,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 var ErrManagerClosed = errdefs.NotAvailablef("runtime session: manager is closed")
@@ -295,7 +298,15 @@ func (m *Manager) reclaim(key Key, session *Session, generation uint64) {
 	delete(m.entries, key)
 	entry.timer = nil
 	m.mu.Unlock()
-	_ = session.close()
+	if err := session.close(); err != nil {
+		telemetry.WarnErr(context.Background(), "runtime session: close idle-reclaimed session failed", err,
+			otellog.String(telemetry.AttrAgentID, key.AgentID),
+			otellog.String(telemetry.AttrConversationID, key.ContextID))
+		return
+	}
+	telemetry.Debug(context.Background(), "runtime session: idle session reclaimed",
+		otellog.String(telemetry.AttrAgentID, key.AgentID),
+		otellog.String(telemetry.AttrConversationID, key.ContextID))
 }
 
 // RemoveAgent blocks new session activity for the named agent and
@@ -333,6 +344,9 @@ func (m *Manager) RemoveAgent(ctx context.Context, name string) error {
 	m.mu.Unlock()
 
 	if err := m.awaitAgentIdle(ctx, name); err != nil {
+		telemetry.Error(ctx, "runtime session: agent drain timed out",
+			otellog.String(telemetry.AttrAgentID, name),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
 		return err
 	}
 
@@ -436,6 +450,10 @@ func (m *Manager) Close() error {
 		}
 		m.closeErr = errors.Join(closeErrors...)
 	})
+	if m.closeErr != nil {
+		telemetry.Error(context.Background(), "runtime session: manager close failed",
+			otellog.String(telemetry.AttrErrorMessage, m.closeErr.Error()))
+	}
 	return m.closeErr
 }
 

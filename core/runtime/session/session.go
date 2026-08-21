@@ -14,7 +14,10 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 type activityKind uint8
@@ -325,8 +328,15 @@ func (s *Session) interruptActive(ctx context.Context) (func(), error) {
 	old := s.active
 	s.mu.Unlock()
 	if old != nil {
-		_ = old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput})
-		_, _ = old.Wait(ctx)
+		if err := old.Interrupt(agent.Interrupt{Cause: agent.CauseUserInput}); err != nil {
+			telemetry.WarnErr(ctx, "runtime session: interrupt active turn failed", err,
+				otellog.String(telemetry.AttrRunID, old.runID))
+		}
+		if _, err := old.Wait(ctx); err != nil {
+			telemetry.Debug(ctx, "runtime session: active turn wait after interrupt",
+				otellog.String(telemetry.AttrRunID, old.runID),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		release()
@@ -597,7 +607,10 @@ func (s *Session) saveSessionState(
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
-	_ = checkpoints.Save(ctx, cp)
+	if err := checkpoints.Save(ctx, cp); err != nil {
+		telemetry.WarnErr(ctx, "runtime session: save session state checkpoint failed", err,
+			otellog.String("runtime.session.id", sessionStateID(s.key)))
+	}
 }
 
 // clearParkedRun drops the resumable marker (e.g. the parked run's
@@ -671,7 +684,10 @@ func (s *Session) deleteCheckpoint(
 	ctx, cancel := context.WithTimeout(
 		context.WithoutCancel(context.Background()), 5*time.Second)
 	defer cancel()
-	_ = deleter.Delete(ctx, runID)
+	if err := deleter.Delete(ctx, runID); err != nil {
+		telemetry.WarnErr(ctx, "runtime session: delete parked-run checkpoint failed", err,
+			otellog.String(telemetry.AttrRunID, runID))
+	}
 }
 
 // loadResumableCheckpoint loads and validates the parked run's

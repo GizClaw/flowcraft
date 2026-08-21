@@ -12,6 +12,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Runtime owns the complete application object graph built by Builder.
@@ -145,6 +148,10 @@ func (r *Runtime) Close() error {
 		}
 		r.closeErr = closeOwned(r.manager, r.router, r.current)
 	})
+	if r.closeErr != nil {
+		telemetry.Error(context.Background(), "runtime close failed",
+			otellog.String(telemetry.AttrErrorMessage, r.closeErr.Error()))
+	}
 	return r.closeErr
 }
 
