@@ -98,6 +98,9 @@ func (c *streamCoordinator) OnDelta(ctx context.Context, env event.Envelope, del
 		return nil
 	}
 
+	// queuedSink.OnDelta never returns a non-nil error: a full queue
+	// detaches the sink instead of surfacing one, so fan-out here is
+	// intentionally fire-and-forget.
 	for _, sink := range c.raw {
 		_ = sink.OnDelta(ctx, env, delta)
 	}
@@ -200,6 +203,8 @@ func (c *streamCoordinator) emitConfirmedLocked(ctx context.Context, env event.E
 	}
 	cloned.Headers[HeaderDeliveryCursor] = strconv.FormatUint(uint64(cursor), 10)
 	c.turn.recordConfirmed(c.attempt, cursor, delta)
+	// See the raw fan-out above: OnDelta is enqueue-or-detach and
+	// always reports nil.
 	for _, sink := range c.confirmed {
 		_ = sink.OnDelta(ctx, cloned, delta)
 	}
@@ -276,6 +281,8 @@ func (c *streamCoordinator) finalize(ctx context.Context, result *agent.Result, 
 	confirmedLive := !c.confirmedDead
 	c.mu.Unlock()
 
+	// Raw fan-out carries the same enqueue-or-detach contract as
+	// OnDelta above.
 	for _, sink := range c.raw {
 		_ = sink.OnDelta(ctx, env, agent.StreamDeltaPayload{})
 	}
