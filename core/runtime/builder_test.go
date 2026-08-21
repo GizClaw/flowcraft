@@ -481,12 +481,16 @@ func TestBuildWithoutResultHostFactoryLeavesHostUnexposed(t *testing.T) {
 }
 
 func TestBuildBindsDelegationDirectory(t *testing.T) {
-	directory := delegation.NewDirectory()
 	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
-	reg.MustRegister(delegation.NewServiceFactory(directory))
+	reg.MustRegister(delegation.NewDirectoryFactory())
+	reg.MustRegister(delegation.NewServiceFactory())
 	doc := baseRuntimeDoc(t)
+	doc.Resources["delegation_directory"] = resource.Resource{
+		Kind: delegation.DirectoryKind, Impl: "local",
+	}
 	doc.Resources["delegation"] = resource.Resource{
 		Kind: delegation.ServiceKind, Impl: "local",
+		Deps: resource.Deps{"directory": "delegation_directory"},
 	}
 
 	app, err := NewBuilder(reg).Build(context.Background(), doc)
@@ -495,6 +499,12 @@ func TestBuildBindsDelegationDirectory(t *testing.T) {
 	}
 	defer func() { _ = app.Close() }()
 
+	directoryValue, _ := app.Resource("delegation_directory")
+	directory, ok := directoryValue.(*delegation.LocalDirectory)
+	if !ok {
+		t.Fatalf("delegation directory resource = %T, want *delegation.LocalDirectory",
+			directoryValue)
+	}
 	targets, err := directory.List(context.Background())
 	if err != nil {
 		t.Fatalf("directory was not bound: %v", err)

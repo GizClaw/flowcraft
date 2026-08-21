@@ -158,6 +158,26 @@ const (
 	// dimension.
 	AttrConversationID = "conversation.id"
 
+	// ----- Delegation -----
+
+	// AttrDelegationTarget is the delegation target id as requested by
+	// the caller (delegation.Request.Target). It can differ from
+	// AttrAgentID when the directory normalizes the target to a
+	// different canonical agent id.
+	AttrDelegationTarget = "delegation.target"
+
+	// AttrDelegationMode is the requested execution mode
+	// (delegation.ModeSync or delegation.ModeAsync).
+	AttrDelegationMode = "delegation.mode"
+
+	// AttrDelegationDepth is the delegation nesting depth: 1 for a
+	// top-level delegation, incremented per subagent hop.
+	AttrDelegationDepth = "delegation.depth"
+
+	// AttrDelegationCaller identifies the delegating agent's id;
+	// empty for top-level delegations.
+	AttrDelegationCaller = "delegation.caller"
+
 	// ----- Errors -----
 
 	// AttrErrorMessage carries the human-readable error string on

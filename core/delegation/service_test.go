@@ -132,22 +132,16 @@ func TestDirectoryBindListGetLookup(t *testing.T) {
 	}
 }
 
-func TestLocalServiceBindDeployment(t *testing.T) {
+func TestLocalDirectoryBindDeployment(t *testing.T) {
 	directory := NewDirectory()
-	service, err := NewService(directory, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = service.Close() }()
-
-	if err := service.BindDeployment("not a deployment"); !errdefs.IsValidation(err) {
+	if err := directory.BindDeployment("not a deployment"); !errdefs.IsValidation(err) {
 		t.Fatalf("BindDeployment(wrong type) error = %v, want validation", err)
 	}
 	result := buildResult(t, completedEngine("ok"))
-	if err := service.BindDeployment(result); err != nil {
+	if err := directory.BindDeployment(result); err != nil {
 		t.Fatalf("BindDeployment: %v", err)
 	}
-	if err := service.BindDeployment(result); err != nil {
+	if err := directory.BindDeployment(result); err != nil {
 		t.Fatalf("repeated BindDeployment error = %v, want idempotent success", err)
 	}
 	targets, err := directory.List(context.Background())
@@ -156,6 +150,26 @@ func TestLocalServiceBindDeployment(t *testing.T) {
 	}
 	if len(targets) != 2 || targets[0].ID != "researcher" {
 		t.Fatalf("bound targets = %+v", targets)
+	}
+}
+
+func TestLocalServiceBindSessionManagerSetOnce(t *testing.T) {
+	directory := NewDirectory()
+	service, err := NewService(directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+
+	if err := service.BindSessionManager(nil); !errdefs.IsValidation(err) {
+		t.Fatalf("BindSessionManager(nil) error = %v, want validation", err)
+	}
+	manager := newTestSessionManagerForResult(t, buildResult(t, completedEngine("ok")))
+	if err := service.BindSessionManager(manager); err != nil {
+		t.Fatalf("BindSessionManager: %v", err)
+	}
+	if err := service.BindSessionManager(manager); !errdefs.IsConflict(err) {
+		t.Fatalf("second BindSessionManager error = %v, want conflict", err)
 	}
 }
 

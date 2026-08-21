@@ -14,8 +14,20 @@ const (
 	// ServiceKind is the deployment resource kind of the local
 	// delegation service.
 	ServiceKind = "delegation.Service"
+	// DirectoryKind is the deployment resource kind of the local
+	// delegation directory.
+	DirectoryKind = "delegation.Directory"
+	// SessionProviderKind is the deployment resource kind of a delegation
+	// session identity policy.
+	SessionProviderKind = "delegation.SessionProvider"
 	// BackendDep is the optional async backend dependency.
 	BackendDep = "backend"
+	// DirectoryDep is the required directory dependency shared by the
+	// service and the delegation tool source.
+	DirectoryDep = "directory"
+	// SessionProviderDep is the optional session identity policy
+	// dependency.
+	SessionProviderDep = "session_provider"
 )
 
 // ServiceSettings is the strict settings subtree of the local service
@@ -29,25 +41,24 @@ type ServiceSettings struct {
 }
 
 type serviceFactory struct {
-	directory *LocalDirectory
-	options   []Option
+	options []Option
 }
 
 // NewServiceFactory returns a deployment factory for the local
-// delegation service. directory is app-owned and may be bound to a
-// deploy result after assembly (it cannot be a DAG dep: it bridges to
-// the deploy result itself). Options inject app-owned behavior the
-// document cannot express (e.g. [delegation.WithWorkerHost]); the
-// declarative settings are applied after them.
-func NewServiceFactory(directory *LocalDirectory, opts ...Option) res.Factory {
+// delegation service. The service resolves its directory and optional
+// session provider from deploy dependencies, so every deployment
+// generation gets its own bound directory. Options inject app-owned
+// behavior the document cannot express (e.g. [delegation.WithWorkerHost]);
+// the declarative settings are applied after them.
+func NewServiceFactory(opts ...Option) res.Factory {
 	return &serviceFactory{
-		directory: directory,
-		options:   append([]Option(nil), opts...),
+		options: append([]Option(nil), opts...),
 	}
 }
 
 // Spec implements res.Factory. The backend dep is optional: a service
-// without one is sync-only.
+// without one is sync-only. The directory dep is required and binds the
+// assembled deployment per generation.
 func (f *serviceFactory) Spec() res.Spec {
 	return res.Spec{
 		Kind: ServiceKind,
@@ -55,15 +66,22 @@ func (f *serviceFactory) Spec() res.Spec {
 		Deps: []res.DepSpec{{
 			Name: BackendDep,
 			Type: "delegation.AsyncBackend",
+		}, {
+			Name:     DirectoryDep,
+			Type:     "delegation.Directory",
+			Required: true,
+		}, {
+			Name: SessionProviderDep,
+			Type: "delegation.SessionProvider",
 		}},
 	}
 }
 
 // New implements res.Factory.
 func (f *serviceFactory) New(_ context.Context, in res.Input) (any, error) {
-	if f == nil || f.directory == nil {
+	if f == nil {
 		return nil, errdefs.Validationf(
-			"delegation service resource: directory is required")
+			"delegation service resource: nil factory")
 	}
 	settings, err := res.DecodeTyped[ServiceSettings](in.Settings)
 	if err != nil {
@@ -108,6 +126,21 @@ func (f *serviceFactory) New(_ context.Context, in res.Input) (any, error) {
 		options = append(options, WithDeferredWorkers())
 	}
 
+	var directory *LocalDirectory
+	if value, ok := in.Dep(DirectoryDep); ok {
+		dir, ok := value.(*LocalDirectory)
+		if !ok || dir == nil {
+			return nil, errdefs.Validationf(
+				"delegation service resource: dep %q is %T, want *delegation.LocalDirectory",
+				DirectoryDep, value)
+		}
+		directory = dir
+	}
+	if directory == nil {
+		return nil, errdefs.Validationf(
+			"delegation service resource: dep %q is required", DirectoryDep)
+	}
+
 	var backend AsyncBackend
 	if value, ok := in.Dep(BackendDep); ok {
 		b, ok := value.(AsyncBackend)
@@ -118,7 +151,18 @@ func (f *serviceFactory) New(_ context.Context, in res.Input) (any, error) {
 		}
 		backend = b
 	}
-	return NewService(f.directory, backend, options...)
+
+	if value, ok := in.Dep(SessionProviderDep); ok {
+		provider, ok := value.(SessionProvider)
+		if !ok || isNilInterface(provider) {
+			return nil, errdefs.Validationf(
+				"delegation service resource: dep %q is %T, want delegation.SessionProvider",
+				SessionProviderDep, value)
+		}
+		options = append(options, WithSessionProvider(provider))
+	}
+
+	return NewService(directory, backend, options...)
 }
 
 func isNilBackend(backend AsyncBackend) bool {
@@ -142,4 +186,72 @@ func parseServiceDuration(field, value string) (time.Duration, error) {
 			"delegation service resource: %s: %w", field, err))
 	}
 	return d, nil
+}
+
+// directoryFactory builds a per-generation LocalDirectory that binds
+// itself to the assembled deployment during the deploy wire phase.
+type directoryFactory struct{}
+
+// NewDirectoryFactory returns a deployment factory for the local
+// delegation directory resource. Each deployment generation builds and
+// binds its own directory, so reloads always delegate against the current
+// generation's agents.
+func NewDirectoryFactory() res.Factory {
+	return directoryFactory{}
+}
+
+// Spec implements res.Factory.
+func (directoryFactory) Spec() res.Spec {
+	return res.Spec{
+		Kind: DirectoryKind,
+		Impl: "local",
+	}
+}
+
+// New implements res.Factory: a directory takes no settings and starts
+// unbound; the deploy wire phase binds it to its generation's result.
+func (directoryFactory) New(_ context.Context, in res.Input) (any, error) {
+	if _, err := res.DecodeTyped[struct{}](in.Settings); err != nil {
+		return nil, errdefs.Validationf(
+			"delegation directory resource: decode settings: %v", err)
+	}
+	return NewDirectory(), nil
+}
+
+// RegisterDirectory adds the local directory resource factory to r.
+func RegisterDirectory(r *res.Registry) error {
+	return r.Register(NewDirectoryFactory())
+}
+
+// randomSessionProviderFactory builds the default ephemeral identity
+// policy.
+type randomSessionProviderFactory struct{}
+
+// NewRandomSessionProviderFactory returns a deployment factory for the
+// default delegation session provider: every delegation mints a fresh
+// ContextID and never persists.
+func NewRandomSessionProviderFactory() res.Factory {
+	return randomSessionProviderFactory{}
+}
+
+// Spec implements res.Factory.
+func (randomSessionProviderFactory) Spec() res.Spec {
+	return res.Spec{
+		Kind: SessionProviderKind,
+		Impl: "random",
+	}
+}
+
+// New implements res.Factory.
+func (randomSessionProviderFactory) New(_ context.Context, in res.Input) (any, error) {
+	if _, err := res.DecodeTyped[struct{}](in.Settings); err != nil {
+		return nil, errdefs.Validationf(
+			"delegation session provider resource: decode settings: %v", err)
+	}
+	return RandomSessionProvider{}, nil
+}
+
+// RegisterSessionProvider adds the random session provider factory to r.
+func RegisterSessionProvider(r *res.Registry) error {
+	return r.Register(NewRandomSessionProviderFactory())
 }

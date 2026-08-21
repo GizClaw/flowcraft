@@ -12,16 +12,17 @@ import (
 )
 
 func TestSourceFactoryRequiresDirectory(t *testing.T) {
-	_, err := (tooldelegation.NewSourceFactory(nil)).New(context.Background(), resource.Input{})
+	_, err := (tooldelegation.NewSourceFactory()).New(context.Background(), resource.Input{})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New without directory = %v, want Validation", err)
 	}
 }
 
 func TestSourceFactoryRejectsSettings(t *testing.T) {
-	_, err := (tooldelegation.NewSourceFactory(&fakeDirectory{})).New(
+	_, err := (tooldelegation.NewSourceFactory()).New(
 		context.Background(), resource.Input{
 			Settings: []byte(`{"unknown":true}`),
+			Deps:     map[string]any{delegation.DirectoryDep: &fakeDirectory{}},
 		})
 	if !errdefs.IsValidation(err) {
 		t.Fatalf("New with settings = %v, want Validation", err)
@@ -29,8 +30,10 @@ func TestSourceFactoryRejectsSettings(t *testing.T) {
 }
 
 func TestSourceFactoryBuildsTools(t *testing.T) {
-	value, err := (tooldelegation.NewSourceFactory(&fakeDirectory{})).New(
-		context.Background(), resource.Input{})
+	value, err := (tooldelegation.NewSourceFactory()).New(
+		context.Background(), resource.Input{
+			Deps: map[string]any{delegation.DirectoryDep: &fakeDirectory{}},
+		})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -56,8 +59,10 @@ func TestSourceFactoryBuildsTools(t *testing.T) {
 }
 
 func TestSourceWorksInToolRegistry(t *testing.T) {
-	value, err := (tooldelegation.NewSourceFactory(&fakeDirectory{})).New(
-		context.Background(), resource.Input{})
+	value, err := (tooldelegation.NewSourceFactory()).New(
+		context.Background(), resource.Input{
+			Deps: map[string]any{delegation.DirectoryDep: &fakeDirectory{}},
+		})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

@@ -52,6 +52,7 @@ type Turn struct {
 	err               error
 	interrupt         *agent.Interrupt
 	host              agent.Host
+	askUserOverride   AskUserFunc
 	prompts           map[string]*promptEntry
 	attachments       []*queuedSink
 	coordinator       *streamCoordinator

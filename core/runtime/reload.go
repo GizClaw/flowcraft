@@ -124,6 +124,14 @@ func (r *Runtime) Reload(
 		return err
 	}
 
+	// Hand the runtime's session manager to the new generation's
+	// consumers (e.g. the delegation service). Binding runs before the
+	// swap so a failure aborts the reload without touching the live
+	// generation; each generation's service instance binds exactly once.
+	if err := bindSessionManagers(r.manager, newResult); err != nil {
+		return nil, abort(err)
+	}
+
 	// Resolve the new generation's system resources and validate the
 	// resume contract. The bus and checkpoint store may change
 	// configuration (or implementation) freely: each generation owns
