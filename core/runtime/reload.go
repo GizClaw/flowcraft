@@ -149,6 +149,9 @@ func (r *Runtime) Reload(
 	if err := bindSessionManagers(r.manager, newResult); err != nil {
 		return nil, abort(err)
 	}
+	if err := bindTargetSources(r.registry, newResult); err != nil {
+		return nil, abort(err)
+	}
 
 	// Resolve the new generation's system resources and validate the
 	// resume contract. The bus and checkpoint store may change
@@ -327,7 +330,9 @@ func (r *Runtime) Reload(
 	// Freeze the retiring generation, swap the live view, and commit.
 	oldGen := r.current
 	if oldGen != nil {
-		oldGen.freeze(dynamicInstances(entries))
+		adopted := dynamicInstances(entries)
+		oldGen.freeze(adopted)
+		freezeTargetViews(oldGen.result, adopted)
 	}
 	newGen := &Generation{
 		id:          newGenID,
@@ -356,6 +361,7 @@ func (r *Runtime) Reload(
 	if err := r.router.AddBus(newBus); err != nil {
 		if oldGen != nil {
 			oldGen.unfreeze()
+			unfreezeTargetViews(oldGen.result)
 		}
 		// Belt and braces: AddBus is all-or-nothing, so the new bus is
 		// never attached on error; removing it here keeps the invariant
@@ -394,6 +400,7 @@ func (r *Runtime) Reload(
 		// Unreachable under lifecycleMu (Close holds it); roll back.
 		if oldGen != nil {
 			oldGen.unfreeze()
+			unfreezeTargetViews(oldGen.result)
 		}
 		if rerr := r.router.RemoveBus(newBus); rerr != nil {
 			telemetry.WarnErr(ctx, "runtime reload: remove new bus after swap failure", rerr,

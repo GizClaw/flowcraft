@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -255,6 +256,12 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		logBuildCleanup(ctx, "close partial deployment", result.Close())
 		return nil, fmt.Errorf("runtime bind session managers: %w", err)
 	}
+	if err := bindTargetSources(registry, result); err != nil {
+		logBuildCleanup(ctx, "close partial session manager", manager.Close())
+		logBuildCleanup(ctx, "close partial router", router.Close())
+		logBuildCleanup(ctx, "close partial deployment", result.Close())
+		return nil, fmt.Errorf("runtime bind delegation target sources: %w", err)
+	}
 	return &Runtime{
 		manager:             manager,
 		router:              router,
@@ -303,6 +310,81 @@ func bindSessionManagers(manager *session.Manager, result *deploy.Result) error 
 		bound = name
 	}
 	return nil
+}
+
+// bindTargetSources hands the Runtime's live agent registry to every
+// delegation directory resource that wants it, making dynamically
+// registered agents delegatable without re-binding. At most one binder
+// is allowed per deployment (v1 constraint, mirroring the session
+// manager binder rule).
+func bindTargetSources(registry *AgentRegistry, result *deploy.Result) error {
+	if registry == nil || result == nil {
+		return errdefs.Internalf(
+			"runtime: bind target sources requires a registry and result")
+	}
+	var bound string
+	for _, name := range result.Names() {
+		value, ok := result.Value(name)
+		if !ok {
+			continue
+		}
+		binder, ok := value.(delegation.TargetViewBinder)
+		if !ok {
+			continue
+		}
+		if bound != "" {
+			return errdefs.Conflictf(
+				"runtime: multiple delegation target view binders (%s and %s)",
+				bound, name)
+		}
+		if err := binder.BindTargetSource(registry); err != nil {
+			return fmt.Errorf(
+				"runtime: bind delegation target source to %q: %w", name, err)
+		}
+		bound = name
+	}
+	return nil
+}
+
+// freezeTargetViews pins the dynamic view of every delegation directory
+// in a retiring generation so in-flight delegations keep resolving the
+// instances that generation served. Freezing is a one-shot commit
+// (paired with unfreezeTargetViews on every rollback path); the
+// single-binder constraint enforced by bindTargetSources guarantees at
+// most one directory per deployment, so iteration here cannot see a
+// conflicting set.
+func freezeTargetViews(result *deploy.Result, instances map[string]*agent.Agent) {
+	if result == nil {
+		return
+	}
+	for _, name := range result.Names() {
+		value, ok := result.Value(name)
+		if !ok {
+			continue
+		}
+		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
+			freezer.FreezeTargets(instances)
+		}
+	}
+}
+
+// unfreezeTargetViews restores the live dynamic view of every
+// delegation directory in a generation that a failed reload rolled
+// back, so the still-current directory keeps following RegisterAgent /
+// UnregisterAgent. It pairs with freezeTargetViews.
+func unfreezeTargetViews(result *deploy.Result) {
+	if result == nil {
+		return
+	}
+	for _, name := range result.Names() {
+		value, ok := result.Value(name)
+		if !ok {
+			continue
+		}
+		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
+			freezer.UnfreezeTargets()
+		}
+	}
 }
 
 func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {
