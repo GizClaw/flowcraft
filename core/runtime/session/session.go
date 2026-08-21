@@ -26,6 +26,12 @@ const (
 	activityTurn activityKind = iota
 	activityPrompt
 	activitySink
+
+	// sessionCloseTurnTimeout bounds how long Session.close waits for
+	// the active turn to finish after shutdown (interrupt) is
+	// signalled. A non-cooperative engine must not hang Close (and
+	// with it Manager.Close / Runtime.Close) forever.
+	sessionCloseTurnTimeout = 30 * time.Second
 )
 
 // Session owns conversational activity for one Key while borrowing all
@@ -852,8 +858,17 @@ func (s *Session) close() error {
 		s.mu.Unlock()
 		if active != nil {
 			active.shutdown()
-			_, s.closeErr = active.Wait(context.Background())
+			waitCtx, cancel := context.WithTimeout(
+				context.Background(), sessionCloseTurnTimeout)
+			_, s.closeErr = active.Wait(waitCtx)
+			cancel()
 			if s.closeErr != nil && errors.Is(s.closeErr, context.Canceled) {
+				s.closeErr = nil
+			}
+			if s.closeErr != nil && errors.Is(s.closeErr, context.DeadlineExceeded) {
+				telemetry.Warn(context.Background(),
+					"runtime session: active turn did not stop within close budget",
+					otellog.String(telemetry.AttrRunID, active.runID))
 				s.closeErr = nil
 			}
 		}
