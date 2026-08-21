@@ -939,7 +939,7 @@ func execStatus(err error) string {
 	case errdefs.IsInterrupted(err):
 		return "interrupted"
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-		return "cancelled"
+		return "canceled"
 	default:
 		return "failed"
 	}

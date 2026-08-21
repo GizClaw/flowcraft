@@ -17,7 +17,11 @@ const (
 	EventCardSuspended = "delegation.kanban.card.suspended"
 	EventCardDone      = "delegation.kanban.card.done"
 	EventCardFailed    = "delegation.kanban.card.failed"
-	EventCardCancelled = "delegation.kanban.card.cancelled"
+	EventCardCanceled  = "delegation.kanban.card.canceled"
+
+	// EventCardCancelled is a deprecated alias kept for source
+	// compatibility; the canonical spelling is EventCardCanceled.
+	EventCardCancelled = EventCardCanceled
 
 	HeaderKind          = "kanban_kind"
 	HeaderCardID        = "card_id"
@@ -63,8 +67,8 @@ func kindFor(status Status) string {
 		return EventCardDone
 	case StatusFailed:
 		return EventCardFailed
-	case StatusCancelled:
-		return EventCardCancelled
+	case StatusCanceled:
+		return EventCardCanceled
 	default:
 		return ""
 	}

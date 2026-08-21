@@ -61,7 +61,7 @@ const (
 
 	// AttrRunStatus reports the terminal status of a run. Suggested
 	// values: "ok" (clean completion), "interrupted" (cooperative
-	// stop), "cancelled" (ctx cancellation), "failed" (any other
+	// stop), "canceled" (ctx cancellation), "failed" (any other
 	// non-nil error). Consumers SHOULD treat unknown values as
 	// "failed".
 	AttrRunStatus = "run.status"
