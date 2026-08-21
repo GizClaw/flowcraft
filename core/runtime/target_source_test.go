@@ -2,7 +2,10 @@ package runtime
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/delegation"
@@ -143,5 +146,191 @@ func TestFreezeTargetViewsPinsDynamicSet(t *testing.T) {
 	}
 	if _, err := directory.Lookup(ctx, "zeta"); !errdefs.IsNotFound(err) {
 		t.Fatalf("Lookup(zeta) after freeze error = %v, want not found", err)
+	}
+}
+
+func TestFreezeUnfreezeTargetViewsRoundTrip(t *testing.T) {
+	app := buildDirectoryApp(t, directoryDoc(t, ""))
+	value, ok := app.Resource("directory")
+	directory, typeOK := value.(*delegation.LocalDirectory)
+	if !ok || !typeOK {
+		t.Fatalf("directory resource = %v, want *delegation.LocalDirectory", value)
+	}
+
+	ctx := context.Background()
+	instance, err := app.RegisterAgent(ctx, "dyn", dynamicDefinition("Dyn"))
+	if err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+
+	// Simulate a freeze at the swap point, then the rollback path.
+	freezeTargetViews(app.current.result, map[string]*agent.Agent{"dyn": instance})
+	unfreezeTargetViews(app.current.result)
+
+	if _, err := app.RegisterAgent(ctx, "zeta", dynamicDefinition("Zeta")); err != nil {
+		t.Fatalf("RegisterAgent(zeta) after unfreeze: %v", err)
+	}
+	targets, err := directory.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(targets) != 3 || targets[0].ID != "bot" ||
+		targets[1].ID != "dyn" || targets[2].ID != "zeta" {
+		t.Fatalf("List after unfreeze = %+v, want [bot dyn zeta]", targets)
+	}
+	if _, err := directory.Lookup(ctx, "zeta"); err != nil {
+		t.Fatalf("Lookup(zeta) after unfreeze: %v", err)
+	}
+}
+
+func TestRuntimeReloadRetiredDirectoryFrozen(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	reg := resource.NewRegistry()
+	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
+	reg.MustRegister(freshBusFactory{})
+	reg.MustRegister(delegation.NewDirectoryFactory())
+	app, err := NewBuilder(reg).Build(ctx, directoryDoc(t, ""))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	if _, err := app.RegisterAgent(ctx, "dyn", dynamicDefinition("Dyn")); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	oldValue, _ := app.current.result.Value("directory")
+	oldDirectory, ok := oldValue.(*delegation.LocalDirectory)
+	if !ok {
+		t.Fatalf("old directory resource = %T", oldValue)
+	}
+
+	if _, err := app.Reload(ctx, directoryDoc(t, "")); err != nil {
+		t.Fatalf("Reload: %v", err)
+	}
+	newValue, ok := app.Resource("directory")
+	newDirectory, typeOK := newValue.(*delegation.LocalDirectory)
+	if !ok || !typeOK {
+		t.Fatalf("new directory resource = %v, want *delegation.LocalDirectory", newValue)
+	}
+
+	// A registration after the swap is visible to the new generation
+	// only; the retired directory stays pinned to the frozen set.
+	if _, err := app.RegisterAgent(ctx, "zeta", dynamicDefinition("Zeta")); err != nil {
+		t.Fatalf("RegisterAgent(zeta): %v", err)
+	}
+	oldTargets, err := oldDirectory.List(ctx)
+	if err != nil {
+		t.Fatalf("old List: %v", err)
+	}
+	if len(oldTargets) != 2 || oldTargets[0].ID != "bot" || oldTargets[1].ID != "dyn" {
+		t.Fatalf("old List after reload = %+v, want [bot dyn]", oldTargets)
+	}
+	if _, err := oldDirectory.Lookup(ctx, "zeta"); !errdefs.IsNotFound(err) {
+		t.Fatalf("old Lookup(zeta) error = %v, want not found", err)
+	}
+	if _, err := oldDirectory.Lookup(ctx, "dyn"); err != nil {
+		t.Fatalf("old Lookup(dyn) (in-flight) : %v", err)
+	}
+
+	newTargets, err := newDirectory.List(ctx)
+	if err != nil {
+		t.Fatalf("new List: %v", err)
+	}
+	if len(newTargets) != 3 || newTargets[1].ID != "dyn" || newTargets[2].ID != "zeta" {
+		t.Fatalf("new List after reload = %+v, want [bot dyn zeta]", newTargets)
+	}
+}
+
+func TestRuntimeDynamicAgentDelegateEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	reg := newBaseRegistry(t, event.NewMemoryBus(), &recordingCheckpointStore{}, noopEngine())
+	reg.MustRegister(delegation.NewDirectoryFactory())
+	reg.MustRegister(delegation.NewServiceFactory())
+	doc := baseRuntimeDoc(t)
+	doc.Resources["delegation_directory"] = resource.Resource{
+		Kind: delegation.DirectoryKind, Impl: "local",
+	}
+	doc.Resources["delegation"] = resource.Resource{
+		Kind: delegation.ServiceKind, Impl: "local",
+		Deps: resource.Deps{"directory": "delegation_directory"},
+	}
+	app, err := NewBuilder(reg).Build(ctx, doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	serviceValue, _ := app.Resource("delegation")
+	service, ok := serviceValue.(*delegation.LocalService)
+	if !ok {
+		t.Fatalf("delegation resource = %T, want *delegation.LocalService", serviceValue)
+	}
+
+	if _, err := app.RegisterAgent(ctx, "dyn", dynamicDefinition("Dyn")); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	response, err := service.Delegate(ctx, delegation.Request{
+		Mode:   delegation.ModeSync,
+		Target: "dyn",
+		Input:  "do it",
+	})
+	if err != nil {
+		t.Fatalf("Delegate to dynamic agent: %v", err)
+	}
+	if response.Status != delegation.StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+
+	if err := app.UnregisterAgent(ctx, "dyn"); err != nil {
+		t.Fatalf("UnregisterAgent: %v", err)
+	}
+	if _, err := service.Delegate(ctx, delegation.Request{
+		Mode:   delegation.ModeSync,
+		Target: "dyn",
+		Input:  "do it again",
+	}); !errdefs.IsNotFound(err) {
+		t.Fatalf("Delegate after unregister error = %v, want not found", err)
+	}
+}
+
+func TestDirectoryConcurrentSourceAccess(t *testing.T) {
+	app := buildDirectoryApp(t, directoryDoc(t, ""))
+	value, ok := app.Resource("directory")
+	directory, typeOK := value.(*delegation.LocalDirectory)
+	if !ok || !typeOK {
+		t.Fatalf("directory resource = %v, want *delegation.LocalDirectory", value)
+	}
+	ctx := context.Background()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			name := fmt.Sprintf("dyn-%d", n)
+			if _, err := app.RegisterAgent(ctx, name, dynamicDefinition(name)); err != nil {
+				t.Errorf("RegisterAgent(%s): %v", name, err)
+			}
+		}(i)
+	}
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = directory.List(ctx)
+			_, _ = directory.Get(ctx, "bot")
+			_, _ = directory.Lookup(ctx, "dyn-3")
+		}()
+	}
+	wg.Wait()
+
+	targets, err := directory.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(targets) != 9 {
+		t.Fatalf("List = %d targets, want 9 (bot + 8 dynamic)", len(targets))
 	}
 }

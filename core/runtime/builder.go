@@ -348,7 +348,11 @@ func bindTargetSources(registry *AgentRegistry, result *deploy.Result) error {
 
 // freezeTargetViews pins the dynamic view of every delegation directory
 // in a retiring generation so in-flight delegations keep resolving the
-// instances that generation served.
+// instances that generation served. Freezing is a one-shot commit
+// (paired with unfreezeTargetViews on every rollback path); the
+// single-binder constraint enforced by bindTargetSources guarantees at
+// most one directory per deployment, so iteration here cannot see a
+// conflicting set.
 func freezeTargetViews(result *deploy.Result, instances map[string]*agent.Agent) {
 	if result == nil {
 		return
@@ -360,6 +364,25 @@ func freezeTargetViews(result *deploy.Result, instances map[string]*agent.Agent)
 		}
 		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
 			freezer.FreezeTargets(instances)
+		}
+	}
+}
+
+// unfreezeTargetViews restores the live dynamic view of every
+// delegation directory in a generation that a failed reload rolled
+// back, so the still-current directory keeps following RegisterAgent /
+// UnregisterAgent. It pairs with freezeTargetViews.
+func unfreezeTargetViews(result *deploy.Result) {
+	if result == nil {
+		return
+	}
+	for _, name := range result.Names() {
+		value, ok := result.Value(name)
+		if !ok {
+			continue
+		}
+		if freezer, ok := value.(delegation.TargetViewFreezer); ok {
+			freezer.UnfreezeTargets()
 		}
 	}
 }
