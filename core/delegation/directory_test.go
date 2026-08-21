@@ -152,6 +152,28 @@ func TestDirectoryBindTargetSourceSetOnce(t *testing.T) {
 	}
 }
 
+func TestDirectoryBindTargetSourceAfterFreezeConflicts(t *testing.T) {
+	dir := delegation.NewDirectory()
+	if err := dir.Bind(&fakeDeployment{}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	source := newFakeTargetSource()
+	if err := dir.BindTargetSource(source); err != nil {
+		t.Fatalf("BindTargetSource: %v", err)
+	}
+	dir.FreezeTargets(map[string]*agent.Agent{})
+
+	// Freeze only swaps the active view; the bound source remains, so a
+	// second bind must still conflict instead of silently overwriting it.
+	if err := dir.BindTargetSource(newFakeTargetSource()); !errdefs.IsConflict(err) {
+		t.Fatalf("BindTargetSource after freeze error = %v, want conflict", err)
+	}
+	dir.UnfreezeTargets()
+	if err := dir.BindTargetSource(newFakeTargetSource()); !errdefs.IsConflict(err) {
+		t.Fatalf("BindTargetSource after freeze/unfreeze error = %v, want conflict", err)
+	}
+}
+
 func TestDirectoryFreezeTargets(t *testing.T) {
 	dir := delegation.NewDirectory()
 	if err := dir.Bind(&fakeDeployment{

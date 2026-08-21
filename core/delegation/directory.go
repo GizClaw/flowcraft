@@ -105,9 +105,10 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.bound {
-		// Binding is idempotent: a directory is immutable after a
-		// successful bind, so multiple resources may share one
-		// directory without failing the deployment.
+		// Binding the deployment snapshot is idempotent, so multiple
+		// resources may share one directory without failing the
+		// deployment. The live dynamic view is attached separately via
+		// BindTargetSource and is not part of this snapshot.
 		return nil
 	}
 
@@ -141,7 +142,9 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 }
 
 // BindTargetSource attaches the live dynamic target view. It is
-// set-once: binding twice returns a Conflict error.
+// set-once for the directory's lifetime: binding twice — including
+// after FreezeTargets, which only swaps the active view and keeps the
+// bound source — returns a Conflict error.
 func (d *LocalDirectory) BindTargetSource(source TargetSource) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
@@ -151,7 +154,7 @@ func (d *LocalDirectory) BindTargetSource(source TargetSource) error {
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.dynamic != nil {
+	if d.source != nil {
 		return errdefs.Conflictf("local delegation directory: target source already bound")
 	}
 	d.source = source
