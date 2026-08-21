@@ -169,8 +169,9 @@ func Execute(
 			return nil, fmt.Errorf("agent: seed board (attempt %d): %w", attempt, err)
 		}
 		if board == nil {
-			logRunError(ctx, id, "agent run seed returned nil board", errdefs.Validationf("agent: Preparer chain returned nil board"))
-			return nil, errdefs.Validationf("agent: Preparer chain returned nil board")
+			nilBoardErr := errdefs.Validationf("agent: Preparer chain returned nil board")
+			logRunError(ctx, id, "agent run seed returned nil board", nilBoardErr)
+			return nil, nilBoardErr
 		}
 		// Messages at or before this index are seed/context, never output
 		// of this attempt. The engine's appended messages start after it.
