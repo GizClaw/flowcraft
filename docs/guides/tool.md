@@ -70,6 +70,60 @@ registry the moment it connects. A server that dies later is
 reconnected the same way; its tools stay registered and calls fail with
 a per-server `NotAvailable` error until the connection is restored.
 Configuration errors (a rejected connection, an invalid spec) still
-fail the deployment. Middleware lives in `core/tool/middleware`.
+fail the deployment. The settings subtree declares one or more servers:
+
+```yaml
+resources:
+  sim:
+    kind: tool.Source
+    impl: mcp
+    settings:
+      servers:
+        - name: filesystem
+          transport: stdio           # stdio | http
+          command: npx
+          args: ["-y", "@modelcontextprotocol/server-filesystem"]
+          env: {TOKEN: ${env:MCP_TOKEN}}
+          prefix: fs                  # tool namespace; default "<name>__"
+          resources: true             # bridge list_resources / read_resource tools
+          required: true              # host should WaitReady before serving
+        - name: remote
+          transport: http
+          url: https://mcp.example.com/mcp
+          headers: {Authorization: "Bearer ${env:MCP_TOKEN}"}
+          http_timeout: 30s
+```
+
+`required: true` marks a server the host cannot start without; hosts
+await `Source.WaitReady` so a background give-up surfaces as an error
+instead of a silent missing tool set. Middleware lives in
+`core/tool/middleware`.
+
+## Middleware chain
+
+`tool.Assembly/middleware` is the memory assembly plus a
+settings-declared middleware chain:
+
+```yaml
+resources:
+  tools:
+    kind: tool.Assembly
+    impl: middleware
+    deps:
+      tool: sim
+    settings:
+      middlewares:
+        recover: {enabled: true}
+        timeout: {default: 30s}
+        concurrency: {limit: 8}
+```
+
+Each entry is optional; absent entries are skipped. `recover` converts a
+panicking tool (or inner middleware) into an `IsError` result instead of
+crashing the caller's goroutine; `timeout.default` bounds each call with a
+Go duration (calls that already carry a deadline pass through);
+`concurrency.limit` caps in-flight executions, with excess callers waiting
+(respecting context cancellation). The plain `memory` impl rejects the
+`middlewares` key.
 
 See [runtime.md](runtime.md) for per-session dynamic catalogs.

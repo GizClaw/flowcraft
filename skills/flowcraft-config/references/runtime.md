@@ -29,8 +29,9 @@ runtime:
   the name against the built resources).
 - `checkpoint_store`, when present, must name a resource whose built
   value implements the `agent.CheckpointStore` contract — the document
-  kind can be `checkpoint.Store` (workspace) or `agent.CheckpointStore`
-  (sqlite) (host build resolves it; the validator checks `resume` rules).
+  kind is `checkpoint.Store` (workspace) in core; alternative backends
+  are app-registered outside `core/` (host build resolves it; the
+  validator checks `resume` rules).
 - `sessions.resume: true` requires `checkpoint_store` — **validator**.
 - `sessions.sink_buffer`, `delivery_concurrency`,
   `speculative_buffer_events`, and `speculative_buffer_bytes` are validated
@@ -39,9 +40,11 @@ runtime:
 - `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources; the
   reserved `default` key is an optional fallback. Every deployed agent must
   be mapped directly or covered by `default` (host build/runtime
-  registration; the validator only checks the map is non-empty). The
-  mapping is live: agents registered at runtime attach a tool assembly via
-  `WithToolAssembly` (see below) or fall back to `default`.
+  registration; the validator only checks the map is non-empty). Mapping
+  keys must name deployed agents — an unknown key fails the build
+  (`no such deployed agent`). The mapping is live: agents registered at
+  runtime attach a tool assembly via `WithToolAssembly` (see below) or
+  fall back to `default`.
 
 ## Dynamic agent registration (core/v0.1.11+)
 
@@ -80,7 +83,18 @@ Rules:
 - `runtime.agent.<id>.registered` / `.removed` lifecycle events are
   published on success (subscribe with `PatternAgentLifecycle()`).
 
+## Runtime reload (core/v0.1.14+)
+
+`Runtime.Reload` transactionally replaces the deployment document without
+rebuilding the runtime: the previous generation keeps serving until the
+new one is built and swapped. Progress is published as
+`runtime.rebuild.started` / `.completed` / `.failed` events
+(`SubjectRuntimeRebuild*`, subscribe with `PatternRuntimeRebuild()`); a
+failed reload aborts before any swap and the old generation stays in
+service.
+
 ## Sources of truth
 
-`core/runtime/config.go`, `core/runtime/doc.go`, `core/runtime/lifecycle.go`,
+`core/runtime/config.go`, `core/runtime/lifecycle.go`,
+`core/runtime/reload.go`, `core/runtime/events.go`,
 `docs/guides/runtime.md`.

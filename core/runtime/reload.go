@@ -33,8 +33,11 @@ type ReloadResult struct {
 //
 //  1. Validates the document and decodes the runtime config.
 //  2. Builds the new deploy.Result (rollback on failure).
-//  3. Asserts the system resources (event_bus, checkpoint_store,
-//     sessions.resume) are unchanged — they are pinned per Runtime.
+//  3. Resolves the new generation's event_bus / checkpoint_store and
+//     validates the resume contract. Each generation owns its values,
+//     so the document may change their configuration or implementation
+//     freely; a reload whose event_bus factory returns the current
+//     generation's bus (a shared singleton) is rejected.
 //  4. Rebuilds the host factory with the same decorator.
 //  5. Re-binds every dynamic agent against the new result; any failure
 //     aborts the whole reload.

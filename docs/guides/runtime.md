@@ -99,8 +99,31 @@ Rules:
 - `dynamic_catalog.tools` maps agent IDs to `tool.Assembly` resources.
   The reserved `default` key is an optional fallback. The mapping is
   live: dynamically registered agents may attach a tool assembly at
-  registration time (see below).
+  registration time (see below). Every mapping key must name a deployed
+  agent — an unknown key fails the build (`no such deployed agent`).
 - Buffer and concurrency fields are validated against hard upper bounds.
+
+## Checkpoint stores
+
+`checkpoint_store` names a resource implementing `agent.CheckpointStore`.
+The core backend is the workspace store:
+
+```yaml
+resources:
+  cps:
+    kind: checkpoint.Store
+    impl: workspace
+    deps:
+      workspace: ws
+    settings:
+      prefix: agent/checkpoints  # optional; default "agent/checkpoints"
+```
+
+Checkpoint files live under the workspace's `prefix` directory.
+`sessions.resume: true` requires a store, and reloads additionally require
+it to implement `agent.CheckpointDeleter` (the core workspace store does).
+Concrete alternative backends are app-registered outside `core/` and own
+their settings schema.
 
 ## Sessions
 
@@ -178,6 +201,44 @@ Semantics:
 
 `Manager.RemoveAgent` / `Manager.ReopenAgent` are the session-manager
 level primitives behind removal and re-registration.
+
+## Reload
+
+`Runtime.Reload` transactionally replaces the deployment document without
+rebuilding the runtime:
+
+```go
+result, err := app.Reload(ctx, newDoc)
+if err != nil {
+    // the previous generation keeps serving
+    return err
+}
+_ = result.GenerationID
+```
+
+Semantics:
+
+- The new generation is built, validated, and swapped atomically; any
+  failure aborts before the swap and the current generation stays in
+  service. In-flight turns always complete on the generation they started
+  on; the next `Start` uses the new generation.
+- Each generation owns its `event_bus` / `checkpoint_store` values, and
+  the router subscribes to every live generation's bus, so the document
+  may change their configuration or implementation freely. Continuity of
+  durable session state across a store change is the host's
+  responsibility (same backing storage or migration). A reload whose
+  `event_bus` factory returns the current generation's bus (a shared
+  singleton) is rejected.
+- Dynamically registered agents are re-bound against the new result;
+  agents removed by the new document have their sessions drained before
+  the swap. `Reload` is serialized with `RegisterAgent` /
+  `UnregisterAgent` / `Close`.
+- Progress is published as `runtime.rebuild.started` / `.completed` /
+  `.failed` events (`SubjectRuntimeRebuild*`, subscribe with
+  `PatternRuntimeRebuild()`); the `RuntimeRebuildEvent` payload carries
+  `generation_id`, `previous_generation_id`, `rebound_agents`,
+  `drained_agents`, and `error` (on failure). See [event.md](event.md)
+  for the event namespaces.
 
 ## Host decorators
 

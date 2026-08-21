@@ -1,6 +1,6 @@
 ---
 name: flowcraft-config
-description: Author, validate, and troubleshoot complete FlowCraft deployment configuration (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring). Use when writing or reviewing FlowCraft configs, assembling an agent deployment, adding runtime/session settings, building graph definitions, resolving config build failures ("not registered", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment template.
+description: "Author, validate, and troubleshoot complete FlowCraft deployment configuration (deploy.yaml with the runtime section, inference/workspace/sandbox/tool sub-documents, core/memory contracts, and graph JSON node wiring). Use when writing or reviewing FlowCraft configs, assembling an agent deployment, adding runtime/session settings, building graph definitions, resolving config build failures (\"not registered\", dead configuration, route policy missing, graph node errors), or copying a minimal runnable FlowCraft deployment template."
 ---
 
 # FlowCraft Config Authoring
@@ -13,7 +13,7 @@ the L2 structural validator and fix errors against the reference cards.
 
 1. **Scope the deployment.** Collect the agents, capabilities (chat,
    tools, memory, scripts, sandboxing), and runtime needs (sessions,
-   resume, event bus, scheduler, backends).
+   resume, event bus, checkpoint stores).
 2. **Draft the deployment document.** `deploy.yaml` is the convention
    but any filename works; pass whatever path you choose to the
    validator. Read
@@ -103,7 +103,7 @@ workflow.
 ## Compatibility and versioning
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
-requires exactly `github.com/GizClaw/flowcraft/core v0.1.13`; the schema
+requires exactly `github.com/GizClaw/flowcraft/core v0.1.23`; the schema
 cards in this skill document that release (no `driver/*` or `backends/*`
 modules are required, since the validator never constructs factories).
 When FlowCraft releases a new version, bump the pin and reconcile the
@@ -115,9 +115,9 @@ their factories and settings schemas live in the host application.
 - [deploy.md](references/deploy.md) — deploy document schema, dep refs,
   first-party kinds, registration.
 - [runtime.md](references/runtime.md) — runtime section, sessions,
-  backends.
+  dynamic registration, reload.
 - [resources.md](references/resources.md) — inference/memory/workspace/
-  sandbox/tool/event/scheduler/checkpoint sub-documents.
+  sandbox/tool/event/checkpoint/delegation/script-runtime sub-documents.
 - [graph.md](references/graph.md) — graph JSON, node configs, engine
   build settings.
 - [pitfalls.md](references/pitfalls.md) — known drift points and the
