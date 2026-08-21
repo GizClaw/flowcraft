@@ -16,12 +16,16 @@ const (
 	StatusSuspended Status = "suspended"
 	StatusDone      Status = "done"
 	StatusFailed    Status = "failed"
-	StatusCancelled Status = "cancelled"
+	StatusCanceled  Status = "canceled"
+
+	// StatusCancelled is a deprecated alias kept for source
+	// compatibility; the canonical spelling is StatusCanceled.
+	StatusCancelled Status = StatusCanceled
 )
 
 // IsTerminal reports whether no further transition is permitted.
 func (s Status) IsTerminal() bool {
-	return s == StatusDone || s == StatusFailed || s == StatusCancelled
+	return s == StatusDone || s == StatusFailed || s == StatusCanceled
 }
 
 // Task is the immutable asynchronous delegation stored by a card.

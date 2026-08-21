@@ -13,7 +13,16 @@ const (
 	OperationGenerate      Operation = "generate"
 	OperationEmbed         Operation = "embed"
 	OperationTranscription Operation = "transcription"
-	OperationRealtime      Operation = "realtime"
+
+	// OperationRealtime is reserved for the future realtime workload:
+	// the operation and the FieldRealtime* ledger entries exist so
+	// profiles, selectors and route phases can be declared ahead of
+	// the surface. No realtime request/session API or driver opener
+	// exists yet; when it lands it plugs in as an OpenRealtime entry
+	// on inference.Openers and an AttemptPhaseOpen path in
+	// inference/route. Providers must not advertise realtime
+	// operations until that surface ships.
+	OperationRealtime Operation = "realtime"
 )
 
 func (o Operation) Validate() error {

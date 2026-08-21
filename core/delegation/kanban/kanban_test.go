@@ -349,7 +349,7 @@ func TestStatusMapsEveryCardState(t *testing.T) {
 				Error:  "boom",
 			})
 		}, delegation.StatusFailed, "", "boom"},
-		{"cancelled", func(board *kanban.Board, id string) {
+		{"canceled", func(board *kanban.Board, id string) {
 			board.Cancel(id, "stopped")
 		}, delegation.StatusCanceled, "", "stopped"},
 	}

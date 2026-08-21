@@ -51,43 +51,51 @@ var (
 			"Event publish failures swallowed by the graph kernel (best-effort observability events)"))
 )
 
-// runScopeAttrs returns the run-level scope attributes for spans:
-// parent run, task, conversation, tenant and engine kind. Empty
-// identity dimensions are omitted so spans stay slim; engine kind is
-// always present.
-func runScopeAttrs(run agent.Run) []attribute.KeyValue {
-	attrs := make([]attribute.KeyValue, 0, 5)
+// runScope returns the run-level scope dimensions shared by spans and
+// log records: parent run, task, conversation, tenant and engine kind.
+// Empty identity dimensions are omitted so payloads stay slim; engine
+// kind is always present. Keeping one source of truth prevents the
+// span and log attribute sets from drifting.
+func runScope(run agent.Run) []runScopeKV {
+	var kvs []runScopeKV
 	if run.ParentRunID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrParentRunID, run.ParentRunID))
+		kvs = append(kvs, runScopeKV{telemetry.AttrParentRunID, run.ParentRunID})
 	}
 	if run.TaskID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrTaskID, run.TaskID))
+		kvs = append(kvs, runScopeKV{telemetry.AttrTaskID, run.TaskID})
 	}
 	if run.ConversationID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrConversationID, run.ConversationID))
+		kvs = append(kvs, runScopeKV{telemetry.AttrConversationID, run.ConversationID})
 	}
 	if tenantID := run.Attributes[telemetry.AttrTenantID]; tenantID != "" {
-		attrs = append(attrs, attribute.String(telemetry.AttrTenantID, tenantID))
+		kvs = append(kvs, runScopeKV{telemetry.AttrTenantID, tenantID})
 	}
-	return append(attrs, attribute.String(telemetry.AttrEngineKind, engineKind))
+	return append(kvs, runScopeKV{telemetry.AttrEngineKind, engineKind})
 }
 
-// runScopeLogAttrs mirrors runScopeAttrs for structured log records.
+type runScopeKV struct {
+	key   string
+	value string
+}
+
+// runScopeAttrs converts the shared run scope into span attributes.
+func runScopeAttrs(run agent.Run) []attribute.KeyValue {
+	kvs := runScope(run)
+	attrs := make([]attribute.KeyValue, 0, len(kvs))
+	for _, kv := range kvs {
+		attrs = append(attrs, attribute.String(kv.key, kv.value))
+	}
+	return attrs
+}
+
+// runScopeLogAttrs converts the shared run scope into log attributes.
 func runScopeLogAttrs(run agent.Run) []otellog.KeyValue {
-	attrs := make([]otellog.KeyValue, 0, 5)
-	if run.ParentRunID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrParentRunID, run.ParentRunID))
+	kvs := runScope(run)
+	attrs := make([]otellog.KeyValue, 0, len(kvs))
+	for _, kv := range kvs {
+		attrs = append(attrs, otellog.String(kv.key, kv.value))
 	}
-	if run.TaskID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrTaskID, run.TaskID))
-	}
-	if run.ConversationID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrConversationID, run.ConversationID))
-	}
-	if tenantID := run.Attributes[telemetry.AttrTenantID]; tenantID != "" {
-		attrs = append(attrs, otellog.String(telemetry.AttrTenantID, tenantID))
-	}
-	return append(attrs, otellog.String(telemetry.AttrEngineKind, engineKind))
+	return attrs
 }
 
 // recordGraphExec records one completed Execute call.

@@ -35,6 +35,10 @@ const (
 	// to restore the terminal and flush state.
 	sessionTerminateGrace   = 2 * time.Second
 	sessionWriteConcurrency = 4
+	// sessionKillTimeout bounds how long Close waits for the process
+	// group to die after SIGKILL. A child that ignores SIGKILL (or a
+	// failed delivery) must not hang the caller forever.
+	sessionKillTimeout = 2 * time.Second
 )
 
 // StartSession launches an already-configured *exec.Cmd as a Session.
@@ -396,7 +400,14 @@ func (s *localSession) Close() error {
 	case <-s.done:
 	default:
 		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group on close failed")
-		<-s.done
+		select {
+		case <-s.done:
+		case <-time.After(sessionKillTimeout):
+			telemetry.Warn(context.Background(),
+				"sandbox: process group did not exit after SIGKILL on close",
+				otellog.String("sandbox.session_id", s.id),
+				otellog.Int("sandbox.pgid", s.pgid))
+		}
 	}
 	s.mu.Lock()
 	ptmx := s.ptmx

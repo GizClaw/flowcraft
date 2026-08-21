@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -227,8 +228,12 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	}
 
 	now := time.Now()
+	cardID, err := newCardID()
+	if err != nil {
+		return "", fmt.Errorf("delegation kanban: generate card id: %w", err)
+	}
 	card := &Card{
-		ID:        newCardID(),
+		ID:        cardID,
 		Producer:  request.Caller,
 		Status:    StatusPending,
 		Task:      &Task{Request: request},
@@ -255,10 +260,15 @@ func (b *Board) Submit(ctx context.Context, request delegation.AsyncRequest) (st
 	b.cards = append(b.cards, card)
 	b.index[card.ID] = card
 	if key := request.Request.IdempotencyKey; key != "" {
+		fingerprint, err := asyncRequestFingerprint(request)
+		if err != nil {
+			b.mu.Unlock()
+			return "", fmt.Errorf("delegation kanban: fingerprint request: %w", err)
+		}
 		b.idempotency[key] = &retainedOperation{
 			id:          card.ID,
 			key:         key,
-			fingerprint: asyncRequestFingerprint(request),
+			fingerprint: fingerprint,
 		}
 	}
 	b.statusCount[StatusPending]++
@@ -289,7 +299,11 @@ func (b *Board) idempotentSubmissionLocked(
 		delete(b.tombstones, retained.id)
 		return "", false, nil
 	}
-	if retained.fingerprint != asyncRequestFingerprint(request) {
+	fingerprint, err := asyncRequestFingerprint(request)
+	if err != nil {
+		return "", false, fmt.Errorf("delegation kanban: fingerprint request: %w", err)
+	}
+	if retained.fingerprint != fingerprint {
 		return "", false, errdefs.Conflictf(
 			"delegation kanban: idempotency key %q was already used for a different request",
 			key,
@@ -346,9 +360,14 @@ func (b *Board) Claim(ctx context.Context) (delegation.Work, error) {
 			if card.Status != StatusPending {
 				continue
 			}
+			leaseToken, err := newLeaseToken()
+			if err != nil {
+				b.mu.Unlock()
+				return delegation.Work{}, fmt.Errorf(
+					"delegation kanban: generate lease token: %w", err)
+			}
 			snapshot := b.claimLocked(card, workSourceConsumer)
 			leaseCtx, cancelLease := context.WithCancel(b.ctx)
-			leaseToken := newLeaseToken()
 			b.leases[card.ID] = lease{token: leaseToken, cancel: cancelLease}
 			b.mu.Unlock()
 			b.afterTransition(snapshot)
@@ -432,7 +451,7 @@ func (b *Board) Complete(
 	case delegation.StatusFailed:
 		card.Status = StatusFailed
 	case delegation.StatusCanceled:
-		card.Status = StatusCancelled
+		card.Status = StatusCanceled
 	}
 	card.Result = &Result{Response: response}
 	snapshot := b.finishTransitionLocked(card, from)
@@ -497,7 +516,7 @@ func (b *Board) Cancel(id, reason string) bool {
 		if card.Status.IsTerminal() {
 			return false
 		}
-		card.Status = StatusCancelled
+		card.Status = StatusCanceled
 		card.Result = &Result{Response: response}
 		return true
 	})
@@ -660,10 +679,17 @@ func (b *Board) retainTerminalLocked(card *Card) {
 	}
 	retained := b.idempotency[key]
 	if key == "" || retained == nil || retained.id != card.ID {
+		fingerprint, err := asyncRequestFingerprint(card.Task.Request)
+		if err != nil {
+			telemetry.WarnErr(b.ctx,
+				"delegation kanban: fingerprint request for retention failed", err,
+				otellog.String("delegation.card", card.ID))
+			return
+		}
 		retained = &retainedOperation{
 			id:          card.ID,
 			key:         key,
-			fingerprint: asyncRequestFingerprint(card.Task.Request),
+			fingerprint: fingerprint,
 		}
 		if key != "" && b.idempotency[key] == nil {
 			b.idempotency[key] = retained
@@ -719,12 +745,14 @@ func (b *Board) runJanitor() {
 	}
 }
 
-func asyncRequestFingerprint(request delegation.AsyncRequest) [sha256.Size]byte {
+func asyncRequestFingerprint(
+	request delegation.AsyncRequest,
+) ([sha256.Size]byte, error) {
 	encoded, err := json.Marshal(request)
 	if err != nil {
-		panic("delegation kanban: fingerprint request: " + err.Error())
+		return [sha256.Size]byte{}, err
 	}
-	return sha256.Sum256(encoded)
+	return sha256.Sum256(encoded), nil
 }
 
 func responseForCard(card *Card) delegation.Response {
@@ -740,20 +768,20 @@ func responseForCard(card *Card) delegation.Response {
 	return delegation.Response{ID: card.ID, Status: status}
 }
 
-func newCardID() string {
+func newCardID() (string, error) {
 	var bytes [16]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
-		panic("delegation kanban: generate card id: " + err.Error())
+		return "", err
 	}
-	return hex.EncodeToString(bytes[:])
+	return hex.EncodeToString(bytes[:]), nil
 }
 
-func newLeaseToken() string {
+func newLeaseToken() (string, error) {
 	var bytes [16]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
-		panic("delegation kanban: generate lease token: " + err.Error())
+		return "", err
 	}
-	return hex.EncodeToString(bytes[:])
+	return hex.EncodeToString(bytes[:]), nil
 }
 
 var (
