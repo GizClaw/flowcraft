@@ -642,7 +642,13 @@ func (s *LocalService) complete(id, leaseToken string, response Response) error 
 		}
 		errs = append(errs, err)
 		if attempt+1 < completeMaxAttempts {
-			time.Sleep(retryDelay(attempt))
+			select {
+			case <-s.workerCtx.Done():
+				return fmt.Errorf(
+					"local delegation: complete work %q: %w",
+					id, errors.Join(errs...))
+			case <-time.After(retryDelay(attempt)):
+			}
 		}
 	}
 	return fmt.Errorf("local delegation: complete work %q: %w", id, errors.Join(errs...))
