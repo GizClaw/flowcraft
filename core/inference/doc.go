@@ -18,5 +18,7 @@
 //
 // Realtime — the fourth workload — is reserved in the operation enum and
 // field ledger but has no request/session surface yet; it lands in a later
-// milestone.
+// milestone. When implemented it plugs in as an OpenRealtime entry on
+// inference.Openers and an AttemptPhaseOpen route path in inference/route;
+// until then providers must not advertise realtime operations.
 package inference
