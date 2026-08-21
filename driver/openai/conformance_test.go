@@ -506,7 +506,7 @@ func TestConformanceImageCompiler(t *testing.T) {
 				Kind:  inference.UnsupportedFeature,
 			},
 			{
-				Name: "size outside the enum",
+				Name: "size outside the gpt-image-2 resolution rules",
 				Request: func() inference.GenerateRequest {
 					request := imageRequest()
 					request.Input.Content.Intent.Image.Size = &media.ImageSize{
