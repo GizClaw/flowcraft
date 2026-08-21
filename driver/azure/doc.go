@@ -5,7 +5,9 @@
 //
 //   - Generate: Responses API over chat deployments, unary + SSE stream.
 //   - Embed: embeddings deployments.
-//   - Image: gpt-image generation deployments, unary only.
+//   - Image: gpt-image generation and image-to-image edits, unary only;
+//     inline reference images route to images/edits, and the image_options
+//     extension carries a mask for local inpainting.
 //   - Audio generation: speech deployments, unary + raw byte stream.
 //
 // Transcription is intentionally absent: core/inference does not expose the
