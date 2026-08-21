@@ -15,9 +15,11 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"github.com/creack/pty"
 	"github.com/rs/xid"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const (
@@ -106,7 +108,10 @@ func StartSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session
 		// ctx kill — the session lives until Terminate/Close.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
-			_ = stdin.Close()
+			if cerr := stdin.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "sandbox: close stdin pipe after start failure", cerr,
+					otellog.String("sandbox.session_id", s.id))
+			}
 			return nil, classifyStartError(cmd.Path, err)
 		}
 		s.stdin = stdin
@@ -390,7 +395,7 @@ func (s *localSession) Close() error {
 	select {
 	case <-s.done:
 	default:
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group on close failed")
 		<-s.done
 	}
 	s.mu.Lock()
@@ -398,14 +403,20 @@ func (s *localSession) Close() error {
 	s.ptmx = nil
 	s.mu.Unlock()
 	if ptmx != nil {
-		_ = ptmx.Close()
+		if err := ptmx.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "sandbox: close pty master failed", err,
+				otellog.String("sandbox.session_id", s.id))
+		}
 	}
 	s.mu.Lock()
 	stdin := s.stdin
 	s.stdin = nil
 	s.mu.Unlock()
 	if stdin != nil && stdin != ptmx {
-		_ = stdin.Close()
+		if err := stdin.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "sandbox: close session stdin failed", err,
+				otellog.String("sandbox.session_id", s.id))
+		}
 	}
 	s.out.close()
 	return nil
@@ -431,10 +442,10 @@ func (s *localSession) timeoutKill() {
 // bounded by ctx.
 func (s *localSession) signal(ctx context.Context, force bool) error {
 	if force {
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group failed")
 		return nil
 	}
-	_ = syscall.Kill(-s.pgid, syscall.SIGTERM)
+	s.killGroup(syscall.SIGTERM, "sandbox: SIGTERM process group failed")
 
 	grace := sessionTerminateGrace
 	if deadline, ok := ctx.Deadline(); ok {
@@ -443,7 +454,7 @@ func (s *localSession) signal(ctx context.Context, force bool) error {
 		}
 	}
 	if grace <= 0 {
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group after grace failed")
 		return ctx.Err()
 	}
 	timer := time.NewTimer(grace)
@@ -452,11 +463,23 @@ func (s *localSession) signal(ctx context.Context, force bool) error {
 	case <-s.done:
 		return nil
 	case <-timer.C:
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group on grace timeout failed")
 		return nil
 	case <-ctx.Done():
-		_ = syscall.Kill(-s.pgid, syscall.SIGKILL)
+		s.killGroup(syscall.SIGKILL, "sandbox: SIGKILL process group on cancel failed")
 		return ctx.Err()
+	}
+}
+
+// killGroup delivers sig to the process group and leaves a failed
+// delivery visible to telemetry. Kill failures during teardown are
+// best-effort by contract (the child may already be gone), so they are
+// never propagated to callers.
+func (s *localSession) killGroup(sig syscall.Signal, msg string) {
+	if err := syscall.Kill(-s.pgid, sig); err != nil {
+		telemetry.WarnErr(context.Background(), msg, err,
+			otellog.String("sandbox.session_id", s.id),
+			otellog.Int("sandbox.pgid", s.pgid))
 	}
 }
 
@@ -473,7 +496,10 @@ func (s *localSession) reap() {
 	s.ptmx = nil
 	s.mu.Unlock()
 	if ptmx != nil {
-		_ = ptmx.Close()
+		if err := ptmx.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "sandbox: close pty after reap failed", err,
+				otellog.String("sandbox.session_id", s.id))
+		}
 	}
 	// The pty copier may still hold bytes read before the child's last
 	// write flushed; wait for it so EOF is never reported early.

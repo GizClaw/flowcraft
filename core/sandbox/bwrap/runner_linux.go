@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/sandbox/bwrap/internal/bridge"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils/net"
 	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
 )
@@ -208,7 +209,7 @@ func (r *Runner) spawnProcess(
 		}
 		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
 		if err != nil {
-			_ = proxy.Close()
+			closeProxy(ctx, proxy)
 			return nil, errdefs.Internalf("bwrap: write CA bundle: %v", err)
 		}
 		if spec.Opts.Env.Inject == nil {
@@ -226,9 +227,7 @@ func (r *Runner) spawnProcess(
 
 	flags, err := buildFlags(spec.Opts, os.Environ())
 	if err != nil {
-		if proxy != nil {
-			_ = proxy.Close()
-		}
+		closeProxy(ctx, proxy)
 		abortBundle()
 		return nil, err
 	}
@@ -239,9 +238,7 @@ func (r *Runner) spawnProcess(
 	}
 	for _, path := range spec.Opts.Net.UnixSockets {
 		if _, statErr := os.Stat(path); statErr != nil {
-			if proxy != nil {
-				_ = proxy.Close()
-			}
+			closeProxy(ctx, proxy)
 			abortBundle()
 			return nil, errdefs.NotFoundf(
 				"bwrap: allowed unix socket %q does not exist: %v", path, statErr)
@@ -253,9 +250,7 @@ func (r *Runner) spawnProcess(
 	if proxyMode {
 		exe, err := os.Executable()
 		if err != nil {
-			if proxy != nil {
-				_ = proxy.Close()
-			}
+			closeProxy(ctx, proxy)
 			abortBundle()
 			return nil, errdefs.Internalf(
 				"bwrap: resolve host binary for in-netns bridge: %v", err)
@@ -291,15 +286,13 @@ func (r *Runner) spawnProcess(
 
 	sess, err := sandbox.StartSession(ctx, spec, c)
 	if err != nil {
-		if proxy != nil {
-			_ = proxy.Close()
-		}
+		closeProxy(ctx, proxy)
 		abortBundle()
 		return nil, err
 	}
 	if proxy != nil {
 		cleanup := &sessionCleanup{cleanup: func() {
-			_ = proxy.Close()
+			closeProxy(context.Background(), proxy)
 			abortBundle()
 		}}
 		go func() {
@@ -309,6 +302,18 @@ func (r *Runner) spawnProcess(
 		return &sessionHandle{Session: sess, cleanup: cleanup}, nil
 	}
 	return sess, nil
+}
+
+// closeProxy best-effort closes the enforcement proxy, leaving the
+// error visible to telemetry. It is nil-safe for uniform use on every
+// spawnProcess teardown path.
+func closeProxy(ctx context.Context, proxy *net.Proxy) {
+	if proxy == nil {
+		return
+	}
+	if err := proxy.Close(); err != nil {
+		telemetry.WarnErr(ctx, "bwrap: close enforcement proxy failed", err)
+	}
 }
 
 // sessionHandle keeps a core Session's side resources (the host

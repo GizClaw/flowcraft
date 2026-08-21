@@ -16,6 +16,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
 )
@@ -180,7 +181,7 @@ func (r *Runner) spawnProcess(
 		}
 		addr, ok := proxy.Addr().(*net.TCPAddr)
 		if !ok {
-			_ = proxy.Close()
+			closeProxy(ctx, proxy)
 			return nil, errdefs.Internalf(
 				"seatbelt: proxy bound %T, want TCP loopback", proxy.Addr())
 		}
@@ -196,7 +197,7 @@ func (r *Runner) spawnProcess(
 		}
 		bundlePath, bundleCleanup, err = mitm.WriteBundle(proxy.CAPEM())
 		if err != nil {
-			_ = proxy.Close()
+			closeProxy(ctx, proxy)
 			return nil, errdefs.Internalf("seatbelt: write CA bundle: %v", err)
 		}
 		if spec.Opts.Env.Inject == nil {
@@ -214,9 +215,7 @@ func (r *Runner) spawnProcess(
 
 	profile, err := buildProfile(r.writable, spec.Opts.Net, proxyPort)
 	if err != nil {
-		if proxy != nil {
-			_ = proxy.Close()
-		}
+		closeProxy(ctx, proxy)
 		abortBundle()
 		return nil, err
 	}
@@ -238,15 +237,13 @@ func (r *Runner) spawnProcess(
 
 	sess, err := sandbox.StartSession(ctx, spec, c)
 	if err != nil {
-		if proxy != nil {
-			_ = proxy.Close()
-		}
+		closeProxy(ctx, proxy)
 		abortBundle()
 		return nil, err
 	}
 	if proxy != nil {
 		cleanup := &sessionCleanup{cleanup: func() {
-			_ = proxy.Close()
+			closeProxy(context.Background(), proxy)
 			abortBundle()
 		}}
 		go func() {
@@ -256,6 +253,18 @@ func (r *Runner) spawnProcess(
 		return &sessionHandle{Session: sess, cleanup: cleanup}, nil
 	}
 	return sess, nil
+}
+
+// closeProxy best-effort closes the enforcement proxy, leaving the
+// error visible to telemetry. It is nil-safe for uniform use on every
+// spawnProcess teardown path.
+func closeProxy(ctx context.Context, proxy *corenet.Proxy) {
+	if proxy == nil {
+		return
+	}
+	if err := proxy.Close(); err != nil {
+		telemetry.WarnErr(ctx, "seatbelt: close enforcement proxy failed", err)
+	}
 }
 
 // sessionHandle keeps a core Session's side resources alive.

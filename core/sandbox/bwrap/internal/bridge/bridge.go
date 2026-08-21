@@ -165,12 +165,25 @@ func acceptLoop(ln net.Listener, sock string) {
 // forward pipes one TCP connection to one UDS connection (the host
 // proxy treats each UDS connection as one client connection).
 func forward(tcp net.Conn, sock string) {
-	defer func() { _ = tcp.Close() }()
+	defer func() {
+		if err := tcp.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close tcp: %v\n", err)
+		}
+	}()
 	uds, err := net.Dial("unix", sock)
 	if err != nil {
 		return
 	}
-	defer func() { _ = uds.Close() }()
-	go func() { _, _ = io.Copy(uds, tcp); _ = uds.Close() }()
+	defer func() {
+		if err := uds.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close uds: %v\n", err)
+		}
+	}()
+	go func() {
+		_, _ = io.Copy(uds, tcp)
+		if err := uds.Close(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bridge: close uds after copy: %v\n", err)
+		}
+	}()
 	_, _ = io.Copy(tcp, uds)
 }
