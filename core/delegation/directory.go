@@ -18,6 +18,13 @@ type LocalDirectory struct {
 	targets []Target
 	byID    map[string]Target
 	lookup  map[string]*agent.Agent
+
+	// dynamic is the live view of runtime-registered targets merged
+	// with the deployment snapshot; frozen replaces it once the
+	// generation retires so in-flight delegations keep resolving the
+	// exact instances that generation served.
+	dynamic TargetSource
+	frozen  map[string]*agent.Agent
 }
 
 // Deployment is the minimal read-only deployment view needed by
@@ -25,6 +32,38 @@ type LocalDirectory struct {
 type Deployment interface {
 	Agent(id string) (*agent.Agent, bool)
 	AgentNames() []string
+}
+
+// TargetSource is the live view of dynamically registered targets that
+// a directory merges with its deployment snapshot. The runtime's agent
+// registry implements it, so registration and unregistration take
+// effect without re-binding the directory. Implementations must be safe
+// for concurrent use.
+type TargetSource interface {
+	// Dynamic resolves one dynamic target by id. Deployment targets
+	// are served from the directory's own snapshot and never returned
+	// here.
+	Dynamic(id string) (*agent.Agent, bool)
+	// DynamicNames lists the dynamic target ids.
+	DynamicNames() []string
+}
+
+// TargetViewBinder is implemented by directory resources that want the
+// runtime's live target source attached. The runtime calls it once per
+// generation before the swap.
+type TargetViewBinder interface {
+	// BindTargetSource attaches the live dynamic source. It is
+	// set-once: a second bind returns a Conflict error.
+	BindTargetSource(source TargetSource) error
+}
+
+// TargetViewFreezer is implemented by directory resources that must pin
+// their dynamic view when the generation retires, so in-flight
+// delegations keep resolving the instances that generation served.
+type TargetViewFreezer interface {
+	// FreezeTargets replaces the live dynamic source with a fixed
+	// instance set. Idempotent.
+	FreezeTargets(instances map[string]*agent.Agent)
 }
 
 // NewDirectory creates an unbound directory.
@@ -67,14 +106,7 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 		if _, duplicate := byID[id]; duplicate {
 			return errdefs.Conflictf("local delegation directory: duplicate target id %q", id)
 		}
-		target := Target{
-			ID:          id,
-			Description: instance.Card.Description,
-			Modes:       []Mode{ModeSync, ModeAsync},
-		}
-		if instance.Card.Name != "" {
-			target.Metadata = map[string]string{"name": instance.Card.Name}
-		}
+		target := targetFromAgent(name, instance)
 		targets = append(targets, target)
 		byID[id] = target
 		lookup[id] = instance
@@ -85,6 +117,52 @@ func (d *LocalDirectory) Bind(result Deployment) error {
 	d.lookup = lookup
 	d.bound = true
 	return nil
+}
+
+// BindTargetSource attaches the live dynamic target view. It is
+// set-once: binding twice returns a Conflict error.
+func (d *LocalDirectory) BindTargetSource(source TargetSource) error {
+	if d == nil {
+		return errdefs.Validationf("local delegation directory: nil receiver")
+	}
+	if isNilInterface(source) {
+		return errdefs.Validationf("local delegation directory: nil target source")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.dynamic != nil {
+		return errdefs.Conflictf("local delegation directory: target source already bound")
+	}
+	d.dynamic = source
+	return nil
+}
+
+// FreezeTargets replaces the live dynamic source with a fixed instance
+// set. Idempotent; used when a generation retires.
+func (d *LocalDirectory) FreezeTargets(instances map[string]*agent.Agent) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.frozen = instances
+	d.dynamic = nil
+}
+
+func targetFromAgent(name string, instance *agent.Agent) Target {
+	id := instance.ID
+	if id == "" {
+		id = name
+	}
+	target := Target{
+		ID:          id,
+		Description: instance.Card.Description,
+		Modes:       []Mode{ModeSync, ModeAsync},
+	}
+	if instance.Card.Name != "" {
+		target.Metadata = map[string]string{"name": instance.Card.Name}
+	}
+	return target
 }
 
 // BindDeployment implements resource.DeploymentBinder: the directory
@@ -116,7 +194,7 @@ func (d *LocalDirectory) List(context.Context) ([]Target, error) {
 	for i, target := range d.targets {
 		out[i] = cloneTarget(target)
 	}
-	return out, nil
+	return append(out, d.dynamicTargetsLocked()...), nil
 }
 
 // Get returns one target by id.
@@ -128,6 +206,9 @@ func (d *LocalDirectory) Get(_ context.Context, id string) (Target, error) {
 	defer d.mu.RUnlock()
 	if !d.bound {
 		return Target{}, errdefs.NotAvailablef("local delegation directory: not bound")
+	}
+	if target, ok := d.dynamicTargetLocked(id); ok {
+		return cloneTarget(target), nil
 	}
 	target, ok := d.byID[id]
 	if !ok {
@@ -146,6 +227,15 @@ func (d *LocalDirectory) Lookup(_ context.Context, id string) (*agent.Agent, err
 	if !d.bound {
 		return nil, errdefs.NotAvailablef("local delegation directory: not bound")
 	}
+	if d.frozen != nil {
+		if instance, ok := d.frozen[id]; ok && instance != nil {
+			return instance, nil
+		}
+	} else if d.dynamic != nil {
+		if instance, ok := d.dynamic.Dynamic(id); ok && instance != nil {
+			return instance, nil
+		}
+	}
 	instance, ok := d.lookup[id]
 	if !ok {
 		return nil, TargetNotFound(id)
@@ -154,6 +244,67 @@ func (d *LocalDirectory) Lookup(_ context.Context, id string) (*agent.Agent, err
 		return nil, errdefs.Internalf("local delegation directory: target %q has no deploy instance", id)
 	}
 	return instance, nil
+}
+
+// dynamicTargetsLocked lists the merged dynamic targets: the frozen set
+// when the generation retired, otherwise the live source. Deployment
+// ids are excluded so the same agent is never listed twice.
+func (d *LocalDirectory) dynamicTargetsLocked() []Target {
+	if d.frozen != nil {
+		names := make([]string, 0, len(d.frozen))
+		for name := range d.frozen {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		out := make([]Target, 0, len(names))
+		for _, name := range names {
+			instance := d.frozen[name]
+			if instance == nil {
+				continue
+			}
+			if _, dup := d.byID[targetFromAgent(name, instance).ID]; dup {
+				continue
+			}
+			out = append(out, targetFromAgent(name, instance))
+		}
+		return out
+	}
+	if d.dynamic == nil {
+		return nil
+	}
+	names := d.dynamic.DynamicNames()
+	out := make([]Target, 0, len(names))
+	for _, name := range names {
+		instance, ok := d.dynamic.Dynamic(name)
+		if !ok || instance == nil {
+			continue
+		}
+		target := targetFromAgent(name, instance)
+		if _, dup := d.byID[target.ID]; dup {
+			continue
+		}
+		out = append(out, target)
+	}
+	return out
+}
+
+// dynamicTargetLocked resolves one dynamic target: frozen first, then
+// the live source.
+func (d *LocalDirectory) dynamicTargetLocked(id string) (Target, bool) {
+	if d.frozen != nil {
+		if instance, ok := d.frozen[id]; ok && instance != nil {
+			return targetFromAgent(id, instance), true
+		}
+		return Target{}, false
+	}
+	if d.dynamic == nil {
+		return Target{}, false
+	}
+	instance, ok := d.dynamic.Dynamic(id)
+	if !ok || instance == nil {
+		return Target{}, false
+	}
+	return targetFromAgent(id, instance), true
 }
 
 func cloneTarget(target Target) Target {
