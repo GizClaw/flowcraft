@@ -1,8 +1,12 @@
 package mitm
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // systemBundleCandidates are the common system CA bundle locations on
@@ -25,22 +29,39 @@ func WriteBundle(caPEM []byte) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
+	cleanup := func() {
+		if err := os.RemoveAll(dir); err != nil {
+			telemetry.WarnErr(context.Background(),
+				"mitm: remove CA bundle temp dir failed", err)
+		}
+	}
 	path := filepath.Join(dir, "ca-bundle.pem")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		cleanup()
 		return "", nil, err
 	}
+	var writeErr error
 	for _, candidate := range systemBundleCandidates {
 		data, readErr := os.ReadFile(candidate)
 		if readErr != nil {
 			continue
 		}
-		_, _ = f.Write(data)
-		_, _ = f.Write([]byte("\n"))
+		if _, err := f.Write(data); err != nil && writeErr == nil {
+			writeErr = err
+		}
+		if _, err := f.Write([]byte("\n")); err != nil && writeErr == nil {
+			writeErr = err
+		}
 	}
-	_, _ = f.Write(caPEM)
+	if _, err := f.Write(caPEM); err != nil && writeErr == nil {
+		writeErr = err
+	}
+	if writeErr != nil {
+		_ = f.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("mitm: write CA bundle: %w", writeErr)
+	}
 	if err := f.Close(); err != nil {
 		cleanup()
 		return "", nil, err

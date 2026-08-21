@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,9 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 	"golang.org/x/net/proxy"
 )
 
@@ -203,12 +207,21 @@ func Start(cfg ProxyConfig) (*Proxy, error) {
 		path := filepath.Join(dir, "proxy.sock")
 		ln, err := net.Listen("unix", path)
 		if err != nil {
-			_ = os.RemoveAll(dir)
+			if rerr := os.RemoveAll(dir); rerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: remove temp dir after listen failure", rerr)
+			}
 			return nil, fmt.Errorf("netproxy: listen: %w", err)
 		}
 		if err := os.Chmod(path, 0o600); err != nil {
-			_ = ln.Close()
-			_ = os.RemoveAll(dir)
+			if cerr := ln.Close(); cerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: close listener after chmod failure", cerr)
+			}
+			if rerr := os.RemoveAll(dir); rerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"netproxy: remove temp dir after chmod failure", rerr)
+			}
 			return nil, fmt.Errorf("netproxy: chmod socket: %w", err)
 		}
 		p.ln = ln
@@ -216,7 +229,11 @@ func Start(cfg ProxyConfig) (*Proxy, error) {
 		p.path = path
 	}
 	p.srv = &http.Server{Handler: p}
-	go func() { _ = p.srv.Serve(p.ln) }()
+	go func() {
+		if err := p.srv.Serve(p.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			telemetry.WarnErr(context.Background(), "netproxy: serve failed", err)
+		}
+	}()
 	return p, nil
 }
 
@@ -241,11 +258,19 @@ func (p *Proxy) CAPEM() []byte {
 // Close stops the server, closes the listener, and removes the temp
 // directory (including the socket file) when one was created.
 func (p *Proxy) Close() error {
-	_ = p.srv.Close()
-	_ = p.ln.Close()
+	if err := p.srv.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		telemetry.WarnErr(context.Background(), "netproxy: close server failed", err)
+	}
+	if err := p.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		telemetry.WarnErr(context.Background(), "netproxy: close listener failed", err)
+	}
 	p.transport.CloseIdleConnections()
 	if p.dir != "" {
-		return os.RemoveAll(p.dir)
+		err := os.RemoveAll(p.dir)
+		if err != nil {
+			telemetry.WarnErr(context.Background(), "netproxy: remove temp dir failed", err)
+		}
+		return err
 	}
 	return nil
 }
@@ -287,7 +312,11 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close upstream response body failed", err)
+		}
+	}()
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
@@ -320,7 +349,11 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = client.Close() }()
+	defer func() {
+		if err := client.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close hijacked client failed", err)
+		}
+	}()
 
 	if _, err := client.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		return
@@ -336,8 +369,20 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = target.Close() }()
-	go func() { _, _ = io.Copy(target, client); _ = target.Close() }()
+	defer func() {
+		if err := target.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close tunnel target failed", err)
+		}
+	}()
+	go func() {
+		if _, err := io.Copy(target, client); err != nil {
+			telemetry.Debug(r.Context(), "netproxy: tunnel upstream copy ended with error",
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		}
+		if err := target.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "netproxy: close tunnel target after copy failed", err)
+		}
+	}()
 	_, _ = io.Copy(client, target)
 }
 
@@ -447,17 +492,23 @@ func (p *Proxy) dialTarget(ctx context.Context, hostport string) (net.Conn, erro
 			}
 			req += "\r\n\r\n"
 			if _, err := io.WriteString(up, req); err != nil {
-				_ = up.Close()
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after write failure", cerr)
+				}
 				return nil, err
 			}
 			br := bufio.NewReader(up)
 			resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
 			if err != nil {
-				_ = up.Close()
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after response failure", cerr)
+				}
 				return nil, err
 			}
 			if resp.StatusCode != http.StatusOK {
-				_ = up.Close()
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after refusal", cerr)
+				}
 				return nil, fmt.Errorf("netproxy: upstream refused CONNECT: %d", resp.StatusCode)
 			}
 			return up, nil

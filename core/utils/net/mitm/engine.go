@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"golang.org/x/net/http2"
 )
@@ -121,7 +122,11 @@ func (e *Engine) Serve(client net.Conn, serverName, dialHostport string) error {
 	if err := tlsConn.Handshake(); err != nil {
 		return fmt.Errorf("mitm: client handshake: %w", err)
 	}
-	defer func() { _ = tlsConn.Close() }()
+	defer func() {
+		if err := tlsConn.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "mitm: close client tls conn failed", err)
+		}
+	}()
 
 	transport := e.newTransport(serverName, dialHostport)
 	defer transport.CloseIdleConnections()
@@ -185,7 +190,11 @@ func (e *Engine) serveH2(w http.ResponseWriter, r *http.Request, transport *http
 		http.Error(w, "mitm: upstream request failed", http.StatusBadGateway)
 		return
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			telemetry.WarnErr(r.Context(), "mitm: close upstream response body failed", err)
+		}
+	}()
 	copyResponse(w, resp)
 }
 
@@ -212,12 +221,16 @@ func (e *Engine) forward(req *http.Request, transport *http.Transport, serverNam
 	}
 	respInfo, err := e.inspectResponse(resp)
 	if err != nil {
-		_ = resp.Body.Close()
+		if cerr := resp.Body.Close(); cerr != nil {
+			telemetry.WarnErr(context.Background(), "mitm: close inspected response body failed", cerr)
+		}
 		return nil, err
 	}
 	if e.hooks != nil && respInfo != nil {
 		if err := e.hooks.OnResponse(context.Background(), respInfo); err != nil {
-			_ = resp.Body.Close()
+			if cerr := resp.Body.Close(); cerr != nil {
+				telemetry.WarnErr(context.Background(), "mitm: close response body after hook failure", cerr)
+			}
 			return nil, errBlocked
 		}
 	}
@@ -325,7 +338,9 @@ func (e *Engine) dialTLS(ctx context.Context, hostport, serverName string) (net.
 		MinVersion: tls.VersionTLS12,
 	})
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		_ = raw.Close()
+		if cerr := raw.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "mitm: close upstream conn after handshake failure", cerr)
+		}
 		return nil, fmt.Errorf("mitm: upstream handshake: %w", err)
 	}
 	return tlsConn, nil
