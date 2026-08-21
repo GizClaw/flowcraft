@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,6 +241,82 @@ func TestRuntimeReloadRetiredDirectoryFrozen(t *testing.T) {
 	}
 	if len(newTargets) != 3 || newTargets[1].ID != "dyn" || newTargets[2].ID != "zeta" {
 		t.Fatalf("new List after reload = %+v, want [bot dyn zeta]", newTargets)
+	}
+}
+
+// failingBusFactory builds a working bus for the first generation and a
+// closed bus (Subscribe always fails) for every later generation, so a
+// reload's router.AddBus fails after the swap-point freeze — the one
+// rollback path reachable through the public API.
+type failingBusFactory struct {
+	built atomic.Int64
+}
+
+func (*failingBusFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: testEventKind, Impl: testEventImpl}
+}
+
+func (f *failingBusFactory) New(context.Context, resource.Input) (any, error) {
+	if f.built.Add(1) == 1 {
+		return event.NewMemoryBus(), nil
+	}
+	bus := event.NewMemoryBus()
+	_ = bus.Close()
+	return bus, nil
+}
+
+func TestRuntimeReloadRollbackUnfreezesDirectory(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	reg := resource.NewRegistry()
+	reg.MustRegister(testEngineFactory{engine: simpleRunEngine()})
+	reg.MustRegister(&failingBusFactory{})
+	reg.MustRegister(delegation.NewDirectoryFactory())
+	app, err := NewBuilder(reg).Build(ctx, directoryDoc(t, ""))
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Close() })
+
+	value, ok := app.Resource("directory")
+	directory, typeOK := value.(*delegation.LocalDirectory)
+	if !ok || !typeOK {
+		t.Fatalf("directory resource = %v, want *delegation.LocalDirectory", value)
+	}
+	if _, err := app.RegisterAgent(ctx, "dyn", dynamicDefinition("Dyn")); err != nil {
+		t.Fatalf("RegisterAgent: %v", err)
+	}
+	// Give the router an attachment so AddBus actually subscribes on
+	// the new generation's bus and hits the closed-bus failure.
+	if _, err := app.router.Attach(ctx, event.Pattern("test.>"),
+		event.SinkFunc(func(context.Context, event.Envelope) error { return nil })); err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+
+	// The new generation's bus cannot be subscribed, so AddBus fails
+	// after the swap-point freeze and must roll the directory back to
+	// the live view.
+	if _, reloadErr := app.Reload(ctx, directoryDoc(t, "")); reloadErr == nil {
+		t.Fatal("Reload with failing bus succeeded, want error")
+	}
+	if app.current.id != 1 {
+		t.Fatalf("generation id after failed reload = %d, want 1", app.current.id)
+	}
+
+	if _, err := app.RegisterAgent(ctx, "zeta", dynamicDefinition("Zeta")); err != nil {
+		t.Fatalf("RegisterAgent(zeta) after failed reload: %v", err)
+	}
+	targets, err := directory.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(targets) != 3 || targets[0].ID != "bot" ||
+		targets[1].ID != "dyn" || targets[2].ID != "zeta" {
+		t.Fatalf("List after failed reload = %+v, want [bot dyn zeta]", targets)
+	}
+	if _, err := directory.Lookup(ctx, "zeta"); err != nil {
+		t.Fatalf("Lookup(zeta) after failed reload: %v", err)
 	}
 }
 
