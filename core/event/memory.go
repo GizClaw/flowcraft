@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
-	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -482,20 +482,31 @@ func (b *MemoryBus) fireObserver(ctx context.Context, env Envelope, delivers []d
 }
 
 func summarizeDropReasons(drops []dropCb) string {
-	seen := make(map[DropReason]int, len(drops))
+	var counts [3]int
 	for _, d := range drops {
-		seen[d.reason]++
+		idx := int(d.reason)
+		if idx >= 0 && idx < len(counts) {
+			counts[idx]++
+		}
 	}
-	keys := make([]DropReason, 0, len(seen))
-	for reason := range seen {
-		keys = append(keys, reason)
+	var b strings.Builder
+	first := true
+	write := func(label string, n int) {
+		if n == 0 {
+			return
+		}
+		if !first {
+			b.WriteByte(',')
+		}
+		first = false
+		b.WriteString(label)
+		b.WriteByte('=')
+		b.WriteString(strconv.Itoa(n))
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
-	var parts []string
-	for _, reason := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%d", reason, seen[reason]))
-	}
-	return strings.Join(parts, ",")
+	write(DropReasonBufferFull.String(), counts[DropReasonBufferFull])
+	write(DropReasonClosed.String(), counts[DropReasonClosed])
+	write(DropReasonSampled.String(), counts[DropReasonSampled])
+	return b.String()
 }
 
 // Subscribe creates a subscription. pattern is validated; ctx cancellation
