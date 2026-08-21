@@ -305,15 +305,24 @@ func transportEmbed(
 	client *dashClient,
 ) inference.Transport[embedWire, embedRaw] {
 	return func(ctx context.Context, wire embedWire) (embedRaw, error) {
+		var raw embedRaw
+		var err error
 		switch wire.Shape {
 		case embedShapeText:
-			return transportEmbedText(ctx, client, wire)
+			raw, err = transportEmbedText(ctx, client, wire)
 		case embedShapeIndependent:
-			return transportEmbedIndependent(ctx, client, wire)
+			raw, err = transportEmbedIndependent(ctx, client, wire)
 		case embedShapeFusion:
-			return transportEmbedFusion(ctx, client, wire)
+			raw, err = transportEmbedFusion(ctx, client, wire)
+		default:
+			err = fmt.Errorf("qwen: unknown embed shape %d", wire.Shape)
 		}
-		return embedRaw{}, fmt.Errorf("qwen: unknown embed shape %d", wire.Shape)
+		if err != nil {
+			logInferenceCall(ctx, "embed", wire.Model, err, "", "")
+			return raw, err
+		}
+		logInferenceCall(ctx, "embed", wire.Model, nil, raw.requestID, "")
+		return raw, nil
 	}
 }
 

@@ -110,7 +110,12 @@ func (c *dashClient) request(
 		return nil, fmt.Errorf("qwen: post %s: %w", path, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		defer func() { _ = resp.Body.Close() }()
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				telemetry.WarnErr(ctx, "qwen: close error response body failed", cerr,
+					otellog.String(telemetry.AttrLLMProvider, providerID))
+			}
+		}()
 		var failure struct {
 			Code      string `json:"code"`
 			Message   string `json:"message"`
@@ -152,7 +157,12 @@ func (c *dashClient) postJSON(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		if cerr := resp.Body.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "qwen: close response body failed", cerr,
+				otellog.String(telemetry.AttrLLMProvider, providerID))
+		}
+	}()
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return fmt.Errorf("qwen: decode %s response: %w", path, err)
 	}

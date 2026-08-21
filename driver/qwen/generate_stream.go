@@ -11,6 +11,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // streamFragment is the raw stream event: one indivisible delta extracted
@@ -50,7 +53,7 @@ const (
 
 // decodeStreamFragment maps one raw fragment onto one canonical event.
 func decodeStreamFragment(
-	_ context.Context,
+	ctx context.Context,
 	fragment streamFragment,
 ) (inference.GenerateStreamEvent, error) {
 	switch fragment.kind {
@@ -87,6 +90,7 @@ func decodeStreamFragment(
 			FinishReason: finishReason(fragment.finish),
 			RequestID:    fragment.requestID,
 		}
+		logInferenceStreamEnd(ctx, "generate", fragment.requestID)
 		if fragment.usage != nil {
 			usage := fragment.usage.canonical()
 			event.Usage = &usage
@@ -120,10 +124,12 @@ func transportGenerateStream(
 		defaultPreserveThinking(&wire)
 		body, err := client.postSSE(ctx, wire.Path, wire)
 		if err != nil {
+			logInferenceStream(ctx, "generate", wire.Model, err, "")
 			return nil, err
 		}
 		scanner := bufio.NewScanner(body)
 		scanner.Buffer(make([]byte, 0, 1<<20), 16<<20)
+		logInferenceStream(ctx, "generate", wire.Model, nil, "")
 		return &sseStream{body: body, scanner: scanner}, nil
 	}
 }
@@ -139,7 +145,10 @@ func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
 	go func() {
 		select {
 		case <-ctx.Done():
-			_ = s.closeBody()
+			if cerr := s.closeBody(); cerr != nil {
+				telemetry.WarnErr(ctx, "qwen: close sse body on cancel failed", cerr,
+					otellog.String(telemetry.AttrLLMProvider, providerID))
+			}
 		case <-stopWatch:
 		}
 	}()
@@ -160,9 +169,11 @@ func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return streamFragment{}, errdefs.FromContext(ctxErr)
 				}
-				return streamFragment{}, fmt.Errorf(
+				readErr := fmt.Errorf(
 					"qwen: read event stream: %w", err,
 				)
+				logInferenceStream(ctx, "generate", "", readErr, "")
+				return streamFragment{}, readErr
 			}
 			return streamFragment{}, io.EOF
 		}
@@ -182,6 +193,7 @@ func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
 			s.mu.Lock()
 			s.done = true
 			s.mu.Unlock()
+			logInferenceStream(ctx, "generate", "", err, "")
 			return streamFragment{}, err
 		}
 		s.queue = fragments
