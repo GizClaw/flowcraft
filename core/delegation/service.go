@@ -16,6 +16,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 const (
@@ -664,9 +666,17 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	if err := s.checkDepth(req.Depth); err != nil {
 		return Response{}, err
 	}
-	if _, err := s.directory.Lookup(ctx, req.Request.Target); err != nil {
+	instance, err := s.directory.Lookup(ctx, req.Request.Target)
+	if err != nil {
 		return Response{}, err
 	}
+	telemetry.Info(ctx, "local delegation: run started",
+		otellog.String(telemetry.AttrAgentID, instance.ID),
+		otellog.String(telemetry.AttrDelegationTarget, req.Request.Target),
+		otellog.String(telemetry.AttrDelegationMode, string(req.Request.Mode)),
+		otellog.Int(telemetry.AttrDelegationDepth, req.Depth),
+		otellog.String(telemetry.AttrDelegationCaller, req.Caller),
+	)
 
 	// Identity rule: with no provider and no bound manager the ContextID
 	// stays empty (legacy, fully compatible); with a provider, or once a
@@ -687,7 +697,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		persistent = provider.Persistent()
 	}
 	if manager == nil {
-		return s.runAtLegacy(ctx, req, reuseSlot, key, hasKey)
+		return s.runAtLegacy(ctx, req, reuseSlot, key, hasKey, instance)
 	}
 	if !hasKey {
 		key = session.Key{AgentID: req.Request.Target, ContextID: newContextID()}
@@ -748,12 +758,9 @@ func (s *LocalService) runAtLegacy(
 	reuseSlot bool,
 	key session.Key,
 	hasKey bool,
+	instance *agent.Agent,
 ) (Response, error) {
 	if err := s.checkDepth(req.Depth); err != nil {
-		return Response{}, err
-	}
-	instance, err := s.directory.Lookup(ctx, req.Request.Target)
-	if err != nil {
 		return Response{}, err
 	}
 

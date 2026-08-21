@@ -32,6 +32,10 @@ func TestAttrConstants_StableNames(t *testing.T) {
 		{AttrLLMRequestID, "llm.request.id"},
 		{AttrLLMResponseID, "llm.response.id"},
 		{AttrConversationID, "conversation.id"},
+		{AttrDelegationTarget, "delegation.target"},
+		{AttrDelegationMode, "delegation.mode"},
+		{AttrDelegationDepth, "delegation.depth"},
+		{AttrDelegationCaller, "delegation.caller"},
 		{AttrErrorMessage, "error.message"},
 	}
 	for _, tc := range cases {
@@ -54,6 +58,8 @@ func TestAttrConstants_Unique(t *testing.T) {
 		AttrLLMTotalTokens, AttrLLMCachedInputTokens, AttrLLMCostMicros, AttrLLMLatencyMs,
 		AttrLLMRequestID, AttrLLMResponseID,
 		AttrConversationID, AttrErrorMessage,
+		AttrDelegationTarget, AttrDelegationMode,
+		AttrDelegationDepth, AttrDelegationCaller,
 	}
 	seen := make(map[string]struct{}, len(all))
 	for _, k := range all {

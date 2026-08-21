@@ -14,6 +14,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+	logglobal "go.opentelemetry.io/otel/log/global"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
 
 type testSessionProvider struct {
@@ -511,6 +514,59 @@ func (s *delegationRecordingStore) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.saved
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
+}
+
+func TestRunAtSessionPathEmitsDelegationTelemetry(t *testing.T) {
+	var out lockedBuffer
+	exporter := telemetry.NewPlainTextExporter(&out)
+	provider := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewSimpleProcessor(exporter)))
+	previous := logglobal.GetLoggerProvider()
+	logglobal.SetLoggerProvider(provider)
+	t.Cleanup(func() {
+		logglobal.SetLoggerProvider(previous)
+		_ = provider.Shutdown(context.Background())
+	})
+
+	service, _ := newSessionPathService(t,
+		completedEngine("ok"),
+		&testSessionProvider{contextID: "telemetry-ctx", persistent: true})
+	response, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"local delegation: run started",
+		"agent.id=writer",
+		"delegation.target=writer",
+		"delegation.mode=sync",
+		"delegation.depth=1",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("telemetry output missing %q:\n%s", want, got)
+		}
+	}
 }
 
 func TestRunAtSessionPathEphemeralWritesNoState(t *testing.T) {
