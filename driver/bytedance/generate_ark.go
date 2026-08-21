@@ -309,9 +309,17 @@ func transportGenerate(client *arkruntime.Client) inference.Transport[generateWi
 	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
 		response, err := client.CreateResponses(ctx, wireToArk(wire))
 		if err != nil {
-			return generateRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			return generateRaw{}, classified
 		}
-		return arkToRaw(response)
+		raw, err := arkToRaw(response)
+		if err != nil {
+			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			return generateRaw{}, err
+		}
+		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		return raw, nil
 	}
 }
 

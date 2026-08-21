@@ -167,10 +167,19 @@ func transportEmbed(
 	client *arkruntime.Client,
 ) inference.Transport[embedWire, embedRaw] {
 	return func(ctx context.Context, wire embedWire) (embedRaw, error) {
+		var raw embedRaw
+		var err error
 		if wire.multimodal {
-			return transportEmbedMultimodal(ctx, client, wire)
+			raw, err = transportEmbedMultimodal(ctx, client, wire)
+		} else {
+			raw, err = transportEmbedText(ctx, client, wire)
 		}
-		return transportEmbedText(ctx, client, wire)
+		if err != nil {
+			logInferenceCall(ctx, "embed", wire.model, err, "", "")
+			return raw, err
+		}
+		logInferenceCall(ctx, "embed", wire.model, nil, "", "")
+		return raw, nil
 	}
 }
 

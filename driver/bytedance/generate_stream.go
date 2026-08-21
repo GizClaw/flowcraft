@@ -49,8 +49,11 @@ func transportGenerateStream(
 	) (inference.ProviderStream[streamRaw], error) {
 		reader, err := client.CreateResponsesStream(ctx, wireToArk(wire))
 		if err != nil {
-			return nil, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			return nil, classified
 		}
+		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &responsesStream{
 			reader: reader,
 			parts:  make(map[int64]*streamPart),
@@ -75,7 +78,9 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 			if errors.Is(err, io.EOF) {
 				return streamRaw{}, io.EOF
 			}
-			return streamRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", "", classified, "")
+			return streamRaw{}, classified
 		}
 		if event == nil {
 			continue
@@ -391,7 +396,7 @@ func arkIncompleteFinish(reason string) inference.FinishReason {
 // decodeGenerateStream is pure: streamRaw already carries canonical part
 // indices assigned by the stateful transport.
 func decodeGenerateStream(
-	_ context.Context,
+	ctx context.Context,
 	raw streamRaw,
 ) (inference.GenerateStreamEvent, error) {
 	switch raw.kind {
@@ -427,6 +432,7 @@ func decodeGenerateStream(
 			ResponseID:      raw.responseID,
 			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
+		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage
