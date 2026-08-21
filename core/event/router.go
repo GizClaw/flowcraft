@@ -6,6 +6,9 @@ import (
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // Sink receives one envelope from a Router attachment. Implementations
@@ -151,7 +154,7 @@ func (r *Router) AddBus(bus Bus) error {
 		sub, err := bus.Subscribe(a.ctx, a.pattern, a.subOpts...)
 		if err != nil {
 			for _, bs := range subs {
-				_ = bs.sub.Close()
+				logSubClose(bs.sub)
 			}
 			r.mu.Unlock()
 			return err
@@ -197,7 +200,7 @@ func (r *Router) RemoveBus(bus Bus) error {
 	}
 	r.mu.Unlock()
 	for _, sub := range closed {
-		_ = sub.Close()
+		logSubClose(sub)
 	}
 	return nil
 }
@@ -263,7 +266,7 @@ func (r *Router) Attach(
 		sub, err := bus.Subscribe(ctx, pattern, subOpts...)
 		if err != nil {
 			for _, bs := range subs {
-				_ = bs.sub.Close()
+				logSubClose(bs.sub)
 			}
 			delete(r.attachments, a.id)
 			r.mu.Unlock()
@@ -305,7 +308,7 @@ func (r *Router) Close() error {
 	r.mu.Unlock()
 
 	for _, sub := range subs {
-		_ = sub.Close()
+		logSubClose(sub)
 	}
 	r.wg.Wait()
 	return nil
@@ -322,12 +325,25 @@ func (r *Router) detach(a *routerAttachment, cause error) {
 		a.subs = nil
 		r.mu.Unlock()
 		for _, bs := range subs {
-			_ = bs.sub.Close()
+			logSubClose(bs.sub)
 		}
 		if cause != nil && a.onDetach != nil {
 			a.onDetach(cause)
 		}
 	})
+}
+
+// logSubClose best-effort closes a subscription and leaves a failed
+// close visible to telemetry.
+func logSubClose(sub Subscription) {
+	if sub == nil {
+		return
+	}
+	if err := sub.Close(); err != nil {
+		telemetry.WarnErr(context.Background(),
+			"event router: close subscription failed", err,
+			otellog.String("event.subscription", string(sub.ID())))
+	}
 }
 
 type routerAttachment struct {
