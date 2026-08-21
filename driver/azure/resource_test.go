@@ -1,6 +1,7 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -134,6 +136,78 @@ func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
 		t.Fatalf("DecodeExtensions: %v", err)
 	}
 	if options := extensions[0].(*GenerateOptions); options.ProviderID() != "az-prod" {
+		t.Fatalf("ProviderID = %q, want %q", options.ProviderID(), "az-prod")
+	}
+}
+
+func TestProviderCarriesImageOptionsDecoder(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{"name": "gpt-image-1", "kind": "image", "capabilities": {"outputs": ["image"]}}]
+			},
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	decoder, ok := provider.ExtensionDecoders[extensionImage]
+	if !ok {
+		t.Fatalf("ExtensionDecoders = %#v, want %q", provider.ExtensionDecoders, extensionImage)
+	}
+
+	maskPNG := "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+	extensions, err := inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "azure",
+		ID:       extensionImage,
+		Fields: json.RawMessage(`{
+			"mask": {
+				"kind": "inline",
+				"data": "` + maskPNG + `",
+				"media_type": "image/png"
+			}
+		}`),
+	}}, map[string]inference.ExtensionDecoder{
+		"azure/" + extensionImage: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	options := extensions[0].(*ImageOptions)
+	if options.ProviderID() != "azure" || options.Mask == nil ||
+		options.Mask.Kind() != media.SourceInline ||
+		!bytes.Equal(options.Mask.Bytes(), testPNG) {
+		t.Fatalf("decoded options = %#v", options)
+	}
+
+	value, err = Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "az-prod",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{"name": "gpt-image-1", "kind": "image", "capabilities": {"outputs": ["image"]}}]
+			},
+			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	decoder = value.(inference.ProviderDefinition).ExtensionDecoders[extensionImage]
+	extensions, err = inference.DecodeExtensions([]inference.ExtensionEntry{{
+		Provider: "az-prod",
+		ID:       extensionImage,
+	}}, map[string]inference.ExtensionDecoder{
+		"az-prod/" + extensionImage: decoder,
+	}, "extensions")
+	if err != nil {
+		t.Fatalf("DecodeExtensions: %v", err)
+	}
+	if options := extensions[0].(*ImageOptions); options.ProviderID() != "az-prod" {
 		t.Fatalf("ProviderID = %q, want %q", options.ProviderID(), "az-prod")
 	}
 }

@@ -76,6 +76,9 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
 				return &GenerateOptions{Provider: settings.ID}
 			}),
+			extensionImage: inference.ExtensionDecoderFor(func() *ImageOptions {
+				return &ImageOptions{Provider: settings.ID}
+			}),
 		},
 	}
 	for _, profile := range settings.Profiles {

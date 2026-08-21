@@ -5,12 +5,16 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 // driverID namespaces every extension this package defines.
 const driverID = "azure"
 
-const extensionGenerate = "generate_options"
+const (
+	extensionGenerate = "generate_options"
+	extensionImage    = "image_options"
+)
 
 // extensionProvider resolves the deployment provider ID an extension targets,
 // defaulting to the driver name.
@@ -119,6 +123,53 @@ func (o GenerateOptions) Clone() inference.Extension {
 		search.ExternalWebAccess = clonePointer(search.ExternalWebAccess)
 		search.ToolChoice = clonePointer(search.ToolChoice)
 		o.WebSearch = &search
+	}
+	return o
+}
+
+// ---------------------------------------------------------------------------
+// Image (gpt-image edits).
+// ---------------------------------------------------------------------------
+
+// ImageOptions carries images API settings beyond the canonical image
+// intent.
+type ImageOptions struct {
+	// Provider targets a deployment provider ID other than "azure".
+	Provider string `json:"-"`
+	// Mask is an inline PNG whose fully transparent areas (alpha zero)
+	// mark where the first reference image should be edited (local
+	// inpainting). The endpoint requires a valid PNG with the same
+	// dimensions as the reference image and applies the mask to the first
+	// reference image only; the mask itself must be inline bytes because
+	// images/edits uploads multipart files.
+	Mask *media.ImageSource `json:"mask,omitempty"`
+}
+
+func (o ImageOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o ImageOptions) ExtensionID() string { return extensionImage }
+
+func (o ImageOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.Mask != nil {
+		fields = append(fields, "mask")
+	}
+	return fields
+}
+
+func (o ImageOptions) Validate() error {
+	if o.Mask == nil {
+		return nil
+	}
+	if base := o.Mask.BaseMediaType(); base != "image/png" {
+		return fmt.Errorf("mask must be a PNG image, not %q", base)
+	}
+	return nil
+}
+
+func (o ImageOptions) Clone() inference.Extension {
+	if o.Mask != nil {
+		mask := o.Mask.Clone()
+		o.Mask = &mask
 	}
 	return o
 }

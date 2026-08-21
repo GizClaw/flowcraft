@@ -1,9 +1,11 @@
 package azure
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -14,10 +16,14 @@ import (
 	"github.com/openai/openai-go/v3/packages/param"
 )
 
-// Image generation runs on the images endpoint (gpt-image). The prompt is
-// the request's text; the endpoint takes no reference images on this
-// driver — image-to-image edits live on a separate API shape and are
-// rejected truthfully. gpt-image always returns base64 payloads, so URL
+// Image generation runs on the images endpoint (gpt-image). Text-only
+// requests go to images/generations; requests that carry inline reference
+// images go to images/edits, which uploads the bytes as multipart files
+// (the Azure image editing surface). A mask for local inpainting rides the
+// image_options extension and uploads alongside the reference images; the
+// endpoint applies the mask to the first reference image only. URL-sourced
+// reference images and masks have no upload channel — callers must
+// materialize them inline. gpt-image always returns base64 payloads, so URL
 // delivery has no native channel and is rejected.
 
 type imageWire struct {
@@ -26,6 +32,12 @@ type imageWire struct {
 	size   string // 1024x1024 | 1536x1024 | 1024x1536
 	count  int
 	format string // png | jpeg | webp
+	// images are inline reference images for image-to-image edits; empty
+	// means a text-only generation.
+	images []media.ImageSource
+	// mask is an inline PNG whose transparent areas mark where the first
+	// reference image should be edited; zero when absent.
+	mask media.ImageSource
 }
 
 type imageRaw struct {
@@ -73,10 +85,14 @@ func compileImage(
 				case message.TextPart:
 					prompt = append(prompt, value.Text)
 				case message.ImagePart:
-					ledger.reject(
-						fields[message.PartImage],
-						"image edits have no channel on this driver; text prompts only",
-					)
+					if value.Source.Kind() != media.SourceInline {
+						ledger.reject(
+							fields[message.PartImage],
+							"images/edits uploads inline bytes; URL-sourced reference images have no channel",
+						)
+						continue
+					}
+					wire.images = append(wire.images, value.Source)
 				default:
 					ledger.reject(
 						fields[part.Kind()],
@@ -155,9 +171,9 @@ func compileImage(
 				)
 			}
 		}
-		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "openai image generation supports no extensions")
-		}
+		options, other := operationExtensions[ImageOptions](request.Extensions)
+		rejectOtherExtensions("image generation", other, ledger)
+		compileImageOptions(&wire, options, ledger)
 		if intent.Audio != nil {
 			ledger.reject(
 				inference.FieldGenerateIntentAudio,
@@ -178,22 +194,76 @@ func compileImage(
 	}
 }
 
+// compileImageOptions lowers ImageOptions onto the wire. Settings that
+// collide with the request are rejected instead of overriding: the canonical
+// channel stays the single source of truth for what it covers.
+func compileImageOptions(
+	wire *imageWire,
+	options ImageOptions,
+	ledger *ledger,
+) {
+	if options.Mask == nil {
+		return
+	}
+	field := inference.ExtensionField("mask").Qualify(options)
+	if options.Mask.Kind() != media.SourceInline {
+		ledger.reject(
+			field,
+			"images/edits uploads inline bytes; URL-sourced masks have no channel",
+		)
+		return
+	}
+	if len(wire.images) == 0 {
+		ledger.reject(
+			field,
+			"mask requires at least one inline reference image",
+		)
+		return
+	}
+	wire.mask = options.Mask.Clone()
+}
+
 func transportImage(
 	client openai.Client,
 ) inference.Transport[imageWire, imageRaw] {
 	return func(ctx context.Context, wire imageWire) (imageRaw, error) {
-		params := openai.ImageGenerateParams{
-			Model:  wire.model,
-			Prompt: wire.prompt,
-			N:      param.NewOpt(int64(wire.count)),
+		var response *openai.ImagesResponse
+		var err error
+		if len(wire.images) == 0 {
+			params := openai.ImageGenerateParams{
+				Model:  wire.model,
+				Prompt: wire.prompt,
+				N:      param.NewOpt(int64(wire.count)),
+			}
+			if wire.size != "" {
+				params.Size = openai.ImageGenerateParamsSize(wire.size)
+			}
+			if wire.format != "" {
+				params.OutputFormat = openai.ImageGenerateParamsOutputFormat(wire.format)
+			}
+			response, err = client.Images.Generate(ctx, params)
+		} else {
+			readers := make([]io.Reader, 0, len(wire.images))
+			for _, source := range wire.images {
+				readers = append(readers, bytes.NewReader(source.Bytes()))
+			}
+			params := openai.ImageEditParams{
+				Model:  openai.ImageModel(wire.model),
+				Prompt: wire.prompt,
+				N:      param.NewOpt(int64(wire.count)),
+				Image:  openai.ImageEditParamsImageUnion{OfFileArray: readers},
+			}
+			if wire.size != "" {
+				params.Size = openai.ImageEditParamsSize(wire.size)
+			}
+			if wire.format != "" {
+				params.OutputFormat = openai.ImageEditParamsOutputFormat(wire.format)
+			}
+			if wire.mask.Kind() != "" {
+				params.Mask = bytes.NewReader(wire.mask.Bytes())
+			}
+			response, err = client.Images.Edit(ctx, params)
 		}
-		if wire.size != "" {
-			params.Size = openai.ImageGenerateParamsSize(wire.size)
-		}
-		if wire.format != "" {
-			params.OutputFormat = openai.ImageGenerateParamsOutputFormat(wire.format)
-		}
-		response, err := client.Images.Generate(ctx, params)
 		if err != nil {
 			return imageRaw{}, classifyError(err)
 		}
