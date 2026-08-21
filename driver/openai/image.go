@@ -27,7 +27,7 @@ import (
 type imageWire struct {
 	model  string
 	prompt string
-	size   string // 1024x1024 | 1536x1024 | 1024x1536
+	size   string // WxH; gpt-image-2-family models accept arbitrary sizes
 	count  int
 	format string // png | jpeg | webp
 	// images are inline reference images for image-to-image edits; empty
@@ -45,11 +45,32 @@ type imageRaw struct {
 	totalTokens  int64
 }
 
-// imageSizes are the only dimensions the endpoint accepts.
-var imageSizes = map[string]struct{}{
-	"1024x1024": {},
-	"1536x1024": {},
-	"1024x1536": {},
+// imageSize validates one canonical size against the gpt-image-2-family
+// arbitrary resolution rules: both edges must be divisible by 16, the
+// aspect ratio must stay between 1:3 and 3:1, and the resolution must not
+// exceed the documented 3840x2160 maximum (long edge 3840, short edge
+// 2160). The standard 1024x1024, 1536x1024, and 1024x1536 sizes satisfy
+// the same rules. Resolutions above 2560x1440 are experimental but valid.
+// On success the returned size is the canonical WxH wire string; the reason
+// is non-empty when the size is rejected.
+func imageSize(width, height int) (size, reason string) {
+	if width <= 0 || height <= 0 {
+		return "", "image dimensions must be positive"
+	}
+	if width%16 != 0 || height%16 != 0 {
+		return "", "image width and height must both be divisible by 16"
+	}
+	max, min := width, height
+	if max < min {
+		max, min = min, max
+	}
+	if max > 3*min {
+		return "", "image aspect ratio must be between 1:3 and 3:1"
+	}
+	if max > 3840 || min > 2160 {
+		return "", "image resolution must not exceed 3840x2160"
+	}
+	return fmt.Sprintf("%dx%d", width, height), ""
 }
 
 func compileImage(
@@ -123,13 +144,12 @@ func compileImage(
 		}
 		if image := intent.Image; image != nil {
 			if image.Size != nil {
-				size := fmt.Sprintf("%dx%d", image.Size.Width, image.Size.Height)
-				if _, ok := imageSizes[size]; ok {
+				if size, reason := imageSize(image.Size.Width, image.Size.Height); reason == "" {
 					wire.size = size
 				} else {
 					ledger.reject(
 						inference.FieldGenerateIntentImageSize,
-						"the images API accepts 1024x1024, 1536x1024, or 1024x1536 only",
+						reason,
 					)
 				}
 			}

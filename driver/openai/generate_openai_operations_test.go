@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -136,7 +137,7 @@ func TestImageTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, body map[string]any) {
-		if size, _ := body["size"].(string); size != "1536x1024" {
+		if size, _ := body["size"].(string); size != "1728x2304" {
 			t.Errorf("size = %v", body["size"])
 		}
 		if fmt.Sprint(body["output_format"]) != "png" {
@@ -160,7 +161,7 @@ func TestImageTransport(t *testing.T) {
 					message.TextPart{Text: "a red circle"},
 				}},
 				Intent: inference.Intent{Image: &inference.ImageIntent{
-					Size:         &media.ImageSize{Width: 1536, Height: 1024},
+					Size:         &media.ImageSize{Width: 1728, Height: 2304},
 					OutputFormat: media.ImageFormatPNG,
 				}},
 			},
@@ -194,6 +195,80 @@ func TestImageTransport(t *testing.T) {
 		t.Fatalf("image source = %v bytes", len(part.Source.Bytes()))
 	}
 	_ = capture.body(0)
+}
+
+func TestImageCompilerSizeRules(t *testing.T) {
+	compile := func(width, height int) (string, error) {
+		t.Helper()
+		request := inference.GenerateRequest{
+			Input: inference.GenerateInput{
+				Role: inference.InputRoleUser,
+				Content: inference.InputContent{
+					Content: message.Content{Parts: []message.Part{
+						message.TextPart{Text: "a red circle"},
+					}},
+					Intent: inference.Intent{Image: &inference.ImageIntent{
+						Size: &media.ImageSize{Width: width, Height: height},
+					}},
+				},
+			},
+		}
+		compiled, err := compileImage("gpt-image-2")(
+			context.Background(),
+			openaiModel("gpt-image-2"),
+			request,
+			inference.GenerateExecutionUnary,
+		)
+		if err != nil {
+			return "", err
+		}
+		return compiled.Wire.size, nil
+	}
+
+	for _, size := range []struct {
+		width, height int
+		want          string
+	}{
+		{1024, 1024, "1024x1024"},
+		{1536, 1024, "1536x1024"},
+		{1024, 1536, "1024x1536"},
+		{1728, 2304, "1728x2304"},
+		{864, 1072, "864x1072"},
+		{2160, 3840, "2160x3840"},
+	} {
+		got, err := compile(size.width, size.height)
+		if err != nil {
+			t.Errorf("%dx%d: compile = %v, want size %q", size.width, size.height, err, size.want)
+			continue
+		}
+		if got != size.want {
+			t.Errorf("%dx%d: wire size = %q, want %q", size.width, size.height, got, size.want)
+		}
+	}
+
+	for _, size := range []struct {
+		width, height int
+	}{
+		{800, 600},   // not divisible by 16
+		{1025, 1024}, // width not divisible by 16
+		{4096, 512},  // aspect ratio 8:1
+		{512, 4096},  // aspect ratio 1:8
+		{3840, 3840}, // short edge above 2160
+		{0, 1024},    // non-positive
+		{-1, -1},     // non-positive
+	} {
+		_, err := compile(size.width, size.height)
+		if err == nil {
+			t.Errorf("%dx%d: compile succeeded, want size rejection", size.width, size.height)
+			continue
+		}
+		var inferenceErr *inference.Error
+		if !errors.As(err, &inferenceErr) ||
+			inferenceErr.Field != inference.FieldGenerateIntentImageSize {
+			t.Errorf("%dx%d: error = %v, want field %q",
+				size.width, size.height, err, inference.FieldGenerateIntentImageSize)
+		}
+	}
 }
 
 func TestImageEditTransport(t *testing.T) {
