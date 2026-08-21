@@ -188,6 +188,54 @@ func TestDirectoryFreezeTargets(t *testing.T) {
 	}
 }
 
+func TestDirectoryUnfreezeRestoresLiveSource(t *testing.T) {
+	dir := delegation.NewDirectory()
+	if err := dir.Bind(&fakeDeployment{
+		instances: map[string]*agent.Agent{"alpha": testAgent("alpha", "Alpha", "")},
+		order:     []string{"alpha"},
+	}); err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	source := newFakeTargetSource()
+	source.set("omega", testAgent("omega", "Omega", "live"))
+	if err := dir.BindTargetSource(source); err != nil {
+		t.Fatalf("BindTargetSource: %v", err)
+	}
+	dir.FreezeTargets(map[string]*agent.Agent{
+		"omega": testAgent("omega", "Omega", "frozen"),
+	})
+	dir.UnfreezeTargets()
+
+	ctx := context.Background()
+	// The frozen instance must no longer pin resolution: the live
+	// source is authoritative again.
+	source.set("zeta", testAgent("zeta", "Zeta", ""))
+	targets, err := dir.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(targets) != 3 || targets[1].ID != "omega" || targets[2].ID != "zeta" {
+		t.Fatalf("List after unfreeze = %+v, want [alpha omega zeta]", targets)
+	}
+	if _, err := dir.Lookup(ctx, "omega"); err != nil {
+		t.Fatalf("Lookup(omega) after unfreeze: %v", err)
+	}
+
+	source.remove("omega")
+	if _, err := dir.Get(ctx, "omega"); !errdefs.IsNotFound(err) {
+		t.Fatalf("Get(omega) after live remove error = %v, want not found", err)
+	}
+
+	// Unfreeze is idempotent.
+	dir.UnfreezeTargets()
+	if targets, err = dir.List(ctx); err != nil {
+		t.Fatalf("List after second unfreeze: %v", err)
+	}
+	if len(targets) != 2 {
+		t.Fatalf("List after second unfreeze = %+v, want [alpha zeta]", targets)
+	}
+}
+
 func TestDirectoryDynamicDedupeWithDeployed(t *testing.T) {
 	dir := delegation.NewDirectory()
 	if err := dir.Bind(&fakeDeployment{

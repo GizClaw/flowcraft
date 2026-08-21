@@ -23,6 +23,9 @@ type LocalDirectory struct {
 	// with the deployment snapshot; frozen replaces it once the
 	// generation retires so in-flight delegations keep resolving the
 	// exact instances that generation served.
+	// source retains the bound live view across FreezeTargets so
+	// UnfreezeTargets can restore it on reload rollback.
+	source  TargetSource
 	dynamic TargetSource
 	frozen  map[string]*agent.Agent
 }
@@ -42,9 +45,10 @@ type Deployment interface {
 type TargetSource interface {
 	// Dynamic resolves one dynamic target by id. Deployment targets
 	// are served from the directory's own snapshot and never returned
-	// here.
+	// here. The id is the AgentID — in the runtime path the
+	// registration name — and implementations must resolve it as such.
 	Dynamic(id string) (*agent.Agent, bool)
-	// DynamicNames lists the dynamic target ids.
+	// DynamicNames lists the dynamic target ids (AgentIDs).
 	DynamicNames() []string
 }
 
@@ -60,10 +64,24 @@ type TargetViewBinder interface {
 // TargetViewFreezer is implemented by directory resources that must pin
 // their dynamic view when the generation retires, so in-flight
 // delegations keep resolving the instances that generation served.
+//
+// Generation semantics: the delegation service uses the resolved
+// instance for target validation and telemetry only; actual execution
+// goes through the session manager's per-generation resolver. After a
+// reload the retired directory may therefore validate against a frozen
+// instance while the delegated turn starts on the new generation's
+// re-bound instance — "the generation is determined at Session.Start",
+// matching the runtime's resolver contract.
 type TargetViewFreezer interface {
-	// FreezeTargets replaces the live dynamic source with a fixed
-	// instance set. Idempotent.
+	// FreezeTargets pins the live dynamic source to a fixed instance
+	// set. Freezing is a one-shot commit: callers must guarantee that
+	// every later failure path can either proceed without the live
+	// view or pair the freeze with UnfreezeTargets, or the directory
+	// will silently diverge from the runtime registry.
 	FreezeTargets(instances map[string]*agent.Agent)
+	// UnfreezeTargets restores the live dynamic source after a
+	// rollback. Idempotent; safe to call on a never-frozen directory.
+	UnfreezeTargets()
 }
 
 // NewDirectory creates an unbound directory.
@@ -71,8 +89,11 @@ func NewDirectory() *LocalDirectory {
 	return &LocalDirectory{}
 }
 
-// Bind installs Build's instances. A directory is immutable after a successful
-// bind and borrows the instances; the result retains lifecycle ownership.
+// Bind installs Build's instances. The deployment snapshot is immutable
+// after a successful bind and borrows the instances; the result retains
+// lifecycle ownership. The directory as a whole is not frozen: the live
+// dynamic view may be attached once (BindTargetSource) and pinned on
+// generation retirement (FreezeTargets).
 func (d *LocalDirectory) Bind(result Deployment) error {
 	if d == nil {
 		return errdefs.Validationf("local delegation directory: nil receiver")
@@ -133,12 +154,14 @@ func (d *LocalDirectory) BindTargetSource(source TargetSource) error {
 	if d.dynamic != nil {
 		return errdefs.Conflictf("local delegation directory: target source already bound")
 	}
+	d.source = source
 	d.dynamic = source
 	return nil
 }
 
 // FreezeTargets replaces the live dynamic source with a fixed instance
-// set. Idempotent; used when a generation retires.
+// set. Idempotent; used when a generation retires. The bound source is
+// retained so UnfreezeTargets can restore it.
 func (d *LocalDirectory) FreezeTargets(instances map[string]*agent.Agent) {
 	if d == nil {
 		return
@@ -147,6 +170,18 @@ func (d *LocalDirectory) FreezeTargets(instances map[string]*agent.Agent) {
 	defer d.mu.Unlock()
 	d.frozen = instances
 	d.dynamic = nil
+}
+
+// UnfreezeTargets restores the live dynamic source bound by
+// BindTargetSource, discarding the frozen view. Idempotent.
+func (d *LocalDirectory) UnfreezeTargets() {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.frozen = nil
+	d.dynamic = d.source
 }
 
 func targetFromAgent(name string, instance *agent.Agent) Target {
@@ -180,7 +215,9 @@ func (d *LocalDirectory) BindDeployment(deployment any) error {
 	return d.Bind(view)
 }
 
-// List returns targets in deploy.Result.InstanceNames order.
+// List returns targets in deploy.Result.InstanceNames order followed by
+// the dynamic targets (frozen set when retired, otherwise the live
+// source) sorted by id.
 func (d *LocalDirectory) List(context.Context) ([]Target, error) {
 	if d == nil {
 		return nil, errdefs.NotAvailablef("local delegation directory: nil receiver")
