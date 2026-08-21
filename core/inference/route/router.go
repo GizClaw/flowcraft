@@ -9,6 +9,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/telemetry"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 type Selectors struct {
@@ -324,13 +327,17 @@ func executeWithFallback[Request any, Response any](
 			gate := r.breaker.begin(ctx, key)
 			breakerAllowed = gate.allowed
 			if !breakerAllowed {
-				trace.Attempts = append(trace.Attempts, Attempt{
+				skipped := Attempt{
 					Target: target, Phase: AttemptPhaseExecute, Trigger: trigger,
 					Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
-				})
+				}
+				trace.Attempts = append(trace.Attempts, skipped)
+				logRouteAttempt(telemetry.Warn, ctx, operation,
+					"inference route: target circuit open, skipping",
+					skipped, inference.ModelRef{}, nil)
 				next, ok, fallbackErr := nextFallbackTarget(r,
 					ctx, operation, snapshot, clone,
-					Attempt{Target: target, Phase: AttemptPhaseExecute, Trigger: trigger, Outcome: AttemptOutcomeSkipped},
+					skipped,
 					&trace, seen, fallbackNext, true, false, AttemptPhaseExecute,
 				)
 				if fallbackErr != nil {
@@ -400,6 +407,9 @@ func executeWithFallback[Request any, Response any](
 						if !ok {
 							return zero, trace, err
 						}
+						logRouteAttempt(telemetry.Warn, ctx, operation,
+							"inference route: falling back to another target",
+							attempt, next, err)
 						target, trigger = next, AttemptTriggerFallback
 						break
 					}
@@ -407,6 +417,9 @@ func executeWithFallback[Request any, Response any](
 						operation, AttemptPhasePreflight, attemptTrigger, err, attemptNumber,
 					)
 					if retryEligible(ctx, &policy, decision) {
+						logRouteAttempt(telemetry.Debug, ctx, operation,
+							"inference route: attempt failed, will retry",
+							attempt, inference.ModelRef{}, err)
 						lastErr = err
 						continue
 					}
@@ -421,6 +434,9 @@ func executeWithFallback[Request any, Response any](
 					if !ok {
 						return zero, trace, err
 					}
+					logRouteAttempt(telemetry.Warn, ctx, operation,
+						"inference route: falling back after retries exhausted",
+						attempt, next, err)
 					target, trigger = next, AttemptTriggerFallback
 					break
 				}
@@ -448,6 +464,9 @@ func executeWithFallback[Request any, Response any](
 					operation, AttemptPhaseExecute, attemptTrigger, err, attemptNumber,
 				)
 				if retryEligible(ctx, &policy, decision) {
+					logRouteAttempt(telemetry.Debug, ctx, operation,
+						"inference route: attempt failed, will retry",
+						attempt, inference.ModelRef{}, err)
 					lastErr = err
 					continue
 				}
@@ -462,6 +481,9 @@ func executeWithFallback[Request any, Response any](
 				if !ok {
 					return zero, trace, err
 				}
+				logRouteAttempt(telemetry.Warn, ctx, operation,
+					"inference route: falling back after retries exhausted",
+					attempt, next, err)
 				target, trigger = next, AttemptTriggerFallback
 				break
 			}
@@ -532,13 +554,17 @@ func openSessionWithFallback[Request any, Session any](
 			gate := r.breaker.begin(ctx, key)
 			breakerAllowed = gate.allowed
 			if !breakerAllowed {
-				trace.Attempts = append(trace.Attempts, Attempt{
+				skipped := Attempt{
 					Target: target, Phase: skipPhase, Trigger: trigger,
 					Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
-				})
+				}
+				trace.Attempts = append(trace.Attempts, skipped)
+				logRouteAttempt(telemetry.Warn, ctx, operation,
+					"inference route: target circuit open, skipping",
+					skipped, inference.ModelRef{}, nil)
 				next, ok, fallbackErr := nextFallbackTarget(r,
 					ctx, operation, snapshot, clone,
-					Attempt{Target: target, Phase: skipPhase, Trigger: trigger, Outcome: AttemptOutcomeSkipped},
+					skipped,
 					&trace, seen, fallbackNext, true, false, skipPhase,
 				)
 				if fallbackErr != nil {
@@ -608,12 +634,18 @@ func openSessionWithFallback[Request any, Session any](
 						if !ok {
 							return zero, trace, err
 						}
+						logRouteAttempt(telemetry.Warn, ctx, operation,
+							"inference route: falling back to another target",
+							attempt, next, err)
 						target, trigger = next, AttemptTriggerFallback
 						break
 					}
 					if retryEligible(ctx, &policy, retryDecision(
 						operation, AttemptPhasePreflight, attemptTrigger, err, attemptNumber,
 					)) {
+						logRouteAttempt(telemetry.Debug, ctx, operation,
+							"inference route: attempt failed, will retry",
+							attempt, inference.ModelRef{}, err)
 						lastErr = err
 						continue
 					}
@@ -628,6 +660,9 @@ func openSessionWithFallback[Request any, Session any](
 					if !ok {
 						return zero, trace, err
 					}
+					logRouteAttempt(telemetry.Warn, ctx, operation,
+						"inference route: falling back after retries exhausted",
+						attempt, next, err)
 					target, trigger = next, AttemptTriggerFallback
 					break
 				}
@@ -654,6 +689,9 @@ func openSessionWithFallback[Request any, Session any](
 				if retryEligible(ctx, &policy, retryDecision(
 					operation, AttemptPhaseOpen, attemptTrigger, err, attemptNumber,
 				)) {
+					logRouteAttempt(telemetry.Debug, ctx, operation,
+						"inference route: attempt failed, will retry",
+						attempt, inference.ModelRef{}, err)
 					lastErr = err
 					continue
 				}
@@ -668,6 +706,9 @@ func openSessionWithFallback[Request any, Session any](
 				if !ok {
 					return zero, trace, err
 				}
+				logRouteAttempt(telemetry.Warn, ctx, operation,
+					"inference route: falling back after retries exhausted",
+					attempt, next, err)
 				target, trigger = next, AttemptTriggerFallback
 				break
 			}
@@ -943,4 +984,44 @@ func isNilInterface(value any) bool {
 	default:
 		return false
 	}
+}
+
+// logRouteAttempt emits one log record for a retry / fallback / circuit
+// event. Retry noise stays at Debug; fallback and circuit skips are Warn
+// because operators should be able to search for them in log queries.
+func logRouteAttempt(
+	log func(context.Context, string, ...otellog.KeyValue),
+	ctx context.Context,
+	operation inference.Operation,
+	msg string,
+	attempt Attempt,
+	next inference.ModelRef,
+	err error,
+) {
+	attrs := []otellog.KeyValue{
+		otellog.String("inference.operation", string(operation)),
+		otellog.String(telemetry.AttrLLMProvider, attempt.Target.ID.Provider),
+		otellog.String(telemetry.AttrLLMModel, attempt.Target.ID.Name),
+		otellog.String("phase", string(attempt.Phase)),
+		otellog.String("trigger", string(attempt.Trigger)),
+		otellog.String("outcome", string(attempt.Outcome)),
+	}
+	if attempt.Number > 0 {
+		attrs = append(attrs, otellog.Int("attempt", attempt.Number))
+	}
+	if attempt.ErrorKind != "" {
+		attrs = append(attrs, otellog.String("error_kind", string(attempt.ErrorKind)))
+	}
+	if attempt.Circuit != "" {
+		attrs = append(attrs, otellog.String("circuit", attempt.Circuit))
+	}
+	if next.ID != (inference.ModelID{}) {
+		attrs = append(attrs,
+			otellog.String("next.provider", next.ID.Provider),
+			otellog.String("next.model", next.ID.Name))
+	}
+	if err != nil {
+		attrs = append(attrs, otellog.String(telemetry.AttrErrorMessage, err.Error()))
+	}
+	log(ctx, msg, attrs...)
 }
