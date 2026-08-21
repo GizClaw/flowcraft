@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.22` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.23` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.23` - 2026-08-21
+
+### Changed
+
+- feat(core): wire delegation subagents through session lifecycle — the delegation service and tool source resolve a per-generation delegation.Directory dependency (new directory and session-provider resource factories), the directory binds the assembled deployment during the deploy wire phase, and the runtime hands its single session manager to the service via session.ManagerBinder (set-once, before the generation swap); delegated runs execute through the session lifecycle with a minted ContextID, refused ask-user, ephemeral sessions for non-persistent identities (no state, checkpoint, or resume), and caller/depth/timeout metadata crossing the session boundary, while the legacy bare-run path is preserved when no manager is bound; feat(core): emit delegation run telemetry and reuse resolved target — runAt logs the resolved subagent target through OpenTelemetry (agent.id, delegation.target/mode/depth/caller attributes) and passes the directory-resolved instance into the legacy path, removing a duplicate lookup
 
 ## `core/v0.1.22` - 2026-08-20
 
