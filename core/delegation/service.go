@@ -601,6 +601,9 @@ func (s *LocalService) worker() {
 				return
 			}
 			claimFailures++
+			telemetry.Warn(s.workerCtx, "local delegation: claim work failed, will retry",
+				otellog.Int("delegation.claim_failures", claimFailures),
+				otellog.String(telemetry.AttrErrorMessage, err.Error()))
 			continue
 		}
 		claimFailures = 0
@@ -649,6 +652,8 @@ func (s *LocalService) recordWorkerError(err error) {
 	if err == nil {
 		return
 	}
+	telemetry.Error(context.Background(), "local delegation: worker stopped after error",
+		otellog.String(telemetry.AttrErrorMessage, err.Error()))
 	s.stateMu.Lock()
 	s.workerErrs = append(s.workerErrs, err)
 	s.closed = true
@@ -730,7 +735,13 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	if err != nil {
 		return Response{}, err
 	}
-	defer func() { _ = lease.Close() }()
+	defer func() {
+		if cerr := lease.Close(); cerr != nil {
+			telemetry.WarnErr(execCtx, "local delegation: close session lease failed", cerr,
+				otellog.String(telemetry.AttrAgentID, key.AgentID),
+				otellog.String(telemetry.AttrConversationID, key.ContextID))
+		}
+	}()
 
 	turn, err := lease.Session().StartWithOptions(execCtx, agent.Request{
 		ContextID: key.ContextID,
