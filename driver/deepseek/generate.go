@@ -272,7 +272,7 @@ func rawUsageCanonical(raw rawUsage) inference.Usage {
 // decodeGenerateStream is the pure stage: streamRaw already carries
 // canonical part indices assigned by the stateful transport.
 func decodeGenerateStream(
-	_ context.Context,
+	ctx context.Context,
 	raw streamRaw,
 ) (inference.GenerateStreamEvent, error) {
 	switch raw.kind {
@@ -308,6 +308,7 @@ func decodeGenerateStream(
 			ResponseID:      raw.responseID,
 			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
+		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

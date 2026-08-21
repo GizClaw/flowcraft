@@ -631,9 +631,17 @@ func transportResponsesGenerate(
 	return func(ctx context.Context, wire responseWire) (generateRaw, error) {
 		response, err := client.Responses.New(ctx, wireToResponseParams(wire))
 		if err != nil {
-			return generateRaw{}, classifyError(err)
+			classified := classifyError(err)
+			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			return generateRaw{}, classified
 		}
-		return responsesToRaw(response)
+		raw, err := responsesToRaw(response)
+		if err != nil {
+			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			return generateRaw{}, err
+		}
+		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		return raw, nil
 	}
 }
 
@@ -840,8 +848,11 @@ func transportResponsesGenerateStream(
 	) (inference.ProviderStream[streamRaw], error) {
 		stream := client.Responses.NewStreaming(ctx, wireToResponseParams(wire))
 		if err := stream.Err(); err != nil {
-			return nil, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			return nil, classified
 		}
+		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &deepseekStream{
 			stream: stream,
 			parts:  make(map[int64]*deepseekStreamPart),
@@ -863,7 +874,9 @@ func (s *deepseekStream) Next(ctx context.Context) (streamRaw, error) {
 	for {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
-				return streamRaw{}, classifyError(err)
+				classified := classifyError(err)
+				logInferenceStream(ctx, "generate", "", classified, "")
+				return streamRaw{}, classified
 			}
 			return streamRaw{}, io.EOF
 		}
