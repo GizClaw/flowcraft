@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
 )
 
@@ -72,27 +73,27 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		res := doc.Resources[name]
 		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
 		if !ok {
-			_ = closeAll(values, order, nil)
+			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf(
 				"deploy: resource %q: no factory for %s/%s",
 				name, res.Kind, res.Impl)
 		}
 		if err := validateDeps(factory, res.Deps); err != nil {
-			_ = closeAll(values, order, nil)
+			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		settings := res.Settings
 		if b.loader != nil {
 			settings, err = resolveSettings(ctx, b.loader, settings)
 			if err != nil {
-				_ = closeAll(values, order, nil)
+				logCleanup(ctx, values, order)
 				return nil, errdefs.Validationf(
 					"deploy: resource %q: %v", name, err)
 			}
 		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
-			_ = closeAll(values, order, nil)
+			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		value, err := factory.New(ctx, resource.Input{
@@ -101,7 +102,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 			Loader:   b.loader,
 		})
 		if err != nil {
-			_ = closeAll(values, order, nil)
+			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		values[name] = value
@@ -195,10 +196,20 @@ func (b *Builder) Deploy(ctx context.Context, doc Document) (*Result, error) {
 		return nil, err
 	}
 	if err := b.Wire(ctx, result, doc); err != nil {
-		_ = result.Close()
+		if cerr := result.Close(); cerr != nil {
+			telemetry.WarnErr(ctx, "deploy: close built deployment after wire failure", cerr)
+		}
 		return nil, err
 	}
 	return result, nil
+}
+
+// logCleanup rolls back partially built resources on a Build failure
+// and leaves any close error visible to telemetry.
+func logCleanup(ctx context.Context, values map[string]any, order []string) {
+	if err := closeAll(values, order, nil); err != nil {
+		telemetry.WarnErr(ctx, "deploy: close partially built resources after failure", err)
+	}
 }
 
 // bindAgents constructs every [agent.Agent] from its Definition and
@@ -396,7 +407,10 @@ func closeAgentParts(values []any) {
 			continue
 		}
 		if closer, ok := value.(io.Closer); ok {
-			_ = closer.Close()
+			if err := closer.Close(); err != nil {
+				telemetry.WarnErr(context.Background(),
+					"deploy: close agent part failed", err)
+			}
 		}
 	}
 }
