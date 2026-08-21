@@ -51,8 +51,11 @@ func transportGenerateStream(
 	) (inference.ProviderStream[streamRaw], error) {
 		stream := client.Responses.NewStreaming(ctx, wireToParams(wire))
 		if err := stream.Err(); err != nil {
-			return nil, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			return nil, classified
 		}
+		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &responsesStream{
 			stream: stream,
 			parts:  make(map[int64]*streamPart),
@@ -74,7 +77,9 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 	for {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
-				return streamRaw{}, classifyError(err)
+				classified := classifyError(err)
+				logInferenceStream(ctx, "generate", "", classified, "")
+				return streamRaw{}, classified
 			}
 			return streamRaw{}, io.EOF
 		}
@@ -361,7 +366,7 @@ func openaiAnnotationCitation(annotation any) (inference.Citation, bool) {
 // decodeGenerateStream is pure: streamRaw already carries canonical part
 // indices assigned by the stateful transport.
 func decodeGenerateStream(
-	_ context.Context,
+	ctx context.Context,
 	raw streamRaw,
 ) (inference.GenerateStreamEvent, error) {
 	switch raw.kind {
@@ -398,6 +403,7 @@ func decodeGenerateStream(
 			ResponseID:      raw.responseID,
 			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
+		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage
