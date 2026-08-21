@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): expose runtime-registered agents as delegation targets — the delegation LocalDirectory merges the session manager's live dynamic view through a set-once TargetSource (dynamic-first resolve, deduped sorted List, freeze/unfreeze pinning), AgentRegistry implements the target source, and Build/Reload bind it to every delegation directory so RegisterAgent targets appear immediately, unregister yields TargetNotFound for new delegates while in-flight runs drain, and reload rollback unfreezes the still-current directory; fix(core): harden teardown and error surfacing — kanban card panics become returned errors, complete retries are interruptible, session close bounds turn drain, sandbox close bounds the wait after SIGKILL, bwrap bridge helpers thread stderr, CA bundle write and proxy teardown errors surface, nil-board seed failure is logged, and canceled status spelling is unified; feat(core): add telemetry log records across runtime paths — agent run lifecycle, revise attempts and close failures, runtime reload, agent lifecycle and session stream events, graph run publish, node retries and script stream events, inference route retries, fallbacks and circuit skips, delegation worker failures and kanban lifecycle, tool panics, lazy loads and MCP teardown, sandbox enforcement kills and session teardown, event subscription close and unobserved drops, deploy partial build cleanup, and resource loader base-dir close; refactor(core): deallocate memory bus drop summary and derive graph span/log scope attrs from one source",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
