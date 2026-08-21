@@ -89,9 +89,16 @@ func transportGenerate(client *kimiClient) inference.Transport[generateWire, gen
 		wire.Stream = false
 		var envelope completionEnvelope
 		if err := client.postJSON(ctx, wire, &envelope); err != nil {
+			logInferenceCall(ctx, "generate", wire.Model, err, "", "")
 			return generateRaw{}, err
 		}
-		return completionToRaw(&envelope)
+		raw, err := completionToRaw(&envelope)
+		if err != nil {
+			logInferenceCall(ctx, "generate", wire.Model, err, "", "")
+			return generateRaw{}, err
+		}
+		logInferenceCall(ctx, "generate", wire.Model, nil, "", raw.id)
+		return raw, nil
 	}
 }
 

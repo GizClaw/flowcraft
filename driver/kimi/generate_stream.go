@@ -7,7 +7,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // chunkEnvelope is one streaming chunk: delta content, optional finish
@@ -93,24 +96,35 @@ func transportGenerateStream(client *kimiClient) inference.Transport[generateWir
 		wire.Stream = true
 		request, err := client.newRequest(ctx, wire, true)
 		if err != nil {
+			logInferenceStream(ctx, "generate", wire.Model, err, "")
 			return nil, err
 		}
 		response, err := client.http.Do(request)
 		if err != nil {
-			return nil, classifyError(err)
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.Model, classified, "")
+			return nil, classified
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
-			defer func() { _ = response.Body.Close() }()
+			defer func() {
+				if cerr := response.Body.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "kimi: close error response body failed", cerr,
+						otellog.String(telemetry.AttrLLMProvider, providerID))
+				}
+			}()
 			payload, _ := io.ReadAll(response.Body)
-			return nil, errdefs.WithRetryCount(
+			classified := errdefs.WithRetryCount(
 				errdefs.WithRetryAfter(
 					classifyHTTPError(ctx, response.StatusCode, payload),
 					errdefs.ParseRetryAfter(response.Header.Get("Retry-After")),
 				),
 				utils.RetryCountOf(response),
 			)
+			logInferenceStream(ctx, "generate", wire.Model, classified, "")
+			return nil, classified
 		}
 		streamCtx, cancel := context.WithCancel(ctx)
+		logInferenceStream(ctx, "generate", wire.Model, nil, "")
 		return &chatStream{
 			body:          response.Body,
 			events:        sseEvents(streamCtx, response.Body),
@@ -142,6 +156,7 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 				continue
 			}
 			if err := s.apply(event.data); err != nil {
+				logInferenceStream(ctx, "generate", "", err, "")
 				return streamRaw{}, err
 			}
 		case <-ctx.Done():
@@ -248,7 +263,7 @@ func (s *chatStream) textIndex() int {
 
 // decodeGenerateStream is the pure stage: raw stream events become
 // canonical stream events.
-func decodeGenerateStream(_ context.Context, raw streamRaw) (inference.GenerateStreamEvent, error) {
+func decodeGenerateStream(ctx context.Context, raw streamRaw) (inference.GenerateStreamEvent, error) {
 	switch raw.kind {
 	case streamRawText:
 		return inference.GenerateStreamEvent{
@@ -274,6 +289,7 @@ func decodeGenerateStream(_ context.Context, raw streamRaw) (inference.GenerateS
 			FinishReason: raw.finish,
 			ResponseID:   raw.responseID,
 		}
+		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage
