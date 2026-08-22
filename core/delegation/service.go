@@ -749,13 +749,46 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		}
 	}()
 
-	turn, err := lease.Session().StartWithOptions(execCtx, agent.Request{
+	opts := s.delegationStartOptions(persistent)
+	request := agent.Request{
 		ContextID: key.ContextID,
 		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
 		Inputs:    metadataInputs(req),
-	}, s.delegationStartOptions(persistent)...)
-	if err != nil {
-		return Response{}, err
+	}
+
+	// Resume path: a persistent session retried with the identical
+	// request replays the parked run from its checkpoint instead of
+	// starting fresh. Resume is best-effort for a retry: any failure to
+	// probe or replay — transient checkpoint-store errors, unreadable
+	// parked state, a missing checkpoint, or an engine that cannot
+	// resume — degrades to a fresh Start with a warning rather than
+	// failing the retry. Start re-validates the session and surfaces
+	// real failures.
+	var turn *session.Turn
+	if persistent {
+		parked, ok, err := lease.Session().ParkedRequest(execCtx)
+		if err != nil {
+			telemetry.WarnErr(execCtx,
+				"local delegation: cannot inspect parked run, starting fresh", err,
+				otellog.String(telemetry.AttrAgentID, key.AgentID),
+				otellog.String(telemetry.AttrConversationID, key.ContextID))
+		} else if ok && sameDelegationRequest(request, parked) {
+			if resumed, err := lease.Session().ResumeWithOptions(execCtx, opts...); err == nil {
+				turn = resumed
+			} else {
+				telemetry.WarnErr(execCtx,
+					"local delegation: resume parked run failed, starting fresh", err,
+					otellog.String(telemetry.AttrAgentID, key.AgentID),
+					otellog.String(telemetry.AttrConversationID, key.ContextID))
+			}
+		}
+	}
+	if turn == nil {
+		var err error
+		turn, err = lease.Session().StartWithOptions(execCtx, request, opts...)
+		if err != nil {
+			return Response{}, err
+		}
 	}
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
@@ -925,6 +958,16 @@ func (s *LocalService) delegationStartOptions(persistent bool) []session.StartOp
 		options = append(options, session.WithEphemeral())
 	}
 	return options
+}
+
+// sameDelegationRequest reports whether two delegation requests are
+// identical for resume purposes: the same user message and the same
+// metadata inputs. ContextID and RunID are session plumbing stamped by
+// the service and are ignored.
+func sameDelegationRequest(a, b agent.Request) bool {
+	return a.Message.Role == b.Message.Role &&
+		a.Message.Content.Text() == b.Message.Content.Text() &&
+		reflect.DeepEqual(a.Inputs, b.Inputs)
 }
 
 // refuseSubagentAskUser is the default subagent asker: subagents never

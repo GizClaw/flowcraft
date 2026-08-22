@@ -56,28 +56,39 @@ func (h delegationTestHost) Publish(ctx context.Context, env event.Envelope) err
 	return h.bus.Publish(ctx, env)
 }
 
+// runEndEngine wraps an engine so it publishes the run-end event the
+// session stream coordinator waits for. Unwrap keeps decorated
+// capabilities (e.g. Resumer) visible to host-side probes.
+type runEndEngine struct {
+	inner agent.Engine
+}
+
+func (e runEndEngine) Execute(
+	ctx context.Context,
+	run agent.Run,
+	host agent.Host,
+	board *agent.Board,
+) (*agent.Board, error) {
+	board, err := e.inner.Execute(ctx, run, host, board)
+	publishCtx := context.WithoutCancel(ctx)
+	envelope, envelopeErr := event.NewEnvelope(
+		publishCtx, agent.SubjectRunEnd(run.RunID), nil)
+	if envelopeErr == nil {
+		envelope.SetRunID(run.RunID)
+		envelopeErr = host.Publish(publishCtx, envelope)
+	}
+	if err != nil {
+		return board, err
+	}
+	return board, envelopeErr
+}
+
+func (e runEndEngine) Unwrap() agent.Engine { return e.inner }
+
 // delegationWithRunEnd wraps an engine so it publishes the run-end event
 // the session stream coordinator waits for.
 func delegationWithRunEnd(engine agent.Engine) agent.Engine {
-	return agent.EngineFunc(func(
-		ctx context.Context,
-		run agent.Run,
-		host agent.Host,
-		board *agent.Board,
-	) (*agent.Board, error) {
-		board, err := engine.Execute(ctx, run, host, board)
-		publishCtx := context.WithoutCancel(ctx)
-		envelope, envelopeErr := event.NewEnvelope(
-			publishCtx, agent.SubjectRunEnd(run.RunID), nil)
-		if envelopeErr == nil {
-			envelope.SetRunID(run.RunID)
-			envelopeErr = host.Publish(publishCtx, envelope)
-		}
-		if err != nil {
-			return board, err
-		}
-		return board, envelopeErr
-	})
+	return runEndEngine{inner: engine}
 }
 
 func newTestSessionManagerForResult(
@@ -487,6 +498,269 @@ func TestRunAtSessionPathAsyncRun(t *testing.T) {
 	}
 	if response.Metadata["delegation.session_id"] != "async-ctx" {
 		t.Fatalf("session_id = %q, want async-ctx", response.Metadata["delegation.session_id"])
+	}
+}
+
+// delegationCheckpointStore is a minimal in-memory CheckpointDeleter
+// used to exercise the delegation resume path end to end.
+type delegationCheckpointStore struct {
+	mu             sync.Mutex
+	cps            map[string]agent.Checkpoint
+	loadFailPrefix string
+}
+
+func newDelegationCheckpointStore() *delegationCheckpointStore {
+	return &delegationCheckpointStore{cps: make(map[string]agent.Checkpoint)}
+}
+
+func (s *delegationCheckpointStore) Save(_ context.Context, cp agent.Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cps[cp.ExecID] = cp.Clone()
+	return nil
+}
+
+func (s *delegationCheckpointStore) Load(_ context.Context, execID string) (*agent.Checkpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.loadFailPrefix != "" && strings.HasPrefix(execID, s.loadFailPrefix) {
+		return nil, errdefs.Fmt("delegation test store: read failed for %s", execID)
+	}
+	cp, ok := s.cps[execID]
+	if !ok {
+		return nil, nil
+	}
+	clone := cp.Clone()
+	return &clone, nil
+}
+
+func (s *delegationCheckpointStore) Delete(_ context.Context, execID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cps, execID)
+	return nil
+}
+
+// resumeAwareDelegationEngine fails the first attempt (optionally after
+// writing a checkpoint) and succeeds on the next, recording whether the
+// second attempt was a resume under the original run id.
+type resumeAwareDelegationEngine struct {
+	mu              sync.Mutex
+	attempts        int
+	resumed         bool
+	runIDs          []string
+	store           *delegationCheckpointStore
+	writeCheckpoint bool
+}
+
+func (e *resumeAwareDelegationEngine) Execute(
+	ctx context.Context,
+	run agent.Run,
+	_ agent.Host,
+	board *agent.Board,
+) (*agent.Board, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.attempts++
+	e.runIDs = append(e.runIDs, run.RunID)
+	if e.attempts == 1 {
+		if e.writeCheckpoint {
+			if err := e.store.Save(ctx, agent.Checkpoint{
+				ExecID:            run.RunID,
+				Steps:             []string{"wave-1"},
+				Board:             board.Snapshot(),
+				Timestamp:         time.Now(),
+				OriginalStartedAt: time.Now(),
+				SpecVersion:       "v1",
+			}); err != nil {
+				return board, err
+			}
+		}
+		return board, errdefs.Internalf("first attempt fails")
+	}
+	e.resumed = run.ResumeFrom != nil
+	board.AppendChannelMessage(agent.MainChannel,
+		message.NewTextMessage(message.RoleAssistant, "done"))
+	return board, nil
+}
+
+func (*resumeAwareDelegationEngine) CanResume(agent.Checkpoint) error { return nil }
+
+func TestRunAtPersistentRetryResumesParkedRun(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	engine := &resumeAwareDelegationEngine{store: store, writeCheckpoint: true}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "resume-ctx", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("first Delegate: %v", err)
+	}
+	if first.Status != StatusFailed {
+		t.Fatalf("first status = %q, want failed", first.Status)
+	}
+
+	second, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", engine.attempts)
+	}
+	if !engine.resumed {
+		t.Fatal("retry did not resume the parked run")
+	}
+	if len(engine.runIDs) != 2 || engine.runIDs[0] != engine.runIDs[1] {
+		t.Fatalf("retry run ids = %v, want original id replayed on both attempts", engine.runIDs)
+	}
+}
+
+func TestRunAtPersistentDifferentRequestStartsFresh(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	engine := &resumeAwareDelegationEngine{store: store, writeCheckpoint: true}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "fresh-ctx", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+
+	second, err := service.Delegate(context.Background(), Request{
+		Mode:   ModeSync,
+		Target: "writer",
+		Input:  "different job",
+	})
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", engine.attempts)
+	}
+	if engine.resumed {
+		t.Fatal("different request must not resume the parked run")
+	}
+	if len(engine.runIDs) == 2 && engine.runIDs[0] == engine.runIDs[1] {
+		t.Fatalf("different request reused parked run id %q", engine.runIDs[0])
+	}
+}
+
+func TestRunAtPersistentRetryFallsBackWhenCheckpointMissing(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	engine := &resumeAwareDelegationEngine{store: store}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "missing-cp", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+
+	second, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", engine.attempts)
+	}
+	if engine.resumed {
+		t.Fatal("retry with a missing checkpoint must fall back to a fresh start")
+	}
+}
+
+func TestRunAtPersistentRetryFallsBackWhenEngineCannotResume(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	var attempts int
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		attempts++
+		if attempts == 1 {
+			if err := store.Save(ctx, agent.Checkpoint{
+				ExecID:      run.RunID,
+				Steps:       []string{"wave-1"},
+				Board:       board.Snapshot(),
+				SpecVersion: "v1",
+			}); err != nil {
+				return board, err
+			}
+			return board, errdefs.Internalf("first attempt fails")
+		}
+		return board, nil
+	})
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "no-resume-engine", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+
+	second, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+	if attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", attempts)
+	}
+}
+
+func TestRunAtPersistentRetryFallsBackWhenResumeReadFails(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	store.loadFailPrefix = "run-"
+	engine := &resumeAwareDelegationEngine{store: store, writeCheckpoint: true}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "store-flaky", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+
+	second, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", engine.attempts)
+	}
+	if engine.resumed {
+		t.Fatal("retry with an unreadable checkpoint must fall back to a fresh start")
 	}
 }
 

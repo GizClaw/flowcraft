@@ -75,6 +75,38 @@ on every call, so each generation's tools see that generation's agents.
 - A `Reload` re-binds the directory and service to the new generation,
   so in-flight delegation completes on the generation it started on.
 
+## Session identity and resume
+
+When a session manager is bound, delegated work runs through the runtime
+session lifecycle. `SessionProvider.Persistent()` is provider-wide: a
+persistent provider's `ContextID` is stable, durable, and resumable, while
+providers that mint a fresh `ContextID` per delegation (e.g. `random`) are
+ephemeral and never write state. A one-shot target behind a persistent
+provider can therefore still opt out by returning a fresh `ContextID`.
+
+A retried delegation with the same `ContextID` resumes the parked run from
+its last checkpoint instead of starting fresh, but only when **both** the
+request and the session key match:
+
+- identical message and metadata inputs → the turn replays from the
+  checkpoint under the original run id (`runtime.sessions.resume` and a
+  `checkpoint_store` are required);
+- a different message or inputs → a fresh turn starts on the same session;
+- any failure to replay — a missing checkpoint, unreadable parked state,
+  transient checkpoint-store read errors, or an engine that cannot
+  resume — falls back to a fresh start with a warning rather than
+  failing the retry.
+
+Resume replays the request stored with the parked run; callers retrying a
+job should send the exact same message and inputs. After a successful run
+the parked marker is cleared, so a later delegation of the same key starts
+fresh.
+
+Agent preparers run again on resume before the engine restores the
+checkpoint board. Preparers with side effects (uploads, live-progress
+resets) must be idempotent or detect the replay via `agent.ResumeContext`
+/ `Run.ResumeFrom` and skip.
+
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.
 

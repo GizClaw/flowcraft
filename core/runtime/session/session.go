@@ -293,28 +293,58 @@ func (s *Session) resume(ctx context.Context, config startConfig) (*Turn, error)
 // Resumable reports whether a previous turn ended without committing
 // and can be replayed via Resume. It returns the parked run id.
 func (s *Session) Resumable(ctx context.Context) (string, bool, error) {
-	if s == nil {
-		return "", false, nil
-	}
-	if s.isEphemeral() {
-		return "", false, nil
-	}
-	deps := s.manager.currentDeps()
-	if !deps.Resume || deps.Checkpoints == nil {
-		return "", false, nil
-	}
-	if ctx == nil {
-		return "", false, errdefs.Validationf(
-			"runtime session: Resumable context is required")
-	}
-	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
+	state, err := s.parkedRunState(ctx)
 	if err != nil {
 		return "", false, err
 	}
-	if state == nil || state.ResumableRunID == "" {
+	if state == nil {
 		return "", false, nil
 	}
 	return state.ResumableRunID, true, nil
+}
+
+// ParkedRequest returns the original request of the session's parked
+// interrupted run, when one exists and its request was stored. ok is
+// false whenever there is nothing to resume: a fresh or committed
+// session, an ephemeral session, resume not configured, or a parked
+// marker without a stored request. The returned request is a copy.
+func (s *Session) ParkedRequest(ctx context.Context) (agent.Request, bool, error) {
+	state, err := s.parkedRunState(ctx)
+	if err != nil {
+		return agent.Request{}, false, err
+	}
+	if state == nil || state.Request == nil {
+		return agent.Request{}, false, nil
+	}
+	return *state.Request, true, nil
+}
+
+// parkedRunState loads the parked-run session state, or returns nil
+// when there is nothing to resume: a nil session, an ephemeral
+// session, resume not configured, or no persisted state.
+func (s *Session) parkedRunState(ctx context.Context) (*sessionState, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if s.isEphemeral() {
+		return nil, nil
+	}
+	deps := s.manager.currentDeps()
+	if !deps.Resume || deps.Checkpoints == nil {
+		return nil, nil
+	}
+	if ctx == nil {
+		return nil, errdefs.Validationf(
+			"runtime session: parked run context is required")
+	}
+	state, err := s.loadSessionState(ctx, deps.Checkpoints, deps.Resume)
+	if err != nil {
+		return nil, err
+	}
+	if state == nil || state.ResumableRunID == "" {
+		return nil, nil
+	}
+	return state, nil
 }
 
 // interruptActive stops any running turn and reserves one activity slot

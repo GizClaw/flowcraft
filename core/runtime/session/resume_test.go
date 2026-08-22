@@ -264,6 +264,48 @@ func TestSessionResume_ResumeWithoutParkedRun(t *testing.T) {
 	}
 }
 
+func TestSessionResume_ParkedRequest(t *testing.T) {
+	engine := &resumeProbeEngine{reply: "done"}
+	store := &resumeTestStore{cps: make(map[string]agent.Checkpoint)}
+	session := newResumeSession(t, engine, store)
+
+	// Fresh session: nothing parked.
+	if req, ok, err := session.ParkedRequest(context.Background()); err != nil || ok {
+		t.Fatalf("ParkedRequest before park = (%+v, %v, %v), want no request", req, ok, err)
+	}
+
+	runID := "run-" + strings.Repeat("p", 16)
+	parkRun(t, session, store, runID, time.Now().Add(-time.Hour),
+		&agent.Request{
+			TaskID:  "task-9",
+			Message: message.NewTextMessage(message.RoleUser, "continue"),
+			Inputs:  map[string]any{"pipeline": "image"},
+		})
+
+	got, ok, err := session.ParkedRequest(context.Background())
+	if err != nil || !ok {
+		t.Fatalf("ParkedRequest after park = (%+v, %v, %v), want parked request", got, ok, err)
+	}
+	if got.TaskID != "task-9" || got.Message.Content.Text() != "continue" {
+		t.Fatalf("ParkedRequest = %+v, want task-9 / 'continue'", got)
+	}
+	if got.Inputs["pipeline"] != "image" {
+		t.Fatalf("ParkedRequest.Inputs = %+v, want pipeline=image", got.Inputs)
+	}
+
+	// A committed resume clears the parked marker and request.
+	turn, err := session.Resume(context.Background())
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if req, ok, err := session.ParkedRequest(context.Background()); err != nil || ok {
+		t.Fatalf("ParkedRequest after commit = (%+v, %v, %v), want cleared", req, ok, err)
+	}
+}
+
 func TestSessionResume_RejectsNonResumableEngine(t *testing.T) {
 	engine := agent.EngineFunc(func(
 		_ context.Context,
