@@ -239,12 +239,19 @@ func (t targetsTool) Execute(ctx context.Context, arguments string) (string, err
 // rejectUnexpectedArguments accepts the empty string, JSON null, and the
 // empty object as a no-argument call and rejects anything else. Models
 // routinely emit {} when invoking a parameterless tool, so the guard
-// admits exactly what the tool schema already allows.
+// admits exactly what the tool schema already allows. Malformed JSON is
+// reported as a parse error, distinct from valid JSON that carries
+// unexpected arguments.
 func rejectUnexpectedArguments(arguments string) error {
-	if strings.TrimSpace(arguments) == "" {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
 		return nil
 	}
-	if err := decodeStrict(arguments, &struct{}{}); err != nil {
+	var probe any
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return errdefs.Validationf("%s: parse arguments: %v", TargetsToolName, err)
+	}
+	if err := decodeStrict(trimmed, &struct{}{}); err != nil {
 		return errdefs.Validationf("%s: no arguments expected", TargetsToolName)
 	}
 	return nil

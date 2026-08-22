@@ -344,16 +344,40 @@ func TestTargetsToolAcceptsNoArgumentForms(t *testing.T) {
 }
 
 func TestTargetsToolRejectsArgumentsAndMissingDirectory(t *testing.T) {
-	if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
-		context.Background(), `{"target":"billing"}`); !errdefs.IsValidation(err) {
-		t.Fatalf("Execute with args = %v, want Validation", err)
-	}
-	if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
-		context.Background(), `[]`); !errdefs.IsValidation(err) {
-		t.Fatalf("Execute with array args = %v, want Validation", err)
+	for name, arguments := range map[string]string{
+		"object":    `{"target":"billing"}`,
+		"array":     `[]`,
+		"malformed": `{`,
+		"trailing":  `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
+				context.Background(), arguments); !errdefs.IsValidation(err) {
+				t.Fatalf("Execute(%q) = %v, want Validation", arguments, err)
+			}
+		})
 	}
 	if _, err := (tooldelegation.NewTargets(nil)).Execute(
 		context.Background(), ""); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("Execute without directory = %v, want NotAvailable", err)
+	}
+}
+
+func TestTargetsToolArgumentErrorsDistinguishMalformedJSON(t *testing.T) {
+	targets := tooldelegation.NewTargets(&fakeDirectory{})
+	for name, arguments := range map[string]string{
+		"malformed": `{`,
+		"trailing":  `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := targets.Execute(context.Background(), arguments)
+			if err == nil || !strings.Contains(err.Error(), "parse arguments") {
+				t.Fatalf("error = %v, want parse arguments", err)
+			}
+		})
+	}
+	_, err := targets.Execute(context.Background(), `{"target":"billing"}`)
+	if err == nil || !strings.Contains(err.Error(), "no arguments expected") {
+		t.Fatalf("unexpected arguments error = %v, want no arguments expected", err)
 	}
 }
