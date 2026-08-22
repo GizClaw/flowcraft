@@ -173,11 +173,24 @@ Behavior:
   as an assistant `tool_call` paired with a `tool` result telling the model
   the tool is not exposed and to use `tool_search`, sets
   `recover_pending_key` to true (`tool_pending_key` to false), and returns
-  success. The graph must route on `recover_pending_key` back to inference —
-  never through a tool node, which would execute the call. `max_per_run`
+  success. The graph must route the recovered round back to inference: the
+  `recover_pending_key` marker is the explicit hook for an edge back into
+  the tool loop (e.g. `llm -> compact` conditioned on
+  `recover_pending == true`). With a standard tool-pending graph whose
+  `llm -> __end__` edge fires when `tool_pending == false`, a recovered
+  round without a loop-back edge terminates the run right after appending
+  the feedback — the model never gets another round. A graph whose tool
+  loop already routes the inference node back unconditionally can omit the
+  marker, but the feedback tail must reach an inference node, never a tool
+  node: a tool node would execute the replayed call, and a miswired
+  recover edge can execute deferred-but-registered tools with real side
+  effects. Validate graph edges when enabling recovery. `max_per_run`
   (default 2) bounds recoveries per graph run; past it the rejection fails
-  the node as before, keeping strict deployments intact. `tool_choice`
-  `named`/`required` violations are never recovered.
+  the node as before, keeping strict deployments intact. One rejection
+  discards the whole round's response — the other tool calls in the same
+  response are dropped, and only the offending call is replayed as
+  feedback. `tool_choice` `named`/`required` violations are never
+  recovered.
 - Usage is reported to the host on every call. In stream mode a mid-stream
   failure commits the buffered partial text to the board and reports the
   last usage snapshot before propagating the error.

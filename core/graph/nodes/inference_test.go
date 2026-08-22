@@ -501,6 +501,167 @@ func TestInferenceNode_UndefinedToolRecoveryKeepsNamedChoiceStrict(t *testing.T)
 	}
 }
 
+func undefinedToolResponse(name string) inference.GenerateResponse {
+	return inference.GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolCallPart{Call: message.ToolCall{
+					ID: "call-1", Name: name, Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+		},
+		FinishReason: inference.FinishToolCalls,
+	}
+}
+
+func textResponse(text string) inference.GenerateResponse {
+	return inference.GenerateResponse{
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{message.TextPart{Text: text}}},
+		},
+		FinishReason: inference.FinishCompleted,
+	}
+}
+
+// TestInferenceGraph_UndefinedToolRecoveryLoop proves the full recovery
+// cycle at graph level: the recovered round loops back to the inference
+// node on recover_pending, the next round succeeds, the marker is cleared,
+// and the per-run recovery counter survives to the end of the run.
+func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				return undefinedToolResponse("ghost")
+			}
+			return textResponse("ok")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "recovery-loop",
+		Entry: "llm",
+		Nodes: []graph.NodeDefinition{{
+			ID: "llm", Type: "inference",
+			Config: mustConfig(t, InferenceConfig{
+				Model:                 ptr(inferencetest.DefaultFakeModel),
+				Tools:                 []string{"known"},
+				ToolPendingKey:        "tool_pending",
+				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+				RecoverPendingKey:     "recover_pending",
+				RecoverCountKey:       "recover_count",
+			}),
+		}},
+		Edges: []graph.EdgeDefinition{
+			{From: "llm", To: "llm", Condition: "recover_pending == true"},
+			{From: "llm", To: graph.END,
+				Condition: "tool_pending == false && recover_pending != true"},
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	requests := fake.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("llm rounds = %d, want 2 (recovered round + success round)", len(requests))
+	}
+	// The recovered round's feedback must ride into the next request:
+	// the fabricated assistant call sits in context and the rejection is
+	// the tool-role input.
+	if len(requests[1].Context) != 2 {
+		t.Fatalf("second round context length = %d, want 2", len(requests[1].Context))
+	}
+	call, ok := requests[1].Context[1].Content.Parts[0].(message.ToolCallPart)
+	if !ok || call.Call.Name != "ghost" {
+		t.Fatalf("second round context call = %+v", requests[1].Context[1].Content.Parts[0])
+	}
+	result, ok := requests[1].Input.Content.Parts[0].(message.ToolResultPart)
+	if !ok || !result.Result.IsError || !strings.Contains(result.Result.Content, "tool_search") {
+		t.Fatalf("second round input = %+v", requests[1].Input.Content.Parts[0])
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 4 {
+		t.Fatalf("channel length = %d, want 4 (user, recovered pair, final answer)", len(msgs))
+	}
+	if text, ok := msgs[3].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
+		t.Fatalf("final assistant message = %+v, want text %q", msgs[3], "ok")
+	}
+	if v, _ := board.GetVar("recover_pending"); v != false {
+		t.Fatalf("recover_pending = %v, want false after success round", v)
+	}
+	if v, _ := board.GetVar("recover_count"); v != 1 {
+		t.Fatalf("recover_count = %v, want 1 retained to run end", v)
+	}
+}
+
+// TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds documents
+// the routing contract: with a standard tool-pending graph (llm ends when
+// tool_pending is false) and no recover loop-back edge, a recovered round
+// terminates the run after appending the feedback — the model never gets
+// another round. Recovery therefore needs an explicit route back to the
+// inference node (or a graph whose tool loop already routes llm back
+// unconditionally).
+func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return undefinedToolResponse("ghost")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "recovery-no-route",
+		Entry: "llm",
+		Nodes: []graph.NodeDefinition{{
+			ID: "llm", Type: "inference",
+			Config: mustConfig(t, InferenceConfig{
+				Model:                 ptr(inferencetest.DefaultFakeModel),
+				Tools:                 []string{"known"},
+				ToolPendingKey:        "tool_pending",
+				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+				RecoverPendingKey:     "recover_pending",
+				RecoverCountKey:       "recover_count",
+			}),
+		}},
+		Edges: []graph.EdgeDefinition{
+			{From: "llm", To: graph.END, Condition: "tool_pending == false"},
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if requests := fake.Requests(); len(requests) != 1 {
+		t.Fatalf("llm rounds = %d, want 1 (run ends after the recovered round)", len(requests))
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 3 {
+		t.Fatalf("channel length = %d, want 3 (feedback appended, no final answer)", len(msgs))
+	}
+}
+
 // fakeVisibleCatalog is a minimal stand-in for a catalog whose
 // Definitions are the final model-visible set (the dynamic injection
 // view being one such implementation): it accepts RequiredByName
