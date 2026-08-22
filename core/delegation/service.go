@@ -749,13 +749,36 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		}
 	}()
 
-	turn, err := lease.Session().StartWithOptions(execCtx, agent.Request{
+	opts := s.delegationStartOptions(persistent)
+	request := agent.Request{
 		ContextID: key.ContextID,
 		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
 		Inputs:    metadataInputs(req),
-	}, s.delegationStartOptions(persistent)...)
-	if err != nil {
-		return Response{}, err
+	}
+
+	// Resume path: a persistent session retried with the identical
+	// request replays the parked run from its checkpoint instead of
+	// starting fresh. Anything that cannot resume — no parked request,
+	// a mismatched retry request, a missing checkpoint, or an engine
+	// that cannot resume — falls through to a fresh Start.
+	var turn *session.Turn
+	if persistent {
+		if parked, ok, err := lease.Session().ParkedRequest(execCtx); err != nil {
+			return Response{}, err
+		} else if ok && sameDelegationRequest(request, parked) {
+			if resumed, err := lease.Session().ResumeWithOptions(execCtx, opts...); err == nil {
+				turn = resumed
+			} else if !errdefs.IsNotFound(err) && !errdefs.IsNotAvailable(err) {
+				return Response{}, err
+			}
+		}
+	}
+	if turn == nil {
+		var err error
+		turn, err = lease.Session().StartWithOptions(execCtx, request, opts...)
+		if err != nil {
+			return Response{}, err
+		}
 	}
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
@@ -925,6 +948,16 @@ func (s *LocalService) delegationStartOptions(persistent bool) []session.StartOp
 		options = append(options, session.WithEphemeral())
 	}
 	return options
+}
+
+// sameDelegationRequest reports whether two delegation requests are
+// identical for resume purposes: the same user message and the same
+// metadata inputs. ContextID and RunID are session plumbing stamped by
+// the service and are ignored.
+func sameDelegationRequest(a, b agent.Request) bool {
+	return a.Message.Role == b.Message.Role &&
+		a.Message.Content.Text() == b.Message.Content.Text() &&
+		reflect.DeepEqual(a.Inputs, b.Inputs)
 }
 
 // refuseSubagentAskUser is the default subagent asker: subagents never
