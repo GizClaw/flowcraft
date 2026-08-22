@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.24` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.25` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.25` - 2026-08-22
+
+### Changed
+
+- feat(core/delegation): resume parked delegated runs on identical retry — persistent-session delegations now check Session.ParkedRequest and replay the parked run from its checkpoint under the original run id when the retried request matches (same message and metadata inputs), with any resume or probe failure (missing checkpoint, unreadable parked state, transient store errors, non-resumable engine) degrading to a fresh start with a warning instead of failing the retry, and a successful run clearing the parked marker; fix(core/delegation): delegation_targets accepts empty-object and null arguments as a no-argument call — the parameterless tool now admits "", whitespace, {}, and JSON null, rejects non-empty objects, arrays, and scalars as no-arguments-expected, and reports malformed or trailing JSON as a parse error
 
 ## `core/v0.1.24` - 2026-08-21
 
