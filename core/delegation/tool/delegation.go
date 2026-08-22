@@ -217,8 +217,8 @@ func (t targetsTool) Definition() message.ToolDefinition {
 }
 
 func (t targetsTool) Execute(ctx context.Context, arguments string) (string, error) {
-	if strings.TrimSpace(arguments) != "" {
-		return "", errdefs.Validationf("%s: no arguments expected", TargetsToolName)
+	if err := rejectUnexpectedArguments(arguments); err != nil {
+		return "", err
 	}
 	if t.directory == nil {
 		return "", errdefs.NotAvailablef("%s: no directory wired", TargetsToolName)
@@ -234,6 +234,20 @@ func (t targetsTool) Execute(ctx context.Context, arguments string) (string, err
 		return "", errdefs.Internal(fmt.Errorf("%s: encode targets: %w", TargetsToolName, err))
 	}
 	return string(raw), nil
+}
+
+// rejectUnexpectedArguments accepts the empty string, JSON null, and the
+// empty object as a no-argument call and rejects anything else. Models
+// routinely emit {} when invoking a parameterless tool, so the guard
+// admits exactly what the tool schema already allows.
+func rejectUnexpectedArguments(arguments string) error {
+	if strings.TrimSpace(arguments) == "" {
+		return nil
+	}
+	if err := decodeStrict(arguments, &struct{}{}); err != nil {
+		return errdefs.Validationf("%s: no arguments expected", TargetsToolName)
+	}
+	return nil
 }
 
 func serviceFromContext(ctx context.Context) (sdkdelegation.Service, error) {

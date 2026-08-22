@@ -322,10 +322,35 @@ func TestTargetsToolListsCurrentTargets(t *testing.T) {
 	}
 }
 
+func TestTargetsToolAcceptsNoArgumentForms(t *testing.T) {
+	directory := &fakeDirectory{targets: []sdkdelegation.Target{{ID: "billing"}}}
+	targets := tooldelegation.NewTargets(directory)
+	for name, arguments := range map[string]string{
+		"empty":        "",
+		"blank":        "   ",
+		"empty object": "{}",
+		"null":         "null",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := targets.Execute(context.Background(), arguments)
+			if err != nil {
+				t.Fatalf("Execute(%q): %v", arguments, err)
+			}
+			if !strings.Contains(out, `"billing"`) {
+				t.Fatalf("output = %s, want billing", out)
+			}
+		})
+	}
+}
+
 func TestTargetsToolRejectsArgumentsAndMissingDirectory(t *testing.T) {
 	if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
-		context.Background(), `{}`); !errdefs.IsValidation(err) {
+		context.Background(), `{"target":"billing"}`); !errdefs.IsValidation(err) {
 		t.Fatalf("Execute with args = %v, want Validation", err)
+	}
+	if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
+		context.Background(), `[]`); !errdefs.IsValidation(err) {
+		t.Fatalf("Execute with array args = %v, want Validation", err)
 	}
 	if _, err := (tooldelegation.NewTargets(nil)).Execute(
 		context.Background(), ""); !errdefs.IsNotAvailable(err) {
