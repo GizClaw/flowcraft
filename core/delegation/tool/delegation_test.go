@@ -322,13 +322,62 @@ func TestTargetsToolListsCurrentTargets(t *testing.T) {
 	}
 }
 
+func TestTargetsToolAcceptsNoArgumentForms(t *testing.T) {
+	directory := &fakeDirectory{targets: []sdkdelegation.Target{{ID: "billing"}}}
+	targets := tooldelegation.NewTargets(directory)
+	for name, arguments := range map[string]string{
+		"empty":        "",
+		"blank":        "   ",
+		"empty object": "{}",
+		"null":         "null",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := targets.Execute(context.Background(), arguments)
+			if err != nil {
+				t.Fatalf("Execute(%q): %v", arguments, err)
+			}
+			if !strings.Contains(out, `"billing"`) {
+				t.Fatalf("output = %s, want billing", out)
+			}
+		})
+	}
+}
+
 func TestTargetsToolRejectsArgumentsAndMissingDirectory(t *testing.T) {
-	if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
-		context.Background(), `{}`); !errdefs.IsValidation(err) {
-		t.Fatalf("Execute with args = %v, want Validation", err)
+	for name, arguments := range map[string]string{
+		"object":    `{"target":"billing"}`,
+		"array":     `[]`,
+		"malformed": `{`,
+		"trailing":  `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := (tooldelegation.NewTargets(&fakeDirectory{})).Execute(
+				context.Background(), arguments); !errdefs.IsValidation(err) {
+				t.Fatalf("Execute(%q) = %v, want Validation", arguments, err)
+			}
+		})
 	}
 	if _, err := (tooldelegation.NewTargets(nil)).Execute(
 		context.Background(), ""); !errdefs.IsNotAvailable(err) {
 		t.Fatalf("Execute without directory = %v, want NotAvailable", err)
+	}
+}
+
+func TestTargetsToolArgumentErrorsDistinguishMalformedJSON(t *testing.T) {
+	targets := tooldelegation.NewTargets(&fakeDirectory{})
+	for name, arguments := range map[string]string{
+		"malformed": `{`,
+		"trailing":  `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := targets.Execute(context.Background(), arguments)
+			if err == nil || !strings.Contains(err.Error(), "parse arguments") {
+				t.Fatalf("error = %v, want parse arguments", err)
+			}
+		})
+	}
+	_, err := targets.Execute(context.Background(), `{"target":"billing"}`)
+	if err == nil || !strings.Contains(err.Error(), "no arguments expected") {
+		t.Fatalf("unexpected arguments error = %v, want no arguments expected", err)
 	}
 }

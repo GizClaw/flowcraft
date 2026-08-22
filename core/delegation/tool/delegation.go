@@ -217,8 +217,8 @@ func (t targetsTool) Definition() message.ToolDefinition {
 }
 
 func (t targetsTool) Execute(ctx context.Context, arguments string) (string, error) {
-	if strings.TrimSpace(arguments) != "" {
-		return "", errdefs.Validationf("%s: no arguments expected", TargetsToolName)
+	if err := rejectUnexpectedArguments(arguments); err != nil {
+		return "", err
 	}
 	if t.directory == nil {
 		return "", errdefs.NotAvailablef("%s: no directory wired", TargetsToolName)
@@ -234,6 +234,27 @@ func (t targetsTool) Execute(ctx context.Context, arguments string) (string, err
 		return "", errdefs.Internal(fmt.Errorf("%s: encode targets: %w", TargetsToolName, err))
 	}
 	return string(raw), nil
+}
+
+// rejectUnexpectedArguments accepts the empty string, JSON null, and the
+// empty object as a no-argument call and rejects anything else. Models
+// routinely emit {} when invoking a parameterless tool, so the guard
+// admits exactly what the tool schema already allows. Malformed JSON is
+// reported as a parse error, distinct from valid JSON that carries
+// unexpected arguments.
+func rejectUnexpectedArguments(arguments string) error {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return nil
+	}
+	var probe any
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return errdefs.Validationf("%s: parse arguments: %v", TargetsToolName, err)
+	}
+	if err := decodeStrict(trimmed, &struct{}{}); err != nil {
+		return errdefs.Validationf("%s: no arguments expected", TargetsToolName)
+	}
+	return nil
 }
 
 func serviceFromContext(ctx context.Context) (sdkdelegation.Service, error) {
