@@ -350,7 +350,7 @@ func (p *pipeline[Req, Wire, Raw, Resp]) execute(
 		return zero, compiled.Report, NewError(InvalidProviderResponse, p.operation, "", err)
 	}
 	if err := p.validateResponse(request, response); err != nil {
-		return zero, compiled.Report, NewError(InvalidProviderResponse, p.operation, "", err)
+		return zero, compiled.Report, newResponseValidationError(p.operation, err)
 	}
 	return response, compiled.Report, nil
 }

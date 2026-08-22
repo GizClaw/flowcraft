@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -44,6 +45,22 @@ type InferenceConfig struct {
 	// tool_calls — the boolean condition edges branch on to route
 	// through a tool node and loop back.
 	ToolPendingKey string `json:"tool_pending_key,omitempty"`
+	// UndefinedToolRecovery converts a generate rejection for a tool
+	// call absent from the exposed definitions into in-conversation
+	// feedback instead of failing the node: the rejected call is
+	// replayed as an assistant tool_call paired with a tool result
+	// telling the model the tool is not exposed and to use tool_search.
+	// The graph routes on RecoverPendingKey back to inference — never
+	// through a tool node, which would execute the call. Strict
+	// deployments leave this disabled and keep failing hard.
+	UndefinedToolRecovery *UndefinedToolRecoveryConfig `json:"undefined_tool_recovery,omitempty"`
+	// RecoverPendingKey, when set, receives whether the current round
+	// was recovered from an undefined-tool response. Graph conditions
+	// route on it to loop back to inference.
+	RecoverPendingKey string `json:"recover_pending_key,omitempty"`
+	// RecoverCountKey, when set, receives the per-run recovery counter.
+	// The node hard-fails once it reaches MaxPerRun.
+	RecoverCountKey string `json:"recover_count_key,omitempty"`
 
 	// Stream opens a GenerateStream and publishes text and reasoning
 	// deltas as token stream events. Reasoning fragments arrive as
@@ -82,6 +99,26 @@ type InferenceConfig struct {
 	Extensions []inference.ExtensionEntry `json:"extensions,omitempty"`
 }
 
+// UndefinedToolRecoveryConfig configures the inference node's
+// recoverable handling of undefined-tool responses.
+type UndefinedToolRecoveryConfig struct {
+	// Enabled turns recovery on. Defaults to false: undefined tool
+	// calls fail the node exactly as before.
+	Enabled bool `json:"enabled,omitempty"`
+	// MaxPerRun caps how many undefined-tool responses one graph run
+	// converts into feedback before failing hard. Zero falls back to 2.
+	MaxPerRun int `json:"max_per_run,omitempty"`
+}
+
+// defaultUndefinedToolMaxRecoveries bounds how many undefined-tool
+// responses one graph run converts into feedback before failing hard.
+const defaultUndefinedToolMaxRecoveries = 2
+
+// undefinedToolFeedback is the model-readable rejection appended as a
+// tool result when a response names a tool the model was never shown.
+const undefinedToolFeedback = "tool %q is not exposed in this round's tool set; " +
+	"call tool_search to find and select it before calling it again"
+
 // InferenceNodeDeps wires the inference node's collaborators. Runtime
 // serves configs carrying an explicit model; Router serves configs
 // without one. Either may be nil if no graph needs it — the error
@@ -115,6 +152,8 @@ func Inference(deps InferenceNodeDeps) graph.NodeType[InferenceConfig] {
 				{Kind: graph.RoleVar, ConfigKey: "output_key"},
 				{Kind: graph.RoleVar, ConfigKey: "usage_key"},
 				{Kind: graph.RoleVar, ConfigKey: "tool_pending_key"},
+				{Kind: graph.RoleVar, ConfigKey: "recover_pending_key"},
+				{Kind: graph.RoleVar, ConfigKey: "recover_count_key"},
 			},
 		},
 		Handler: func(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig) error {
@@ -133,6 +172,11 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 	if channel == "" {
 		channel = agent.MainChannel
 	}
+	if cfg.UndefinedToolRecovery != nil && cfg.UndefinedToolRecovery.Enabled &&
+		(cfg.RecoverPendingKey == "" || cfg.RecoverCountKey == "") {
+		return errdefs.Validationf(
+			"inference node: undefined_tool_recovery requires recover_pending_key and recover_count_key")
+	}
 	req, err := buildGenerateRequest(ec, board, channel, cfg, deps)
 	if err != nil {
 		return err
@@ -140,7 +184,12 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 
 	resp, err := executeGenerate(ec, board, cfg, deps, req)
 	if err != nil {
-		return err
+		return recoverUndefinedTool(ec, board, channel, cfg, err)
+	}
+	if cfg.RecoverPendingKey != "" {
+		// A successful round clears the recovery marker so the loop
+		// returns to its normal edges.
+		board.SetVar(cfg.RecoverPendingKey, false)
 	}
 	// Mirror the provider request / response identifiers and token
 	// usage onto the node span after a successful call so
@@ -198,6 +247,74 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 		return err
 	}
 	return nil
+}
+
+// recoverUndefinedTool converts an undefined-tool generate failure into
+// in-conversation feedback when the node is configured to recover. The
+// rejected call is replayed as an assistant tool_call paired with a tool
+// result explaining how to expose the tool — the message shape providers
+// require — but the graph must route back to inference, never through a
+// tool node, or the call would be executed for real. The original error
+// is returned when recovery is disabled, the failure is not an
+// undefined-tool rejection, or the per-run budget is exhausted.
+func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, err error) error {
+	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
+		return err
+	}
+	var infErr *inference.Error
+	if !errors.As(err, &infErr) ||
+		infErr.Kind != inference.UndefinedTool ||
+		infErr.UndefinedToolCall == nil {
+		return err
+	}
+	max := cfg.UndefinedToolRecovery.MaxPerRun
+	if max <= 0 {
+		max = defaultUndefinedToolMaxRecoveries
+	}
+	count := recoveryCount(board, cfg)
+	if count >= max {
+		return err
+	}
+	call := *infErr.UndefinedToolCall
+	board.AppendChannelMessage(channel, message.Message{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolCallPart{Call: call},
+		}},
+	})
+	board.AppendChannelMessage(channel, message.Message{
+		Role: message.RoleTool,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.ToolResult{
+				CallID:  call.ID,
+				Content: fmt.Sprintf(undefinedToolFeedback, call.Name),
+				IsError: true,
+			}},
+		}},
+	})
+	if cfg.ToolPendingKey != "" {
+		board.SetVar(cfg.ToolPendingKey, false)
+	}
+	board.SetVar(cfg.RecoverPendingKey, true)
+	board.SetVar(cfg.RecoverCountKey, count+1)
+	telemetry.Warn(ec.Context, "inference node: recovered undefined tool call",
+		otellog.String("node.type", "inference"),
+		otellog.String("tool.name", call.Name),
+		otellog.Int("recovery.count", count+1))
+	return nil
+}
+
+// recoveryCount reads the per-run undefined-tool recovery counter.
+func recoveryCount(board *agent.Board, cfg InferenceConfig) int {
+	count, ok := board.GetVar(cfg.RecoverCountKey)
+	if !ok {
+		return 0
+	}
+	n, ok := count.(int)
+	if !ok {
+		return 0
+	}
+	return n
 }
 
 // emitGenerationTerminal publishes the terminal stream deltas of one

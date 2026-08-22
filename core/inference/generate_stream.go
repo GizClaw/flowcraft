@@ -463,7 +463,7 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	response.Usage.Model = s.model
 	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := response.ValidateFor(s.request); err != nil {
-		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+		s.resultErr = newResponseValidationError(OperationGenerate, err)
 		return
 	}
 	s.result = response

@@ -135,6 +135,9 @@ onto `tool_pending_key` and the graph routes onward.
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
 | `usage_key`                              | board var receiving the call's `inference.Usage`                                                                  |
 | `tool_pending_key`                       | board var receiving `finish_reason == tool_calls` (the condition edges branch on)                                 |
+| `undefined_tool_recovery`                | `{enabled, max_per_run}`: convert an undefined-tool rejection into in-conversation feedback instead of failing the node; disabled by default |
+| `recover_pending_key`                    | board var receiving whether the round was recovered from an undefined-tool response (loop-back condition)             |
+| `recover_count_key`                      | board var receiving the per-run recovery counter (node hard-fails past `max_per_run`)                               |
 | `stream`                                 | open a `GenerateStream`; text/reasoning deltas stream incrementally, the board still gets one assembled message   |
 | `tools`                                  | named catalog tools the model may call this turn                                                                  |
 | `all_tools`                              | send the catalog's entire visible set; with `tools`, names are declared `RequiredByName` and must exist           |
@@ -163,6 +166,18 @@ Behavior:
   the provider's compiler.
 - With `tools`/`all_tools` configured the tools dep's catalog must be wired;
   unknown names fail the node.
+- A response whose tool calls name tools absent from the exposed definitions
+  is rejected by the engine with a distinguishable `undefined_tool` error
+  (not the generic `invalid_provider_response`). When
+  `undefined_tool_recovery` is enabled, the node replays the rejected call
+  as an assistant `tool_call` paired with a `tool` result telling the model
+  the tool is not exposed and to use `tool_search`, sets
+  `recover_pending_key` to true (`tool_pending_key` to false), and returns
+  success. The graph must route on `recover_pending_key` back to inference —
+  never through a tool node, which would execute the call. `max_per_run`
+  (default 2) bounds recoveries per graph run; past it the rejection fails
+  the node as before, keeping strict deployments intact. `tool_choice`
+  `named`/`required` violations are never recovered.
 - Usage is reported to the host on every call. In stream mode a mid-stream
   failure commits the buffered partial text to the board and reports the
   last usage snapshot before propagating the error.

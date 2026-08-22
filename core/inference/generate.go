@@ -387,6 +387,20 @@ func (r GenerateResponse) Validate() error {
 	return nil
 }
 
+// undefinedToolError reports a tool call whose name is absent from the
+// request's tool definitions. ValidateFor returns it instead of a plain
+// error so callers can distinguish "the model called a tool it was never
+// shown" (deterministic, potentially recoverable via tool_search) from
+// other response corruption.
+type undefinedToolError struct {
+	Index int
+	Call  message.ToolCall
+}
+
+func (e *undefinedToolError) Error() string {
+	return fmt.Sprintf("generate tool call %d names undefined tool %q", e.Index, e.Call.Name)
+}
+
 func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 	deriveGenerateUsage(request, &r)
 	if err := r.Validate(); err != nil {
@@ -459,7 +473,7 @@ func (r GenerateResponse) ValidateFor(request GenerateRequest) error {
 		}
 		for index, call := range toolCalls {
 			if _, ok := definitions[call.Call.Name]; !ok {
-				return fmt.Errorf("generate tool call %d names undefined tool %q", index, call.Call.Name)
+				return &undefinedToolError{Index: index, Call: call.Call}
 			}
 		}
 		if choice := intent.Text.ToolChoice; choice != nil {
