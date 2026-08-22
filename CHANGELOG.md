@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.25` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.26` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.26` - 2026-08-22
+
+### Changed
+
+- feat(core): recover from undefined tool calls instead of failing the turn — a model response that names a tool absent from the exposed definitions now rejects with a distinguishable undefined_tool inference error (deterministic and non-retryable) instead of invalid_provider_response, and the inference graph node gains opt-in undefined_tool_recovery config ({enabled, max_per_run}, default 2) that replays the rejected call as an assistant tool_call paired with a tool result telling the model the tool is not exposed and to use tool_search, sets recover_pending_key/recover_count_key board vars with tool_pending_key false, and returns success so the graph can route the round back to inference; recovery is bounded per graph run, strict deployments keep hard-failing, named/required tool_choice violations are never recovered, and one rejection discards the round's other tool calls; docs and graph-level tests cover the loop-back routing contract
 
 ## `core/v0.1.25` - 2026-08-22
 
