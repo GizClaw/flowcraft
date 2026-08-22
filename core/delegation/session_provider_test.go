@@ -504,8 +504,9 @@ func TestRunAtSessionPathAsyncRun(t *testing.T) {
 // delegationCheckpointStore is a minimal in-memory CheckpointDeleter
 // used to exercise the delegation resume path end to end.
 type delegationCheckpointStore struct {
-	mu  sync.Mutex
-	cps map[string]agent.Checkpoint
+	mu             sync.Mutex
+	cps            map[string]agent.Checkpoint
+	loadFailPrefix string
 }
 
 func newDelegationCheckpointStore() *delegationCheckpointStore {
@@ -522,6 +523,9 @@ func (s *delegationCheckpointStore) Save(_ context.Context, cp agent.Checkpoint)
 func (s *delegationCheckpointStore) Load(_ context.Context, execID string) (*agent.Checkpoint, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.loadFailPrefix != "" && strings.HasPrefix(execID, s.loadFailPrefix) {
+		return nil, errdefs.Fmt("delegation test store: read failed for %s", execID)
+	}
 	cp, ok := s.cps[execID]
 	if !ok {
 		return nil, nil
@@ -726,6 +730,37 @@ func TestRunAtPersistentRetryFallsBackWhenEngineCannotResume(t *testing.T) {
 	}
 	if attempts != 2 {
 		t.Fatalf("engine attempts = %d, want 2", attempts)
+	}
+}
+
+func TestRunAtPersistentRetryFallsBackWhenResumeReadFails(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	store.loadFailPrefix = "run-"
+	engine := &resumeAwareDelegationEngine{store: store, writeCheckpoint: true}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "store-flaky", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+
+	first, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+
+	second, err := service.Delegate(context.Background(), syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	if engine.attempts != 2 {
+		t.Fatalf("engine attempts = %d, want 2", engine.attempts)
+	}
+	if engine.resumed {
+		t.Fatal("retry with an unreadable checkpoint must fall back to a fresh start")
 	}
 }
 

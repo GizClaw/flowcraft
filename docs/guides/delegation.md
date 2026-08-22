@@ -92,8 +92,10 @@ request and the session key match:
   checkpoint under the original run id (`runtime.sessions.resume` and a
   `checkpoint_store` are required);
 - a different message or inputs → a fresh turn starts on the same session;
-- a parked marker with no checkpoint, or an engine that cannot resume,
-  falls back to a fresh start rather than failing the retry.
+- any failure to replay — a missing checkpoint, unreadable parked state,
+  transient checkpoint-store read errors, or an engine that cannot
+  resume — falls back to a fresh start with a warning rather than
+  failing the retry.
 
 Resume replays the request stored with the parked run; callers retrying a
 job should send the exact same message and inputs. After a successful run

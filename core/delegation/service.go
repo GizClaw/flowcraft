@@ -758,18 +758,28 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 
 	// Resume path: a persistent session retried with the identical
 	// request replays the parked run from its checkpoint instead of
-	// starting fresh. Anything that cannot resume — no parked request,
-	// a mismatched retry request, a missing checkpoint, or an engine
-	// that cannot resume — falls through to a fresh Start.
+	// starting fresh. Resume is best-effort for a retry: any failure to
+	// probe or replay — transient checkpoint-store errors, unreadable
+	// parked state, a missing checkpoint, or an engine that cannot
+	// resume — degrades to a fresh Start with a warning rather than
+	// failing the retry. Start re-validates the session and surfaces
+	// real failures.
 	var turn *session.Turn
 	if persistent {
-		if parked, ok, err := lease.Session().ParkedRequest(execCtx); err != nil {
-			return Response{}, err
+		parked, ok, err := lease.Session().ParkedRequest(execCtx)
+		if err != nil {
+			telemetry.WarnErr(execCtx,
+				"local delegation: cannot inspect parked run, starting fresh", err,
+				otellog.String(telemetry.AttrAgentID, key.AgentID),
+				otellog.String(telemetry.AttrConversationID, key.ContextID))
 		} else if ok && sameDelegationRequest(request, parked) {
 			if resumed, err := lease.Session().ResumeWithOptions(execCtx, opts...); err == nil {
 				turn = resumed
-			} else if !errdefs.IsNotFound(err) && !errdefs.IsNotAvailable(err) {
-				return Response{}, err
+			} else {
+				telemetry.WarnErr(execCtx,
+					"local delegation: resume parked run failed, starting fresh", err,
+					otellog.String(telemetry.AttrAgentID, key.AgentID),
+					otellog.String(telemetry.AttrConversationID, key.ContextID))
 			}
 		}
 	}
