@@ -2,10 +2,12 @@ package inference
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -118,5 +120,79 @@ func TestValidateGenerateText(t *testing.T) {
 				t.Fatalf("validateGenerateText error = %v, want containing %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateForUndefinedTool(t *testing.T) {
+	req := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
+				Intent: Intent{Text: &TextIntent{
+					Tools: []message.ToolDefinition{message.DefineSchema("known", "a known tool").Build()},
+				}},
+			},
+		},
+	}
+	resp := GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolCallPart{Call: message.ToolCall{
+					ID: "call-1", Name: "ghost", Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+		},
+		FinishReason: FinishToolCalls,
+	}
+	err := resp.ValidateFor(req)
+	var ute *undefinedToolError
+	if !errors.As(err, &ute) {
+		t.Fatalf("ValidateFor error = %v, want *undefinedToolError", err)
+	}
+	if ute.Index != 0 || ute.Call.Name != "ghost" {
+		t.Fatalf("undefined tool error = %+v, want call 0 ghost", ute)
+	}
+
+	wrapped := newResponseValidationError(OperationGenerate, err)
+	if wrapped.Kind != UndefinedTool {
+		t.Fatalf("wrapped kind = %q, want %q", wrapped.Kind, UndefinedTool)
+	}
+	if wrapped.UndefinedToolCall == nil ||
+		wrapped.UndefinedToolCall.ID != "call-1" ||
+		wrapped.UndefinedToolCall.Name != "ghost" {
+		t.Fatalf("wrapped call = %+v, want call-1/ghost", wrapped.UndefinedToolCall)
+	}
+	if !errdefs.IsValidation(wrapped) {
+		t.Fatalf("wrapped error must classify as validation, got %v", wrapped)
+	}
+}
+
+func TestValidateForKnownToolCall(t *testing.T) {
+	req := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{message.TextPart{Text: "hi"}}},
+				Intent: Intent{Text: &TextIntent{
+					Tools: []message.ToolDefinition{message.DefineSchema("known", "a known tool").Build()},
+				}},
+			},
+		},
+	}
+	resp := GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolCallPart{Call: message.ToolCall{
+					ID: "call-1", Name: "known", Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+		},
+		FinishReason: FinishToolCalls,
+	}
+	if err := resp.ValidateFor(req); err != nil {
+		t.Fatalf("ValidateFor known tool call: %v", err)
 	}
 }

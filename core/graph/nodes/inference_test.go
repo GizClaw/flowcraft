@@ -121,6 +121,17 @@ func toolCatalog(t *testing.T, tools ...tool.Tool) *tool.Registry {
 	return reg
 }
 
+// stubTool is a minimal catalog tool for node tests.
+type stubTool struct {
+	name, desc string
+}
+
+func (t stubTool) Definition() message.ToolDefinition {
+	return message.DefineSchema(t.name, t.desc).Build()
+}
+
+func (stubTool) Execute(context.Context, string) (string, error) { return "ok", nil }
+
 func inferenceRegistry(t *testing.T, deps InferenceNodeDeps) *graph.Registry {
 	t.Helper()
 	reg := graph.NewRegistry()
@@ -284,6 +295,370 @@ func TestInferenceNode_UnknownToolRejected(t *testing.T) {
 	})
 	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("unknown tool error = %v, want validation-classified", err)
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.ToolCall{
+							ID: "call-1", Name: "ghost", Arguments: json.RawMessage(`{}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known"},
+		ToolPendingKey:        "tool_pending",
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 3 {
+		t.Fatalf("channel length = %d, want 3 (user + assistant call + tool rejection)", len(msgs))
+	}
+	call, ok := msgs[1].Content.Parts[0].(message.ToolCallPart)
+	if !ok || msgs[1].Role != message.RoleAssistant || call.Call.Name != "ghost" {
+		t.Fatalf("recovered assistant message = %+v", msgs[1])
+	}
+	result, ok := msgs[2].Content.Parts[0].(message.ToolResultPart)
+	if !ok || msgs[2].Role != message.RoleTool || !result.Result.IsError ||
+		result.Result.CallID != "call-1" || !strings.Contains(result.Result.Content, "tool_search") {
+		t.Fatalf("recovered tool message = %+v", msgs[2])
+	}
+	if v, _ := board.GetVar("recover_pending"); v != true {
+		t.Fatalf("recover_pending = %v, want true", v)
+	}
+	if v, _ := board.GetVar("recover_count"); v != 1 {
+		t.Fatalf("recover_count = %v, want 1", v)
+	}
+	if v, _ := board.GetVar("tool_pending"); v != false {
+		t.Fatalf("tool_pending = %v, want false", v)
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecoveryDisabled(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.ToolCall{
+							ID: "call-1", Name: "ghost", Arguments: json.RawMessage(`{}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model: ptr(inferencetest.DefaultFakeModel),
+		Tools: []string{"known"},
+	})
+	board := userBoard()
+	err := executeGraph(t, g, agent.NoopHost{}, board)
+	var infErr *inference.Error
+	if !errors.As(err, &infErr) || infErr.Kind != inference.UndefinedTool {
+		t.Fatalf("error = %v, want undefined_tool", err)
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (no feedback when recovery disabled)", len(msgs))
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecoveryBudget(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.ToolCall{
+							ID: "call-1", Name: "ghost", Arguments: json.RawMessage(`{}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known"},
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 1},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+	})
+	board := userBoard()
+	board.SetVar("recover_count", 1) // one recovery already spent this run
+	err := executeGraph(t, g, agent.NoopHost{}, board)
+	var infErr *inference.Error
+	if !errors.As(err, &infErr) || infErr.Kind != inference.UndefinedTool {
+		t.Fatalf("error = %v, want undefined_tool past budget", err)
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (no feedback past budget)", len(msgs))
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecoveryRequiresKeys(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !errdefs.IsValidation(err) {
+		t.Fatalf("missing keys error = %v, want validation", err)
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecoveryClearsMarker(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:             ptr(inferencetest.DefaultFakeModel),
+		RecoverPendingKey: "recover_pending",
+	})
+	board := userBoard()
+	board.SetVar("recover_pending", true)
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if v, _ := board.GetVar("recover_pending"); v != false {
+		t.Fatalf("recover_pending = %v, want false after success", v)
+	}
+}
+
+func TestInferenceNode_UndefinedToolRecoveryKeepsNamedChoiceStrict(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return inference.GenerateResponse{
+				Message: message.Message{
+					Role: message.RoleAssistant,
+					Content: message.Content{Parts: []message.Part{
+						message.ToolCallPart{Call: message.ToolCall{
+							ID: "call-1", Name: "other", Arguments: json.RawMessage(`{}`),
+						}},
+					}},
+				},
+				FinishReason: inference.FinishToolCalls,
+			}
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog: toolCatalog(t,
+			stubTool{name: "known", desc: "the named-choice tool"},
+			stubTool{name: "other", desc: "a defined but unchosen tool"},
+		),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known", "other"},
+		ToolChoice:            &inference.ToolChoice{Kind: inference.ToolChoiceNamed, Name: "known"},
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+	})
+	board := userBoard()
+	err := executeGraph(t, g, agent.NoopHost{}, board)
+	var infErr *inference.Error
+	if !errors.As(err, &infErr) || infErr.Kind != inference.InvalidProviderResponse {
+		t.Fatalf("error = %v, want invalid_provider_response for named-choice violation", err)
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (named choice never recovered)", len(msgs))
+	}
+}
+
+func undefinedToolResponse(name string) inference.GenerateResponse {
+	return inference.GenerateResponse{
+		Message: message.Message{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.ToolCallPart{Call: message.ToolCall{
+					ID: "call-1", Name: name, Arguments: json.RawMessage(`{}`),
+				}},
+			}},
+		},
+		FinishReason: inference.FinishToolCalls,
+	}
+}
+
+func textResponse(text string) inference.GenerateResponse {
+	return inference.GenerateResponse{
+		Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{message.TextPart{Text: text}}},
+		},
+		FinishReason: inference.FinishCompleted,
+	}
+}
+
+// TestInferenceGraph_UndefinedToolRecoveryLoop proves the full recovery
+// cycle at graph level: the recovered round loops back to the inference
+// node on recover_pending, the next round succeeds, the marker is cleared,
+// and the per-run recovery counter survives to the end of the run.
+func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				return undefinedToolResponse("ghost")
+			}
+			return textResponse("ok")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "recovery-loop",
+		Entry: "llm",
+		Nodes: []graph.NodeDefinition{{
+			ID: "llm", Type: "inference",
+			Config: mustConfig(t, InferenceConfig{
+				Model:                 ptr(inferencetest.DefaultFakeModel),
+				Tools:                 []string{"known"},
+				ToolPendingKey:        "tool_pending",
+				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+				RecoverPendingKey:     "recover_pending",
+				RecoverCountKey:       "recover_count",
+			}),
+		}},
+		Edges: []graph.EdgeDefinition{
+			{From: "llm", To: "llm", Condition: "recover_pending == true"},
+			{From: "llm", To: graph.END,
+				Condition: "tool_pending == false && recover_pending != true"},
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	requests := fake.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("llm rounds = %d, want 2 (recovered round + success round)", len(requests))
+	}
+	// The recovered round's feedback must ride into the next request:
+	// the fabricated assistant call sits in context and the rejection is
+	// the tool-role input.
+	if len(requests[1].Context) != 2 {
+		t.Fatalf("second round context length = %d, want 2", len(requests[1].Context))
+	}
+	call, ok := requests[1].Context[1].Content.Parts[0].(message.ToolCallPart)
+	if !ok || call.Call.Name != "ghost" {
+		t.Fatalf("second round context call = %+v", requests[1].Context[1].Content.Parts[0])
+	}
+	result, ok := requests[1].Input.Content.Parts[0].(message.ToolResultPart)
+	if !ok || !result.Result.IsError || !strings.Contains(result.Result.Content, "tool_search") {
+		t.Fatalf("second round input = %+v", requests[1].Input.Content.Parts[0])
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 4 {
+		t.Fatalf("channel length = %d, want 4 (user, recovered pair, final answer)", len(msgs))
+	}
+	if text, ok := msgs[3].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
+		t.Fatalf("final assistant message = %+v, want text %q", msgs[3], "ok")
+	}
+	if v, _ := board.GetVar("recover_pending"); v != false {
+		t.Fatalf("recover_pending = %v, want false after success round", v)
+	}
+	if v, _ := board.GetVar("recover_count"); v != 1 {
+		t.Fatalf("recover_count = %v, want 1 retained to run end", v)
+	}
+}
+
+// TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds documents
+// the routing contract: with a standard tool-pending graph (llm ends when
+// tool_pending is false) and no recover loop-back edge, a recovered round
+// terminates the run after appending the feedback — the model never gets
+// another round. Recovery therefore needs an explicit route back to the
+// inference node (or a graph whose tool loop already routes llm back
+// unconditionally).
+func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			return undefinedToolResponse("ghost")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "recovery-no-route",
+		Entry: "llm",
+		Nodes: []graph.NodeDefinition{{
+			ID: "llm", Type: "inference",
+			Config: mustConfig(t, InferenceConfig{
+				Model:                 ptr(inferencetest.DefaultFakeModel),
+				Tools:                 []string{"known"},
+				ToolPendingKey:        "tool_pending",
+				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+				RecoverPendingKey:     "recover_pending",
+				RecoverCountKey:       "recover_count",
+			}),
+		}},
+		Edges: []graph.EdgeDefinition{
+			{From: "llm", To: graph.END, Condition: "tool_pending == false"},
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if requests := fake.Requests(); len(requests) != 1 {
+		t.Fatalf("llm rounds = %d, want 1 (run ends after the recovered round)", len(requests))
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 3 {
+		t.Fatalf("channel length = %d, want 3 (feedback appended, no final answer)", len(msgs))
 	}
 }
 

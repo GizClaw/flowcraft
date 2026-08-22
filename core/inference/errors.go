@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type ErrorKind string
@@ -23,6 +24,12 @@ const (
 	CompilerContractViolation ErrorKind = "compiler_contract_violation"
 	ProviderFailure           ErrorKind = "provider_failure"
 	InvalidProviderResponse   ErrorKind = "invalid_provider_response"
+	// UndefinedTool marks a response whose tool calls name tools absent
+	// from the request's definitions. It is distinct from
+	// InvalidProviderResponse so callers can offer a recoverable path
+	// (e.g. feedback that sends the model back to tool_search) without
+	// weakening the contract for genuinely corrupt responses.
+	UndefinedTool ErrorKind = "undefined_tool"
 )
 
 // Error carries safe structural context. Error() deliberately excludes the
@@ -49,7 +56,12 @@ type Error struct {
 	// Runtime telemetry mirrors it onto error spans and logs as
 	// llm.request.id.
 	RequestID string
-	cause     error
+	// UndefinedToolCall is the first tool call rejected because its name
+	// was absent from the request's definitions. Populated only for
+	// UndefinedTool errors; a recovering caller uses it to reconstruct the
+	// call for in-conversation feedback.
+	UndefinedToolCall *message.ToolCall
+	cause             error
 }
 
 func NewError(kind ErrorKind, operation Operation, field FieldID, cause error) *Error {
@@ -129,6 +141,12 @@ func (kind ErrorKind) classify(cause error) error {
 		return errdefs.Aborted(classified)
 	case CompilerContractViolation, InvalidProviderResponse:
 		return errdefs.Internal(cause)
+	case UndefinedTool:
+		// Deterministic response violation: the model referenced a tool
+		// it was never shown. Retrying the same request cannot help, so
+		// it classifies as validation (non-retryable) rather than
+		// internal.
+		return errdefs.Validation(cause)
 	case ProviderFailure:
 		classified := errdefs.FromContext(cause)
 		if errdefs.HasClassification(classified) {
@@ -138,4 +156,19 @@ func (kind ErrorKind) classify(cause error) error {
 	default:
 		return errdefs.Internal(fmt.Errorf("unknown inference error kind %q: %w", kind, cause))
 	}
+}
+
+// newResponseValidationError classifies a GenerateResponse.ValidateFor
+// failure. Undefined tool calls become UndefinedTool (deterministic,
+// potentially recoverable); every other contract violation stays
+// InvalidProviderResponse (provider-side corruption).
+func newResponseValidationError(operation Operation, err error) *Error {
+	var ute *undefinedToolError
+	if errors.As(err, &ute) {
+		out := NewError(UndefinedTool, operation, "", err)
+		call := ute.Call
+		out.UndefinedToolCall = &call
+		return out
+	}
+	return NewError(InvalidProviderResponse, operation, "", err)
 }
