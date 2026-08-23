@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core/runtime/session): add Manager.DeleteSession for by-key removal of a session's durable state — drop the checkpoint-store record (committed board/history, parked run marker, resumable request) and the parked run's checkpoint for one agent+context key, drain and close any live session with RemoveAgent-style rollback semantics (opens refused while in flight, ctx-bounded drain with full rollback on timeout, idempotent retries), and only delete durable state after the session confirms its active turn stopped so a budgeted close timeout returns a retryable error instead of letting afterTurn resurrect state; feat(core/inference): per-call model hint for router generate selection — GenerateRequest gains an optional model_hint (provider/name or bare name) consumed only by the route selector, the inference graph node gains model_hint config resolving board references per invocation (${board.model}) so a per-conversation choice can ride agent.Request inputs, a hinted target is tried first and falls back to the default chain on failure (execute/preflight/circuit-open, never re-attempting the failed hint), unknown/ambiguous/output-incompatible hints fall back to the default policy, and hint matching is profile-blind; docs updated in guides/graph.md and guides/inference.md",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
