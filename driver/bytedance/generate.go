@@ -87,6 +87,7 @@ const (
 	wireContentText  wireContentKind = "text"
 	wireContentImage wireContentKind = "image"
 	wireContentVideo wireContentKind = "video"
+	wireContentAudio wireContentKind = "audio"
 )
 
 type wireContent struct {
@@ -475,7 +476,14 @@ func compileMessage(
 				uri:  videoSourceURI(value.Source),
 			})
 		case message.AudioPart:
-			ledger.reject(fields[message.PartAudio], "audio input is not supported by generate models")
+			if !slices.Contains(entry.capabilities.Inputs, message.PartAudio) {
+				ledger.reject(fields[message.PartAudio], "model does not accept audio input")
+				continue
+			}
+			content = append(content, wireContent{
+				kind: wireContentAudio,
+				uri:  audioSourceURI(value.Source),
+			})
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
@@ -670,6 +678,14 @@ func sourceURI(source media.ImageSource) string {
 }
 
 func videoSourceURI(source media.VideoSource) string {
+	if source.Kind() == media.SourceURL {
+		return source.URL()
+	}
+	return "data:" + source.MediaType() + ";base64," +
+		base64.StdEncoding.EncodeToString(source.Bytes())
+}
+
+func audioSourceURI(source media.AudioSource) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
 	}

@@ -239,6 +239,15 @@ func arkMessageContent(content []wireContent) *arkresponses.MessageContent {
 					},
 				},
 			})
+		case wireContentAudio:
+			items = append(items, &arkresponses.ContentItem{
+				Union: &arkresponses.ContentItem_Audio{
+					Audio: &arkresponses.ContentItemAudio{
+						Type:     arkresponses.ContentItemType_input_audio,
+						AudioUrl: part.uri,
+					},
+				},
+			})
 		}
 	}
 	return &arkresponses.MessageContent{
