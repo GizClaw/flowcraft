@@ -135,9 +135,9 @@ var catalog = map[string]catalogEntry{
 	},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
-	// The 260215 lite revision retired in 2026-05, but the 260428 revision
-	// stays live (and is Ark's recommended audio-understanding model), so
-	// the stable family name remains routable.
+	// The 260215 revisions retired in 2026-05, but the 260428 lite/mini
+	// revisions stay live and are Ark's recommended audio-understanding
+	// models, so the stable family names remain routable.
 	"doubao-seed-2-0-pro": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
@@ -149,7 +149,7 @@ var catalog = map[string]catalogEntry{
 	"doubao-seed-2-0-lite": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
-			WithInputs(message.PartImage, message.PartVideo).
+			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 256_000,
@@ -157,7 +157,7 @@ var catalog = map[string]catalogEntry{
 	"doubao-seed-2-0-mini": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
-			WithInputs(message.PartImage, message.PartVideo).
+			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 256_000,

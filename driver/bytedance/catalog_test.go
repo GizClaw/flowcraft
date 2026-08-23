@@ -101,6 +101,35 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	}
 }
 
+func TestCatalogDeclaresAudioInput(t *testing.T) {
+	provider, err := buildProvider(ResourceSettings{ID: "bytedance"})
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	for _, model := range provider.Models {
+		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	}
+	// Ark's audio-understanding line is the 260428 lite/mini revisions;
+	// the rest of the generate family does not take audio input.
+	checks := map[string]bool{
+		"doubao-seed-2-0-lite": true,
+		"doubao-seed-2-0-mini": true,
+		"doubao-seed-2-0-pro":  false,
+		"doubao-seed-2-1-pro":  false,
+		"doubao-seed-evolving": false,
+	}
+	for name, want := range checks {
+		descriptor, ok := descriptors[name]
+		if !ok {
+			t.Fatalf("model %q missing from provider", name)
+		}
+		if has := slices.Contains(descriptor.Capabilities.Inputs, message.PartAudio); has != want {
+			t.Errorf("model %q: audio input = %v, want %v", name, has, want)
+		}
+	}
+}
+
 func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 	spec, err := decodeSpec([]byte(
 		`{"models":[{"name":"m","kind":"image","capabilities":{"outputs":["text"]}}]}`,
