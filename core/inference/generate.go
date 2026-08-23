@@ -93,6 +93,14 @@ type GenerateRequest struct {
 	Context    []message.Message `json:"context,omitempty" ledger:"generate.context.*.role"`
 	Input      GenerateInput     `json:"input" ledger:"generate.input.role"`
 	Extensions Extensions        `json:"-" ledger:"extension"`
+
+	// ModelHint is an optional per-call model preference consumed by the
+	// inference router's generate selection: "provider/name" or a bare
+	// model name. The router honors it only when it names a configured
+	// target that can serve the request; otherwise selection falls back
+	// to the default policy. Providers never interpret the hint — it is
+	// routing metadata, not a provider knob.
+	ModelHint string `json:"model_hint,omitempty"`
 }
 
 func (r GenerateRequest) Clone() GenerateRequest {

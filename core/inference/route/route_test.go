@@ -1183,3 +1183,220 @@ func TestRouterTranscribeSessionCircuitBreakerSkipsOpenTarget(t *testing.T) {
 		t.Fatalf("second attempts = %+v, want circuit-open skip", trace.Attempts)
 	}
 }
+
+func providerDefinitionNamed(
+	t *testing.T,
+	id, name string,
+	fail bool,
+	outputs []message.PartKind,
+) inference.ProviderDefinition {
+	t.Helper()
+	driver, err := inference.BindGenerate(
+		routeCompiler(),
+		routeTransport(fail),
+		routeDecode(),
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	return inference.ProviderDefinition{
+		ID: id,
+		Models: []inference.ModelImplementation{{
+			Descriptor: inference.ModelDescriptor{
+				ID: inference.ModelID{Provider: id, Name: name},
+				Capabilities: inference.ModelCapabilities{
+					Outputs: outputs,
+				},
+			},
+			Openers: inference.Openers{
+				Generate: func(
+					context.Context, inference.ModelRef,
+				) (inference.GenerateOperations, error) {
+					return inference.GenerateOperations{Unary: driver}, nil
+				},
+			},
+		}},
+	}
+}
+
+func hintedRequest(hint string) inference.GenerateRequest {
+	request := routeRequest()
+	request.ModelHint = hint
+	return request
+}
+
+func TestPolicyGenerateHintSelectsConfiguredTarget(t *testing.T) {
+	good := inference.ModelRef{
+		ID:      inference.ModelID{Provider: "good", Name: "model-1"},
+		Profile: "prod",
+	}
+	policy := Policy{Generate: []Pool{
+		{Tier: "primary", Targets: []Target{{Model: inference.ModelRef{
+			ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+		}}}},
+		{Tier: "fallback", Targets: []Target{{Model: good}}},
+	}}
+	selectors := policy.Selectors(nil)
+	decision, err := selectors.Generate.SelectGenerate(
+		context.Background(),
+		hintedRequest("good/model-1"),
+	)
+	if err != nil {
+		t.Fatalf("SelectGenerate: %v", err)
+	}
+	if decision.Selected != good {
+		t.Fatalf("Selected = %+v, want hinted target %+v", decision.Selected, good)
+	}
+	if decision.Tier != "fallback" {
+		t.Fatalf("Tier = %q, want hinted target's tier", decision.Tier)
+	}
+}
+
+func TestPolicyGenerateHintUnknownOrEmptyFallsBack(t *testing.T) {
+	first := inference.ModelRef{
+		ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+	}
+	policy := Policy{Generate: []Pool{
+		{Tier: "primary", Targets: []Target{{Model: first}}},
+		{Tier: "fallback", Targets: []Target{{Model: inference.ModelRef{
+			ID: inference.ModelID{Provider: "good", Name: "model-1"},
+		}}}},
+	}}
+	selectors := policy.Selectors(nil)
+	for _, hint := range []string{"", "nope/model-1", "bad/model-2", "/model-1", "bad/"} {
+		decision, err := selectors.Generate.SelectGenerate(
+			context.Background(),
+			hintedRequest(hint),
+		)
+		if err != nil {
+			t.Fatalf("hint %q: SelectGenerate: %v", hint, err)
+		}
+		if decision.Selected != first {
+			t.Fatalf("hint %q: Selected = %+v, want default %+v", hint, decision.Selected, first)
+		}
+	}
+}
+
+func TestPolicyGenerateHintBareNameUniqueAndAmbiguous(t *testing.T) {
+	first := inference.ModelRef{
+		ID: inference.ModelID{Provider: "provider-a", Name: "model-a"},
+	}
+	second := inference.ModelRef{
+		ID: inference.ModelID{Provider: "provider-b", Name: "model-b"},
+	}
+	policy := Policy{Generate: []Pool{{
+		Tier: "primary",
+		Targets: []Target{
+			{Model: first},
+			{Model: second},
+		},
+	}}}
+	selectors := policy.Selectors(nil)
+
+	decision, err := selectors.Generate.SelectGenerate(
+		context.Background(),
+		hintedRequest("model-b"),
+	)
+	if err != nil {
+		t.Fatalf("SelectGenerate(bare unique): %v", err)
+	}
+	if decision.Selected != second {
+		t.Fatalf("bare hint Selected = %+v, want %+v", decision.Selected, second)
+	}
+
+	ambiguous := Policy{Generate: []Pool{{
+		Tier: "primary",
+		Targets: []Target{
+			{Model: inference.ModelRef{
+				ID: inference.ModelID{Provider: "provider-a", Name: "shared"},
+			}},
+			{Model: inference.ModelRef{
+				ID: inference.ModelID{Provider: "provider-b", Name: "shared"},
+			}},
+		},
+	}}}
+	ambiguousSelectors := ambiguous.Selectors(nil)
+	decision, err = ambiguousSelectors.Generate.SelectGenerate(
+		context.Background(),
+		hintedRequest("shared"),
+	)
+	if err != nil {
+		t.Fatalf("SelectGenerate(ambiguous): %v", err)
+	}
+	wantFirst := inference.ModelRef{
+		ID: inference.ModelID{Provider: "provider-a", Name: "shared"},
+	}
+	if decision.Selected != wantFirst {
+		t.Fatalf("ambiguous bare hint Selected = %+v, want first target", decision.Selected)
+	}
+}
+
+func TestPolicyGenerateHintTargetUnsupportedOutputsFallsBack(t *testing.T) {
+	assembly := assemblyWithProviders(t, map[string]inference.ProviderDefinition{
+		"provider.image": providerDefinitionNamed(t, "image-only", "model-1", false, []message.PartKind{message.PartImage}),
+		"provider.text":  providerDefinitionNamed(t, "text-only", "model-1", false, []message.PartKind{message.PartText}),
+	})
+	textRef := inference.ModelRef{
+		ID: inference.ModelID{Provider: "text-only", Name: "model-1"},
+	}
+	policy := Policy{Generate: []Pool{{
+		Tier: "primary",
+		Targets: []Target{
+			{Model: inference.ModelRef{
+				ID: inference.ModelID{Provider: "image-only", Name: "model-1"},
+			}},
+			{Model: textRef},
+		},
+	}}}
+	selectors := policy.Selectors(assembly)
+	decision, err := selectors.Generate.SelectGenerate(
+		context.Background(),
+		hintedRequest("image-only/model-1"),
+	)
+	if err != nil {
+		t.Fatalf("SelectGenerate: %v", err)
+	}
+	if decision.Selected != textRef {
+		t.Fatalf("Selected = %+v, want capability-compatible fallback %+v",
+			decision.Selected, textRef)
+	}
+}
+
+func TestRouterGenerateHintSelectsTargetWithoutFallback(t *testing.T) {
+	assembly := newRouteAssembly(t)
+	goodRef := inference.ModelRef{
+		ID: inference.ModelID{Provider: "good", Name: "model-1"},
+	}
+	policy := Policy{
+		Generate: []Pool{
+			{Tier: "primary", Targets: []Target{{Model: inference.ModelRef{
+				ID: inference.ModelID{Provider: "bad", Name: "model-1"},
+			}}}},
+			{Tier: "fallback", Targets: []Target{{Model: goodRef}}},
+		},
+	}
+	options, err := policy.Options()
+	if err != nil {
+		t.Fatalf("Options: %v", err)
+	}
+	router, err := New(assembly, policy.Selectors(assembly), options...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	response, trace, err := router.Generate(
+		context.Background(),
+		hintedRequest("good/model-1"),
+	)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if response.Usage.TotalTokens != 7 {
+		t.Fatalf("usage = %+v, want hinted target response", response.Usage)
+	}
+	if len(trace.Fallbacks) != 0 {
+		t.Fatalf("fallbacks = %+v, want none (hint picked the good target first)", trace.Fallbacks)
+	}
+	if trace.Executed != goodRef {
+		t.Fatalf("executed = %+v, want %+v", trace.Executed, goodRef)
+	}
+}

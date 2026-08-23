@@ -103,6 +103,15 @@ Scores guide selection only; they never claim a request is executable.
   cannot serve the request intent are skipped, while targets with
   undeclared capabilities are treated as undeclared (not unsupported) —
   preflight remains the final arbiter.
+- Generate selection honors an optional per-call `model_hint` on the
+  request (`provider/name`, or a bare name when exactly one configured
+  target carries it). The hint is a preference, not a bypass: it is
+  honored only when it names a configured target that can serve the
+  request, and any absent, unknown, malformed, or ambiguous hint falls
+  back to the default policy. A hint that selects a target in a lower
+  tier still falls back through the remaining declared targets if that
+  target fails. The hint is routing metadata — drivers never interpret
+  it — and it applies to both unary `Generate` and `GenerateStream`.
 - The `retry` section configures per-operation retries (same-target), each
   with `max_attempts`, an optional `max_total_attempts`, a `backoff`
   curve, an explicit `retryable` class list (`rate_limit`, `timeout`,

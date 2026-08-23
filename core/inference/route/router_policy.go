@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
@@ -124,6 +125,22 @@ func (r *policyRoute) SelectGenerate(
 		)
 	}
 	requested := request.Input.Content.Intent.OutputKinds()
+	if hinted := r.hintTarget(request.ModelHint); hinted != nil {
+		supported, err := r.supportsOutputs(hinted.model, requested)
+		if err != nil {
+			return Decision{}, err
+		}
+		if supported {
+			return Decision{
+				Operation: r.operation,
+				Tier:      hinted.tier,
+				Proposed:  hinted.model,
+				Selected:  hinted.model,
+			}, nil
+		}
+		// The hinted target exists but cannot serve this request's output
+		// kinds; fall through to the default capability-aware selection.
+	}
 	for _, target := range r.targets {
 		supported, err := r.supportsOutputs(target.model, requested)
 		if err != nil {
@@ -148,6 +165,45 @@ func (r *policyRoute) SelectGenerate(
 			requested,
 		),
 	)
+}
+
+// hintTarget resolves the optional per-call model hint to a configured
+// target, or nil when the hint is absent, malformed, or does not name a
+// unique configured target:
+//
+//   - "provider/name" matches the exact configured model id;
+//   - a bare "name" matches any configured target with that model name;
+//     when several targets share the name the hint is ambiguous and is
+//     ignored;
+//   - anything else (empty, unknown provider/name, malformed segments)
+//     is ignored.
+//
+// Matching ignores the target's credential profile: the hint selects the
+// model, and the deployment's configured profile stays authoritative.
+func (r *policyRoute) hintTarget(hint string) *policyTarget {
+	if hint == "" {
+		return nil
+	}
+	provider, name, qualified := strings.Cut(hint, "/")
+	if !qualified {
+		name = hint
+	}
+	var match *policyTarget
+	for index := range r.targets {
+		target := &r.targets[index]
+		if target.model.ID.Name != name {
+			continue
+		}
+		if qualified && target.model.ID.Provider != provider {
+			continue
+		}
+		if match != nil {
+			// Ambiguous bare-name hint: no unique configured target.
+			return nil
+		}
+		match = target
+	}
+	return match
 }
 
 // supportsOutputs reports whether the model can serve every requested output

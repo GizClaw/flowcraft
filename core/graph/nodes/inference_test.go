@@ -811,6 +811,71 @@ func TestInferenceNode_RouterPathWhenNoModel(t *testing.T) {
 	}
 }
 
+func TestInferenceNode_ModelHintFromBoard(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Assembly(t)
+	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		ModelHint: "${board.model}",
+	})
+	board := userBoard()
+	board.SetVar("model", "deepseek/deepseek-v4-flash")
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if req := fake.LastRequest(); req.ModelHint != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("routed request model_hint = %q, want board value", req.ModelHint)
+	}
+}
+
+func TestInferenceNode_ModelHintMissingBoardFallsBack(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Assembly(t)
+	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		ModelHint: "${board.model:}",
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if req := fake.LastRequest(); req.ModelHint != "" {
+		t.Fatalf("routed request model_hint = %q, want empty when board var is absent", req.ModelHint)
+	}
+}
+
+func TestInferenceNode_ModelHintStatic(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Assembly(t)
+	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		ModelHint: "good/model-1",
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if req := fake.LastRequest(); req.ModelHint != "good/model-1" {
+		t.Fatalf("routed request model_hint = %q, want static config value", req.ModelHint)
+	}
+}
+
+func TestInferenceNode_StreamCarriesModelHint(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	runtime := fake.Assembly(t)
+	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		ModelHint: "${board.model}",
+		Stream:    true,
+	})
+	board := userBoard()
+	board.SetVar("model", "deepseek/deepseek-v4-flash")
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if req := fake.LastRequest(); req.ModelHint != "deepseek/deepseek-v4-flash" {
+		t.Fatalf("stream request model_hint = %q, want board value", req.ModelHint)
+	}
+}
+
 func TestInferenceNode_NotAvailable(t *testing.T) {
 	reg := inferenceRegistry(t, InferenceNodeDeps{})
 

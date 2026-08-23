@@ -130,6 +130,7 @@ onto `tool_pending_key` and the graph routes onward.
 | Config field                             | Meaning                                                                                                           |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `model`                                  | explicit target `{id: {provider, name}, profile?}`; absent defers selection to the wired router                   |
+| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board.model}`); honored only when it names a configured target that can serve the request, otherwise the default policy applies |
 | `messages_channel`                       | board channel holding the conversation; empty means the main channel                                              |
 | `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
@@ -151,6 +152,15 @@ Behavior:
   the request context. An empty channel or wrong role is a validation error.
 - `model` uses the wired `inference.Assembly`; no `model` requires the
   `inference.Router` (selector/fallback chain picks the target).
+- `model_hint` is a request-level preference consumed only by the router:
+  it never bypasses the router or targets a model outside the configured
+  pools, and it is ignored when `model` is set. Board references resolve
+  per invocation, so a per-conversation choice can ride `agent.Request`
+  inputs (`inputs: {model: ...}`) and be read with `${board.model}` — pair
+  it with a default (`${board.model:}`) so turns without the input still
+  route with the default policy. A bare name is honored only when exactly
+  one configured target carries it; an unknown, malformed, or ambiguous
+  hint falls back to the default selection.
 - `intent` is the authoritative execution envelope and covers every
   generation modality: text controls (`response`, `max_output_tokens`,
   `tools`, `tool_choice`, `temperature`, `top_p`, `reasoning_enabled`,
