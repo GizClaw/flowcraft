@@ -1,11 +1,11 @@
 module github.com/GizClaw/flowcraft/driver/bytedance
 
-go 1.26.0
+go 1.25.0
 
 require (
-	github.com/GizClaw/doubao-speech-go v0.0.0-20260723152315-fe8153366feb
 	github.com/GizClaw/flowcraft/core v0.1.22
 	github.com/volcengine/volcengine-go-sdk v1.2.48
+	go.opentelemetry.io/otel/log v0.16.0
 )
 
 require (
@@ -14,7 +14,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.7 // indirect
 	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/klauspost/compress v1.13.5 // indirect
@@ -27,7 +26,6 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp v1.40.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.40.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.40.0 // indirect
-	go.opentelemetry.io/otel/log v0.16.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.43.0 // indirect
 	go.opentelemetry.io/otel/sdk/log v0.16.0 // indirect

@@ -8,7 +8,6 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/utils"
 
-	doubaospeech "github.com/GizClaw/doubao-speech-go"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 )
 
@@ -30,15 +29,13 @@ const defaultArkBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 type profileMaterial struct {
 	spec   ProfileSpec
 	apiKey string
-	speech string // speech API key override; empty means use apiKey
 }
 
 // clients bundles the service clients one profile needs. ark is nil when the
-// profile has no Ark credential; speech is nil when no speech credential/app
-// ID is available. Drivers check the client they need at open time.
+// profile has no Ark credential. Drivers check the client they need at open
+// time.
 type clients struct {
-	ark    *arkruntime.Client
-	speech *doubaospeech.Client
+	ark *arkruntime.Client
 	// endpoints binds model names to this account's deployment addresses
 	// (ProfileSpec.Endpoints); empty maps resolve to the catalog name.
 	endpoints map[string]string
@@ -69,7 +66,7 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 	material := profileMaterial{spec: spec}
 	for name := range profile.Secrets {
 		switch name {
-		case SecretAPIKey, SecretSpeechAPIKey:
+		case SecretAPIKey:
 		default:
 			return profileMaterial{}, fmt.Errorf(
 				"bytedance profile %q carries unknown secret %q",
@@ -81,23 +78,17 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
 		material.apiKey = strings.TrimSpace(secret)
 	}
-	if secret, ok := profile.Secrets[SecretSpeechAPIKey]; ok {
-		material.speech = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" && material.speech == "" {
+	if material.apiKey == "" {
 		return profileMaterial{}, fmt.Errorf(
-			"bytedance profile %q needs an Ark credential (%q) or a speech credential (%q)",
+			"bytedance profile %q needs an Ark credential (%q)",
 			profile.ID,
 			SecretAPIKey,
-			SecretSpeechAPIKey,
 		)
 	}
 	return material, nil
 }
 
-// newClients builds the service clients for one profile. Speech clients
-// require the profile's app_id; profiles without one get no speech client,
-// and speech drivers fail with a clear error when opened.
+// newClients builds the service clients for one profile.
 func (m profileMaterial) newClients(spec Spec) *clients {
 	built := &clients{endpoints: m.spec.Endpoints}
 	built.apiKey = m.apiKey
@@ -134,25 +125,6 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	if m.apiKey != "" {
 		built.ark = arkruntime.NewClientWithApiKey(m.apiKey, options...)
 	}
-	speechKey := m.speech
-	if speechKey == "" {
-		speechKey = m.apiKey
-	}
-	if speechKey != "" && m.spec.AppID != "" {
-		options := []doubaospeech.Option{doubaospeech.WithAPIKey(speechKey)}
-		// The speech SDK shares the httpkit retry budget with the Ark
-		// client so http_retries governs both surfaces.
-		options = append(options, doubaospeech.WithHTTPClient(
-			utils.NewHttpClient(httpOptions...),
-		))
-		if spec.SpeechBaseURL != "" {
-			options = append(options, doubaospeech.WithBaseURL(spec.SpeechBaseURL))
-		}
-		if spec.SpeechWebSocketURL != "" {
-			options = append(options, doubaospeech.WithWebSocketURL(spec.SpeechWebSocketURL))
-		}
-		built.speech = doubaospeech.NewClient(m.spec.AppID, options...)
-	}
 	return built
 }
 
@@ -166,16 +138,4 @@ func (c *clients) requireArk(profile string) (*arkruntime.Client, error) {
 		)
 	}
 	return c.ark, nil
-}
-
-// requireSpeech returns the Doubao speech client or a profile-scoped error.
-func (c *clients) requireSpeech(profile string) (*doubaospeech.Client, error) {
-	if c.speech == nil {
-		return nil, fmt.Errorf(
-			"bytedance profile %q needs a speech credential and app_id "+
-				"for Doubao speech services",
-			profile,
-		)
-	}
-	return c.speech, nil
 }

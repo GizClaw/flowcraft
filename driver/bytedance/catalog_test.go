@@ -87,11 +87,6 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		t.Fatalf("video outputs = %v, want video", video.Capabilities.Outputs)
 	}
 
-	tts := descriptors["doubao-tts-2-0"]
-	if !reflect.DeepEqual(tts.Capabilities.Outputs, []message.PartKind{message.PartAudio}) {
-		t.Fatalf("tts outputs = %v, want audio", tts.Capabilities.Outputs)
-	}
-
 	embed := descriptors["doubao-embedding-vision"]
 	if !slices.Contains(embed.Capabilities.Inputs, message.PartImage) {
 		t.Fatalf("multimodal embed inputs = %v, want image input", embed.Capabilities.Inputs)
