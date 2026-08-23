@@ -38,6 +38,38 @@ func TestIntentOutputKinds(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestModelHintCloneValidateAndJSON(t *testing.T) {
+	request := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "hi"},
+				}},
+				Intent: Intent{Text: &TextIntent{}},
+			},
+		},
+		ModelHint: "good/model-1",
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if clone := request.Clone(); clone.ModelHint != request.ModelHint {
+		t.Fatalf("Clone().ModelHint = %q, want %q", clone.ModelHint, request.ModelHint)
+	}
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded GenerateRequest
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.ModelHint != request.ModelHint {
+		t.Fatalf("JSON round-trip ModelHint = %q, want %q", decoded.ModelHint, request.ModelHint)
+	}
+}
+
 func TestValidateGenerateText(t *testing.T) {
 	arraySchema := json.RawMessage(
 		`{"type":"array","items":{"type":"string"}}`,

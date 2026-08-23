@@ -27,6 +27,14 @@ type InferenceConfig struct {
 	// absent the node defers target selection to the wired Router.
 	Model *inference.ModelRef `json:"model,omitempty"`
 
+	// ModelHint is an optional per-call model preference passed to the
+	// wired Router's generate selection: "provider/name" or a bare model
+	// name (e.g. "${board.model}"). The router honors it only when it
+	// names a configured target that can serve the request; otherwise it
+	// falls back to the default routing policy. Ignored when Model is
+	// set, since a static model bypasses the router entirely.
+	ModelHint string `json:"model_hint,omitempty"`
+
 	// MessagesChannel names the board channel holding the
 	// conversation; empty means the main channel. The channel's tail
 	// message is the current turn's input and must have role user or
@@ -404,6 +412,7 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 			},
 		},
 		Extensions: extensions,
+		ModelHint:  cfg.ModelHint,
 	}, nil
 }
 

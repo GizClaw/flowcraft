@@ -103,6 +103,23 @@ Scores guide selection only; they never claim a request is executable.
   cannot serve the request intent are skipped, while targets with
   undeclared capabilities are treated as undeclared (not unsupported) —
   preflight remains the final arbiter.
+- Generate selection honors an optional per-call `model_hint` on the
+  request (`provider/name`, or a bare name when exactly one configured
+  target carries it). The hint is a preference, not a bypass: a hinted
+  target that is absent, unknown, malformed, ambiguous, or whose declared
+  output kinds cannot serve the request is skipped, and selection falls
+  back to the default policy. When the hinted target is chosen but fails
+  at runtime, fallback restarts at the head of the declared order — the
+  hinted model is tried first and the rest of the chain keeps its normal
+  sequence, never re-attempting the failed hint. The hint matches by
+  provider + model name only; credential profiles are not part of the
+  hint, so a model configured under several profiles cannot be
+  distinguished per call (the deployment's configured profile stays
+  authoritative). A hinted target that the assembly reports as retired or
+  missing the operation is a selection error on both the hinted and
+  default paths (build-time policy validation already rejects such
+  targets). The hint is routing metadata — drivers never interpret it —
+  and it applies to both unary `Generate` and `GenerateStream`.
 - The `retry` section configures per-operation retries (same-target), each
   with `max_attempts`, an optional `max_total_attempts`, a `backoff`
   curve, an explicit `retryable` class list (`rate_limit`, `timeout`,
