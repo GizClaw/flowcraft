@@ -18,8 +18,6 @@ const (
 	kindEmbed    modelKind = "embed"
 	kindImage    modelKind = "image"
 	kindVideo    modelKind = "video"
-	kindTTS      modelKind = "tts"
-	kindASR      modelKind = "asr"
 )
 
 // catalogEntry is one model's declared capability set. capabilities is the
@@ -68,11 +66,7 @@ func (e catalogEntry) validate() error {
 		if !slices.Contains(e.capabilities.Outputs, message.PartVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
-	case kindTTS:
-		if !slices.Contains(e.capabilities.Outputs, message.PartAudio) {
-			return fmt.Errorf("tts family must declare audio output")
-		}
-	case kindEmbed, kindASR:
+	case kindEmbed:
 		if len(e.capabilities.Outputs) != 0 {
 			return fmt.Errorf("%s family declares no generate output", e.kind)
 		}
@@ -297,19 +291,6 @@ var catalog = map[string]catalogEntry{
 		maxResolution: "720p",
 		deprecated:    true, replacement: "doubao-seedance-2-0-fast",
 	},
-
-	// Logical names for speech families; the wire address (resource ID or
-	// fixed upstream model version) is resolved per driver. The ASR family
-	// defaults to the SAUC V2 streaming endpoint when the profile does not
-	// map the model to an account resource ID; realtime remains absent until
-	// core exposes that operation surface.
-	"doubao-tts-2-0": {
-		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText).
-			WithOutputs(message.PartAudio),
-	},
-	"doubao-seed-asr": {kind: kindASR},
 }
 
 // mergedCatalog overlays Spec.Models onto the built-in catalog and returns

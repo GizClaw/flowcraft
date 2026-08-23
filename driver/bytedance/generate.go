@@ -582,7 +582,7 @@ func compileIntent(
 	if intent.Audio != nil {
 		ledger.reject(
 			inference.FieldGenerateIntentAudio,
-			"text models do not synthesize speech; route a seed-tts model",
+			"text models do not synthesize speech",
 		)
 	}
 	text := intent.Text

@@ -204,32 +204,6 @@ func openersFor(
 				return openVideo(cls, spec, entry, id, model.Profile)
 			},
 		}
-	case kindTTS:
-		return inference.Openers{
-			Generate: func(
-				_ context.Context,
-				model inference.ModelRef,
-			) (inference.GenerateOperations, error) {
-				cls, err := open(model.Profile)
-				if err != nil {
-					return inference.GenerateOperations{}, err
-				}
-				return openTTS(cls, spec, id, model.Profile)
-			},
-		}
-	case kindASR:
-		return inference.Openers{
-			Transcribe: func(
-				_ context.Context,
-				model inference.ModelRef,
-			) (inference.TranscribeOperations, error) {
-				cls, err := open(model.Profile)
-				if err != nil {
-					return inference.TranscribeOperations{}, err
-				}
-				return openASR(cls, id, model.Profile)
-			},
-		}
 	}
 	return inference.Openers{}
 }

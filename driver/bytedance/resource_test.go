@@ -3,7 +3,6 @@ package bytedance
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -47,81 +46,6 @@ func TestResourceFactoryRejectsRealtime(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("New accepted kind realtime before core exposes that surface")
-	}
-}
-
-func TestResourceFactoryBuildsASRModel(t *testing.T) {
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
-			"id": "bytedance",
-			"spec": {},
-			"profiles": [{
-				"id": "default",
-				"secrets": {"speech_api_key": "sk-test"},
-				"spec": {"app_id": "app-test"}
-			}]
-		}`),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	provider := value.(inference.ProviderDefinition)
-	var model *inference.ModelImplementation
-	for index := range provider.Models {
-		if provider.Models[index].Descriptor.ID.Name == "doubao-seed-asr" {
-			model = &provider.Models[index]
-			break
-		}
-	}
-	if model == nil {
-		t.Fatalf("doubao-seed-asr missing from catalog")
-	}
-	if model.Openers.Transcribe == nil {
-		t.Fatalf("doubao-seed-asr has no Transcribe opener")
-	}
-	operations, err := model.Openers.Transcribe(context.Background(), inference.ModelRef{
-		ID:      model.Descriptor.ID,
-		Profile: "default",
-	})
-	if err != nil {
-		t.Fatalf("open ASR: %v", err)
-	}
-	if err := operations.Validate(); err != nil {
-		t.Fatalf("operations: %v", err)
-	}
-}
-
-func TestResourceFactoryASROpenRequiresSpeech(t *testing.T) {
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
-			"id": "bytedance",
-			"spec": {},
-			"profiles": [{
-				"id": "default",
-				"secrets": {"api_key": "sk-test"}
-			}]
-		}`),
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	provider := value.(inference.ProviderDefinition)
-	var model *inference.ModelImplementation
-	for index := range provider.Models {
-		if provider.Models[index].Descriptor.ID.Name == "doubao-seed-asr" {
-			model = &provider.Models[index]
-			break
-		}
-	}
-	if model == nil || model.Openers.Transcribe == nil {
-		t.Fatalf("doubao-seed-asr opener missing")
-	}
-	_, err = model.Openers.Transcribe(context.Background(), inference.ModelRef{
-		ID:      model.Descriptor.ID,
-		Profile: "default",
-	})
-	if err == nil || !strings.Contains(err.Error(), "app_id") {
-		t.Fatalf("open ASR error = %v, want app_id requirement", err)
 	}
 }
 

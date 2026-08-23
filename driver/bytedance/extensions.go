@@ -27,7 +27,6 @@ const (
 	extensionGenerate = "generate_options"
 	extensionImage    = "image_options"
 	extensionVideo    = "video_options"
-	extensionTTS      = "tts_options"
 )
 
 // extensionProvider resolves the deployment provider ID an extension targets,
@@ -393,72 +392,6 @@ func (o VideoOptions) Clone() inference.Extension {
 	o.CameraFixed = clonePointer(o.CameraFixed)
 	o.GenerateAudio = clonePointer(o.GenerateAudio)
 	o.ExecutionExpiresAfter = clonePointer(o.ExecutionExpiresAfter)
-	return o
-}
-
-// ---------------------------------------------------------------------------
-// Speech synthesis (Doubao TTS V2).
-// ---------------------------------------------------------------------------
-
-// TTSOptions carries Doubao TTS V2 settings beyond the canonical audio
-// intent. Rates are percentage offsets: 0 keeps the voice default.
-type TTSOptions struct {
-	// Provider targets a deployment provider ID other than "bytedance".
-	// Attempts for any other provider leave the extension inert rather than
-	// rejecting it, so mixed-provider routes keep working.
-	Provider string `json:"-"`
-	// PitchRate adjusts pitch in [-100, 100].
-	PitchRate *int `json:"pitch_rate,omitempty"`
-	// VolumeRate adjusts loudness in [-100, 100].
-	VolumeRate *int `json:"volume_rate,omitempty"`
-	// Emotion selects an emotional style supported by the voice.
-	Emotion string `json:"emotion,omitempty"`
-	// BitRate sets the compressed bitrate; rejected for raw PCM output.
-	BitRate *int `json:"bit_rate,omitempty"`
-	// Note: the provider's mixed-speaker mode is intentionally absent — the
-	// canonical audio intent makes a voice ID mandatory, so a mix replacing
-	// the voice has no truthful request shape.
-}
-
-func (o TTSOptions) ProviderID() string  { return extensionProvider(o.Provider) }
-func (o TTSOptions) ExtensionID() string { return extensionTTS }
-
-func (o TTSOptions) ActiveFields() []inference.ExtensionField {
-	var fields []inference.ExtensionField
-	if o.PitchRate != nil {
-		fields = append(fields, "pitch_rate")
-	}
-	if o.VolumeRate != nil {
-		fields = append(fields, "volume_rate")
-	}
-	if o.Emotion != "" {
-		fields = append(fields, "emotion")
-	}
-	if o.BitRate != nil {
-		fields = append(fields, "bit_rate")
-	}
-	return fields
-}
-
-func (o TTSOptions) Validate() error {
-	for name, rate := range map[string]*int{
-		"pitch_rate":  o.PitchRate,
-		"volume_rate": o.VolumeRate,
-	} {
-		if rate != nil && (*rate < -100 || *rate > 100) {
-			return fmt.Errorf("%s must be in [-100, 100], not %d", name, *rate)
-		}
-	}
-	if o.BitRate != nil && *o.BitRate <= 0 {
-		return fmt.Errorf("bit_rate must be positive, not %d", *o.BitRate)
-	}
-	return nil
-}
-
-func (o TTSOptions) Clone() inference.Extension {
-	o.PitchRate = clonePointer(o.PitchRate)
-	o.VolumeRate = clonePointer(o.VolumeRate)
-	o.BitRate = clonePointer(o.BitRate)
 	return o
 }
 

@@ -13,20 +13,8 @@ import (
 // Secret names owned by this provider. Profile secrets outside this set are
 // rejected at build time so typos fail fast instead of silently missing.
 const (
-	// SecretAPIKey authenticates the Ark runtime and is the default
-	// credential for Doubao speech services.
+	// SecretAPIKey authenticates the Ark runtime.
 	SecretAPIKey = "api_key"
-	// SecretSpeechAPIKey optionally overrides SecretAPIKey for speech
-	// services (TTS, ASR, realtime duplex).
-	SecretSpeechAPIKey = "speech_api_key"
-	// SecretAccessKey is the Volcengine IAM access key ID. Together with
-	// SecretSecretKey it authenticates Ark via AK/SK signing instead of an
-	// API key; the pair only covers generate and embed — images, video
-	// tasks, and speech services have no AK/SK channel.
-	SecretAccessKey = "access_key"
-	// SecretSecretKey is the Volcengine IAM secret access key paired with
-	// SecretAccessKey.
-	SecretSecretKey = "secret_key"
 )
 
 // Spec is the provider-level configuration for ByteDance. It must stay
@@ -34,14 +22,9 @@ const (
 type Spec struct {
 	// BaseURL overrides the Ark API base URL (regional endpoints, gateways).
 	BaseURL string `json:"base_url,omitempty"`
-	// SpeechBaseURL overrides the Doubao speech HTTP endpoint (TTS).
-	SpeechBaseURL string `json:"speech_base_url,omitempty"`
-	// SpeechWebSocketURL overrides the Doubao speech WebSocket endpoint (ASR,
-	// realtime duplex).
-	SpeechWebSocketURL string `json:"speech_web_socket_url,omitempty"`
-	// HTTPRetries bounds wire-level HTTP retries on the Ark and Doubao
-	// speech HTTP clients. Zero disables transport retries so the route
-	// Router owns the full retry budget; nil keeps the httpkit default.
+	// HTTPRetries bounds wire-level HTTP retries on the Ark HTTP client.
+	// Zero disables transport retries so the route Router owns the full
+	// retry budget; nil keeps the httpkit default.
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Region selects the Ark service region.
 	Region string `json:"region,omitempty"`
@@ -76,19 +59,13 @@ type ModelSpec struct {
 }
 
 // ProfileSpec is the per-credential-profile configuration. Endpoint IDs
-// (ep-xxx) and speech app IDs are account-scoped, so both live here rather
-// than at provider level: two profiles backed by different Volcengine
-// accounts bind the same logical model to different addresses.
+// (ep-xxx) are account-scoped, so they live here rather than at provider
+// level: two profiles backed by different Volcengine accounts bind the same
+// logical model to different addresses.
 type ProfileSpec struct {
-	// AppID is the Doubao speech application ID tied to the profile's API
-	// key. Speech services (TTS, ASR, realtime duplex) fail to open without
-	// it; Ark-only profiles may leave it empty.
-	AppID string `json:"app_id,omitempty"`
 	// Endpoints maps catalog model names to this account's deployment
-	// addresses: Ark inference endpoint IDs (ep-xxx) or speech resource
-	// IDs. For realtime models the mapped value pins the duplex dialog
-	// engine version instead. Unmapped models are addressed by their
-	// catalog name (realtime: the SDK default engine version).
+	// addresses: Ark inference endpoint IDs (ep-xxx). Unmapped models are
+	// addressed by their catalog name.
 	Endpoints map[string]string `json:"endpoints,omitempty"`
 }
 
@@ -122,17 +99,9 @@ func (s Spec) Validate() error {
 		return fmt.Errorf("http_retries must not be negative")
 	}
 	for name, value := range map[string]string{
-		"base_url":              s.BaseURL,
-		"speech_base_url":       s.SpeechBaseURL,
-		"speech_web_socket_url": s.SpeechWebSocketURL,
+		"base_url": s.BaseURL,
 	} {
 		if value == "" {
-			continue
-		}
-		if name == "speech_web_socket_url" {
-			if !strings.HasPrefix(value, "wss://") && !strings.HasPrefix(value, "ws://") {
-				return fmt.Errorf("speech_web_socket_url must be a ws(s) URL")
-			}
 			continue
 		}
 		if !strings.HasPrefix(value, "https://") && !strings.HasPrefix(value, "http://") {
@@ -157,7 +126,7 @@ func (m ModelSpec) Validate() error {
 		return fmt.Errorf("invalid model name %q", m.Name)
 	}
 	switch modelKind(m.Kind) {
-	case kindGenerate, kindEmbed, kindImage, kindVideo, kindTTS, kindASR:
+	case kindGenerate, kindEmbed, kindImage, kindVideo:
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
