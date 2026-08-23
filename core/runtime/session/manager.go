@@ -197,6 +197,11 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 			"runtime session: agent %q is not deployed", key.AgentID)
 	}
 	if entry := m.entries[key]; entry != nil {
+		if entry.session.isClosing() {
+			return nil, errdefs.NotAvailablef(
+				"runtime session: session %q/%q is closing",
+				key.AgentID, key.ContextID)
+		}
 		entry.leases++
 		entry.idleGeneration++
 		if entry.timer != nil {
@@ -414,9 +419,13 @@ func (m *Manager) ReopenAgent(name string) {
 //   - Repeated calls are idempotent: a key with no live Session and no
 //     persisted state deletes successfully.
 //
-// Deletion of the checkpoint store entries runs after the live Session
-// has closed, so a turn that started just before the close cannot
-// resurrect state underneath the delete. Store failures are returned
+// Deletion of the checkpoint store entries runs only after the live
+// Session confirms its active turn has stopped (afterTurn has run), so a
+// turn that started in the drain window cannot resurrect state underneath
+// the delete. Session.close's shutdown wait is budgeted: if it times out —
+// or the session is already closing with an active turn — DeleteSession
+// returns a retryable error with the durable state left in place, and the
+// caller retries once the turn has stopped. Store failures are returned
 // (joined with close errors) so callers can retry.
 func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 	if m == nil {
@@ -446,14 +455,26 @@ func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 	m.deleting[key] = struct{}{}
 	// Stop idle-reclamation timers and invalidate in-flight callbacks so
 	// the session is not reclaimed while we drain it.
-	if entry := m.entries[key]; entry != nil {
+	entry := m.entries[key]
+	if entry != nil {
 		entry.idleGeneration++
 		if entry.timer != nil {
 			entry.timer.Stop()
 			entry.timer = nil
 		}
 	}
+	closingWithTurn := entry != nil &&
+		entry.session.isClosing() && entry.session.hasActiveTurn()
 	m.mu.Unlock()
+
+	if closingWithTurn {
+		m.mu.Lock()
+		delete(m.deleting, key)
+		m.mu.Unlock()
+		return errdefs.NotAvailablef(
+			"runtime session: session %q/%q is already closing with an active turn; deletion incomplete, retry once the turn stops",
+			key.AgentID, key.ContextID)
+	}
 
 	if err := m.awaitKeyIdle(ctx, key); err != nil {
 		telemetry.Error(ctx, "runtime session: session drain timed out during delete",
@@ -475,7 +496,10 @@ func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 		if entry.session.markClosing() {
 			closing = entry.session
 		}
-		delete(m.entries, key)
+		// Keep the entry in place until the turn has fully stopped:
+		// close()'s shutdown wait is budgeted and may time out, and a
+		// retry (or Open) must be able to see a still-running turn. The
+		// entry is removed only after close confirms the session stopped.
 	}
 	m.mu.Unlock()
 
@@ -485,7 +509,24 @@ func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
 		if err := closing.close(); err != nil {
 			errs = append(errs, err)
 		}
+		if closing.hasActiveTurn() {
+			// close()'s shutdown wait is budgeted and may have timed out:
+			// the turn can still be running and its afterTurn would write
+			// session state back after we delete it. Leave the durable
+			// state and the entry in place, roll back the delete marker,
+			// and ask the caller to retry once the turn has stopped.
+			errs = append(errs, errdefs.NotAvailablef(
+				"runtime session: session %q/%q still has an active turn after close; deletion incomplete, retry once the turn stops",
+				key.AgentID, key.ContextID))
+			m.mu.Lock()
+			delete(m.deleting, key)
+			m.mu.Unlock()
+			return errors.Join(errs...)
+		}
 	}
+	m.mu.Lock()
+	delete(m.entries, key)
+	m.mu.Unlock()
 	if err := m.deletePersistedState(key); err != nil {
 		errs = append(errs, err)
 	}
@@ -525,7 +566,13 @@ func (m *Manager) keyIdle(key Key) bool {
 	if entry == nil {
 		return true
 	}
-	return entry.session.isIdle()
+	if entry.session.isIdle() {
+		return true
+	}
+	// A closing session whose turn already stopped never reports idle
+	// (isIdle requires !closing), but there is nothing left to drain:
+	// close() is a no-op and the durable state can be removed safely.
+	return entry.session.isClosing() && !entry.session.hasActiveTurn()
 }
 
 // scheduleIdleTimerIfIdleLocked re-arms the idle-reclamation timer for a
@@ -546,7 +593,11 @@ func (m *Manager) scheduleIdleTimerIfIdleLocked(key Key, entry *managerEntry) {
 // session: the durable session-state record (committed board, parked
 // run marker, resumable request) and the parked run's checkpoint. Store
 // access is bounded with a background timeout so a slow store cannot
-// hold the caller's context hostage after the drain phase completed.
+// hold the caller's context hostage after the drain phase completed. The
+// store is resolved from the manager's current epoch: if a deployment
+// swaps checkpoint store instances between a session's writes and the
+// delete, cleanup lands on the current store (deployments sharing one
+// store singleton — the normal layout — are unaffected).
 func (m *Manager) deletePersistedState(key Key) error {
 	deps := m.currentDeps()
 	if !deps.Resume || deps.Checkpoints == nil {

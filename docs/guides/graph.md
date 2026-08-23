@@ -130,7 +130,7 @@ onto `tool_pending_key` and the graph routes onward.
 | Config field                             | Meaning                                                                                                           |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `model`                                  | explicit target `{id: {provider, name}, profile?}`; absent defers selection to the wired router                   |
-| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board.model}`); honored only when it names a configured target that can serve the request, otherwise the default policy applies |
+| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board.model}`); the hinted target is tried first, and on failure fallback restarts at the head of the default chain |
 | `messages_channel`                       | board channel holding the conversation; empty means the main channel                                              |
 | `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
@@ -160,7 +160,11 @@ Behavior:
   it with a default (`${board.model:}`) so turns without the input still
   route with the default policy. A bare name is honored only when exactly
   one configured target carries it; an unknown, malformed, or ambiguous
-  hint falls back to the default selection.
+  hint falls back to the default selection. The hinted model is tried
+  first; if it fails (or its declared output kinds cannot serve the
+  request), fallback continues from the head of the declared order
+  without re-attempting the hint. Hints match by provider + model name —
+  profiles are not part of a hint.
 - `intent` is the authoritative execution envelope and covers every
   generation modality: text controls (`response`, `max_output_tokens`,
   `tools`, `tool_choice`, `temperature`, `top_p`, `reasoning_enabled`,

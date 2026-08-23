@@ -388,6 +388,89 @@ func TestManagerDeleteSessionConcurrentDeleteRejected(t *testing.T) {
 	}
 }
 
+// ignoreCtxEngine blocks until release, ignoring context cancellation, so
+// Session.close's shutdown wait times out with the turn still running.
+func ignoreCtxEngine(release <-chan struct{}) agent.Engine {
+	return agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		<-release
+		return board, nil
+	})
+}
+
+func TestManagerDeleteSessionKeepsStateWhenCloseTimesOut(t *testing.T) {
+	release := make(chan struct{})
+	store := &resumeTestStore{cps: make(map[string]agent.Checkpoint)}
+	manager := newDeleteManager(t, ignoreCtxEngine(release), store)
+	key := deleteKey("ctx")
+	stateID := sessionStateID(key)
+	board := agent.NewBoard()
+	board.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "seed"))
+	store.cps[stateID] = agent.Checkpoint{
+		ExecID:  stateID,
+		Board:   board.Snapshot(),
+		Payload: []byte(`{}`),
+	}
+
+	originalCloseTimeout := sessionCloseTurnTimeout
+	sessionCloseTurnTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { sessionCloseTurnTimeout = originalCloseTimeout })
+
+	lease, err := manager.GetOrCreate(context.Background(), key)
+	if err != nil {
+		t.Fatalf("GetOrCreate: %v", err)
+	}
+	turn, err := lease.Session().Start(context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Simulate the drain->close race: the turn starts after the drain
+	// observed idle, then close()'s shutdown wait expires with the turn
+	// still running (close swallows the timeout and returns nil).
+	if err := lease.Session().close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !lease.Session().hasActiveTurn() {
+		t.Fatal("turn stopped within close budget; test cannot exercise the timeout path")
+	}
+
+	// DeleteSession must refuse to delete durable state while the turn
+	// could still write it, and must keep the session observable for a
+	// retry.
+	err = manager.DeleteSession(context.Background(), key)
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("DeleteSession with active closing turn = %v, want not available", err)
+	}
+	if _, ok := store.cps[stateID]; !ok {
+		t.Fatal("DeleteSession removed durable state while the turn was still active")
+	}
+	if _, err := manager.Open(context.Background(), key); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("Open on closing session = %v, want not available", err)
+	}
+
+	close(release)
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	// The finished turn writes its terminal state; a retry must now
+	// complete the deletion.
+	if err := manager.DeleteSession(context.Background(), key); err != nil {
+		t.Fatalf("retry DeleteSession: %v", err)
+	}
+	if keys := storeKeys(store); len(keys) != 0 {
+		t.Fatalf("checkpoint store still holds %v after retried delete", keys)
+	}
+	if err := lease.Close(); err != nil {
+		t.Fatalf("lease.Close: %v", err)
+	}
+}
+
 func (m *Manager) keyDeleting(key Key) bool {
 	if m == nil {
 		return false

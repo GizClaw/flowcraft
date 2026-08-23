@@ -26,13 +26,14 @@ const (
 	activityTurn activityKind = iota
 	activityPrompt
 	activitySink
-
-	// sessionCloseTurnTimeout bounds how long Session.close waits for
-	// the active turn to finish after shutdown (interrupt) is
-	// signalled. A non-cooperative engine must not hang Close (and
-	// with it Manager.Close / Runtime.Close) forever.
-	sessionCloseTurnTimeout = 30 * time.Second
 )
+
+// sessionCloseTurnTimeout bounds how long Session.close waits for
+// the active turn to finish after shutdown (interrupt) is
+// signalled. A non-cooperative engine must not hang Close (and
+// with it Manager.Close / Runtime.Close) forever. It is a variable
+// (not a const) so tests can shrink the budget.
+var sessionCloseTurnTimeout = 30 * time.Second
 
 // Session owns conversational activity for one Key while borrowing all
 // deployment and event-routing dependencies from the runtime.
@@ -825,6 +826,20 @@ func (s *Session) isIdle() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.idleLocked()
+}
+
+// hasActiveTurn reports whether a turn is still executing on the
+// session. Session.close bounds its shutdown wait and treats a timeout as
+// non-fatal, so a closed session can still have an active turn whose
+// afterTurn would write durable state; callers that delete that state
+// must confirm this returns false first.
+func (s *Session) hasActiveTurn() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.active != nil
 }
 
 // isEphemeral reports whether the session was created as an ephemeral

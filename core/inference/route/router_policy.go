@@ -95,22 +95,54 @@ func (r *policyRoute) selectTarget() (Decision, error) {
 	}, nil
 }
 
-// nextTarget advances past the attempted target in declared order. An attempt
-// target that never came from this policy — a custom selector mixed with the
-// policy fallback — stops fallback instead of guessing.
+// nextTarget advances past the attempted target in the effective fallback
+// order for the hint. The effective order places the hinted target first and
+// keeps every other target in declared order, so a hint elevates one model
+// without replacing the default chain: when the hinted target fails, fallback
+// restarts at the head of the declared order instead of continuing past the
+// hint's position. An attempt target that never came from this policy — a
+// custom selector mixed with the policy fallback — stops fallback instead of
+// guessing.
 func (r *policyRoute) nextTarget(
+	hint string,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
-	for index, target := range r.targets {
+	order := r.effectiveOrder(hint)
+	for index, target := range order {
 		if target.model != attempt.Target {
 			continue
 		}
-		if index+1 < len(r.targets) {
-			return r.targets[index+1].model, true, nil
+		if index+1 < len(order) {
+			return order[index+1].model, true, nil
 		}
 		return inference.ModelRef{}, false, nil
 	}
 	return inference.ModelRef{}, false, nil
+}
+
+// effectiveOrder returns the fallback order for one request: when the
+// optional model hint names a configured target, that target moves to the
+// front and every other target keeps its declared order. Without a hint (or
+// when the hint is unknown/ambiguous) the declared order is used unchanged.
+// The hinted target is never repeated in the order, so a failed hint cannot
+// be re-attempted by fallback.
+func (r *policyRoute) effectiveOrder(hint string) []policyTarget {
+	if hint == "" {
+		return r.targets
+	}
+	hinted := r.hintTarget(hint)
+	if hinted == nil {
+		return r.targets
+	}
+	order := make([]policyTarget, 0, len(r.targets))
+	order = append(order, *hinted)
+	for _, target := range r.targets {
+		if target.model.ID == hinted.model.ID {
+			continue
+		}
+		order = append(order, target)
+	}
+	return order
 }
 
 func (r *policyRoute) SelectGenerate(
@@ -171,15 +203,18 @@ func (r *policyRoute) SelectGenerate(
 // target, or nil when the hint is absent, malformed, or does not name a
 // unique configured target:
 //
-//   - "provider/name" matches the exact configured model id;
+//   - "provider/name" matches the configured model id by provider and name;
 //   - a bare "name" matches any configured target with that model name;
 //     when several targets share the name the hint is ambiguous and is
 //     ignored;
 //   - anything else (empty, unknown provider/name, malformed segments)
 //     is ignored.
 //
-// Matching ignores the target's credential profile: the hint selects the
-// model, and the deployment's configured profile stays authoritative.
+// Matching is deliberately profile-blind: the hint selects the model, and
+// the deployment's configured profile stays authoritative. A consequence is
+// that when one model id is configured under several profiles, a qualified
+// hint is ambiguous (all profile entries share the id) and falls back to the
+// default selection — a hint cannot distinguish profiles.
 func (r *policyRoute) hintTarget(hint string) *policyTarget {
 	if hint == "" {
 		return nil
@@ -236,10 +271,10 @@ func (r *policyRoute) supportsOutputs(
 
 func (r *policyRoute) NextGenerate(
 	_ context.Context,
-	_ inference.GenerateRequest,
+	request inference.GenerateRequest,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
-	return r.nextTarget(attempt)
+	return r.nextTarget(request.ModelHint, attempt)
 }
 
 func (r *policyRoute) SelectEmbed(
@@ -254,7 +289,7 @@ func (r *policyRoute) NextEmbed(
 	_ inference.EmbedRequest,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
-	return r.nextTarget(attempt)
+	return r.nextTarget("", attempt)
 }
 
 func (r *policyRoute) SelectTranscribe(
@@ -269,7 +304,7 @@ func (r *policyRoute) NextTranscribe(
 	_ inference.TranscriptionRequest,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
-	return r.nextTarget(attempt)
+	return r.nextTarget("", attempt)
 }
 
 func (r *policyRoute) SelectTranscribeSession(
@@ -284,5 +319,5 @@ func (r *policyRoute) NextTranscribeSession(
 	_ inference.TranscriptionSessionRequest,
 	attempt Attempt,
 ) (inference.ModelRef, bool, error) {
-	return r.nextTarget(attempt)
+	return r.nextTarget("", attempt)
 }
