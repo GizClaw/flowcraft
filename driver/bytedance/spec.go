@@ -19,14 +19,6 @@ const (
 	// SecretSpeechAPIKey optionally overrides SecretAPIKey for speech
 	// services (TTS, ASR, realtime duplex).
 	SecretSpeechAPIKey = "speech_api_key"
-	// SecretAccessKey is the Volcengine IAM access key ID. Together with
-	// SecretSecretKey it authenticates Ark via AK/SK signing instead of an
-	// API key; the pair only covers generate and embed — images, video
-	// tasks, and speech services have no AK/SK channel.
-	SecretAccessKey = "access_key"
-	// SecretSecretKey is the Volcengine IAM secret access key paired with
-	// SecretAccessKey.
-	SecretSecretKey = "secret_key"
 )
 
 // Spec is the provider-level configuration for ByteDance. It must stay

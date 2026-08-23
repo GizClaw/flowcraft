@@ -350,9 +350,6 @@ func openVideo(
 	if err != nil {
 		return inference.GenerateOperations{}, err
 	}
-	if err := cls.requireArkAPIKey(profile, "Seedance video generation"); err != nil {
-		return inference.GenerateOperations{}, err
-	}
 	unary, err := inference.BindGenerate(
 		compileVideo(cls.endpoint(id.Name), entry),
 		transportVideo(ark, spec.videoPollInterval()),

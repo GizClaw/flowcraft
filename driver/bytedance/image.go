@@ -614,9 +614,6 @@ func openImage(
 	if _, err := cls.requireArk(profile); err != nil {
 		return inference.GenerateOperations{}, err
 	}
-	if err := cls.requireArkAPIKey(profile, "Seedream image generation"); err != nil {
-		return inference.GenerateOperations{}, err
-	}
 	unary, err := inference.BindGenerate(
 		compileImage(cls.endpoint(id.Name)),
 		transportImage(cls),

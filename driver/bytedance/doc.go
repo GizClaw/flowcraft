@@ -57,12 +57,7 @@
 // authenticates Ark and is the default speech credential, `speech_api_key`
 // optionally overrides it for speech services, and the profile Spec's
 // `app_id` supplies the Doubao speech application ID those services still
-// require. As an alternative to `api_key`, the `access_key`/`secret_key`
-// pair authenticates Ark via Volcengine IAM AK/SK signing; the two schemes
-// are mutually exclusive within one profile. AK/SK has no channel for
-// images or content-generation tasks (the SDK hard-fails them) and none for
-// speech services, so image/video drivers reject AK/SK profiles at open
-// time and speech still needs an API-key profile.
+// require.
 //
 // Deployments wire this package through the config builder under the driver
 // name "bytedance":
