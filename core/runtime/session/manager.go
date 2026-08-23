@@ -2,7 +2,9 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"time"
@@ -51,6 +53,7 @@ type Manager struct {
 	mu        sync.Mutex
 	entries   map[Key]*managerEntry
 	removed   map[string]struct{}
+	deleting  map[Key]struct{}
 	closed    bool
 	closeOnce sync.Once
 	closeErr  error
@@ -113,6 +116,7 @@ func NewManager(
 		observer:            opts.observer,
 		entries:             make(map[Key]*managerEntry),
 		removed:             make(map[string]struct{}),
+		deleting:            make(map[Key]struct{}),
 		epochSeq:            1,
 		epochs:              make(map[uint64]*epochState),
 	}
@@ -182,6 +186,11 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, ErrManagerClosed
+	}
+	if _, deleting := m.deleting[key]; deleting {
+		return nil, errdefs.NotAvailablef(
+			"runtime session: session %q/%q is being deleted",
+			key.AgentID, key.ContextID)
 	}
 	if _, gone := m.removed[key.AgentID]; gone {
 		return nil, errdefs.NotFoundf(
@@ -385,6 +394,202 @@ func (m *Manager) ReopenAgent(name string) {
 	m.mu.Lock()
 	delete(m.removed, name)
 	m.mu.Unlock()
+}
+
+// DeleteSession removes one session's durable state and closes its live
+// Session, identified by key (agent id + context id). It is the
+// by-key counterpart of RemoveAgent for the desktop lifecycle
+// (delete/archive a conversation): after it returns, the checkpoint
+// store no longer carries the session's committed board (history),
+// parked run checkpoint, or resumable request for that key, and a
+// later Open starts a fresh session with empty history.
+//
+// Semantics mirror RemoveAgent:
+//
+//   - New opens for the key are refused until deletion finishes.
+//   - Any live Session is drained (bounded by ctx), then closed. On ctx
+//     expiry the delete marker is rolled back, the session is left
+//     intact, and no partial removal state is produced — callers may
+//     retry.
+//   - Repeated calls are idempotent: a key with no live Session and no
+//     persisted state deletes successfully.
+//
+// Deletion of the checkpoint store entries runs after the live Session
+// has closed, so a turn that started just before the close cannot
+// resurrect state underneath the delete. Store failures are returned
+// (joined with close errors) so callers can retry.
+func (m *Manager) DeleteSession(ctx context.Context, key Key) error {
+	if m == nil {
+		return nil
+	}
+	if isNil(ctx) {
+		return errdefs.Validationf("runtime session: context is required")
+	}
+	if err := key.Validate(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return errdefs.FromContext(err)
+	}
+
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrManagerClosed
+	}
+	if _, deleting := m.deleting[key]; deleting {
+		m.mu.Unlock()
+		return errdefs.NotAvailablef(
+			"runtime session: deletion already in progress for key %q/%q",
+			key.AgentID, key.ContextID)
+	}
+	m.deleting[key] = struct{}{}
+	// Stop idle-reclamation timers and invalidate in-flight callbacks so
+	// the session is not reclaimed while we drain it.
+	if entry := m.entries[key]; entry != nil {
+		entry.idleGeneration++
+		if entry.timer != nil {
+			entry.timer.Stop()
+			entry.timer = nil
+		}
+	}
+	m.mu.Unlock()
+
+	if err := m.awaitKeyIdle(ctx, key); err != nil {
+		telemetry.Error(ctx, "runtime session: session drain timed out during delete",
+			otellog.String(telemetry.AttrAgentID, key.AgentID),
+			otellog.String(telemetry.AttrConversationID, key.ContextID),
+			otellog.String(telemetry.AttrErrorMessage, err.Error()))
+		m.mu.Lock()
+		delete(m.deleting, key)
+		if entry := m.entries[key]; entry != nil {
+			m.scheduleIdleTimerIfIdleLocked(key, entry)
+		}
+		m.mu.Unlock()
+		return err
+	}
+
+	var closing *Session
+	m.mu.Lock()
+	if entry := m.entries[key]; entry != nil {
+		if entry.session.markClosing() {
+			closing = entry.session
+		}
+		delete(m.entries, key)
+	}
+	m.mu.Unlock()
+
+	var errs []error
+	if closing != nil {
+		closing.notifySessionClosing(true)
+		if err := closing.close(); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if err := m.deletePersistedState(key); err != nil {
+		errs = append(errs, err)
+	}
+
+	// Re-admit opens only after both the live Session and the durable
+	// state are gone, so a concurrent Open cannot load state that the
+	// delete is about to remove.
+	m.mu.Lock()
+	delete(m.deleting, key)
+	m.mu.Unlock()
+
+	return errors.Join(errs...)
+}
+
+// awaitKeyIdle waits (bounded by ctx) until the key's Session has no
+// active turns, prompts, or sinks. A key with no live Session is
+// immediately idle.
+func (m *Manager) awaitKeyIdle(ctx context.Context, key Key) error {
+	ticker := time.NewTicker(agentDrainPollInterval)
+	defer ticker.Stop()
+	for {
+		if m.keyIdle(key) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errdefs.FromContext(ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) keyIdle(key Key) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry := m.entries[key]
+	if entry == nil {
+		return true
+	}
+	return entry.session.isIdle()
+}
+
+// scheduleIdleTimerIfIdleLocked re-arms the idle-reclamation timer for a
+// session that still has no leases and is idle. Callers must hold mu.
+func (m *Manager) scheduleIdleTimerIfIdleLocked(key Key, entry *managerEntry) {
+	if m.closed || entry == nil {
+		return
+	}
+	if _, gone := m.removed[key.AgentID]; gone {
+		return
+	}
+	if entry.leases == 0 && entry.session.isIdle() {
+		m.scheduleIdleTimerLocked(key, entry)
+	}
+}
+
+// deletePersistedState removes the checkpoint-store entries for one
+// session: the durable session-state record (committed board, parked
+// run marker, resumable request) and the parked run's checkpoint. Store
+// access is bounded with a background timeout so a slow store cannot
+// hold the caller's context hostage after the drain phase completed.
+func (m *Manager) deletePersistedState(key Key) error {
+	deps := m.currentDeps()
+	if !deps.Resume || deps.Checkpoints == nil {
+		return nil
+	}
+	deleter, ok := deps.Checkpoints.(agent.CheckpointDeleter)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(
+		context.WithoutCancel(context.Background()), 5*time.Second)
+	defer cancel()
+
+	stateID := sessionStateID(key)
+	cp, err := deps.Checkpoints.Load(ctx, stateID)
+	if err != nil {
+		return fmt.Errorf("runtime session: load session state for delete: %w", err)
+	}
+	if cp == nil {
+		return nil
+	}
+	var state sessionState
+	if len(cp.Payload) > 0 {
+		if err := json.Unmarshal(cp.Payload, &state); err != nil {
+			// A corrupt record hides the parked run id; remove the
+			// session-state key anyway and report the decode failure so
+			// the caller knows cleanup may be incomplete.
+			return errors.Join(
+				fmt.Errorf("runtime session: decode session state for delete: %w", err),
+				deleter.Delete(ctx, stateID))
+		}
+	}
+	if state.ResumableRunID != "" {
+		if err := deleter.Delete(ctx, state.ResumableRunID); err != nil {
+			return fmt.Errorf(
+				"runtime session: delete parked run checkpoint %q: %w",
+				state.ResumableRunID, err)
+		}
+	}
+	if err := deleter.Delete(ctx, stateID); err != nil {
+		return fmt.Errorf("runtime session: delete session state: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) awaitAgentIdle(ctx context.Context, name string) error {
