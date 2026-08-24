@@ -10,7 +10,7 @@
         "model": {
           "id": {"provider": "deepseek", "name": "deepseek-v4-flash"}
         },
-        "messages_channel": "main",
+        "messages_channel": "__main_channel",
         "system_prompt": "You are a helpful assistant.",
         "tool_pending_key": "tool_pending",
         "stream": true

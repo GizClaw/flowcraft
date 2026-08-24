@@ -69,6 +69,17 @@ if err := app.UnregisterAgent(ctx, "qa",
 }
 ```
 
+## Session deletion (core/v0.1.27+)
+
+`app.Sessions().DeleteSession(ctx, key)` removes one session's durable
+state (committed history, parked-run checkpoint, resumable request) and
+closes its live session — the by-key counterpart of `UnregisterAgent` for
+delete/archive workflows. Semantics mirror removal: new opens for the key
+are refused until deletion finishes, the live session is drained (bounded
+by ctx), and on ctx expiry the delete marker rolls back with no partial
+removal — retryable, idempotent, and a later `Open` starts with empty
+history.
+
 Rules:
 
 - `RegisterAgent` uses the same assembly path as deployment

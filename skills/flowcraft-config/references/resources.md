@@ -219,7 +219,7 @@ agents:
         settings:
           scope: {runtime_id: memories, user_id: user-1, agent_id: assistant}
           conversation_id: conv-1  # optional; defaults to the request ContextID
-          channel: main            # optional; defaults to the main channel
+          channel: __main_channel  # optional; defaults to the main channel
 ```
 
 `memory.context` requires exactly one `query` source and a non-reserved
