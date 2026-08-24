@@ -351,7 +351,9 @@ func accountSID(username string) (*windows.SID, error) {
 
 // logonSandboxUser builds a primary token for one sandbox account via
 // LogonUserW (NETWORK logon), used by the elevated runner to spawn.
-func logonSandboxUser(acct *accountCred) (windows.Token, error) {
+// configDir receives step diagnostics so a silent death during the
+// call is bisectable from the helper log.
+func logonSandboxUser(acct *accountCred, configDir string) (windows.Token, error) {
 	u, err := windows.UTF16PtrFromString(acct.Username)
 	if err != nil {
 		return 0, err
@@ -361,6 +363,7 @@ func logonSandboxUser(acct *accountCred) (windows.Token, error) {
 		return 0, err
 	}
 	var tok windows.Token
+	appendHelperLog(configDir, fmt.Errorf("logon: calling LogonUserW for %q type=%d", acct.Username, logon32LogonNetwork))
 	r1, _, e1 := procLogonUserW.Call(
 		0,
 		0,
@@ -370,10 +373,62 @@ func logonSandboxUser(acct *accountCred) (windows.Token, error) {
 		logon32ProviderDefault,
 		uintptr(unsafe.Pointer(&tok)),
 	)
+	appendHelperLog(configDir, fmt.Errorf("logon: LogonUserW returned r1=%d err=%v", r1, e1))
 	if r1 == 0 {
 		return 0, fmt.Errorf("windows/elevated: logon sandbox user: %w", e1)
 	}
 	return tok, nil
+}
+
+// logTokenPrivileges records which privileges the helper's token
+// holds, so an elevated-path failure can be checked against the
+// process' actual rights (e.g. SeIncreaseQuotaPrivilege is required
+// by CreateProcessAsUser and is rarely present on CI runners).
+func logTokenPrivileges(configDir string) {
+	var tok windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &tok); err != nil {
+		appendHelperLog(configDir, fmt.Errorf("open token for privilege check: %v", err))
+		return
+	}
+	defer func() { _ = tok.Close() }()
+	var needed uint32
+	_ = windows.GetTokenInformation(tok, windows.TokenPrivileges, nil, 0, &needed)
+	buf := make([]byte, needed)
+	if err := windows.GetTokenInformation(tok, windows.TokenPrivileges, &buf[0], needed, &needed); err != nil {
+		appendHelperLog(configDir, fmt.Errorf("query token privileges: %v", err))
+		return
+	}
+	privs := (*windows.Tokenprivileges)(unsafe.Pointer(&buf[0]))
+	// The rights that matter for the elevated spawn path.
+	interesting := []string{
+		"SeIncreaseQuotaPrivilege",
+		"SeAssignPrimaryTokenPrivilege",
+		"SeTcbPrivilege",
+		"SeDebugPrivilege",
+		"SeBackupPrivilege",
+		"SeRestorePrivilege",
+	}
+	var found []string
+	for _, name := range interesting {
+		var want windows.LUID
+		u, err := windows.UTF16PtrFromString(name)
+		if err != nil {
+			continue
+		}
+		if err := windows.LookupPrivilegeValue(nil, u, &want); err != nil {
+			continue
+		}
+		for _, p := range privs.AllPrivileges() {
+			if p.Luid == want {
+				state := "present"
+				if p.Attributes&windows.SE_PRIVILEGE_ENABLED != 0 {
+					state = "enabled"
+				}
+				found = append(found, name+"="+state)
+			}
+		}
+	}
+	appendHelperLog(configDir, fmt.Errorf("helper privileges: %v (total %d)", found, privs.PrivilegeCount))
 }
 
 // shellExecuteInfoW mirrors SHELLEXECUTEINFOW (x64 layout).

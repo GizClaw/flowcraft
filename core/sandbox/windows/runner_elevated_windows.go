@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,7 @@ var (
 // client put in every request.
 func SandboxHelperServe(ctx context.Context, pipeName, configDir, root, secret string) error {
 	appendHelperLog(configDir, fmt.Errorf("helper starting pid=%d", os.Getpid()))
+	logTokenPrivileges(configDir)
 	if !setupComplete(configDir) {
 		if err := SandboxHelperInstall(configDir); err != nil {
 			return err
@@ -302,16 +304,36 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 	if acct == nil {
 		return failSpawn(conn, configDir, "spawn", errdefs.Internalf("windows/elevated: missing credentials for account %q", req.Account))
 	}
-	tok, err := logonSandboxUser(acct)
+	tok, err := logonSandboxUser(acct, configDir)
 	if err != nil {
 		return failSpawn(conn, configDir, "spawn", err)
 	}
 	defer func() { _ = tok.Close() }()
 	appendHelperLog(configDir, fmt.Errorf("logon ok for %q", acct.Username))
 
-	sess, err := spawnAsSandboxUser(ctx, &req, tok, acct.Username)
-	if err != nil {
-		return failSpawn(conn, configDir, "spawn", err)
+	logonDone := make(chan struct {
+		sess sandbox.Session
+		err  error
+	}, 1)
+	go func() {
+		sess, err := spawnAsSandboxUser(ctx, &req, tok, acct.Username)
+		logonDone <- struct {
+			sess sandbox.Session
+			err  error
+		}{sess, err}
+	}()
+	var sess sandbox.Session
+	select {
+	case r := <-logonDone:
+		if r.err != nil {
+			return failSpawn(conn, configDir, "spawn", r.err)
+		}
+		sess = r.sess
+	case <-time.After(20 * time.Second):
+		buf := make([]byte, 1<<20)
+		n := runtime.Stack(buf, true)
+		appendHelperLog(configDir, fmt.Errorf("elevated spawn stuck 20s; goroutines:\n%s", buf[:n]))
+		return failSpawn(conn, configDir, "spawn", fmt.Errorf("windows/elevated: spawn hung for 20s"))
 	}
 	appendHelperLog(configDir, fmt.Errorf("session started pid=%d", sess.PID()))
 	if err := writeFrame(conn, msgReady, SpawnReady{
