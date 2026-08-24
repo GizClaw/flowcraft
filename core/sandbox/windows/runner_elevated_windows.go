@@ -52,11 +52,13 @@ var (
 // accept ACL work for; secret must match the per-runner value the
 // client put in every request.
 func SandboxHelperServe(ctx context.Context, pipeName, configDir, root, secret string) error {
+	appendHelperLog(configDir, fmt.Errorf("helper starting pid=%d", os.Getpid()))
 	if !setupComplete(configDir) {
 		if err := SandboxHelperInstall(configDir); err != nil {
 			return err
 		}
 	}
+	appendHelperLog(configDir, fmt.Errorf("helper setup complete"))
 	if secret == "" {
 		return fmt.Errorf("windows/elevated: helper secret missing from environment")
 	}
@@ -113,19 +115,24 @@ func SandboxHelperServe(ctx context.Context, pipeName, configDir, root, secret s
 			<-done
 			select {
 			case err := <-errc:
+				appendHelperLog(configDir, fmt.Errorf("helper exiting (ctx done): %v", err))
 				return err
 			default:
+				appendHelperLog(configDir, fmt.Errorf("helper exiting (ctx done, no error)"))
 				return nil
 			}
 		case <-done:
 			select {
 			case err := <-errc:
+				appendHelperLog(configDir, fmt.Errorf("helper exiting (done): %v", err))
 				return err
 			default:
 			}
+			appendHelperLog(configDir, fmt.Errorf("helper exiting (all instances done)"))
 			return nil
 		case <-idle.C:
 			if activity.idleFor(helperIdleTimeout) {
+				appendHelperLog(configDir, fmt.Errorf("helper idle timeout"))
 				cancel()
 			}
 		}
@@ -202,10 +209,12 @@ func serveInstance(
 		activity.touch()
 		activity.incr()
 		f := os.NewFile(uintptr(h), pipeName)
+		appendHelperLog(configDir, fmt.Errorf("accepted connection"))
 		err = serveConnLogged(ctx, f, configDir, root, secret, activity)
 		_ = f.Close()
 		activity.decr()
 		activity.touch()
+		appendHelperLog(configDir, fmt.Errorf("connection closed: %v", err))
 		if errors.Is(err, errShutdown) {
 			return errShutdown
 		}
@@ -285,6 +294,7 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 	if err != nil {
 		return failSpawn(conn, configDir, "spawn", err)
 	}
+	appendHelperLog(configDir, fmt.Errorf("creds ok"))
 	acct := creds.Online
 	if req.Account == sandboxAccountOffline {
 		acct = creds.Offline
