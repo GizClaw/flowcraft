@@ -160,6 +160,51 @@ func TestEphemeralSessionWritesNoState(t *testing.T) {
 	}
 }
 
+func TestEphemeralHostPreservesOptionalCapabilities(t *testing.T) {
+	store := &sessionRecordingStore{}
+	var busFound bool
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		// The ephemeral wrapper must not hide optional host capabilities
+		// (delegation service, event bus, ...) from CapabilityFromHost.
+		_, busFound = agent.EventBusFromHost(host)
+		// Checkpoint suppression must still hold through the wrapper.
+		if checkpointer, ok := host.(agent.Checkpointer); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = checkpointer.Checkpoint(ctx, agent.Checkpoint{
+				ExecID: "run-checkpoint",
+			})
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "done"))
+		return board, nil
+	})
+	_, session, _, _ := newTurnSession(t, engine, turnHostFactory,
+		WithResume(true), WithCheckpointStore(store))
+	turn, err := session.StartWithOptions(
+		context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
+		WithEphemeral(),
+	)
+	if err != nil {
+		t.Fatalf("StartWithOptions: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !busFound {
+		t.Fatal("EventBusFromHost(ephemeral host) = not found, want the inner host's bus")
+	}
+	if !store.isEmpty() {
+		t.Fatalf("ephemeral host wrote %d checkpoints, want none", store.count())
+	}
+}
+
 func TestEphemeralCanceledTurnNeverParks(t *testing.T) {
 	store := &sessionRecordingStore{}
 	blocking := make(chan struct{})
