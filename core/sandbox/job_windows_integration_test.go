@@ -3,7 +3,9 @@
 package sandbox
 
 import (
+	"fmt"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,7 +76,23 @@ func TestIntegrationJobCPUSampling(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("sampleCPU stayed 0s for a running child (pids %v)", pids)
+			var detail strings.Builder
+			for _, pid := range pids {
+				h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+				if err != nil {
+					fmt.Fprintf(&detail, "pid %d: OpenProcess: %v; ", pid, err)
+					continue
+				}
+				var ct, et, kt, ut windows.Filetime
+				err = windows.GetProcessTimes(h, &ct, &et, &kt, &ut)
+				_ = windows.CloseHandle(h)
+				if err != nil {
+					fmt.Fprintf(&detail, "pid %d: GetProcessTimes: %v; ", pid, err)
+					continue
+				}
+				fmt.Fprintf(&detail, "pid %d: kt=%d ut=%d; ", pid, uint64(kt.HighDateTime)<<32|uint64(kt.LowDateTime), uint64(ut.HighDateTime)<<32|uint64(ut.LowDateTime))
+			}
+			t.Fatalf("sampleCPU stayed 0s for a running child (pids %v): %s", pids, detail.String())
 		}
 		time.Sleep(500 * time.Millisecond)
 	}

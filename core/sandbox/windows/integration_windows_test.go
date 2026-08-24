@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
@@ -267,6 +268,121 @@ func TestIntegrationLogonUserW(t *testing.T) {
 	if tok == 0 {
 		t.Fatal("logon returned zero token")
 	}
+}
+
+// TestIntegrationCreateProcessWithLogon isolates the logon spawn
+// primitive from the session machinery: a bare CreateProcessWithLogonW
+// of `cmd /c whoami` with pipes, a minimal env, and a 20s deadline.
+// If this hangs while the elevated session hangs too, the problem is
+// the logon spawn itself; if it completes, the session layer (job,
+// desktop, full env, cwd) is at fault.
+func TestIntegrationCreateProcessWithLogon(t *testing.T) {
+	requireElevated(t)
+	dir := t.TempDir()
+	if err := SandboxHelperInstall(dir); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	creds, err := loadCreds(dir)
+	if err != nil {
+		t.Fatalf("loadCreds: %v", err)
+	}
+
+	var inR, inW, outR, outW windows.Handle
+	if err := windows.CreatePipe(&inR, &inW, nil, 0); err != nil {
+		t.Fatalf("stdin pipe: %v", err)
+	}
+	defer func() {
+		_ = windows.CloseHandle(inR)
+		_ = windows.CloseHandle(inW)
+		_ = windows.CloseHandle(outR)
+		_ = windows.CloseHandle(outW)
+	}()
+	if err := windows.CreatePipe(&outR, &outW, nil, 0); err != nil {
+		t.Fatalf("stdout pipe: %v", err)
+	}
+	for _, h := range []windows.Handle{inR, outW} {
+		if err := windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+			t.Fatalf("SetHandleInformation: %v", err)
+		}
+	}
+
+	cmdline, _ := windows.UTF16PtrFromString(`cmd.exe /d /c whoami`)
+	user, _ := windows.UTF16PtrFromString(creds.Online.Username)
+	domain, _ := windows.UTF16PtrFromString(".")
+	password, _ := windows.UTF16PtrFromString(creds.Online.Password)
+	envBlock := makeEnvBlockTest([]string{"SystemRoot=" + os.Getenv("SystemRoot"), "COMSPEC=" + os.Getenv("SystemRoot") + `\System32\cmd.exe`, "PATH=" + os.Getenv("SystemRoot") + `\System32`})
+	cwd, _ := windows.UTF16PtrFromString(t.TempDir())
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Flags |= windows.STARTF_USESTDHANDLES
+	si.StdInput = inR
+	si.StdOutput = outW
+	var pi windows.ProcessInformation
+	r1, _, e1 := procCreateProcessWithLogonWTest.Call(
+		uintptr(unsafe.Pointer(user)),
+		uintptr(unsafe.Pointer(domain)),
+		uintptr(unsafe.Pointer(password)),
+		0,
+		0,
+		uintptr(unsafe.Pointer(cmdline)),
+		uintptr(windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_NO_WINDOW),
+		uintptr(unsafe.Pointer(&envBlock[0])),
+		uintptr(unsafe.Pointer(cwd)),
+		uintptr(unsafe.Pointer(&si)),
+		uintptr(unsafe.Pointer(&pi)),
+	)
+	if r1 == 0 {
+		t.Fatalf("CreateProcessWithLogonW: %v", e1)
+	}
+	defer func() {
+		_ = windows.CloseHandle(pi.Process)
+		_ = windows.CloseHandle(pi.Thread)
+	}()
+
+	_ = windows.CloseHandle(inW)
+	done := make(chan struct{})
+	go func() {
+		_, _ = windows.WaitForSingleObject(pi.Process, windows.INFINITE)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("CreateProcessWithLogonW child did not exit within 20s")
+	}
+
+	_ = windows.CloseHandle(outW)
+	var buf [4096]byte
+	var out strings.Builder
+	for {
+		var read uint32
+		err := windows.ReadFile(outR, buf[:], &read, nil)
+		n := int(read)
+		if n > 0 {
+			out.Write(buf[:n])
+		}
+		if err != nil {
+			break
+		}
+	}
+	if !strings.Contains(strings.ToLower(out.String()), "flowcraftsbx") {
+		t.Fatalf("whoami output = %q, want sandbox account", out.String())
+	}
+}
+
+var procCreateProcessWithLogonWTest = windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateProcessWithLogonW")
+
+// makeEnvBlockTest renders a minimal UTF-16 environment block for the
+// logon-spawn probe.
+func makeEnvBlockTest(env []string) []uint16 {
+	var block []uint16
+	for _, kv := range env {
+		u := windows.StringToUTF16(kv)
+		block = append(block, u...)
+		block = append(block, 0)
+	}
+	block = append(block, 0)
+	return block
 }
 
 // readHelperLog returns the elevated helper's diagnostic log for test
