@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.27` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.28` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.28` - 2026-08-24
+
+### Changed
+
+- fix(core/runtime/session): preserve optional host capabilities in ephemeral sessions — ephemeralHost now implements agent.HostUnwrapper so agent.CapabilityFromHost traversal reaches the wrapped turn host's optional capabilities (delegation service, event bus) instead of stopping at the opaque wrapper, which previously made delegation.ServiceFromHost fail and delegate/delegation_status report 'host has no delegation service' (and broke nested delegation, since non-persistent subagent turns also run ephemeral); checkpoint suppression is unchanged, and a regression test asserts both delegation-service-style capability resolution and checkpoint suppression through the ephemeral wrapper
 
 ## `core/v0.1.27` - 2026-08-24
 
