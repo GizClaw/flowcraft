@@ -453,8 +453,13 @@ func dpapiProtect(data []byte) ([]byte, error) {
 	if err := windows.CryptProtectData(&in, nil, nil, 0, nil, 0, &out); err != nil {
 		return nil, err
 	}
+	// Copy out of the LocalAlloc'd blob before LocalFree: the deferred
+	// free runs after the return expression, so a slice that aliases
+	// out.Data would be dangling by the time the caller reads it.
+	plain := make([]byte, out.Size)
+	copy(plain, unsafe.Slice(out.Data, out.Size))
 	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
-	return unsafe.Slice(out.Data, out.Size), nil
+	return plain, nil
 }
 
 func dpapiUnprotect(blob []byte) ([]byte, error) {
@@ -467,6 +472,8 @@ func dpapiUnprotect(blob []byte) ([]byte, error) {
 	if err := windows.CryptUnprotectData(&in, nil, nil, 0, nil, 0, &out); err != nil {
 		return nil, err
 	}
+	plain := make([]byte, out.Size)
+	copy(plain, unsafe.Slice(out.Data, out.Size))
 	defer windows.LocalFree(windows.Handle(unsafe.Pointer(out.Data)))
-	return unsafe.Slice(out.Data, out.Size), nil
+	return plain, nil
 }
