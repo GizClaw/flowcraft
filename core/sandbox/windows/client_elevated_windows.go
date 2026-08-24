@@ -22,6 +22,12 @@ import (
 // helper to appear (UAC prompt + account setup can take a while).
 const dialDeadline = 60 * time.Second
 
+// controlWriteTimeout bounds a control-frame write to the elevated
+// helper. The named pipe write blocks forever when the helper stops
+// reading the client direction; a bounded write turns that hang into
+// an error plus a session teardown.
+const controlWriteTimeout = 10 * time.Second
+
 func randomPipeName() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -405,21 +411,14 @@ func (s *pipeSession) Write(ctx context.Context, data []byte) error {
 	if len(data) == 0 {
 		return nil
 	}
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-	if err := writeFrame(s.conn, msgWrite, WriteRequest{Data: data}); err != nil {
-		return errdefs.Internal(fmt.Errorf("windows/elevated: write request: %w", err))
-	}
-	return nil
+	return s.writeControl(msgWrite, WriteRequest{Data: data})
 }
 
 func (s *pipeSession) CloseInput() error {
 	if s.isClosed() {
 		return sandbox.ErrSessionClosed
 	}
-	s.connMu.Lock()
-	defer s.connMu.Unlock()
-	return writeFrame(s.conn, msgCloseInput, struct{}{})
+	return s.writeControl(msgCloseInput, struct{}{})
 }
 
 func (s *pipeSession) Resize(ctx context.Context, rows, cols int) error {
@@ -429,9 +428,37 @@ func (s *pipeSession) Resize(ctx context.Context, rows, cols int) error {
 	if s.isClosed() {
 		return sandbox.ErrSessionClosed
 	}
+	return s.writeControl(msgResize, ResizeRequest{Rows: rows, Cols: cols})
+}
+
+// writeControl sends one control frame with a bounded write. A wedged
+// helper that stops reading the client->server direction would
+// otherwise block the caller forever (the named-pipe buffer fills and
+// the write never completes); after controlWriteTimeout the session is
+// torn down so the caller gets an error instead of hanging.
+func (s *pipeSession) writeControl(kind string, payload any) error {
 	s.connMu.Lock()
 	defer s.connMu.Unlock()
-	return writeFrame(s.conn, msgResize, ResizeRequest{Rows: rows, Cols: cols})
+	type result struct{ err error }
+	done := make(chan result, 1)
+	go func() {
+		done <- result{writeFrame(s.conn, kind, payload)}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			return errdefs.Internal(fmt.Errorf("windows/elevated: %s request: %w", kind, r.err))
+		}
+		return nil
+	case <-time.After(controlWriteTimeout):
+		// Unblock the stuck writer and mark the session dead; the
+		// helper is not consuming control frames anymore.
+		s.closeOnce.Do(func() {
+			s.closed = true
+			_ = s.conn.Close()
+		})
+		return errdefs.Internal(fmt.Errorf("windows/elevated: %s request timed out", kind))
+	}
 }
 
 func (s *pipeSession) Signal(context.Context, sandbox.SessionSignal) error {
