@@ -24,6 +24,13 @@ func helperLogPath(configDir string) string {
 	return filepath.Join(configDir, "helper.log")
 }
 
+// helperErrLogPath receives the helper's raw stderr, redirected at
+// launch through cmd.exe. A native fatal (access violation) prints
+// here because no Go recover can observe it.
+func helperErrLogPath(configDir string) string {
+	return filepath.Join(configDir, "helper.err.log")
+}
+
 func appendHelperLog(configDir string, err error) {
 	if configDir == "" {
 		return

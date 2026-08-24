@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -96,15 +97,25 @@ func (r *Runner) helperError(err error) error {
 	if derr != nil {
 		return err
 	}
-	b, rerr := os.ReadFile(helperLogPath(dir))
-	if rerr != nil || len(b) == 0 {
+	var tail strings.Builder
+	for _, p := range []string{helperLogPath(dir), helperErrLogPath(dir)} {
+		b, rerr := os.ReadFile(p)
+		if rerr != nil || len(b) == 0 {
+			continue
+		}
+		if tail.Len() > 0 {
+			tail.WriteByte('\n')
+		}
+		tail.WriteString(strings.TrimSpace(string(b)))
+	}
+	if tail.Len() == 0 {
 		return err
 	}
-	tail := strings.TrimSpace(string(b))
-	if len(tail) > 512 {
-		tail = tail[len(tail)-512:]
+	msg := tail.String()
+	if len(msg) > 1024 {
+		msg = msg[len(msg)-1024:]
 	}
-	return fmt.Errorf("%w (helper log: %s)", err, tail)
+	return fmt.Errorf("%w (helper log: %s)", err, msg)
 }
 
 // launchHelper re-executes this process elevated with the helper
@@ -130,6 +141,7 @@ func (r *Runner) launchHelperLocked() error {
 	// A fresh helper should start with a clean log; stale entries from
 	// an earlier launch would point at the wrong failure.
 	_ = os.Remove(helperLogPath(dir))
+	_ = os.Remove(helperErrLogPath(dir))
 	if err := os.Setenv(helperSecretEnv, secret); err != nil {
 		return fmt.Errorf("windows/elevated: set helper secret: %w", err)
 	}
@@ -137,7 +149,14 @@ func (r *Runner) launchHelperLocked() error {
 	args := HelperArgvMarker + " serve --pipe " + quoteArg(r.elevatedPipe) +
 		" --config " + quoteArg(dir) +
 		" --root " + quoteArg(r.rootDir)
-	if _, err := launchElevated(r.helperExePath(), args, false); err != nil {
+	// Route the helper's stderr into helper.log through cmd.exe: the
+	// helper runs hidden, and a native fatal (access violation) prints
+	// to stderr and kills the process without any Go recover firing.
+	// `cmd /d /s /c` strips exactly the outer pair of quotes.
+	shell := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
+	wrapped := quoteArg(shell) + ` /d /s /c ""` + quoteArg(r.helperExePath()) + ` ` + args +
+		` 2> ` + quoteArg(helperErrLogPath(dir)) + `"`
+	if _, err := launchElevated(shell, wrapped, false); err != nil {
 		return err
 	}
 	return nil
