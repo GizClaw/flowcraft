@@ -353,7 +353,8 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 		_ = sess.Close()
 		return err
 	}
-	return runSession(ctx, conn, sess, activity)
+	appendHelperLog(configDir, fmt.Errorf("ready sent pid=%d", sess.PID()))
+	return runSession(ctx, conn, sess, activity, configDir)
 }
 
 // failSpawn records err in helper.log, sends it to the client as an
@@ -480,7 +481,7 @@ func applyAccountACLs(req *SpawnRequest, sid *windows.SID) error {
 
 // runSession pumps output to the client and handles control frames
 // until the client disconnects or the session ends.
-func runSession(ctx context.Context, conn io.ReadWriteCloser, sess sandbox.Session, activity *pipeActivity) error {
+func runSession(ctx context.Context, conn io.ReadWriteCloser, sess sandbox.Session, activity *pipeActivity, configDir string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var writeMu sync.Mutex
@@ -490,6 +491,20 @@ func runSession(ctx context.Context, conn io.ReadWriteCloser, sess sandbox.Sessi
 		activity.touch()
 		return writeFrame(conn, kind, payload)
 	}
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-time.After(45 * time.Second):
+			buf := make([]byte, 1<<20)
+			n := runtime.Stack(buf, true)
+			appendHelperLog(configDir, fmt.Errorf("session stuck 45s; server goroutines:\n%s", buf[:n]))
+			_ = send(msgError, ErrorFrame{Stage: "session", Message: "elevated session stuck 45s"})
+			_ = sess.Close()
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -521,6 +536,7 @@ func runSession(ctx context.Context, conn io.ReadWriteCloser, sess sandbox.Sessi
 			}
 		}
 		exit, err := sess.Wait(ctx)
+		appendHelperLog(configDir, fmt.Errorf("session exit %+v err=%v", exit, err))
 		_ = send(msgExit, ExitFrame{Exit: exit, Err: errString(err)})
 	}()
 

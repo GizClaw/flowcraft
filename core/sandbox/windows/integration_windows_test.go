@@ -206,10 +206,10 @@ func TestIntegrationElevatedSpawn(t *testing.T) {
 	res, err := sandbox.Exec(
 		context.Background(), r,
 		"cmd", []string{"/c", "whoami"},
-		sandbox.ExecOptions{},
+		sandbox.ExecOptions{Timeout: 90 * time.Second},
 	)
 	if err != nil {
-		t.Fatalf("Exec(elevated): %v", err)
+		t.Fatalf("Exec(elevated): %v\nhelper log:\n%s", err, readHelperLog())
 	}
 	if !strings.Contains(strings.ToLower(res.Stdout), "flowcraftsbxonline") {
 		t.Fatalf("whoami = %q, want online sandbox account", res.Stdout)
@@ -267,4 +267,28 @@ func TestIntegrationLogonUserW(t *testing.T) {
 	if tok == 0 {
 		t.Fatal("logon returned zero token")
 	}
+}
+
+// readHelperLog returns the elevated helper's diagnostic log for test
+// failures, when one exists.
+func readHelperLog() string {
+	dir, err := sandboxConfigDir()
+	if err != nil {
+		return "(no config dir: " + err.Error() + ")"
+	}
+	var out strings.Builder
+	for _, p := range []string{helperLogPath(dir), helperErrLogPath(dir)} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		if out.Len() > 0 {
+			out.WriteString("\n")
+		}
+		out.Write(b)
+	}
+	if out.Len() == 0 {
+		return "(no helper log)"
+	}
+	return out.String()
 }
