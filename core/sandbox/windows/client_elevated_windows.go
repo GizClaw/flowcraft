@@ -243,7 +243,15 @@ func (r *Runner) sendHelperShutdown() {
 		return
 	}
 	defer func() { _ = conn.Close() }()
-	_ = writeFrame(conn, msgShutdown, ShutdownRequest{Secret: secret})
+	// Bound the write: if the helper is wedged in a session it will
+	// never read the shutdown frame, and an unbounded pipe write would
+	// block Runner.Close (and any test cleanup) forever.
+	done := make(chan error, 1)
+	go func() { done <- writeFrame(conn, msgShutdown, ShutdownRequest{Secret: secret}) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+	}
 }
 
 // cleanupSession keeps a proxy (and MITM bundle) alive until the
@@ -459,8 +467,35 @@ func (s *pipeSession) writeControl(kind string, payload any) error {
 			s.closed = true
 			_ = s.conn.Close()
 		})
-		return errdefs.Internal(fmt.Errorf("windows/elevated: %s request timed out", kind))
+		return errdefs.Internal(fmt.Errorf("windows/elevated: %s request timed out%s", kind, helperLogSuffix()))
 	}
+}
+
+// helperLogSuffix reads the elevated helper's diagnostic logs for
+// inclusion in client errors, so a server-side hang surfaces the
+// helper's own state (including the 45s goroutine dump).
+func helperLogSuffix() string {
+	dir, err := sandboxConfigDir()
+	if err != nil {
+		return ""
+	}
+	var b []byte
+	for _, p := range []string{helperLogPath(dir), helperErrLogPath(dir)} {
+		chunk, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		b = append(b, '\n')
+		b = append(b, chunk...)
+	}
+	if len(b) == 0 {
+		return ""
+	}
+	msg := strings.TrimSpace(string(b))
+	if len(msg) > 2048 {
+		msg = msg[len(msg)-2048:]
+	}
+	return " (helper log: " + msg + ")"
 }
 
 func (s *pipeSession) Signal(context.Context, sandbox.SessionSignal) error {
