@@ -55,6 +55,17 @@ var (
 func SandboxHelperServe(ctx context.Context, pipeName, configDir, root, secret string) error {
 	appendHelperLog(configDir, fmt.Errorf("helper starting pid=%d", os.Getpid()))
 	logTokenPrivileges(configDir)
+	var ptok windows.Token
+	privErr := fmt.Errorf("cannot open process token")
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY|windows.TOKEN_ADJUST_PRIVILEGES, &ptok); err == nil {
+		privErr = enablePrivilege(ptok, "SeIncreaseQuotaPrivilege")
+		_ = ptok.Close()
+	}
+	if privErr != nil {
+		appendHelperLog(configDir, fmt.Errorf("enable SeIncreaseQuotaPrivilege: %v", privErr))
+	} else {
+		appendHelperLog(configDir, fmt.Errorf("SeIncreaseQuotaPrivilege enabled"))
+	}
 	if !setupComplete(configDir) {
 		if err := SandboxHelperInstall(configDir); err != nil {
 			return err
