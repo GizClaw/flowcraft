@@ -261,38 +261,32 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 		return err
 	}
 	if err := validateSpawnRequest(&req, root, secret); err != nil {
-		_ = sendError(conn, "spawn", err)
-		return nil
+		return failSpawn(conn, configDir, "spawn", err)
 	}
 	if len(req.Argv) == 0 {
-		_ = sendError(conn, "spawn", errdefs.Validationf("windows/elevated: SpawnRequest.Argv must name a command"))
-		return nil
+		return failSpawn(conn, configDir, "spawn", errdefs.Validationf("windows/elevated: SpawnRequest.Argv must name a command"))
 	}
 
 	creds, err := loadCreds(configDir)
 	if err != nil {
-		_ = sendError(conn, "spawn", err)
-		return nil
+		return failSpawn(conn, configDir, "spawn", err)
 	}
 	acct := creds.Online
 	if req.Account == sandboxAccountOffline {
 		acct = creds.Offline
 	}
 	if acct == nil {
-		_ = sendError(conn, "spawn", errdefs.Internalf("windows/elevated: missing credentials for account %q", req.Account))
-		return nil
+		return failSpawn(conn, configDir, "spawn", errdefs.Internalf("windows/elevated: missing credentials for account %q", req.Account))
 	}
 	tok, err := logonSandboxUser(acct)
 	if err != nil {
-		_ = sendError(conn, "spawn", err)
-		return nil
+		return failSpawn(conn, configDir, "spawn", err)
 	}
 	defer func() { _ = tok.Close() }()
 
 	sess, err := spawnAsSandboxUser(ctx, &req, tok, acct.Username)
 	if err != nil {
-		_ = sendError(conn, "spawn", err)
-		return nil
+		return failSpawn(conn, configDir, "spawn", err)
 	}
 	if err := writeFrame(conn, msgReady, SpawnReady{
 		PID:  uint32(sess.PID()),
@@ -302,6 +296,22 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 		return err
 	}
 	return runSession(ctx, conn, sess, activity)
+}
+
+// failSpawn records err in helper.log, sends it to the client as an
+// error frame, and then waits for the client to consume the frame and
+// close before releasing the connection. A named pipe close can
+// discard unwritten/unread buffered data, which is exactly how a
+// server-side failure used to reach the client as a bare EOF.
+func failSpawn(conn io.ReadWriteCloser, configDir, stage string, err error) error {
+	appendHelperLog(configDir, fmt.Errorf("spawn %s: %w", stage, err))
+	if serr := sendError(conn, stage, err); serr != nil {
+		return serr
+	}
+	// Drain until the client closes: the client closes immediately
+	// after reading the error frame, so this cannot block forever.
+	_, _ = io.Copy(io.Discard, conn)
+	return nil
 }
 
 // validateSpawnRequest refuses anything the client must not control:
