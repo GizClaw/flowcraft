@@ -262,15 +262,15 @@ func (w *jobCapsWatcher) run() {
 				cpu, err := w.job.sampleCPU()
 				if err != nil {
 					failures++
-				if failures < maxJobSampleFailures {
-					continue
-				}
-				wrapped := fmt.Errorf("job cpu sampling failed %d times in a row: %w", failures, err)
-				w.sampleErr.Store(wrapped)
-				telemetry.WarnErr(w.ctx, "sandbox: cpu sampling failed; killing job", wrapped,
-					otellog.String("sandbox.kill_reason", "sample_failure"))
-				w.kill("sample_failure")
-				return
+					if failures < maxJobSampleFailures {
+						continue
+					}
+					wrapped := fmt.Errorf("job cpu sampling failed %d times in a row: %w", failures, err)
+					w.sampleErr.Store(wrapped)
+					telemetry.WarnErr(w.ctx, "sandbox: cpu sampling failed; killing job", wrapped,
+						otellog.String("sandbox.kill_reason", "sample_failure"))
+					w.kill("sample_failure")
+					return
 				}
 				failures = 0
 				if cpu >= w.maxCPU {
