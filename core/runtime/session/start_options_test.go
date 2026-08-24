@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,98 @@ func TestEphemeralSessionWritesNoState(t *testing.T) {
 	}
 	if _, err := session.Resume(context.Background()); !errdefs.IsNotFound(err) {
 		t.Fatalf("Resume on ephemeral session error = %v, want not found", err)
+	}
+}
+
+// delegationService is a minimal stand-in for core/delegation.Service. The
+// session package cannot import core/delegation (it imports session), so the
+// regression asserts the same capability shape that delegation.ServiceFromHost
+// resolves through agent.CapabilityFromHost.
+type delegationService struct{ id string }
+
+// delegationServiceProvider mirrors core/delegation.ServiceProvider.
+type delegationServiceProvider interface {
+	DelegationService() delegationService
+}
+
+// delegationHost mirrors core/delegation.serviceHost: it exposes the
+// capability and unwraps to the underlying host.
+type delegationHost struct {
+	agent.Host
+	service delegationService
+}
+
+func (h delegationHost) DelegationService() delegationService { return h.service }
+
+func (h delegationHost) UnwrapHost() agent.Host { return h.Host }
+
+// delegationCapabilityHostFactory mirrors delegation hostwrap: the capability
+// wraps the runtime host, and the session wraps the result in ephemeralHost
+// for ephemeral starts.
+func delegationCapabilityHostFactory(bus event.Bus) HostFactory {
+	return HostFactoryFunc(func(_ context.Context, request HostRequest) (agent.Host, error) {
+		return delegationHost{
+			Host: agent.HostFuncs{
+				Inner:        testHost{bus: bus},
+				InterruptsFn: func() <-chan agent.Interrupt { return request.Interrupts },
+				AskUserFn:    request.AskUser,
+			},
+			service: delegationService{id: "delegate"},
+		}, nil
+	})
+}
+
+func TestEphemeralHostPreservesOptionalCapabilities(t *testing.T) {
+	store := &sessionRecordingStore{}
+	var busFound atomic.Bool
+	var serviceFound atomic.Bool
+	engine := agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		// The ephemeral wrapper must not hide optional host capabilities:
+		// the delegation service (the #426 regression, ServiceFromHost) and
+		// the event bus must both survive CapabilityFromHost traversal.
+		_, ok := agent.EventBusFromHost(host)
+		busFound.Store(ok)
+		if provider, ok := agent.CapabilityFromHost[delegationServiceProvider](host); ok {
+			serviceFound.Store(provider.DelegationService().id == "delegate")
+		}
+		// Checkpoint suppression must still hold through the wrapper.
+		if checkpointer, ok := host.(agent.Checkpointer); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_ = checkpointer.Checkpoint(ctx, agent.Checkpoint{
+				ExecID: "run-checkpoint",
+			})
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "done"))
+		return board, nil
+	})
+	_, session, _, _ := newTurnSession(t, engine, delegationCapabilityHostFactory,
+		WithResume(true), WithCheckpointStore(store))
+	turn, err := session.StartWithOptions(
+		context.Background(),
+		agent.Request{Message: message.NewTextMessage(message.RoleUser, "hi")},
+		WithEphemeral(),
+	)
+	if err != nil {
+		t.Fatalf("StartWithOptions: %v", err)
+	}
+	if _, err := turn.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !busFound.Load() {
+		t.Fatal("EventBusFromHost(ephemeral host) = not found, want the inner host's bus")
+	}
+	if !serviceFound.Load() {
+		t.Fatal("delegation capability (ServiceFromHost) = not found, want the inner host's service")
+	}
+	if !store.isEmpty() {
+		t.Fatalf("ephemeral host wrote %d checkpoints, want none", store.count())
 	}
 }
 

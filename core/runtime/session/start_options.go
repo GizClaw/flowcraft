@@ -78,4 +78,11 @@ func (ephemeralHost) Checkpoint(context.Context, agent.Checkpoint) error {
 	return nil
 }
 
+// UnwrapHost preserves optional capabilities of the wrapped turn Host:
+// ephemeral sessions only suppress checkpoint writes and must not hide
+// the inner host's capabilities (delegation service, event bus, ...) from
+// agent.CapabilityFromHost traversal.
+func (h ephemeralHost) UnwrapHost() agent.Host { return h.Host }
+
 var _ agent.Checkpointer = ephemeralHost{}
+var _ agent.HostUnwrapper = ephemeralHost{}
