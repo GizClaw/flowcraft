@@ -154,7 +154,7 @@ func (r *Runner) launchHelperLocked() error {
 	// to stderr and kills the process without any Go recover firing.
 	// `cmd /d /s /c` strips exactly the outer pair of quotes.
 	shell := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
-	wrapped := quoteArg(shell) + ` /d /s /c ""` + quoteArg(r.helperExePath()) + ` ` + args +
+	wrapped := `/d /s /c ""` + quoteArg(r.helperExePath()) + ` ` + args +
 		` 2> ` + quoteArg(helperErrLogPath(dir)) + `"`
 	if _, err := launchElevated(shell, wrapped, false); err != nil {
 		return err
