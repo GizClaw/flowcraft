@@ -334,8 +334,11 @@ func newPipeSession(id string, conn io.ReadWriteCloser, ready SpawnReady, maxOut
 	}
 	// Ctrl-C and Watch are not proxied yet; narrow the capabilities
 	// the server reports so callers never rely on NotAvailable paths.
+	// TTY is unavailable on the elevated path: CreateProcessWithLogonW
+	// cannot attach a ConPTY until the two-stage runner lands.
 	s.caps.Signal = false
 	s.caps.Events = false
+	s.caps.TTY = false
 	go s.pump()
 	return s
 }

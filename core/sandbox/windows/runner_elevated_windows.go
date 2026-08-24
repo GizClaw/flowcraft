@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -315,19 +314,12 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 	if acct == nil {
 		return failSpawn(conn, configDir, "spawn", errdefs.Internalf("windows/elevated: missing credentials for account %q", req.Account))
 	}
-	tok, err := logonSandboxUser(acct, configDir)
-	if err != nil {
-		return failSpawn(conn, configDir, "spawn", err)
-	}
-	defer func() { _ = tok.Close() }()
-	appendHelperLog(configDir, fmt.Errorf("logon ok for %q", acct.Username))
-
 	logonDone := make(chan struct {
 		sess sandbox.Session
 		err  error
 	}, 1)
 	go func() {
-		sess, err := spawnAsSandboxUser(ctx, &req, tok, acct.Username)
+		sess, err := spawnAsSandboxUser(ctx, &req, acct)
 		logonDone <- struct {
 			sess sandbox.Session
 			err  error
@@ -406,25 +398,19 @@ func pathWithinRoot(p, root string) bool {
 		strings.HasPrefix(strings.ToLower(clean), strings.ToLower(r)+strings.ToLower(string(filepath.Separator)))
 }
 
-// spawnAsSandboxUser builds the configured command with the sandbox
-// account's token and hands it to core/sandbox.StartWindowsSession,
-// which owns stdio (ConPTY/pipes), the job object, and reaping. The
-// token's default DACL is set so child-created objects stay usable.
-func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, tok windows.Token, username string) (sandbox.Session, error) {
+// spawnAsSandboxUser builds the configured command and hands it to
+// core/sandbox.StartWindowsSessionLogon, which spawns the child as the
+// sandbox account via CreateProcessWithLogonW and owns stdio, the job
+// object, and reaping. CreateProcessWithLogonW needs no
+// SeIncreaseQuota/SeAssignPrimaryToken privileges (CreateProcessAsUser
+// fails with ERROR_PRIVILEGE_NOT_HELD on CI runners that lack them).
+func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, acct *accountCred) (sandbox.Session, error) {
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
-	cmd.SysProcAttr = &syscall.SysProcAttr{Token: syscall.Token(tok)}
 
-	sid, err := accountSID(username)
+	sid, err := accountSID(acct.Username)
 	if err != nil {
-		return nil, err
-	}
-	everyone, err := windows.CreateWellKnownSid(windows.WinWorldSid)
-	if err != nil {
-		return nil, err
-	}
-	if err := setTokenDefaultDACL(tok, []*windows.SID{sid, everyone}); err != nil {
 		return nil, err
 	}
 	// Grant the sandbox account write access to the workspace roots
@@ -449,11 +435,7 @@ func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, tok windows.Toke
 			Timeout: durationMs(req.TimeoutMs),
 		},
 	}
-	sess, err := sandbox.StartWindowsSession(ctx, spec, cmd)
-	if err != nil {
-		return nil, err
-	}
-	return sess, nil
+	return sandbox.StartWindowsSessionLogon(ctx, spec, cmd, acct.Username, ".", acct.Password)
 }
 
 // applyAccountACLs grants sid write access on root + writable roots

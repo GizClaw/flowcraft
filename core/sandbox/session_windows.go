@@ -42,6 +42,15 @@ const (
 	pseudoConsoleResizeQuirk = 0x2
 )
 
+// logonWithProfile loads the sandbox account's user profile during
+// CreateProcessWithLogonW, so the child gets HKCU / %USERPROFILE%.
+const logonWithProfile = 0x1
+
+var (
+	modAdvapi32                 = windows.NewLazySystemDLL("advapi32.dll")
+	procCreateProcessWithLogonW = modAdvapi32.NewProc("CreateProcessWithLogonW")
+)
+
 // Process-thread attribute identifiers. HANDLE_LIST and PSEUDOCONSOLE
 // come from x/sys, which is generated from Microsoft's Win32
 // metadata (0x00020002 and 0x00020016); JOB_LIST is not exported
@@ -67,6 +76,31 @@ const procThreadAttributeJobList = 0x0002000d
 // limit plus a completion-port/sampling watcher, and reaping follows
 // the same seq-cursor output-log contract as StartSession on unix.
 func StartWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (Session, error) {
+	return startWindowsSession(ctx, spec, cmd, nil)
+}
+
+// StartWindowsSessionLogon is StartWindowsSession for a logon-created
+// child: instead of a restricted token in cmd.SysProcAttr, the child
+// is spawned via CreateProcessWithLogonW (the elevated backend's
+// sandbox accounts). CreateProcessWithLogonW needs no
+// SeIncreaseQuota/SeAssignPrimaryToken privileges, unlike
+// CreateProcessAsUser, and loads the account profile
+// (LOGON_WITH_PROFILE). It does not support extended startup info, so
+// TTY (ConPTY) sessions and the atomic JOB_LIST attribute are
+// unavailable on this path; the child is assigned to the job object
+// immediately after spawn instead.
+func StartWindowsSessionLogon(ctx context.Context, spec SessionSpec, cmd *exec.Cmd, user, domain, password string) (Session, error) {
+	return startWindowsSession(ctx, spec, cmd, &logonCreds{user: user, domain: domain, password: password})
+}
+
+// logonCreds selects the CreateProcessWithLogonW spawn path.
+type logonCreds struct {
+	user     string
+	domain   string
+	password string
+}
+
+func startWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd, logon *logonCreds) (Session, error) {
 	if cmd == nil {
 		return nil, errdefs.Validationf("sandbox: nil command for process session")
 	}
@@ -86,14 +120,19 @@ func StartWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (
 	if cmd.SysProcAttr != nil {
 		token = windows.Token(cmd.SysProcAttr.Token)
 	}
-	if token == 0 {
+	if token == 0 && logon == nil {
 		return nil, errdefs.NotAvailablef(
 			"sandbox: windows session requires a restricted token attached to cmd.SysProcAttr.Token")
+	}
+	if spec.TTY && logon != nil {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: elevated logon sessions do not support TTY yet")
 	}
 
 	s := &windowsSession{
 		id:         id,
 		token:      token,
+		logon:      logon,
 		argv:       cmd.Args,
 		dir:        cmd.Dir,
 		env:        cmd.Env,
@@ -134,6 +173,14 @@ func StartWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (
 			_ = job.Close()
 			return nil, err
 		}
+	} else if s.logon != nil {
+		if err := s.spawnPipesLogon(); err != nil {
+			if s.watcher != nil {
+				s.watcher.Stop()
+			}
+			_ = job.Close()
+			return nil, err
+		}
 	} else {
 		if err := s.spawnPipes(); err != nil {
 			if s.watcher != nil {
@@ -161,6 +208,7 @@ func StartWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (
 type windowsSession struct {
 	id    string
 	token windows.Token
+	logon *logonCreds
 	argv  []string
 	dir   string
 	env   []string
@@ -269,6 +317,107 @@ func (s *windowsSession) spawnPipes() error {
 		return fail(classifyWindowsStartError(s.argv[0], err))
 	}
 	_ = windows.CloseHandle(pi.Thread)
+
+	// The child holds duplicates of the read/write ends now; drop ours.
+	_ = windows.CloseHandle(inRead)
+	_ = windows.CloseHandle(outWrite)
+	_ = windows.CloseHandle(errWrite)
+
+	s.proc = pi.Process
+	s.pid = pi.ProcessId
+	s.stdin = os.NewFile(uintptr(inWrite), "sandbox-stdin")
+	s.stdout = os.NewFile(uintptr(outRead), "sandbox-stdout")
+	s.stderr = os.NewFile(uintptr(errRead), "sandbox-stderr")
+
+	s.copiers.Add(2)
+	go s.copyStream(s.stdout, SessionStreamStdout)
+	go s.copyStream(s.stderr, SessionStreamStderr)
+	return nil
+}
+
+// spawnPipesLogon launches a non-TTY child via CreateProcessWithLogonW
+// as the sandbox account (elevated backend). CreateProcessWithLogonW
+// cannot carry a STARTUPINFOEX attribute list, so there is no JOB_LIST
+// or handle list; the child is assigned to the job object immediately
+// after spawn, and only the stdio handles are inheritable so nothing
+// else leaks into it.
+func (s *windowsSession) spawnPipesLogon() error {
+	var inRead, inWrite, outRead, outWrite, errRead, errWrite windows.Handle
+	fail := func(err error) error {
+		closeHandles(inRead, inWrite, outRead, outWrite, errRead, errWrite)
+		return err
+	}
+	if err := windows.CreatePipe(&inRead, &inWrite, nil, 0); err != nil {
+		return fail(fmt.Errorf("sandbox: create stdin pipe: %w", err))
+	}
+	if err := windows.CreatePipe(&outRead, &outWrite, nil, 0); err != nil {
+		return fail(fmt.Errorf("sandbox: create stdout pipe: %w", err))
+	}
+	if err := windows.CreatePipe(&errRead, &errWrite, nil, 0); err != nil {
+		return fail(fmt.Errorf("sandbox: create stderr pipe: %w", err))
+	}
+	for _, h := range []windows.Handle{inRead, outWrite, errWrite} {
+		if err := windows.SetHandleInformation(h, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+			return fail(fmt.Errorf("sandbox: make stdio handle inheritable: %w", err))
+		}
+	}
+
+	cmdline, err := s.commandLine()
+	if err != nil {
+		return fail(err)
+	}
+	envBlock := makeEnvBlock(s.env)
+	cwd, err := windows.UTF16PtrFromString(s.dir)
+	if err != nil {
+		return fail(fmt.Errorf("sandbox: encode cwd: %w", err))
+	}
+	user, err := windows.UTF16PtrFromString(s.logon.user)
+	if err != nil {
+		return fail(fmt.Errorf("sandbox: encode logon user: %w", err))
+	}
+	domain, err := windows.UTF16PtrFromString(s.logon.domain)
+	if err != nil {
+		return fail(fmt.Errorf("sandbox: encode logon domain: %w", err))
+	}
+	password, err := windows.UTF16PtrFromString(s.logon.password)
+	if err != nil {
+		return fail(fmt.Errorf("sandbox: encode logon password: %w", err))
+	}
+
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Flags |= windows.STARTF_USESTDHANDLES
+	si.StdInput = inRead
+	si.StdOutput = outWrite
+	si.StdErr = errWrite
+
+	var pi windows.ProcessInformation
+	flags := uint32(windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW)
+	r1, _, e1 := procCreateProcessWithLogonW.Call(
+		uintptr(unsafe.Pointer(user)),
+		uintptr(unsafe.Pointer(domain)),
+		uintptr(unsafe.Pointer(password)),
+		logonWithProfile,
+		0,
+		uintptr(unsafe.Pointer(&cmdline[0])),
+		uintptr(flags),
+		uintptr(unsafe.Pointer(&envBlock[0])),
+		uintptr(unsafe.Pointer(cwd)),
+		uintptr(unsafe.Pointer(&si)),
+		uintptr(unsafe.Pointer(&pi)),
+	)
+	if r1 == 0 {
+		return fail(classifyWindowsStartError(s.argv[0], e1))
+	}
+	_ = windows.CloseHandle(pi.Thread)
+
+	// The logon path cannot use the JOB_LIST attribute; assign the
+	// child to the job now, before it can run untrusted work.
+	if err := windows.AssignProcessToJobObject(s.job.handle, pi.Process); err != nil {
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_ = windows.CloseHandle(pi.Process)
+		return fail(fmt.Errorf("sandbox: assign logon process to job: %w", err))
+	}
 
 	// The child holds duplicates of the read/write ends now; drop ours.
 	_ = windows.CloseHandle(inRead)

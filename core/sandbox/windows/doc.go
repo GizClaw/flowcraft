@@ -21,7 +21,10 @@
 //   - a Job Object: process-tree termination (KILL_ON_JOB_CLOSE) plus
 //     hard Memory/CPU limits (SetInformationJobObject + completion-port
 //     watcher);
-//   - ConPTY for interactive TTY sessions.
+//   - ConPTY for interactive TTY sessions (unelevated backend only:
+//     the elevated backend spawns through CreateProcessWithLogonW,
+//     which cannot attach a ConPTY — elevated TTY sessions arrive with
+//     the two-stage command-runner architecture).
 //
 // The design follows codex-rs (codex-rs/windows-sandbox-rs): an
 // unelevated restricted-token backend for the default case, with an
