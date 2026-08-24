@@ -315,28 +315,35 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 		return failSpawn(conn, configDir, "spawn", errdefs.Internalf("windows/elevated: missing credentials for account %q", req.Account))
 	}
 	logonDone := make(chan struct {
-		sess sandbox.Session
-		err  error
+		sess           sandbox.Session
+		cleanupDesktop func()
+		err            error
 	}, 1)
 	go func() {
-		sess, err := spawnAsSandboxUser(ctx, &req, acct)
+		sess, cleanup, err := spawnAsSandboxUser(ctx, &req, acct)
 		logonDone <- struct {
-			sess sandbox.Session
-			err  error
-		}{sess, err}
+			sess           sandbox.Session
+			cleanupDesktop func()
+			err            error
+		}{sess, cleanup, err}
 	}()
 	var sess sandbox.Session
+	var cleanupDesktop func()
 	select {
 	case r := <-logonDone:
 		if r.err != nil {
 			return failSpawn(conn, configDir, "spawn", r.err)
 		}
 		sess = r.sess
+		cleanupDesktop = r.cleanupDesktop
 	case <-time.After(20 * time.Second):
 		buf := make([]byte, 1<<20)
 		n := runtime.Stack(buf, true)
 		appendHelperLog(configDir, fmt.Errorf("elevated spawn stuck 20s; goroutines:\n%s", buf[:n]))
 		return failSpawn(conn, configDir, "spawn", fmt.Errorf("windows/elevated: spawn hung for 20s"))
+	}
+	if cleanupDesktop != nil {
+		defer cleanupDesktop()
 	}
 	appendHelperLog(configDir, fmt.Errorf("session started pid=%d", sess.PID()))
 	if err := writeFrame(conn, msgReady, SpawnReady{
@@ -404,22 +411,30 @@ func pathWithinRoot(p, root string) bool {
 // object, and reaping. CreateProcessWithLogonW needs no
 // SeIncreaseQuota/SeAssignPrimaryToken privileges (CreateProcessAsUser
 // fails with ERROR_PRIVILEGE_NOT_HELD on CI runners that lack them).
-func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, acct *accountCred) (sandbox.Session, error) {
+func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, acct *accountCred) (sess sandbox.Session, cleanupDesktop func(), err error) {
 	cmd := exec.Command(req.Argv[0], req.Argv[1:]...)
 	cmd.Dir = req.Cwd
 	cmd.Env = req.Env
 
 	sid, err := accountSID(acct.Username)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Grant the sandbox account write access to the workspace roots
 	// and protect the agent-owned subdirectories, so the child (which
 	// runs as a different user) can work and still cannot rewrite its
 	// own policy.
 	if err := applyAccountACLs(req, sid); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	// A private desktop the sandbox account can actually access: the
+	// service session's default desktop denies plain users and console
+	// children hang in console initialization with no output.
+	desktop, hdesk, err := createSandboxDesktop(sid.String())
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanupDesktop = func() { closeSandboxDesktop(hdesk) }
 
 	spec := sandbox.SessionSpec{
 		Argv: req.Argv,
@@ -435,7 +450,12 @@ func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, acct *accountCre
 			Timeout: durationMs(req.TimeoutMs),
 		},
 	}
-	return sandbox.StartWindowsSessionLogon(ctx, spec, cmd, acct.Username, ".", acct.Password)
+	sess, err = sandbox.StartWindowsSessionLogon(ctx, spec, cmd, acct.Username, ".", acct.Password, desktop)
+	if err != nil {
+		cleanupDesktop()
+		return nil, nil, err
+	}
+	return sess, cleanupDesktop, nil
 }
 
 // applyAccountACLs grants sid write access on root + writable roots

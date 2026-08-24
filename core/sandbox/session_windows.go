@@ -92,15 +92,20 @@ func StartWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd) (
 // TTY (ConPTY) sessions and the atomic JOB_LIST attribute are
 // unavailable on this path; the child is assigned to the job object
 // immediately after spawn instead.
-func StartWindowsSessionLogon(ctx context.Context, spec SessionSpec, cmd *exec.Cmd, user, domain, password string) (Session, error) {
-	return startWindowsSession(ctx, spec, cmd, &logonCreds{user: user, domain: domain, password: password})
+func StartWindowsSessionLogon(ctx context.Context, spec SessionSpec, cmd *exec.Cmd, user, domain, password, desktop string) (Session, error) {
+	return startWindowsSession(ctx, spec, cmd, &logonCreds{user: user, domain: domain, password: password, desktop: desktop})
 }
 
-// logonCreds selects the CreateProcessWithLogonW spawn path.
+// logonCreds selects the CreateProcessWithLogonW spawn path. desktop
+// is a private desktop the elevated helper created for the sandbox
+// account (bare name, on the caller's window station); console
+// children hang during console initialization without one they can
+// access.
 type logonCreds struct {
 	user     string
 	domain   string
 	password string
+	desktop  string
 }
 
 func startWindowsSession(ctx context.Context, spec SessionSpec, cmd *exec.Cmd, logon *logonCreds) (Session, error) {
@@ -393,6 +398,13 @@ func (s *windowsSession) spawnPipesLogon() error {
 	si.StdInput = inRead
 	si.StdOutput = outWrite
 	si.StdErr = errWrite
+	if s.logon.desktop != "" {
+		desktop, err := windows.UTF16PtrFromString(s.logon.desktop)
+		if err != nil {
+			return fail(fmt.Errorf("sandbox: encode desktop name: %w", err))
+		}
+		si.Desktop = desktop
+	}
 
 	var pi windows.ProcessInformation
 	flags := uint32(windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_NO_WINDOW)
