@@ -42,9 +42,12 @@ const (
 	pseudoConsoleResizeQuirk = 0x2
 )
 
-// logonWithProfile loads the sandbox account's user profile during
-// CreateProcessWithLogonW, so the child gets HKCU / %USERPROFILE%.
-const logonWithProfile = 0x1
+// logonWithProfile (LOGON_WITH_PROFILE) loads the sandbox account's
+// user profile during CreateProcessWithLogonW. It is deliberately
+// NOT used: first-login profile creation hangs for many seconds (or
+// indefinitely) in the CI service session, and the sandbox children
+// only need a plain console environment. Pass 0 to skip it.
+const logonWithProfile = 0x0
 
 var (
 	modAdvapi32                 = windows.NewLazySystemDLL("advapi32.dll")
