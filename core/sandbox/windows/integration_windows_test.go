@@ -5,6 +5,7 @@ package windows
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,19 @@ import (
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 	"golang.org/x/sys/windows"
 )
+
+// TestMain gives the re-executed test binary a host-main hook so the
+// elevated helper (which re-executes the current executable with
+// HelperArgvMarker) can serve under `go test`. Real host applications
+// call windows.MaybeHelper() from their own main; the testing binary
+// has no main of ours, so intercept the marker before m.Run parses
+// flags.
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && os.Args[1] == HelperArgvMarker {
+		os.Exit(runHelper(os.Args[2:]))
+	}
+	os.Exit(m.Run())
+}
 
 // This file is the runtime verification layer for the Windows
 // backend: it exercises the real Win32 primitives (restricted token,

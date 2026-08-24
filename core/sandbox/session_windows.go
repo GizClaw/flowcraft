@@ -42,14 +42,11 @@ const (
 	pseudoConsoleResizeQuirk = 0x2
 )
 
-// Process-thread attribute identifiers (winnt.h authoritative values;
-// x/sys's HANDLE_LIST constant is not authoritative, so define all
-// three locally).
-const (
-	procThreadAttributeHandleList = 0x00020003
-	procThreadAttributeJobList    = 0x0002000d
-	procThreadAttrPseudoConsole   = 0x00020016
-)
+// Process-thread attribute identifiers. HANDLE_LIST and PSEUDOCONSOLE
+// come from x/sys, which is generated from Microsoft's Win32
+// metadata (0x00020002 and 0x00020016); JOB_LIST is not exported
+// there, so it is defined locally with its winnt.h value 0x0002000d.
+const procThreadAttributeJobList = 0x0002000d
 
 // StartWindowsSession launches an already-configured *exec.Cmd as a
 // Session. cmd.Dir / cmd.Env must already be resolved by the caller,
@@ -227,7 +224,7 @@ func (s *windowsSession) spawnPipes() error {
 	if err := attrs.Update(procThreadAttributeJobList, unsafe.Pointer(&jobList[0]), uintptr(len(jobList))*unsafe.Sizeof(jobList[0])); err != nil {
 		return fail(fmt.Errorf("sandbox: set job list attribute: %w", err))
 	}
-	if err := attrs.Update(procThreadAttributeHandleList, unsafe.Pointer(&childHandles[0]), uintptr(len(childHandles))*unsafe.Sizeof(childHandles[0])); err != nil {
+	if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&childHandles[0]), uintptr(len(childHandles))*unsafe.Sizeof(childHandles[0])); err != nil {
 		return fail(fmt.Errorf("sandbox: set handle list attribute: %w", err))
 	}
 
@@ -341,7 +338,7 @@ func (s *windowsSession) spawnConPTY() error {
 	// itself (see the Microsoft ConPTY sample); reinterpret the
 	// uintptr's storage so vet's unsafeptr check stays quiet.
 	hpcValue := *(*unsafe.Pointer)(unsafe.Pointer(&hpc))
-	if err := attrs.Update(procThreadAttrPseudoConsole, hpcValue, unsafe.Sizeof(hpc)); err != nil {
+	if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE, hpcValue, unsafe.Sizeof(hpc)); err != nil {
 		s.closeConPTY()
 		return fail(fmt.Errorf("sandbox: set pseudo console attribute: %w", err))
 	}
