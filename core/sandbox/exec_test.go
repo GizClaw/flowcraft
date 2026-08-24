@@ -1,3 +1,5 @@
+//go:build unix
+
 package sandbox_test
 
 import (

@@ -228,10 +228,46 @@ jobs:
         run: go test -tags=integration_bwrap -count=1 -timeout 180s ./bwrap/...
         working-directory: core/sandbox
 
+  windows-cross-build:
+    name: Windows compile gate (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Cross-compile for windows
+        working-directory: core
+        run: GOOS=windows go build ./...
+
+  windows-sandbox:
+    name: Test core/sandbox on windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Test
+        working-directory: core
+        run: go test -count=1 ./sandbox/...
+
+  test-sandbox-windows-integration:
+    name: Integration core/sandbox/windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+      - name: Test
+        working-directory: core/sandbox
+        run: go test -tags=integration_windows -count=1 -timeout 300s ./windows/...
+
   ci-pass:
     name: CI
     if: always()
-    needs: [release-intent, gofmt, compute-matrix, lint, test, test-sandbox-bwrap]
+    needs: [release-intent, gofmt, compute-matrix, lint, test, test-sandbox-bwrap, test-sandbox-windows-integration, windows-cross-build, windows-sandbox]
     runs-on: ubuntu-latest
     steps:
       - name: Check results
@@ -243,6 +279,9 @@ jobs:
             "${{ needs.lint.result }}" \
             "${{ needs.test.result }}" \
             "${{ needs.test-sandbox-bwrap.result }}" \
+            "${{ needs.test-sandbox-windows-integration.result }}" \
+            "${{ needs.windows-cross-build.result }}" \
+            "${{ needs.windows-sandbox.result }}" \
           )
           for r in "${results[@]}"; do
             if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then

@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -18,7 +19,7 @@ func TestRegister(t *testing.T) {
 		t.Fatal("sandbox.Runner/local factory not registered")
 	}
 	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "` + t.TempDir() + `"}`),
+		Settings: []byte(`{"root": ` + mustJSON(t.TempDir()) + `}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -26,6 +27,16 @@ func TestRegister(t *testing.T) {
 	if _, ok := value.(*local.Runner); !ok {
 		t.Fatalf("New returned %T, want *local.Runner", value)
 	}
+}
+
+// mustJSON renders a string as a JSON string literal, so Windows
+// paths with backslashes stay valid JSON in Settings.
+func mustJSON(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestFactoryRequiresRoot(t *testing.T) {
