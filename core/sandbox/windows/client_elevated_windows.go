@@ -25,8 +25,10 @@ const dialDeadline = 60 * time.Second
 // controlWriteTimeout bounds a control-frame write to the elevated
 // helper. The named pipe write blocks forever when the helper stops
 // reading the client direction; a bounded write turns that hang into
-// an error plus a session teardown.
-const controlWriteTimeout = 10 * time.Second
+// an error plus a session teardown. Generous on purpose: the
+// server-side watchdog dumps the helper's goroutines at 45s, so a
+// wedged session can be diagnosed before the client gives up.
+const controlWriteTimeout = 60 * time.Second
 
 func randomPipeName() string {
 	var b [16]byte
