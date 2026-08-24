@@ -397,10 +397,16 @@ type shellExecuteInfoW struct {
 	hProcess     uintptr
 }
 
-// launchElevated starts exePath with args through ShellExecuteExW's
-// "runas" verb (UAC prompt), hiding the helper window. When wait is
-// true it blocks until the helper exits and returns its exit code.
-func launchElevated(exePath, args string, wait bool) (uint32, error) {
+// launchElevated starts exePath with args. When the current process
+// is already elevated it spawns directly via CreateProcess (no UAC
+// prompt) and redirects stderr to errLog; otherwise it falls back to
+// ShellExecuteExW's "runas" verb (UAC prompt), hiding the helper
+// window. When wait is true it blocks until the helper exits and
+// returns its exit code.
+func launchElevated(exePath, args string, wait bool, errLog string) (uint32, error) {
+	if elevated, err := currentProcessElevated(); err == nil && elevated {
+		return launchElevatedDirect(exePath, args, wait, errLog)
+	}
 	verb, err := windows.UTF16PtrFromString("runas")
 	if err != nil {
 		return 0, err
@@ -441,6 +447,76 @@ func launchElevated(exePath, args string, wait bool) (uint32, error) {
 	_ = windows.GetExitCodeProcess(windows.Handle(sei.hProcess), &code)
 	_ = windows.CloseHandle(windows.Handle(sei.hProcess))
 	return code, nil
+}
+
+// currentProcessElevated reports whether the calling process runs
+// with a full (elevated) token, in which case the helper needs no
+// runas prompt and can be spawned directly.
+func currentProcessElevated() (bool, error) {
+	var tok windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_QUERY, &tok); err != nil {
+		return false, err
+	}
+	defer func() { _ = tok.Close() }()
+	return tok.IsElevated(), nil
+}
+
+// launchElevatedDirect spawns exePath with args under the caller's
+// already-elevated token, redirecting stderr to errLog so a hidden
+// native fatal is not invisible. The helper window is suppressed.
+func launchElevatedDirect(exePath, args string, wait bool, errLog string) (uint32, error) {
+	cmdline, err := windows.UTF16PtrFromString(quoteCommandLine(exePath, args))
+	if err != nil {
+		return 0, err
+	}
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Flags = windows.STARTF_USESTDHANDLES | windows.STARTF_USESHOWWINDOW
+	si.ShowWindow = windows.SW_HIDE
+	var errFile *os.File
+	if errLog != "" {
+		errFile, err = os.OpenFile(errLog, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		if err != nil {
+			return 0, err
+		}
+		defer func() { _ = errFile.Close() }()
+		si.StdErr = windows.Handle(errFile.Fd())
+	}
+	var pi windows.ProcessInformation
+	if err := windows.CreateProcess(
+		nil,
+		cmdline,
+		nil,
+		nil,
+		true,
+		windows.CREATE_UNICODE_ENVIRONMENT|windows.CREATE_NO_WINDOW,
+		nil,
+		nil,
+		&si,
+		&pi,
+	); err != nil {
+		return 0, fmt.Errorf("windows/elevated: launch helper: %w", err)
+	}
+	_ = windows.CloseHandle(pi.Thread)
+	if !wait {
+		// The helper runs independently; release the process handle so
+		// the runner does not leak one per launch.
+		_ = windows.CloseHandle(pi.Process)
+		return 0, nil
+	}
+	defer func() { _ = windows.CloseHandle(pi.Process) }()
+	if _, err := windows.WaitForSingleObject(pi.Process, windows.INFINITE); err != nil {
+		return 0, err
+	}
+	var code uint32
+	_ = windows.GetExitCodeProcess(pi.Process, &code)
+	return code, nil
+}
+
+// quoteCommandLine renders a CreateProcess command line from an
+// executable and a pre-quoted argument string.
+func quoteCommandLine(exePath, args string) string {
+	return quoteArg(exePath) + " " + args
 }
 
 func dpapiProtect(data []byte) ([]byte, error) {

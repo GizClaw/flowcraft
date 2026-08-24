@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -149,14 +148,10 @@ func (r *Runner) launchHelperLocked() error {
 	args := HelperArgvMarker + " serve --pipe " + quoteArg(r.elevatedPipe) +
 		" --config " + quoteArg(dir) +
 		" --root " + quoteArg(r.rootDir)
-	// Route the helper's stderr into helper.log through cmd.exe: the
-	// helper runs hidden, and a native fatal (access violation) prints
-	// to stderr and kills the process without any Go recover firing.
-	// `cmd /d /s /c` strips exactly the outer pair of quotes.
-	shell := filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
-	wrapped := `/d /s /c ""` + quoteArg(r.helperExePath()) + ` ` + args +
-		` 2> ` + quoteArg(helperErrLogPath(dir)) + `"`
-	if _, err := launchElevated(shell, wrapped, false); err != nil {
+	// launchElevated redirects the helper's stderr to helper.err.log
+	// on the direct (already-elevated) path, so a hidden native fatal
+	// is not invisible. The runas fallback cannot redirect.
+	if _, err := launchElevated(r.helperExePath(), args, false, helperErrLogPath(dir)); err != nil {
 		return err
 	}
 	return nil
