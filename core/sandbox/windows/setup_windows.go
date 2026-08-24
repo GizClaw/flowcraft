@@ -358,6 +358,14 @@ func logonSandboxUser(acct *accountCred, configDir string) (windows.Token, error
 	if err != nil {
 		return 0, err
 	}
+	// "." pins the local machine explicitly. A NULL domain makes
+	// LogonUserW take the UPN/network-account lookup path, which
+	// access-violates (read of address 0x0) in the CI service
+	// session; codex-rs passes "." for the same reason.
+	domain, err := windows.UTF16PtrFromString(".")
+	if err != nil {
+		return 0, err
+	}
 	p, err := windows.UTF16PtrFromString(acct.Password)
 	if err != nil {
 		return 0, err
@@ -365,9 +373,8 @@ func logonSandboxUser(acct *accountCred, configDir string) (windows.Token, error
 	var tok windows.Token
 	appendHelperLog(configDir, fmt.Errorf("logon: calling LogonUserW for %q type=%d", acct.Username, logon32LogonNetwork))
 	r1, _, e1 := procLogonUserW.Call(
-		0,
-		0,
 		uintptr(unsafe.Pointer(u)),
+		uintptr(unsafe.Pointer(domain)),
 		uintptr(unsafe.Pointer(p)),
 		logon32LogonNetwork,
 		logon32ProviderDefault,
