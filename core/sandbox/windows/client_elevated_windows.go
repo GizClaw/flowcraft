@@ -81,7 +81,11 @@ func (r *Runner) startElevated(ctx context.Context, spec sandbox.SessionSpec, wo
 		CPUMillicores:  spec.Opts.Resources.CPUMillicores,
 		TimeoutMs:      spec.Opts.Timeout.Milliseconds(),
 	}
-	return elevatedSpawn(ctx, conn, spec.ID, req)
+	sess, err := elevatedSpawn(ctx, conn, spec.ID, req)
+	if err != nil {
+		return nil, r.helperError(err)
+	}
+	return sess, nil
 }
 
 // helperError enriches a failed dial with the helper's recorded

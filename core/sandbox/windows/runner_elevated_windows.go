@@ -189,7 +189,7 @@ func serveInstance(
 		activity.touch()
 		activity.incr()
 		f := os.NewFile(uintptr(h), pipeName)
-		err = serveConn(ctx, f, configDir, root, secret, activity)
+		err = serveConnLogged(ctx, f, configDir, root, secret, activity)
 		_ = f.Close()
 		activity.decr()
 		activity.touch()
@@ -205,6 +205,24 @@ func serveInstance(
 				otellog.String("windows.pipe", pipeName))
 		}
 	}
+}
+
+// serveConnLogged runs serveConn with panic recovery and error
+// logging to helper.log: the helper runs hidden, so a per-request
+// failure that merely closes the pipe is otherwise invisible to the
+// runner (which reports a bare EOF).
+func serveConnLogged(ctx context.Context, conn io.ReadWriteCloser, configDir, root, secret string, activity *pipeActivity) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("windows/elevated: helper panic: %v", r)
+			appendHelperLog(configDir, err)
+		}
+	}()
+	err = serveConn(ctx, conn, configDir, root, secret, activity)
+	if err != nil && !errors.Is(err, errShutdown) {
+		appendHelperLog(configDir, err)
+	}
+	return err
 }
 
 func mustUTF16Ptr(s string) *uint16 {
