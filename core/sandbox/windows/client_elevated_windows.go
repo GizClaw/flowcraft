@@ -134,6 +134,9 @@ func (r *Runner) launchHelperLocked() error {
 	if err != nil {
 		return err
 	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("windows/elevated: create helper config dir: %w", err)
+	}
 	r.elevatedPipe = randomPipeName()
 	secret := randomSecret()
 	r.elevatedSecret = secret
