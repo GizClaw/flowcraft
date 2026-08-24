@@ -78,9 +78,22 @@ func SandboxHelperServe(ctx context.Context, pipeName, configDir, root, secret s
 		wg.Add(1)
 		go func(first bool) {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					err := fmt.Errorf("windows/elevated: serve instance panic: %v", r)
+					appendHelperLog(configDir, err)
+					select {
+					case errc <- err:
+					default:
+					}
+				}
+			}()
 			if err := serveInstance(ctx, pipeName, configDir, root, secret, sa, first, activity); err != nil {
 				if !errors.Is(err, errShutdown) {
-					errc <- err
+					select {
+					case errc <- err:
+					default:
+					}
 				}
 				cancel()
 			}
@@ -260,6 +273,7 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 	if err := decodePayload(kind, payload, &req); err != nil {
 		return err
 	}
+	appendHelperLog(configDir, fmt.Errorf("spawn request account=%q argv=%v", req.Account, req.Argv))
 	if err := validateSpawnRequest(&req, root, secret); err != nil {
 		return failSpawn(conn, configDir, "spawn", err)
 	}
@@ -283,11 +297,13 @@ func serveConn(ctx context.Context, conn io.ReadWriteCloser, configDir, root, se
 		return failSpawn(conn, configDir, "spawn", err)
 	}
 	defer func() { _ = tok.Close() }()
+	appendHelperLog(configDir, fmt.Errorf("logon ok for %q", acct.Username))
 
 	sess, err := spawnAsSandboxUser(ctx, &req, tok, acct.Username)
 	if err != nil {
 		return failSpawn(conn, configDir, "spawn", err)
 	}
+	appendHelperLog(configDir, fmt.Errorf("session started pid=%d", sess.PID()))
 	if err := writeFrame(conn, msgReady, SpawnReady{
 		PID:  uint32(sess.PID()),
 		Caps: sess.Capabilities(),
@@ -390,7 +406,11 @@ func spawnAsSandboxUser(ctx context.Context, req *SpawnRequest, tok windows.Toke
 			Timeout: durationMs(req.TimeoutMs),
 		},
 	}
-	return sandbox.StartWindowsSession(ctx, spec, cmd)
+	sess, err := sandbox.StartWindowsSession(ctx, spec, cmd)
+	if err != nil {
+		return nil, err
+	}
+	return sess, nil
 }
 
 // applyAccountACLs grants sid write access on root + writable roots
