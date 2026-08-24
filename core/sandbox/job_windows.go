@@ -221,7 +221,7 @@ func startJobCapsWatcher(ctx context.Context, job *jobObject, res ResourceLimits
 		port, err := windows.CreateIoCompletionPort(job.handle, 0, 0, 0)
 		if err != nil {
 			wrapped := fmt.Errorf("sandbox: associate job completion port: %w", err)
-			w.sampleErr.Store(&wrapped)
+			w.sampleErr.Store(wrapped)
 		} else {
 			w.port = port
 		}
@@ -262,13 +262,15 @@ func (w *jobCapsWatcher) run() {
 				cpu, err := w.job.sampleCPU()
 				if err != nil {
 					failures++
-					if failures < maxJobSampleFailures {
-						continue
-					}
-					wrapped := fmt.Errorf("job cpu sampling failed %d times in a row: %w", failures, err)
-					w.sampleErr.Store(&wrapped)
-					w.kill("sample_failure")
-					return
+				if failures < maxJobSampleFailures {
+					continue
+				}
+				wrapped := fmt.Errorf("job cpu sampling failed %d times in a row: %w", failures, err)
+				w.sampleErr.Store(wrapped)
+				telemetry.WarnErr(w.ctx, "sandbox: cpu sampling failed; killing job", wrapped,
+					otellog.String("sandbox.kill_reason", "sample_failure"))
+				w.kill("sample_failure")
+				return
 				}
 				failures = 0
 				if cpu >= w.maxCPU {
@@ -294,7 +296,9 @@ func (w *jobCapsWatcher) run() {
 					continue
 				}
 				wrapped := fmt.Errorf("job completion port failed %d times in a row: %w", failures, err)
-				w.sampleErr.Store(&wrapped)
+				w.sampleErr.Store(wrapped)
+				telemetry.WarnErr(w.ctx, "sandbox: job completion port failed; killing job", wrapped,
+					otellog.String("sandbox.kill_reason", "sample_failure"))
 				w.kill("sample_failure")
 				return
 			}
