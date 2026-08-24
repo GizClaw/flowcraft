@@ -44,6 +44,15 @@ type jobObject struct {
 	closeOnce sync.Once
 }
 
+// jobAssociateCompletionPort mirrors JOBOBJECT_ASSOCIATE_COMPLETION_PORT
+// (winnt.h). A job is associated with a completion port through
+// SetInformationJobObject(JobObjectAssociateCompletionPortInformation),
+// not by passing the job handle to CreateIoCompletionPort.
+type jobAssociateCompletionPort struct {
+	CompletionKey  uintptr
+	CompletionPort windows.Handle
+}
+
 // newJobObject creates an unnamed job object with KILL_ON_JOB_CLOSE
 // (last handle close kills every member) and BREAKAWAY_OK (children
 // that already belong to an outer job — e.g. an IDE runner — may
@@ -216,14 +225,28 @@ func startJobCapsWatcher(ctx context.Context, job *jobObject, res ResourceLimits
 		doneCh: make(chan struct{}),
 	}
 	if res.MemoryBytes > 0 {
-		// CreateIoCompletionPort with a zero port handle both creates
-		// the port and associates the job with it.
-		port, err := windows.CreateIoCompletionPort(job.handle, 0, 0, 0)
+		// Create the completion port (unassociated), then associate the
+		// job with it via JobObjectAssociateCompletionPortInformation.
+		// CreateIoCompletionPort takes file/socket handles, not job
+		// handles; passing the job handle fails with ERROR_INVALID_HANDLE.
+		port, err := windows.CreateIoCompletionPort(windows.InvalidHandle, 0, 0, 0)
 		if err != nil {
 			wrapped := fmt.Errorf("sandbox: associate job completion port: %w", err)
 			w.sampleErr.Store(wrapped)
 		} else {
-			w.port = port
+			assoc := jobAssociateCompletionPort{CompletionPort: port}
+			if _, err := windows.SetInformationJobObject(
+				job.handle,
+				windows.JobObjectAssociateCompletionPortInformation,
+				uintptr(unsafe.Pointer(&assoc)),
+				uint32(unsafe.Sizeof(assoc)),
+			); err != nil {
+				_ = windows.CloseHandle(port)
+				wrapped := fmt.Errorf("sandbox: associate job completion port: %w", err)
+				w.sampleErr.Store(wrapped)
+			} else {
+				w.port = port
+			}
 		}
 	}
 	go w.run()

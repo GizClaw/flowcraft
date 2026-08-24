@@ -60,7 +60,7 @@ func (r *Runner) startElevated(ctx context.Context, spec sandbox.SessionSpec, wo
 	}
 	conn, err := r.dialElevated(ctx)
 	if err != nil {
-		return nil, err
+		return nil, r.helperError(err)
 	}
 	r.elevatedMu.Lock()
 	secret := r.elevatedSecret
@@ -84,6 +84,25 @@ func (r *Runner) startElevated(ctx context.Context, spec sandbox.SessionSpec, wo
 	return elevatedSpawn(ctx, conn, spec.ID, req)
 }
 
+// helperError enriches a failed dial with the helper's recorded
+// startup error, when one exists, so a hidden elevated helper failure
+// is not reported as a bare pipe timeout.
+func (r *Runner) helperError(err error) error {
+	dir, derr := sandboxConfigDir()
+	if derr != nil {
+		return err
+	}
+	b, rerr := os.ReadFile(helperLogPath(dir))
+	if rerr != nil || len(b) == 0 {
+		return err
+	}
+	tail := strings.TrimSpace(string(b))
+	if len(tail) > 512 {
+		tail = tail[len(tail)-512:]
+	}
+	return fmt.Errorf("%w (helper log: %s)", err, tail)
+}
+
 // launchHelper re-executes this process elevated with the helper
 // marker, carrying a fresh per-runner secret through an environment
 // variable that is removed immediately after launch. Each launch uses
@@ -104,6 +123,9 @@ func (r *Runner) launchHelperLocked() error {
 	r.elevatedPipe = randomPipeName()
 	secret := randomSecret()
 	r.elevatedSecret = secret
+	// A fresh helper should start with a clean log; stale entries from
+	// an earlier launch would point at the wrong failure.
+	_ = os.Remove(helperLogPath(dir))
 	if err := os.Setenv(helperSecretEnv, secret); err != nil {
 		return fmt.Errorf("windows/elevated: set helper secret: %w", err)
 	}
