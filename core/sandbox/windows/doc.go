@@ -59,8 +59,8 @@
 //
 // P2 (elevated backend + WFP network policy) is implemented:
 //
-//   - two dedicated local accounts (FlowCraftSandboxOffline /
-//     FlowCraftSandboxOnline) created by an elevated setup step,
+//   - two dedicated local accounts (FlowCraftSbxOffline /
+//     FlowCraftSbxOnline) created by an elevated setup step,
 //     DPAPI-protected credentials, and a setup marker;
 //   - persistent WFP filters on the offline account: catch-all block
 //     for outbound connects and inbound accepts (IPv4 + IPv6) with an
@@ -137,8 +137,8 @@
 // Manual checks for the parts integration tests cannot reach (UAC
 // interaction, interactive ConPTY behavior, proxy policy):
 //
-//   - after elevated setup: net user FlowCraftSandboxOffline /
-//     FlowCraftSandboxOnline must exist, and
+//   - after elevated setup: net user FlowCraftSbxOffline /
+//     FlowCraftSbxOnline must exist, and
 //     %APPDATA%\flowcraft\windows-sandbox must contain creds.json and
 //     setup.json;
 //   - WFP filters: netsh wfp show filters file=wfp.xml, then grep the

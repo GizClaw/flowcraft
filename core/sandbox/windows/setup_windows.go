@@ -29,9 +29,14 @@ import (
 // so an elevated helper holds the credentials and spawns on its
 // behalf.
 const (
-	sandboxAccountOffline = "FlowCraftSandboxOffline"
-	sandboxAccountOnline  = "FlowCraftSandboxOnline"
-	setupVersion          = 2
+	// Local account names are capped at 20 characters by NetUserAdd
+	// (SAM account-name limit); longer names fail with
+	// ERROR_BAD_USERNAME (0x89a).
+	sandboxAccountOffline = "FlowCraftSbxOffline"
+	sandboxAccountOnline  = "FlowCraftSbxOnline"
+	// Bumped from 2: the sandbox account names changed, so machines
+	// that ran the old setup must re-create accounts and filters.
+	setupVersion = 3
 
 	// NetUserAdd / NetUserSetInfo return codes.
 	nerrSuccess    = 0

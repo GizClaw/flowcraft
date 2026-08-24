@@ -128,13 +128,16 @@ func (j *jobObject) processIDs() ([]uint32, error) {
 	var needed uint32
 	// First query with the minimal buffer just learns the required
 	// size; ERROR_MORE_DATA is expected and ignored.
-	_ = windows.QueryInformationJobObject(
+	err := windows.QueryInformationJobObject(
 		j.handle,
 		windows.JobObjectBasicProcessIdList,
 		uintptr(unsafe.Pointer(&header)),
 		uint32(unsafe.Sizeof(header)),
 		&needed,
 	)
+	if err != nil && err != windows.ERROR_MORE_DATA {
+		return nil, fmt.Errorf("sandbox: query job process list size: %w", err)
+	}
 	if needed <= uint32(unsafe.Sizeof(header)) {
 		// The header alone was returned: the job is empty.
 		if needed == 0 {
@@ -142,22 +145,29 @@ func (j *jobObject) processIDs() ([]uint32, error) {
 		}
 		needed = uint32(unsafe.Sizeof(header))
 	}
-	buf := make([]byte, needed)
-	if err := windows.QueryInformationJobObject(
-		j.handle,
-		windows.JobObjectBasicProcessIdList,
-		uintptr(unsafe.Pointer(&buf[0])),
-		needed,
-		&needed,
-	); err != nil {
-		return nil, fmt.Errorf("sandbox: query job process list: %w", err)
+	for {
+		buf := make([]byte, needed)
+		if err := windows.QueryInformationJobObject(
+			j.handle,
+			windows.JobObjectBasicProcessIdList,
+			uintptr(unsafe.Pointer(&buf[0])),
+			needed,
+			&needed,
+		); err != nil {
+			if err == windows.ERROR_MORE_DATA {
+				// More processes joined the job between the two
+				// queries; retry with the enlarged buffer.
+				continue
+			}
+			return nil, fmt.Errorf("sandbox: query job process list: %w", err)
+		}
+		numIDs := *(*uint32)(unsafe.Pointer(&buf[4]))
+		pids := make([]uint32, 0, numIDs)
+		for i := 0; i < int(numIDs); i++ {
+			pids = append(pids, *(*uint32)(unsafe.Pointer(&buf[8+i*4])))
+		}
+		return pids, nil
 	}
-	numIDs := *(*uint32)(unsafe.Pointer(&buf[4]))
-	pids := make([]uint32, 0, numIDs)
-	for i := 0; i < int(numIDs); i++ {
-		pids = append(pids, *(*uint32)(unsafe.Pointer(&buf[8+i*4])))
-	}
-	return pids, nil
 }
 
 // sampleCPU sums kernel+user cpu time across every process currently

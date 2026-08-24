@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 // tests skip themselves unless the process token is elevated.
 //
 // NOTE: the elevated tests mutate the machine: they create two local
-// accounts (FlowCraftSandboxOffline / FlowCraftSandboxOnline) and
+// accounts (FlowCraftSbxOffline / FlowCraftSbxOnline) and
 // install persistent WFP filters. Run them only on a throwaway CI
 // runner or a machine you can clean up.
 
@@ -211,7 +211,7 @@ func TestIntegrationElevatedSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec(elevated): %v", err)
 	}
-	if !strings.Contains(strings.ToLower(res.Stdout), "flowcraftsandboxonline") {
+	if !strings.Contains(strings.ToLower(res.Stdout), "flowcraftsbxonline") {
 		t.Fatalf("whoami = %q, want online sandbox account", res.Stdout)
 	}
 
@@ -225,7 +225,7 @@ func TestIntegrationElevatedSpawn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec(elevated, denyall): %v", err)
 	}
-	if !strings.Contains(strings.ToLower(res.Stdout), "flowcraftsandboxoffline") {
+	if !strings.Contains(strings.ToLower(res.Stdout), "flowcraftsbxoffline") {
 		t.Fatalf("whoami = %q, want offline sandbox account", res.Stdout)
 	}
 
