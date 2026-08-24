@@ -242,3 +242,29 @@ func TestIntegrationElevatedSpawn(t *testing.T) {
 		t.Fatal("offline sandbox account reached the internet; WFP block did not apply")
 	}
 }
+
+// TestIntegrationLogonUserW isolates the LogonUserW primitive from
+// the helper: same account, same password path, but running directly
+// in the test process (also elevated). If this passes while the
+// helper dies at the same call, the fault is in the helper's state
+// (e.g. memory corruption during setup); if it also dies, the CI
+// environment's LogonUserW is at fault.
+func TestIntegrationLogonUserW(t *testing.T) {
+	requireElevated(t)
+	dir := t.TempDir()
+	if err := SandboxHelperInstall(dir); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	creds, err := loadCreds(dir)
+	if err != nil {
+		t.Fatalf("loadCreds: %v", err)
+	}
+	tok, err := logonSandboxUser(creds.Online, dir)
+	if err != nil {
+		t.Fatalf("logonSandboxUser: %v", err)
+	}
+	defer func() { _ = tok.Close() }()
+	if tok == 0 {
+		t.Fatal("logon returned zero token")
+	}
+}
