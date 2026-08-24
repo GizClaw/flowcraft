@@ -150,6 +150,19 @@ result, err := turn.Wait(ctx)
 `SinkSpec` controls streaming delivery, visibility, authority, and queue
 size. `delivery_concurrency` bounds in-flight sink callbacks.
 
+### DeleteSession
+
+`app.Sessions().DeleteSession(ctx, key)` removes one session's durable
+state by key (agent id + context id) and closes its live session — the
+by-key counterpart of `UnregisterAgent` for delete/archive-a-conversation
+workflows. After it returns, the checkpoint store no longer carries the
+key's committed history, parked-run checkpoint, or resumable request; a
+later `Open` starts with empty history. Semantics mirror removal: new
+opens for the key are refused until deletion finishes, the live session is
+drained (bounded by ctx) before store entries are removed, and on ctx
+expiry the delete marker rolls back with no partial removal — the call is
+retryable and repeated calls are idempotent.
+
 ## Dynamic agent registry
 
 Agents are normally declared in the deployment document and fixed for the

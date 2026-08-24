@@ -34,14 +34,14 @@ A `*Graph` is an `agent.Engine`.
         "model": {
           "id": { "provider": "deepseek", "name": "deepseek-v4-flash" }
         },
-        "messages_channel": "main"
+        "messages_channel": "__main_channel"
       }
     },
     {
       "id": "tools",
       "type": "tool",
       "config": {
-        "messages_channel": "main",
+        "messages_channel": "__main_channel",
         "results_key": "tool_results"
       }
     }
@@ -131,7 +131,7 @@ onto `tool_pending_key` and the graph routes onward.
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `model`                                  | explicit target `{id: {provider, name}, profile?}`; absent defers selection to the wired router                   |
 | `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board.model}`); the hinted target is tried first, and on failure fallback restarts at the head of the default chain |
-| `messages_channel`                       | board channel holding the conversation; empty means the main channel                                              |
+| `messages_channel`                       | board channel holding the conversation; empty means the main channel (`__main_channel`)                          |
 | `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
 | `usage_key`                              | board var receiving the call's `inference.Usage`                                                                  |
@@ -228,7 +228,7 @@ results as one `role=tool` message — again a valid tail for `inference`.
 
 | Config field       | Meaning                                                                        |
 | ------------------ | ------------------------------------------------------------------------------ |
-| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel      |
+| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
 | `results_key`      | board var receiving the raw `[]message.Result` for downstream nodes/conditions |
 
 Behavior:
@@ -624,7 +624,7 @@ busy VM degrades to a `not_available` signal instead of panicking.
       "id": "chat",
       "type": "inference",
       "config": {
-        "messages_channel": "main",
+        "messages_channel": "__main_channel",
         "tool_pending_key": "tool_pending",
         "tools": ["read_file", "list_dir", "grep"]
       }
@@ -633,7 +633,7 @@ busy VM degrades to a `not_available` signal instead of panicking.
       "id": "tools",
       "type": "tool",
       "config": {
-        "messages_channel": "main",
+        "messages_channel": "__main_channel",
         "results_key": "tool_results"
       }
     },

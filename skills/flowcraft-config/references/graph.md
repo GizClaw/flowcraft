@@ -12,10 +12,10 @@ File definitions are capped at 1 MiB.
   "nodes": [
     {"id": "chat", "type": "inference", "config": {
       "model": {"id": {"provider": "deepseek", "name": "deepseek-v4-flash"}},
-      "messages_channel": "main"
+      "messages_channel": "__main_channel"
     }},
     {"id": "tools", "type": "tool", "config": {
-      "messages_channel": "main",
+      "messages_channel": "__main_channel",
       "results_key": "tool_results"
     }}
   ],
@@ -77,9 +77,12 @@ appended to the same channel. The node never executes tool calls — a
 | Config field | Meaning |
 | --- | --- |
 | `model` | explicit target `{id: {provider, name}, profile?}`; absent defers to the wired router |
-| `messages_channel` | board channel holding the conversation; empty means the main channel |
+| `model_hint` | per-call router preference: `provider/name` or a bare name (e.g. `${board.model}`); ignored when `model` is set |
+| `messages_channel` | board channel holding the conversation; empty means the main channel (`__main_channel`) |
 | `system_prompt` | prepended system message when the context does not start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key` / `usage_key` / `tool_pending_key` | board vars receiving the message / usage / tool-pending flag |
+| `undefined_tool_recovery` | `{enabled, max_per_run}`: replay undefined-tool rejections as in-conversation feedback; disabled by default |
+| `recover_pending_key` / `recover_count_key` | board vars receiving the recovery marker / per-run recovery counter |
 | `stream` | stream deltas incrementally; the board still gets one assembled message |
 | `tools` / `all_tools` | named catalog tools, or the catalog's entire visible set |
 | `tool_choice` | constrain when/which tools are called |
@@ -99,6 +102,17 @@ may not be combined with an intent that declares those fields itself.
 Legacy node-level sampling/reasoning/response-format keys were removed —
 strict decode rejects them; put them under `intent.text` instead.
 
+`model_hint` is a request-level preference consumed only by the router: it
+never bypasses routing and falls back to the default policy when the hint
+is unknown, malformed, or ambiguous. A response naming tools absent from
+the exposed definitions fails with a distinguishable `undefined_tool`
+error; with `undefined_tool_recovery` enabled the node replays the
+rejection as feedback (assistant `tool_call` paired with a `tool` result),
+sets `recover_pending_key` (clearing `tool_pending_key`), and returns
+success. The graph must route the recovered round back to inference —
+never to a tool node, which would execute the replayed call.
+`max_per_run` defaults to 2; past it the rejection fails the node.
+
 ### `tool` — batch tool execution
 
 Reads the `tool_call` parts off the channel tail's assistant message,
@@ -107,7 +121,7 @@ and appends the results as one `role=tool` message.
 
 | Config field | Meaning |
 | --- | --- |
-| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel |
+| `messages_channel` | channel whose tail holds pending tool calls; empty means the main channel (`__main_channel`) |
 | `results_key` | board var receiving the raw `[]message.Result` |
 
 Allow-listing/approval policy lives in the dispatcher's middleware, not the

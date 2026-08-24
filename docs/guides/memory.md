@@ -102,7 +102,7 @@ agents:
             user_id: user-1
             agent_id: assistant
           conversation_id: conv-1   # optional; defaults to the request ContextID
-          channel: main             # optional; defaults to the main channel
+          channel: __main_channel   # optional; defaults to the main channel
 ```
 
 Committed turns are idempotent per run id, so retried turns do not
