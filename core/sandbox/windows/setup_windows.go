@@ -5,7 +5,6 @@ package windows
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -210,11 +209,43 @@ func netUserSetPassword(username, password string) error {
 }
 
 func randomPassword() (string, error) {
-	var b [24]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("windows/elevated: generate password: %w", err)
+	const (
+		lower   = "abcdefghijklmnopqrstuvwxyz"
+		upper   = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digits  = "0123456789"
+		symbols = "!@#$%^&*()-_=+[]{};:,.<>?"
+	)
+	all := lower + upper + digits + symbols
+	classes := []string{lower, upper, digits, symbols}
+	b := make([]byte, 24)
+	for i := range b {
+		var r [1]byte
+		if _, err := rand.Read(r[:]); err != nil {
+			return "", fmt.Errorf("windows/elevated: generate password: %w", err)
+		}
+		b[i] = all[int(r[0])%len(all)]
 	}
-	return hex.EncodeToString(b[:]), nil
+	// Force one character from every class so common password
+	// complexity policies (three of four classes) cannot reject the
+	// password; a hex-only draw fails NetUserAdd with
+	// NERR_PasswordTooShort on hardened machines.
+	for i, class := range classes {
+		var r [1]byte
+		if _, err := rand.Read(r[:]); err != nil {
+			return "", fmt.Errorf("windows/elevated: generate password: %w", err)
+		}
+		b[i] = class[int(r[0])%len(class)]
+	}
+	// Shuffle so the forced class positions are not predictable.
+	for i := len(b) - 1; i > 0; i-- {
+		var r [1]byte
+		if _, err := rand.Read(r[:]); err != nil {
+			return "", fmt.Errorf("windows/elevated: generate password: %w", err)
+		}
+		j := int(r[0]) % (i + 1)
+		b[i], b[j] = b[j], b[i]
+	}
+	return string(b), nil
 }
 
 // saveCreds persists the credentials with passwords DPAPI-protected.

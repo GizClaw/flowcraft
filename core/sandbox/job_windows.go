@@ -20,8 +20,8 @@ import (
 // posts these when a hard job limit trips; we read them off the
 // completion port associated with the job to classify the death.
 const (
-	jobMsgProcessMemoryLimit = 7
-	jobMsgJobMemoryLimit     = 8
+	jobMsgProcessMemoryLimit = 9
+	jobMsgJobMemoryLimit     = 10
 )
 
 // jobWatchInterval is the cpu-time sampling period, matching the unix
@@ -116,10 +116,13 @@ func (j *jobObject) Close() error {
 }
 
 // jobBasicProcessIDList mirrors JOBOBJECT_BASIC_PROCESS_ID_LIST.
+// ProcessIdList holds ULONG_PTR entries, so on 64-bit Windows each
+// entry is 8 bytes; a DWORD-sized list makes the kernel reject the
+// query with ERROR_BAD_LENGTH.
 type jobBasicProcessIDList struct {
 	numberOfAssignedProcesses uint32
 	numberOfProcessIDsInList  uint32
-	processIDList             [1]uint32
+	processIDList             [1]uintptr
 }
 
 // processIDs lists the current members of the job.
@@ -138,11 +141,10 @@ func (j *jobObject) processIDs() ([]uint32, error) {
 	if err != nil && err != windows.ERROR_MORE_DATA {
 		return nil, fmt.Errorf("sandbox: query job process list size: %w", err)
 	}
-	if needed <= uint32(unsafe.Sizeof(header)) {
-		// The header alone was returned: the job is empty.
-		if needed == 0 {
-			return nil, nil
-		}
+	if needed == 0 {
+		return nil, nil
+	}
+	if needed < uint32(unsafe.Sizeof(header)) {
 		needed = uint32(unsafe.Sizeof(header))
 	}
 	for {
@@ -162,9 +164,11 @@ func (j *jobObject) processIDs() ([]uint32, error) {
 			return nil, fmt.Errorf("sandbox: query job process list: %w", err)
 		}
 		numIDs := *(*uint32)(unsafe.Pointer(&buf[4]))
+		base := unsafe.Add(unsafe.Pointer(&buf[0]), unsafe.Offsetof(jobBasicProcessIDList{}.processIDList))
 		pids := make([]uint32, 0, numIDs)
 		for i := 0; i < int(numIDs); i++ {
-			pids = append(pids, *(*uint32)(unsafe.Pointer(&buf[8+i*4])))
+			pid := *(*uintptr)(unsafe.Add(base, uintptr(i)*unsafe.Sizeof(uintptr(0))))
+			pids = append(pids, uint32(pid))
 		}
 		return pids, nil
 	}
@@ -321,7 +325,10 @@ func (w *jobCapsWatcher) run() {
 			err := windows.GetQueuedCompletionStatus(
 				w.port, &qty, &key, &ovl, uint32(jobWatchInterval/time.Millisecond))
 			if err != nil {
-				if err == windows.ERROR_TIMEOUT {
+				// A quiet port returns WAIT_TIMEOUT (258) here; some
+				// builds surface the equivalent ERROR_TIMEOUT (1460).
+				// Both are benign — no message arrived this interval.
+				if err == windows.WAIT_TIMEOUT || err == windows.ERROR_TIMEOUT {
 					continue
 				}
 				failures++

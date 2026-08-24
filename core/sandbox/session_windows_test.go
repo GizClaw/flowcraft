@@ -23,4 +23,8 @@ func TestProcThreadAttributeConstants(t *testing.T) {
 	if windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE != 0x00020016 {
 		t.Fatalf("PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = %#x, want 0x00020016", windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE)
 	}
+	if jobMsgProcessMemoryLimit != 9 || jobMsgJobMemoryLimit != 10 {
+		t.Fatalf("job message ids = %d/%d, want 9 (PROCESS_MEMORY_LIMIT) / 10 (JOB_MEMORY_LIMIT)",
+			jobMsgProcessMemoryLimit, jobMsgJobMemoryLimit)
+	}
 }
