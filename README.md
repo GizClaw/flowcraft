@@ -26,8 +26,9 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   delegation contracts.
 - **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
   ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
-- **`backends/*`** — Platform-specific implementations: object-store
-  workspaces, sandbox backends (`bwrap`, `seatbelt`), and SQLite checkpoints.
+- **`backends/*`** — Platform-specific implementations: SQLite checkpoints
+  (`backends/checkpoint`) and the plugin shell (`backends/plugin`); the
+  sandbox backends (`bwrap`, `seatbelt`) live in `core/sandbox`.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
@@ -48,9 +49,10 @@ the GoTemplate context renderer.
 
 This mirrors the inference pattern: `core/inference` is generic, and
 each provider (`openai`, `deepseek`, …) is a registered factory. Memory
-implementations plug in the same way — `impl: flowcraft` selects the bundled
-implementation, and another implementation registers under its own name with
-its own parameters.
+implementations plug in the same way — each registers under its own
+`impl:` name with its own parameters (the flowcraft memory module is one
+such app-registered implementation); `core` owns only the contracts and
+glue.
 
 ## Quickstart
 
@@ -145,7 +147,7 @@ the core and depend on it, never the reverse.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
-| [`backends`](backends/)                       | Platform-specific sandbox/object-store/checkpoint backends                           | Versioned Go modules |
+| [`backends`](backends/)                       | SQLite checkpoints and plugin shell (sandbox backends live in `core/sandbox`)         | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
@@ -208,6 +210,11 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   streaming sessions above a built deployment.
 - [Memory Stack](docs/guides/memory.md) — the three-layer memory stack:
   `core/memory` contracts and deploy/runtime glue.
+- [Prompt Lifecycle Events](docs/guides/prompt.md) — the
+  `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
+- [Delegation](docs/guides/delegation.md) — `core/delegation`: backend-neutral
+  target discovery, sync / async execution, and the session-bound
+  delegation lifecycle.
 
 ### Configuration authoring skill (`skills/flowcraft-config`)
 
