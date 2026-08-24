@@ -151,7 +151,8 @@ teardown remains the guaranteed release for runtime-managed providers.
 - **Env inheritance**: plugin processes do not inherit host secrets;
   declare credentials explicitly in the service artifact `env`.
 - **Strict decode**: unknown manifest fields, unknown artifact types,
-  and `protocol_version != 1` are load-time errors, not warnings.
+  and a `protocol_version` outside `{0, 1}` are load-time errors, not
+  warnings.
 - **Path safety**: layer and service file paths must stay inside the
   plugin directory; the resource loader rejects `..` and absolute paths.
 - **ProviderDefinition freezing**: per-handle close is not reached via
