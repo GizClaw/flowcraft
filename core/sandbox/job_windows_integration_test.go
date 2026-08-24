@@ -62,11 +62,20 @@ func TestIntegrationJobCPUSampling(t *testing.T) {
 	if !found {
 		t.Fatalf("job process list %v does not contain child pid %d", pids, cmd.Process.Pid)
 	}
-	cpu, err := job.sampleCPU()
-	if err != nil {
-		t.Fatalf("sampleCPU: %v", err)
-	}
-	if cpu <= 0 {
-		t.Fatalf("sampleCPU = %v, want > 0 for a running child", cpu)
+	// On a loaded CI runner the child may not have been scheduled yet;
+	// poll until it has accumulated cpu time instead of sampling once.
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		cpu, err := job.sampleCPU()
+		if err != nil {
+			t.Fatalf("sampleCPU: %v", err)
+		}
+		if cpu > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sampleCPU stayed 0s for a running child (pids %v)", pids)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
