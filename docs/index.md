@@ -20,6 +20,11 @@ retrieval, runtime orchestration, and voice. Source on
 - [Event Bus](guides/event.md) — `core/event`: subject-routed
   publish/subscribe, in-process `MemoryBus`, host capability
   wiring, backpressure policies.
+- [Application Runtime](guides/runtime.md) — `core/runtime` +
+  `core/runtime/session`: process-level services and leased,
+  interruptible streaming sessions above a built deployment.
+- [Prompt Lifecycle Events](guides/prompt.md) — the
+  `agent.run.<id>.prompt.*` lifecycle events UI consumers subscribe to.
 
 ### State and execution boundary
 
@@ -29,6 +34,9 @@ retrieval, runtime orchestration, and voice. Source on
 - [Sandbox](guides/sandbox.md) — `core/sandbox`: agent execution
   boundary, env / net / resources policy, runners (local /
   seatbelt / bwrap), decorators and approval.
+- [Memory Stack](guides/memory.md) — the three-layer memory stack:
+  `core/memory` contracts, deploy/runtime glue, and app-registered
+  implementations.
 
 ### Assembly
 
@@ -41,6 +49,12 @@ retrieval, runtime orchestration, and voice. Source on
 - [Resource Protocol](guides/resource.md) — `core/resource`: the
   provider-neutral factory, dependency DAG, loader, and lifecycle phases
   that every deployment resource uses.
+
+### Delegation
+
+- [Delegation](guides/delegation.md) — `core/delegation`: backend-neutral
+  target discovery, sync / async execution, and the session-bound
+  delegation lifecycle.
 
 ## Migrations
 
@@ -69,14 +83,14 @@ The repository is organised as independently released Go modules:
 ```
 core/            Platform module (contracts, deploy, runtime, built-in resources)
 driver/          Provider inference adapters
-backends/    Platform-specific sandbox, object-store, and checkpoint backends
+backends/        SQLite checkpoints and plugin shell (sandbox backends live in core/)
 examples/        Reference assemblies
 ```
 
 ## Getting started
 
 ```bash
-go get github.com/GizClaw/flowcraft/core@v0.1.0
+go get github.com/GizClaw/flowcraft/core@latest
 ```
 
 See the package-level `doc.go` files for runnable usage snippets:
