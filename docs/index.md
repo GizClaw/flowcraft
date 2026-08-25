@@ -41,7 +41,7 @@ retrieval, runtime orchestration, and voice. Source on
 ### Assembly
 
 - [Inference Runtime](guides/inference.md) — unified Generate / Embed /
-  Transcription / Realtime: deployment config, routing, extensions,
+  Transcription (Realtime reserved): deployment config, routing, extensions,
   streaming, media intents, hot reload.
 - [Deployment Assembly](guides/deploy.md) — `core/deploy`: one YAML
   document + one `Build` call to wire shared resources, named agents,

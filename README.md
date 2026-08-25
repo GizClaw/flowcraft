@@ -169,7 +169,7 @@ the core and depend on it, never the reverse.
 
 ### Unified inference runtime (`core/inference` + `driver/*`)
 
-- One runtime for Generate / Embed / Transcription / Realtime, with exact
+- One runtime for Generate / Embed / Transcription (Realtime reserved), with exact
   `ModelRef` addressing and compile-time capability checks.
 - Providers registered as factories: Anthropic, Azure, ByteDance, DeepSeek,
   Kimi, MiniMax, OpenAI, and Qwen.
@@ -200,7 +200,7 @@ pkg.go.dev. Topic guides live in [`docs/guides/`](docs/guides/):
   boundary, env / net / resources policy, runners (local / seatbelt /
   bwrap), decorators, and approval.
 - [Inference Runtime](docs/guides/inference.md) — unified Generate / Embed /
-  Transcription / Realtime: deployment config, routing, extensions,
+  Transcription (Realtime reserved): deployment config, routing, extensions,
   streaming, media intents, hot reload.
 - [Deployment Assembly](docs/guides/deploy.md) — `core/deploy`: one YAML
   document + one `Build` call to wire shared resources, named agents,
