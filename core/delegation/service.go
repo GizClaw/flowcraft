@@ -379,6 +379,8 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 	service.workerHost = WithService(config.workerHost, service)
 	service.workers.Add(1)
 	go service.idempotencyJanitor()
+	service.workers.Add(1)
+	go service.sweepStreamEscrowLoop()
 	if source, ok := backend.(WorkSource); ok && !isNilInterface(source) {
 		service.work = source
 		if !config.deferWorkers {
@@ -529,6 +531,10 @@ func (s *LocalService) delegate(
 				return Response{}, errdefs.Internalf(
 					"local delegation: async backend returned an empty id")
 			}
+			// The work item is durably queued; re-arm the escrow TTL
+			// from now so a slow Submit cannot expire the entry before
+			// the worker claims it.
+			s.rearmStreamEscrow(ref, specs)
 			return Response{ID: id, Status: StatusAccepted}, nil
 		}
 		id, err := s.backend.Submit(ctx, asyncReq)
@@ -650,6 +656,35 @@ func (s *LocalService) idempotencyJanitor() {
 	}
 }
 
+// sweepStreamEscrowLoop periodically drops expired stream escrow
+// entries so a quiet service cannot accumulate abandoned attachments
+// indefinitely. store/take also sweep opportunistically; this loop only
+// bounds memory between operations and is a leak backstop, not a
+// run-duration cap (claimed entries are refreshed on take and released
+// at terminal completion).
+func (s *LocalService) sweepStreamEscrowLoop() {
+	defer s.workers.Done()
+	interval := s.streamEscrowTTL / 2
+	if interval < time.Second {
+		interval = time.Second
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.workerCtx.Done():
+			return
+		case <-ticker.C:
+			s.streamEscrowMu.Lock()
+			s.sweepStreamEscrowLocked()
+			s.streamEscrowMu.Unlock()
+		}
+	}
+}
+
 func sameRequest(left, right Request) bool {
 	return left.Mode == right.Mode &&
 		left.Target == right.Target &&
@@ -762,11 +797,16 @@ func (s *LocalService) worker() {
 			}
 		}
 		response.ID = work.ID
-		if err := s.complete(work.ID, work.LeaseToken, response); err != nil {
-			s.recordWorkerError(err)
+		completeErr := s.complete(work.ID, work.LeaseToken, response)
+		// Release the caller's escrowed stream attachment on every
+		// terminal path — including a failed Complete, where the
+		// service is about to stop and the entry would otherwise linger
+		// until the TTL sweep.
+		s.releaseStreamEscrow(streamRefOf(work.Request.Stream))
+		if completeErr != nil {
+			s.recordWorkerError(completeErr)
 			return
 		}
-		s.releaseStreamEscrow(streamRefOf(work.Request.Stream))
 	}
 }
 
@@ -1180,6 +1220,38 @@ func (s *LocalService) takeStreamEscrow(ref string) ([]session.SinkSpec, bool) {
 	return append([]session.SinkSpec(nil), entry.specs...), true
 }
 
+// rearmStreamEscrow extends the TTL of a queued work item's stream
+// escrow, re-storing the attachment when the periodic sweep already
+// dropped the expired entry while Submit was slow. It is called once the
+// work item is durably queued, so the escrow survives long enough for
+// the worker to claim it. Re-storing is safe here: the only way the
+// entry can be missing at this point is an expiry sweep (release only
+// runs on the submit-failure paths, which return earlier).
+//
+// Residual window: a worker could claim between Submit returning and
+// this re-arm running, and take's own sweep would delete the expired
+// entry before re-arm re-stores it. With the default 1h TTL (sweep
+// interval capped at 1m) that requires Submit itself to have taken
+// longer than the TTL; a short custom TTL plus a slow backend can widen
+// it. The submit side's exporter/resolver fallback is the backstop for
+// that case.
+func (s *LocalService) rearmStreamEscrow(ref string, specs []session.SinkSpec) {
+	if ref == "" {
+		return
+	}
+	s.streamEscrowMu.Lock()
+	if entry, ok := s.streamEscrow[ref]; ok {
+		entry.expires = time.Now().Add(s.streamEscrowTTL)
+		s.streamEscrow[ref] = entry
+	} else {
+		s.streamEscrow[ref] = streamEscrowEntry{
+			specs:   append([]session.SinkSpec(nil), specs...),
+			expires: time.Now().Add(s.streamEscrowTTL),
+		}
+	}
+	s.streamEscrowMu.Unlock()
+}
+
 // releaseStreamEscrow drops an escrow entry. Idempotent; missing refs
 // are no-ops.
 func (s *LocalService) releaseStreamEscrow(ref string) {
@@ -1225,6 +1297,8 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 			return ctx
 		}
 		if isNilInterface(sink) {
+			telemetry.Warn(ctx, "local delegation: stream resolver returned nil sink",
+				otellog.String("delegation.stream_target", req.Stream.Target.ID))
 			return ctx
 		}
 		spec := session.SinkSpec{
@@ -1242,6 +1316,14 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 			Inheritable: true,
 		})
 	}
+	// A stream attachment was expected (the submit side stored one) but
+	// neither the in-process escrow nor a resolver target materialized
+	// it — TTL expiry, a restart, or a worker in another process without
+	// a registered resolver. Surface the loss instead of silently
+	// degrading the subagent stream.
+	telemetry.Warn(ctx, "local delegation: stream attachment unavailable; "+
+		"subagent stream will not reach caller sinks",
+		otellog.String("delegation.stream_ref", req.Stream.Ref))
 	return ctx
 }
 
@@ -1356,8 +1438,10 @@ func responseFromTurn(result *agent.Result, contextID string) Response {
 // or run checkpoint is ever written, and stream sinks are inherited
 // from the caller turn when the caller's stream policy is inheritable.
 // Inherited sinks are downgraded to observers (see inheritedSinkSpecs).
-// Async worker runs do not inherit here: the caller context does not
-// cross the backend queue, and the worker is not a live UI consumer.
+// Async worker runs restore the caller's stream attachment before this
+// runs (see inheritAsyncStreams), so the same inheritance applies there
+// too — the worker context does not cross the queue, but the restored
+// policy does.
 func (s *LocalService) delegationStartOptions(ctx context.Context, persistent bool) []session.StartOption {
 	options := []session.StartOption{
 		session.WithAskUserOverride(refuseSubagentAskUser),

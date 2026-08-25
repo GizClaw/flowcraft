@@ -270,6 +270,7 @@ func (c *streamCoordinator) finalize(ctx context.Context, result *agent.Result, 
 	}
 	env := event.MustEnvelope(ctx, c.runEnd, payload)
 	env.SetRunID(c.turn.runID)
+	stampTurnLineage(&env, c.turn)
 
 	c.mu.Lock()
 	if c.finalized {

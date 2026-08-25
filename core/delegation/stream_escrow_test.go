@@ -62,6 +62,106 @@ func TestStreamEscrowExpiresByTTL(t *testing.T) {
 	}
 }
 
+func TestStreamEscrowRearmExtendsTTLAndRestoresSweptEntry(t *testing.T) {
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), nil,
+		WithStreamEscrowTTL(200*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	sink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+		return nil
+	})
+	specs := []session.SinkSpec{{ID: "caller", Sink: sink}}
+
+	// Extend: an entry still present gets a fresh expiry.
+	service.storeStreamEscrow("ref-rearm", specs)
+	time.Sleep(120 * time.Millisecond)
+	service.rearmStreamEscrow("ref-rearm", specs)
+	time.Sleep(120 * time.Millisecond)
+	// 240ms elapsed > the 200ms TTL: only the re-arm (which refreshed
+	// the expiry at 120ms) keeps the entry resolvable.
+	if _, ok := service.takeStreamEscrow("ref-rearm"); !ok {
+		t.Fatal("rearm did not extend the escrow TTL")
+	}
+	service.releaseStreamEscrow("ref-rearm")
+
+	// Restore: an entry already swept while Submit was slow is re-stored
+	// so the worker can still claim the attachment.
+	service.storeStreamEscrow("ref-restore", specs)
+	time.Sleep(250 * time.Millisecond)
+	if _, ok := service.takeStreamEscrow("ref-restore"); ok {
+		t.Fatal("expired entry still resolvable before rearm")
+	}
+	service.rearmStreamEscrow("ref-restore", specs)
+	got, ok := service.takeStreamEscrow("ref-restore")
+	if !ok || len(got) != 1 || got[0].ID != "caller" {
+		t.Fatalf("rearm did not restore the swept entry: %v, %v", got, ok)
+	}
+	service.rearmStreamEscrow("", specs) // no-op
+}
+
+type failingCompleteBackend struct {
+	*queueBackend
+	err error
+}
+
+func (b *failingCompleteBackend) Complete(
+	ctx context.Context,
+	id, leaseToken string,
+	response Response,
+) error {
+	if b.err != nil {
+		return b.err
+	}
+	return b.queueBackend.Complete(ctx, id, leaseToken, response)
+}
+
+func TestWorkerReleasesStreamEscrowOnCompleteFailure(t *testing.T) {
+	backend := &failingCompleteBackend{
+		queueBackend: newQueueBackend(),
+		err:          errors.New("complete boom"),
+	}
+	service, err := NewService(boundDirectory(t, completedEngine("done")), backend,
+		WithMaxConcurrency(1), WithDeferredWorkers())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	sink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+		return nil
+	})
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks:       []session.SinkSpec{{ID: "caller", Sink: sink}},
+		Inheritable: true,
+	})
+	request := syncRequest("writer")
+	request.Mode = ModeAsync
+	if _, err := service.Delegate(ctx, request); err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	service.streamEscrowMu.Lock()
+	if len(service.streamEscrow) == 0 {
+		service.streamEscrowMu.Unlock()
+		t.Fatal("escrow entry missing after async submit")
+	}
+	service.streamEscrowMu.Unlock()
+
+	if err := service.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The worker claims, runs, fails to Complete, and must release the
+	// escrow before stopping — the entry must not linger until the TTL
+	// sweep.
+	waitUntil(t, 5*time.Second, func() bool {
+		service.streamEscrowMu.Lock()
+		defer service.streamEscrowMu.Unlock()
+		return len(service.streamEscrow) == 0
+	})
+}
+
 type captureAsyncBackend struct {
 	submitted chan AsyncRequest
 	submitErr error
