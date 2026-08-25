@@ -295,6 +295,39 @@ Expose the service on every turn host with
 directory binds the current deployment generation, so reloads delegate
 against the new generation's agents.
 
+### Async streaming
+
+Async delegations stream subagent deltas to the caller's live sinks by
+default: the submit side stores the caller's sinks in a service-side
+escrow and the worker restores them, so no YAML settings are needed.
+Streams carry lineage headers (`run_id`, `parent_run_id`, `tool_call_id`,
+`agent_id`).
+
+Cross-process delivery (worker without the escrow: TTL expiry, restart,
+separate process) is wired in Go, not YAML — build a
+`runtime.StreamExportRegistry`, register its resolver/exporter on the
+delegation service factory, and expose the service on turn hosts:
+
+```go
+reg := runtime.NewStreamExportRegistry(map[string]event.Bus{"events": bus})
+delegation.NewServiceFactory(
+    delegation.WithStreamTargetResolver(reg.Resolver),
+    delegation.WithStreamTargetExporter(reg.Exporter),
+)
+// + runtime.Builder.WithResultHostFactory(hostwrap.Wrap)
+```
+
+Target reachability: `conversation` targets resolve to a live sink
+registered in the resolving process's registry (same-process recovery
+only); `bus` targets forward onto a named event bus and are the
+cross-process option. `StreamRef.Target` is single-valued — the
+in-process escrow keeps every sink, the cross-process path restores
+exactly one, and the exporter prefers bus targets. Sinks describe
+themselves via `delegation.StreamTargetProvider`, so UI decorators can
+pass the description through. See
+[docs/guides/delegation.md](../../../docs/guides/delegation.md) for the
+full lifecycle.
+
 ## checkpoint store
 
 ```yaml
