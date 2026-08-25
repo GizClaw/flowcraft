@@ -1593,6 +1593,79 @@ func TestRun_WithParentRunID_EmptyIsNoop(t *testing.T) {
 	}
 }
 
+// TestRun_RequestParentRunID_PropagatesToEngineRun verifies the
+// Request-level lineage slot: the runtime session path assembles its
+// own ExecuteOptions, so delegated subagents must be able to carry the
+// parent run id on agent.Request instead of a per-call option.
+func TestRun_RequestParentRunID_PropagatesToEngineRun(t *testing.T) {
+	var observed string
+	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		observed = run.ParentRunID
+		b.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "ok"))
+		return b, nil
+	})
+
+	req := newReq("hi")
+	req.ParentRunID = "run-parent-request"
+	if _, err := agent.Execute(context.Background(), agent.Agent{ID: "child"}, eng, req); err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if observed != "run-parent-request" {
+		t.Fatalf("Run.ParentRunID = %q, want %q", observed, "run-parent-request")
+	}
+}
+
+// TestRun_RequestParentRunID_OptionWins documents precedence: an
+// explicit WithParentRunID option wins over Request.ParentRunID.
+func TestRun_RequestParentRunID_OptionWins(t *testing.T) {
+	var observed string
+	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		observed = run.ParentRunID
+		return b, nil
+	})
+
+	req := newReq("hi")
+	req.ParentRunID = "run-parent-request"
+	if _, err := agent.Execute(context.Background(), agent.Agent{ID: "child"}, eng, req,
+		agent.WithParentRunID("run-parent-option")); err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if observed != "run-parent-option" {
+		t.Fatalf("Run.ParentRunID = %q, want option value", observed)
+	}
+}
+
+// TestRun_RequestAttributes_PropagateAndOptionWins verifies the
+// Request-level attributes slot merges into Run.Attributes and that an
+// explicit WithAttributes option wins per key.
+func TestRun_RequestAttributes_PropagateAndOptionWins(t *testing.T) {
+	var got agent.Run
+	eng := agent.EngineFunc(func(_ context.Context, run agent.Run, _ agent.Host, b *agent.Board) (*agent.Board, error) {
+		got = run
+		return b, nil
+	})
+
+	req := newReq("hi")
+	req.Attributes = map[string]string{
+		telemetry.AttrToolCallID: "call-from-request",
+		"tenant":                 "request",
+	}
+	if _, err := agent.Execute(context.Background(), agent.Agent{ID: "a"}, eng, req,
+		agent.WithAttributes(map[string]string{"tenant": "option"})); err != nil {
+		t.Fatalf("agent.Run: %v", err)
+	}
+	if got.Attribute(telemetry.AttrToolCallID) != "call-from-request" {
+		t.Fatalf("Run tool.call_id = %q, want request value", got.Attribute(telemetry.AttrToolCallID))
+	}
+	if got.Attribute("tenant") != "option" {
+		t.Fatalf("Run tenant = %q, want option value", got.Attribute("tenant"))
+	}
+	if got.Attribute("agent.attempt") != "1" {
+		t.Fatalf("Run agent.attempt = %q, want 1", got.Attribute("agent.attempt"))
+	}
+}
+
 // TestRun_WithArtifactChannels_HarvestsRegisteredChannels is the
 // regression for contract-audit #6. Result.Artifacts had been
 // promised since v0.1 ("engines store them in a board channel;

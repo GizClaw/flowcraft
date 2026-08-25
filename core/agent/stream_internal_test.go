@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // capturePublisher records every envelope it receives; tests inspect the
@@ -59,6 +60,46 @@ func TestEmitStreamPart_HappyPath(t *testing.T) {
 	text, ok := p.Part.(message.TextPart)
 	if !ok || text.Text != "hello" {
 		t.Fatalf("Part = %#v, want TextPart hello", p.Part)
+	}
+}
+
+// TestEmitStreamDelta_StampsLineageFromAmbientRunInfo verifies the
+// SDK path projects run lineage (parent run id + creating tool call
+// id) onto stream envelopes from the ambient RunInfo, and skips both
+// headers when the context carries no run identity.
+func TestEmitStreamDelta_StampsLineageFromAmbientRunInfo(t *testing.T) {
+	t.Parallel()
+	pub := &capturePublisher{}
+	ctx := WithRunInfo(context.Background(), RunInfo{
+		Identity: Identity{
+			AgentID:     "child",
+			RunID:       "run-child",
+			ParentRunID: "run-parent",
+		},
+		Attributes: map[string]string{telemetry.AttrToolCallID: "call-9"},
+	})
+	if err := EmitStreamPart(ctx, pub, "run-child", "child.node.work",
+		message.TextPart{Text: "x"}); err != nil {
+		t.Fatalf("EmitStreamPart: %v", err)
+	}
+	env := pub.got[0]
+	if got := env.Headers[event.HeaderParentRunID]; got != "run-parent" {
+		t.Errorf("HeaderParentRunID = %q, want run-parent", got)
+	}
+	if got := env.Headers[event.HeaderToolCallID]; got != "call-9" {
+		t.Errorf("HeaderToolCallID = %q, want call-9", got)
+	}
+
+	pub.got = nil
+	if err := EmitStreamPart(context.Background(), pub, "run-child", "child.node.work",
+		message.TextPart{Text: "x"}); err != nil {
+		t.Fatalf("EmitStreamPart: %v", err)
+	}
+	if _, ok := pub.got[0].Headers[event.HeaderParentRunID]; ok {
+		t.Error("HeaderParentRunID stamped without ambient RunInfo")
+	}
+	if _, ok := pub.got[0].Headers[event.HeaderToolCallID]; ok {
+		t.Error("HeaderToolCallID stamped without ambient RunInfo")
 	}
 }
 

@@ -54,7 +54,7 @@ func NewExecutor(catalog Catalog, mws ...Middleware) *Executor {
 // unknown tool, tool error — surface as Result with IsError=true,
 // never as a Go error.
 func (e *Executor) Execute(ctx context.Context, call message.ToolCall) message.ToolResult {
-	return e.dispatch(ctx, call)
+	return e.dispatch(WithCallID(ctx, call.ID), call)
 }
 
 // ExecuteAll runs every call concurrently through the chain and

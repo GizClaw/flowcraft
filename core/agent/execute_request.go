@@ -33,6 +33,18 @@ type Request struct {
 	// stylistic consistency.
 	RunID string `json:"runId,omitempty"`
 
+	// ParentRunID identifies the parent run when this turn was
+	// dispatched by another agent (multi-agent call chains). Empty for
+	// top-level runs. WithParentRunID wins when both are supplied.
+	// Not part of the A2A wire schema — internal correlation key.
+	ParentRunID string `json:"parentRunId,omitempty"`
+
+	// Attributes carries host-supplied metadata for this turn that
+	// should flow into Run.Attributes (and from there into telemetry
+	// spans and event headers): tenant id, feature flags, delegation
+	// lineage, ... WithAttributes wins per key on conflict.
+	Attributes map[string]string `json:"attributes,omitempty"`
+
 	// Message is the user's turn input (text, parts, attachments).
 	Message message.Message `json:"message"`
 

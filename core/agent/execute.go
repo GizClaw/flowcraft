@@ -110,6 +110,9 @@ func Execute(
 		TaskID:         req.TaskID,
 		ConversationID: req.ContextID,
 	}
+	if id.ParentRunID == "" {
+		id.ParentRunID = req.ParentRunID
+	}
 
 	host := rc.host
 	if host == nil {
@@ -183,10 +186,12 @@ func Execute(
 		// / hosts can correlate retries in their telemetry. RunID
 		// stays constant across attempts so observers / dashboards
 		// see one logical run with N attempts, not N separate runs.
-		attemptAttrs := maps.Clone(rc.attributes)
-		if attemptAttrs == nil {
-			attemptAttrs = map[string]string{}
-		}
+		attemptAttrs := make(map[string]string, len(req.Attributes)+len(rc.attributes)+1)
+		maps.Copy(attemptAttrs, req.Attributes)
+		// Explicit WithAttributes options win per key over Request
+		// attributes; the attempt index is engine-owned and always
+		// wins over both.
+		maps.Copy(attemptAttrs, rc.attributes)
 		attemptAttrs["agent.attempt"] = itoa(attempt)
 		engRun := Run{
 			Identity:      id,

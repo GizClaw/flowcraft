@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/tool"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -750,10 +751,13 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	}()
 
 	opts := s.delegationStartOptions(execCtx, persistent)
+	parentRunID, lineageAttrs := lineageFromContext(execCtx)
 	request := agent.Request{
-		ContextID: key.ContextID,
-		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
-		Inputs:    metadataInputs(req),
+		ContextID:   key.ContextID,
+		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
+		Inputs:      metadataInputs(req),
+		ParentRunID: parentRunID,
+		Attributes:  lineageAttrs,
 	}
 
 	// Resume path: a persistent session retried with the identical
@@ -834,8 +838,11 @@ func (s *LocalService) runAtLegacy(
 		}
 	}
 
+	parentRunID, lineageAttrs := lineageFromContext(execCtx)
 	agentRequest := agent.Request{
-		Message: message.NewTextMessage(message.RoleUser, req.Request.Input),
+		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
+		ParentRunID: parentRunID,
+		Attributes:  lineageAttrs,
 	}
 	if hasKey {
 		agentRequest.ContextID = key.ContextID
@@ -858,6 +865,25 @@ func (s *LocalService) runAtLegacy(
 		return Response{}, err
 	}
 	return responseFromAgent(result), nil
+}
+
+// lineageFromContext derives the run lineage for a delegated subagent
+// from the caller's ambient execution context: the caller's run id
+// (agent.RunInfo, stamped by the graph engine at the node boundary)
+// and the id of the delegate tool call that started this delegation
+// (tool.CallIDFromContext, stamped by the tool executor). Either may
+// be absent — a tool executed outside an engine run has no ambient
+// RunInfo, and direct service calls carry no tool call id — in which
+// case the corresponding lineage slot stays empty and the subagent
+// runs exactly as it does today.
+func lineageFromContext(ctx context.Context) (parentRunID string, attrs map[string]string) {
+	if info, ok := agent.RunInfoFromContext(ctx); ok {
+		parentRunID = info.RunID
+	}
+	if callID, ok := tool.CallIDFromContext(ctx); ok {
+		attrs = map[string]string{telemetry.AttrToolCallID: callID}
+	}
+	return parentRunID, attrs
 }
 
 func (s *LocalService) begin() error {
