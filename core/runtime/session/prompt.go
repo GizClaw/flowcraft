@@ -122,6 +122,7 @@ func (t *Turn) askUser(ctx context.Context, prompt agent.UserPrompt) (agent.User
 	if err == nil {
 		envelope.SetRunID(t.runID)
 		envelope.SetAgentID(t.session.key.AgentID)
+		stampTurnLineage(&envelope, t)
 		err = host.Publish(ctx, envelope)
 	}
 	if err != nil {
@@ -225,6 +226,7 @@ func (t *Turn) publishPromptResolved(host agent.Host, promptID string, status Pr
 	if t.session != nil {
 		envelope.SetAgentID(t.session.key.AgentID)
 	}
+	stampTurnLineage(&envelope, t)
 	if err := host.Publish(ctx, envelope); err != nil {
 		telemetry.WarnErr(ctx, "runtime session: prompt resolved event publish failed", err,
 			otellog.String(telemetry.AttrRunID, t.runID),

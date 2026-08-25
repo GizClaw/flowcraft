@@ -107,6 +107,10 @@ func (e *Engine) Execute(ctx context.Context, run agent.Run, host agent.Host, bo
 		board = agent.NewBoard()
 	}
 	retBoard = board
+	// Run identity is ambient: stream helpers (EmitStreamDelta) read it
+	// from the context, so stamp it once at the run boundary like the
+	// other engines do.
+	ctx = agent.WithRunInfo(ctx, run.Info())
 
 	spanAttrs := []attribute.KeyValue{
 		attribute.String(telemetry.AttrEngineKind, engineKind),
@@ -874,6 +878,7 @@ func publishRunEvent(ctx context.Context, host agent.Host, run agent.Run, subjec
 	}
 	env.SetAgentID(run.AgentID)
 	env.SetRunID(run.RunID)
+	stampLineage(&env, run)
 	return host.Publish(ctx, env)
 }
 
@@ -897,10 +902,24 @@ func publishStepEvent(ctx context.Context, host agent.Host, run agent.Run, subje
 	}
 	env.SetAgentID(run.AgentID)
 	env.SetRunID(run.RunID)
+	stampLineage(&env, run)
 	if err := host.Publish(ctx, env); err != nil {
 		telemetry.WarnErr(ctx, "a2a: step event publish failed", err,
 			otellog.String("event.subject", string(env.Subject)),
 			otellog.String(telemetry.AttrRunID, run.RunID))
+	}
+}
+
+// stampLineage projects run lineage onto a freshly minted envelope: the
+// parent run id (when this run was spawned by another run) and the
+// creating tool call id (when this run was spawned by a tool). Empty
+// values are skipped so top-level runs stay header-free.
+func stampLineage(env *event.Envelope, run agent.Run) {
+	if run.ParentRunID != "" {
+		env.SetParentRunID(run.ParentRunID)
+	}
+	if callID := run.Attribute(telemetry.AttrToolCallID); callID != "" {
+		env.SetToolCallID(callID)
 	}
 }
 

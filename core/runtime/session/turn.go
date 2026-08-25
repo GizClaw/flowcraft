@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
@@ -106,6 +107,26 @@ func (t *Turn) RunID() string {
 		return ""
 	}
 	return t.runID
+}
+
+// stampLineage projects the turn's run lineage onto a freshly minted
+// envelope: the parent run id (when this turn was dispatched by another
+// run, e.g. a delegated subagent) and the creating tool call id (when
+// this turn was spawned by a tool, e.g. a delegate tool call). Empty
+// values are skipped so top-level turns stay header-free. It is applied
+// at the session-level mint points (logical run end, prompt events) so
+// the lineage invariant holds for every envelope a sink observes, not
+// just the engine's own events.
+func stampTurnLineage(env *event.Envelope, t *Turn) {
+	if t == nil {
+		return
+	}
+	if parentRunID := t.request.ParentRunID; parentRunID != "" {
+		env.SetParentRunID(parentRunID)
+	}
+	if callID := t.request.Attributes[telemetry.AttrToolCallID]; callID != "" {
+		env.SetToolCallID(callID)
+	}
 }
 
 // State returns the current lifecycle state.
