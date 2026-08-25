@@ -20,12 +20,33 @@ const (
 	CallIDMetadataKey = "delegation.call_id"
 )
 
+// Stream target kinds. The vocabulary is part of the delegation
+// contract so the submit side (exporter) and the worker side
+// (resolver) agree without importing the runtime.
+const (
+	// StreamTargetKindConversation routes envelopes to a live,
+	// conversation-scoped sink. Reachability is same-process: the
+	// resolving registry must hold the registered sink, so this kind
+	// recovers streams when the in-process escrow was lost (TTL,
+	// release) but does not deliver across processes.
+	StreamTargetKindConversation = "conversation"
+	// StreamTargetKindBus routes envelopes onto a named event bus.
+	// This is the kind capable of true cross-process delivery, as
+	// long as the bus implementation itself spans the processes.
+	StreamTargetKindBus = "bus"
+)
+
 // StreamTarget is a serializable description of where an async
 // subagent's stream envelopes should be delivered. It replaces the
 // live (non-serializable) sink across the queue boundary: the caller's
 // runtime knows how to describe its sinks as targets, and the worker's
 // runtime resolves them back into live sinks through
 // [StreamTargetResolver].
+//
+// AsyncRequest.Stream.Target is single-valued (see [StreamRef]): the
+// in-process escrow preserves every inherited sink, but the
+// cross-process path can restore exactly one destination. The exporter
+// prefers broadcast (bus) targets when several sinks are describable.
 type StreamTarget struct {
 	// Kind is the target vocabulary understood by the resolver
 	// (e.g. "conversation", "bus"). Resolvers MUST reject unknown
@@ -62,7 +83,9 @@ type StreamRef struct {
 	// Policy snapshots the caller's attachment tuning.
 	Policy StreamPolicySnapshot `json:"policy,omitempty"`
 	// Target describes the delivery destination for resolver-based
-	// materialization. Empty when the escrow path is used.
+	// materialization. Empty when the escrow path is used. At most
+	// one target is persisted: cross-process delivery is
+	// single-destination by contract.
 	Target *StreamTarget `json:"target,omitempty"`
 }
 
@@ -72,11 +95,22 @@ type StreamRef struct {
 // persisted data.
 type StreamTargetResolver func(ctx context.Context, target StreamTarget) (agent.StreamSink, error)
 
+// StreamTargetProvider is implemented by stream sinks that can describe
+// their durable destination as a serializable [StreamTarget].
+// [StreamTargetExporter]s recognize providers instead of concrete sink
+// types, so decorators (logging middleware, proxies) can pass the
+// description through without breaking recognition.
+type StreamTargetProvider interface {
+	StreamTarget() (StreamTarget, bool)
+}
+
 // StreamTargetExporter describes a caller-side live sink as a
 // serializable [StreamTarget] at async submit time, so cross-process
 // backends can re-materialize the same destination worker-side through
-// a [StreamTargetResolver]. It returns ok=false for sinks it cannot
-// describe (e.g. plain closures with no durable destination).
+// a [StreamTargetResolver]. It returns ok=false for sinks that are not
+// [StreamTargetProvider]s (e.g. plain closures with no durable
+// destination). Cross-process delivery restores at most one target —
+// see [StreamTarget].
 type StreamTargetExporter func(spec session.SinkSpec) (StreamTarget, bool)
 
 // RunIDNotifier is an optional AsyncBackend capability: it lets a

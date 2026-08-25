@@ -119,9 +119,37 @@ detach the attachment mid-run). Visibility is preserved.
 
 An inherited sink may be invoked concurrently from multiple sessions
 (the caller turn plus parallel subagents) and must be safe for concurrent
-`OnDelta` calls. Async delegation does not inherit: the caller context
-does not cross the backend queue, and the worker is not a live UI
-consumer.
+`OnDelta` calls.
+
+Async delegation inherits the same way, across the queue boundary:
+
+- **In-process (escrow):** the submit side stores the caller's live sink
+  specs in a service-side escrow referenced by `AsyncRequest.Stream.Ref`;
+  the worker restores them and attaches them, so deltas reach the exact
+  sink instances the caller's UI is listening on. Entries are released
+  at terminal completion and swept by TTL as a backstop.
+- **Cross-process (target + resolver):** the submit side also persists a
+  serializable `StreamTarget` (`AsyncRequest.Stream.Target`) describing
+  the destination. When no escrow entry survives (TTL expiry, restart, a
+  worker in another process), the worker resolves the target through the
+  runtime's whitelisted `StreamTargetResolver`
+  (`runtime.StreamExportRegistry`).
+- **Reachability:** `conversation` targets resolve to a live sink
+  registered in the resolving process's registry — they recover streams
+  in-process but do not deliver across processes. `bus` targets forward
+  onto a named event bus and are the kind capable of true cross-process
+  delivery, as long as the bus transport spans the processes.
+- **Single-destination caveat:** `StreamRef.Target` is single-valued.
+  The in-process escrow preserves every inherited sink; the
+  cross-process path restores exactly one. The exporter prefers
+  broadcast (bus) targets when several sinks are describable. Sinks
+  describe themselves by implementing `delegation.StreamTargetProvider`,
+  so UI decorators can pass the description through without breaking
+  recognition.
+- **Lifecycle:** async stream deltas carry lineage headers (`run_id`,
+  `parent_run_id`, `tool_call_id`, `agent_id`) but the sink sees no
+  explicit EOF; terminal state is reported through kanban card events
+  and `delegation_status`.
 
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.

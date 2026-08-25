@@ -507,13 +507,18 @@ func (s *LocalService) delegate(
 		if specs, ok := s.asyncStreamSpecs(ctx); ok {
 			ref := "escrow-" + newID()
 			release := s.storeStreamEscrow(ref, specs)
-			asyncReq.Stream = &StreamRef{
+			stream := &StreamRef{
 				Ref:    ref,
-				Policy: streamPolicySnapshot(specs),
+				Policy: streamPolicySnapshotOf(specs[0]),
 			}
-			if target, ok := s.exportStreamTarget(specs); ok {
-				asyncReq.Stream.Target = &target
+			if target, spec, ok := s.exportStreamTarget(specs); ok {
+				stream.Target = &target
+				// The persisted policy describes the same sink the
+				// target came from, so the worker re-materializes the
+				// attachment with matching tuning.
+				stream.Policy = streamPolicySnapshotOf(spec)
 			}
+			asyncReq.Stream = stream
 			id, err := s.backend.Submit(ctx, asyncReq)
 			if err != nil {
 				release()
@@ -1084,31 +1089,52 @@ func (s *LocalService) asyncStreamSpecs(ctx context.Context) ([]session.SinkSpec
 }
 
 // exportStreamTarget runs the configured exporter over an inherited
-// sink set and returns the first describable target. ok=false when no
-// exporter is configured or no sink carries a durable destination.
-func (s *LocalService) exportStreamTarget(specs []session.SinkSpec) (StreamTarget, bool) {
+// sink set and returns the chosen target together with the spec it was
+// derived from (so the persisted policy snapshot stays aligned with the
+// target). Broadcast (bus) targets are preferred: cross-process
+// delivery restores exactly one destination, and a bus reaches every
+// subscriber. ok=false when no exporter is configured or no sink is
+// describable — with an exporter configured that silent degradation is
+// logged, because cross-process streaming then silently disappears.
+func (s *LocalService) exportStreamTarget(
+	specs []session.SinkSpec,
+) (StreamTarget, session.SinkSpec, bool) {
 	if s.streamExporter == nil {
-		return StreamTarget{}, false
+		return StreamTarget{}, session.SinkSpec{}, false
 	}
+	var first StreamTarget
+	var firstSpec session.SinkSpec
+	var firstOK bool
 	for _, spec := range specs {
-		if target, ok := s.streamExporter(spec); ok {
-			return target, true
+		target, ok := s.streamExporter(spec)
+		if !ok {
+			continue
+		}
+		if target.Kind == StreamTargetKindBus {
+			return target, spec, true
+		}
+		if !firstOK {
+			first, firstSpec, firstOK = target, spec, true
 		}
 	}
-	return StreamTarget{}, false
+	if !firstOK {
+		telemetry.Warn(context.Background(),
+			"local delegation: stream exporter matched no sink; "+
+				"cross-process streaming will be unavailable",
+			otellog.Int("delegation.stream_sinks", len(specs)))
+		return StreamTarget{}, session.SinkSpec{}, false
+	}
+	return first, firstSpec, true
 }
 
-// streamPolicySnapshot projects an inherited sink set onto the
-// serializable policy snapshot carried by AsyncRequest.Stream. It is
-// populated from the first spec; with multiple sinks the snapshot
-// reflects the first attachment's tuning (authority/ack fields are
-// informational — inherited attachments always downgrade to observers).
-func streamPolicySnapshot(specs []session.SinkSpec) StreamPolicySnapshot {
+// streamPolicySnapshotOf projects one sink spec onto the serializable
+// policy snapshot carried by AsyncRequest.Stream. The snapshot is
+// derived from the same spec that produced the persisted target, so
+// worker-side re-materialization applies matching tuning. Authority and
+// ack fields are informational — inherited attachments always downgrade
+// to observers.
+func streamPolicySnapshotOf(spec session.SinkSpec) StreamPolicySnapshot {
 	var snapshot StreamPolicySnapshot
-	if len(specs) == 0 {
-		return snapshot
-	}
-	spec := specs[0]
 	snapshot.Visibility = spec.Visibility
 	snapshot.Authority = spec.Authority
 	snapshot.AckMode = spec.AckMode

@@ -10,20 +10,9 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
-)
+	"github.com/GizClaw/flowcraft/core/telemetry"
 
-// Stream target kinds understood by [StreamExportRegistry]. The
-// registry only ever resolves targets whose kind appears here; unknown
-// kinds from persisted backend records are rejected outright.
-const (
-	// StreamTargetConversation routes envelopes to a live,
-	// conversation-scoped sink registered by the UI/runtime (the
-	// destination survives the individual caller turn).
-	StreamTargetConversation = "conversation"
-	// StreamTargetBus forwards envelopes onto a runtime-owned event
-	// bus under their original subject, so any subscriber (SSE
-	// relay, dashboard) can consume async subagent streams.
-	StreamTargetBus = "bus"
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // StreamExportRegistry is the runtime-owned bridge between the
@@ -32,13 +21,23 @@ const (
 //
 // It implements both halves of the delegation stream contract:
 //   - Exporter describes sinks the runtime attached to a turn as
-//     serializable targets at async submit time;
+//     serializable targets at async submit time. It recognizes sinks
+//     that implement delegation.StreamTargetProvider (the registry's
+//     conversation sinks do), so decorators wrapping a conversation
+//     sink can pass the description through;
 //   - Resolver re-materializes those targets worker-side when no
-//     in-process escrow entry survives (cross-process backends).
+//     in-process escrow entry survives.
 //
 // Resolver is whitelisted by construction: it only accepts the kinds
-// declared above, and conversation sinks come from the registry's own
-// registered set — never from request data.
+// declared by the delegation contract (conversation, bus), and
+// conversation sinks come from the registry's own registered set —
+// never from request data.
+//
+// Reachability: conversation targets resolve to a live sink registered
+// in the resolving process's registry, so they recover streams when
+// the in-process escrow was lost but do NOT deliver across processes.
+// Bus targets resolve to a named bus and are the kind capable of true
+// cross-process delivery (when the bus transport spans processes).
 type StreamExportRegistry struct {
 	mu            sync.Mutex
 	conversations map[string]agent.StreamSink
@@ -65,6 +64,11 @@ func (r *StreamExportRegistry) RegisterConversation(contextID string, sink agent
 	}
 	wrapped := conversationStreamSink{contextID: contextID, inner: sink}
 	r.mu.Lock()
+	if _, existing := r.conversations[contextID]; existing {
+		telemetry.Debug(context.Background(),
+			"runtime stream export: replacing conversation sink",
+			otellog.String("runtime.stream_export.context", contextID))
+	}
 	r.conversations[contextID] = wrapped
 	r.mu.Unlock()
 }
@@ -98,18 +102,16 @@ func (r *StreamExportRegistry) ConversationSink(contextID string) (agent.StreamS
 }
 
 // Exporter implements delegation.StreamTargetExporter: it recognizes
-// sinks registered through RegisterConversation (and only those) and
-// describes them as conversation targets. All other sinks report
-// ok=false.
+// sinks that implement delegation.StreamTargetProvider (the registry's
+// conversation sinks do, and decorators may pass the description
+// through) and describes them as conversation targets. All other sinks
+// report ok=false.
 func (r *StreamExportRegistry) Exporter(spec session.SinkSpec) (delegation.StreamTarget, bool) {
-	sink, ok := spec.Sink.(conversationStreamSink)
-	if !ok || isNil(sink.inner) {
+	provider, ok := spec.Sink.(delegation.StreamTargetProvider)
+	if !ok {
 		return delegation.StreamTarget{}, false
 	}
-	return delegation.StreamTarget{
-		Kind: StreamTargetConversation,
-		ID:   sink.contextID,
-	}, true
+	return provider.StreamTarget()
 }
 
 // Resolver implements delegation.StreamTargetResolver with a strict
@@ -123,7 +125,7 @@ func (r *StreamExportRegistry) Resolver(
 	target delegation.StreamTarget,
 ) (agent.StreamSink, error) {
 	switch target.Kind {
-	case StreamTargetConversation:
+	case delegation.StreamTargetKindConversation:
 		if target.ID == "" {
 			return nil, errdefs.Validationf(
 				"runtime stream export: conversation target id is required")
@@ -137,11 +139,15 @@ func (r *StreamExportRegistry) Resolver(
 				target.ID)
 		}
 		return sink, nil
-	case StreamTargetBus:
+	case delegation.StreamTargetKindBus:
 		if target.ID == "" {
 			return nil, errdefs.Validationf(
 				"runtime stream export: bus target id is required")
 		}
+		// Unknown bus names are Validation (static runtime
+		// configuration fixed at construction), while an unattached
+		// conversation is NotAvailable (a dynamic resource the UI
+		// registers at runtime).
 		r.mu.Lock()
 		bus, ok := r.buses[target.ID]
 		r.mu.Unlock()
@@ -158,11 +164,22 @@ func (r *StreamExportRegistry) Resolver(
 }
 
 // conversationStreamSink wraps a conversation-scoped sink with its
-// context id so [StreamExportRegistry.Exporter] can recognize it.
-// OnDelta forwards to the wrapped sink unchanged.
+// context id. It implements [delegation.StreamTargetProvider] so
+// [StreamExportRegistry.Exporter] recognizes it without a concrete
+// type assertion, and OnDelta forwards to the wrapped sink unchanged.
 type conversationStreamSink struct {
 	contextID string
 	inner     agent.StreamSink
+}
+
+func (s conversationStreamSink) StreamTarget() (delegation.StreamTarget, bool) {
+	if s.contextID == "" || isNil(s.inner) {
+		return delegation.StreamTarget{}, false
+	}
+	return delegation.StreamTarget{
+		Kind: delegation.StreamTargetKindConversation,
+		ID:   s.contextID,
+	}, true
 }
 
 func (s conversationStreamSink) OnDelta(
