@@ -883,3 +883,92 @@ func TestRunAtSessionPathPersistentWritesState(t *testing.T) {
 		t.Fatal("persistent delegation wrote no checkpoints, want session state")
 	}
 }
+
+// streamEngine emits one stream delta on the run's canonical stream
+// subject before completing, so an attached sink has something to
+// observe.
+func streamEngine(output string) agent.Engine {
+	return agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		if err := agent.EmitStreamPart(
+			ctx, host, run.RunID, "writer.node.work",
+			message.TextPart{Text: output}); err != nil {
+			return nil, err
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, output))
+		return board, nil
+	})
+}
+
+func TestSyncDelegationInheritsCallerStreamSinks(t *testing.T) {
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	service, _ := newSessionPathService(t, streamEngine("progress"), nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: true,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	select {
+	case delta := <-received:
+		part, ok := delta.Part.(message.TextPart)
+		if !ok || part.Text != "progress" {
+			t.Fatalf("delta part = %#v, want text %q", delta.Part, "progress")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("inherited sink received no subagent stream delta")
+	}
+}
+
+func TestSyncDelegationSkipsNonInheritableStreamPolicy(t *testing.T) {
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	service, _ := newSessionPathService(t, streamEngine("progress"), nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: false,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	select {
+	case delta := <-received:
+		t.Fatalf("non-inheritable policy still delivered delta: %#v", delta)
+	case <-time.After(300 * time.Millisecond):
+	}
+}

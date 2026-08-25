@@ -749,7 +749,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		}
 	}()
 
-	opts := s.delegationStartOptions(persistent)
+	opts := s.delegationStartOptions(execCtx, persistent)
 	request := agent.Request{
 		ContextID: key.ContextID,
 		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
@@ -947,15 +947,21 @@ func responseFromTurn(result *agent.Result, contextID string) Response {
 }
 
 // delegationStartOptions builds the session options for a delegated
-// subagent turn: questions to the user are refused (never block), and
-// non-persistent identities run the turn ephemeral so no session state or
-// run checkpoint is ever written.
-func (s *LocalService) delegationStartOptions(persistent bool) []session.StartOption {
+// subagent turn: questions to the user are refused (never block),
+// non-persistent identities run the turn ephemeral so no session state
+// or run checkpoint is ever written, and stream sinks are inherited
+// from the caller turn when the caller's stream policy is inheritable.
+// Async worker runs do not inherit here: the caller context does not
+// cross the backend queue, and the worker is not a live UI consumer.
+func (s *LocalService) delegationStartOptions(ctx context.Context, persistent bool) []session.StartOption {
 	options := []session.StartOption{
 		session.WithAskUserOverride(refuseSubagentAskUser),
 	}
 	if !persistent {
 		options = append(options, session.WithEphemeral())
+	}
+	if policy, ok := session.StreamPolicyFromContext(ctx); ok && policy.Inheritable && len(policy.Sinks) > 0 {
+		options = append(options, session.WithSinks(policy.Sinks...))
 	}
 	return options
 }
