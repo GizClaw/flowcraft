@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.31` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.32` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.32` - 2026-08-25
+
+### Changed
+
+- fix(core/graph): undefined-tool recovery appends a user-role text feedback message instead of replaying a synthetic assistant tool_call paired with a tool result — no fabricated conversation turn, no provider reasoning round-trip exposure (DeepSeek thinking mode rejects assistant tool-call turns without reasoning_content), and no undefined function reference left in context; recovery markers and the llm->compact->llm loop are unchanged
 
 ## `core/v0.1.31` - 2026-08-25
 
