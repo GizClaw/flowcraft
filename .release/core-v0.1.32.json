@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core/graph): undefined-tool recovery appends a user-role text feedback message instead of replaying a synthetic assistant tool_call paired with a tool result — no fabricated conversation turn, no provider reasoning round-trip exposure (DeepSeek thinking mode rejects assistant tool-call turns without reasoning_content), and no undefined function reference left in context; recovery markers and the llm->compact->llm loop are unchanged",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}

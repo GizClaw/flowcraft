@@ -332,17 +332,14 @@ func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
 	}
 
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 3 {
-		t.Fatalf("channel length = %d, want 3 (user + assistant call + tool rejection)", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("channel length = %d, want 2 (user + text feedback)", len(msgs))
 	}
-	call, ok := msgs[1].Content.Parts[0].(message.ToolCallPart)
-	if !ok || msgs[1].Role != message.RoleAssistant || call.Call.Name != "ghost" {
-		t.Fatalf("recovered assistant message = %+v", msgs[1])
-	}
-	result, ok := msgs[2].Content.Parts[0].(message.ToolResultPart)
-	if !ok || msgs[2].Role != message.RoleTool || !result.Result.IsError ||
-		result.Result.CallID != "call-1" || !strings.Contains(result.Result.Content, "tool_search") {
-		t.Fatalf("recovered tool message = %+v", msgs[2])
+	feedback, ok := msgs[1].Content.Parts[0].(message.TextPart)
+	if !ok || msgs[1].Role != message.RoleUser ||
+		!strings.Contains(feedback.Text, "ghost") ||
+		!strings.Contains(feedback.Text, "tool_search") {
+		t.Fatalf("recovered feedback message = %+v", msgs[1])
 	}
 	if v, _ := board.GetVar("recover_pending"); v != true {
 		t.Fatalf("recover_pending = %v, want true", v)
@@ -582,27 +579,27 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("llm rounds = %d, want 2 (recovered round + success round)", len(requests))
 	}
-	// The recovered round's feedback must ride into the next request:
-	// the fabricated assistant call sits in context and the rejection is
-	// the tool-role input.
-	if len(requests[1].Context) != 2 {
-		t.Fatalf("second round context length = %d, want 2", len(requests[1].Context))
+	// The recovered round's feedback must ride into the next request as
+	// the current input: a single user-role text message, with no
+	// fabricated assistant tool_call in context.
+	if len(requests[1].Context) != 1 {
+		t.Fatalf("second round context length = %d, want 1", len(requests[1].Context))
 	}
-	call, ok := requests[1].Context[1].Content.Parts[0].(message.ToolCallPart)
-	if !ok || call.Call.Name != "ghost" {
-		t.Fatalf("second round context call = %+v", requests[1].Context[1].Content.Parts[0])
+	if requests[1].Input.Role != inference.InputRoleUser {
+		t.Fatalf("second round input role = %q, want user", requests[1].Input.Role)
 	}
-	result, ok := requests[1].Input.Content.Parts[0].(message.ToolResultPart)
-	if !ok || !result.Result.IsError || !strings.Contains(result.Result.Content, "tool_search") {
+	feedback, ok := requests[1].Input.Content.Parts[0].(message.TextPart)
+	if !ok || !strings.Contains(feedback.Text, "ghost") ||
+		!strings.Contains(feedback.Text, "tool_search") {
 		t.Fatalf("second round input = %+v", requests[1].Input.Content.Parts[0])
 	}
 
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 4 {
-		t.Fatalf("channel length = %d, want 4 (user, recovered pair, final answer)", len(msgs))
+	if len(msgs) != 3 {
+		t.Fatalf("channel length = %d, want 3 (user, feedback, final answer)", len(msgs))
 	}
-	if text, ok := msgs[3].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
-		t.Fatalf("final assistant message = %+v, want text %q", msgs[3], "ok")
+	if text, ok := msgs[2].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
+		t.Fatalf("final assistant message = %+v, want text %q", msgs[2], "ok")
 	}
 	if v, _ := board.GetVar("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success round", v)
@@ -657,8 +654,8 @@ func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) 
 	if requests := fake.Requests(); len(requests) != 1 {
 		t.Fatalf("llm rounds = %d, want 1 (run ends after the recovered round)", len(requests))
 	}
-	if msgs := board.Channel(agent.MainChannel); len(msgs) != 3 {
-		t.Fatalf("channel length = %d, want 3 (feedback appended, no final answer)", len(msgs))
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 2 {
+		t.Fatalf("channel length = %d, want 2 (feedback appended, no final answer)", len(msgs))
 	}
 }
 
