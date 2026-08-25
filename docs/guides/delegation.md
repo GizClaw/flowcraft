@@ -107,6 +107,22 @@ checkpoint board. Preparers with side effects (uploads, live-progress
 resets) must be idempotent or detect the replay via `agent.ResumeContext`
 / `Run.ResumeFrom` and skip.
 
+## Stream inheritance
+
+Delegated subagent turns inherit the caller turn's stream sinks: the turn
+execution context carries the caller's stream policy, and the delegation
+service attaches those sinks to the subagent session as observers.
+Authority and explicit-ack semantics are downgraded on inheritance — the
+subagent turn is never handed to the inherited sink, so it cannot fulfil
+authoritative/explicit-ack obligations (an unacked window would otherwise
+detach the attachment mid-run). Visibility is preserved.
+
+An inherited sink may be invoked concurrently from multiple sessions
+(the caller turn plus parallel subagents) and must be safe for concurrent
+`OnDelta` calls. Async delegation does not inherit: the caller context
+does not cross the backend queue, and the worker is not a live UI
+consumer.
+
 See [runtime.md](runtime.md) for `WithResultHostFactory` and reload, and
 [tool.md](tool.md) for tool sources.
 

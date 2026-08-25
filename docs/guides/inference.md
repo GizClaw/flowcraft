@@ -5,7 +5,9 @@ title: Inference Runtime
 # Inference Runtime Guide
 
 `core/inference` is the unified, instance-owned runtime for model inference.
-All workloads are one of `Generate`, `Embed`, `Transcription`, or `Realtime`.
+Active workloads are `Generate`, `Embed`, and `Transcription`. `Realtime`
+is reserved in the operation enum and field ledger but has no request or
+session surface yet — it lands in a later milestone.
 
 ## Exact addressing
 
