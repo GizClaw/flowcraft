@@ -101,6 +101,34 @@ func TestDelegateDefinitionBoundsDirectoryLookup(t *testing.T) {
 	}
 }
 
+func TestDelegateDefinitionGuidesAsyncForLongRunningWork(t *testing.T) {
+	delegate := tooldelegation.NewDelegate(&fakeDirectory{
+		targets: []sdkdelegation.Target{{ID: "billing"}},
+	})
+	definition := delegate.Definition()
+	var schema struct {
+		Properties map[string]struct {
+			Description string `json:"description"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(definition.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(definition.Description, "Prefer async") {
+		t.Fatalf("tool description = %q, want async guidance", definition.Description)
+	}
+	modeDescription := schema.Properties["mode"].Description
+	for _, want := range []string{
+		"sync blocks",
+		"delegation_status",
+		"Prefer async",
+	} {
+		if !strings.Contains(modeDescription, want) {
+			t.Fatalf("mode description = %q, want substring %q", modeDescription, want)
+		}
+	}
+}
+
 func TestDelegateExecuteModesAndNoteMetadata(t *testing.T) {
 	service := &fakeService{delegate: func(req sdkdelegation.Request) (sdkdelegation.Response, error) {
 		switch req.Mode {
