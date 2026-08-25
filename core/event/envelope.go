@@ -40,6 +40,11 @@ const (
 	HeaderRunID  = "run_id"
 	HeaderNodeID = "node_id"
 
+	// HeaderParentRunID identifies the run that spawned the run this
+	// envelope belongs to (multi-agent call chains / delegation).
+	// Absent on envelopes for top-level runs.
+	HeaderParentRunID = "parent_run_id"
+
 	// HeaderAgentID identifies the agent (core/agent.Agent.ID) that
 	// produced this envelope — i.e. the executor identity in
 	// engine-neutral terms. The producer end is core/agent.Run, which
@@ -48,6 +53,11 @@ const (
 	// header via SetAgentID. Consumers that need to fan-in / filter
 	// by "which agent did this" subscribe on this dimension.
 	HeaderAgentID = "agent_id"
+
+	// HeaderToolCallID identifies the tool call (message.ToolCall.ID)
+	// that created the run this envelope belongs to, when the run was
+	// spawned by a tool (e.g. a delegate tool starting a subagent).
+	HeaderToolCallID = "tool_call_id"
 
 	HeaderGraphID = "graph_id"
 	HeaderTenant  = "tenant"
@@ -149,6 +159,18 @@ func (e *Envelope) SetRunID(id string) { e.SetHeader(HeaderRunID, id) }
 
 // RunID returns the value of the well-known run_id header.
 func (e Envelope) RunID() string { return e.Header(HeaderRunID) }
+
+// SetParentRunID is a typed shorthand for SetHeader(HeaderParentRunID, id).
+func (e *Envelope) SetParentRunID(id string) { e.SetHeader(HeaderParentRunID, id) }
+
+// ParentRunID returns the value of the well-known parent_run_id header.
+func (e Envelope) ParentRunID() string { return e.Header(HeaderParentRunID) }
+
+// SetToolCallID is a typed shorthand for SetHeader(HeaderToolCallID, id).
+func (e *Envelope) SetToolCallID(id string) { e.SetHeader(HeaderToolCallID, id) }
+
+// ToolCallID returns the value of the well-known tool_call_id header.
+func (e Envelope) ToolCallID() string { return e.Header(HeaderToolCallID) }
 
 // SetNodeID is a typed shorthand for SetHeader(HeaderNodeID, id).
 func (e *Envelope) SetNodeID(id string) { e.SetHeader(HeaderNodeID, id) }

@@ -70,17 +70,20 @@ func TestNewEnvelope_RejectsInvalidSubject(t *testing.T) {
 func TestEnvelope_HeadersHelpers(t *testing.T) {
 	var env Envelope
 	env.SetRunID("r1")
+	env.SetParentRunID("r0")
+	env.SetToolCallID("c1")
 	env.SetNodeID("n1")
 	env.SetAgentID("a1")
 	env.SetGraphID("g1")
 	env.SetTenant("t1")
 
-	if env.RunID() != "r1" || env.NodeID() != "n1" || env.AgentID() != "a1" || env.GraphID() != "g1" || env.Tenant() != "t1" {
+	if env.RunID() != "r1" || env.ParentRunID() != "r0" || env.ToolCallID() != "c1" ||
+		env.NodeID() != "n1" || env.AgentID() != "a1" || env.GraphID() != "g1" || env.Tenant() != "t1" {
 		t.Fatalf("typed accessors disagree: %+v", env.Headers)
 	}
 	// Zero envelope returns "" without panic.
 	var zero Envelope
-	if zero.RunID() != "" || zero.NodeID() != "" {
+	if zero.RunID() != "" || zero.ParentRunID() != "" || zero.ToolCallID() != "" || zero.NodeID() != "" {
 		t.Fatal("zero envelope should return empty strings")
 	}
 }

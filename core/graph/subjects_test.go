@@ -7,6 +7,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 func TestStepActorForIncludesAgentID(t *testing.T) {
@@ -58,6 +60,8 @@ func TestRunErrorPayloadCarriesRequestID(t *testing.T) {
 	host := &publishHost{}
 	g := &Graph{name: "g"}
 	run := testRun()
+	run.ParentRunID = "run-parent"
+	run.Attributes = map[string]string{telemetry.AttrToolCallID: "call-5"}
 	runErr := errdefs.WithRequestID(
 		errdefs.Validation(errors.New("boom")), "req-ui-2")
 
@@ -77,5 +81,66 @@ func TestRunErrorPayloadCarriesRequestID(t *testing.T) {
 	}
 	if payload.Error != "boom" || payload.RequestID != "req-ui-2" {
 		t.Fatalf("payload = %+v", payload)
+	}
+	if host.envs[0].ParentRunID() != "run-parent" || host.envs[0].ToolCallID() != "call-5" {
+		t.Fatalf("run envelope lineage headers = %+v", host.envs[0].Headers)
+	}
+}
+
+func TestPublishStreamDelta_StampsLineageHeaders(t *testing.T) {
+	host := &publishHost{}
+	info := agent.RunInfo{
+		Identity: agent.Identity{
+			AgentID:     "child",
+			RunID:       "run-child",
+			ParentRunID: "run-parent",
+		},
+		Attributes: map[string]string{telemetry.AttrToolCallID: "call-5"},
+	}
+	if err := publishStreamDelta(context.Background(), host, info, "g", "n1",
+		agent.StreamDeltaPayload{
+			Type: agent.StreamDeltaPart,
+			Part: message.TextPart{Text: "x"},
+		}); err != nil {
+		t.Fatalf("publishStreamDelta: %v", err)
+	}
+	env := host.envs[0]
+	if env.ParentRunID() != "run-parent" || env.ToolCallID() != "call-5" {
+		t.Fatalf("lineage headers = %+v", env.Headers)
+	}
+
+	// Top-level runs carry no lineage headers.
+	topHost := &publishHost{}
+	top := agent.RunInfo{Identity: agent.Identity{AgentID: "root", RunID: "run-root"}}
+	if err := publishStreamDelta(context.Background(), topHost, top, "g", "n1",
+		agent.StreamDeltaPayload{
+			Type: agent.StreamDeltaPart,
+			Part: message.TextPart{Text: "x"},
+		}); err != nil {
+		t.Fatalf("publishStreamDelta: %v", err)
+	}
+	if topEnv := topHost.envs[0]; topEnv.ParentRunID() != "" || topEnv.ToolCallID() != "" {
+		t.Fatalf("top-level run got lineage headers: %+v", topEnv.Headers)
+	}
+}
+
+func TestPublishStep_StampsLineageHeaders(t *testing.T) {
+	host := &publishHost{}
+	g := &Graph{name: "g"}
+	info := agent.RunInfo{
+		Identity: agent.Identity{
+			AgentID:     "child",
+			RunID:       "run-child",
+			ParentRunID: "run-parent",
+		},
+		Attributes: map[string]string{telemetry.AttrToolCallID: "call-5"},
+	}
+	publishStepStarted(context.Background(), host, g, info, "n1")
+	if len(host.envs) != 1 {
+		t.Fatalf("published = %d envelopes, want 1", len(host.envs))
+	}
+	env := host.envs[0]
+	if env.ParentRunID() != "run-parent" || env.ToolCallID() != "call-5" {
+		t.Fatalf("step envelope lineage headers = %+v", env.Headers)
 	}
 }

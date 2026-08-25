@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/tool"
 	logglobal "go.opentelemetry.io/otel/log/global"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 )
@@ -949,6 +950,89 @@ func TestSyncDelegationInheritsCallerStreamSinks(t *testing.T) {
 		t.Fatalf("response status = %q, want succeeded", response.Status)
 	}
 	awaitStreamText(t, received, "progress")
+}
+
+// TestSyncDelegationStampsLineageOnStreamEnvelopes verifies the full
+// sync lineage chain: the service derives the caller run id and the
+// delegate call id from the ambient execution context, stamps them
+// onto the subagent run's identity, and the subagent's stream
+// envelopes carry parent_run_id + tool_call_id so consumers can build
+// the run tree without a separate join.
+func TestSyncDelegationStampsLineageOnStreamEnvelopes(t *testing.T) {
+	received := make(chan event.Envelope, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		env event.Envelope,
+		_ agent.StreamDeltaPayload,
+	) error {
+		received <- env
+		return nil
+	})
+	var subagentRun agent.Run
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		subagentRun = run
+		// The graph engine stamps ambient RunInfo at the node
+		// boundary; mirror that so the SDK stream helper projects
+		// lineage onto the envelope like a real deployment.
+		ctx = agent.WithRunInfo(ctx, run.Info())
+		if err := agent.EmitStreamPart(
+			ctx, host, run.RunID, "writer.node.work",
+			message.TextPart{Text: "progress"}); err != nil {
+			return nil, err
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "done"))
+		return board, nil
+	})
+	service, _ := newSessionPathService(t, engine, nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: true,
+	})
+	ctx = agent.WithRunInfo(ctx, agent.RunInfo{
+		Identity: agent.Identity{AgentID: "caller-agent", RunID: "run-caller"},
+	})
+	ctx = tool.WithCallID(ctx, "call-delegate-1")
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	if subagentRun.ParentRunID != "run-caller" {
+		t.Fatalf("subagent Run.ParentRunID = %q, want run-caller", subagentRun.ParentRunID)
+	}
+	if subagentRun.Attribute(telemetry.AttrToolCallID) != "call-delegate-1" {
+		t.Fatalf("subagent tool.call_id = %q, want call-delegate-1",
+			subagentRun.Attribute(telemetry.AttrToolCallID))
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case env := <-received:
+			if env.ParentRunID() != "run-caller" {
+				continue
+			}
+			if env.RunID() != subagentRun.RunID {
+				t.Fatalf("envelope run_id = %q, want %q", env.RunID(), subagentRun.RunID)
+			}
+			if env.ToolCallID() != "call-delegate-1" {
+				t.Fatalf("envelope tool_call_id = %q, want call-delegate-1", env.ToolCallID())
+			}
+			return
+		case <-deadline:
+			t.Fatal("lineage-stamped stream envelope never received")
+		}
+	}
 }
 
 func TestSyncDelegationSkipsNonInheritableStreamPolicy(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // ---------- StreamDelta emit ----------
@@ -101,6 +102,20 @@ func EmitStreamDelta(ctx context.Context, pub Publisher, runID, stepActor string
 	}
 	if nodeID != "" {
 		env.SetNodeID(nodeID)
+	}
+	// Lineage projection: when the ambient run identity carries a
+	// parent run or a creating tool call (e.g. a delegated subagent
+	// started by a delegate tool call), stamp them onto the envelope
+	// so consumers can build the run tree without a separate join.
+	// Outside an engine run the ambient identity is absent and both
+	// headers are simply skipped.
+	if info, ok := RunInfoFromContext(ctx); ok {
+		if info.ParentRunID != "" {
+			env.SetParentRunID(info.ParentRunID)
+		}
+		if callID := info.Attribute(telemetry.AttrToolCallID); callID != "" {
+			env.SetToolCallID(callID)
+		}
 	}
 	return pub.Publish(ctx, env)
 }

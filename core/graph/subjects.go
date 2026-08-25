@@ -6,6 +6,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
 // stepActorFor maps an agent and node id to its step actor — the middle
@@ -50,6 +51,7 @@ func publishRunEvent(ctx context.Context, host agent.Host, g *Graph, run agent.R
 	env.SetGraphID(g.name)
 	env.SetAgentID(run.AgentID)
 	env.SetRunID(run.RunID)
+	stampLineage(&env, run.ParentRunID, run.Attribute(telemetry.AttrToolCallID))
 	if err := host.Publish(ctx, env); err != nil {
 		recordPublishError(ctx, "run", run.Info(), "")
 		return err
@@ -121,6 +123,7 @@ func publishStep(ctx context.Context, host agent.Host, subject event.Subject, in
 	env.SetGraphID(payload.Graph)
 	env.SetAgentID(info.AgentID)
 	env.SetRunID(info.RunID)
+	stampLineage(&env, info.ParentRunID, info.Attribute(telemetry.AttrToolCallID))
 	if err := host.Publish(ctx, env); err != nil {
 		recordPublishError(ctx, "step", info, payload.NodeID)
 	}
@@ -162,6 +165,7 @@ func publishParallelWave(ctx context.Context, host agent.Host, g *Graph, info ag
 	env.SetGraphID(payload.Graph)
 	env.SetAgentID(info.AgentID)
 	env.SetRunID(info.RunID)
+	stampLineage(&env, info.ParentRunID, info.Attribute(telemetry.AttrToolCallID))
 	if err := host.Publish(ctx, env); err != nil {
 		recordPublishError(ctx, "parallel_wave", info, payload.ForkID)
 	}
@@ -187,7 +191,21 @@ func publishStreamDelta(ctx context.Context, host agent.Host, info agent.RunInfo
 	env.SetGraphID(graphID)
 	env.SetAgentID(info.AgentID)
 	env.SetRunID(info.RunID)
+	stampLineage(&env, info.ParentRunID, info.Attribute(telemetry.AttrToolCallID))
 	return host.Publish(ctx, env)
+}
+
+// stampLineage projects run lineage onto a freshly minted envelope:
+// the parent run id (when this run was spawned by another run) and
+// the creating tool call id (when this run was spawned by a tool).
+// Empty values are skipped so top-level runs stay header-free.
+func stampLineage(env *event.Envelope, parentRunID, toolCallID string) {
+	if parentRunID != "" {
+		env.SetParentRunID(parentRunID)
+	}
+	if toolCallID != "" {
+		env.SetToolCallID(toolCallID)
+	}
 }
 
 // publishBranchDelta emits a parallel branch accept/cancel stream
