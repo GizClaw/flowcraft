@@ -72,6 +72,13 @@ type StreamRef struct {
 // persisted data.
 type StreamTargetResolver func(ctx context.Context, target StreamTarget) (agent.StreamSink, error)
 
+// StreamTargetExporter describes a caller-side live sink as a
+// serializable [StreamTarget] at async submit time, so cross-process
+// backends can re-materialize the same destination worker-side through
+// a [StreamTargetResolver]. It returns ok=false for sinks it cannot
+// describe (e.g. plain closures with no durable destination).
+type StreamTargetExporter func(spec session.SinkSpec) (StreamTarget, bool)
+
 // RunIDNotifier is an optional AsyncBackend capability: it lets a
 // claimed async work item record the subagent run id as soon as the
 // run starts, so operational views can correlate a delegation id with

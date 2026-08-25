@@ -117,6 +117,7 @@ type serviceConfig struct {
 	workerHost           agent.Host
 	sessionProvider      SessionProvider
 	streamResolver       StreamTargetResolver
+	streamExporter       StreamTargetExporter
 	deferWorkers         bool
 }
 
@@ -232,6 +233,23 @@ func WithStreamTargetResolver(resolver StreamTargetResolver) Option {
 	}
 }
 
+// WithStreamTargetExporter registers the caller-side exporter that
+// describes live sinks as serializable [StreamTarget]s on async
+// submit. When set, the exporter is consulted for each inherited sink
+// and the first describable target is persisted alongside the escrow
+// ref, so cross-process workers can re-materialize the destination
+// through [WithStreamTargetResolver] even when no in-process escrow
+// entry survives.
+func WithStreamTargetExporter(exporter StreamTargetExporter) Option {
+	return func(config *serviceConfig) error {
+		if exporter == nil {
+			return errdefs.Validationf("local delegation: stream target exporter is nil")
+		}
+		config.streamExporter = exporter
+		return nil
+	}
+}
+
 // WithSessionProvider sets the identity policy for delegated subagent
 // sessions. When nil and a session manager is bound, the service mints a
 // fresh ContextID per delegation.
@@ -288,6 +306,7 @@ type LocalService struct {
 	streamEscrow    map[string]streamEscrowEntry
 	streamEscrowTTL time.Duration
 	streamResolver  StreamTargetResolver
+	streamExporter  StreamTargetExporter
 	// sessionProvider is the identity policy for subagent sessions. It is
 	// immutable after construction.
 	sessionProvider SessionProvider
@@ -353,6 +372,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 		streamEscrow:         make(map[string]streamEscrowEntry),
 		streamEscrowTTL:      config.streamEscrowTTL,
 		streamResolver:       config.streamResolver,
+		streamExporter:       config.streamExporter,
 		workerCtx:            workerCtx,
 		cancelWorker:         cancelWorker,
 	}
@@ -490,6 +510,9 @@ func (s *LocalService) delegate(
 			asyncReq.Stream = &StreamRef{
 				Ref:    ref,
 				Policy: streamPolicySnapshot(specs),
+			}
+			if target, ok := s.exportStreamTarget(specs); ok {
+				asyncReq.Stream.Target = &target
 			}
 			id, err := s.backend.Submit(ctx, asyncReq)
 			if err != nil {
@@ -1058,6 +1081,21 @@ func (s *LocalService) asyncStreamSpecs(ctx context.Context) ([]session.SinkSpec
 		return nil, false
 	}
 	return inheritedSinkSpecs(policy.Sinks), true
+}
+
+// exportStreamTarget runs the configured exporter over an inherited
+// sink set and returns the first describable target. ok=false when no
+// exporter is configured or no sink carries a durable destination.
+func (s *LocalService) exportStreamTarget(specs []session.SinkSpec) (StreamTarget, bool) {
+	if s.streamExporter == nil {
+		return StreamTarget{}, false
+	}
+	for _, spec := range specs {
+		if target, ok := s.streamExporter(spec); ok {
+			return target, true
+		}
+	}
+	return StreamTarget{}, false
 }
 
 // streamPolicySnapshot projects an inherited sink set onto the
