@@ -25,6 +25,11 @@ const (
 	defaultMaxConcurrency       = 4
 	defaultMaxDepth             = 8
 	defaultIdempotencyRetention = time.Hour
+	// defaultStreamEscrowTTL bounds how long an async delegation's
+	// stream escrow survives without a claim; claimed entries are
+	// refreshed and released at terminal completion, so the TTL is a
+	// leak backstop, not a run-duration cap.
+	defaultStreamEscrowTTL = time.Hour
 
 	workerRetryInitial     = 10 * time.Millisecond
 	workerRetryMax         = 250 * time.Millisecond
@@ -38,6 +43,22 @@ type AsyncRequest struct {
 	Request Request `json:"request"`
 	Caller  string  `json:"caller,omitempty"`
 	Depth   int     `json:"depth"`
+
+	// ParentRunID is the run id of the delegating agent's run. Sync
+	// delegations derive it from the ambient execution context;
+	// async delegations persist it here so it survives the queue.
+	ParentRunID string `json:"parent_run_id,omitempty"`
+
+	// CallID is the delegate tool call id that started the
+	// delegation. Like ParentRunID it is derived from the caller's
+	// execution context and persisted across the queue for async.
+	CallID string `json:"call_id,omitempty"`
+
+	// Stream is the queue-crossing reference to the caller's stream
+	// sinks. Nil means the delegation carries no live stream (the
+	// caller had no inheritable sinks, or the deployment does not
+	// support async streaming).
+	Stream *StreamRef `json:"stream,omitempty"`
 }
 
 // Work is one claimed asynchronous request. LeaseToken uniquely identifies
@@ -92,8 +113,10 @@ type serviceConfig struct {
 	maxDepth             int
 	timeout              time.Duration
 	idempotencyRetention time.Duration
+	streamEscrowTTL      time.Duration
 	workerHost           agent.Host
 	sessionProvider      SessionProvider
+	streamResolver       StreamTargetResolver
 	deferWorkers         bool
 }
 
@@ -108,6 +131,14 @@ type idempotencyResult struct {
 	request  Request
 	response Response
 	expires  time.Time
+}
+
+// streamEscrowEntry is one async delegation's stream attachment: the
+// caller's live sinks (already downgraded to observers) plus a claim
+// backstop deadline.
+type streamEscrowEntry struct {
+	specs   []session.SinkSpec
+	expires time.Time
 }
 
 // WithMaxConcurrency bounds all local agent executions, including sync calls
@@ -171,6 +202,36 @@ func WithWorkerHost(host agent.Host) Option {
 	}
 }
 
+// WithStreamEscrowTTL bounds how long an async delegation's stream
+// escrow may sit unclaimed (or between claims) before the service
+// drops it. Claimed entries are refreshed and released at terminal
+// completion, so a long-running job is unaffected by a short TTL; the
+// TTL only guards abandoned entries. Zero uses the service default.
+func WithStreamEscrowTTL(ttl time.Duration) Option {
+	return func(config *serviceConfig) error {
+		if ttl < 0 {
+			return errdefs.Validationf("local delegation: stream escrow ttl cannot be negative")
+		}
+		config.streamEscrowTTL = ttl
+		return nil
+	}
+}
+
+// WithStreamTargetResolver registers the worker-side resolver that
+// materializes a serializable [StreamTarget] (persisted in an async
+// AsyncRequest) into a live stream sink. Resolvers MUST whitelist
+// target kinds; the resolver is only consulted when no in-process
+// escrow entry exists for the request.
+func WithStreamTargetResolver(resolver StreamTargetResolver) Option {
+	return func(config *serviceConfig) error {
+		if resolver == nil {
+			return errdefs.Validationf("local delegation: stream target resolver is nil")
+		}
+		config.streamResolver = resolver
+		return nil
+	}
+}
+
 // WithSessionProvider sets the identity policy for delegated subagent
 // sessions. When nil and a session manager is bound, the service mints a
 // fresh ContextID per delegation.
@@ -219,6 +280,14 @@ type LocalService struct {
 	workerCtx    context.Context
 	cancelWorker context.CancelFunc
 	workerHost   agent.Host
+	// streamEscrow holds the caller's live (downgraded) sink specs for
+	// in-flight async delegations, keyed by the StreamRef.Ref carried
+	// in the persisted AsyncRequest. Entries are released at terminal
+	// completion, refreshed on claim, and swept by TTL as a backstop.
+	streamEscrowMu  sync.Mutex
+	streamEscrow    map[string]streamEscrowEntry
+	streamEscrowTTL time.Duration
+	streamResolver  StreamTargetResolver
 	// sessionProvider is the identity policy for subagent sessions. It is
 	// immutable after construction.
 	sessionProvider SessionProvider
@@ -258,6 +327,9 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 			}
 		}
 	}
+	if config.streamEscrowTTL <= 0 {
+		config.streamEscrowTTL = defaultStreamEscrowTTL
+	}
 
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	asyncRetention := config.idempotencyRetention
@@ -278,6 +350,9 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 		asyncRetention:       asyncRetention,
 		idempotencyCalls:     make(map[string]*idempotencyCall),
 		idempotencyCache:     make(map[string]idempotencyResult),
+		streamEscrow:         make(map[string]streamEscrowEntry),
+		streamEscrowTTL:      config.streamEscrowTTL,
+		streamResolver:       config.streamResolver,
 		workerCtx:            workerCtx,
 		cancelWorker:         cancelWorker,
 	}
@@ -379,10 +454,13 @@ func (s *LocalService) delegate(
 	switch req.Mode {
 	case ModeSync:
 		meta := metadataFromContext(ctx)
+		parentRunID, callID := lineageFromContext(ctx)
 		return s.runAt(ctx, AsyncRequest{
-			Request: req,
-			Caller:  meta.caller,
-			Depth:   meta.depth + 1,
+			Request:     req,
+			Caller:      meta.caller,
+			Depth:       meta.depth + 1,
+			ParentRunID: parentRunID,
+			CallID:      callID,
 		}, meta.leased)
 	case ModeAsync:
 		if s.backend == nil {
@@ -393,11 +471,39 @@ func (s *LocalService) delegate(
 		if err := s.checkDepth(depth); err != nil {
 			return Response{}, err
 		}
-		id, err := s.backend.Submit(ctx, AsyncRequest{
-			Request: cloneRequest(req),
-			Caller:  meta.caller,
-			Depth:   depth,
-		})
+		parentRunID, callID := lineageFromContext(ctx)
+		asyncReq := AsyncRequest{
+			Request:     cloneRequest(req),
+			Caller:      meta.caller,
+			Depth:       depth,
+			ParentRunID: parentRunID,
+			CallID:      callID,
+		}
+		// Surface lineage on operational views (kanban cards,
+		// delegation_status) through the portable metadata channel;
+		// the injected keys are service-owned, not user input.
+		asyncReq.Request.Metadata = injectDelegationLineage(
+			asyncReq.Request.Metadata, parentRunID, callID)
+		if specs, ok := s.asyncStreamSpecs(ctx); ok {
+			ref := "escrow-" + newID()
+			release := s.storeStreamEscrow(ref, specs)
+			asyncReq.Stream = &StreamRef{
+				Ref:    ref,
+				Policy: streamPolicySnapshot(specs),
+			}
+			id, err := s.backend.Submit(ctx, asyncReq)
+			if err != nil {
+				release()
+				return Response{}, err
+			}
+			if id == "" {
+				release()
+				return Response{}, errdefs.Internalf(
+					"local delegation: async backend returned an empty id")
+			}
+			return Response{ID: id, Status: StatusAccepted}, nil
+		}
+		id, err := s.backend.Submit(ctx, asyncReq)
 		if err != nil {
 			return Response{}, err
 		}
@@ -579,6 +685,9 @@ func (s *LocalService) Close() error {
 		s.cancelWorker()
 		s.workers.Wait()
 		s.active.Wait()
+		s.streamEscrowMu.Lock()
+		s.streamEscrow = nil
+		s.streamEscrowMu.Unlock()
 		s.stateMu.Lock()
 		s.closeErr = errors.Join(s.workerErrs...)
 		s.stateMu.Unlock()
@@ -629,6 +738,7 @@ func (s *LocalService) worker() {
 			s.recordWorkerError(err)
 			return
 		}
+		s.releaseStreamEscrow(streamRefOf(work.Request.Stream))
 	}
 }
 
@@ -678,6 +788,10 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	if err := s.checkDepth(req.Depth); err != nil {
 		return Response{}, err
 	}
+	// Async work carries its stream attachment through the queue; the
+	// worker restores the caller's sinks (or a resolver target) as an
+	// inheritable policy before the session turn starts.
+	ctx = s.inheritAsyncStreams(ctx, req)
 	instance, err := s.directory.Lookup(ctx, req.Request.Target)
 	if err != nil {
 		return Response{}, err
@@ -751,13 +865,19 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 	}()
 
 	opts := s.delegationStartOptions(execCtx, persistent)
-	parentRunID, lineageAttrs := lineageFromContext(execCtx)
+	parentRunID, callID := lineageFromContext(execCtx)
+	if req.ParentRunID != "" {
+		parentRunID = req.ParentRunID
+	}
+	if req.CallID != "" {
+		callID = req.CallID
+	}
 	request := agent.Request{
 		ContextID:   key.ContextID,
 		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
 		Inputs:      metadataInputs(req),
 		ParentRunID: parentRunID,
-		Attributes:  lineageAttrs,
+		Attributes:  lineageAttributes(callID),
 	}
 
 	// Resume path: a persistent session retried with the identical
@@ -794,6 +914,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 			return Response{}, err
 		}
 	}
+	s.notifyRunStarted(execCtx, req, turn)
 
 	result, err := waitTurnCancelOnDone(execCtx, turn)
 	if err != nil {
@@ -838,11 +959,17 @@ func (s *LocalService) runAtLegacy(
 		}
 	}
 
-	parentRunID, lineageAttrs := lineageFromContext(execCtx)
+	parentRunID, callID := lineageFromContext(execCtx)
+	if req.ParentRunID != "" {
+		parentRunID = req.ParentRunID
+	}
+	if req.CallID != "" {
+		callID = req.CallID
+	}
 	agentRequest := agent.Request{
 		Message:     message.NewTextMessage(message.RoleUser, req.Request.Input),
 		ParentRunID: parentRunID,
-		Attributes:  lineageAttrs,
+		Attributes:  lineageAttributes(callID),
 	}
 	if hasKey {
 		agentRequest.ContextID = key.ContextID
@@ -876,14 +1003,200 @@ func (s *LocalService) runAtLegacy(
 // RunInfo, and direct service calls carry no tool call id — in which
 // case the corresponding lineage slot stays empty and the subagent
 // runs exactly as it does today.
-func lineageFromContext(ctx context.Context) (parentRunID string, attrs map[string]string) {
+func lineageFromContext(ctx context.Context) (parentRunID, callID string) {
 	if info, ok := agent.RunInfoFromContext(ctx); ok {
 		parentRunID = info.RunID
 	}
-	if callID, ok := tool.CallIDFromContext(ctx); ok {
-		attrs = map[string]string{telemetry.AttrToolCallID: callID}
+	callID, _ = tool.CallIDFromContext(ctx)
+	return parentRunID, callID
+}
+
+// lineageAttributes maps a delegate tool call id onto the subagent
+// run attribute consumed by the envelope projection. Nil when the
+// call id is absent.
+func lineageAttributes(callID string) map[string]string {
+	if callID == "" {
+		return nil
 	}
-	return parentRunID, attrs
+	return map[string]string{telemetry.AttrToolCallID: callID}
+}
+
+// injectDelegationLineage adds the service-owned lineage metadata keys
+// to an async request's portable metadata so operational views
+// surface parent run + call id without per-view plumbing. Returns the
+// (possibly newly allocated) metadata map.
+func injectDelegationLineage(metadata map[string]string, parentRunID, callID string) map[string]string {
+	if parentRunID == "" && callID == "" {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = make(map[string]string, 2)
+	}
+	if parentRunID != "" {
+		metadata[ParentRunMetadataKey] = parentRunID
+	}
+	if callID != "" {
+		metadata[CallIDMetadataKey] = callID
+	}
+	return metadata
+}
+
+// streamRefOf returns the escrow ref carried by a StreamRef, or "".
+func streamRefOf(ref *StreamRef) string {
+	if ref == nil {
+		return ""
+	}
+	return ref.Ref
+}
+
+// asyncStreamSpecs captures the caller's inheritable stream sinks for
+// an async delegation, downgraded to observers exactly like the sync
+// inheritance path. ok=false means there is nothing to stream.
+func (s *LocalService) asyncStreamSpecs(ctx context.Context) ([]session.SinkSpec, bool) {
+	policy, ok := session.StreamPolicyFromContext(ctx)
+	if !ok || !policy.Inheritable || len(policy.Sinks) == 0 {
+		return nil, false
+	}
+	return inheritedSinkSpecs(policy.Sinks), true
+}
+
+// streamPolicySnapshot projects an inherited sink set onto the
+// serializable policy snapshot carried by AsyncRequest.Stream. It is
+// populated from the first spec; with multiple sinks the snapshot
+// reflects the first attachment's tuning (authority/ack fields are
+// informational — inherited attachments always downgrade to observers).
+func streamPolicySnapshot(specs []session.SinkSpec) StreamPolicySnapshot {
+	var snapshot StreamPolicySnapshot
+	if len(specs) == 0 {
+		return snapshot
+	}
+	spec := specs[0]
+	snapshot.Visibility = spec.Visibility
+	snapshot.Authority = spec.Authority
+	snapshot.AckMode = spec.AckMode
+	snapshot.MaxUnacked = spec.MaxUnacked
+	snapshot.QueueSize = spec.QueueSize
+	snapshot.DeliveryTimeout = spec.DeliveryTimeout.Milliseconds()
+	return snapshot
+}
+
+// storeStreamEscrow records the caller's live sink specs for one async
+// delegation and returns a release func that must run when the
+// delegation reaches its terminal state (or immediately on submit
+// failure). Entries are swept by TTL as a backstop.
+func (s *LocalService) storeStreamEscrow(ref string, specs []session.SinkSpec) func() {
+	s.streamEscrowMu.Lock()
+	defer s.streamEscrowMu.Unlock()
+	s.sweepStreamEscrowLocked()
+	s.streamEscrow[ref] = streamEscrowEntry{
+		specs:   append([]session.SinkSpec(nil), specs...),
+		expires: time.Now().Add(s.streamEscrowTTL),
+	}
+	return func() { s.releaseStreamEscrow(ref) }
+}
+
+// takeStreamEscrow resolves an escrow ref to the caller's live sink
+// specs, refreshing the entry's claim backstop. Missing and expired
+// entries report ok=false so the worker degrades to the resolver (or
+// no stream at all).
+func (s *LocalService) takeStreamEscrow(ref string) ([]session.SinkSpec, bool) {
+	if ref == "" {
+		return nil, false
+	}
+	s.streamEscrowMu.Lock()
+	defer s.streamEscrowMu.Unlock()
+	s.sweepStreamEscrowLocked()
+	entry, ok := s.streamEscrow[ref]
+	if !ok {
+		return nil, false
+	}
+	entry.expires = time.Now().Add(s.streamEscrowTTL)
+	s.streamEscrow[ref] = entry
+	return append([]session.SinkSpec(nil), entry.specs...), true
+}
+
+// releaseStreamEscrow drops an escrow entry. Idempotent; missing refs
+// are no-ops.
+func (s *LocalService) releaseStreamEscrow(ref string) {
+	if ref == "" {
+		return
+	}
+	s.streamEscrowMu.Lock()
+	delete(s.streamEscrow, ref)
+	s.streamEscrowMu.Unlock()
+}
+
+// sweepStreamEscrowLocked drops expired entries. Callers hold
+// streamEscrowMu.
+func (s *LocalService) sweepStreamEscrowLocked() {
+	now := time.Now()
+	for ref, entry := range s.streamEscrow {
+		if now.After(entry.expires) {
+			delete(s.streamEscrow, ref)
+		}
+	}
+}
+
+// inheritAsyncStreams restores an async work item's stream attachment
+// on the worker side. In-process escrow wins; a resolver target is the
+// cross-process fallback. The restored attachment is stamped as an
+// inheritable stream policy so the session turn (and any nested
+// delegation) picks it up through the ordinary sync inheritance path.
+func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest) context.Context {
+	if req.Stream == nil {
+		return ctx
+	}
+	if specs, ok := s.takeStreamEscrow(req.Stream.Ref); ok {
+		return session.WithStreamPolicy(ctx, session.StreamPolicy{
+			Sinks:       specs,
+			Inheritable: true,
+		})
+	}
+	if s.streamResolver != nil && req.Stream.Target != nil {
+		sink, err := s.streamResolver(ctx, *req.Stream.Target)
+		if err != nil {
+			telemetry.WarnErr(ctx, "local delegation: stream target resolution failed",
+				err, otellog.String("delegation.stream_target", req.Stream.Target.ID))
+			return ctx
+		}
+		if isNilInterface(sink) {
+			return ctx
+		}
+		spec := session.SinkSpec{
+			ID:              req.Stream.Target.ID,
+			Sink:            sink,
+			Visibility:      req.Stream.Policy.Visibility,
+			Authority:       req.Stream.Policy.Authority,
+			AckMode:         req.Stream.Policy.AckMode,
+			MaxUnacked:      req.Stream.Policy.MaxUnacked,
+			QueueSize:       req.Stream.Policy.QueueSize,
+			DeliveryTimeout: time.Duration(req.Stream.Policy.DeliveryTimeout) * time.Millisecond,
+		}
+		return session.WithStreamPolicy(ctx, session.StreamPolicy{
+			Sinks:       inheritedSinkSpecs([]session.SinkSpec{spec}),
+			Inheritable: true,
+		})
+	}
+	return ctx
+}
+
+// notifyRunStarted records the subagent run id on the async backend
+// (when it supports RunIDNotifier) as soon as the turn exists, so
+// operational views can correlate delegation ids with runs before the
+// terminal response. Best-effort: failures are logged, never fatal.
+func (s *LocalService) notifyRunStarted(ctx context.Context, req AsyncRequest, turn *session.Turn) {
+	ref := streamRefOf(req.Stream)
+	if ref == "" || turn == nil {
+		return
+	}
+	notifier, ok := s.backend.(RunIDNotifier)
+	if !ok || isNilInterface(notifier) {
+		return
+	}
+	if err := notifier.NoteRunID(ctx, ref, turn.RunID()); err != nil {
+		telemetry.WarnErr(ctx, "local delegation: note run id failed", err,
+			otellog.String(telemetry.AttrDelegationTarget, req.Request.Target))
+	}
 }
 
 func (s *LocalService) begin() error {

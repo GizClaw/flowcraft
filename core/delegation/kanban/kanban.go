@@ -464,6 +464,39 @@ func (b *Board) Complete(
 	return nil
 }
 
+// NoteRunID implements delegation.RunIDNotifier: it records the
+// subagent run id on the claimed card whose stream escrow ref matches,
+// so operational views can correlate a delegation id with its run
+// before the terminal response arrives. Unknown refs, cards not in the
+// claimed state, and repeated identical updates are no-ops; the
+// recorded run id is re-published through the ordinary claimed card
+// event.
+func (b *Board) NoteRunID(ctx context.Context, ref, runID string) error {
+	if ref == "" || runID == "" {
+		return errdefs.Validationf(
+			"delegation kanban: stream ref and run id are required")
+	}
+	b.mu.Lock()
+	var card *Card
+	for _, c := range b.cards {
+		if c.Task != nil && c.Task.Request.Stream != nil &&
+			c.Task.Request.Stream.Ref == ref {
+			card = c
+			break
+		}
+	}
+	if card == nil || card.Status != StatusClaimed || card.RunID == runID {
+		b.mu.Unlock()
+		return nil
+	}
+	card.RunID = runID
+	card.UpdatedAt = time.Now()
+	snapshot := card.clone()
+	b.mu.Unlock()
+	b.afterTransition(snapshot)
+	return nil
+}
+
 // ClaimCard applies an explicit operational claim to one pending card.
 func (b *Board) ClaimCard(id, consumer string) bool {
 	b.mu.Lock()
@@ -765,7 +798,11 @@ func responseForCard(card *Card) delegation.Response {
 	if card.Status == StatusClaimed {
 		status = delegation.StatusRunning
 	}
-	return delegation.Response{ID: card.ID, Status: status}
+	response := delegation.Response{ID: card.ID, Status: status}
+	if len(card.Meta) > 0 {
+		response.Metadata = cloneMetadata(card.Meta)
+	}
+	return response
 }
 
 func newCardID() (string, error) {
@@ -787,5 +824,6 @@ func newLeaseToken() (string, error) {
 var (
 	_ delegation.AsyncBackend                 = (*Board)(nil)
 	_ delegation.IdempotencyRetentionProvider = (*Board)(nil)
+	_ delegation.RunIDNotifier                = (*Board)(nil)
 	_ delegation.WorkSource                   = (*Board)(nil)
 )

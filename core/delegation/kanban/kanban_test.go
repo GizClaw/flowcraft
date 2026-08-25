@@ -76,6 +76,71 @@ func TestAsyncBackendSubmitAndStatus(t *testing.T) {
 	}
 }
 
+func TestBoardRunningStatusCarriesMeta(t *testing.T) {
+	board := newBoard(t)
+	id := submit(t, board, "worker")
+
+	accepted, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if accepted.Status != delegation.StatusAccepted || accepted.Metadata["tenant"] != "acme" {
+		t.Fatalf("pending status = %+v", accepted)
+	}
+
+	work, err := board.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if work.ID != id {
+		t.Fatalf("claimed work id = %q, want %q", work.ID, id)
+	}
+	running, err := board.Status(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if running.Status != delegation.StatusRunning || running.Metadata["tenant"] != "acme" {
+		t.Fatalf("running status = %+v", running)
+	}
+}
+
+func TestBoardNoteRunIDRecordsAndPublishesRunID(t *testing.T) {
+	board := newBoard(t)
+	req := request("worker")
+	req.Stream = &delegation.StreamRef{Ref: "escrow-1"}
+	id, err := board.Submit(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	work, err := board.Claim(context.Background())
+	if err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if work.ID != id {
+		t.Fatalf("claimed work id = %q, want %q", work.ID, id)
+	}
+
+	if err := board.NoteRunID(context.Background(), "escrow-1", "run-sub-1"); err != nil {
+		t.Fatalf("NoteRunID: %v", err)
+	}
+	card, ok := board.Card(id)
+	if !ok || card.RunID != "run-sub-1" {
+		t.Fatalf("card RunID = %q (ok %v), want run-sub-1", card.RunID, ok)
+	}
+	// Repeated identical update is a no-op.
+	if err := board.NoteRunID(context.Background(), "escrow-1", "run-sub-1"); err != nil {
+		t.Fatalf("repeated NoteRunID: %v", err)
+	}
+	// Unknown ref is a no-op.
+	if err := board.NoteRunID(context.Background(), "missing", "run-x"); err != nil {
+		t.Fatalf("unknown ref NoteRunID: %v", err)
+	}
+	// Empty inputs are validation errors.
+	if err := board.NoteRunID(context.Background(), "", "run-x"); !errdefs.IsValidation(err) {
+		t.Fatalf("empty ref error = %v, want validation", err)
+	}
+}
+
 func TestAsyncBackendSubmitIdempotency(t *testing.T) {
 	board := newBoard(t)
 	req := request("worker")

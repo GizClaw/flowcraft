@@ -48,6 +48,7 @@ type CardEvent struct {
 	Status    Status                   `json:"status"`
 	Producer  string                   `json:"producer,omitempty"`
 	Consumer  string                   `json:"consumer,omitempty"`
+	RunID     string                   `json:"run_id,omitempty"`
 	Request   *delegation.AsyncRequest `json:"request,omitempty"`
 	Response  *delegation.Response     `json:"response,omitempty"`
 	ResumeRef string                   `json:"resume_ref,omitempty"`
@@ -92,6 +93,7 @@ func (b *Board) publish(ctx context.Context, snapshot *Card) {
 		Status:    snapshot.Status,
 		Producer:  snapshot.Producer,
 		Consumer:  snapshot.Consumer,
+		RunID:     snapshot.RunID,
 		ResumeRef: snapshot.ResumeRef,
 		ElapsedMs: snapshot.Elapsed().Milliseconds(),
 		Meta:      cloneMetadata(snapshot.Meta),
