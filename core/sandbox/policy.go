@@ -23,6 +23,29 @@ type EnvPolicy struct {
 	Inject map[string]string
 }
 
+// WritePolicy controls how much filesystem write access a single Exec
+// call gets on top of the runner's construction-time boundary (runner
+// root plus explicit [RunnerOption] writable paths).
+//
+//   - WriteWorkspace (zero value): the runner root plus explicit
+//     writable paths are writable — the current behavior and the
+//     back-compat default. With the seatbelt / bwrap backends this is
+//     enforced at the OS level; sandbox/local has no OS boundary and
+//     reports no write modes in Capabilities.
+//   - WriteReadOnly: the runner root is not writable for this call.
+//     Explicitly configured writable paths remain writable, and
+//     platform escape hatches such as /dev/null stay open.
+//
+// There is deliberately no "wider" value: a call can narrow the
+// construction-time boundary, never widen it. A runner constructed
+// read-only (e.g. WithReadOnlyRoot) stays read-only for every call.
+type WritePolicy uint8
+
+const (
+	WriteWorkspace WritePolicy = iota
+	WriteReadOnly
+)
+
 // ResourceLimits caps how much the child process may consume.
 //
 // MemoryBytes caps aggregate resident memory used by the child process
@@ -62,10 +85,17 @@ type ResourceLimits struct {
 //   - MemoryBytes / CPUMillicores ride the shared process-group
 //     sampler; where that sampler cannot run, honouring the request
 //     would silently run without caps, so it is rejected instead.
+//   - Write must be a known WritePolicy value; anything else is
+//     rejected so an unsupported mode cannot silently degrade to the
+//     runner default.
 //
 // Backend-specific posture checks (which Net modes a runner enforces,
 // WorkDir confinement) stay in each backend.
 func ValidateExecPolicy(opts ExecOptions) error {
+	if opts.Write > WriteReadOnly {
+		return errdefs.Validationf(
+			"sandbox: unknown write policy %d", int(opts.Write))
+	}
 	if opts.Resources.DiskBytes != 0 {
 		return errdefs.NotAvailablef(
 			"sandbox: disk limits not supported (no quota mechanism)")

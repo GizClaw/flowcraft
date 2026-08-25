@@ -53,17 +53,22 @@ func buildFlags(opts sandbox.ExecOptions, hostEnv []string) ([]string, error) {
 //
 //   - bind the host root read-only, preserving access to toolchains;
 //   - mount a private writable tmpfs at /tmp;
-//   - bind rootDir and explicit exceptions read-write at the same path;
+//   - bind rootDir (read-write, or read-only with readOnlyRoot) and
+//     explicit exceptions read-write at the same path;
 //   - mount fresh procfs and a minimal /dev.
 //
 // Writable binds follow the /tmp mount intentionally: when rootDir is
 // itself under /tmp (common in tests and CI), the later nested bind
 // makes the workspace visible inside the otherwise-private tmpfs.
-func filesystemFlags(rootDir string, writable []string) []string {
+func filesystemFlags(rootDir string, writable []string, readOnlyRoot bool) []string {
+	rootBind := "--bind"
+	if readOnlyRoot {
+		rootBind = "--ro-bind"
+	}
 	flags := []string{
 		"--ro-bind", "/", "/",
 		"--tmpfs", "/tmp",
-		"--bind", rootDir, rootDir,
+		rootBind, rootDir, rootDir,
 	}
 	for _, path := range writable {
 		if path == "" || path == rootDir {

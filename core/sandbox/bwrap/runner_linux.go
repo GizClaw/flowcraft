@@ -34,6 +34,7 @@ type Runner struct {
 	binary           string
 	extraFlags       []string
 	writablePaths    []string
+	readOnlyRoot     bool
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	decision         func(net.ProxyDecision)
@@ -54,6 +55,7 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
+		WriteModes:       []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly},
 	}
 }
 
@@ -97,6 +99,17 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		if err != nil {
 			return nil, err
 		}
+		if resolved == abs {
+			if cfg.readOnlyRoot {
+				return nil, errdefs.Validationf(
+					"bwrap: writable path %q is the read-only runner root; drop the path or disable readonly_root",
+					path,
+				)
+			}
+			// Redundant with the default (root writable); keep the
+			// explicit list free of duplicates.
+			continue
+		}
 		if !seenWritable[resolved] {
 			seenWritable[resolved] = true
 			writable = append(writable, resolved)
@@ -108,6 +121,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		binary:           binary,
 		extraFlags:       append([]string(nil), cfg.extra...),
 		writablePaths:    writable,
+		readOnlyRoot:     cfg.readOnlyRoot,
 		defaultMaxOutput: defaultMaxOutputBytes,
 		decision:         cfg.decision,
 		hooks:            cfg.hooks,
@@ -231,7 +245,7 @@ func (r *Runner) spawnProcess(
 		abortBundle()
 		return nil, err
 	}
-	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
+	fsFlags := r.filesystemFlagsFor(spec.Opts.Write)
 	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
 	if bundlePath != "" {
 		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)
@@ -302,6 +316,14 @@ func (r *Runner) spawnProcess(
 		return &sessionHandle{Session: sess, cleanup: cleanup}, nil
 	}
 	return sess, nil
+}
+
+// filesystemFlagsFor renders the mount flags for a single spawn: the
+// runner root is read-only when pinned at construction or by the
+// per-call write policy.
+func (r *Runner) filesystemFlagsFor(write sandbox.WritePolicy) []string {
+	return filesystemFlags(r.rootDir, r.writablePaths,
+		r.readOnlyRoot || write == sandbox.WriteReadOnly)
 }
 
 // closeProxy best-effort closes the enforcement proxy, leaving the

@@ -47,6 +47,8 @@ func WithMaxOutputBytes(n int64) Option {
 //     just the leader.
 //   - Env: fully supported (see sandbox.EnvPolicy doc).
 //   - Net.Mode != corenet.NetDefault: returns errdefs.NotAvailable.
+//   - Write == WriteReadOnly: returns errdefs.NotAvailable (no OS
+//     boundary to confine writes).
 //   - Resources.MemoryBytes: enforced by a sampling watcher on aggregate
 //     group RSS; overflow kills the whole group.
 //   - Resources.CPUMillicores: enforced by the same watcher as group

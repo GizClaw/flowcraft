@@ -48,16 +48,55 @@ resources:
       root: ./sandbox
       binary: /usr/bin/bwrap    # optional; resolved against the root
       writable_paths: [./out]   # optional; paths the sandbox may write
+      readonly_root: true       # optional; keep the runner root read-only
       extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
 ```
 
 `root` is required and scopes the sandbox filesystem. `binary` overrides
 the backend binary and is resolved against the root; `writable_paths`
-opt into write access; `extra_flags` (bwrap only) passes additional
-bwrap flags, with any flag that could weaken the policy (e.g. `--ro-bind`
-or `--args`) rejected at build time. The local runner is a no-isolation
-backend for trusted workflows; bwrap/seatbelt enforce the isolation
-boundary and reject policies they cannot honor.
+opt into write access; `readonly_root` keeps the runner root read-only
+for every exec (explicit `writable_paths` stay writable);
+`writable_paths` entries that resolve to the runner root conflict with
+`readonly_root: true` and are rejected at build time instead of being
+silently dropped (without `readonly_root` such an entry is redundant
+and ignored);
+`extra_flags` (bwrap only) passes additional bwrap flags, with any flag
+that could weaken the policy (e.g. `--ro-bind` or `--args`) rejected at
+build time. The local runner is a no-isolation backend for trusted
+workflows; bwrap/seatbelt enforce the isolation boundary and reject
+policies they cannot honor.
+
+## Per-exec write policy
+
+`ExecOptions.Write` narrows the filesystem boundary for a single call
+without changing the runner. `WriteReadOnly` keeps the runner root
+read-only for that exec (explicit `writable_paths` and platform escape
+hatches like `/dev/null` remain allowed); `WriteWorkspace` (zero value)
+keeps the runner root writable — the current behavior. There is no
+widening mode — a call can only request a stricter boundary than the
+runner was constructed with, and `WithDefaults` follows the same rule
+(either side read-only wins; an unknown value on either side is
+preserved so backend validation rejects it instead of silently
+degrading to `WriteWorkspace`). The local runner has no OS boundary and
+reports no write modes in `Capabilities`.
+
+For read-only auto-approval, `ClassifySafeReadOnly` implements the
+codex-rs-style heuristic (base read-only commands plus argument-aware
+checks for `find` / `rg` / `git` / `sed` / `sort`, with `sh -c` /
+`bash -lc` unwrap). `date` and `hostname` are deliberately not
+auto-approved: `date -s` changes the system clock and
+`hostname newname` changes the host name — non-file writes the OS
+sandbox cannot block. It is a caller-side helper — the host's
+`ApprovalFunc` decides:
+
+```go
+if req.Opts.Write == sandbox.WriteReadOnly && sandbox.ClassifySafeReadOnly(req.Exec) {
+    return sandbox.Allow, nil
+}
+```
+
+It never denies and never widens policy; unrecognized commands return
+`false` and route to the human approver.
 
 ## Policy groups
 
