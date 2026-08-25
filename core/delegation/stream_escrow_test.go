@@ -62,7 +62,7 @@ func TestStreamEscrowExpiresByTTL(t *testing.T) {
 	}
 }
 
-func TestStreamEscrowTouchRearmsTTL(t *testing.T) {
+func TestStreamEscrowRearmExtendsTTLAndRestoresSweptEntry(t *testing.T) {
 	service, err := NewService(boundDirectory(t, completedEngine("unused")), nil,
 		WithStreamEscrowTTL(200*time.Millisecond))
 	if err != nil {
@@ -73,17 +73,33 @@ func TestStreamEscrowTouchRearmsTTL(t *testing.T) {
 	sink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
 		return nil
 	})
-	service.storeStreamEscrow("ref-touch", []session.SinkSpec{{ID: "caller", Sink: sink}})
+	specs := []session.SinkSpec{{ID: "caller", Sink: sink}}
+
+	// Extend: an entry still present gets a fresh expiry.
+	service.storeStreamEscrow("ref-rearm", specs)
 	time.Sleep(120 * time.Millisecond)
-	service.touchStreamEscrow("ref-touch")
+	service.rearmStreamEscrow("ref-rearm", specs)
 	time.Sleep(120 * time.Millisecond)
-	// 240ms elapsed > the 200ms TTL: only the touch (which re-armed the
-	// expiry at 120ms) keeps the entry resolvable.
-	if _, ok := service.takeStreamEscrow("ref-touch"); !ok {
-		t.Fatal("touch did not re-arm the escrow TTL")
+	// 240ms elapsed > the 200ms TTL: only the re-arm (which refreshed
+	// the expiry at 120ms) keeps the entry resolvable.
+	if _, ok := service.takeStreamEscrow("ref-rearm"); !ok {
+		t.Fatal("rearm did not extend the escrow TTL")
 	}
-	service.touchStreamEscrow("")        // no-op
-	service.touchStreamEscrow("missing") // no-op
+	service.releaseStreamEscrow("ref-rearm")
+
+	// Restore: an entry already swept while Submit was slow is re-stored
+	// so the worker can still claim the attachment.
+	service.storeStreamEscrow("ref-restore", specs)
+	time.Sleep(250 * time.Millisecond)
+	if _, ok := service.takeStreamEscrow("ref-restore"); ok {
+		t.Fatal("expired entry still resolvable before rearm")
+	}
+	service.rearmStreamEscrow("ref-restore", specs)
+	got, ok := service.takeStreamEscrow("ref-restore")
+	if !ok || len(got) != 1 || got[0].ID != "caller" {
+		t.Fatalf("rearm did not restore the swept entry: %v, %v", got, ok)
+	}
+	service.rearmStreamEscrow("", specs) // no-op
 }
 
 type failingCompleteBackend struct {

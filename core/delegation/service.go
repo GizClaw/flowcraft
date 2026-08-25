@@ -534,7 +534,7 @@ func (s *LocalService) delegate(
 			// The work item is durably queued; re-arm the escrow TTL
 			// from now so a slow Submit cannot expire the entry before
 			// the worker claims it.
-			s.touchStreamEscrow(ref)
+			s.rearmStreamEscrow(ref, specs)
 			return Response{ID: id, Status: StatusAccepted}, nil
 		}
 		id, err := s.backend.Submit(ctx, asyncReq)
@@ -1220,11 +1220,22 @@ func (s *LocalService) takeStreamEscrow(ref string) ([]session.SinkSpec, bool) {
 	return append([]session.SinkSpec(nil), entry.specs...), true
 }
 
-// touchStreamEscrow re-arms an escrow entry's TTL without consuming it.
-// It is called once the work item is durably queued, so a slow Submit
-// cannot expire the entry before the worker claims it. Missing refs are
-// no-ops.
-func (s *LocalService) touchStreamEscrow(ref string) {
+// rearmStreamEscrow extends the TTL of a queued work item's stream
+// escrow, re-storing the attachment when the periodic sweep already
+// dropped the expired entry while Submit was slow. It is called once the
+// work item is durably queued, so the escrow survives long enough for
+// the worker to claim it. Re-storing is safe here: the only way the
+// entry can be missing at this point is an expiry sweep (release only
+// runs on the submit-failure paths, which return earlier).
+//
+// Residual window: a worker could claim between Submit returning and
+// this re-arm running, and take's own sweep would delete the expired
+// entry before re-arm re-stores it. With the default 1h TTL (sweep
+// interval capped at 1m) that requires Submit itself to have taken
+// longer than the TTL; a short custom TTL plus a slow backend can widen
+// it. The submit side's exporter/resolver fallback is the backstop for
+// that case.
+func (s *LocalService) rearmStreamEscrow(ref string, specs []session.SinkSpec) {
 	if ref == "" {
 		return
 	}
@@ -1232,6 +1243,11 @@ func (s *LocalService) touchStreamEscrow(ref string) {
 	if entry, ok := s.streamEscrow[ref]; ok {
 		entry.expires = time.Now().Add(s.streamEscrowTTL)
 		s.streamEscrow[ref] = entry
+	} else {
+		s.streamEscrow[ref] = streamEscrowEntry{
+			specs:   append([]session.SinkSpec(nil), specs...),
+			expires: time.Now().Add(s.streamEscrowTTL),
+		}
 	}
 	s.streamEscrowMu.Unlock()
 }

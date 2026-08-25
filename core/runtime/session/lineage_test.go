@@ -116,3 +116,86 @@ func TestTopLevelTurnStaysHeaderFreeOnSessionEnvelopes(t *testing.T) {
 		}
 	}
 }
+
+// TestDelegatedTurnLineageOnPromptEnvelopes verifies the session-level
+// prompt mint points (prompt_requested / prompt_resolved) carry the
+// turn's delegation lineage as well, not just the logical run end.
+func TestDelegatedTurnLineageOnPromptEnvelopes(t *testing.T) {
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		_ agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		reply, err := host.AskUser(ctx, agent.UserPrompt{Source: "lineage"})
+		if err != nil {
+			return board, err
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleUser, reply.Metadata["source"]))
+		return board, nil
+	})
+	_, sess, _, bus := newTurnSession(t, engine, turnHostFactory)
+	sub, err := bus.Subscribe(context.Background(), agent.PatternAllRuns())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sub.Close() }()
+
+	turn, err := sess.StartWithOptions(context.Background(), agent.Request{
+		ParentRunID: "caller-run",
+		Attributes:  map[string]string{telemetry.AttrToolCallID: "call-delegate-1"},
+		Message:     message.NewTextMessage(message.RoleUser, "hi"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// PromptRequested must carry the lineage.
+	deadline := time.After(5 * time.Second)
+	var promptID string
+	for {
+		select {
+		case env := <-sub.C():
+			if env.Subject != SubjectPromptRequested(turn.RunID()) {
+				continue
+			}
+			if env.ParentRunID() != "caller-run" || env.ToolCallID() != "call-delegate-1" {
+				t.Fatalf("prompt requested lineage headers = %+v", env.Headers)
+			}
+			var requested PromptRequested
+			if err := env.Decode(&requested); err != nil {
+				t.Fatal(err)
+			}
+			promptID = requested.PromptID
+			goto requested
+		case <-deadline:
+			t.Fatal("prompt requested envelope never published")
+		}
+	}
+requested:
+	if err := turn.Reply(context.Background(), promptID, agent.UserReply{
+		Metadata: map[string]string{"source": "lineage"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// PromptResolved must carry the same lineage.
+	for {
+		select {
+		case env := <-sub.C():
+			if env.Subject != SubjectPromptResolved(turn.RunID()) {
+				continue
+			}
+			if env.ParentRunID() != "caller-run" || env.ToolCallID() != "call-delegate-1" {
+				t.Fatalf("prompt resolved lineage headers = %+v", env.Headers)
+			}
+			if _, err := turn.Wait(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			return
+		case <-deadline:
+			t.Fatal("prompt resolved envelope never published")
+		}
+	}
+}
