@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.28` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.29` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.29` - 2026-08-25
+
+### Changed
+
+- fix(core): inherit caller stream sinks into delegated subagent sessions — session turns now stamp their attached stream sinks as an inheritable StreamPolicy on the run context (new session.StreamPolicy/WithStreamPolicy/StreamPolicyFromContext, with SinkSpec documenting that a shared sink must tolerate concurrent OnDelta calls), and delegation attaches the caller's sinks to subagent turns when the policy is inheritable; inherited specs are downgraded to observers with ack-on-delivery and no unacked window because the subagent turn is never exposed to the inherited sink (an unacked authoritative attachment would otherwise be detached with BudgetExceeded once its window fills), while visibility, queue size, and delivery timeout are preserved, nested delegations propagate transitively, non-inheritable policies and async worker runs (whose caller context does not cross the backend queue) are not inherited, and tests cover sync delegation delivery, the non-inheritable skip, observer downgrade field preservation, and a 40-delta authoritative sink staying attached
 
 ## `core/v0.1.28` - 2026-08-24
 
