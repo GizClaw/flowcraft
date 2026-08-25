@@ -511,7 +511,7 @@ func (s *LocalService) delegate(
 				Ref:    ref,
 				Policy: streamPolicySnapshotOf(specs[0]),
 			}
-			if target, spec, ok := s.exportStreamTarget(specs); ok {
+			if target, spec, ok := s.exportStreamTarget(ctx, specs); ok {
 				stream.Target = &target
 				// The persisted policy describes the same sink the
 				// target came from, so the worker re-materializes the
@@ -1097,6 +1097,7 @@ func (s *LocalService) asyncStreamSpecs(ctx context.Context) ([]session.SinkSpec
 // describable — with an exporter configured that silent degradation is
 // logged, because cross-process streaming then silently disappears.
 func (s *LocalService) exportStreamTarget(
+	ctx context.Context,
 	specs []session.SinkSpec,
 ) (StreamTarget, session.SinkSpec, bool) {
 	if s.streamExporter == nil {
@@ -1118,7 +1119,7 @@ func (s *LocalService) exportStreamTarget(
 		}
 	}
 	if !firstOK {
-		telemetry.Warn(context.Background(),
+		telemetry.Warn(ctx,
 			"local delegation: stream exporter matched no sink; "+
 				"cross-process streaming will be unavailable",
 			otellog.Int("delegation.stream_sinks", len(specs)))
