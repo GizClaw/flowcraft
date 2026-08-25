@@ -123,7 +123,8 @@ type UndefinedToolRecoveryConfig struct {
 const defaultUndefinedToolMaxRecoveries = 2
 
 // undefinedToolFeedback is the model-readable rejection appended as a
-// tool result when a response names a tool the model was never shown.
+// user feedback message when a response names a tool the model was
+// never shown.
 const undefinedToolFeedback = "tool %q is not exposed in this round's tool set; " +
 	"call tool_search to find and select it before calling it again"
 
@@ -259,12 +260,17 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 
 // recoverUndefinedTool converts an undefined-tool generate failure into
 // in-conversation feedback when the node is configured to recover. The
-// rejected call is replayed as an assistant tool_call paired with a tool
-// result explaining how to expose the tool — the message shape providers
-// require — but the graph must route back to inference, never through a
-// tool node, or the call would be executed for real. The original error
-// is returned when recovery is disabled, the failure is not an
-// undefined-tool rejection, or the per-run budget is exhausted.
+// rejection is appended as a single user-role text message explaining how
+// to expose the tool. The rejected call is deliberately not replayed as a
+// synthetic assistant tool_call: that would fabricate a turn the model
+// never produced, violate provider reasoning round-trip rules (DeepSeek
+// thinking mode requires reasoning_content on assistant tool-call turns),
+// and leave an undefined function reference in history for providers that
+// validate calls against the request tool set. The graph must still route
+// back to inference, never through a tool node, or the call would be
+// executed for real. The original error is returned when recovery is
+// disabled, the failure is not an undefined-tool rejection, or the
+// per-run budget is exhausted.
 func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, err error) error {
 	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
 		return err
@@ -285,19 +291,9 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel
 	}
 	call := *infErr.UndefinedToolCall
 	board.AppendChannelMessage(channel, message.Message{
-		Role: message.RoleAssistant,
+		Role: message.RoleUser,
 		Content: message.Content{Parts: []message.Part{
-			message.ToolCallPart{Call: call},
-		}},
-	})
-	board.AppendChannelMessage(channel, message.Message{
-		Role: message.RoleTool,
-		Content: message.Content{Parts: []message.Part{
-			message.ToolResultPart{Result: message.ToolResult{
-				CallID:  call.ID,
-				Content: fmt.Sprintf(undefinedToolFeedback, call.Name),
-				IsError: true,
-			}},
+			message.TextPart{Text: fmt.Sprintf(undefinedToolFeedback, call.Name)},
 		}},
 	})
 	if cfg.ToolPendingKey != "" {
