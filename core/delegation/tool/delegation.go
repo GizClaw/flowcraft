@@ -83,7 +83,7 @@ func NewTargets(directory sdkdelegation.Directory) tool.Tool {
 
 func (t delegateTool) Definition() message.ToolDefinition {
 	targets := t.targets()
-	description := "Delegate work to another available target. Supports synchronous results, interaction handoff, and asynchronous execution."
+	description := "Delegate work to another available target. Supports synchronous results, interaction handoff, and asynchronous execution. Prefer async mode for long-running or background work so the calling turn is not blocked."
 	if len(targets) > 0 {
 		var listed strings.Builder
 		listed.WriteString(" Available targets: ")
@@ -309,7 +309,7 @@ func definition(name, description string, targets []sdkdelegation.Target) messag
 		name,
 		description,
 		message.ToolEnumProperty(
-			"mode", "string", "Delegation lifecycle mode.",
+			"mode", "string", "Delegation lifecycle mode: sync blocks the caller's turn until the delegated work finishes and returns its terminal response; async admits the work immediately and returns a delegation_id to poll with delegation_status. Prefer async for long-running or background work.",
 			string(sdkdelegation.ModeSync),
 			string(sdkdelegation.ModeAsync)),
 		targetProperty,
