@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.30` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.31` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.31` - 2026-08-25
+
+### Changed
+
+- feat(core): per-exec write policy and read-only sandbox mode — sandbox.WritePolicy (WriteWorkspace / WriteReadOnly) on ExecOptions narrows the filesystem boundary per call, WithReadOnlyRoot() / settings.readonly_root provide the runner-level default, seatbelt omits the runner root from the SBPL writable set and bwrap ro-binds rootDir in read-only mode, sandbox/local rejects WriteReadOnly as unavailable, backends advertise the write modes they enforce, and ClassifySafeReadOnly supplies the codex-rs-style read-only command heuristic for caller-owned auto-approval; review hardening closes classifier gaps (date/hostname dropped from the base set, sort -o, rg --search-zip/--hostname-bin, git diff/log/show write variants, and sed address-form writes rejected), pins unknown default write policies so they reach backend validation instead of being silently swallowed, rejects writable_paths resolving to the runner root when readonly_root is set, and unifies polarity naming with extracted per-call write merging covered by direct tests
 
 ## `core/v0.1.30` - 2026-08-25
 
