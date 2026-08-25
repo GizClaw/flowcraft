@@ -41,12 +41,16 @@ type Result struct {
 // Card is an operational snapshot of one delegation backend entry.
 // Backend callers normally use only the id returned by Submit and Status.
 type Card struct {
-	ID        string            `json:"id"`
-	Producer  string            `json:"producer,omitempty"`
-	Consumer  string            `json:"consumer,omitempty"`
-	Status    Status            `json:"status"`
-	Task      *Task             `json:"task"`
-	Result    *Result           `json:"result,omitempty"`
+	ID       string  `json:"id"`
+	Producer string  `json:"producer,omitempty"`
+	Consumer string  `json:"consumer,omitempty"`
+	Status   Status  `json:"status"`
+	Task     *Task   `json:"task"`
+	Result   *Result `json:"result,omitempty"`
+	// RunID is the subagent run id recorded while the card is
+	// running (see Board.NoteRunID); empty until the worker starts
+	// the run. The terminal Result.Response.ID carries the same value.
+	RunID     string            `json:"run_id,omitempty"`
 	ResumeRef string            `json:"resume_ref,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
@@ -98,6 +102,7 @@ func (c *Card) clone() *Card {
 		out.Result = &Result{Response: cloneResponse(c.Result.Response)}
 	}
 	out.Meta = cloneMetadata(c.Meta)
+	out.RunID = c.RunID
 	return &out
 }
 
