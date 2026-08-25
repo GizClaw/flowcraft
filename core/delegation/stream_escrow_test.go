@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
@@ -127,6 +128,9 @@ func TestDelegateAsyncStampsLineageStreamRefAndEscrow(t *testing.T) {
 	if submitted.Stream == nil || submitted.Stream.Ref == "" {
 		t.Fatalf("submitted stream ref = %+v, want escrow ref", submitted.Stream)
 	}
+	if submitted.Stream.Target != nil {
+		t.Fatalf("submitted stream target = %+v, want nil without exporter", submitted.Stream.Target)
+	}
 	if submitted.Stream.Policy.QueueSize != 7 ||
 		submitted.Stream.Policy.DeliveryTimeout != time.Minute.Milliseconds() ||
 		submitted.Stream.Policy.Visibility != session.VisibilityConfirmed {
@@ -137,6 +141,111 @@ func TestDelegateAsyncStampsLineageStreamRefAndEscrow(t *testing.T) {
 	service.streamEscrowMu.Unlock()
 	if !escrowed {
 		t.Fatal("async submit did not leave an escrow entry")
+	}
+}
+
+func TestDelegateAsyncExporterPopulatesTarget(t *testing.T) {
+	backend := &captureAsyncBackend{submitted: make(chan AsyncRequest, 1)}
+	exporter := func(spec session.SinkSpec) (StreamTarget, bool) {
+		if spec.ID == "caller" {
+			return StreamTarget{Kind: "conversation", ID: "ctx-1"}, true
+		}
+		return StreamTarget{}, false
+	}
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), backend,
+		WithStreamTargetExporter(exporter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	sink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+		return nil
+	})
+	// The describable sink is NOT specs[0]: the persisted policy
+	// snapshot must come from the sink that produced the target.
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{
+			{
+				ID:              "plain",
+				Sink:            sink,
+				QueueSize:       1,
+				DeliveryTimeout: time.Second,
+			},
+			{
+				ID:              "caller",
+				Sink:            sink,
+				QueueSize:       9,
+				DeliveryTimeout: 30 * time.Second,
+			},
+		},
+		Inheritable: true,
+	})
+	request := syncRequest("writer")
+	request.Mode = ModeAsync
+	if _, err := service.Delegate(ctx, request); err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	submitted := <-backend.submitted
+	if submitted.Stream == nil || submitted.Stream.Target == nil {
+		t.Fatalf("submitted stream = %+v, want escrow ref + conversation target", submitted.Stream)
+	}
+	if submitted.Stream.Target.Kind != "conversation" || submitted.Stream.Target.ID != "ctx-1" {
+		t.Fatalf("exported target = %+v", submitted.Stream.Target)
+	}
+	if submitted.Stream.Policy.QueueSize != 9 ||
+		submitted.Stream.Policy.DeliveryTimeout != 30*time.Second.Milliseconds() {
+		t.Fatalf("policy snapshot not aligned with target sink: %+v", submitted.Stream.Policy)
+	}
+}
+
+func TestDelegateAsyncExporterPrefersBusTarget(t *testing.T) {
+	backend := &captureAsyncBackend{submitted: make(chan AsyncRequest, 1)}
+	exporter := func(spec session.SinkSpec) (StreamTarget, bool) {
+		switch spec.ID {
+		case "conversation":
+			return StreamTarget{Kind: "conversation", ID: "ctx-1"}, true
+		case "bus":
+			return StreamTarget{Kind: "bus", ID: "events"}, true
+		default:
+			return StreamTarget{}, false
+		}
+	}
+	service, err := NewService(boundDirectory(t, completedEngine("unused")), backend,
+		WithStreamTargetExporter(exporter))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+
+	sink := agent.StreamSinkFunc(func(context.Context, event.Envelope, agent.StreamDeltaPayload) error {
+		return nil
+	})
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{
+			{ID: "conversation", Sink: sink},
+			{ID: "bus", Sink: sink},
+		},
+		Inheritable: true,
+	})
+	request := syncRequest("writer")
+	request.Mode = ModeAsync
+	if _, err := service.Delegate(ctx, request); err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	submitted := <-backend.submitted
+	if submitted.Stream == nil || submitted.Stream.Target == nil ||
+		submitted.Stream.Target.Kind != "bus" || submitted.Stream.Target.ID != "events" {
+		t.Fatalf("exported target = %+v, want bus target preferred", submitted.Stream.Target)
+	}
+}
+
+func TestWithStreamTargetExporterRejectsNil(t *testing.T) {
+	if _, err := NewService(
+		boundDirectory(t, completedEngine("unused")), nil,
+		WithStreamTargetExporter(nil),
+	); !errdefs.IsValidation(err) {
+		t.Fatalf("nil exporter error = %v, want validation", err)
 	}
 }
 
