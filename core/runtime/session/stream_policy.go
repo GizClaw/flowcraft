@@ -10,9 +10,16 @@ type streamPolicyKey struct{}
 // sessions started within the turn's execution (for example delegated
 // subagent runs). Session starts stamp their attached sinks so nested
 // runs inherit the caller's stream without any explicit wiring.
+//
+// Inheritance shares the same Sink instance across sessions: a delegated
+// turn attaches the caller's sinks too, so a sink must be safe for
+// concurrent OnDelta calls. The delegation boundary downgrades inherited
+// specs to observers (no authority, no explicit acks), because the
+// subagent turn is never handed to the sink.
 type StreamPolicy struct {
 	// Sinks are attached to every nested session started inside the
-	// turn when Inheritable is true.
+	// turn when Inheritable is true. Delegation attaches them as
+	// observers.
 	Sinks []SinkSpec
 	// Inheritable reports whether nested sessions should inherit Sinks.
 	// Session starts stamp the policy with Inheritable=true; callers may

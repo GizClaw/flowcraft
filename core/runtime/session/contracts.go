@@ -86,7 +86,11 @@ func DeliveryCursorFromEnvelope(env event.Envelope) (DeliveryCursor, error) {
 
 // SinkSpec describes one independently buffered stream attachment.
 type SinkSpec struct {
-	ID        string
+	ID string
+	// Sink receives stream deltas for this attachment. A Sink may be
+	// shared across sessions: session inheritance (see StreamPolicy)
+	// attaches the caller's sink to delegated subagent turns as well,
+	// so implementations must be safe for concurrent OnDelta calls.
 	Sink      agent.StreamSink
 	QueueSize int
 	// DeliveryTimeout bounds each Sink.OnDelta call. Zero uses the 30-second

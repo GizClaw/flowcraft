@@ -150,6 +150,14 @@ result, err := turn.Wait(ctx)
 `SinkSpec` controls streaming delivery, visibility, authority, and queue
 size. `delivery_concurrency` bounds in-flight sink callbacks.
 
+Delegated subagent sessions inherit the caller turn's stream sinks: the
+turn execution context carries the caller's stream policy, and the
+delegation service attaches those sinks to subagent runs as observers
+(authority and explicit-ack semantics are downgraded because the sink has
+no handle to the subagent turn). An inherited sink may be invoked
+concurrently from multiple sessions and must be safe for concurrent
+`OnDelta` calls.
+
 ### DeleteSession
 
 `app.Sessions().DeleteSession(ctx, key)` removes one session's durable
