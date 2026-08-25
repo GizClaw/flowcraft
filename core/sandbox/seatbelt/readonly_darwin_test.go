@@ -5,10 +5,12 @@ package seatbelt
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/sandbox"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
 )
 
@@ -60,7 +62,7 @@ func TestNewReadOnlyRootOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if !runner.rootWritable {
+	if runner.readOnlyRoot {
 		t.Fatal("default runner must keep the root writable")
 	}
 
@@ -68,11 +70,55 @@ func TestNewReadOnlyRootOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(WithReadOnlyRoot): %v", err)
 	}
-	if ro.rootWritable {
+	if !ro.readOnlyRoot {
 		t.Fatal("WithReadOnlyRoot must make the root read-only")
 	}
 	if len(ro.extraWritable) != 0 {
 		t.Fatalf("unexpected extra writable paths: %v", ro.extraWritable)
+	}
+}
+
+// TestNewRejectsWritableRootWithReadOnlyRoot pins the documented
+// contract: an explicit writable path that resolves to the runner root
+// conflicts with readonly_root and must fail construction instead of
+// being silently dropped.
+func TestNewRejectsWritableRootWithReadOnlyRoot(t *testing.T) {
+	root := t.TempDir()
+	if _, err := New(root, WithReadOnlyRoot(), WithWritablePaths(root)); err == nil {
+		t.Fatal("New must reject a writable path that is the read-only runner root")
+	}
+	// Without readonly_root the root is already writable by default,
+	// so listing it is redundant but harmless.
+	runner, err := New(root, WithWritablePaths(root))
+	if err != nil {
+		t.Fatalf("New(WithWritablePaths(root)): %v", err)
+	}
+	if len(runner.extraWritable) != 0 {
+		t.Fatalf("root must not be duplicated in extraWritable: %v", runner.extraWritable)
+	}
+}
+
+// TestWritablePathsForPerCallReadOnly is the direct assertion that a
+// per-call WriteReadOnly keeps the construction-time writable root out
+// of the writable set while explicit writable paths stay writable.
+func TestWritablePathsForPerCallReadOnly(t *testing.T) {
+	root := t.TempDir()
+	cache := t.TempDir()
+	runner, err := New(root, WithWritablePaths(cache))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if writes := runner.writablePathsFor(sandbox.WriteWorkspace); !slices.Contains(writes, runner.rootDir) {
+		t.Fatalf("workspace call must keep the root writable: %v", writes)
+	}
+
+	writes := runner.writablePathsFor(sandbox.WriteReadOnly)
+	if slices.Contains(writes, runner.rootDir) {
+		t.Fatalf("per-call read-only must drop the root from the writable set: %v", writes)
+	}
+	if len(runner.extraWritable) != 1 || !slices.Contains(writes, runner.extraWritable[0]) {
+		t.Fatalf("explicit writable paths must stay writable: %v", writes)
 	}
 }
 
@@ -98,8 +144,8 @@ func TestRegisterReadOnlyRootSettings(t *testing.T) {
 			if !ok {
 				t.Fatalf("factory returned %T, want *Runner", got)
 			}
-			if runner.rootWritable != !tc.wantRO {
-				t.Fatalf("rootWritable = %v, want %v", runner.rootWritable, !tc.wantRO)
+			if runner.readOnlyRoot != tc.wantRO {
+				t.Fatalf("readOnlyRoot = %v, want %v", runner.readOnlyRoot, tc.wantRO)
 			}
 		})
 	}

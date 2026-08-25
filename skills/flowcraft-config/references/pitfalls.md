@@ -27,7 +27,10 @@ builds the deployment with its own factory registry, or at runtime.
     writes at all": explicit `writable_paths` stay writable, and on
     bwrap the private `/tmp` tmpfs is still writable (host-invisible,
     dies with the sandbox). Seatbelt has no tmpfs fallback, so it
-    denies every write outside `writable_paths` and `/dev/null`.
+    denies every write outside `writable_paths` and `/dev/null`. A
+    `writable_paths` entry resolving to the runner root is rejected at
+    build time when `readonly_root: true` — the combination is not
+    silently downgraded.
 12. Runtime registration cannot reuse a deployed agent name (`Conflict`);
     deployed agents can only be removed by changing the deployment
     document — runtime API.

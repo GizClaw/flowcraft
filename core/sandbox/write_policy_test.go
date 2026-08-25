@@ -25,9 +25,9 @@ func (r *captureRunner) Start(_ context.Context, spec sandbox.SessionSpec) (sand
 }
 
 // TestWithDefaultsWriteMerge pins the security-biased merge rule:
-// either side being read-only wins, an unknown caller value is
-// preserved for backend validation, and a read-only default can never
-// be widened.
+// either side being read-only wins, an unknown value on either side is
+// preserved for backend validation (never silently degraded to
+// WriteWorkspace), and a pinned default can never be widened.
 func TestWithDefaultsWriteMerge(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -41,6 +41,8 @@ func TestWithDefaultsWriteMerge(t *testing.T) {
 		{name: "both read-only", caller: sandbox.WriteReadOnly, def: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
 		{name: "unknown caller preserved", caller: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
 		{name: "unknown caller cannot widen pinned default", caller: sandbox.WritePolicy(7), def: sandbox.WriteReadOnly, expected: sandbox.WriteReadOnly},
+		{name: "unknown default preserved", def: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
+		{name: "unknown default cannot be widened", caller: sandbox.WriteReadOnly, def: sandbox.WritePolicy(7), expected: sandbox.WritePolicy(7)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

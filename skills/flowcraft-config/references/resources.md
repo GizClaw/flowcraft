@@ -132,6 +132,11 @@ box:
 host code narrows a single call to read-only without changing settings;
 `WriteReadOnly` on `sandbox/local` is rejected as unavailable.
 
+`writable_paths` entries that resolve to the runner root conflict with
+`readonly_root: true`: the host build rejects the combination instead of
+silently dropping the entry (without `readonly_root` such an entry is
+redundant and ignored).
+
 ## tool source / assembly
 
 ```yaml

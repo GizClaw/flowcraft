@@ -21,6 +21,21 @@ func TestClassifySafeReadOnly(t *testing.T) {
 		{name: "wc", req: sandbox.ExecRequest{Command: "wc", Args: []string{"-l", "f"}}, want: true},
 		{name: "echo", req: sandbox.ExecRequest{Command: "echo", Args: []string{"hi"}}, want: true},
 
+		// date / hostname: non-file state writes (clock, hostname)
+		// escape the OS file sandbox, so every form routes to the
+		// approver.
+		{name: "date", req: sandbox.ExecRequest{Command: "date", Args: []string{"+%Y-%m-%d"}}, want: false},
+		{name: "date -s", req: sandbox.ExecRequest{Command: "date", Args: []string{"-s", "2026-01-01"}}, want: false},
+		{name: "hostname", req: sandbox.ExecRequest{Command: "hostname"}, want: false},
+		{name: "hostname set", req: sandbox.ExecRequest{Command: "hostname", Args: []string{"newname"}}, want: false},
+
+		// sort: -o / --output write the sorted result to a file.
+		{name: "sort read", req: sandbox.ExecRequest{Command: "sort", Args: []string{"-u", "f"}}, want: true},
+		{name: "sort -o", req: sandbox.ExecRequest{Command: "sort", Args: []string{"-o", "out", "f"}}, want: false},
+		{name: "sort --output=", req: sandbox.ExecRequest{Command: "sort", Args: []string{"--output=out", "f"}}, want: false},
+		{name: "sort --output", req: sandbox.ExecRequest{Command: "sort", Args: []string{"--output", "out", "f"}}, want: false},
+		{name: "sort grouped -ro", req: sandbox.ExecRequest{Command: "sort", Args: []string{"-ro", "out", "f"}}, want: false},
+
 		// find: read-only forms safe, write/exec actions unsafe.
 		{name: "find print", req: sandbox.ExecRequest{Command: "find", Args: []string{".", "-name", "*.go", "-print"}}, want: true},
 		{name: "find delete", req: sandbox.ExecRequest{Command: "find", Args: []string{".", "-delete"}}, want: false},
@@ -37,6 +52,9 @@ func TestClassifySafeReadOnly(t *testing.T) {
 		{name: "rg pre", req: sandbox.ExecRequest{Command: "rg", Args: []string{"--pre", "cat", "pattern"}}, want: false},
 		{name: "rg pre-glob", req: sandbox.ExecRequest{Command: "rg", Args: []string{"--pre-glob", "*.md", "pattern"}}, want: false},
 		{name: "rg combined short", req: sandbox.ExecRequest{Command: "rg", Args: []string{"-lz", "pattern"}}, want: false},
+		{name: "rg search-zip", req: sandbox.ExecRequest{Command: "rg", Args: []string{"--search-zip", "pattern"}}, want: false},
+		{name: "rg hostname-bin", req: sandbox.ExecRequest{Command: "rg", Args: []string{"--hostname-bin", "sh", "pattern"}}, want: false},
+		{name: "rg hostname-bin=", req: sandbox.ExecRequest{Command: "rg", Args: []string{"--hostname-bin=sh", "pattern"}}, want: false},
 
 		// git: subcommand whitelist.
 		{name: "git bare", req: sandbox.ExecRequest{Command: "git"}, want: true},
@@ -52,13 +70,27 @@ func TestClassifySafeReadOnly(t *testing.T) {
 		{name: "git remote add", req: sandbox.ExecRequest{Command: "git", Args: []string{"remote", "add", "origin", "u"}}, want: false},
 		{name: "git push", req: sandbox.ExecRequest{Command: "git", Args: []string{"push"}}, want: false},
 		{name: "git checkout", req: sandbox.ExecRequest{Command: "git", Args: []string{"checkout", "x"}}, want: false},
+		{name: "git diff output=", req: sandbox.ExecRequest{Command: "git", Args: []string{"diff", "--output=/tmp/out"}}, want: false},
+		{name: "git diff output", req: sandbox.ExecRequest{Command: "git", Args: []string{"diff", "--output", "/tmp/out"}}, want: false},
+		{name: "git show output=", req: sandbox.ExecRequest{Command: "git", Args: []string{"show", "--output=/tmp/out", "HEAD"}}, want: false},
+		{name: "git log output=", req: sandbox.ExecRequest{Command: "git", Args: []string{"log", "--output=/tmp/out", "-1"}}, want: false},
+		{name: "git diff ext-diff", req: sandbox.ExecRequest{Command: "git", Args: []string{"diff", "--ext-diff"}}, want: false},
 
-		// sed: -i and script write commands unsafe.
+		// sed: only `-n <addr>p [file]` is auto-approved (codex-rs
+		// alignment); substitutions, -i, and address-form writes are
+		// all routed to the approver.
 		{name: "sed -n", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "1,5p", "f"}}, want: true},
-		{name: "sed plain", req: sandbox.ExecRequest{Command: "sed", Args: []string{"s/a/b/", "f"}}, want: true},
+		{name: "sed -n single", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "5p", "f"}}, want: true},
+		{name: "sed -n no file", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "1,5p"}}, want: true},
+		{name: "sed plain", req: sandbox.ExecRequest{Command: "sed", Args: []string{"s/a/b/", "f"}}, want: false},
 		{name: "sed -i", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-i", "s/a/b/", "f"}}, want: false},
 		{name: "sed in-place long", req: sandbox.ExecRequest{Command: "sed", Args: []string{"--in-place", "s/a/b/", "f"}}, want: false},
 		{name: "sed script write", req: sandbox.ExecRequest{Command: "sed", Args: []string{"s/a/b/w /tmp/out", "f"}}, want: false},
+		{name: "sed address write", req: sandbox.ExecRequest{Command: "sed", Args: []string{"1w /tmp/out", "f"}}, want: false},
+		{name: "sed range write", req: sandbox.ExecRequest{Command: "sed", Args: []string{"2,5w /tmp/out", "f"}}, want: false},
+		{name: "sed -e print", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "-e", "1,5p", "f"}}, want: false},
+		{name: "sed two files", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "1,5p", "a", "b"}}, want: false},
+		{name: "sed non-numeric addr", req: sandbox.ExecRequest{Command: "sed", Args: []string{"-n", "a,5p", "f"}}, want: false},
 
 		// Shell unwrapping: simple scripts safe, composites unsafe.
 		{name: "sh -c ls", req: sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "ls"}}, want: true},
