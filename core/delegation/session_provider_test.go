@@ -883,3 +883,352 @@ func TestRunAtSessionPathPersistentWritesState(t *testing.T) {
 		t.Fatal("persistent delegation wrote no checkpoints, want session state")
 	}
 }
+
+// streamEngine emits one stream delta on the run's canonical stream
+// subject before completing, so an attached sink has something to
+// observe.
+func streamEngine(output string) agent.Engine {
+	return agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		if err := agent.EmitStreamPart(
+			ctx, host, run.RunID, "writer.node.work",
+			message.TextPart{Text: output}); err != nil {
+			return nil, err
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, output))
+		return board, nil
+	})
+}
+
+// awaitStreamText waits until a stream delta carrying the given text
+// arrives. Raw/confirmed sinks may observe other run events first, so
+// assertions must scan rather than expect a specific first delta.
+func awaitStreamText(t *testing.T, received <-chan agent.StreamDeltaPayload, want string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case delta := <-received:
+			if part, ok := delta.Part.(message.TextPart); ok && part.Text == want {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("stream delta with text %q never received", want)
+		}
+	}
+}
+
+func TestSyncDelegationInheritsCallerStreamSinks(t *testing.T) {
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	service, _ := newSessionPathService(t, streamEngine("progress"), nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: true,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	awaitStreamText(t, received, "progress")
+}
+
+func TestSyncDelegationSkipsNonInheritableStreamPolicy(t *testing.T) {
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	service, _ := newSessionPathService(t, streamEngine("progress"), nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: false,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	// Delegate returns only after the subagent turn finalizes, and
+	// finalize drains then detaches every attached sink — any delivery
+	// caused by a buggy attachment would already be queued. The select
+	// below is a bounded absence check on that flushed state, not a race.
+	select {
+	case delta := <-received:
+		t.Fatalf("non-inheritable policy still delivered delta: %#v", delta)
+	case <-time.After(time.Second):
+	}
+}
+
+func TestInheritedSinkSpecsDowngradeAuthorityAndAck(t *testing.T) {
+	sink := agent.StreamSinkFunc(func(
+		context.Context, event.Envelope, agent.StreamDeltaPayload,
+	) error {
+		return nil
+	})
+	spec := session.SinkSpec{
+		ID:              "authority",
+		Sink:            sink,
+		QueueSize:       7,
+		DeliveryTimeout: time.Minute,
+		Visibility:      session.VisibilityConfirmed,
+		Authority:       session.AuthorityAuthoritative,
+		AckMode:         session.AckExplicit,
+		MaxUnacked:      3,
+	}
+	got := inheritedSinkSpecs([]session.SinkSpec{spec})
+	if len(got) != 1 {
+		t.Fatalf("inherited specs = %d, want 1", len(got))
+	}
+	inherited := got[0]
+	if inherited.Authority != session.AuthorityObserver {
+		t.Fatalf("inherited Authority = %q, want observer", inherited.Authority)
+	}
+	if inherited.AckMode != session.AckOnDelivery {
+		t.Fatalf("inherited AckMode = %q, want ack-on-delivery", inherited.AckMode)
+	}
+	if inherited.MaxUnacked != 0 {
+		t.Fatalf("inherited MaxUnacked = %d, want 0", inherited.MaxUnacked)
+	}
+	if inherited.ID != spec.ID || inherited.Sink == nil ||
+		inherited.Visibility != spec.Visibility ||
+		inherited.QueueSize != spec.QueueSize ||
+		inherited.DeliveryTimeout != spec.DeliveryTimeout {
+		t.Fatalf("inherited spec dropped fields: %+v", inherited)
+	}
+}
+
+func TestSyncDelegationInheritsAuthoritativeSinkAsObserver(t *testing.T) {
+	const deltas = 40
+	received := make(chan agent.StreamDeltaPayload, deltas*2)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		for range deltas {
+			if err := agent.EmitStreamPart(
+				ctx, host, run.RunID, "writer.node.work",
+				message.TextPart{Text: "p"}); err != nil {
+				return nil, err
+			}
+		}
+		board.AppendChannelMessage(agent.MainChannel,
+			message.NewTextMessage(message.RoleAssistant, "done"))
+		return board, nil
+	})
+	service, _ := newSessionPathService(t, engine, nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:         "authority",
+			Sink:       sink,
+			QueueSize:  64,
+			Visibility: session.VisibilityConfirmed,
+			Authority:  session.AuthorityAuthoritative,
+			AckMode:    session.AckExplicit,
+			MaxUnacked: 10,
+		}},
+		Inheritable: true,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	// The spec carries an explicit MaxUnacked window of 10 with no ack
+	// source: an un-downgraded authoritative attachment would be detached
+	// with BudgetExceeded after ~10 deliveries, dropping the tail.
+	// Observer inheritance must deliver every delta. The queue (64) is
+	// sized so queue-full backpressure cannot mask the distinction.
+	deadline := time.After(5 * time.Second)
+	for i := 0; i < deltas; i++ {
+		select {
+		case delta := <-received:
+			if part, ok := delta.Part.(message.TextPart); !ok || part.Text != "p" {
+				t.Fatalf("delta part = %#v, want text %q", delta.Part, "p")
+			}
+		case <-deadline:
+			t.Fatalf("inherited sink received %d of %d subagent deltas", i, deltas)
+		}
+	}
+}
+
+func TestSyncDelegationPropagatesStreamSinksTransitively(t *testing.T) {
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	var service *LocalService
+	engine := agent.EngineFunc(func(
+		ctx context.Context,
+		run agent.Run,
+		host agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		switch run.AgentID {
+		case "writer":
+			// The writer is itself a delegated subagent; delegating from
+			// inside its engine exercises the full context chain instead
+			// of stamping the policy on the caller context directly.
+			response, err := service.Delegate(ctx, syncRequest("researcher"))
+			if err != nil {
+				return board, err
+			}
+			if response.Status != StatusSucceeded {
+				return board, errdefs.Internalf(
+					"nested delegate status = %q, want succeeded", response.Status)
+			}
+			board.AppendChannelMessage(agent.MainChannel,
+				message.NewTextMessage(message.RoleAssistant, "writer-done"))
+			return board, nil
+		case "researcher":
+			if err := agent.EmitStreamPart(
+				ctx, host, run.RunID, "researcher.node.work",
+				message.TextPart{Text: "grandchild"}); err != nil {
+				return nil, err
+			}
+			board.AppendChannelMessage(agent.MainChannel,
+				message.NewTextMessage(message.RoleAssistant, "researcher-done"))
+			return board, nil
+		default:
+			return board, errdefs.Internalf("unexpected agent %q", run.AgentID)
+		}
+	})
+	service, _ = newSessionPathService(t, engine, nil)
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: true,
+	})
+	response, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("Delegate: %v", err)
+	}
+	if response.Status != StatusSucceeded {
+		t.Fatalf("response status = %q, want succeeded", response.Status)
+	}
+	awaitStreamText(t, received, "grandchild")
+}
+
+// resumeStreamEngine fails the first attempt after writing a checkpoint
+// and, on the resumed attempt, emits one stream delta before completing.
+type resumeStreamEngine struct {
+	mu       sync.Mutex
+	attempts int
+	store    *delegationCheckpointStore
+}
+
+func (e *resumeStreamEngine) Execute(
+	ctx context.Context,
+	run agent.Run,
+	host agent.Host,
+	board *agent.Board,
+) (*agent.Board, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.attempts++
+	if e.attempts == 1 {
+		if err := e.store.Save(ctx, agent.Checkpoint{
+			ExecID:            run.RunID,
+			Steps:             []string{"wave-1"},
+			Board:             board.Snapshot(),
+			Timestamp:         time.Now(),
+			OriginalStartedAt: time.Now(),
+			SpecVersion:       "v1",
+		}); err != nil {
+			return board, err
+		}
+		return board, errdefs.Internalf("first attempt fails")
+	}
+	if err := agent.EmitStreamPart(
+		ctx, host, run.RunID, "writer.node.work",
+		message.TextPart{Text: "resumed"}); err != nil {
+		return board, err
+	}
+	board.AppendChannelMessage(agent.MainChannel,
+		message.NewTextMessage(message.RoleAssistant, "done"))
+	return board, nil
+}
+
+func (*resumeStreamEngine) CanResume(agent.Checkpoint) error { return nil }
+
+func TestResumeInheritsStreamSinks(t *testing.T) {
+	store := newDelegationCheckpointStore()
+	engine := &resumeStreamEngine{store: store}
+	service, _ := newSessionPathService(t, engine,
+		&testSessionProvider{contextID: "resume-sink-ctx", persistent: true},
+		session.WithResume(true), session.WithCheckpointStore(store))
+	received := make(chan agent.StreamDeltaPayload, 8)
+	sink := agent.StreamSinkFunc(func(
+		_ context.Context,
+		_ event.Envelope,
+		delta agent.StreamDeltaPayload,
+	) error {
+		received <- delta
+		return nil
+	})
+	ctx := session.WithStreamPolicy(context.Background(), session.StreamPolicy{
+		Sinks: []session.SinkSpec{{
+			ID:   "caller",
+			Sink: sink,
+		}},
+		Inheritable: true,
+	})
+	first, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil || first.Status != StatusFailed {
+		t.Fatalf("first = (%+v, %v), want failed", first, err)
+	}
+	second, err := service.Delegate(ctx, syncRequest("writer"))
+	if err != nil {
+		t.Fatalf("retry Delegate: %v", err)
+	}
+	if second.Status != StatusSucceeded {
+		t.Fatalf("retry status = %q, want succeeded", second.Status)
+	}
+	awaitStreamText(t, received, "resumed")
+}

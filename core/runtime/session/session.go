@@ -428,6 +428,16 @@ func (s *Session) startTurnLocked(
 	turn.resumeCtx = resumeCtx
 	turn.snapshot = snapshot
 	turn.askUserOverride = config.askUser
+	// Nested sessions started inside this turn (e.g. delegated subagents)
+	// inherit the turn's stream sinks, so the caller's stream policy
+	// follows the execution without explicit wiring. Both Start and
+	// Resume flow through here, and the subagent turn stamps its own
+	// (inherited) policy again, so nested delegations propagate
+	// transitively.
+	turn.runCtx = WithStreamPolicy(turn.runCtx, StreamPolicy{
+		Sinks:       config.sinks,
+		Inheritable: true,
+	})
 	instance, ok := deps.Resolver.Instance(s.key.AgentID)
 	if !ok {
 		turn.cancel()

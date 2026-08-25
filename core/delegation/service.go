@@ -749,7 +749,7 @@ func (s *LocalService) runAt(ctx context.Context, req AsyncRequest, reuseSlot bo
 		}
 	}()
 
-	opts := s.delegationStartOptions(persistent)
+	opts := s.delegationStartOptions(execCtx, persistent)
 	request := agent.Request{
 		ContextID: key.ContextID,
 		Message:   message.NewTextMessage(message.RoleUser, req.Request.Input),
@@ -947,17 +947,43 @@ func responseFromTurn(result *agent.Result, contextID string) Response {
 }
 
 // delegationStartOptions builds the session options for a delegated
-// subagent turn: questions to the user are refused (never block), and
-// non-persistent identities run the turn ephemeral so no session state or
-// run checkpoint is ever written.
-func (s *LocalService) delegationStartOptions(persistent bool) []session.StartOption {
+// subagent turn: questions to the user are refused (never block),
+// non-persistent identities run the turn ephemeral so no session state
+// or run checkpoint is ever written, and stream sinks are inherited
+// from the caller turn when the caller's stream policy is inheritable.
+// Inherited sinks are downgraded to observers (see inheritedSinkSpecs).
+// Async worker runs do not inherit here: the caller context does not
+// cross the backend queue, and the worker is not a live UI consumer.
+func (s *LocalService) delegationStartOptions(ctx context.Context, persistent bool) []session.StartOption {
 	options := []session.StartOption{
 		session.WithAskUserOverride(refuseSubagentAskUser),
 	}
 	if !persistent {
 		options = append(options, session.WithEphemeral())
 	}
+	if policy, ok := session.StreamPolicyFromContext(ctx); ok && policy.Inheritable && len(policy.Sinks) > 0 {
+		options = append(options, session.WithSinks(inheritedSinkSpecs(policy.Sinks)...))
+	}
 	return options
+}
+
+// inheritedSinkSpecs adapts the caller's sink specs for a subagent turn.
+// The subagent turn is a different session whose Turn handle is never
+// exposed to the inherited sink, so authoritative and explicit-ack
+// obligations cannot be fulfilled there: inherited sinks always attach
+// as observers with ack-on-delivery and no unacked window (an unacked
+// authoritative attachment would otherwise be detached with a
+// BudgetExceeded once its window fills). Visibility is preserved so
+// consumers keep the delivery granularity they chose.
+func inheritedSinkSpecs(specs []session.SinkSpec) []session.SinkSpec {
+	out := make([]session.SinkSpec, 0, len(specs))
+	for _, spec := range specs {
+		spec.Authority = session.AuthorityObserver
+		spec.AckMode = session.AckOnDelivery
+		spec.MaxUnacked = 0
+		out = append(out, spec)
+	}
+	return out
 }
 
 // sameDelegationRequest reports whether two delegation requests are
