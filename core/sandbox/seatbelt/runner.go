@@ -13,11 +13,12 @@ type RunnerOption func(*runnerConfig)
 // It lives in the platform-neutral file so the option functions
 // type-check on every OS even though Runner itself is darwin-only.
 type runnerConfig struct {
-	binFrom  string   // raw value supplied to WithBinary, "" if defaulted
-	writable []string // extra writable paths, resolved at construction
-	decision func(net.ProxyDecision)
-	hooks    net.MITMHooks
-	roots    *x509.CertPool
+	binFrom      string   // raw value supplied to WithBinary, "" if defaulted
+	writable     []string // extra writable paths, resolved at construction
+	readOnlyRoot bool     // keep the runner root read-only for every exec
+	decision     func(net.ProxyDecision)
+	hooks        net.MITMHooks
+	roots        *x509.CertPool
 }
 
 // WithBinary overrides the sandbox-exec binary path. By default the
@@ -41,6 +42,17 @@ func WithBinary(path string) RunnerOption {
 func WithWritablePaths(paths ...string) RunnerOption {
 	return func(c *runnerConfig) {
 		c.writable = append(c.writable, paths...)
+	}
+}
+
+// WithReadOnlyRoot keeps the runner root read-only for every exec
+// spawned through this runner, instead of the default (root writable).
+// Explicit [WithWritablePaths] exceptions remain writable, and
+// per-exec sandbox.WriteReadOnly can only keep the root read-only —
+// it cannot re-enable writes on a runner constructed with this option.
+func WithReadOnlyRoot() RunnerOption {
+	return func(c *runnerConfig) {
+		c.readOnlyRoot = true
 	}
 }
 

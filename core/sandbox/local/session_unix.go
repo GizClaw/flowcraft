@@ -26,6 +26,10 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 		return nil, errdefs.NotAvailablef(
 			"sandbox: net policy not supported by local runner; requires a kernel-level isolation backend")
 	}
+	if spec.Opts.Write == sandbox.WriteReadOnly {
+		return nil, errdefs.NotAvailablef(
+			"sandbox: write policy not supported by local runner; requires a kernel-level isolation backend")
+	}
 	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
 	if err != nil {
 		return nil, err

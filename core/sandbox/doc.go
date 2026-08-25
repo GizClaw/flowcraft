@@ -16,7 +16,7 @@
 // sessions and releases backend-owned resources, and the decorators
 // forward it so wrapping never hides the backend's cleanup.
 //
-// ExecOptions carries three policy groups beyond the obvious WorkDir /
+// ExecOptions carries four policy groups beyond the obvious WorkDir /
 // Stdin / Timeout knobs:
 //
 //   - Env (EnvPolicy): explicit allow-list of host environment variables
@@ -26,6 +26,10 @@
 //     only accepts NetDefault; non-default modes require a sandboxing
 //     backend (namespace-based, container-based, or microVM-based) that
 //     can actually enforce the policy at the kernel level.
+//   - Write (WritePolicy): per-call filesystem write mode. The zero
+//     value applies the runner's construction-time boundary;
+//     WriteReadOnly keeps the runner root read-only for that call.
+//     sandbox/local has no OS boundary and rejects WriteReadOnly.
 //   - Resources (ResourceLimits): CPU / memory / disk caps plus
 //     MaxOutputBytes. On unix, sandbox/local enforces group-wide memory
 //     and cpu-time caps with a sampling watcher and kills the whole

@@ -28,7 +28,8 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 type Runner struct {
 	rootDir          string
 	binary           string
-	writable         []string
+	extraWritable    []string // explicit writable paths beyond the root
+	rootWritable     bool     // false when constructed with WithReadOnlyRoot
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	decision         func(corenet.ProxyDecision)
@@ -64,19 +65,22 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	writable := []string{root}
+	extraWritable := make([]string, 0, len(cfg.writable))
 	for _, path := range cfg.writable {
 		resolved, err := resolveRoot(path)
 		if err != nil {
 			return nil, fmt.Errorf("seatbelt: resolve writable path %q: %w", path, err)
 		}
-		writable = append(writable, resolved)
+		if resolved != root {
+			extraWritable = append(extraWritable, resolved)
+		}
 	}
 
 	runner := &Runner{
 		rootDir:          root,
 		binary:           binary,
-		writable:         dedupe(writable),
+		extraWritable:    dedupe(extraWritable),
+		rootWritable:     !cfg.readOnlyRoot,
 		defaultMaxOutput: defaultMaxOutputBytes,
 		decision:         cfg.decision,
 		hooks:            cfg.hooks,
@@ -98,6 +102,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			MemoryCap:        caps,
 			CPUCap:           caps,
 			FilesystemBounds: true,
+			WriteModes:       []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly},
 		},
 		Features: sandbox.SessionFeatures{
 			TTY:    true,
@@ -213,7 +218,11 @@ func (r *Runner) spawnProcess(
 		}
 	}
 
-	profile, err := buildProfile(r.writable, spec.Opts.Net, proxyPort)
+	writes := append([]string(nil), r.extraWritable...)
+	if r.rootWritable && spec.Opts.Write != sandbox.WriteReadOnly {
+		writes = append(writes, r.rootDir)
+	}
+	profile, err := buildProfile(writes, spec.Opts.Net, proxyPort)
 	if err != nil {
 		closeProxy(ctx, proxy)
 		abortBundle()

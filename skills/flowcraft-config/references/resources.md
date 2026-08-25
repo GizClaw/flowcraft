@@ -122,8 +122,15 @@ box:
     root: ./sandbox
     binary: /usr/bin/bwrap    # optional; resolved against the root
     writable_paths: [./out]   # optional; paths the sandbox may write
+    readonly_root: true       # optional; keep the runner root read-only
     extra_flags: [--die-with-parent]  # bwrap only; policy-downgrading flags are rejected
 ```
+
+`readonly_root` keeps the runner root read-only for every exec; explicit
+`writable_paths` stay writable. The per-call counterpart is
+`ExecOptions.Write` (`WriteWorkspace` zero value / `WriteReadOnly`) —
+host code narrows a single call to read-only without changing settings;
+`WriteReadOnly` on `sandbox/local` is rejected as unavailable.
 
 ## tool source / assembly
 

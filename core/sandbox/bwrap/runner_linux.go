@@ -34,6 +34,7 @@ type Runner struct {
 	binary           string
 	extraFlags       []string
 	writablePaths    []string
+	readOnlyRoot     bool
 	defaultMaxOutput int64
 	sessions         *sandbox.SessionRegistry
 	decision         func(net.ProxyDecision)
@@ -54,6 +55,7 @@ func (r *Runner) Enforcement() sandbox.Enforcement {
 		MemoryCap:        caps,
 		CPUCap:           caps,
 		FilesystemBounds: true,
+		WriteModes:       []sandbox.WritePolicy{sandbox.WriteWorkspace, sandbox.WriteReadOnly},
 	}
 }
 
@@ -108,6 +110,7 @@ func New(rootDir string, opts ...RunnerOption) (*Runner, error) {
 		binary:           binary,
 		extraFlags:       append([]string(nil), cfg.extra...),
 		writablePaths:    writable,
+		readOnlyRoot:     cfg.readOnlyRoot,
 		defaultMaxOutput: defaultMaxOutputBytes,
 		decision:         cfg.decision,
 		hooks:            cfg.hooks,
@@ -231,7 +234,11 @@ func (r *Runner) spawnProcess(
 		abortBundle()
 		return nil, err
 	}
-	fsFlags := filesystemFlags(r.rootDir, r.writablePaths)
+	fsFlags := filesystemFlags(
+		r.rootDir,
+		r.writablePaths,
+		r.readOnlyRoot || spec.Opts.Write == sandbox.WriteReadOnly,
+	)
 	fsFlags = append(fsFlags, netIsolationFlags(spec.Opts.Net.Mode)...)
 	if bundlePath != "" {
 		fsFlags = append(fsFlags, "--ro-bind", bundlePath, bundlePath)

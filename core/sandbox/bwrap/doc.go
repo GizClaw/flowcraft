@@ -48,7 +48,10 @@
 // rootDir is bind-mounted read-write at the same absolute path, /tmp
 // is a private writable tmpfs, and /proc plus a minimal /dev are
 // freshly mounted. Additional existing paths may be opened for writing
-// with [WithWritablePaths]. Mount-affecting [WithExtraFlags] values
+// with [WithWritablePaths]. [WithReadOnlyRoot] (or per-exec
+// sandbox.WriteReadOnly) ro-binds rootDir instead, so the workspace is
+// inspect-only while /tmp stays a private writable tmpfs — writes
+// there never reach the host. Mount-affecting [WithExtraFlags] values
 // are rejected so callers cannot silently disable the boundary
 // reported by sandbox.Enforcement.FilesystemBounds.
 //

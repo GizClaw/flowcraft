@@ -30,6 +30,7 @@
 //	Net.Mode == NetDenyAll      (deny network*)
 //	Net.Mode == NetAllowList    loopback-only profile + host enforcement proxy (hostname allow-list)
 //	Net.Mode == NetProxy        loopback-only profile + host enforcement proxy (upstream)
+//	Write == WriteReadOnly      root left out of the writable set for this call
 //	Resources.MemoryBytes       group watcher (core/sandbox.GroupCapsWatcher)
 //	Resources.CPUMillicores     group watcher, cpu-time = Timeout x millicores/1000
 //	Resources.DiskBytes         errdefs.NotAvailable (no quota mechanism)
@@ -41,10 +42,14 @@
 // re-allow the workspace": reads and process execution are unrestricted
 // (a local agent must reach the real toolchain), file writes are denied
 // machine-wide except the runner root and /dev/null. Dedicated temp
-// or cache paths may be added explicitly with WithWritablePaths. This
-// is the containment posture the local-sandbox PRD
-// calls blast-radius: not total isolation, but an honest boundary
-// around the workspace.
+// or cache paths may be added explicitly with WithWritablePaths.
+// [WithReadOnlyRoot] drops the runner root from the writable set for
+// every exec, and per-exec sandbox.WriteReadOnly does the same for a
+// single call — explicit writable paths and /dev/null stay allowed, so
+// on seatbelt read-only means no host writes beyond those exceptions
+// (there is no private tmpfs to fall back on). This is the
+// containment posture the local-sandbox PRD calls blast-radius: not
+// total isolation, but an honest boundary around the workspace.
 //
 // # NetAllowList / NetProxy enforcement
 //

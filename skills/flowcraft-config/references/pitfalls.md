@@ -23,13 +23,18 @@ builds the deployment with its own factory registry, or at runtime.
    source — host build.
 10. Local sandbox is a no-isolation backend and should not be used for
     untrusted production execution.
-11. Runtime registration cannot reuse a deployed agent name (`Conflict`);
+11. `readonly_root` (or per-call `WriteReadOnly`) does not mean "no
+    writes at all": explicit `writable_paths` stay writable, and on
+    bwrap the private `/tmp` tmpfs is still writable (host-invisible,
+    dies with the sandbox). Seatbelt has no tmpfs fallback, so it
+    denies every write outside `writable_paths` and `/dev/null`.
+12. Runtime registration cannot reuse a deployed agent name (`Conflict`);
     deployed agents can only be removed by changing the deployment
     document — runtime API.
-12. With `dynamic_catalog` configured and no `default`, runtime
+13. With `dynamic_catalog` configured and no `default`, runtime
     registration must pass `WithToolAssembly`; otherwise registration is
     rejected up front — runtime API.
-13. `UnregisterAgent` waits for active turns; a stuck engine times out
+14. `UnregisterAgent` waits for active turns; a stuck engine times out
     (`WithRemoveTimeout` / ctx deadline) and the agent is left registered
     — retry, don't assume removal happened — runtime API.
 

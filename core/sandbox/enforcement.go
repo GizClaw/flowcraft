@@ -35,6 +35,12 @@ import corenet "github.com/GizClaw/flowcraft/core/utils/net"
 //     OS level (Seatbelt profile, namespace mounts). sandbox/local's
 //     WorkDir check is call-time validation only — once the child is
 //     running it can chdir anywhere — so it does not qualify.
+//   - WriteModes: the set of WritePolicy values this backend can
+//     enforce per call. Isolation backends list WriteWorkspace (writes
+//     confined to the root plus explicit writable paths) and
+//     WriteReadOnly (root read-only). sandbox/local reports none —
+//     "unrestricted" is not an enforced mode, and WriteReadOnly is
+//     rejected with NotAvailable there.
 type Enforcement struct {
 	EnvAllowList     bool
 	NetModes         []corenet.NetMode
@@ -45,6 +51,7 @@ type Enforcement struct {
 	CPUCap           bool
 	DiskCap          bool
 	FilesystemBounds bool
+	WriteModes       []WritePolicy
 }
 
 // GroupCapsSupported reports whether the shared process-group watcher

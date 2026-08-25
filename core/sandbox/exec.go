@@ -28,6 +28,9 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //   - Env: see EnvPolicy. Replaces the historical "inherit everything"
 //     behaviour while staying back-compat when EnvPolicy.Allow is nil.
 //   - Net: see NetPolicy. The local runner only accepts NetDefault.
+//   - Write: see WritePolicy. Zero value keeps the runner's
+//     construction-time write boundary; WriteReadOnly narrows it for
+//     this call only (root not writable, explicit writable paths stay).
 //   - Resources: see ResourceLimits. The local runner enforces MemoryBytes,
 //     CPUMillicores (with Timeout), and MaxOutputBytes; DiskBytes is
 //     still errdefs.NotAvailable.
@@ -37,6 +40,7 @@ type ExecOptions struct {
 	Timeout   time.Duration
 	Env       EnvPolicy
 	Net       corenet.NetPolicy
+	Write     WritePolicy
 	Resources ResourceLimits
 }
 

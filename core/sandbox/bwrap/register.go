@@ -21,6 +21,7 @@ type settings struct {
 	Binary        string   `json:"binary,omitempty"`
 	WritablePaths []string `json:"writable_paths,omitempty"`
 	ExtraFlags    []string `json:"extra_flags,omitempty"`
+	ReadOnlyRoot  bool     `json:"readonly_root,omitempty"`
 }
 
 type factory struct{}
@@ -59,6 +60,9 @@ func (factory) New(_ context.Context, in resource.Input) (any, error) {
 	}
 	if s.ExtraFlags != nil {
 		options = append(options, WithExtraFlags(s.ExtraFlags...))
+	}
+	if s.ReadOnlyRoot {
+		options = append(options, WithReadOnlyRoot())
 	}
 	runner, err := New(s.Root, options...)
 	if err != nil {

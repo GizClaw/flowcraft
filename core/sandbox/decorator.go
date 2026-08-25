@@ -106,6 +106,12 @@ func (r *allowCommandsRunner) Close() error {
 //     sandbox's static injections.
 //   - Net: defaults wins entirely. Caller Net is ignored — the
 //     network posture is sandbox-level policy.
+//   - Write: the caller may narrow the boundary to WriteReadOnly for a
+//     single call; defaults may pin WriteReadOnly for the whole chain.
+//     Since WriteReadOnly is the strictest mode and there is no
+//     widening mode, "either side is read-only" is the whole merge
+//     rule. An unknown caller value is preserved so backend validation
+//     rejects it instead of silently degrading to WriteWorkspace.
 //   - Resources: defaults wins entirely. Caller cannot raise caps;
 //     and narrowing CPU/Mem/Disk per call is not actionable for a
 //     local runner today (those fields are advisory until a real
@@ -183,7 +189,11 @@ func (r *defaultsRunner) merge(caller ExecOptions) ExecOptions {
 		Timeout:   mergeTimeout(caller.Timeout, r.defaults.Timeout),
 		Env:       mergeEnv(caller.Env, r.defaults.Env),
 		Net:       r.defaults.Net,
+		Write:     caller.Write,
 		Resources: r.defaults.Resources,
+	}
+	if r.defaults.Write == WriteReadOnly {
+		merged.Write = WriteReadOnly
 	}
 	if merged.WorkDir == "" {
 		merged.WorkDir = r.defaults.WorkDir
