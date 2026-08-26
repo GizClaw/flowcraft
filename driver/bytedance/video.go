@@ -24,27 +24,38 @@ import (
 // rather than deleted, because the SDK delete call is best-effort and a
 // cancelled caller no longer needs the artifact either way.
 //
-// Input images map onto the frame roles the task API understands: the first
-// image is the first frame, the second is the last frame. More references
-// have no truthful canonical ordering, so the compiler rejects them instead
-// of guessing. Video-reference input (video_url content items) is not
-// exposed: the pinned SDK version cannot encode it.
+// Inputs map onto the content roles the task API understands: the first
+// image is the first frame, the second is the last frame; any further
+// images and any video/audio parts become reference inputs
+// (reference_image / reference_video / reference_audio), which only the
+// 2.0 series and 2.5 support. First/last-frame input and reference inputs
+// are mutually exclusive, mirroring the official task scenarios.
 
 type videoWire struct {
 	model      string
 	prompt     string
 	firstFrame string
 	lastFrame  string
-	duration   *int64 // seconds
-	resolution string // 480p | 720p | 1080p | 4k
-	ratio      string // width:height, e.g. 16:9
-	seed       *int64
-	watermark  *bool
+	// Reference inputs (Seedance 2.0 series / 2.5 only).
+	referenceImages []string
+	referenceVideos []string
+	referenceAudios []string
+	duration        *int64 // seconds
+	resolution      string // 480p | 720p | 1080p | 4k
+	ratio           string // width:height, e.g. 16:9
+	seed            *int64
+	watermark       *bool
 	// Extension settings (VideoOptions).
 	cameraFixed           *bool
 	generateAudio         *bool
 	serviceTier           string
 	executionExpiresAfter *int64
+	priority              *int32
+	outputFormat          string
+	omniReferenceTaskType string
+	webSearch             bool
+	callbackURL           string
+	safetyIdentifier      string
 }
 
 type videoRaw struct {
@@ -53,8 +64,16 @@ type videoRaw struct {
 }
 
 // defaultVideoPollInterval paces task polls when the deployment Spec does
-// not override it (Spec.video_poll_interval_millis).
-const defaultVideoPollInterval = 5 * time.Second
+// not override it (Spec.video_poll_interval_millis). The official docs
+// recommend polling no more often than every 10 seconds.
+const defaultVideoPollInterval = 10 * time.Second
+
+// statusExpired is the terminal state the task API reports when a task stays
+// queued/running past execution_expires_after (official docs: 任务超时...
+// 自动终止，并标记为 expired 状态). The pinned SDK defines no constant for
+// it — content_generation.go lists only succeeded/cancelled/failed/running/
+// queued — so the transport handles it locally.
+const statusExpired = "expired"
 
 func compileVideo(
 	endpoint string,
@@ -82,6 +101,8 @@ func compileVideo(
 
 		var prompt []string
 		var images []string
+		var videos []string
+		var audios []string
 		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
@@ -90,14 +111,16 @@ func compileVideo(
 				case message.ImagePart:
 					images = append(images, sourceURI(value.Source))
 				case message.VideoPart:
-					ledger.reject(
-						fields[part.Kind()],
-						"video-reference input is not exposed by the pinned SDK",
-					)
+					videos = append(videos, value.Source.URL())
+				case message.AudioPart:
+					audios = append(audios, value.Source.URL())
 				default:
 					ledger.reject(
 						fields[part.Kind()],
-						fmt.Sprintf("video generation accepts text and image parts, not %s", part.Kind()),
+						fmt.Sprintf(
+							"video generation accepts text, image, video, and audio parts, not %s",
+							part.Kind(),
+						),
 					)
 				}
 			}
@@ -114,16 +137,87 @@ func compileVideo(
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
-		switch len(images) {
-		case 0:
-		case 1:
+		referenceMode := len(images) > 2 || len(videos) > 0 || len(audios) > 0
+		switch {
+		case len(images) == 1:
+			if referenceMode {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					"first/last-frame input and reference inputs are mutually exclusive",
+				)
+			}
 			wire.firstFrame = images[0]
-		case 2:
+		case len(images) == 2:
+			if referenceMode {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					"first/last-frame input and reference inputs are mutually exclusive",
+				)
+			}
 			wire.firstFrame, wire.lastFrame = images[0], images[1]
-		default:
+		case len(images) > 2:
+			if entry.video.referenceImage == 0 {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					fmt.Sprintf(
+						"model %s does not support reference-image input; it accepts at most a first-frame and a last-frame image",
+						model.ID.Name,
+					),
+				)
+			} else if len(images) > entry.video.referenceImage {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					fmt.Sprintf(
+						"model %s supports at most %d reference images",
+						model.ID.Name, entry.video.referenceImage,
+					),
+				)
+			} else {
+				wire.referenceImages = images
+			}
+		}
+		switch {
+		case len(videos) > 0 && entry.video.referenceVideo == 0:
 			ledger.reject(
-				inference.FieldGenerateInputImage,
-				"video generation accepts at most a first-frame and a last-frame image",
+				inference.FieldGenerateInputVideo,
+				fmt.Sprintf("model %s does not support video-reference input", model.ID.Name),
+			)
+		case len(videos) > entry.video.referenceVideo:
+			ledger.reject(
+				inference.FieldGenerateInputVideo,
+				fmt.Sprintf(
+					"model %s supports at most %d reference videos",
+					model.ID.Name, entry.video.referenceVideo,
+				),
+			)
+		default:
+			wire.referenceVideos = videos
+		}
+		switch {
+		case len(audios) > 0 && entry.video.referenceAudio == 0:
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf("model %s does not support audio-reference input", model.ID.Name),
+			)
+		case len(audios) > entry.video.referenceAudio:
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf(
+					"model %s supports at most %d reference audio clips",
+					model.ID.Name, entry.video.referenceAudio,
+				),
+			)
+		default:
+			wire.referenceAudios = audios
+		}
+		if len(audios) > 0 && len(images) == 0 && len(videos) == 0 &&
+			!entry.video.audioOnly {
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf(
+					"model %s does not allow audio-only input; include at least one reference image or video",
+					model.ID.Name,
+				),
 			)
 		}
 
@@ -138,6 +232,18 @@ func compileVideo(
 					)
 				} else {
 					seconds := millis / 1000
+					if min := entry.video.durationMin; min != nil && seconds < *min {
+						ledger.reject(
+							inference.FieldGenerateIntentVideoDuration,
+							fmt.Sprintf("model %s requires a duration of at least %ds", model.ID.Name, *min),
+						)
+					}
+					if max := entry.video.durationMax; max != nil && seconds > *max {
+						ledger.reject(
+							inference.FieldGenerateIntentVideoDuration,
+							fmt.Sprintf("model %s caps duration at %ds", model.ID.Name, *max),
+						)
+					}
 					wire.duration = &seconds
 				}
 			}
@@ -152,13 +258,40 @@ func compileVideo(
 			}
 			if video.AspectRatio != "" {
 				wire.ratio = string(video.AspectRatio)
+				if !validVideoRatio(wire.ratio) {
+					ledger.reject(
+						inference.FieldGenerateIntentVideoAspectRatio,
+						fmt.Sprintf("unsupported video ratio %q", wire.ratio),
+					)
+				} else if entry.video.frameRatioAdaptiveOnly &&
+					(wire.firstFrame != "" || wire.lastFrame != "") &&
+					wire.ratio != "adaptive" {
+					ledger.reject(
+						inference.FieldGenerateIntentVideoAspectRatio,
+						fmt.Sprintf(
+							"model %s supports only ratio=adaptive for first/last-frame tasks",
+							model.ID.Name,
+						),
+					)
+				}
 			}
 			wire.seed = video.Seed
+			if wire.seed != nil && !entry.video.seed {
+				ledger.reject(
+					inference.FieldGenerateIntentVideoSeed,
+					fmt.Sprintf("model %s does not support seed", model.ID.Name),
+				)
+			} else if wire.seed != nil && (*wire.seed < -1 || *wire.seed > 2_147_483_647) {
+				ledger.reject(
+					inference.FieldGenerateIntentVideoSeed,
+					"seed must be within [-1, 2147483647]",
+				)
+			}
 			wire.watermark = video.Watermark
 		}
 		options, other := operationExtensions[VideoOptions](request.Extensions)
 		rejectOtherExtensions("video generation", other, ledger)
-		compileVideoOptions(&wire, options)
+		compileVideoOptions(&wire, options, entry, ledger, model.ID.Name)
 
 		if text := intent.Text; text != nil {
 			// Specific control rejections precede the wholesale text
@@ -193,14 +326,107 @@ func compileVideo(
 	}
 }
 
-// compileVideoOptions lowers VideoOptions onto the wire. None of the
-// extension fields overlap a canonical channel, so every value applies
-// directly.
-func compileVideoOptions(wire *videoWire, options VideoOptions) {
+// compileVideoOptions lowers VideoOptions onto the wire and rejects
+// extension settings the model does not support, per the official
+// documentation's per-model support matrix (catalogEntry.video).
+func compileVideoOptions(
+	wire *videoWire,
+	options VideoOptions,
+	entry catalogEntry,
+	ledger *ledger,
+	modelName string,
+) {
+	field := func(name string) inference.FieldID {
+		return inference.ExtensionField(name).Qualify(options)
+	}
+	if options.CameraFixed != nil && !entry.video.cameraFixed {
+		ledger.reject(
+			field("camera_fixed"),
+			fmt.Sprintf("model %s does not support camera_fixed", modelName),
+		)
+	}
+	if options.GenerateAudio != nil && !entry.video.generateAudio {
+		ledger.reject(
+			field("generate_audio"),
+			fmt.Sprintf("model %s does not support generate_audio", modelName),
+		)
+	}
+	if options.ServiceTier == "flex" && !entry.video.flexTier {
+		ledger.reject(
+			field("service_tier"),
+			fmt.Sprintf("model %s does not support service_tier=flex", modelName),
+		)
+	}
+	if options.Priority != nil && !entry.video.priority {
+		ledger.reject(
+			field("priority"),
+			fmt.Sprintf("model %s does not support priority", modelName),
+		)
+	}
+	if options.OutputFormat != nil && !entry.video.outputFormat {
+		ledger.reject(
+			field("output_format"),
+			fmt.Sprintf("model %s does not support output_format", modelName),
+		)
+	}
+	if options.OmniReferenceTaskType != nil && !entry.video.omniReference {
+		ledger.reject(
+			field("omni_reference_task_type"),
+			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
+		)
+	}
+	if options.WebSearch != nil && *options.WebSearch &&
+		!entry.capabilities.HostedWebSearch {
+		ledger.reject(
+			field("web_search"),
+			fmt.Sprintf("model %s does not support web_search", modelName),
+		)
+	}
+	if options.OmniReferenceTaskType != nil {
+		taskType := *options.OmniReferenceTaskType
+		if taskType == "edit" || taskType == "extend" {
+			// Official constraints: at least one reference_video;
+			// ratio=adaptive; edit additionally requires duration=-1.
+			if len(wire.referenceVideos) == 0 {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					fmt.Sprintf("%s requires at least one reference video", taskType),
+				)
+			}
+			if wire.ratio != "adaptive" {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					fmt.Sprintf("%s requires ratio=adaptive", taskType),
+				)
+			}
+			if taskType == "edit" && wire.duration != nil {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					"edit requires duration=-1; omit the canonical duration",
+				)
+			}
+		}
+	}
 	wire.cameraFixed = options.CameraFixed
 	wire.generateAudio = options.GenerateAudio
 	wire.serviceTier = options.ServiceTier
 	wire.executionExpiresAfter = options.ExecutionExpiresAfter
+	wire.priority = options.Priority
+	wire.outputFormat = derefString(options.OutputFormat)
+	wire.omniReferenceTaskType = derefString(options.OmniReferenceTaskType)
+	wire.webSearch = options.WebSearch != nil && *options.WebSearch
+	wire.callbackURL = derefString(options.CallbackURL)
+	wire.safetyIdentifier = derefString(options.SafetyIdentifier)
+}
+
+// validVideoRatio reports whether ratio is one of the official create-task
+// API values (16:9 / 4:3 / 1:1 / 3:4 / 9:16 / 21:9 / adaptive).
+func validVideoRatio(ratio string) bool {
+	switch ratio {
+	case "16:9", "4:3", "1:1", "3:4", "9:16", "21:9", "adaptive":
+		return true
+	}
+	return false
 }
 
 // resolutionWithin reports whether resolution fits inside the model's
@@ -237,18 +463,20 @@ func transportVideo(
 			Type: arkmodel.ContentGenerationContentItemTypeText,
 			Text: &prompt,
 		}}
-		frame := func(url, role string) *arkmodel.CreateContentGenerationContentItem {
-			return &arkmodel.CreateContentGenerationContentItem{
-				Type:     arkmodel.ContentGenerationContentItemTypeImage,
-				ImageURL: &arkmodel.ImageURL{URL: url},
-				Role:     &role,
-			}
-		}
 		if wire.firstFrame != "" {
-			content = append(content, frame(wire.firstFrame, "first_frame"))
+			content = append(content, itemImage(wire.firstFrame, "first_frame"))
 		}
 		if wire.lastFrame != "" {
-			content = append(content, frame(wire.lastFrame, "last_frame"))
+			content = append(content, itemImage(wire.lastFrame, "last_frame"))
+		}
+		for _, url := range wire.referenceImages {
+			content = append(content, itemImage(url, "reference_image"))
+		}
+		for _, url := range wire.referenceVideos {
+			content = append(content, itemVideo(url, "reference_video"))
+		}
+		for _, url := range wire.referenceAudios {
+			content = append(content, itemAudio(url, "reference_audio"))
 		}
 		request := arkmodel.CreateContentGenerationTaskRequest{
 			Model:                 wire.model,
@@ -268,6 +496,24 @@ func transportVideo(
 		}
 		if wire.serviceTier != "" {
 			request.ServiceTier = &wire.serviceTier
+		}
+		request.Priority = wire.priority
+		if wire.outputFormat != "" {
+			request.OutputFormat = &wire.outputFormat
+		}
+		if wire.omniReferenceTaskType != "" {
+			request.OmniReferenceTaskType = &wire.omniReferenceTaskType
+		}
+		if wire.webSearch {
+			request.Tools = []*arkmodel.ContentGenerationTool{{
+				Type: arkmodel.ToolTypeWebSearch,
+			}}
+		}
+		if wire.callbackURL != "" {
+			request.CallbackUrl = &wire.callbackURL
+		}
+		if wire.safetyIdentifier != "" {
+			request.SafetyIdentifier = &wire.safetyIdentifier
 		}
 		created, err := client.CreateContentGenerationTask(ctx, request)
 		if err != nil {
@@ -304,6 +550,11 @@ func transportVideo(
 					"bytedance: video task %q was cancelled server-side",
 					task.ID,
 				))
+			case statusExpired:
+				return videoRaw{}, errdefs.Timeout(fmt.Errorf(
+					"bytedance: video task %q expired server-side",
+					task.ID,
+				))
 			}
 			select {
 			case <-ctx.Done():
@@ -311,6 +562,33 @@ func transportVideo(
 			case <-time.After(pollInterval):
 			}
 		}
+	}
+}
+
+// itemImage / itemVideo / itemAudio build the official content items with
+// their role. The roles are fixed by the compiler: first/last frame for
+// bookend images, reference_* for every other input.
+func itemImage(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeImage,
+		ImageURL: &arkmodel.ImageURL{URL: url},
+		Role:     &role,
+	}
+}
+
+func itemVideo(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeVideo,
+		VideoURL: &arkmodel.VideoUrl{Url: url},
+		Role:     &role,
+	}
+}
+
+func itemAudio(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeAudio,
+		AudioURL: &arkmodel.AudioUrl{Url: url},
+		Role:     &role,
 	}
 }
 

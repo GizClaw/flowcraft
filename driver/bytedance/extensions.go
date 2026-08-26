@@ -351,6 +351,26 @@ type VideoOptions struct {
 	ServiceTier string `json:"service_tier,omitempty"`
 	// ExecutionExpiresAfter bounds the server-side task lifetime in seconds.
 	ExecutionExpiresAfter *int64 `json:"execution_expires_after,omitempty"`
+	// Priority raises the task's queue position; range [0, 9].
+	// Seedance 2.5 / 2.0 series only.
+	Priority *int32 `json:"priority,omitempty"`
+	// OutputFormat selects the container: "mp4" (default) or "mov".
+	// Seedance 2.5 only.
+	OutputFormat *string `json:"output_format,omitempty"`
+	// OmniReferenceTaskType hints the omni-reference subtask:
+	// "auto" (default), "reference", "edit", or "extend". Seedance 2.5
+	// only; edit/extend impose reference-video, ratio, and duration
+	// constraints checked at compile time.
+	OmniReferenceTaskType *string `json:"omni_reference_task_type,omitempty"`
+	// WebSearch attaches Ark's hosted web_search tool. Seedance 2.5 /
+	// 2.0 series only. Search counts are not surfaced: the pinned SDK
+	// response Usage has no tool_usage field.
+	WebSearch *bool `json:"web_search,omitempty"`
+	// CallbackURL receives task status webhook pushes; polling stays the
+	// fallback.
+	CallbackURL *string `json:"callback_url,omitempty"`
+	// SafetyIdentifier is the end-user identifier for abuse detection.
+	SafetyIdentifier *string `json:"safety_identifier,omitempty"`
 }
 
 func (o VideoOptions) ProviderID() string  { return extensionProvider(o.Provider) }
@@ -370,6 +390,24 @@ func (o VideoOptions) ActiveFields() []inference.ExtensionField {
 	if o.ExecutionExpiresAfter != nil {
 		fields = append(fields, "execution_expires_after")
 	}
+	if o.Priority != nil {
+		fields = append(fields, "priority")
+	}
+	if o.OutputFormat != nil {
+		fields = append(fields, "output_format")
+	}
+	if o.OmniReferenceTaskType != nil {
+		fields = append(fields, "omni_reference_task_type")
+	}
+	if o.WebSearch != nil {
+		fields = append(fields, "web_search")
+	}
+	if o.CallbackURL != nil {
+		fields = append(fields, "callback_url")
+	}
+	if o.SafetyIdentifier != nil {
+		fields = append(fields, "safety_identifier")
+	}
 	return fields
 }
 
@@ -379,11 +417,29 @@ func (o VideoOptions) Validate() error {
 	default:
 		return fmt.Errorf("service_tier must be default or flex, not %q", o.ServiceTier)
 	}
-	if o.ExecutionExpiresAfter != nil && *o.ExecutionExpiresAfter <= 0 {
+	// Official range: [3600, 259200] seconds (default 172800).
+	if o.ExecutionExpiresAfter != nil &&
+		(*o.ExecutionExpiresAfter < 3600 || *o.ExecutionExpiresAfter > 259200) {
 		return fmt.Errorf(
-			"execution_expires_after must be positive, not %d",
+			"execution_expires_after must be within [3600, 259200], not %d",
 			*o.ExecutionExpiresAfter,
 		)
+	}
+	if o.Priority != nil && (*o.Priority < 0 || *o.Priority > 9) {
+		return fmt.Errorf("priority must be within [0, 9], not %d", *o.Priority)
+	}
+	if o.OutputFormat != nil && *o.OutputFormat != "mp4" && *o.OutputFormat != "mov" {
+		return fmt.Errorf("output_format must be mp4 or mov, not %q", *o.OutputFormat)
+	}
+	if o.OmniReferenceTaskType != nil {
+		switch *o.OmniReferenceTaskType {
+		case "auto", "reference", "edit", "extend":
+		default:
+			return fmt.Errorf(
+				"omni_reference_task_type must be auto, reference, edit, or extend, not %q",
+				*o.OmniReferenceTaskType,
+			)
+		}
 	}
 	return nil
 }
@@ -392,6 +448,12 @@ func (o VideoOptions) Clone() inference.Extension {
 	o.CameraFixed = clonePointer(o.CameraFixed)
 	o.GenerateAudio = clonePointer(o.GenerateAudio)
 	o.ExecutionExpiresAfter = clonePointer(o.ExecutionExpiresAfter)
+	o.Priority = clonePointer(o.Priority)
+	o.OutputFormat = clonePointer(o.OutputFormat)
+	o.OmniReferenceTaskType = clonePointer(o.OmniReferenceTaskType)
+	o.WebSearch = clonePointer(o.WebSearch)
+	o.CallbackURL = clonePointer(o.CallbackURL)
+	o.SafetyIdentifier = clonePointer(o.SafetyIdentifier)
 	return o
 }
 

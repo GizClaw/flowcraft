@@ -86,6 +86,29 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !reflect.DeepEqual(video.Capabilities.Outputs, []message.PartKind{message.PartVideo}) {
 		t.Fatalf("video outputs = %v, want video", video.Capabilities.Outputs)
 	}
+	if !slices.Contains(video.Capabilities.Inputs, message.PartVideo) ||
+		!slices.Contains(video.Capabilities.Inputs, message.PartAudio) {
+		t.Fatalf(
+			"seedance 2.0 inputs = %v, want video/audio reference input",
+			video.Capabilities.Inputs,
+		)
+	}
+	if !video.Capabilities.HostedWebSearch {
+		t.Fatal("seedance 2.0 must declare hosted web search")
+	}
+	flagship := descriptors["doubao-seedance-2-5"]
+	if !flagship.Capabilities.HostedWebSearch {
+		t.Fatal("seedance 2.5 must declare hosted web search")
+	}
+	legacy := descriptors["doubao-seedance-1-5-pro"]
+	if slices.Contains(legacy.Capabilities.Inputs, message.PartVideo) ||
+		slices.Contains(legacy.Capabilities.Inputs, message.PartAudio) ||
+		legacy.Capabilities.HostedWebSearch {
+		t.Fatalf(
+			"seedance 1.5 pro capabilities = %+v, want no reference/web-search capabilities",
+			legacy.Capabilities,
+		)
+	}
 
 	embed := descriptors["doubao-embedding-vision"]
 	if !slices.Contains(embed.Capabilities.Inputs, message.PartImage) {
