@@ -50,6 +50,12 @@ type videoWire struct {
 	generateAudio         *bool
 	serviceTier           string
 	executionExpiresAfter *int64
+	priority              *int32
+	outputFormat          string
+	omniReferenceTaskType string
+	webSearch             bool
+	callbackURL           string
+	safetyIdentifier      string
 }
 
 type videoRaw struct {
@@ -331,10 +337,65 @@ func compileVideoOptions(
 			fmt.Sprintf("model %s does not support service_tier=flex", modelName),
 		)
 	}
+	if options.Priority != nil && !entry.video.priority {
+		ledger.reject(
+			field("priority"),
+			fmt.Sprintf("model %s does not support priority", modelName),
+		)
+	}
+	if options.OutputFormat != nil && !entry.video.outputFormat {
+		ledger.reject(
+			field("output_format"),
+			fmt.Sprintf("model %s does not support output_format", modelName),
+		)
+	}
+	if options.OmniReferenceTaskType != nil && !entry.video.omniReference {
+		ledger.reject(
+			field("omni_reference_task_type"),
+			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
+		)
+	}
+	if options.WebSearch != nil && *options.WebSearch && !entry.video.webSearch {
+		ledger.reject(
+			field("web_search"),
+			fmt.Sprintf("model %s does not support web_search", modelName),
+		)
+	}
+	if options.OmniReferenceTaskType != nil {
+		taskType := *options.OmniReferenceTaskType
+		if taskType == "edit" || taskType == "extend" {
+			// Official constraints: at least one reference_video;
+			// ratio=adaptive; edit additionally requires duration=-1.
+			if len(wire.referenceVideos) == 0 {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					fmt.Sprintf("%s requires at least one reference video", taskType),
+				)
+			}
+			if wire.ratio != "adaptive" {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					fmt.Sprintf("%s requires ratio=adaptive", taskType),
+				)
+			}
+			if taskType == "edit" && wire.duration != nil {
+				ledger.reject(
+					field("omni_reference_task_type"),
+					"edit requires duration=-1; omit the canonical duration",
+				)
+			}
+		}
+	}
 	wire.cameraFixed = options.CameraFixed
 	wire.generateAudio = options.GenerateAudio
 	wire.serviceTier = options.ServiceTier
 	wire.executionExpiresAfter = options.ExecutionExpiresAfter
+	wire.priority = options.Priority
+	wire.outputFormat = derefString(options.OutputFormat)
+	wire.omniReferenceTaskType = derefString(options.OmniReferenceTaskType)
+	wire.webSearch = options.WebSearch != nil && *options.WebSearch
+	wire.callbackURL = derefString(options.CallbackURL)
+	wire.safetyIdentifier = derefString(options.SafetyIdentifier)
 }
 
 // validVideoRatio reports whether ratio is one of the official create-task
@@ -414,6 +475,24 @@ func transportVideo(
 		}
 		if wire.serviceTier != "" {
 			request.ServiceTier = &wire.serviceTier
+		}
+		request.Priority = wire.priority
+		if wire.outputFormat != "" {
+			request.OutputFormat = &wire.outputFormat
+		}
+		if wire.omniReferenceTaskType != "" {
+			request.OmniReferenceTaskType = &wire.omniReferenceTaskType
+		}
+		if wire.webSearch {
+			request.Tools = []*arkmodel.ContentGenerationTool{{
+				Type: arkmodel.ToolTypeWebSearch,
+			}}
+		}
+		if wire.callbackURL != "" {
+			request.CallbackUrl = &wire.callbackURL
+		}
+		if wire.safetyIdentifier != "" {
+			request.SafetyIdentifier = &wire.safetyIdentifier
 		}
 		created, err := client.CreateContentGenerationTask(ctx, request)
 		if err != nil {

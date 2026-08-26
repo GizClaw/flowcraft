@@ -32,7 +32,8 @@
 // web search), ImageOptions (guidance scale, watermark, prompt
 // optimization, grouped generation, named size tiers, web search),
 // VideoOptions (fixed camera, generated audio track, service tier, task
-// TTL). Every extension field is
+// TTL, queue priority, output format, omni-reference task type, hosted web
+// search, callback URL, safety identifier). Every extension field is
 // consumed explicitly by the matching compiler; an extension attached to the
 // wrong operation, or one colliding with a canonical channel, is rejected
 // with InvalidExtension.

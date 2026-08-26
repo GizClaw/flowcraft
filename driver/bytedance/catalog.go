@@ -61,6 +61,10 @@ type videoParams struct {
 	cameraFixed   bool // supports camera_fixed
 	flexTier      bool // supports service_tier=flex
 	generateAudio bool // supports generate_audio
+	priority      bool // supports priority
+	outputFormat  bool // supports output_format
+	omniReference bool // supports omni_reference_task_type
+	webSearch     bool // supports tools[web_search]
 	durationMin   *int64
 	durationMax   *int64
 	durationAuto  bool // supports duration=-1 (model picks the length)
@@ -281,6 +285,10 @@ var catalog = map[string]catalogEntry{
 		maxResolution: "1080p",
 		video: videoParams{
 			generateAudio:  true,
+			priority:       true,
+			outputFormat:   true,
+			omniReference:  true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(30),
 			durationAuto:   true,
@@ -302,6 +310,8 @@ var catalog = map[string]catalogEntry{
 		maxResolution: "4k",
 		video: videoParams{
 			generateAudio:  true,
+			priority:       true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -323,6 +333,8 @@ var catalog = map[string]catalogEntry{
 		maxResolution: "720p",
 		video: videoParams{
 			generateAudio:  true,
+			priority:       true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -344,6 +356,8 @@ var catalog = map[string]catalogEntry{
 		maxResolution: "720p",
 		video: videoParams{
 			generateAudio:  true,
+			priority:       true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,

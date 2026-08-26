@@ -67,6 +67,10 @@ func TestCompileVideoGatesParamsByModel(t *testing.T) {
 	seed := int64(11)
 	cameraFixed := true
 	generateAudio := true
+	priority := int32(5)
+	outputFormat := "mov"
+	omniReference := "edit"
+	webSearch := true
 	oneSecond := int64(1_000)
 	thirteenSeconds := int64(13_000)
 	overMaxSeed := int64(2_147_483_648)
@@ -106,6 +110,34 @@ func TestCompileVideoGatesParamsByModel(t *testing.T) {
 			options: VideoOptions{ServiceTier: "flex"},
 			field:   videoOptionsField("service_tier"),
 			reason:  "does not support service_tier=flex",
+		},
+		{
+			name:    "priority unsupported on 1.5 pro",
+			model:   "doubao-seedance-1-5-pro",
+			options: VideoOptions{Priority: &priority},
+			field:   videoOptionsField("priority"),
+			reason:  "does not support priority",
+		},
+		{
+			name:    "output_format unsupported on 2.0",
+			model:   "doubao-seedance-2-0",
+			options: VideoOptions{OutputFormat: &outputFormat},
+			field:   videoOptionsField("output_format"),
+			reason:  "does not support output_format",
+		},
+		{
+			name:    "omni_reference_task_type unsupported on 2.0",
+			model:   "doubao-seedance-2-0",
+			options: VideoOptions{OmniReferenceTaskType: &omniReference},
+			field:   videoOptionsField("omni_reference_task_type"),
+			reason:  "does not support omni_reference_task_type",
+		},
+		{
+			name:    "web_search unsupported on 1.5 pro",
+			model:   "doubao-seedance-1-5-pro",
+			options: VideoOptions{WebSearch: &webSearch},
+			field:   videoOptionsField("web_search"),
+			reason:  "does not support web_search",
 		},
 		{
 			name:   "duration below 1.0 pro minimum",
@@ -213,6 +245,136 @@ func TestVideoOptionsValidateExecutionExpiresAfter(t *testing.T) {
 	}
 }
 
+func TestVideoOptionsValidateExtendedFields(t *testing.T) {
+	priority := int32(10)
+	if err := (VideoOptions{Priority: &priority}).Validate(); err == nil {
+		t.Error("priority=10: expected validation error")
+	}
+	priority = 9
+	if err := (VideoOptions{Priority: &priority}).Validate(); err != nil {
+		t.Errorf("priority=9: unexpected error %v", err)
+	}
+	for _, format := range []string{"gif", "mkv"} {
+		if err := (VideoOptions{OutputFormat: &format}).Validate(); err == nil {
+			t.Errorf("output_format=%q: expected validation error", format)
+		}
+	}
+	for _, taskType := range []string{"auto", "reference", "edit", "extend"} {
+		if err := (VideoOptions{OmniReferenceTaskType: &taskType}).Validate(); err != nil {
+			t.Errorf("omni_reference_task_type=%q: unexpected error %v", taskType, err)
+		}
+	}
+	taskType := "draft"
+	if err := (VideoOptions{OmniReferenceTaskType: &taskType}).Validate(); err == nil {
+		t.Error("omni_reference_task_type=draft: expected validation error")
+	}
+}
+
+func TestCompileVideoOmniReferenceTaskTypeLinkage(t *testing.T) {
+	edit := "edit"
+	extend := "extend"
+	fiveSeconds := int64(5_000)
+
+	requestWith := func(taskType *string, parts []message.Part, ratio string, duration *int64) inference.GenerateRequest {
+		request := compileVideoRequest(parts, VideoOptions{OmniReferenceTaskType: taskType})
+		video := request.Input.Content.Intent.Video
+		video.AspectRatio = media.AspectRatio(ratio)
+		video.DurationMillis = duration
+		return request
+	}
+
+	rejected := []struct {
+		name   string
+		req    inference.GenerateRequest
+		reason string
+	}{
+		{
+			name: "edit without reference video",
+			req: requestWith(
+				&edit,
+				[]message.Part{videoImagePart(t, "https://example.com/a.png")},
+				"adaptive", nil,
+			),
+			reason: "requires at least one reference video",
+		},
+		{
+			name: "edit with explicit ratio",
+			req: requestWith(
+				&edit,
+				[]message.Part{videoReferenceVideoPart(t, "https://example.com/clip.mp4")},
+				"16:9", nil,
+			),
+			reason: "requires ratio=adaptive",
+		},
+		{
+			name: "edit with explicit duration",
+			req: requestWith(
+				&edit,
+				[]message.Part{videoReferenceVideoPart(t, "https://example.com/clip.mp4")},
+				"adaptive", &fiveSeconds,
+			),
+			reason: "requires duration=-1",
+		},
+		{
+			name: "extend without reference video",
+			req: requestWith(
+				&extend,
+				[]message.Part{videoImagePart(t, "https://example.com/a.png")},
+				"adaptive", nil,
+			),
+			reason: "requires at least one reference video",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			_, report, err := compileVideoWire(t, "doubao-seedance-2-5", tc.req)
+			if err == nil {
+				t.Fatalf("compile unexpectedly succeeded; report = %+v", report)
+			}
+			reason := rejectedReason(report, videoOptionsField("omni_reference_task_type"))
+			if reason == "" {
+				t.Fatalf("omni_reference_task_type not rejected; report = %+v", report)
+			}
+			if !strings.Contains(reason, tc.reason) {
+				t.Errorf("rejection reason = %q, want substring %q", reason, tc.reason)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name     string
+		taskType string
+		parts    []message.Part
+	}{
+		{
+			name:     "edit with reference video, adaptive, auto duration",
+			taskType: edit,
+			parts: []message.Part{
+				videoReferenceVideoPart(t, "https://example.com/clip.mp4"),
+			},
+		},
+		{
+			name:     "extend with reference video and adaptive",
+			taskType: extend,
+			parts: []message.Part{
+				videoReferenceVideoPart(t, "https://example.com/clip.mp4"),
+			},
+		},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			req := requestWith(&tc.taskType, tc.parts, "adaptive", nil)
+			wire, report, err := compileVideoWire(t, "doubao-seedance-2-5", req)
+			if err != nil {
+				t.Fatalf("compile: %v; report = %+v", err, report)
+			}
+			if wire.omniReferenceTaskType != tc.taskType {
+				t.Errorf("omniReferenceTaskType = %q, want %q", wire.omniReferenceTaskType, tc.taskType)
+			}
+		})
+	}
+}
+
 func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 	// Transcription guard: catalogEntry.video mirrors the official
 	// create-task API per-model support columns. Any drift here means the
@@ -220,6 +382,10 @@ func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 	checks := map[string]videoParams{
 		"doubao-seedance-2-5": {
 			generateAudio:  true,
+			priority:       true,
+			outputFormat:   true,
+			omniReference:  true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(30),
 			durationAuto:   true,
@@ -229,6 +395,8 @@ func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 		},
 		"doubao-seedance-2-0": {
 			generateAudio:  true,
+			priority:       true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -238,6 +406,8 @@ func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 		},
 		"doubao-seedance-2-0-fast": {
 			generateAudio:  true,
+			priority:       true,
+			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -608,5 +778,70 @@ func TestTransportVideoCarriesReferenceInputs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(body.Content, want) {
 		t.Errorf("content = %#v, want %#v", body.Content, want)
+	}
+}
+
+func TestTransportVideoCarriesExtendedFields(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == videoTaskTestPath:
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			_, _ = writer.Write([]byte(`{"id":"cgt-test"}`))
+		case request.Method == http.MethodGet && request.URL.Path == videoTaskTestPath+"/cgt-test":
+			_, _ = writer.Write([]byte(`{
+				"id": "cgt-test",
+				"status": "succeeded",
+				"content": {"video_url": "https://example.com/out.mp4"},
+				"usage": {"completion_tokens": 1}
+			}`))
+		default:
+			t.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := arkruntime.NewClientWithApiKey(
+		"sk-test",
+		arkruntime.WithBaseUrl(server.URL),
+		arkruntime.WithHTTPClient(server.Client()),
+		arkruntime.WithRetryTimes(0),
+	)
+	priority := int32(5)
+	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+		model:                 "ep-test",
+		prompt:                "a cinematic scene",
+		priority:              &priority,
+		outputFormat:          "mp4",
+		omniReferenceTaskType: "reference",
+		webSearch:             true,
+		callbackURL:           "https://example.com/hooks",
+		safetyIdentifier:      "user-42",
+	})
+	if err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	for key, want := range map[string]any{
+		"model":                    "ep-test",
+		"priority":                 float64(5),
+		"output_format":            "mp4",
+		"omni_reference_task_type": "reference",
+		"callback_url":             "https://example.com/hooks",
+		"safety_identifier":        "user-42",
+	} {
+		if body[key] != want {
+			t.Errorf("body[%q] = %#v, want %#v", key, body[key], want)
+		}
+	}
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %#v, want one web_search tool", body["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	if tool["type"] != "web_search" {
+		t.Errorf("tool type = %#v, want web_search", tool["type"])
 	}
 }
