@@ -379,9 +379,11 @@ func (o VideoOptions) Validate() error {
 	default:
 		return fmt.Errorf("service_tier must be default or flex, not %q", o.ServiceTier)
 	}
-	if o.ExecutionExpiresAfter != nil && *o.ExecutionExpiresAfter <= 0 {
+	// Official range: [3600, 259200] seconds (default 172800).
+	if o.ExecutionExpiresAfter != nil &&
+		(*o.ExecutionExpiresAfter < 3600 || *o.ExecutionExpiresAfter > 259200) {
 		return fmt.Errorf(
-			"execution_expires_after must be positive, not %d",
+			"execution_expires_after must be within [3600, 259200], not %d",
 			*o.ExecutionExpiresAfter,
 		)
 	}

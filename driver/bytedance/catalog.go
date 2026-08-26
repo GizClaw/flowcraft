@@ -33,6 +33,8 @@ type catalogEntry struct {
 	// video: highest supported resolution tier ("720p", "1080p", "4k");
 	// empty leaves resolution unconstrained.
 	maxResolution string
+	// video: Seedance task-parameter support matrix (see videoParams).
+	video videoParams
 	// lifecycle: deprecated models stay routable but announce a replacement.
 	deprecated  bool
 	replacement string
@@ -45,6 +47,32 @@ type catalogEntry struct {
 	// bound. Embedding values mirror the documented per-input limit.
 	maxInputTokens int
 }
+
+// videoParams is the Seedance task-parameter support matrix for one video
+// model, transcribed from the official create-task API documentation
+// (https://www.volcengine.com/docs/82379/1520757): each field mirrors one
+// parameter's documented "model support" column, so the compiler can reject
+// parameters the strong-validation endpoint would otherwise fault on.
+// Zero values mean "undeclared": Spec.Models entries keep a zero matrix and
+// compile with syntax-only validation (the deployment declares the
+// capability); built-in entries declare the full matrix.
+type videoParams struct {
+	seed          bool // supports seed
+	cameraFixed   bool // supports camera_fixed
+	flexTier      bool // supports service_tier=flex
+	generateAudio bool // supports generate_audio
+	durationMin   *int64
+	durationMax   *int64
+	durationAuto  bool // supports duration=-1 (model picks the length)
+	// Reference-input caps; 0 means the model takes no reference inputs
+	// (image counts above the first/last-frame pair are rejected).
+	referenceImage int
+	referenceVideo int
+	referenceAudio int
+}
+
+// videoSeconds builds a *int64 for videoParams duration bounds.
+func videoSeconds(value int64) *int64 { return &value }
 
 // validate enforces the family contract: the compiler bound by kind can only
 // serve the output modalities it produces, so kind and capabilities cannot
@@ -237,6 +265,15 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
+		video: videoParams{
+			generateAudio:  true,
+			durationMin:    videoSeconds(4),
+			durationMax:    videoSeconds(30),
+			durationAuto:   true,
+			referenceImage: 30,
+			referenceVideo: 10,
+			referenceAudio: 10,
+		},
 	},
 	"doubao-seedance-2-0": {
 		kind: kindVideo,
@@ -244,6 +281,15 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "4k",
+		video: videoParams{
+			generateAudio:  true,
+			durationMin:    videoSeconds(4),
+			durationMax:    videoSeconds(15),
+			durationAuto:   true,
+			referenceImage: 9,
+			referenceVideo: 3,
+			referenceAudio: 3,
+		},
 	},
 	"doubao-seedance-2-0-fast": {
 		kind: kindVideo,
@@ -251,6 +297,15 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
+		video: videoParams{
+			generateAudio:  true,
+			durationMin:    videoSeconds(4),
+			durationMax:    videoSeconds(15),
+			durationAuto:   true,
+			referenceImage: 9,
+			referenceVideo: 3,
+			referenceAudio: 3,
+		},
 	},
 	"doubao-seedance-2-0-mini": {
 		kind: kindVideo,
@@ -258,6 +313,15 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
+		video: videoParams{
+			generateAudio:  true,
+			durationMin:    videoSeconds(4),
+			durationMax:    videoSeconds(15),
+			durationAuto:   true,
+			referenceImage: 9,
+			referenceVideo: 3,
+			referenceAudio: 3,
+		},
 	},
 	"doubao-seedance-1-5-pro": {
 		kind: kindVideo,
@@ -265,7 +329,16 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
-		deprecated:    true, replacement: "doubao-seedance-2-0",
+		video: videoParams{
+			seed:          true,
+			cameraFixed:   true,
+			flexTier:      true,
+			generateAudio: true,
+			durationMin:   videoSeconds(4),
+			durationMax:   videoSeconds(12),
+			durationAuto:  true,
+		},
+		deprecated: true, replacement: "doubao-seedance-2-0",
 	},
 	"doubao-seedance-1-0-pro": {
 		kind: kindVideo,
@@ -273,7 +346,14 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
-		deprecated:    true, replacement: "doubao-seedance-2-0",
+		video: videoParams{
+			seed:        true,
+			cameraFixed: true,
+			flexTier:    true,
+			durationMin: videoSeconds(2),
+			durationMax: videoSeconds(12),
+		},
+		deprecated: true, replacement: "doubao-seedance-2-0",
 	},
 	"doubao-seedance-1-0-lite-t2v": {
 		kind: kindVideo,
@@ -281,7 +361,16 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
-		deprecated:    true, replacement: "doubao-seedance-2-0-fast",
+		// Official docs list only the 1.0 pro/pro fast tiers; the lite
+		// entries approximate the 1.0 family support set.
+		video: videoParams{
+			seed:        true,
+			cameraFixed: true,
+			flexTier:    true,
+			durationMin: videoSeconds(2),
+			durationMax: videoSeconds(12),
+		},
+		deprecated: true, replacement: "doubao-seedance-2-0-fast",
 	},
 	"doubao-seedance-1-0-lite-i2v": {
 		kind: kindVideo,
@@ -289,7 +378,14 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
-		deprecated:    true, replacement: "doubao-seedance-2-0-fast",
+		video: videoParams{
+			seed:        true,
+			cameraFixed: true,
+			flexTier:    true,
+			durationMin: videoSeconds(2),
+			durationMax: videoSeconds(12),
+		},
+		deprecated: true, replacement: "doubao-seedance-2-0-fast",
 	},
 }
 
