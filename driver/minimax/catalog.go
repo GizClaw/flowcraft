@@ -13,27 +13,43 @@ import (
 type modelKind string
 
 const (
-	kindGenerate modelKind = "generate"
-	kindImage    modelKind = "image"
-	kindTTS      modelKind = "tts"
-	kindVideo    modelKind = "video"
-	kindMusic    modelKind = "music"
+	kindGenerate  modelKind = "generate"
+	kindImage     modelKind = "image"
+	kindTTS       modelKind = "tts"
+	kindVideo     modelKind = "video"
+	kindMusic     modelKind = "music"
+	kindContextIR modelKind = "context_ir"
 )
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
-// single capability fact source: input/output content kinds and the reasoning
-// control capability. video10s, videoHD, and videoI2VOnly are control
-// capabilities that no capability kind expresses and stay separate flags.
+// single capability fact source: input/output content kinds and the
+// reasoning control capability. video10s, videoHD, video512P,
+// videoLastFrame, videoI2VOnly, and videoV2 are control capabilities that
+// no capability kind expresses and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
+	// wireModel overrides the model token sent to the API when the
+	// catalog name is a deployment-side alias (e.g. MiniMax-H3-Context-IR
+	// still speaks to the MiniMax-H3 model). Empty uses the catalog name.
+	wireModel string
 	// video10s accepts 10-second durations at 768P.
 	video10s bool
 	// videoHD accepts 1080P resolution.
 	videoHD bool
+	// video512P accepts 512P resolution; MiniMax-Hailuo-02 serves it on
+	// the image-to-video surface only.
+	video512P bool
+	// videoLastFrame accepts a second input image as the closing frame
+	// (first_frame_image + last_frame_image); MiniMax-Hailuo-02 only.
+	videoLastFrame bool
 	// videoI2VOnly marks image-to-video models: the request must carry a
 	// first-frame image.
 	videoI2VOnly bool
+	// videoV2 routes the model to the v2 video task API (MiniMax-H3):
+	// a multimodal content array, 768P/2K tiers, 4-15s durations, and
+	// ratio control. The Hailuo 2.x/02 trio rides the flat v1 API.
+	videoV2 bool
 	// maxInputTokens caps the input context in tokens; zero means
 	// undeclared. M3 holds the 1M context and the M2.x series holds
 	// 204,800 per https://platform.minimaxi.com/docs/guides/text-generation.
@@ -64,6 +80,10 @@ func (e catalogEntry) validate() error {
 		if !slices.Contains(e.capabilities.Outputs, message.PartVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
+	case kindContextIR:
+		if !slices.Contains(e.capabilities.Outputs, message.PartText) {
+			return fmt.Errorf("context_ir family must declare text output")
+		}
 	default:
 		return fmt.Errorf("unsupported kind %q", e.kind)
 	}
@@ -89,6 +109,7 @@ func generateChatCapabilities() inference.ModelCapabilities {
 //   - https://platform.minimaxi.com/docs/api-reference/api-overview
 //   - https://platform.minimaxi.com/docs/api-reference/speech-t2a-http
 //   - https://platform.minimaxi.com/docs/api-reference/video-generation-t2v
+//   - https://platform.minimaxi.com/docs/api-reference/video-generation-v2-create
 //   - https://platform.minimaxi.com/docs/api-reference/image-generation-t2i
 //
 // All generate entries speak the binary-thinking dialect: any requested
@@ -200,8 +221,13 @@ var catalog = map[string]catalogEntry{
 			WithOutputs(message.PartImage),
 	},
 
-	// Video generation (async task API). Hailuo-2.3-Fast is image-to-video
-	// only; the 2.3/02 pair runs 10s at 768P and 6s at 1080P.
+	// Video generation (async task API). MiniMax-H3 rides the v2 API: a
+	// multimodal content array (text/image/video/audio items with
+	// first_frame/last_frame/reference_* roles), 768P/2K, 4-15s durations,
+	// ratio control, and a direct content.url on query. The Hailuo trio
+	// rides the flat v1 API: 6s everywhere, 10s at 768P, 1080P at 6s.
+	// Hailuo-2.3-Fast is image-to-video only; Hailuo-02 adds 512P
+	// (image-to-video) and first/last-frame input.
 	"MiniMax-Hailuo-2.3": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
@@ -216,14 +242,47 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		videoI2VOnly: true,
+		video10s:     true,
+		videoHD:      true,
 	},
 	"MiniMax-Hailuo-02": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
-		video10s: true,
-		videoHD:  true,
+		video10s:       true,
+		videoHD:        true,
+		video512P:      true,
+		videoLastFrame: true,
+	},
+	"MiniMax-H3": {
+		kind: kindVideo,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
+			WithOutputs(message.PartVideo),
+		videoV2: true,
+	},
+
+	// H3-Context-IR deep-reads the multimodal context and returns an
+	// enhanced video prompt (text), never a video. It rides the v2 task
+	// API: same content roles as MiniMax-H3 video, duration 4-15s, and an
+	// optional ratio; the target duration/ratio ride ContextIROptions.
+	"MiniMax-H3-Context-IR": {
+		kind:      kindContextIR,
+		wireModel: "MiniMax-H3",
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
+			WithOutputs(message.PartText),
 	},
 
 	// Music generation (text-to-music; music-cover stays out — see
@@ -266,10 +325,28 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			kind:         modelKind(declared.Kind),
 			capabilities: declared.Capabilities,
 		}
-		if entry.kind == "" {
-			if existing, exists := models[declared.Name]; exists {
+		if existing, exists := models[declared.Name]; exists {
+			if entry.kind == "" {
 				entry.kind = existing.kind
-			} else {
+			}
+			if entry.kind == existing.kind {
+				// Redeclaring a built-in model under the same kind keeps
+				// the family's control flags and limits; only capabilities
+				// come from the declaration. Without this, a spec entry for
+				// MiniMax-H3 would silently fall back to the v1 video API
+				// and a redeclared Hailuo model would lose its 10s/1080P
+				// support.
+				entry.wireModel = existing.wireModel
+				entry.video10s = existing.video10s
+				entry.videoHD = existing.videoHD
+				entry.video512P = existing.video512P
+				entry.videoLastFrame = existing.videoLastFrame
+				entry.videoI2VOnly = existing.videoI2VOnly
+				entry.videoV2 = existing.videoV2
+				entry.maxInputTokens = existing.maxInputTokens
+			}
+		} else {
+			if entry.kind == "" {
 				entry.kind = kindGenerate
 			}
 		}
@@ -281,6 +358,16 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		}
 	}
 	return models, nil
+}
+
+// wireModel returns the model token sent on the wire: the catalog name
+// unless the entry declares a wireModel override (e.g. the Context-IR
+// alias still addresses the MiniMax-H3 model).
+func wireModel(name string, entry catalogEntry) string {
+	if entry.wireModel != "" {
+		return entry.wireModel
+	}
+	return name
 }
 
 // sortedNames returns catalog names in deterministic order so factory

@@ -56,6 +56,7 @@ func (m ModelSpec) Validate() error {
 		modelKind(m.Kind) != kindImage &&
 		modelKind(m.Kind) != kindTTS &&
 		modelKind(m.Kind) != kindVideo &&
+		modelKind(m.Kind) != kindContextIR &&
 		modelKind(m.Kind) != kindMusic {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}

@@ -2,6 +2,7 @@ package minimax
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 )
@@ -22,6 +23,10 @@ import (
 const driverID = "minimax"
 
 const extensionMusic = "music_options"
+
+const extensionVideo = "video_options"
+
+const extensionContextIR = "context_ir_options"
 
 // extensionProvider resolves the deployment provider ID an extension targets,
 // defaulting to the driver name.
@@ -85,6 +90,128 @@ func (o MusicOptions) Validate() error {
 func (o MusicOptions) Clone() inference.Extension {
 	o.Instrumental = clonePointer(o.Instrumental)
 	o.Watermark = clonePointer(o.Watermark)
+	return o
+}
+
+// VideoOptions carries video task settings that have no canonical
+// representation. callback_url applies to both API generations;
+// prompt_optimizer and fast_pretreatment are v1-only prompt controls —
+// the v2 API has no optimizer knobs, so those fields reject on
+// MiniMax-H3.
+type VideoOptions struct {
+	// Provider targets a deployment provider ID other than "minimax".
+	// Attempts for any other provider leave the extension inert rather
+	// than rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// CallbackURL receives asynchronous task status updates after a
+	// challenge handshake; the driver still polls as its primary path.
+	CallbackURL string `json:"callback_url,omitempty"`
+	// PromptOptimizer asks the provider to rewrite the prompt before
+	// generation (v1 API only; defaults to true server-side).
+	PromptOptimizer *bool `json:"prompt_optimizer,omitempty"`
+	// FastPretreatment shortens the optimizer's rewrite time (v1 API
+	// only; applies to the Hailuo 2.3/2.3-Fast/02 models).
+	FastPretreatment *bool `json:"fast_pretreatment,omitempty"`
+	// LastFrameOnly marks a single input image as the closing frame
+	// (role=last_frame) instead of the opening one. v2 API only; requires
+	// exactly one image — the official last-frame-only i2v scenario.
+	LastFrameOnly *bool `json:"last_frame_only,omitempty"`
+}
+
+func (o VideoOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o VideoOptions) ExtensionID() string { return extensionVideo }
+
+func (o VideoOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.CallbackURL != "" {
+		fields = append(fields, "callback_url")
+	}
+	if o.PromptOptimizer != nil {
+		fields = append(fields, "prompt_optimizer")
+	}
+	if o.FastPretreatment != nil {
+		fields = append(fields, "fast_pretreatment")
+	}
+	if o.LastFrameOnly != nil {
+		fields = append(fields, "last_frame_only")
+	}
+	return fields
+}
+
+func (o VideoOptions) Validate() error {
+	if o.CallbackURL != "" &&
+		!strings.HasPrefix(o.CallbackURL, "https://") &&
+		!strings.HasPrefix(o.CallbackURL, "http://") {
+		return fmt.Errorf("callback_url must be an http(s) URL")
+	}
+	return nil
+}
+
+func (o VideoOptions) Clone() inference.Extension {
+	o.PromptOptimizer = clonePointer(o.PromptOptimizer)
+	o.FastPretreatment = clonePointer(o.FastPretreatment)
+	o.LastFrameOnly = clonePointer(o.LastFrameOnly)
+	return o
+}
+
+// ContextIROptions carries H3-Context-IR task settings that have no
+// canonical representation. The target video's duration and ratio shape
+// the enhanced prompt, and callback_url receives async status updates;
+// the content itself rides the request's multimodal parts.
+type ContextIROptions struct {
+	// Provider targets a deployment provider ID other than "minimax".
+	// Attempts for any other provider leave the extension inert rather
+	// than rejecting it, so mixed-provider routes keep working.
+	Provider string `json:"-"`
+	// DurationMillis is the target video length; defaults to 6s, valid
+	// whole seconds within [4, 15].
+	DurationMillis *int64 `json:"duration_millis,omitempty"`
+	// Ratio is the target video's aspect ratio: adaptive/21:9/16:9/4:3/
+	// 1:1/3:4/9:16. Text-only tasks require an explicit non-adaptive
+	// ratio (default 16:9); image/reference tasks default to adaptive.
+	Ratio string `json:"ratio,omitempty"`
+	// CallbackURL receives asynchronous task status updates after a
+	// challenge handshake; the driver still polls as its primary path.
+	CallbackURL string `json:"callback_url,omitempty"`
+}
+
+func (o ContextIROptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o ContextIROptions) ExtensionID() string { return extensionContextIR }
+
+func (o ContextIROptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.DurationMillis != nil {
+		fields = append(fields, "duration_millis")
+	}
+	if o.Ratio != "" {
+		fields = append(fields, "ratio")
+	}
+	if o.CallbackURL != "" {
+		fields = append(fields, "callback_url")
+	}
+	return fields
+}
+
+func (o ContextIROptions) Validate() error {
+	if o.DurationMillis != nil && *o.DurationMillis <= 0 {
+		return fmt.Errorf("duration_millis must be positive")
+	}
+	if o.Ratio != "" && !v2RatioValues[o.Ratio] {
+		return fmt.Errorf(
+			"ratio must be one of adaptive/21:9/16:9/4:3/1:1/3:4/9:16, not %q",
+			o.Ratio,
+		)
+	}
+	if o.CallbackURL != "" &&
+		!strings.HasPrefix(o.CallbackURL, "https://") &&
+		!strings.HasPrefix(o.CallbackURL, "http://") {
+		return fmt.Errorf("callback_url must be an http(s) URL")
+	}
+	return nil
+}
+
+func (o ContextIROptions) Clone() inference.Extension {
+	o.DurationMillis = clonePointer(o.DurationMillis)
 	return o
 }
 
