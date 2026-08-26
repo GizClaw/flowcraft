@@ -78,6 +78,20 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		t.Fatalf("video outputs = %v, want video", video.Capabilities.Outputs)
 	}
 
+	h3 := descriptors["MiniMax-H3"]
+	if !reflect.DeepEqual(h3.Capabilities.Outputs, []message.PartKind{message.PartVideo}) ||
+		!slices.Contains(h3.Capabilities.Inputs, message.PartVideo) ||
+		!slices.Contains(h3.Capabilities.Inputs, message.PartAudio) {
+		t.Fatalf("H3 capabilities = %+v", h3.Capabilities)
+	}
+
+	contextIR := descriptors["MiniMax-H3-Context-IR"]
+	if !reflect.DeepEqual(contextIR.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
+		!slices.Contains(contextIR.Capabilities.Inputs, message.PartVideo) ||
+		!slices.Contains(contextIR.Capabilities.Inputs, message.PartAudio) {
+		t.Fatalf("Context-IR capabilities = %+v", contextIR.Capabilities)
+	}
+
 	tts := descriptors["speech-2.8-hd"]
 	if !reflect.DeepEqual(tts.Capabilities.Outputs, []message.PartKind{message.PartAudio}) {
 		t.Fatalf("tts outputs = %v, want audio", tts.Capabilities.Outputs)
@@ -98,5 +112,50 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 	}
 	if _, err := mergedCatalog(spec); err == nil {
 		t.Fatal("mergedCatalog unexpectedly accepted contract violation")
+	}
+}
+
+func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
+	spec, err := decodeSpec([]byte(
+		`{"models":[{"name":"MiniMax-H3","kind":"video","capabilities":{"inputs":["text"],"outputs":["video"]}}]}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	if entry := models["MiniMax-H3"]; !entry.videoV2 {
+		t.Fatal("redeclared MiniMax-H3 lost the v2 flag")
+	}
+
+	spec, err = decodeSpec([]byte(
+		`{"models":[{"name":"MiniMax-Hailuo-02","kind":"video","capabilities":{"inputs":["text","image"],"outputs":["video"]}}]}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["MiniMax-Hailuo-02"]
+	if !entry.video10s || !entry.videoHD || !entry.video512P || !entry.videoLastFrame {
+		t.Fatalf("redeclared MiniMax-Hailuo-02 flags = %+v", entry)
+	}
+
+	spec, err = decodeSpec([]byte(
+		`{"models":[{"name":"MiniMax-H3-Context-IR","kind":"context_ir","capabilities":{"inputs":["text"],"outputs":["text"]}}]}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	if entry := models["MiniMax-H3-Context-IR"]; entry.wireModel != "MiniMax-H3" {
+		t.Fatalf("redeclared Context-IR wireModel = %q, want MiniMax-H3", entry.wireModel)
 	}
 }

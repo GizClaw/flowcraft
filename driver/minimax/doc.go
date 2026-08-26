@@ -32,9 +32,13 @@
 //     HD and turbo tiers), unary hex payloads and SSE hex streaming.
 //   - Generate ImageIntent: image_generation (image-01, image-01-live),
 //     unary; URL deliveries expire after 24 hours on the provider side.
-//   - Generate VideoIntent: the async video task pipeline
-//     (MiniMax-Hailuo-2.3, 2.3-Fast, 02) — create, poll, retrieve; the
-//     download URL expires one hour after retrieval.
+//   - Generate VideoIntent: the async video task pipeline. The Hailuo
+//     2.3/2.3-Fast/02 trio rides the v1 API (create, poll, retrieve; the
+//     download URL expires one hour after retrieval); MiniMax-H3 rides the
+//     v2 API and returns the artifact URL from the query directly.
+//   - Generate TextIntent on MiniMax-H3-Context-IR: the v2 H3-Context-IR
+//     task returns an enhanced video prompt (text), never a video. The
+//     target duration/ratio ride the ContextIROptions extension.
 //   - Generate AudioIntent without a voice: music_generation
 //     (music-3.0/2.6 and their -free tiers). The canonical voice is
 //     optional: speech models require one, music models reject one.
@@ -48,8 +52,9 @@
 // 2026-07: MiniMax-M3 (1M context, image input) and the M2.x series
 // (M2.7, M2.5, M2.1 and their highspeed twins, plus M2 — 204,800
 // context, text-only), the speech-2.8/2.6/02 speech models, image-01 and
-// image-01-live, the Hailuo video trio, and the music-3.0/2.6 music
-// models. Custom models declare
+// image-01-live, the Hailuo video trio plus MiniMax-H3, the
+// MiniMax-H3-Context-IR prompt-enhancement task, and the music-3.0/2.6
+// music models. Custom models declare
 // through the spec's models list; unknown channels stay fail closed.
 //
 // # Behavior mapping
@@ -81,9 +86,20 @@
 //     Image parts compile into character subject references
 //     (image-to-image); custom sizes must be 512–2048 and divisible
 //     by 8.
-//   - Video durations are model-bound: 6s everywhere, 10s at 768P on
-//     the Hailuo-2.3/02 pair; Hailuo-2.3-Fast is image-to-video only.
-//     The task API has no aspect-ratio or seed knob — both reject.
+//   - Video durations are model-bound. The Hailuo trio serves 6s, and 10s
+//     at 768P on the 2.3/2.3-Fast/02 models; Hailuo-2.3-Fast is
+//     image-to-video only, and Hailuo-02 adds 512P (single-first-frame
+//     image-to-video only; first/last-frame tasks cap at 768P/1080P) and
+//     first/last-frame input. MiniMax-H3 rides the v2 API: 4-15s
+//     durations, 768P/2K, a ratio knob (text-only tasks default to 16:9
+//     and reject adaptive), and multimodal reference inputs. The v1-only
+//     prompt_optimizer / fast_pretreatment controls and the shared
+//     callback_url ride the VideoOptions extension, which also carries
+//     last_frame_only to mark a single v2 input image as the closing
+//     frame. The task APIs have no seed knob — it rejects.
+//   - H3-Context-IR shares the v2 content roles and the 4-15s duration /
+//     ratio rules, but returns an enhanced video prompt as text; the
+//     target duration/ratio ride ContextIROptions.
 //   - Music encodes mp3 or 16-bit pcm at 16/24/32/44.1kHz; bitrate and
 //     channel layout are model-fixed, so those canonical knobs reject.
 //     Speech synthesis requires a voice; music generation requires none.

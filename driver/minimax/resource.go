@@ -81,6 +81,12 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 			extensionMusic: inference.ExtensionDecoderFor(func() *MusicOptions {
 				return &MusicOptions{Provider: settings.ID}
 			}),
+			extensionVideo: inference.ExtensionDecoderFor(func() *VideoOptions {
+				return &VideoOptions{Provider: settings.ID}
+			}),
+			extensionContextIR: inference.ExtensionDecoderFor(func() *ContextIROptions {
+				return &ContextIROptions{Provider: settings.ID}
+			}),
 		},
 	}
 	for _, profile := range settings.Profiles {
@@ -140,6 +146,8 @@ func openersFor(
 			return openTTS(cls, entry, id)
 		case kindVideo:
 			return openVideo(cls, spec, entry, id)
+		case kindContextIR:
+			return openContextIR(cls, spec, entry, id)
 		case kindMusic:
 			return openMusic(cls, entry, id)
 		default:
