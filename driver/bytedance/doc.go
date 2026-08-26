@@ -17,8 +17,10 @@
 //   - Generate VideoIntent: Ark content-generation tasks (seedance models).
 //     The API is asynchronous — the transport creates a task and polls it to
 //     a terminal state inside the caller's context, so the unary contract
-//     holds. Input images map to first/last-frame roles; parameters the
-//     model does not support (seed, camera_fixed, flex tier, duration
+//     holds. Input images map to first/last-frame roles; the 2.0 series and
+//     2.5 additionally accept reference images (3+), reference videos, and
+//     reference audio under the official mutual-exclusion rules. Parameters
+//     the model does not support (seed, camera_fixed, flex tier, duration
 //     bounds) are rejected at compile time per the official per-model
 //     support matrix.
 //   - Embed: Ark embeddings (doubao-embedding text; multimodal embedding for

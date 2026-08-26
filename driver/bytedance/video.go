@@ -24,23 +24,27 @@ import (
 // rather than deleted, because the SDK delete call is best-effort and a
 // cancelled caller no longer needs the artifact either way.
 //
-// Input images map onto the frame roles the task API understands: the first
-// image is the first frame, the second is the last frame. More references
-// have no truthful canonical ordering, so the compiler rejects them instead
-// of guessing. Video/audio-reference input (video_url/audio_url content
-// items) is likewise not yet exposed, but that is a scope decision, not an
-// SDK limitation: v1.2.48 encodes both content item types.
+// Inputs map onto the content roles the task API understands: the first
+// image is the first frame, the second is the last frame; any further
+// images and any video/audio parts become reference inputs
+// (reference_image / reference_video / reference_audio), which only the
+// 2.0 series and 2.5 support. First/last-frame input and reference inputs
+// are mutually exclusive, mirroring the official task scenarios.
 
 type videoWire struct {
 	model      string
 	prompt     string
 	firstFrame string
 	lastFrame  string
-	duration   *int64 // seconds
-	resolution string // 480p | 720p | 1080p | 4k
-	ratio      string // width:height, e.g. 16:9
-	seed       *int64
-	watermark  *bool
+	// Reference inputs (Seedance 2.0 series / 2.5 only).
+	referenceImages []string
+	referenceVideos []string
+	referenceAudios []string
+	duration        *int64 // seconds
+	resolution      string // 480p | 720p | 1080p | 4k
+	ratio           string // width:height, e.g. 16:9
+	seed            *int64
+	watermark       *bool
 	// Extension settings (VideoOptions).
 	cameraFixed           *bool
 	generateAudio         *bool
@@ -91,6 +95,8 @@ func compileVideo(
 
 		var prompt []string
 		var images []string
+		var videos []string
+		var audios []string
 		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
@@ -99,14 +105,16 @@ func compileVideo(
 				case message.ImagePart:
 					images = append(images, sourceURI(value.Source))
 				case message.VideoPart:
-					ledger.reject(
-						fields[part.Kind()],
-						"video-reference input is not exposed by the pinned SDK",
-					)
+					videos = append(videos, value.Source.URL())
+				case message.AudioPart:
+					audios = append(audios, value.Source.URL())
 				default:
 					ledger.reject(
 						fields[part.Kind()],
-						fmt.Sprintf("video generation accepts text and image parts, not %s", part.Kind()),
+						fmt.Sprintf(
+							"video generation accepts text, image, video, and audio parts, not %s",
+							part.Kind(),
+						),
 					)
 				}
 			}
@@ -123,17 +131,78 @@ func compileVideo(
 		}
 		collect(request.Input.Content.Parts, inputPartFields)
 		wire.prompt = strings.Join(prompt, "\n")
-		switch len(images) {
-		case 0:
-		case 1:
+		referenceMode := len(images) > 2 || len(videos) > 0 || len(audios) > 0
+		switch {
+		case len(images) == 1:
+			if referenceMode {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					"first/last-frame input and reference inputs are mutually exclusive",
+				)
+			}
 			wire.firstFrame = images[0]
-		case 2:
+		case len(images) == 2:
+			if referenceMode {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					"first/last-frame input and reference inputs are mutually exclusive",
+				)
+			}
 			wire.firstFrame, wire.lastFrame = images[0], images[1]
-		default:
+		case len(images) > 2:
+			if entry.video.referenceImage == 0 {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					fmt.Sprintf(
+						"model %s does not support reference-image input; it accepts at most a first-frame and a last-frame image",
+						model.ID.Name,
+					),
+				)
+			} else if len(images) > entry.video.referenceImage {
+				ledger.reject(
+					inference.FieldGenerateInputImage,
+					fmt.Sprintf(
+						"model %s supports at most %d reference images",
+						model.ID.Name, entry.video.referenceImage,
+					),
+				)
+			} else {
+				wire.referenceImages = images
+			}
+		}
+		switch {
+		case len(videos) > 0 && entry.video.referenceVideo == 0:
 			ledger.reject(
-				inference.FieldGenerateInputImage,
-				"video generation accepts at most a first-frame and a last-frame image",
+				inference.FieldGenerateInputVideo,
+				fmt.Sprintf("model %s does not support video-reference input", model.ID.Name),
 			)
+		case len(videos) > entry.video.referenceVideo:
+			ledger.reject(
+				inference.FieldGenerateInputVideo,
+				fmt.Sprintf(
+					"model %s supports at most %d reference videos",
+					model.ID.Name, entry.video.referenceVideo,
+				),
+			)
+		default:
+			wire.referenceVideos = videos
+		}
+		switch {
+		case len(audios) > 0 && entry.video.referenceAudio == 0:
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf("model %s does not support audio-reference input", model.ID.Name),
+			)
+		case len(audios) > entry.video.referenceAudio:
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf(
+					"model %s supports at most %d reference audio clips",
+					model.ID.Name, entry.video.referenceAudio,
+				),
+			)
+		default:
+			wire.referenceAudios = audios
 		}
 
 		intent := request.Input.Content.Intent
@@ -312,18 +381,20 @@ func transportVideo(
 			Type: arkmodel.ContentGenerationContentItemTypeText,
 			Text: &prompt,
 		}}
-		frame := func(url, role string) *arkmodel.CreateContentGenerationContentItem {
-			return &arkmodel.CreateContentGenerationContentItem{
-				Type:     arkmodel.ContentGenerationContentItemTypeImage,
-				ImageURL: &arkmodel.ImageURL{URL: url},
-				Role:     &role,
-			}
-		}
 		if wire.firstFrame != "" {
-			content = append(content, frame(wire.firstFrame, "first_frame"))
+			content = append(content, itemImage(wire.firstFrame, "first_frame"))
 		}
 		if wire.lastFrame != "" {
-			content = append(content, frame(wire.lastFrame, "last_frame"))
+			content = append(content, itemImage(wire.lastFrame, "last_frame"))
+		}
+		for _, url := range wire.referenceImages {
+			content = append(content, itemImage(url, "reference_image"))
+		}
+		for _, url := range wire.referenceVideos {
+			content = append(content, itemVideo(url, "reference_video"))
+		}
+		for _, url := range wire.referenceAudios {
+			content = append(content, itemAudio(url, "reference_audio"))
 		}
 		request := arkmodel.CreateContentGenerationTaskRequest{
 			Model:                 wire.model,
@@ -391,6 +462,33 @@ func transportVideo(
 			case <-time.After(pollInterval):
 			}
 		}
+	}
+}
+
+// itemImage / itemVideo / itemAudio build the official content items with
+// their role. The roles are fixed by the compiler: first/last frame for
+// bookend images, reference_* for every other input.
+func itemImage(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeImage,
+		ImageURL: &arkmodel.ImageURL{URL: url},
+		Role:     &role,
+	}
+}
+
+func itemVideo(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeVideo,
+		VideoURL: &arkmodel.VideoUrl{Url: url},
+		Role:     &role,
+	}
+}
+
+func itemAudio(url, role string) *arkmodel.CreateContentGenerationContentItem {
+	return &arkmodel.CreateContentGenerationContentItem{
+		Type:     arkmodel.ContentGenerationContentItemTypeAudio,
+		AudioURL: &arkmodel.AudioUrl{Url: url},
+		Role:     &role,
 	}
 }
 

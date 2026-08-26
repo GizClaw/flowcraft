@@ -2,6 +2,7 @@ package bytedance
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
 )
@@ -336,5 +338,275 @@ func TestTransportVideoSucceeded(t *testing.T) {
 	}
 	if raw.completionTokens != 12345 {
 		t.Fatalf("completionTokens = %d, want 12345", raw.completionTokens)
+	}
+}
+
+func videoImagePart(t *testing.T, url string) message.ImagePart {
+	t.Helper()
+	source, err := media.NewImageURL(url, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	return message.ImagePart{Source: source}
+}
+
+func videoReferenceVideoPart(t *testing.T, url string) message.VideoPart {
+	t.Helper()
+	source, err := media.NewVideoURL(url, "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoURL: %v", err)
+	}
+	return message.VideoPart{Source: source}
+}
+
+func videoReferenceAudioPart(t *testing.T, url string) message.AudioPart {
+	t.Helper()
+	source, err := media.NewAudioURL(url, "audio/mpeg")
+	if err != nil {
+		t.Fatalf("NewAudioURL: %v", err)
+	}
+	return message.AudioPart{Source: source}
+}
+
+func TestCompileVideoReferenceInputs(t *testing.T) {
+	parts := func(kinds ...message.Part) []message.Part { return kinds }
+
+	accepted := []struct {
+		name       string
+		model      string
+		parts      []message.Part
+		wantFirst  string
+		wantLast   string
+		wantImages []string
+		wantVideos []string
+		wantAudios []string
+	}{
+		{
+			name:      "first frame",
+			model:     "doubao-seedance-2-0",
+			parts:     parts(videoImagePart(t, "https://example.com/a.png")),
+			wantFirst: "https://example.com/a.png",
+		},
+		{
+			name:  "first and last frames",
+			model: "doubao-seedance-2-0",
+			parts: parts(
+				videoImagePart(t, "https://example.com/a.png"),
+				videoImagePart(t, "https://example.com/b.png"),
+			),
+			wantFirst: "https://example.com/a.png",
+			wantLast:  "https://example.com/b.png",
+		},
+		{
+			name:  "reference images",
+			model: "doubao-seedance-2-0",
+			parts: parts(
+				videoImagePart(t, "https://example.com/a.png"),
+				videoImagePart(t, "https://example.com/b.png"),
+				videoImagePart(t, "https://example.com/c.png"),
+			),
+			wantImages: []string{
+				"https://example.com/a.png",
+				"https://example.com/b.png",
+				"https://example.com/c.png",
+			},
+		},
+		{
+			name:       "reference video",
+			model:      "doubao-seedance-2-0",
+			parts:      parts(videoReferenceVideoPart(t, "https://example.com/clip.mp4")),
+			wantVideos: []string{"https://example.com/clip.mp4"},
+		},
+		{
+			name:       "reference audio",
+			model:      "doubao-seedance-2-0",
+			parts:      parts(videoReferenceAudioPart(t, "https://example.com/track.mp3")),
+			wantAudios: []string{"https://example.com/track.mp3"},
+		},
+		{
+			name:       "audio only on 2.5",
+			model:      "doubao-seedance-2-5",
+			parts:      parts(videoReferenceAudioPart(t, "https://example.com/track.mp3")),
+			wantAudios: []string{"https://example.com/track.mp3"},
+		},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			wire, report, err := compileVideoWire(
+				t,
+				tc.model,
+				compileVideoRequest(tc.parts, VideoOptions{}),
+			)
+			if err != nil {
+				t.Fatalf("compile: %v; report = %+v", err, report)
+			}
+			if wire.firstFrame != tc.wantFirst {
+				t.Errorf("firstFrame = %q, want %q", wire.firstFrame, tc.wantFirst)
+			}
+			if wire.lastFrame != tc.wantLast {
+				t.Errorf("lastFrame = %q, want %q", wire.lastFrame, tc.wantLast)
+			}
+			if !reflect.DeepEqual(wire.referenceImages, tc.wantImages) {
+				t.Errorf("referenceImages = %v, want %v", wire.referenceImages, tc.wantImages)
+			}
+			if !reflect.DeepEqual(wire.referenceVideos, tc.wantVideos) {
+				t.Errorf("referenceVideos = %v, want %v", wire.referenceVideos, tc.wantVideos)
+			}
+			if !reflect.DeepEqual(wire.referenceAudios, tc.wantAudios) {
+				t.Errorf("referenceAudios = %v, want %v", wire.referenceAudios, tc.wantAudios)
+			}
+		})
+	}
+}
+
+func TestCompileVideoRejectsReferenceConflicts(t *testing.T) {
+	tenImages := make([]message.Part, 0, 10)
+	for i := range 10 {
+		tenImages = append(tenImages, videoImagePart(
+			t,
+			"https://example.com/"+string(rune('a'+i))+".png",
+		))
+	}
+	cases := []struct {
+		name   string
+		model  string
+		parts  []message.Part
+		field  inference.FieldID
+		reason string
+	}{
+		{
+			name:   "video reference unsupported on 1.5 pro",
+			model:  "doubao-seedance-1-5-pro",
+			parts:  []message.Part{videoReferenceVideoPart(t, "https://example.com/clip.mp4")},
+			field:  inference.FieldGenerateInputVideo,
+			reason: "does not support video-reference input",
+		},
+		{
+			name:  "reference images unsupported on 1.5 pro",
+			model: "doubao-seedance-1-5-pro",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+				videoImagePart(t, "https://example.com/b.png"),
+				videoImagePart(t, "https://example.com/c.png"),
+			},
+			field:  inference.FieldGenerateInputImage,
+			reason: "does not support reference-image input",
+		},
+		{
+			name:  "first frame and reference video conflict",
+			model: "doubao-seedance-2-0",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+				videoReferenceVideoPart(t, "https://example.com/clip.mp4"),
+			},
+			field:  inference.FieldGenerateInputImage,
+			reason: "mutually exclusive",
+		},
+		{
+			name:   "reference image count cap on 2.0",
+			model:  "doubao-seedance-2-0",
+			parts:  tenImages,
+			field:  inference.FieldGenerateInputImage,
+			reason: "supports at most 9 reference images",
+		},
+		{
+			name:  "reference video count cap on 2.0",
+			model: "doubao-seedance-2-0",
+			parts: []message.Part{
+				videoReferenceVideoPart(t, "https://example.com/1.mp4"),
+				videoReferenceVideoPart(t, "https://example.com/2.mp4"),
+				videoReferenceVideoPart(t, "https://example.com/3.mp4"),
+				videoReferenceVideoPart(t, "https://example.com/4.mp4"),
+			},
+			field:  inference.FieldGenerateInputVideo,
+			reason: "supports at most 3 reference videos",
+		},
+		{
+			name:  "reference audio count cap on 2.0",
+			model: "doubao-seedance-2-0",
+			parts: []message.Part{
+				videoReferenceAudioPart(t, "https://example.com/1.mp3"),
+				videoReferenceAudioPart(t, "https://example.com/2.mp3"),
+				videoReferenceAudioPart(t, "https://example.com/3.mp3"),
+				videoReferenceAudioPart(t, "https://example.com/4.mp3"),
+			},
+			field:  inference.FieldGenerateInputAudio,
+			reason: "supports at most 3 reference audio clips",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, report, err := compileVideoWire(
+				t,
+				tc.model,
+				compileVideoRequest(tc.parts, VideoOptions{}),
+			)
+			if err == nil {
+				t.Fatalf("compile unexpectedly succeeded; report = %+v", report)
+			}
+			reason := rejectedReason(report, tc.field)
+			if reason == "" {
+				t.Fatalf("field %q not rejected; report = %+v", tc.field, report)
+			}
+			if !strings.Contains(reason, tc.reason) {
+				t.Errorf("rejection reason = %q, want substring %q", reason, tc.reason)
+			}
+		})
+	}
+}
+
+func TestTransportVideoCarriesReferenceInputs(t *testing.T) {
+	var body struct {
+		Content []map[string]any `json:"content"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		switch {
+		case request.Method == http.MethodPost && request.URL.Path == videoTaskTestPath:
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			_, _ = writer.Write([]byte(`{"id":"cgt-test"}`))
+		case request.Method == http.MethodGet && request.URL.Path == videoTaskTestPath+"/cgt-test":
+			_, _ = writer.Write([]byte(`{
+				"id": "cgt-test",
+				"status": "succeeded",
+				"content": {"video_url": "https://example.com/out.mp4"},
+				"usage": {"completion_tokens": 1}
+			}`))
+		default:
+			t.Errorf("unexpected request %s %s", request.Method, request.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client := arkruntime.NewClientWithApiKey(
+		"sk-test",
+		arkruntime.WithBaseUrl(server.URL),
+		arkruntime.WithHTTPClient(server.Client()),
+		arkruntime.WithRetryTimes(0),
+	)
+	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+		model:           "ep-test",
+		prompt:          "reference please",
+		firstFrame:      "https://example.com/first.png",
+		lastFrame:       "https://example.com/last.png",
+		referenceImages: []string{"https://example.com/ref1.png"},
+		referenceVideos: []string{"https://example.com/clip.mp4"},
+		referenceAudios: []string{"https://example.com/track.mp3"},
+	})
+	if err != nil {
+		t.Fatalf("transport: %v", err)
+	}
+	want := []map[string]any{
+		{"type": "text", "text": "reference please"},
+		{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/first.png"}, "role": "first_frame"},
+		{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/last.png"}, "role": "last_frame"},
+		{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/ref1.png"}, "role": "reference_image"},
+		{"type": "video_url", "video_url": map[string]any{"url": "https://example.com/clip.mp4"}, "role": "reference_video"},
+		{"type": "audio_url", "audio_url": map[string]any{"url": "https://example.com/track.mp3"}, "role": "reference_audio"},
+	}
+	if !reflect.DeepEqual(body.Content, want) {
+		t.Errorf("content = %#v, want %#v", body.Content, want)
 	}
 }

@@ -94,6 +94,15 @@ func (e catalogEntry) validate() error {
 		if !slices.Contains(e.capabilities.Outputs, message.PartVideo) {
 			return fmt.Errorf("video family must declare video output")
 		}
+		if e.video.referenceImage > 0 && !slices.Contains(e.capabilities.Inputs, message.PartImage) {
+			return fmt.Errorf("video family declaring reference images must accept image input")
+		}
+		if e.video.referenceVideo > 0 && !slices.Contains(e.capabilities.Inputs, message.PartVideo) {
+			return fmt.Errorf("video family declaring reference videos must accept video input")
+		}
+		if e.video.referenceAudio > 0 && !slices.Contains(e.capabilities.Inputs, message.PartAudio) {
+			return fmt.Errorf("video family declaring reference audio must accept audio input")
+		}
 	case kindEmbed:
 		if len(e.capabilities.Outputs) != 0 {
 			return fmt.Errorf("%s family declares no generate output", e.kind)
@@ -262,7 +271,12 @@ var catalog = map[string]catalogEntry{
 	"doubao-seedance-2-5": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage).
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
 		video: videoParams{
@@ -278,7 +292,12 @@ var catalog = map[string]catalogEntry{
 	"doubao-seedance-2-0": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage).
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
 			WithOutputs(message.PartVideo),
 		maxResolution: "4k",
 		video: videoParams{
@@ -294,7 +313,12 @@ var catalog = map[string]catalogEntry{
 	"doubao-seedance-2-0-fast": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage).
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
 		video: videoParams{
@@ -310,7 +334,12 @@ var catalog = map[string]catalogEntry{
 	"doubao-seedance-2-0-mini": {
 		kind: kindVideo,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage).
+			WithInputs(
+				message.PartText,
+				message.PartImage,
+				message.PartVideo,
+				message.PartAudio,
+			).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
 		video: videoParams{

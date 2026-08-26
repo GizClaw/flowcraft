@@ -86,6 +86,21 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !reflect.DeepEqual(video.Capabilities.Outputs, []message.PartKind{message.PartVideo}) {
 		t.Fatalf("video outputs = %v, want video", video.Capabilities.Outputs)
 	}
+	if !slices.Contains(video.Capabilities.Inputs, message.PartVideo) ||
+		!slices.Contains(video.Capabilities.Inputs, message.PartAudio) {
+		t.Fatalf(
+			"seedance 2.0 inputs = %v, want video/audio reference input",
+			video.Capabilities.Inputs,
+		)
+	}
+	legacy := descriptors["doubao-seedance-1-5-pro"]
+	if slices.Contains(legacy.Capabilities.Inputs, message.PartVideo) ||
+		slices.Contains(legacy.Capabilities.Inputs, message.PartAudio) {
+		t.Fatalf(
+			"seedance 1.5 pro inputs = %v, want no reference inputs",
+			legacy.Capabilities.Inputs,
+		)
+	}
 
 	embed := descriptors["doubao-embedding-vision"]
 	if !slices.Contains(embed.Capabilities.Inputs, message.PartImage) {
