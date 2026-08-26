@@ -210,6 +210,16 @@ func compileVideo(
 		default:
 			wire.referenceAudios = audios
 		}
+		if len(audios) > 0 && len(images) == 0 && len(videos) == 0 &&
+			!entry.video.audioOnly {
+			ledger.reject(
+				inference.FieldGenerateInputAudio,
+				fmt.Sprintf(
+					"model %s does not allow audio-only input; include at least one reference image or video",
+					model.ID.Name,
+				),
+			)
+		}
 
 		intent := request.Input.Content.Intent
 		if video := intent.Video; video != nil {
@@ -252,6 +262,16 @@ func compileVideo(
 					ledger.reject(
 						inference.FieldGenerateIntentVideoAspectRatio,
 						fmt.Sprintf("unsupported video ratio %q", wire.ratio),
+					)
+				} else if entry.video.frameRatioAdaptiveOnly &&
+					(wire.firstFrame != "" || wire.lastFrame != "") &&
+					wire.ratio != "adaptive" {
+					ledger.reject(
+						inference.FieldGenerateIntentVideoAspectRatio,
+						fmt.Sprintf(
+							"model %s supports only ratio=adaptive for first/last-frame tasks",
+							model.ID.Name,
+						),
 					)
 				}
 			}
@@ -355,7 +375,8 @@ func compileVideoOptions(
 			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
 		)
 	}
-	if options.WebSearch != nil && *options.WebSearch && !entry.video.webSearch {
+	if options.WebSearch != nil && *options.WebSearch &&
+		!entry.capabilities.HostedWebSearch {
 		ledger.reject(
 			field("web_search"),
 			fmt.Sprintf("model %s does not support web_search", modelName),

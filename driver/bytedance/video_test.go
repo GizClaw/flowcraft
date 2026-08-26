@@ -375,28 +375,123 @@ func TestCompileVideoOmniReferenceTaskTypeLinkage(t *testing.T) {
 	}
 }
 
+func TestCompileVideoFrameRatioRestriction(t *testing.T) {
+	rejected := []struct {
+		name   string
+		model  string
+		parts  []message.Part
+		ratio  string
+		reason string
+	}{
+		{
+			name:  "2.5 first frame with explicit ratio",
+			model: "doubao-seedance-2-5",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+			},
+			ratio:  "16:9",
+			reason: "supports only ratio=adaptive for first/last-frame tasks",
+		},
+		{
+			name:  "2.5 first and last frame with explicit ratio",
+			model: "doubao-seedance-2-5",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+				videoImagePart(t, "https://example.com/b.png"),
+			},
+			ratio:  "9:16",
+			reason: "supports only ratio=adaptive for first/last-frame tasks",
+		},
+	}
+	for _, tc := range rejected {
+		t.Run(tc.name, func(t *testing.T) {
+			request := compileVideoRequest(tc.parts, VideoOptions{})
+			request.Input.Content.Intent.Video.AspectRatio = media.AspectRatio(tc.ratio)
+			_, report, err := compileVideoWire(t, tc.model, request)
+			if err == nil {
+				t.Fatalf("compile unexpectedly succeeded; report = %+v", report)
+			}
+			reason := rejectedReason(report, inference.FieldGenerateIntentVideoAspectRatio)
+			if reason == "" {
+				t.Fatalf("aspect_ratio not rejected; report = %+v", report)
+			}
+			if !strings.Contains(reason, tc.reason) {
+				t.Errorf("rejection reason = %q, want substring %q", reason, tc.reason)
+			}
+		})
+	}
+
+	accepted := []struct {
+		name  string
+		model string
+		parts []message.Part
+		ratio string
+	}{
+		{
+			name:  "2.5 first frame with adaptive",
+			model: "doubao-seedance-2-5",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+			},
+			ratio: "adaptive",
+		},
+		{
+			name:  "2.5 first frame without ratio",
+			model: "doubao-seedance-2-5",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+			},
+		},
+		{
+			name:  "2.5 text-to-video with explicit ratio",
+			model: "doubao-seedance-2-5",
+			parts: []message.Part{
+				message.TextPart{Text: "a cinematic scene"},
+			},
+			ratio: "16:9",
+		},
+		{
+			name:  "2.0 first frame with explicit ratio",
+			model: "doubao-seedance-2-0",
+			parts: []message.Part{
+				videoImagePart(t, "https://example.com/a.png"),
+			},
+			ratio: "16:9",
+		},
+	}
+	for _, tc := range accepted {
+		t.Run(tc.name, func(t *testing.T) {
+			request := compileVideoRequest(tc.parts, VideoOptions{})
+			request.Input.Content.Intent.Video.AspectRatio = media.AspectRatio(tc.ratio)
+			if _, report, err := compileVideoWire(t, tc.model, request); err != nil {
+				t.Fatalf("compile: %v; report = %+v", err, report)
+			}
+		})
+	}
+}
+
 func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 	// Transcription guard: catalogEntry.video mirrors the official
 	// create-task API per-model support columns. Any drift here means the
 	// compiler gates the wrong model set.
 	checks := map[string]videoParams{
 		"doubao-seedance-2-5": {
-			generateAudio:  true,
-			priority:       true,
-			outputFormat:   true,
-			omniReference:  true,
-			webSearch:      true,
-			durationMin:    videoSeconds(4),
-			durationMax:    videoSeconds(30),
-			durationAuto:   true,
-			referenceImage: 30,
-			referenceVideo: 10,
-			referenceAudio: 10,
+			generateAudio:          true,
+			priority:               true,
+			outputFormat:           true,
+			omniReference:          true,
+			durationMin:            videoSeconds(4),
+			durationMax:            videoSeconds(30),
+			durationAuto:           true,
+			audioOnly:              true,
+			frameRatioAdaptiveOnly: true,
+			referenceImage:         30,
+			referenceVideo:         10,
+			referenceAudio:         10,
 		},
 		"doubao-seedance-2-0": {
 			generateAudio:  true,
 			priority:       true,
-			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -407,7 +502,6 @@ func TestCatalogVideoParamsMatchOfficialMatrix(t *testing.T) {
 		"doubao-seedance-2-0-fast": {
 			generateAudio:  true,
 			priority:       true,
-			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -588,9 +682,13 @@ func TestCompileVideoReferenceInputs(t *testing.T) {
 			wantVideos: []string{"https://example.com/clip.mp4"},
 		},
 		{
-			name:       "reference audio",
-			model:      "doubao-seedance-2-0",
-			parts:      parts(videoReferenceAudioPart(t, "https://example.com/track.mp3")),
+			name:  "reference video and audio",
+			model: "doubao-seedance-2-0",
+			parts: parts(
+				videoReferenceVideoPart(t, "https://example.com/clip.mp4"),
+				videoReferenceAudioPart(t, "https://example.com/track.mp3"),
+			),
+			wantVideos: []string{"https://example.com/clip.mp4"},
 			wantAudios: []string{"https://example.com/track.mp3"},
 		},
 		{
@@ -702,6 +800,15 @@ func TestCompileVideoRejectsReferenceConflicts(t *testing.T) {
 			},
 			field:  inference.FieldGenerateInputAudio,
 			reason: "supports at most 3 reference audio clips",
+		},
+		{
+			name:  "audio only on 2.0",
+			model: "doubao-seedance-2-0",
+			parts: []message.Part{
+				videoReferenceAudioPart(t, "https://example.com/track.mp3"),
+			},
+			field:  inference.FieldGenerateInputAudio,
+			reason: "does not allow audio-only input",
 		},
 	}
 	for _, tc := range cases {

@@ -64,10 +64,15 @@ type videoParams struct {
 	priority      bool // supports priority
 	outputFormat  bool // supports output_format
 	omniReference bool // supports omni_reference_task_type
-	webSearch     bool // supports tools[web_search]
 	durationMin   *int64
 	durationMax   *int64
 	durationAuto  bool // supports duration=-1 (model picks the length)
+	// audioOnly allows audio-only input (2.5); other reference-capable
+	// models require at least one image or video alongside audio.
+	audioOnly bool
+	// frameRatioAdaptiveOnly restricts first/last-frame tasks to
+	// ratio=adaptive (2.5); explicit ratios are rejected for them.
+	frameRatioAdaptiveOnly bool
 	// Reference-input caps; 0 means the model takes no reference inputs
 	// (image counts above the first/last-frame pair are rejected).
 	referenceImage int
@@ -281,20 +286,22 @@ var catalog = map[string]catalogEntry{
 				message.PartVideo,
 				message.PartAudio,
 			).
-			WithOutputs(message.PartVideo),
+			WithOutputs(message.PartVideo).
+			WithHostedWebSearch(),
 		maxResolution: "1080p",
 		video: videoParams{
-			generateAudio:  true,
-			priority:       true,
-			outputFormat:   true,
-			omniReference:  true,
-			webSearch:      true,
-			durationMin:    videoSeconds(4),
-			durationMax:    videoSeconds(30),
-			durationAuto:   true,
-			referenceImage: 30,
-			referenceVideo: 10,
-			referenceAudio: 10,
+			generateAudio:          true,
+			priority:               true,
+			outputFormat:           true,
+			omniReference:          true,
+			durationMin:            videoSeconds(4),
+			durationMax:            videoSeconds(30),
+			durationAuto:           true,
+			audioOnly:              true,
+			frameRatioAdaptiveOnly: true,
+			referenceImage:         30,
+			referenceVideo:         10,
+			referenceAudio:         10,
 		},
 	},
 	"doubao-seedance-2-0": {
@@ -306,12 +313,12 @@ var catalog = map[string]catalogEntry{
 				message.PartVideo,
 				message.PartAudio,
 			).
-			WithOutputs(message.PartVideo),
+			WithOutputs(message.PartVideo).
+			WithHostedWebSearch(),
 		maxResolution: "4k",
 		video: videoParams{
 			generateAudio:  true,
 			priority:       true,
-			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -329,12 +336,12 @@ var catalog = map[string]catalogEntry{
 				message.PartVideo,
 				message.PartAudio,
 			).
-			WithOutputs(message.PartVideo),
+			WithOutputs(message.PartVideo).
+			WithHostedWebSearch(),
 		maxResolution: "720p",
 		video: videoParams{
 			generateAudio:  true,
 			priority:       true,
-			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,
@@ -352,12 +359,12 @@ var catalog = map[string]catalogEntry{
 				message.PartVideo,
 				message.PartAudio,
 			).
-			WithOutputs(message.PartVideo),
+			WithOutputs(message.PartVideo).
+			WithHostedWebSearch(),
 		maxResolution: "720p",
 		video: videoParams{
 			generateAudio:  true,
 			priority:       true,
-			webSearch:      true,
 			durationMin:    videoSeconds(4),
 			durationMax:    videoSeconds(15),
 			durationAuto:   true,

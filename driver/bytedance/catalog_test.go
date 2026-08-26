@@ -93,12 +93,20 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 			video.Capabilities.Inputs,
 		)
 	}
+	if !video.Capabilities.HostedWebSearch {
+		t.Fatal("seedance 2.0 must declare hosted web search")
+	}
+	flagship := descriptors["doubao-seedance-2-5"]
+	if !flagship.Capabilities.HostedWebSearch {
+		t.Fatal("seedance 2.5 must declare hosted web search")
+	}
 	legacy := descriptors["doubao-seedance-1-5-pro"]
 	if slices.Contains(legacy.Capabilities.Inputs, message.PartVideo) ||
-		slices.Contains(legacy.Capabilities.Inputs, message.PartAudio) {
+		slices.Contains(legacy.Capabilities.Inputs, message.PartAudio) ||
+		legacy.Capabilities.HostedWebSearch {
 		t.Fatalf(
-			"seedance 1.5 pro inputs = %v, want no reference inputs",
-			legacy.Capabilities.Inputs,
+			"seedance 1.5 pro capabilities = %+v, want no reference/web-search capabilities",
+			legacy.Capabilities,
 		)
 	}
 
