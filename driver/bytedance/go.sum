@@ -1,7 +1,7 @@
 cloud.google.com/go v0.26.0/go.mod h1:aQUYkXzVsufM+DwF1aE+0xfcU+56JwCaLick0ClmMTw=
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
-github.com/GizClaw/flowcraft/core v0.1.22 h1:b5X1OHWk6y8Zcqw+QsqgAlDUCj8kDvNdv09epEeyISY=
-github.com/GizClaw/flowcraft/core v0.1.22/go.mod h1:ivaKWysWMtv3j0fj4059RWiSP8kNXBFDYDaFD80Gr74=
+github.com/GizClaw/flowcraft/core v0.1.33 h1:dQrsEe0TvwVguuLOCs6PbizAKItAEosd+7lp1UHTvvI=
+github.com/GizClaw/flowcraft/core v0.1.33/go.mod h1:2EZ+ZFBICJse3GS48m7S+IpXy2s8j/xEy/O7dN5VB+U=
 github.com/avast/retry-go v3.0.0+incompatible/go.mod h1:XtSnn+n/sHqQIpZ10K1qAevBhOOCWBLXXy3hyiqqBrY=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
