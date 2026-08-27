@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.34` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.35` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.35` - 2026-08-28
+
+### Changed
+
+- fix(core): keep undefined-tool recovery feedback out of the messages channel — recoverUndefinedTool no longer appends a user-role rejection to the transcript; the feedback text is stored on the board under the optional recover_feedback_key config (defaulting to a reserved per-node __recover_feedback.<node id> var), the recovered inference round consumes it as its current input with the whole channel as context, and a successful round clears the pending marker and deletes the feedback var; recovery-enabled nodes get isolated per-node slots and unrelated nodes never delete another node's pending feedback
 
 ## `core/v0.1.34` - 2026-08-27
 
