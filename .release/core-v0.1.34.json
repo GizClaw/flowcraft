@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): image generation streaming and quality — ImagePartDelta gains Interim progress snapshots that replace rather than accumulate at the same part index, so partial-image previews stream as progress while the terminal result keeps only the final image per index (GeneratedImages stays correct); ImageIntent gains a canonical Quality field (auto|low|medium|high via media.ImageQuality) wired through the generate ledger, giving azure/openai image generation a quality knob and letting bytedance/minimax reject it at compile time",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
