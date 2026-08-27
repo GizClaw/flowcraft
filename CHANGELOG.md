@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.32` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.33` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.33` - 2026-08-27
+
+### Changed
+
+- fix(core): bump OTLP HTTP exporters past GO-2026-4985 — otlptracehttp/otlpmetrichttp to v1.43.0 and otlploghttp to v0.19.0 (with otel/log and sdk/log at v0.19.0, otlptrace at v1.43.0) so oversized collector response bodies are size-limited instead of exhausting memory, aligning the same dependencies across all drivers, backends, examples, and the flowcraft-config validator
 
 ## `core/v0.1.32` - 2026-08-25
 
