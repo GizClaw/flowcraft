@@ -177,6 +177,12 @@ func compileImage(
 					wire.delivery = "b64_json"
 				}
 			}
+			if image.Quality != "" {
+				ledger.reject(
+					inference.FieldGenerateIntentImageQuality,
+					"seedream has no quality parameter; quality is set by model and resolution tier",
+				)
+			}
 		}
 		if wire.seed != nil && wire.count > 1 {
 			ledger.reject(

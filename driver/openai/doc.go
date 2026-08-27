@@ -20,7 +20,9 @@
 //     GenerateOptions.WebSearch attaches OpenAI's hosted web_search tool;
 //     web_search_call items and url_citation annotations surface on
 //     GenerateResponse.ProviderOutputs (never inside Message).
-//   - Generate ImageIntent: Images API (gpt-image models).
+//   - Generate ImageIntent: Images API (gpt-image models), unary + SSE
+//     stream with optional partial-image previews via
+//     ImageOptions.PartialImages.
 //   - Generate AudioIntent: speech API (gpt-4o-mini-tts and friends).
 //   - Embed: embeddings API (text-embedding-3 family).
 //

@@ -172,6 +172,12 @@ func compileImage(
 			case media.SourceInline:
 				wire.delivery = "base64"
 			}
+			if image.Quality != "" {
+				ledger.reject(
+					inference.FieldGenerateIntentImageQuality,
+					"image-01 has no quality parameter",
+				)
+			}
 		}
 		rejectOtherExtensions("image generation", request.Extensions, ledger)
 

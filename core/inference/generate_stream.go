@@ -107,9 +107,17 @@ func (d AudioPartDelta) validateGenerateDelta() error {
 func (AudioPartDelta) inferencePartDelta() {}
 
 // ImagePartDelta carries one complete image. Images are not incrementally
-// assembled by the generic runtime.
+// assembled by the generic runtime. A delta marked Interim is a progress
+// snapshot: it replaces any image previously accumulated at the same part
+// index, and the terminal image for that index (a delta without Interim)
+// replaces the last snapshot. Interim deltas surface to stream consumers as
+// progress, while the final result keeps only the last image per index.
 type ImagePartDelta struct {
 	Part message.ImagePart `json:"part"`
+	// Interim marks the delta as a progress snapshot that replaces any
+	// previously accumulated image at the same part index. A part index
+	// must end with a non-Interim delta to be included in the result.
+	Interim bool `json:"interim,omitempty"`
 }
 
 func (ImagePartDelta) Kind() message.PartKind { return message.PartImage }
@@ -222,6 +230,7 @@ type generatePartAccumulator struct {
 	audioFormat   *media.AudioFormat
 	audioDuration *int64
 	completeImage *message.ImagePart
+	imageInterim  bool
 
 	reasoningSignature string
 	reasoningID        string
@@ -399,11 +408,12 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 		}
 		_, _ = p.audio.Write(value.Data)
 	case ImagePartDelta:
-		if p.completeImage != nil {
+		if !value.Interim && p.completeImage != nil && !p.imageInterim {
 			return fmt.Errorf("image emitted more than one complete value")
 		}
 		image := value.Part
 		p.completeImage = &image
+		p.imageInterim = value.Interim
 	case ReasoningDelta:
 		p.text.WriteString(value.Text)
 		if value.Signature != "" {

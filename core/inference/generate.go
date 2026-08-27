@@ -291,6 +291,9 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 		if intent.Image.Delivery != "" {
 			fields = append(fields, FieldGenerateIntentImageDelivery)
 		}
+		if intent.Image.Quality != "" {
+			fields = append(fields, FieldGenerateIntentImageQuality)
+		}
 	}
 	if intent.Audio != nil {
 		fields = append(fields, FieldGenerateIntentAudio, FieldGenerateIntentAudioVoice)
