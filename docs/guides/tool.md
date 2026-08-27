@@ -129,8 +129,9 @@ Go duration (calls that already carry a deadline pass through);
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`
 error rather than the generic `invalid_provider_response`. The inference
-node's `undefined_tool_recovery` config turns that rejection into
-in-conversation feedback that sends the model back to `tool_search`; see
-[graph.md](graph.md) for the recovery loop.
+node's `undefined_tool_recovery` config turns that rejection into board
+feedback that sends the model back to `tool_search` on the next round,
+without writing an engine-generated turn into the conversation transcript;
+see [graph.md](graph.md) for the recovery loop.
 
 See [runtime.md](runtime.md) for per-session dynamic catalogs.

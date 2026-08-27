@@ -136,9 +136,10 @@ onto `tool_pending_key` and the graph routes onward.
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
 | `usage_key`                              | board var receiving the call's `inference.Usage`                                                                  |
 | `tool_pending_key`                       | board var receiving `finish_reason == tool_calls` (the condition edges branch on)                                 |
-| `undefined_tool_recovery`                | `{enabled, max_per_run}`: convert an undefined-tool rejection into in-conversation feedback instead of failing the node; disabled by default |
+| `undefined_tool_recovery`                | `{enabled, max_per_run}`: convert an undefined-tool rejection into recoverable board feedback instead of failing the node; disabled by default |
 | `recover_pending_key`                    | board var receiving whether the round was recovered from an undefined-tool response (loop-back condition)             |
 | `recover_count_key`                      | board var receiving the per-run recovery counter (node hard-fails past `max_per_run`)                               |
+| `recover_feedback_key`                   | board var receiving the user-role feedback text for the recovered round; the recovered inference round consumes it as its current input; defaults to the reserved per-node `__recover_feedback.<node id>` var when unset |
 | `stream`                                 | open a `GenerateStream`; text/reasoning deltas stream incrementally, the board still gets one assembled message   |
 | `tools`                                  | named catalog tools the model may call this turn                                                                  |
 | `all_tools`                              | send the catalog's entire visible set; with `tools`, names are declared `RequiredByName` and must exist           |
@@ -183,27 +184,32 @@ Behavior:
 - A response whose tool calls name tools absent from the exposed definitions
   is rejected by the engine with a distinguishable `undefined_tool` error
   (not the generic `invalid_provider_response`). When
-  `undefined_tool_recovery` is enabled, the node replays the rejected call
-  as an assistant `tool_call` paired with a `tool` result telling the model
-  the tool is not exposed and to use `tool_search`, sets
-  `recover_pending_key` to true (`tool_pending_key` to false), and returns
-  success. The graph must route the recovered round back to inference: the
+  `undefined_tool_recovery` is enabled, the node stores a user-role
+  feedback text under `recover_feedback_key` (defaulting to the reserved
+  per-node `__recover_feedback.<node id>` var) — telling the model the
+  tool is not exposed and to use `tool_search` — sets `recover_pending_key` to true
+  (`tool_pending_key` to false), and returns success. The feedback is
+  deliberately never appended to the messages channel: the transcript stays
+  a pure user/assistant conversation, so UIs do not need to filter
+  engine-generated turns. On the recovered round the stored text becomes
+  the current input (user role) with the whole channel as context, so the
+  model sees the same sequence it would have seen from an appended
+  message. The graph must route the recovered round back to inference: the
   `recover_pending_key` marker is the explicit hook for an edge back into
   the tool loop (e.g. `llm -> compact` conditioned on
   `recover_pending == true`). With a standard tool-pending graph whose
   `llm -> __end__` edge fires when `tool_pending == false`, a recovered
-  round without a loop-back edge terminates the run right after appending
-  the feedback — the model never gets another round. A graph whose tool
+  round without a loop-back edge terminates the run with the feedback left
+  on the board — the model never gets another round. A graph whose tool
   loop already routes the inference node back unconditionally can omit the
-  marker, but the feedback tail must reach an inference node, never a tool
-  node: a tool node would execute the replayed call, and a miswired
-  recover edge can execute deferred-but-registered tools with real side
-  effects. Validate graph edges when enabling recovery. `max_per_run`
+  marker. Because the feedback is never a channel message, no tool node can
+  execute the rejected call by accident; a successful round clears
+  `recover_pending_key` and deletes the feedback var. `max_per_run`
   (default 2) bounds recoveries per graph run; past it the rejection fails
   the node as before, keeping strict deployments intact. One rejection
   discards the whole round's response — the other tool calls in the same
-  response are dropped, and only the offending call is replayed as
-  feedback. `tool_choice` `named`/`required` violations are never
+  response are dropped, and only the offending call is described in the
+  stored feedback. `tool_choice` `named`/`required` violations are never
   recovered.
 - Usage is reported to the host on every call. In stream mode a mid-stream
   failure commits the buffered partial text to the board and reports the

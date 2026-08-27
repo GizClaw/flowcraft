@@ -54,12 +54,13 @@ type InferenceConfig struct {
 	// through a tool node and loop back.
 	ToolPendingKey string `json:"tool_pending_key,omitempty"`
 	// UndefinedToolRecovery converts a generate rejection for a tool
-	// call absent from the exposed definitions into in-conversation
-	// feedback instead of failing the node: the rejected call is
-	// replayed as an assistant tool_call paired with a tool result
-	// telling the model the tool is not exposed and to use tool_search.
-	// The graph routes on RecoverPendingKey back to inference — never
-	// through a tool node, which would execute the call. Strict
+	// call absent from the exposed definitions into recoverable
+	// feedback instead of failing the node. The rejected call is not
+	// replayed: the node stores a user-role feedback text under
+	// RecoverFeedbackKey (or the reserved defaultRecoverFeedbackKey var
+	// when unset) and the graph routes on RecoverPendingKey back to
+	// inference, where the stored feedback becomes the next round's
+	// input without ever being written to the messages channel. Strict
 	// deployments leave this disabled and keep failing hard.
 	UndefinedToolRecovery *UndefinedToolRecoveryConfig `json:"undefined_tool_recovery,omitempty"`
 	// RecoverPendingKey, when set, receives whether the current round
@@ -69,6 +70,14 @@ type InferenceConfig struct {
 	// RecoverCountKey, when set, receives the per-run recovery counter.
 	// The node hard-fails once it reaches MaxPerRun.
 	RecoverCountKey string `json:"recover_count_key,omitempty"`
+	// RecoverFeedbackKey, when set, receives the user-role feedback
+	// text describing the rejected tool call. The stored text becomes
+	// the recovered round's current input while the messages channel
+	// stays free of engine-generated turns, so UIs render a pure user
+	// transcript. Empty defaults to a reserved per-node var named
+	// "__recover_feedback.<node id>", so concurrent recovery on
+	// different inference nodes never shares a slot.
+	RecoverFeedbackKey string `json:"recover_feedback_key,omitempty"`
 
 	// Stream opens a GenerateStream and publishes text and reasoning
 	// deltas as token stream events. Reasoning fragments arrive as
@@ -122,6 +131,14 @@ type UndefinedToolRecoveryConfig struct {
 // responses one graph run converts into feedback before failing hard.
 const defaultUndefinedToolMaxRecoveries = 2
 
+// defaultRecoverFeedbackPrefix is the reserved board-var prefix the
+// recovery flow uses when RecoverFeedbackKey is not configured; the
+// recovering node's id is appended (e.g. "__recover_feedback.llm"), so
+// the slot is scoped per node. It lives in the engine's "__" namespace
+// (see agent.MainChannel); user-domain code must not introduce keys
+// with that prefix.
+const defaultRecoverFeedbackPrefix = "__recover_feedback."
+
 // undefinedToolFeedback is the model-readable rejection appended as a
 // user feedback message when a response names a tool the model was
 // never shown.
@@ -163,6 +180,7 @@ func Inference(deps InferenceNodeDeps) graph.NodeType[InferenceConfig] {
 				{Kind: graph.RoleVar, ConfigKey: "tool_pending_key"},
 				{Kind: graph.RoleVar, ConfigKey: "recover_pending_key"},
 				{Kind: graph.RoleVar, ConfigKey: "recover_count_key"},
+				{Kind: graph.RoleVar, ConfigKey: "recover_feedback_key"},
 			},
 		},
 		Handler: func(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig) error {
@@ -193,12 +211,20 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 
 	resp, err := executeGenerate(ec, board, cfg, deps, req)
 	if err != nil {
-		return recoverUndefinedTool(ec, board, channel, cfg, err)
+		return recoverUndefinedTool(ec, board, cfg, err)
 	}
 	if cfg.RecoverPendingKey != "" {
 		// A successful round clears the recovery marker so the loop
 		// returns to its normal edges.
 		board.SetVar(cfg.RecoverPendingKey, false)
+	}
+	if cfg.UndefinedToolRecovery != nil && cfg.UndefinedToolRecovery.Enabled {
+		// Stale feedback from a previous recovery must not leak into a
+		// later round once the loop has returned to its normal edges.
+		// Only nodes participating in recovery touch their own slot, so
+		// an unrelated node's success never clears another node's
+		// pending feedback.
+		board.DeleteVar(recoverFeedbackKey(ec, cfg))
 	}
 	// Mirror the provider request / response identifiers and token
 	// usage onto the node span after a successful call so
@@ -259,19 +285,25 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 }
 
 // recoverUndefinedTool converts an undefined-tool generate failure into
-// in-conversation feedback when the node is configured to recover. The
-// rejection is appended as a single user-role text message explaining how
-// to expose the tool. The rejected call is deliberately not replayed as a
+// recoverable feedback when the node is configured to recover. The
+// rejection is stored as a user-role feedback text under
+// RecoverFeedbackKey (or the per-node reserved
+// "__recover_feedback.<node id>" var) — it is deliberately NOT appended
+// to the messages channel, so the user-visible transcript never shows
+// an engine-generated turn. The recovered round (routed back to
+// inference on RecoverPendingKey) consumes the stored text as its
+// current input with the whole channel as context; see
+// buildGenerateRequest. The rejected call is never replayed as a
 // synthetic assistant tool_call: that would fabricate a turn the model
 // never produced, violate provider reasoning round-trip rules (DeepSeek
-// thinking mode requires reasoning_content on assistant tool-call turns),
-// and leave an undefined function reference in history for providers that
-// validate calls against the request tool set. The graph must still route
-// back to inference, never through a tool node, or the call would be
-// executed for real. The original error is returned when recovery is
-// disabled, the failure is not an undefined-tool rejection, or the
-// per-run budget is exhausted.
-func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, err error) error {
+// thinking mode requires reasoning_content on assistant tool-call
+// turns), and leave an undefined function reference in history for
+// providers that validate calls against the request tool set. The graph
+// must still route back to inference, never through a tool node, or the
+// call would be executed for real. The original error is returned when
+// recovery is disabled, the failure is not an undefined-tool rejection,
+// or the per-run budget is exhausted.
+func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, err error) error {
 	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
 		return err
 	}
@@ -290,12 +322,7 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel
 		return err
 	}
 	call := *infErr.UndefinedToolCall
-	board.AppendChannelMessage(channel, message.Message{
-		Role: message.RoleUser,
-		Content: message.Content{Parts: []message.Part{
-			message.TextPart{Text: fmt.Sprintf(undefinedToolFeedback, call.Name)},
-		}},
-	})
+	board.SetVar(recoverFeedbackKey(ec, cfg), fmt.Sprintf(undefinedToolFeedback, call.Name))
 	if cfg.ToolPendingKey != "" {
 		board.SetVar(cfg.ToolPendingKey, false)
 	}
@@ -367,6 +394,53 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 	if len(messages) == 0 {
 		return req, errdefs.Validationf("inference node: messages channel %q is empty", channel)
 	}
+
+	intent, err := resolveIntent(ec.Context, cfg, deps)
+	if err != nil {
+		return req, err
+	}
+
+	extensions, err := inference.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
+	if err != nil {
+		return req, err
+	}
+
+	// A recovered round feeds the stored feedback as its current input
+	// instead of a channel tail: the feedback is engine-generated and
+	// never written to the user-visible transcript. The whole channel
+	// (including the rejected assistant tool_calls turn) is the
+	// context, with the system prompt prepended exactly as on a normal
+	// round.
+	if recoveryPending(board, cfg) {
+		feedbackKey := recoverFeedbackKey(ec, cfg)
+		feedback := board.GetVarString(feedbackKey)
+		if feedback == "" {
+			return req, errdefs.Validationf(
+				"inference node: recovery pending but var %q holds no feedback text",
+				feedbackKey)
+		}
+		contextMessages := messages
+		if cfg.SystemPrompt != "" &&
+			(len(contextMessages) == 0 || contextMessages[0].Role != message.RoleSystem) {
+			contextMessages = append(
+				[]message.Message{message.NewTextMessage(message.RoleSystem, cfg.SystemPrompt)},
+				contextMessages...,
+			)
+		}
+		return inference.GenerateRequest{
+			Context: contextMessages,
+			Input: inference.GenerateInput{
+				Role: inference.InputRoleUser,
+				Content: inference.InputContent{
+					Content: message.NewTextMessage(message.RoleUser, feedback).Content,
+					Intent:  intent,
+				},
+			},
+			Extensions: extensions,
+			ModelHint:  cfg.ModelHint,
+		}, nil
+	}
+
 	last := messages[len(messages)-1]
 	var inputRole inference.InputRole
 	switch last.Role {
@@ -388,16 +462,6 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 		)
 	}
 
-	intent, err := resolveIntent(ec.Context, cfg, deps)
-	if err != nil {
-		return req, err
-	}
-
-	extensions, err := inference.DecodeExtensions(cfg.Extensions, deps.Extensions, "inference node extensions")
-	if err != nil {
-		return req, err
-	}
-
 	return inference.GenerateRequest{
 		Context: contextMessages,
 		Input: inference.GenerateInput{
@@ -410,6 +474,30 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 		Extensions: extensions,
 		ModelHint:  cfg.ModelHint,
 	}, nil
+}
+
+// recoveryPending reports whether the board is mid-recovery: the
+// previous round was converted into feedback and the graph looped back
+// to this node. The feedback var must be configured for recovery, so an
+// empty key makes this never match (the guard also covers validation
+// failures at node start).
+func recoveryPending(board *agent.Board, cfg InferenceConfig) bool {
+	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled ||
+		cfg.RecoverPendingKey == "" {
+		return false
+	}
+	pending, ok := board.GetVar(cfg.RecoverPendingKey)
+	return ok && pending == true
+}
+
+// recoverFeedbackKey returns the configured feedback var, falling back
+// to the engine-reserved per-node default
+// ("__recover_feedback.<node id>") when the config leaves it unset.
+func recoverFeedbackKey(ec graph.ExecutionContext, cfg InferenceConfig) string {
+	if cfg.RecoverFeedbackKey != "" {
+		return cfg.RecoverFeedbackKey
+	}
+	return defaultRecoverFeedbackPrefix + ec.NodeID
 }
 
 // resolveIntent assembles the invocation's canonical execution

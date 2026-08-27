@@ -325,21 +325,22 @@ func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
 		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
 		RecoverPendingKey:     "recover_pending",
 		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
 	})
 	board := userBoard()
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
+	// The feedback rides the board, never the transcript: the channel
+	// still holds only the original user turn.
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 2 {
-		t.Fatalf("channel length = %d, want 2 (user + text feedback)", len(msgs))
+	if len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (feedback must not enter the transcript)", len(msgs))
 	}
-	feedback, ok := msgs[1].Content.Parts[0].(message.TextPart)
-	if !ok || msgs[1].Role != message.RoleUser ||
-		!strings.Contains(feedback.Text, "ghost") ||
-		!strings.Contains(feedback.Text, "tool_search") {
-		t.Fatalf("recovered feedback message = %+v", msgs[1])
+	feedback := board.GetVarString("recover_feedback")
+	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
+		t.Fatalf("recover_feedback var = %q, want ghost + tool_search text", feedback)
 	}
 	if v, _ := board.GetVar("recover_pending"); v != true {
 		t.Fatalf("recover_pending = %v, want true", v)
@@ -413,6 +414,7 @@ func TestInferenceNode_UndefinedToolRecoveryBudget(t *testing.T) {
 		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 1},
 		RecoverPendingKey:     "recover_pending",
 		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
 	})
 	board := userBoard()
 	board.SetVar("recover_count", 1) // one recovery already spent this run
@@ -439,20 +441,173 @@ func TestInferenceNode_UndefinedToolRecoveryRequiresKeys(t *testing.T) {
 	}
 }
 
+// TestInferenceNode_UndefinedToolRecoveryDefaultFeedbackKey proves the
+// feedback var defaults to the reserved per-node
+// "__recover_feedback.<node id>" slot: the rejection lands there, the
+// recovered round consumes it as input, and a successful round deletes
+// it — all without configuring recover_feedback_key.
+func TestInferenceNode_UndefinedToolRecoveryDefaultFeedbackKey(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				return undefinedToolResponse("ghost")
+			}
+			return textResponse("ok")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	config := InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known"},
+		ToolPendingKey:        "tool_pending",
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+	}
+	g := singleNodeGraph(t, reg, "inference", config)
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	feedback := board.GetVarString("__recover_feedback.n")
+	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
+		t.Fatalf("__recover_feedback var = %q, want ghost + tool_search text", feedback)
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (feedback must not enter the transcript)", len(msgs))
+	}
+
+	// The recovered round (pending marker set) consumes the default var
+	// as its current input, then clears both the marker and the var.
+	board.SetVar("recover_pending", true)
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute recovered round: %v", err)
+	}
+	req := fake.LastRequest()
+	if req.Input.Role != inference.InputRoleUser {
+		t.Fatalf("input role = %q, want user", req.Input.Role)
+	}
+	if text, ok := req.Input.Content.Parts[0].(message.TextPart); !ok ||
+		!strings.Contains(text.Text, "ghost") {
+		t.Fatalf("recovered input = %+v, want stored feedback", req.Input.Content.Parts[0])
+	}
+	if v, _ := board.GetVar("recover_pending"); v != false {
+		t.Fatalf("recover_pending = %v, want false after success", v)
+	}
+	if _, ok := board.GetVar("__recover_feedback.n"); ok {
+		t.Fatalf("__recover_feedback.n var still present, want deleted after success")
+	}
+}
+
+// TestInferenceGraph_UndefinedToolRecoveryScopesDefaultFeedbackByNode
+// proves two recovery-enabled inference nodes never share the default
+// feedback slot: each rejection lands in its own
+// "__recover_feedback.<node id>" var, and neither node's success path
+// deletes the other node's pending feedback.
+func TestInferenceGraph_UndefinedToolRecoveryScopesDefaultFeedbackByNode(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	fake := &inferencetest.GenerateFake{
+		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
+			mu.Lock()
+			calls++
+			n := calls
+			mu.Unlock()
+			if n == 1 {
+				return undefinedToolResponse("ghost-a")
+			}
+			return undefinedToolResponse("ghost-b")
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	config := func(pending, count string) json.RawMessage {
+		return mustConfig(t, InferenceConfig{
+			Model:                 ptr(inferencetest.DefaultFakeModel),
+			Tools:                 []string{"known"},
+			UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+			RecoverPendingKey:     pending,
+			RecoverCountKey:       count,
+		})
+	}
+	g, err := graph.Build(&graph.GraphDefinition{
+		Name:  "recovery-scope",
+		Entry: "a",
+		Nodes: []graph.NodeDefinition{
+			{ID: "a", Type: "inference", Config: config("recover_pending_a", "recover_count_a")},
+			{ID: "b", Type: "inference", Config: config("recover_pending_b", "recover_count_b")},
+		},
+		Edges: []graph.EdgeDefinition{
+			{From: "a", To: "b"},
+			{From: "b", To: graph.END},
+		},
+	}, reg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	if fa := board.GetVarString("__recover_feedback.a"); !strings.Contains(fa, "ghost-a") {
+		t.Fatalf("__recover_feedback.a = %q, want node a's own rejection", fa)
+	}
+	if fb := board.GetVarString("__recover_feedback.b"); !strings.Contains(fb, "ghost-b") {
+		t.Fatalf("__recover_feedback.b = %q, want node b's own rejection", fb)
+	}
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (no feedback in transcript)", len(msgs))
+	}
+}
+
 func TestInferenceNode_UndefinedToolRecoveryClearsMarker(t *testing.T) {
 	fake := &inferencetest.GenerateFake{}
 	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
-		Model:             ptr(inferencetest.DefaultFakeModel),
-		RecoverPendingKey: "recover_pending",
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
 	})
 	board := userBoard()
 	board.SetVar("recover_pending", true)
+	board.SetVar("recover_feedback", `tool "ghost" is not exposed`)
 	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
+	// The recovered round consumes the stored feedback as its current
+	// input even though the channel tail is the original user turn.
+	req := fake.LastRequest()
+	if req.Input.Role != inference.InputRoleUser {
+		t.Fatalf("input role = %q, want user", req.Input.Role)
+	}
+	if text, ok := req.Input.Content.Parts[0].(message.TextPart); !ok ||
+		!strings.Contains(text.Text, "ghost") {
+		t.Fatalf("recovered input = %+v, want stored feedback", req.Input.Content.Parts[0])
+	}
 	if v, _ := board.GetVar("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success", v)
+	}
+	if _, ok := board.GetVar("recover_feedback"); ok {
+		t.Fatalf("recover_feedback var still present, want deleted after success")
 	}
 }
 
@@ -486,6 +641,7 @@ func TestInferenceNode_UndefinedToolRecoveryKeepsNamedChoiceStrict(t *testing.T)
 		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
 		RecoverPendingKey:     "recover_pending",
 		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
 	})
 	board := userBoard()
 	err := executeGraph(t, g, agent.NoopHost{}, board)
@@ -554,11 +710,13 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 			ID: "llm", Type: "inference",
 			Config: mustConfig(t, InferenceConfig{
 				Model:                 ptr(inferencetest.DefaultFakeModel),
+				SystemPrompt:          "be nice",
 				Tools:                 []string{"known"},
 				ToolPendingKey:        "tool_pending",
 				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
 				RecoverPendingKey:     "recover_pending",
 				RecoverCountKey:       "recover_count",
+				RecoverFeedbackKey:    "recover_feedback",
 			}),
 		}},
 		Edges: []graph.EdgeDefinition{
@@ -581,9 +739,14 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 	}
 	// The recovered round's feedback must ride into the next request as
 	// the current input: a single user-role text message, with no
-	// fabricated assistant tool_call in context.
-	if len(requests[1].Context) != 1 {
-		t.Fatalf("second round context length = %d, want 1", len(requests[1].Context))
+	// fabricated assistant tool_call in context, and the system prompt
+	// still prepended. The whole channel (user turn only — feedback is
+	// never appended) becomes the context.
+	if len(requests[1].Context) != 2 {
+		t.Fatalf("second round context length = %d, want 2 (system + user)", len(requests[1].Context))
+	}
+	if requests[1].Context[0].Role != message.RoleSystem {
+		t.Fatalf("second round context[0] role = %q, want system prompt", requests[1].Context[0].Role)
 	}
 	if requests[1].Input.Role != inference.InputRoleUser {
 		t.Fatalf("second round input role = %q, want user", requests[1].Input.Role)
@@ -595,11 +758,11 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 	}
 
 	msgs := board.Channel(agent.MainChannel)
-	if len(msgs) != 3 {
-		t.Fatalf("channel length = %d, want 3 (user, feedback, final answer)", len(msgs))
+	if len(msgs) != 2 {
+		t.Fatalf("channel length = %d, want 2 (user, final answer; no feedback)", len(msgs))
 	}
-	if text, ok := msgs[2].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
-		t.Fatalf("final assistant message = %+v, want text %q", msgs[2], "ok")
+	if text, ok := msgs[1].Content.Parts[0].(message.TextPart); !ok || text.Text != "ok" {
+		t.Fatalf("final assistant message = %+v, want text %q", msgs[1], "ok")
 	}
 	if v, _ := board.GetVar("recover_pending"); v != false {
 		t.Fatalf("recover_pending = %v, want false after success round", v)
@@ -607,15 +770,18 @@ func TestInferenceGraph_UndefinedToolRecoveryLoop(t *testing.T) {
 	if v, _ := board.GetVar("recover_count"); v != 1 {
 		t.Fatalf("recover_count = %v, want 1 retained to run end", v)
 	}
+	if _, ok := board.GetVar("recover_feedback"); ok {
+		t.Fatalf("recover_feedback var still present, want deleted after success round")
+	}
 }
 
 // TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds documents
 // the routing contract: with a standard tool-pending graph (llm ends when
 // tool_pending is false) and no recover loop-back edge, a recovered round
-// terminates the run after appending the feedback — the model never gets
-// another round. Recovery therefore needs an explicit route back to the
-// inference node (or a graph whose tool loop already routes llm back
-// unconditionally).
+// terminates the run with the feedback stored on the board — the model
+// never gets another round. Recovery therefore needs an explicit route
+// back to the inference node (or a graph whose tool loop already routes
+// llm back unconditionally).
 func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) {
 	fake := &inferencetest.GenerateFake{
 		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
@@ -638,6 +804,7 @@ func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) 
 				UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
 				RecoverPendingKey:     "recover_pending",
 				RecoverCountKey:       "recover_count",
+				RecoverFeedbackKey:    "recover_feedback",
 			}),
 		}},
 		Edges: []graph.EdgeDefinition{
@@ -654,8 +821,11 @@ func TestInferenceGraph_UndefinedToolRecoveryWithoutLoopRouteEnds(t *testing.T) 
 	if requests := fake.Requests(); len(requests) != 1 {
 		t.Fatalf("llm rounds = %d, want 1 (run ends after the recovered round)", len(requests))
 	}
-	if msgs := board.Channel(agent.MainChannel); len(msgs) != 2 {
-		t.Fatalf("channel length = %d, want 2 (feedback appended, no final answer)", len(msgs))
+	if msgs := board.Channel(agent.MainChannel); len(msgs) != 1 {
+		t.Fatalf("channel length = %d, want 1 (feedback never enters the transcript)", len(msgs))
+	}
+	if feedback := board.GetVarString("recover_feedback"); !strings.Contains(feedback, "ghost") {
+		t.Fatalf("recover_feedback var = %q, want stored rejection text", feedback)
 	}
 }
 
