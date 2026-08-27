@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/GizClaw/flowcraft/backends/plugin v0.1.0
-	github.com/GizClaw/flowcraft/core v0.1.5
+	github.com/GizClaw/flowcraft/core v0.1.33
 	github.com/GizClaw/flowcraft/driver/deepseek v0.1.0
 	github.com/GizClaw/flowcraft/driver/openai v0.1.0
 	github.com/charmbracelet/bubbles v1.0.0

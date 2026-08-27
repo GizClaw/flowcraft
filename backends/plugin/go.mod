@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/backends/plugin
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.5
+	github.com/GizClaw/flowcraft/core v0.1.33
 	golang.org/x/mod v0.35.0
 )
 
