@@ -59,7 +59,7 @@ type Error struct {
 	// UndefinedToolCall is the first tool call rejected because its name
 	// was absent from the request's definitions. Populated only for
 	// UndefinedTool errors; a recovering caller uses it to reconstruct the
-	// call for in-conversation feedback.
+	// call for the stored recovery feedback.
 	UndefinedToolCall *message.ToolCall
 	cause             error
 }
