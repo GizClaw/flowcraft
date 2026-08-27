@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
-func TestCompileImageQualityRejects(t *testing.T) {
+func TestCompileImageQualityDrops(t *testing.T) {
 	request := inference.GenerateRequest{
 		Input: inference.GenerateInput{
 			Role: inference.InputRoleUser,
@@ -32,19 +32,19 @@ func TestCompileImageQualityRejects(t *testing.T) {
 		request,
 		inference.GenerateExecutionUnary,
 	)
-	if err == nil {
-		t.Fatal("compile succeeded, want quality rejection")
+	if err != nil {
+		t.Fatalf("compile: %v, want quality dropped with success", err)
 	}
 	found := false
 	for _, decision := range compiled.Report.Decisions {
 		if decision.Field == inference.FieldGenerateIntentImageQuality &&
-			decision.Disposition == inference.Rejected &&
+			decision.Disposition == inference.Dropped &&
 			strings.Contains(decision.Reason, "no quality parameter") {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("report decisions = %+v, want image-01 no-quality rejection",
+		t.Fatalf("report decisions = %+v, want image-01 no-quality drop",
 			compiled.Report.Decisions)
 	}
 }

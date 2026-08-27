@@ -209,18 +209,27 @@ func TestCompileImageBackgroundRejects(t *testing.T) {
 	}
 }
 
-func TestCompileImageQualityRejects(t *testing.T) {
+func TestCompileImageQualityDrops(t *testing.T) {
 	request := compileImageRequest(
 		[]message.Part{message.TextPart{Text: "a red circle"}},
 		ImageOptions{},
 	)
 	request.Input.Content.Intent.Image.Quality = media.ImageQualityHigh
 	_, report, err := compileImageWire(t, request)
-	if err == nil {
-		t.Fatal("compile succeeded, want quality rejection")
+	if err != nil {
+		t.Fatalf("compile: %v, want quality dropped with success", err)
 	}
-	if reason := rejectedReason(report, inference.FieldGenerateIntentImageQuality); !strings.Contains(reason, "no quality parameter") {
-		t.Fatalf("rejected reason = %q, want seedream no-quality rejection", reason)
+	found := false
+	for _, decision := range report.Decisions {
+		if decision.Field == inference.FieldGenerateIntentImageQuality &&
+			decision.Disposition == inference.Dropped &&
+			strings.Contains(decision.Reason, "no quality parameter") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("report decisions = %+v, want quality dropped with reason",
+			report.Decisions)
 	}
 }
 
