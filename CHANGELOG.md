@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.33` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.1.34` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.1.34` - 2026-08-27
+
+### Changed
+
+- feat(core): image generation streaming and quality — ImagePartDelta gains Interim progress snapshots that replace rather than accumulate at the same part index, so partial-image previews stream as progress while the terminal result keeps only the final image per index (GeneratedImages stays correct); ImageIntent gains a canonical Quality field (auto|low|medium|high via media.ImageQuality) wired through the generate ledger, giving azure/openai image generation a quality knob and letting bytedance/minimax reject it at compile time
 
 ## `core/v0.1.33` - 2026-08-27
 
