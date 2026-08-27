@@ -178,7 +178,7 @@ func compileImage(
 				}
 			}
 			if image.Quality != "" {
-				ledger.reject(
+				ledger.drop(
 					inference.FieldGenerateIntentImageQuality,
 					"seedream has no quality parameter; quality is set by model and resolution tier",
 				)

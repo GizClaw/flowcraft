@@ -173,7 +173,7 @@ func compileImage(
 				wire.delivery = "base64"
 			}
 			if image.Quality != "" {
-				ledger.reject(
+				ledger.drop(
 					inference.FieldGenerateIntentImageQuality,
 					"image-01 has no quality parameter",
 				)
