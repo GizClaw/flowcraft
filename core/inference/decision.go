@@ -44,6 +44,7 @@ const (
 	FieldGenerateIntentImageSeed             FieldID = "generate.input.content.intent.image.seed"
 	FieldGenerateIntentImageOutputFormat     FieldID = "generate.input.content.intent.image.output_format"
 	FieldGenerateIntentImageDelivery         FieldID = "generate.input.content.intent.image.delivery"
+	FieldGenerateIntentImageQuality          FieldID = "generate.input.content.intent.image.quality"
 	FieldGenerateIntentAudio                 FieldID = "generate.input.content.intent.audio"
 	FieldGenerateIntentAudioVoice            FieldID = "generate.input.content.intent.audio.voice"
 	FieldGenerateIntentAudioVoiceID          FieldID = "generate.input.content.intent.audio.voice.id"

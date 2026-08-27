@@ -10,7 +10,10 @@ import (
 // driverID namespaces every extension this package defines.
 const driverID = "openai"
 
-const extensionGenerate = "generate_options"
+const (
+	extensionGenerate = "generate_options"
+	extensionImage    = "image_options"
+)
 
 // extensionProvider resolves the deployment provider ID an extension targets,
 // defaulting to the driver name.
@@ -120,6 +123,52 @@ func (o GenerateOptions) Clone() inference.Extension {
 		search.ToolChoice = clonePointer(search.ToolChoice)
 		o.WebSearch = &search
 	}
+	return o
+}
+
+// ---------------------------------------------------------------------------
+// Image (gpt-image).
+// ---------------------------------------------------------------------------
+
+// ImageOptions carries images API settings beyond the canonical image
+// intent.
+type ImageOptions struct {
+	// Provider targets a deployment provider ID other than "openai".
+	Provider string `json:"-"`
+	// PartialImages sets the number of progress previews streamed before
+	// the final image when the request runs in the stream execution shape.
+	// It must be between 0 and 3: 0 delivers the final image in a single
+	// stream event, and 1-3 deliver interim previews as they are generated.
+	// Nil keeps the provider default (0). It has no effect on the unary
+	// execution shape.
+	PartialImages *int `json:"partial_images,omitempty"`
+}
+
+func (o ImageOptions) ProviderID() string  { return extensionProvider(o.Provider) }
+func (o ImageOptions) ExtensionID() string { return extensionImage }
+
+func (o ImageOptions) ActiveFields() []inference.ExtensionField {
+	var fields []inference.ExtensionField
+	if o.PartialImages != nil {
+		fields = append(fields, "partial_images")
+	}
+	return fields
+}
+
+func (o ImageOptions) Validate() error {
+	if partial := o.PartialImages; partial != nil {
+		if *partial < 0 || *partial > 3 {
+			return fmt.Errorf(
+				"partial_images must be between 0 and 3, not %d",
+				*partial,
+			)
+		}
+	}
+	return nil
+}
+
+func (o ImageOptions) Clone() inference.Extension {
+	o.PartialImages = clonePointer(o.PartialImages)
 	return o
 }
 

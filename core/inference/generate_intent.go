@@ -188,12 +188,13 @@ func (i TextIntent) Validate() error {
 }
 
 type ImageIntent struct {
-	Size         *media.ImageSize  `json:"size,omitempty"`
-	AspectRatio  media.AspectRatio `json:"aspect_ratio,omitempty"`
-	Count        *int              `json:"count,omitempty"`
-	Seed         *int64            `json:"seed,omitempty"`
-	OutputFormat media.ImageFormat `json:"output_format,omitempty"`
-	Delivery     media.SourceKind  `json:"delivery,omitempty"`
+	Size         *media.ImageSize   `json:"size,omitempty"`
+	AspectRatio  media.AspectRatio  `json:"aspect_ratio,omitempty"`
+	Count        *int               `json:"count,omitempty"`
+	Seed         *int64             `json:"seed,omitempty"`
+	OutputFormat media.ImageFormat  `json:"output_format,omitempty"`
+	Delivery     media.SourceKind   `json:"delivery,omitempty"`
+	Quality      media.ImageQuality `json:"quality,omitempty"`
 }
 
 func (i ImageIntent) Clone() ImageIntent {
@@ -227,6 +228,11 @@ func (i ImageIntent) Validate() error {
 	}
 	if i.Delivery != "" {
 		if err := i.Delivery.Validate(); err != nil {
+			return err
+		}
+	}
+	if i.Quality != "" {
+		if err := i.Quality.Validate(); err != nil {
 			return err
 		}
 	}

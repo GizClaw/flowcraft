@@ -143,6 +143,13 @@ type ImageOptions struct {
 	// reference image only; the mask itself must be inline bytes because
 	// images/edits uploads multipart files.
 	Mask *media.ImageSource `json:"mask,omitempty"`
+	// PartialImages sets the number of progress previews streamed before
+	// the final image when the request runs in the stream execution shape.
+	// It must be between 0 and 3: 0 delivers the final image in a single
+	// stream event, and 1-3 deliver interim previews as they are generated.
+	// Nil keeps the provider default (0). It has no effect on the unary
+	// execution shape.
+	PartialImages *int `json:"partial_images,omitempty"`
 }
 
 func (o ImageOptions) ProviderID() string  { return extensionProvider(o.Provider) }
@@ -153,15 +160,25 @@ func (o ImageOptions) ActiveFields() []inference.ExtensionField {
 	if o.Mask != nil {
 		fields = append(fields, "mask")
 	}
+	if o.PartialImages != nil {
+		fields = append(fields, "partial_images")
+	}
 	return fields
 }
 
 func (o ImageOptions) Validate() error {
-	if o.Mask == nil {
-		return nil
+	if mask := o.Mask; mask != nil {
+		if base := mask.BaseMediaType(); base != "image/png" {
+			return fmt.Errorf("mask must be a PNG image, not %q", base)
+		}
 	}
-	if base := o.Mask.BaseMediaType(); base != "image/png" {
-		return fmt.Errorf("mask must be a PNG image, not %q", base)
+	if partial := o.PartialImages; partial != nil {
+		if *partial < 0 || *partial > 3 {
+			return fmt.Errorf(
+				"partial_images must be between 0 and 3, not %d",
+				*partial,
+			)
+		}
 	}
 	return nil
 }
@@ -171,6 +188,7 @@ func (o ImageOptions) Clone() inference.Extension {
 		mask := o.Mask.Clone()
 		o.Mask = &mask
 	}
+	o.PartialImages = clonePointer(o.PartialImages)
 	return o
 }
 

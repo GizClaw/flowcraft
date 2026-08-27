@@ -6,14 +6,20 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
+	"github.com/openai/openai-go/v3/packages/respjson"
+	"github.com/openai/openai-go/v3/packages/ssestream"
 )
 
 // Image generation runs on the images endpoint (gpt-image). Text-only
@@ -27,11 +33,13 @@ import (
 // delivery has no native channel and is rejected.
 
 type imageWire struct {
-	model  string
-	prompt string
-	size   string // WxH; gpt-image-2-family models accept arbitrary sizes
-	count  int
-	format string // png | jpeg | webp
+	model         string
+	prompt        string
+	size          string // WxH; gpt-image-2-family models accept arbitrary sizes
+	count         int
+	format        string // png | jpeg | webp
+	quality       string // auto | low | medium | high
+	partialImages int    // 0-3 progress previews before the final image (stream only)
 	// images are inline reference images for image-to-image edits; empty
 	// means a text-only generation.
 	images []wireImage
@@ -67,6 +75,8 @@ type imageRaw struct {
 	inputTokens  int64
 	outputTokens int64
 	totalTokens  int64
+	requestID    string
+	responseID   string
 }
 
 // imageSize validates one canonical size against the gpt-image-2-family
@@ -111,12 +121,6 @@ func compileImage(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := imageWire{model: model, count: 1}
-		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
-				inference.FieldGenerateExecutionStream,
-				"image generation is unary on this provider",
-			)
-		}
 
 		var prompt []string
 		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
@@ -212,10 +216,47 @@ func compileImage(
 					"gpt-image returns inline payloads only; URL delivery has no channel",
 				)
 			}
+			if image.Quality != "" {
+				switch image.Quality {
+				case media.ImageQualityAuto,
+					media.ImageQualityLow,
+					media.ImageQualityMedium,
+					media.ImageQualityHigh:
+					wire.quality = string(image.Quality)
+				default:
+					ledger.reject(
+						inference.FieldGenerateIntentImageQuality,
+						fmt.Sprintf(
+							"image quality %q is not supported",
+							image.Quality,
+						),
+					)
+				}
+			}
 		}
 		options, other := operationExtensions[ImageOptions](request.Extensions)
 		rejectOtherExtensions("image generation", other, ledger)
 		compileImageOptions(&wire, options, ledger)
+		if partial := options.PartialImages; partial != nil {
+			field := inference.ExtensionField("partial_images").Qualify(options)
+			switch {
+			case shape != inference.GenerateExecutionStream:
+				ledger.reject(
+					field,
+					"partial_images applies to the stream execution shape",
+				)
+			case *partial < 0 || *partial > 3:
+				ledger.reject(
+					field,
+					fmt.Sprintf(
+						"partial_images must be between 0 and 3, not %d",
+						*partial,
+					),
+				)
+			default:
+				wire.partialImages = *partial
+			}
+		}
 		if intent.Audio != nil {
 			ledger.reject(
 				inference.FieldGenerateIntentAudio,
@@ -274,46 +315,19 @@ func transportImage(
 	return func(ctx context.Context, wire imageWire) (imageRaw, error) {
 		var response *openai.ImagesResponse
 		var err error
+		var requestID string
 		if len(wire.images) == 0 {
-			params := openai.ImageGenerateParams{
-				Model:  wire.model,
-				Prompt: wire.prompt,
-				N:      param.NewOpt(int64(wire.count)),
-			}
-			if wire.size != "" {
-				params.Size = openai.ImageGenerateParamsSize(wire.size)
-			}
-			if wire.format != "" {
-				params.OutputFormat = openai.ImageGenerateParamsOutputFormat(wire.format)
-			}
-			response, err = client.Images.Generate(ctx, params)
+			response, err = client.Images.Generate(
+				ctx,
+				imageGenerateParams(wire),
+				captureRequestID(&requestID),
+			)
 		} else {
-			readers := make([]io.Reader, 0, len(wire.images))
-			for _, image := range wire.images {
-				readers = append(readers, imageFile{
-					Reader:      bytes.NewReader(image.data),
-					contentType: image.mediaType,
-				})
-			}
-			params := openai.ImageEditParams{
-				Model:  openai.ImageModel(wire.model),
-				Prompt: wire.prompt,
-				N:      param.NewOpt(int64(wire.count)),
-				Image:  openai.ImageEditParamsImageUnion{OfFileArray: readers},
-			}
-			if wire.size != "" {
-				params.Size = openai.ImageEditParamsSize(wire.size)
-			}
-			if wire.format != "" {
-				params.OutputFormat = openai.ImageEditParamsOutputFormat(wire.format)
-			}
-			if len(wire.mask.data) > 0 {
-				params.Mask = imageFile{
-					Reader:      bytes.NewReader(wire.mask.data),
-					contentType: wire.mask.mediaType,
-				}
-			}
-			response, err = client.Images.Edit(ctx, params)
+			response, err = client.Images.Edit(
+				ctx,
+				imageEditParams(wire),
+				captureRequestID(&requestID),
+			)
 		}
 		if err != nil {
 			return imageRaw{}, classifyError(err)
@@ -323,6 +337,8 @@ func transportImage(
 			inputTokens:  response.Usage.InputTokens,
 			outputTokens: response.Usage.OutputTokens,
 			totalTokens:  response.Usage.TotalTokens,
+			requestID:    requestID,
+			responseID:   responseBodyID(response.JSON.ExtraFields),
 		}
 		for index, image := range response.Data {
 			data, err := base64.StdEncoding.DecodeString(image.B64JSON)
@@ -337,6 +353,103 @@ func transportImage(
 		}
 		return raw, nil
 	}
+}
+
+// captureRequestID returns a per-call request option whose middleware
+// records the provider's request-id response header. The middleware runs on
+// every HTTP attempt, so the last attempt's header wins. Azure OpenAI
+// echoes the request identifier as x-request-id, with apim-request-id as an
+// API Management fallback.
+func captureRequestID(target *string) option.RequestOption {
+	return option.WithMiddleware(func(
+		req *http.Request,
+		next option.MiddlewareNext,
+	) (*http.Response, error) {
+		response, err := next(req)
+		if err != nil || response == nil {
+			return response, err
+		}
+		if id := response.Header.Get("x-request-id"); id != "" {
+			*target = id
+		} else if id := response.Header.Get("apim-request-id"); id != "" {
+			*target = id
+		}
+		return response, err
+	})
+}
+
+// responseBodyID extracts a response-object id the SDK does not model from
+// the decoded body's extra fields, when the provider echoes one.
+func responseBodyID(fields map[string]respjson.Field) string {
+	field, ok := fields["id"]
+	if !ok || field.Raw() == "" {
+		return ""
+	}
+	id, err := strconv.Unquote(field.Raw())
+	if err != nil {
+		return ""
+	}
+	return id
+}
+
+// imageGenerateParams renders the images/generations request body. Both the
+// unary and streaming transports share it; partialImages stays zero off the
+// stream shape, so unary requests never carry the streaming-only parameter.
+func imageGenerateParams(wire imageWire) openai.ImageGenerateParams {
+	params := openai.ImageGenerateParams{
+		Model:  wire.model,
+		Prompt: wire.prompt,
+		N:      param.NewOpt(int64(wire.count)),
+	}
+	if wire.size != "" {
+		params.Size = openai.ImageGenerateParamsSize(wire.size)
+	}
+	if wire.format != "" {
+		params.OutputFormat = openai.ImageGenerateParamsOutputFormat(wire.format)
+	}
+	if wire.quality != "" {
+		params.Quality = openai.ImageGenerateParamsQuality(wire.quality)
+	}
+	if wire.partialImages > 0 {
+		params.PartialImages = param.NewOpt(int64(wire.partialImages))
+	}
+	return params
+}
+
+// imageEditParams renders the images/edits multipart request body.
+func imageEditParams(wire imageWire) openai.ImageEditParams {
+	readers := make([]io.Reader, 0, len(wire.images))
+	for _, image := range wire.images {
+		readers = append(readers, imageFile{
+			Reader:      bytes.NewReader(image.data),
+			contentType: image.mediaType,
+		})
+	}
+	params := openai.ImageEditParams{
+		Model:  openai.ImageModel(wire.model),
+		Prompt: wire.prompt,
+		N:      param.NewOpt(int64(wire.count)),
+		Image:  openai.ImageEditParamsImageUnion{OfFileArray: readers},
+	}
+	if wire.size != "" {
+		params.Size = openai.ImageEditParamsSize(wire.size)
+	}
+	if wire.format != "" {
+		params.OutputFormat = openai.ImageEditParamsOutputFormat(wire.format)
+	}
+	if wire.quality != "" {
+		params.Quality = openai.ImageEditParamsQuality(wire.quality)
+	}
+	if wire.partialImages > 0 {
+		params.PartialImages = param.NewOpt(int64(wire.partialImages))
+	}
+	if len(wire.mask.data) > 0 {
+		params.Mask = imageFile{
+			Reader:      bytes.NewReader(wire.mask.data),
+			contentType: wire.mask.mediaType,
+		}
+	}
+	return params
 }
 
 func decodeImage(
@@ -374,6 +487,10 @@ func decodeImage(
 			Role:    message.RoleAssistant,
 			Content: message.Content{Parts: parts},
 		},
+		Metadata: inference.Metadata{
+			RequestID:  raw.requestID,
+			ResponseID: raw.responseID,
+		},
 		FinishReason: inference.FinishCompleted,
 		Usage: inference.Usage{
 			InputTokens:     raw.inputTokens,
@@ -399,18 +516,258 @@ func sniffImageMediaType(data []byte) string {
 	return ""
 }
 
+// ---------------------------------------------------------------------------
+// Streaming.
+// ---------------------------------------------------------------------------
+
+// imageStreamRaw is one event from the image streaming surface after part
+// index assignment. interim marks a progress preview; the final image for
+// an output arrives with interim false and carries the cumulative usage.
+type imageStreamRaw struct {
+	partIndex    int
+	interim      bool
+	b64          string
+	outputFormat string
+	usage        inference.Usage
+	requestID    string
+}
+
+// imageStreamEvent is the driver-side view of one SDK image stream event.
+// The SDK exposes generation and edit streams as two sealed unions with
+// identical shapes; this view keeps both behind one concrete surface for
+// the stream wrapper and decoder.
+type imageStreamEvent struct {
+	b64          string
+	outputFormat string
+	usage        inference.Usage
+	partial      bool
+	completed    bool
+	rawType      string
+}
+
+// imageSDKStream is the small SDK surface the wrapper needs. The SDK stream
+// types are concrete, so generation and edit streams each adapt it.
+type imageSDKStream interface {
+	Next() bool
+	Current() imageStreamEvent
+	Err() error
+	Close() error
+}
+
+type imageGenSDKStream struct {
+	stream *ssestream.Stream[openai.ImageGenStreamEventUnion]
+}
+
+func (s imageGenSDKStream) Next() bool { return s.stream.Next() }
+func (s imageGenSDKStream) Err() error { return s.stream.Err() }
+func (s imageGenSDKStream) Close() error {
+	return s.stream.Close()
+}
+
+func (s imageGenSDKStream) Current() imageStreamEvent {
+	event := s.stream.Current()
+	return imageStreamEvent{
+		b64:          event.B64JSON,
+		outputFormat: event.OutputFormat,
+		usage: inference.Usage{
+			InputTokens:  event.Usage.InputTokens,
+			OutputTokens: event.Usage.OutputTokens,
+			TotalTokens:  event.Usage.TotalTokens,
+		},
+		partial:   event.Type == "image_generation.partial_image",
+		completed: event.Type == "image_generation.completed",
+		rawType:   event.Type,
+	}
+}
+
+type imageEditSDKStream struct {
+	stream *ssestream.Stream[openai.ImageEditStreamEventUnion]
+}
+
+func (s imageEditSDKStream) Next() bool { return s.stream.Next() }
+func (s imageEditSDKStream) Err() error { return s.stream.Err() }
+func (s imageEditSDKStream) Close() error {
+	return s.stream.Close()
+}
+
+func (s imageEditSDKStream) Current() imageStreamEvent {
+	event := s.stream.Current()
+	return imageStreamEvent{
+		b64:          event.B64JSON,
+		outputFormat: event.OutputFormat,
+		usage: inference.Usage{
+			InputTokens:  event.Usage.InputTokens,
+			OutputTokens: event.Usage.OutputTokens,
+			TotalTokens:  event.Usage.TotalTokens,
+		},
+		partial:   event.Type == "image_edit.partial_image",
+		completed: event.Type == "image_edit.completed",
+		rawType:   event.Type,
+	}
+}
+
+// imageStream adapts the SDK image SSE reader to ProviderStream[imageStreamRaw].
+// It assigns canonical part indices: progress previews and the final image
+// for one output share one index, so the terminal result keeps only the
+// last image per output. The SDK events carry no per-image index, so the
+// wrapper assumes the API streams outputs sequentially.
+type imageStream struct {
+	sdk       imageSDKStream
+	nextPart  int
+	requestID string
+}
+
+func (s *imageStream) Next(
+	ctx context.Context,
+) (imageStreamRaw, error) {
+	if err := ctx.Err(); err != nil {
+		return imageStreamRaw{}, errdefs.FromContext(err)
+	}
+	for {
+		if !s.sdk.Next() {
+			if err := s.sdk.Err(); err != nil {
+				classified := classifyError(err)
+				logInferenceStream(ctx, "generate", "", classified, "")
+				return imageStreamRaw{}, classified
+			}
+			return imageStreamRaw{}, io.EOF
+		}
+		event := s.sdk.Current()
+		switch {
+		case event.partial:
+			return imageStreamRaw{
+				partIndex:    s.nextPart,
+				interim:      true,
+				b64:          event.b64,
+				outputFormat: event.outputFormat,
+			}, nil
+		case event.completed:
+			raw := imageStreamRaw{
+				partIndex:    s.nextPart,
+				b64:          event.b64,
+				outputFormat: event.outputFormat,
+				usage:        event.usage,
+				requestID:    s.requestID,
+			}
+			s.nextPart++
+			return raw, nil
+		default:
+			return imageStreamRaw{}, fmt.Errorf(
+				"azure: unknown image stream event type %q",
+				event.rawType,
+			)
+		}
+	}
+}
+
+func (s *imageStream) Close() error {
+	if s.sdk == nil {
+		return nil
+	}
+	return classifyError(s.sdk.Close())
+}
+
+func transportImageStream(
+	client openai.Client,
+) inference.Transport[imageWire, inference.ProviderStream[imageStreamRaw]] {
+	return func(
+		ctx context.Context,
+		wire imageWire,
+	) (inference.ProviderStream[imageStreamRaw], error) {
+		var sdk imageSDKStream
+		var requestID string
+		if len(wire.images) == 0 {
+			sdk = imageGenSDKStream{
+				stream: client.Images.GenerateStreaming(
+					ctx,
+					imageGenerateParams(wire),
+					captureRequestID(&requestID),
+				),
+			}
+		} else {
+			sdk = imageEditSDKStream{
+				stream: client.Images.EditStreaming(
+					ctx,
+					imageEditParams(wire),
+					captureRequestID(&requestID),
+				),
+			}
+		}
+		if err := sdk.Err(); err != nil {
+			classified := classifyError(err)
+			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			return nil, classified
+		}
+		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		return &imageStream{sdk: sdk, requestID: requestID}, nil
+	}
+}
+
+func decodeImageStream(
+	_ context.Context,
+	raw imageStreamRaw,
+) (inference.GenerateStreamEvent, error) {
+	image, err := streamImagePart(raw.b64, raw.outputFormat)
+	if err != nil {
+		return inference.GenerateStreamEvent{}, err
+	}
+	event := inference.GenerateStreamEvent{
+		PartIndex: raw.partIndex,
+		Delta: inference.ImagePartDelta{
+			Part:    image,
+			Interim: raw.interim,
+		},
+	}
+	if !raw.interim {
+		event.Usage = &raw.usage
+		event.FinishReason = inference.FinishCompleted
+		event.RequestID = raw.requestID
+	}
+	return event, nil
+}
+
+func streamImagePart(
+	b64Data string,
+	outputFormat string,
+) (message.ImagePart, error) {
+	data, err := base64.StdEncoding.DecodeString(b64Data)
+	if err != nil {
+		return message.ImagePart{}, fmt.Errorf(
+			"azure: decode image stream payload: %w",
+			err,
+		)
+	}
+	mediaType := media.ImageFormat(outputFormat).MediaType()
+	if mediaType == "" {
+		// The stream events echo the negotiated output format; sniff the
+		// container when it is absent or unknown.
+		mediaType = sniffImageMediaType(data)
+		if mediaType == "" {
+			return message.ImagePart{}, fmt.Errorf(
+				"azure: image stream payload has unrecognized format",
+			)
+		}
+	}
+	source, err := media.NewImageBytes(data, mediaType)
+	if err != nil {
+		return message.ImagePart{}, fmt.Errorf(
+			"azure: image stream data: %w",
+			err,
+		)
+	}
+	return message.ImagePart{Source: source}, nil
+}
+
 func openImage(
 	cls *clients,
 	id inference.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
-	unary, err := inference.BindGenerate(
+	return inference.BindGenerateOperations(
 		compileImage(id.Name),
 		transportImage(cls.api),
 		decodeImage,
+		transportImageStream(cls.api),
+		decodeImageStream,
 	)
-	if err != nil {
-		return inference.GenerateOperations{}, err
-	}
-	return inference.GenerateOperations{Unary: unary}, nil
 }

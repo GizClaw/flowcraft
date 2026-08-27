@@ -69,3 +69,29 @@ func (f ImageFormat) MediaType() string {
 		return ""
 	}
 }
+
+// ImageQuality is the canonical generation quality tier. The values mirror
+// the gpt-image family's quality parameter — the only image provider that
+// exposes a per-request quality knob. Providers without a native quality
+// parameter reject the field at compile time rather than approximate it.
+type ImageQuality string
+
+const (
+	// ImageQualityAuto defers to the provider's default quality.
+	ImageQualityAuto ImageQuality = "auto"
+	// ImageQualityLow trades quality for speed.
+	ImageQualityLow ImageQuality = "low"
+	// ImageQualityMedium is the middle quality tier.
+	ImageQualityMedium ImageQuality = "medium"
+	// ImageQualityHigh is the best quality tier.
+	ImageQualityHigh ImageQuality = "high"
+)
+
+func (q ImageQuality) Validate() error {
+	switch q {
+	case ImageQualityAuto, ImageQualityLow, ImageQualityMedium, ImageQualityHigh:
+		return nil
+	default:
+		return fmt.Errorf("unknown image quality %q", q)
+	}
+}

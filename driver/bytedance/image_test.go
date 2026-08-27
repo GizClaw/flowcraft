@@ -209,6 +209,21 @@ func TestCompileImageBackgroundRejects(t *testing.T) {
 	}
 }
 
+func TestCompileImageQualityRejects(t *testing.T) {
+	request := compileImageRequest(
+		[]message.Part{message.TextPart{Text: "a red circle"}},
+		ImageOptions{},
+	)
+	request.Input.Content.Intent.Image.Quality = media.ImageQualityHigh
+	_, report, err := compileImageWire(t, request)
+	if err == nil {
+		t.Fatal("compile succeeded, want quality rejection")
+	}
+	if reason := rejectedReason(report, inference.FieldGenerateIntentImageQuality); !strings.Contains(reason, "no quality parameter") {
+		t.Fatalf("rejected reason = %q, want seedream no-quality rejection", reason)
+	}
+}
+
 func mustImageSource(t *testing.T) media.ImageSource {
 	t.Helper()
 	source, err := media.NewImageURL("https://example.com/input1.png", "image/png")
