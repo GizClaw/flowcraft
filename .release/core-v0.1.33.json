@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): bump OTLP HTTP exporters past GO-2026-4985 — otlptracehttp/otlpmetrichttp to v1.43.0 and otlploghttp to v0.19.0 (with otel/log and sdk/log at v0.19.0, otlptrace at v1.43.0) so oversized collector response bodies are size-limited instead of exhausting memory, aligning the same dependencies across all drivers, backends, examples, and the flowcraft-config validator",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
