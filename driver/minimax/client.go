@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -30,8 +31,8 @@ type clients struct {
 	media *mediaClient
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, fmt.Errorf("profile %q: %w", profile.ID, err)
 	}

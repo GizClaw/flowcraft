@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -24,8 +25,8 @@ type clients struct {
 	api openaigo.Client
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, err
 	}

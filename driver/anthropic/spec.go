@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -57,8 +58,8 @@ type ProfileSpec struct{}
 
 func (ProfileSpec) Validate() error { return nil }
 
-func decodeSpec(raw []byte) (Spec, error) {
-	spec, err := resource.DecodeTyped[Spec](raw)
+func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {
+	spec, err := resource.DecodeTyped[Spec](ctx, raw)
 	if err != nil {
 		return Spec{}, fmt.Errorf("anthropic spec: %w", err)
 	}

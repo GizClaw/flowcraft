@@ -2,6 +2,7 @@ package resource
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,18 +27,18 @@ func (o *Opaque) UnmarshalJSON(data []byte) error {
 func (o Opaque) Bytes() []byte { return o }
 
 // Decode strictly decodes the settings into target.
-func (o Opaque) Decode(target any) error {
-	return DecodeSettings(target, o)
+func (o Opaque) Decode(ctx context.Context, target any) error {
+	return DecodeSettings(ctx, target, o)
 }
 
 // DecodeSettings strictly decodes raw settings into target: unknown
 // fields are rejected so a typo fails the build instead of silently
 // dropping policy. When expansion options are given, scalar string
-// references (${env:NAME}, ${base}, ~, ...) are expanded first; see
-// [Expand].
-func DecodeSettings(target any, raw []byte, opts ...ExpandOption) error {
+// references (${env:NAME}, ${base}, ${secret:...}, ~, ...) are expanded
+// first; see [Expand].
+func DecodeSettings(ctx context.Context, target any, raw []byte, opts ...ExpandOption) error {
 	if len(opts) > 0 {
-		expanded, err := Expand(raw, opts...)
+		expanded, err := Expand(ctx, raw, opts...)
 		if err != nil {
 			return err
 		}
@@ -56,9 +57,9 @@ func DecodeSettings(target any, raw []byte, opts ...ExpandOption) error {
 
 // DecodeTyped is a typed convenience wrapper: it decodes raw into a
 // fresh T and returns it, applying expansion options when given.
-func DecodeTyped[T any](raw []byte, opts ...ExpandOption) (T, error) {
+func DecodeTyped[T any](ctx context.Context, raw []byte, opts ...ExpandOption) (T, error) {
 	var value T
-	if err := DecodeSettings(&value, raw, opts...); err != nil {
+	if err := DecodeSettings(ctx, &value, raw, opts...); err != nil {
 		return value, fmt.Errorf("resource settings decode: %w", err)
 	}
 	return value, nil

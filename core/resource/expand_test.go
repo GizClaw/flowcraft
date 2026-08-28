@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestExpandNoOptionsReturnsInput(t *testing.T) {
-	out, err := Expand([]byte(`{"a": "${env:X}"}`))
+	out, err := Expand(context.Background(), []byte(`{"a": "${env:X}"}`))
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -26,7 +27,7 @@ func TestExpandEnv(t *testing.T) {
 		}
 		return "", false
 	}
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"root": "${env:ROOT}",
 		"nested": {"path": "${env:ROOT}/data"},
 		"list": ["${env:ROOT}/a", "plain"]
@@ -52,7 +53,7 @@ func TestExpandEnv(t *testing.T) {
 }
 
 func TestExpandBase(t *testing.T) {
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"dir": "${base}",
 		"file": "${base:tools/tools.yaml}"
 	}`), ExpandBase("/tmp/deploy"))
@@ -72,7 +73,7 @@ func TestExpandBase(t *testing.T) {
 }
 
 func TestExpandHome(t *testing.T) {
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"bare": "~",
 		"sub": "~/flowcraft",
 		"ref": "${home:data}",
@@ -108,7 +109,7 @@ func TestExpandErrors(t *testing.T) {
 		{"unknown ref", `{"a": "${foo}"}`, []ExpandOption{ExpandEnv()}},
 		{"unterminated", `{"a": "${env:X"}`, []ExpandOption{ExpandEnv()}},
 	} {
-		if _, err := Expand([]byte(tc.raw), tc.opts...); !errdefs.IsValidation(err) {
+		if _, err := Expand(context.Background(), []byte(tc.raw), tc.opts...); !errdefs.IsValidation(err) {
 			t.Fatalf("%s: error = %v, want validation", tc.name, err)
 		}
 	}
@@ -125,11 +126,68 @@ func TestDecodeSettingsWithExpansion(t *testing.T) {
 		return "", false
 	}
 	got, err := DecodeTyped[settings](
+		context.Background(),
 		[]byte(`{"root": "${env:ROOT}/data"}`), WithEnv(lookup))
 	if err != nil {
 		t.Fatalf("DecodeTyped: %v", err)
 	}
 	if got.Root != "/srv/flowcraft/data" {
 		t.Fatalf("Root = %q", got.Root)
+	}
+}
+
+func TestExpandEscapedReference(t *testing.T) {
+	out, err := Expand(context.Background(), []byte(`{
+		"escaped": "\\${env:NOPE}",
+		"mixed": "${env:ROOT}-\\${env:NOPE}"
+	}`), WithEnv(func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv", true
+		}
+		return "", false
+	}))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["escaped"] != "${env:NOPE}" {
+		t.Fatalf("escaped = %v, want literal ${env:NOPE}", got["escaped"])
+	}
+	if got["mixed"] != "/srv-${env:NOPE}" {
+		t.Fatalf("mixed = %v, want /srv-literal", got["mixed"])
+	}
+}
+
+func TestExpandCustomScheme(t *testing.T) {
+	resolver := NewResolver(SchemeFunc{
+		SchemeName: "cfg",
+		Fn: func(_ context.Context, ref string) (string, error) {
+			if ref == "x" {
+				return "value-x", nil
+			}
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref)
+		},
+	})
+	out, err := Expand(context.Background(),
+		[]byte(`{"root": "${cfg:x}"}`), WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["root"] != "value-x" {
+		t.Fatalf("root = %v, want value-x", got["root"])
+	}
+}
+
+func TestExpandDisabledSchemeErrors(t *testing.T) {
+	if _, err := Expand(context.Background(),
+		[]byte(`{"a": "${cfg:x}"}`), ExpandEnv()); !errdefs.IsValidation(err) {
+		t.Fatalf("error = %v, want validation for disabled scheme", err)
 	}
 }

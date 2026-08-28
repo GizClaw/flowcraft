@@ -1,6 +1,7 @@
 package bytedance
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -58,8 +59,8 @@ func (c *clients) endpoint(name string) string {
 	return name
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, err
 	}

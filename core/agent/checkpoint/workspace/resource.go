@@ -42,8 +42,8 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(_ context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[Settings](in.Settings)
+func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
+	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"workspace checkpoint: decode settings: %w", err))

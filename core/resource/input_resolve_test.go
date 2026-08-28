@@ -25,7 +25,7 @@ func TestInputResolveSettingsYAML(t *testing.T) {
 	var settings struct {
 		Root string `json:"root"`
 	}
-	if err := DecodeSettings(&settings, data); err != nil {
+	if err := DecodeSettings(context.Background(), &settings, data); err != nil {
 		t.Fatalf("DecodeSettings: %v", err)
 	}
 	if settings.Root != "/tmp/x" {

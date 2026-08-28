@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "openai"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "openai"})
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -50,7 +51,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "openai"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "openai"})
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -139,7 +140,7 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			spec, err := decodeSpec([]byte(tc.spec))
+			spec, err := decodeSpec(context.Background(), []byte(tc.spec))
 			if err != nil {
 				t.Fatalf("decodeSpec: %v", err)
 			}

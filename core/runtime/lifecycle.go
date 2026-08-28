@@ -110,7 +110,7 @@ func (r *Runtime) RegisterAgent(
 			"runtime: agent %q is a deployed agent", name)
 	}
 
-	instance, err := deploy.BindAgent(ctx, r.resources, r.result, r.loader, name, def)
+	instance, err := deploy.BindAgent(ctx, r.resources, r.result, r.loader, nil, name, def)
 	if err != nil {
 		return nil, err
 	}

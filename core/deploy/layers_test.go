@@ -58,7 +58,7 @@ agents:
 		Root   string         `json:"root"`
 		Nested map[string]int `json:"nested"`
 	}
-	if err := resource.DecodeSettings(&settings, fs.Settings); err != nil {
+	if err := resource.DecodeSettings(context.Background(), &settings, fs.Settings); err != nil {
 		t.Fatal(err)
 	}
 	if settings.Root != "./data" || settings.Nested["a"] != 1 {
@@ -114,7 +114,7 @@ runtime:
 			IdleTimeout string `json:"idle_timeout"`
 		} `json:"sessions"`
 	}
-	if err := resource.DecodeSettings(&runtime, json.RawMessage(*doc.Runtime)); err != nil {
+	if err := resource.DecodeSettings(context.Background(), &runtime, json.RawMessage(*doc.Runtime)); err != nil {
 		t.Fatalf("decode runtime: %v", err)
 	}
 	if runtime.EventBus != "events" {
@@ -191,7 +191,7 @@ resources:
 	var settings struct {
 		Root string `json:"root"`
 	}
-	if err := resource.DecodeSettings(&settings, doc.Resources["fs"].Settings); err != nil {
+	if err := resource.DecodeSettings(context.Background(), &settings, doc.Resources["fs"].Settings); err != nil {
 		t.Fatal(err)
 	}
 	if settings.Root != "./p" {
@@ -231,7 +231,7 @@ func TestLoadLayersPerLayerBaseDir(t *testing.T) {
 	var settings struct {
 		Root string `json:"root"`
 	}
-	if err := resource.DecodeSettings(&settings, doc.Resources["fs"].Settings); err != nil {
+	if err := resource.DecodeSettings(context.Background(), &settings, doc.Resources["fs"].Settings); err != nil {
 		t.Fatal(err)
 	}
 	if settings.Root != "/b" {

@@ -74,7 +74,7 @@ func (c *capturedAzure) body(index int) map[string]any {
 
 func azureImageClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		fmt.Sprintf(`{
 			"endpoint": %q,
 			"models": [{"name": "gpt-image-1", "kind": "image",

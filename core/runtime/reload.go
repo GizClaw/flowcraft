@@ -107,7 +107,7 @@ func (r *Runtime) Reload(
 		return fail(fmt.Errorf(
 			"runtime reload validate deployment: %w", err))
 	}
-	cfg, err := DecodeConfig(doc)
+	cfg, err := DecodeConfig(ctx, doc)
 	if err != nil {
 		return fail(err)
 	}
@@ -252,7 +252,7 @@ func (r *Runtime) Reload(
 	for _, name := range sortedKeys(entries) {
 		entry := entries[name]
 		instance, bindErr := deploy.BindAgent(
-			ctx, r.resources, newResult, r.loader, name, entry.definition)
+			ctx, r.resources, newResult, r.loader, nil, name, entry.definition)
 		if bindErr != nil {
 			closeRebound()
 			return nil, abort(fmt.Errorf(

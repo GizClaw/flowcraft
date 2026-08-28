@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
@@ -22,6 +23,7 @@ import (
 type Builder struct {
 	registry *resource.Registry
 	loader   *resource.Loader
+	resolver *resource.ReferenceResolver
 }
 
 // BuilderOption configures a Builder.
@@ -32,6 +34,15 @@ type BuilderOption func(*Builder)
 // passed to factories for their own source resolution.
 func WithLoader(loader *resource.Loader) BuilderOption {
 	return func(b *Builder) { b.loader = loader }
+}
+
+// WithResolver supplies the reference resolver used to expand inline
+// ${scheme:ref} strings in every settings subtree (resources, agent
+// engine, agent hooks) before a factory decodes them. When unset, the
+// builder uses an all-open default resolver: env + home, plus base when
+// the loader declares a base directory.
+func WithResolver(resolver *resource.ReferenceResolver) BuilderOption {
+	return func(b *Builder) { b.resolver = resolver }
 }
 
 // NewBuilder returns a Builder over registry. A nil registry yields an
@@ -69,6 +80,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	values := make(map[string]any, len(order))
+	resolver := b.resolver
 	for _, name := range order {
 		res := doc.Resources[name]
 		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
@@ -90,6 +102,12 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 				return nil, errdefs.Validationf(
 					"deploy: resource %q: %v", name, err)
 			}
+		}
+		settings, err = expandSettings(ctx, resolver, b.loader, settings)
+		if err != nil {
+			logCleanup(ctx, values, order)
+			return nil, errdefs.Validationf(
+				"deploy: resource %q: %v", name, err)
 		}
 		deps, err := resolveDeps(values, res.Deps)
 		if err != nil {
@@ -139,6 +157,34 @@ func resolveSettings(
 	// Settings sub-documents may be YAML; convert to JSON so factory
 	// DecodeSettings (strict JSON) accepts them.
 	return utils.ToJSON(data)
+}
+
+// expandSettings expands inline ${scheme:ref} strings in one settings
+// subtree with the given resolver. A nil resolver falls back to the
+// all-open default: env + home, plus base when the loader declares a
+// base directory. Expansion is strict — an unknown scheme, a missing
+// env variable, or an unterminated reference fails the build.
+func expandSettings(
+	ctx context.Context,
+	resolver *resource.ReferenceResolver,
+	loader *resource.Loader,
+	raw []byte,
+) ([]byte, error) {
+	if resolver == nil {
+		schemes := []resource.Scheme{
+			resource.EnvScheme(os.LookupEnv),
+			resource.HomeScheme(),
+		}
+		if loader != nil && loader.BaseDir() != "" {
+			schemes = append(schemes, resource.BaseScheme(loader.BaseDir()))
+		}
+		resolver = resource.NewResolver(schemes...)
+	}
+	expanded, err := resource.Expand(ctx, raw, resource.WithResolver(resolver))
+	if err != nil {
+		return nil, err
+	}
+	return expanded, nil
 }
 
 // Wire runs the post-build wiring phase: resource values implementing
@@ -216,7 +262,7 @@ func logCleanup(ctx context.Context, values map[string]any, order []string) {
 // records it on the result.
 func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) error {
 	for name, def := range doc.Agents {
-		instance, err := BindAgent(ctx, b.registry, result, b.loader, name, def)
+		instance, err := BindAgent(ctx, b.registry, result, b.loader, b.resolver, name, def)
 		if err != nil {
 			return err
 		}
@@ -241,6 +287,7 @@ func BindAgent(
 	reg *resource.Registry,
 	result *Result,
 	loader *resource.Loader,
+	resolver *resource.ReferenceResolver,
 	name string,
 	def agent.Definition,
 ) (*agent.Agent, error) {
@@ -268,8 +315,13 @@ func BindAgent(
 		return nil, err
 	}
 
+	engineSettings, err := expandSettings(ctx, resolver, loader, def.Engine.Settings)
+	if err != nil {
+		return fail(errdefs.Validationf(
+			"deploy: agent %q engine: %v", name, err))
+	}
 	engine, err := engineFactory.New(ctx, resource.Input{
-		Settings: def.Engine.Settings,
+		Settings: engineSettings,
 		Deps:     engineDeps,
 		Loader:   loader,
 	})
@@ -285,28 +337,28 @@ func BindAgent(
 	constructed = append(constructed, engineContract)
 
 	prepare, err := buildHookList[agent.Preparer](
-		reg, loader, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		reg, loader, resolver, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, prepare)
 
 	observe, err := buildHookList[agent.Observer](
-		reg, loader, result, ctx, name, agent.HookSlotObserver, def.Observe)
+		reg, loader, resolver, result, ctx, name, agent.HookSlotObserver, def.Observe)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, observe)
 
 	referees, err := buildHookList[agent.Referee](
-		reg, loader, result, ctx, name, agent.HookSlotReferee, def.Referees)
+		reg, loader, resolver, result, ctx, name, agent.HookSlotReferee, def.Referees)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, referees)
 
 	commit, err := buildHookList[agent.Committer](
-		reg, loader, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+		reg, loader, resolver, result, ctx, name, agent.HookSlotCommitter, def.Commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -336,6 +388,7 @@ func BindAgent(
 func buildHookList[T any](
 	reg *resource.Registry,
 	loader *resource.Loader,
+	resolver *resource.ReferenceResolver,
 	result *Result,
 	ctx context.Context,
 	name, slot string,
@@ -364,8 +417,14 @@ func buildHookList[T any](
 			return fail(errdefs.Validationf(
 				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
+		hookSettings, err := expandSettings(ctx, resolver, loader, entry.Settings)
+		if err != nil {
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v",
+				name, slot, i, err))
+		}
 		value, err := factory.New(ctx, resource.Input{
-			Settings: entry.Settings,
+			Settings: hookSettings,
 			Deps:     deps,
 			Loader:   loader,
 		})

@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
@@ -18,7 +19,7 @@ func TestRegisterAddsMCPToolSourceFactory(t *testing.T) {
 }
 
 func TestParseSpecRejectsMissingTransport(t *testing.T) {
-	_, err := ParseSpec(json.RawMessage(`{
+	_, err := ParseSpec(context.Background(), json.RawMessage(`{
 		"servers": [{"name": "fs", "command": "npx"}]
 	}`))
 	if err == nil {
@@ -27,7 +28,7 @@ func TestParseSpecRejectsMissingTransport(t *testing.T) {
 }
 
 func TestParseSpecHTTPTimeout(t *testing.T) {
-	spec, err := ParseSpec(json.RawMessage(`{
+	spec, err := ParseSpec(context.Background(), json.RawMessage(`{
 		"servers": [{
 			"name": "remote",
 			"transport": "http",
@@ -44,7 +45,7 @@ func TestParseSpecHTTPTimeout(t *testing.T) {
 }
 
 func TestParseSpecRejectsInvalidHTTPTimeout(t *testing.T) {
-	_, err := ParseSpec(json.RawMessage(`{
+	_, err := ParseSpec(context.Background(), json.RawMessage(`{
 		"servers": [{
 			"name": "remote",
 			"transport": "http",
@@ -58,7 +59,7 @@ func TestParseSpecRejectsInvalidHTTPTimeout(t *testing.T) {
 }
 
 func TestParseSpecRequired(t *testing.T) {
-	spec, err := ParseSpec(json.RawMessage(`{
+	spec, err := ParseSpec(context.Background(), json.RawMessage(`{
 		"servers": [{
 			"name": "db",
 			"transport": "stdio",

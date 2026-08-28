@@ -54,14 +54,14 @@ func (deployFactory) Spec() resource.Spec {
 // immutable core/inference.ProviderDefinition.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	settings, err := resource.DecodeTyped[ResourceSettings](
-		in.Settings, resource.ExpandEnv())
+		ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
 		return nil, fmt.Errorf("deepseek provider: decode settings: %w", err)
 	}
 	if settings.ID == "" {
 		return nil, fmt.Errorf("deepseek provider: settings.id is required")
 	}
-	return buildProvider(settings)
+	return buildProvider(ctx, settings)
 }
 
 // Register adds the DeepSeek provider factory to r.
@@ -77,8 +77,8 @@ func Register(r *resource.Registry) error {
 // definition carries the generate_options decoder bound to the deployment
 // provider ID, so graph yaml can enable provider knobs (web_search) without
 // host-side registration.
-func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, error) {
-	spec, err := decodeSpec(settings.Spec)
+func buildProvider(ctx context.Context, settings ResourceSettings) (inference.ProviderDefinition, error) {
+	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
@@ -111,7 +111,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile)
+		material, err := newProfileMaterial(ctx, profile)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}

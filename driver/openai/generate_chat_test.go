@@ -192,10 +192,10 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 }
 
 func TestSpecAPIFieldValidation(t *testing.T) {
-	if _, err := decodeSpec([]byte(`{"api":"chat"}`)); err != nil {
+	if _, err := decodeSpec(context.Background(), []byte(`{"api":"chat"}`)); err != nil {
 		t.Fatalf("chat api rejected: %v", err)
 	}
-	if _, err := decodeSpec([]byte(`{"api":"bogus"}`)); err == nil {
+	if _, err := decodeSpec(context.Background(), []byte(`{"api":"bogus"}`)); err == nil {
 		t.Fatal("bogus api accepted")
 	}
 }

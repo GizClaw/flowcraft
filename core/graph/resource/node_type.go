@@ -72,7 +72,7 @@ func (ScriptNodeTypeFactory) Spec() res.Spec {
 
 // New implements res.Factory.
 func (ScriptNodeTypeFactory) New(ctx context.Context, in res.Input) (any, error) {
-	settings, err := res.DecodeTyped[ScriptNodeTypeSettings](in.Settings)
+	settings, err := res.DecodeTyped[ScriptNodeTypeSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("graph node type: decode settings: %v", err)
 	}

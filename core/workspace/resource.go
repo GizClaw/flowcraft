@@ -35,7 +35,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(_ context.Context, in resource.Input) (any, error) {
+func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 	opts := []resource.ExpandOption{
 		resource.ExpandEnv(),
 		resource.ExpandHome(),
@@ -49,7 +49,7 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 		}
 		opts = append(opts, resource.ExpandBase(abs))
 	}
-	settings, err := resource.DecodeTyped[Settings](in.Settings, opts...)
+	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings, opts...)
 	if err != nil {
 		return nil, err
 	}

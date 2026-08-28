@@ -95,7 +95,7 @@ func (Factory) Spec() res.Spec {
 
 // New implements res.Factory.
 func (Factory) New(ctx context.Context, in res.Input) (any, error) {
-	settings, err := res.DecodeTyped[Settings](in.Settings)
+	settings, err := res.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("graph engine: decode settings: %v", err)
 	}

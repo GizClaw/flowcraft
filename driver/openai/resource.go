@@ -55,14 +55,14 @@ func (deployFactory) Spec() resource.Spec {
 // immutable core/inference.ProviderDefinition.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	settings, err := resource.DecodeTyped[ResourceSettings](
-		in.Settings, resource.ExpandEnv())
+		ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
 		return nil, fmt.Errorf("openai provider: decode settings: %w", err)
 	}
 	if settings.ID == "" {
 		return nil, fmt.Errorf("openai provider: settings.id is required")
 	}
-	return buildProvider(settings)
+	return buildProvider(ctx, settings)
 }
 
 // Register adds the OpenAI provider factory to r.
@@ -76,8 +76,8 @@ func Register(r *resource.Registry) error {
 // catalog model to the openers its kind serves. Unknown models fail
 // closed: only catalog models (built-in or declared via Spec.Models)
 // are exposed.
-func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, error) {
-	spec, err := decodeSpec(settings.Spec)
+func buildProvider(ctx context.Context, settings ResourceSettings) (inference.ProviderDefinition, error) {
+	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
@@ -87,7 +87,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile)
+		material, err := newProfileMaterial(ctx, profile)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}

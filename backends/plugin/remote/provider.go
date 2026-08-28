@@ -66,7 +66,7 @@ func (f providerFactory) Spec() resource.Spec { return f.spec }
 // handle, checks the handshake-declared capability, and binds the
 // generate operations to the handle.
 func (f providerFactory) New(ctx context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[Settings](in.Settings)
+	settings, err := resource.DecodeTyped[Settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("remote provider: settings: %v", err)
 	}

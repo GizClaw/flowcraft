@@ -139,7 +139,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	if err := doc.Validate(); err != nil {
 		return nil, fmt.Errorf("runtime validate deployment: %w", err)
 	}
-	cfg, err := DecodeConfig(doc)
+	cfg, err := DecodeConfig(ctx, doc)
 	if err != nil {
 		return nil, err
 	}

@@ -48,7 +48,7 @@ func (factory) Spec() resource.Spec {
 // New implements resource.Factory.
 func (f factory) New(ctx context.Context, in resource.Input) (any, error) {
 	settings, err := resource.DecodeTyped[Settings](
-		in.Settings, resource.ExpandEnv())
+		ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"sqlite checkpoint config: decode settings: %w", err))

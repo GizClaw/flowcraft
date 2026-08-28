@@ -37,8 +37,8 @@ func (sourceFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory: the source takes no settings.
-func (sourceFactory) New(_ context.Context, in res.Input) (any, error) {
-	if _, err := res.DecodeTyped[struct{}](in.Settings); err != nil {
+func (sourceFactory) New(ctx context.Context, in res.Input) (any, error) {
+	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
 			"delegation tool resource: decode settings: %v", err)
 	}

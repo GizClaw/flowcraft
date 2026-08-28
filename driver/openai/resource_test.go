@@ -38,6 +38,7 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	t.Setenv("OPENAI_TEST_HTTP_RETRIES", "3")
 	settings, err := resource.DecodeTyped[ResourceSettings](
+		context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
 			"spec": {"http_retries": "${env:OPENAI_TEST_HTTP_RETRIES}"}
@@ -46,7 +47,7 @@ func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeTyped: %v", err)
 	}
-	spec, err := decodeSpec(settings.Spec)
+	spec, err := decodeSpec(context.Background(), settings.Spec)
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}

@@ -33,6 +33,19 @@ resources:
     deps:
       provider: provider
 
+## Settings reference expansion
+
+The deploy builder expands inline scalar references in every settings
+subtree — resources, agent engines, and agent hooks — before a factory
+decodes them. Supported schemes are `${env:NAME}` (missing variable fails the
+build), `${base}` / `${base:rel}` (rooted at the deployment document's base
+dir), and `${home}` / `${home:rel}` (plus the `~` / `~/...` shorthand). All
+schemes are enabled by default; a custom `resource.ReferenceResolver` can be
+injected with `deploy.WithResolver` to add application-specific schemes.
+Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
+reference fails the build. A literal `${` is written as `\${...}`, matching
+the graph's `${board.*}` escaping convention.
+
 agents:
   assistant:
     card:

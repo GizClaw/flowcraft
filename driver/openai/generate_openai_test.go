@@ -72,7 +72,7 @@ func (c *capturedOpenAI) body(index int) map[string]any {
 
 func testClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		fmt.Sprintf(`{"base_url":%q}`, server.URL),
 	))
 	if err != nil {
@@ -187,12 +187,12 @@ func TestSpecValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := error(nil)
 			if tc.ok {
-				if _, err = decodeSpec([]byte(tc.raw)); err != nil {
+				if _, err = decodeSpec(context.Background(), []byte(tc.raw)); err != nil {
 					t.Fatalf("decodeSpec: %v", err)
 				}
 				return
 			}
-			if _, err = decodeSpec([]byte(tc.raw)); err == nil {
+			if _, err = decodeSpec(context.Background(), []byte(tc.raw)); err == nil {
 				t.Fatal("decodeSpec succeeded, want validation error")
 			}
 		})
@@ -201,13 +201,13 @@ func TestSpecValidation(t *testing.T) {
 
 func TestProfileMaterial(t *testing.T) {
 	t.Run("missing api key", func(t *testing.T) {
-		_, err := newProfileMaterial(ProfileSettings{ID: "default"})
+		_, err := newProfileMaterial(context.Background(), ProfileSettings{ID: "default"})
 		if err == nil {
 			t.Fatal("newProfileMaterial succeeded without api_key")
 		}
 	})
 	t.Run("unknown secret", func(t *testing.T) {
-		_, err := newProfileMaterial(ProfileSettings{
+		_, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
 			Secrets: map[string]string{"access_key": "x"},
 		})
@@ -216,7 +216,7 @@ func TestProfileMaterial(t *testing.T) {
 		}
 	})
 	t.Run("api key", func(t *testing.T) {
-		material, err := newProfileMaterial(ProfileSettings{
+		material, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
 			Secrets: map[string]string{SecretAPIKey: "sk-test\n"},
 		})
@@ -245,7 +245,7 @@ func TestFactoryBuild(t *testing.T) {
 			Secrets:    map[string]string{SecretAPIKey: "sk-test"},
 		}},
 	}
-	provider, err := buildProvider(input)
+	provider, err := buildProvider(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestFactoryCustomModelWebSearchCapability(t *testing.T) {
 			Secrets: map[string]string{SecretAPIKey: "sk-test"},
 		}},
 	}
-	provider, err := buildProvider(input)
+	provider, err := buildProvider(context.Background(), input)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -505,7 +505,7 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 }
 
 func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
-	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+	if _, err := decodeSpec(context.Background(), []byte(`{"http_retries":-1}`)); err == nil {
 		t.Fatal("decodeSpec accepted negative http_retries")
 	}
 }
@@ -609,7 +609,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 	})
 
 	t.Run("reasoning on model without reasoning channel drops", func(t *testing.T) {
-		spec, err := decodeSpec([]byte(
+		spec, err := decodeSpec(context.Background(), []byte(
 			`{"models":[{"name":"my-plain-model","kind":"generate","capabilities":{"outputs":["text"]}}]}`,
 		))
 		if err != nil {

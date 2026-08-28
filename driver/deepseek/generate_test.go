@@ -37,7 +37,7 @@ func deepseekModel(name string) inference.ModelRef {
 
 func testClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
-	spec, err := decodeSpec([]byte(fmt.Sprintf(`{"base_url":%q}`, server.URL)))
+	spec, err := decodeSpec(context.Background(), []byte(fmt.Sprintf(`{"base_url":%q}`, server.URL)))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}

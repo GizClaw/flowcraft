@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,56 +10,189 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-// expandConfig carries the enabled reference kinds and their sources.
+// Scheme resolves one ${scheme:ref} reference kind. Schemes are the
+// extension point for new settings reference sources: implement Scheme,
+// build a [ReferenceResolver], and enable it with [WithResolver] (or the
+// deployment-level WithResolver on core/deploy.Builder).
+type Scheme interface {
+	// Name is the scheme prefix inside ${scheme:ref}.
+	Name() string
+	// Resolve materializes ref. ref is the text after "scheme:" with
+	// surrounding whitespace trimmed. An unresolvable ref is an error.
+	Resolve(ctx context.Context, ref string) (string, error)
+}
+
+// SchemeFunc adapts a function to [Scheme].
+type SchemeFunc struct {
+	SchemeName string
+	Fn         func(context.Context, string) (string, error)
+}
+
+func (s SchemeFunc) Name() string { return s.SchemeName }
+func (s SchemeFunc) Resolve(ctx context.Context, ref string) (string, error) {
+	return s.Fn(ctx, ref)
+}
+
+// ReferenceResolver resolves ${scheme:ref} references by scheme name.
+// Unknown or disabled schemes are validation errors; see [Expand].
+type ReferenceResolver struct {
+	schemes map[string]Scheme
+}
+
+// NewResolver returns a resolver holding the given schemes.
+func NewResolver(schemes ...Scheme) *ReferenceResolver {
+	r := &ReferenceResolver{schemes: make(map[string]Scheme, len(schemes))}
+	for _, s := range schemes {
+		if s != nil && s.Name() != "" {
+			r.schemes[s.Name()] = s
+		}
+	}
+	return r
+}
+
+// Resolve materializes one reference. scheme must be registered; a
+// missing scheme is a validation error naming the scheme.
+func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (string, error) {
+	if r == nil {
+		return "", errdefs.Validationf(
+			"resource settings expand: reference scheme %q is not enabled", scheme)
+	}
+	s, ok := r.schemes[scheme]
+	if !ok {
+		return "", errdefs.Validationf(
+			"resource settings expand: reference scheme %q is not enabled", scheme)
+	}
+	return s.Resolve(ctx, ref)
+}
+
+// EnvScheme resolves ${env:NAME} through lookup. A missing variable is
+// an error.
+func EnvScheme(lookup func(string) (string, bool)) Scheme {
+	return SchemeFunc{
+		SchemeName: "env",
+		Fn: func(_ context.Context, ref string) (string, error) {
+			name := strings.TrimSpace(ref)
+			value, ok := lookup(name)
+			if !ok {
+				return "", errdefs.Validationf(
+					"resource settings expand: env %q is not set", name)
+			}
+			return value, nil
+		},
+	}
+}
+
+// BaseScheme resolves ${base} and ${base:rel} rooted at dir (paths
+// relative to the deployment document). An empty dir is an error: a
+// deployment with no document directory cannot resolve base refs.
+func BaseScheme(dir string) Scheme {
+	return SchemeFunc{
+		SchemeName: "base",
+		Fn: func(_ context.Context, ref string) (string, error) {
+			if dir == "" {
+				return "", errdefs.Validationf(
+					"resource settings expand: base reference requires a base directory")
+			}
+			if ref == "" {
+				return dir, nil
+			}
+			return filepath.Join(dir, ref), nil
+		},
+	}
+}
+
+// HomeScheme resolves "~", "~/...", ${home}, and ${home:rel} rooted at
+// the current user's home directory.
+func HomeScheme() Scheme {
+	return SchemeFunc{
+		SchemeName: "home",
+		Fn: func(_ context.Context, ref string) (string, error) {
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return "", errdefs.Validationf(
+					"resource settings expand: home: %v", err)
+			}
+			if ref == "" {
+				return home, nil
+			}
+			return filepath.Join(home, ref), nil
+		},
+	}
+}
+
+// expandConfig carries the enabled reference schemes.
 type expandConfig struct {
-	env     func(string) (string, bool)
-	baseDir string
-	useEnv  bool
-	useBase bool
-	useHome bool
+	resolver *ReferenceResolver
+}
+
+func (c *expandConfig) add(schemes ...Scheme) {
+	if c.resolver == nil {
+		c.resolver = NewResolver()
+	}
+	for _, s := range schemes {
+		if s != nil && s.Name() != "" {
+			c.resolver.schemes[s.Name()] = s
+		}
+	}
+}
+
+func (c *expandConfig) hasScheme(name string) bool {
+	return c != nil && c.resolver != nil && c.resolver.schemes[name] != nil
+}
+
+func (c *expandConfig) resolve(ctx context.Context, scheme, ref string) (string, error) {
+	if c == nil || c.resolver == nil {
+		return "", errdefs.Validationf(
+			"resource settings expand: reference scheme %q is not enabled", scheme)
+	}
+	return c.resolver.Resolve(ctx, scheme, ref)
 }
 
 // ExpandOption configures scalar settings expansion.
 type ExpandOption func(*expandConfig)
 
+// WithResolver enables every scheme carried by r for expansion.
+func WithResolver(r *ReferenceResolver) ExpandOption {
+	return func(c *expandConfig) {
+		if r != nil {
+			for _, s := range r.schemes {
+				c.add(s)
+			}
+		}
+	}
+}
+
 // ExpandEnv enables ${env:NAME} references, resolved with
 // os.LookupEnv. A missing variable is an expansion error.
 func ExpandEnv() ExpandOption {
-	return func(c *expandConfig) {
-		c.useEnv = true
-		c.env = os.LookupEnv
-	}
+	return WithResolver(NewResolver(EnvScheme(os.LookupEnv)))
 }
 
 // WithEnv enables ${env:NAME} references resolved through lookup.
 func WithEnv(lookup func(string) (string, bool)) ExpandOption {
-	return func(c *expandConfig) {
-		c.useEnv = true
-		c.env = lookup
-	}
+	return WithResolver(NewResolver(EnvScheme(lookup)))
 }
 
 // ExpandBase enables ${base} and ${base:rel} references rooted at
 // baseDir, for paths relative to the deployment document.
 func ExpandBase(baseDir string) ExpandOption {
-	return func(c *expandConfig) {
-		c.useBase = true
-		c.baseDir = baseDir
-	}
+	return WithResolver(NewResolver(BaseScheme(baseDir)))
 }
 
 // ExpandHome enables "~" / "~/..." and ${home} / ${home:rel}
 // references rooted at the current user's home directory.
 func ExpandHome() ExpandOption {
-	return func(c *expandConfig) { c.useHome = true }
+	return WithResolver(NewResolver(HomeScheme()))
 }
 
 // Expand walks raw settings JSON and expands scalar string references
 // everywhere strings can appear (map values, array items). Without
 // options the input is returned unchanged. Expansion is strict: a
-// reference whose kind is not enabled, an unknown reference, a
-// missing env variable, or a malformed "${" is an error.
-func Expand(raw []byte, opts ...ExpandOption) (json.RawMessage, error) {
+// reference whose scheme is not enabled, an unknown scheme, a missing
+// env variable, a base reference without a base directory, or a
+// malformed "${" is an error. A literal "${" can be written as "\${";
+// the backslash is consumed and the reference is emitted verbatim.
+func Expand(ctx context.Context, raw []byte, opts ...ExpandOption) (json.RawMessage, error) {
 	if len(opts) == 0 {
 		if len(raw) == 0 {
 			return json.RawMessage("{}"), nil
@@ -79,7 +213,7 @@ func Expand(raw []byte, opts ...ExpandOption) (json.RawMessage, error) {
 		return nil, errdefs.Validationf(
 			"resource settings expand: %v", err)
 	}
-	expanded, err := expandValue(value, &cfg)
+	expanded, err := expandValue(ctx, value, &cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -91,13 +225,13 @@ func Expand(raw []byte, opts ...ExpandOption) (json.RawMessage, error) {
 	return out, nil
 }
 
-func expandValue(value any, cfg *expandConfig) (any, error) {
+func expandValue(ctx context.Context, value any, cfg *expandConfig) (any, error) {
 	switch v := value.(type) {
 	case string:
-		return expandString(v, cfg)
+		return expandString(ctx, v, cfg)
 	case map[string]any:
 		for key, item := range v {
-			expanded, err := expandValue(item, cfg)
+			expanded, err := expandValue(ctx, item, cfg)
 			if err != nil {
 				return nil, err
 			}
@@ -106,7 +240,7 @@ func expandValue(value any, cfg *expandConfig) (any, error) {
 		return v, nil
 	case []any:
 		for i, item := range v {
-			expanded, err := expandValue(item, cfg)
+			expanded, err := expandValue(ctx, item, cfg)
 			if err != nil {
 				return nil, err
 			}
@@ -118,14 +252,9 @@ func expandValue(value any, cfg *expandConfig) (any, error) {
 	}
 }
 
-func expandString(s string, cfg *expandConfig) (string, error) {
-	if cfg.useHome && (s == "~" || strings.HasPrefix(s, "~/")) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", errdefs.Validationf(
-				"resource settings expand: home: %v", err)
-		}
-		return filepath.Join(home, strings.TrimPrefix(s, "~")), nil
+func expandString(ctx context.Context, s string, cfg *expandConfig) (string, error) {
+	if cfg.hasScheme("home") && (s == "~" || strings.HasPrefix(s, "~/")) {
+		return cfg.resolve(ctx, "home", strings.TrimPrefix(s, "~"))
 	}
 	if !strings.Contains(s, "${") {
 		return s, nil
@@ -134,19 +263,29 @@ func expandString(s string, cfg *expandConfig) (string, error) {
 	var builder strings.Builder
 	rest := s
 	for {
-		start := strings.Index(rest, "${")
-		if start < 0 {
+		refStart := strings.Index(rest, "${")
+		escStart := strings.Index(rest, `\${`)
+		// An escaped reference that starts at or before the next real
+		// reference wins: "\${" emits a literal "${" and the scan
+		// continues after it.
+		if escStart >= 0 && (refStart < 0 || escStart < refStart) {
+			builder.WriteString(rest[:escStart])
+			builder.WriteString("${")
+			rest = rest[escStart+3:]
+			continue
+		}
+		if refStart < 0 {
 			builder.WriteString(rest)
 			break
 		}
-		relativeEnd := strings.Index(rest[start:], "}")
+		relativeEnd := strings.Index(rest[refStart:], "}")
 		if relativeEnd < 0 {
 			return "", errdefs.Validationf(
 				"resource settings expand: unterminated reference in %q", s)
 		}
-		end := start + relativeEnd
-		builder.WriteString(rest[:start])
-		replacement, err := expandExpr(rest[start+2:end], cfg)
+		end := refStart + relativeEnd
+		builder.WriteString(rest[:refStart])
+		replacement, err := expandExpr(ctx, rest[refStart+2:end], cfg)
 		if err != nil {
 			return "", err
 		}
@@ -156,48 +295,12 @@ func expandString(s string, cfg *expandConfig) (string, error) {
 	return builder.String(), nil
 }
 
-func expandExpr(expr string, cfg *expandConfig) (string, error) {
-	switch {
-	case strings.HasPrefix(expr, "env:"):
-		if !cfg.useEnv || cfg.env == nil {
-			return "", errdefs.Validationf(
-				"resource settings expand: env reference requires ExpandEnv")
-		}
-		name := strings.TrimSpace(strings.TrimPrefix(expr, "env:"))
-		value, ok := cfg.env(name)
-		if !ok {
-			return "", errdefs.Validationf(
-				"resource settings expand: env %q is not set", name)
-		}
-		return value, nil
-	case expr == "base":
-		if !cfg.useBase {
-			return "", errdefs.Validationf(
-				"resource settings expand: base reference requires ExpandBase")
-		}
-		return cfg.baseDir, nil
-	case strings.HasPrefix(expr, "base:"):
-		if !cfg.useBase {
-			return "", errdefs.Validationf(
-				"resource settings expand: base reference requires ExpandBase")
-		}
-		return filepath.Join(cfg.baseDir, strings.TrimPrefix(expr, "base:")), nil
-	case expr == "home" || strings.HasPrefix(expr, "home:"):
-		if !cfg.useHome {
-			return "", errdefs.Validationf(
-				"resource settings expand: home reference requires ExpandHome")
-		}
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", errdefs.Validationf(
-				"resource settings expand: home: %v", err)
-		}
-		if expr == "home" {
-			return home, nil
-		}
-		return filepath.Join(home, strings.TrimPrefix(expr, "home:")), nil
-	default:
+func expandExpr(ctx context.Context, expr string, cfg *expandConfig) (string, error) {
+	scheme, ref, _ := strings.Cut(expr, ":")
+	scheme = strings.TrimSpace(scheme)
+	if scheme == "" {
 		return "", errdefs.Validationf(
 			"resource settings expand: unknown reference ${%s}", expr)
 	}
+	return cfg.resolve(ctx, scheme, strings.TrimSpace(ref))
 }
