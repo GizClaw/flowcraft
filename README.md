@@ -27,8 +27,8 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
 - **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
   ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
-  (`backends/checkpoint`) and the plugin shell (`backends/plugin`); the
-  sandbox backends (`bwrap`, `seatbelt`) live in `core/sandbox`.
+  (`backends/checkpoint`); the sandbox backends (`bwrap`, `seatbelt`) live in
+  `core/sandbox`.
 - **`examples/forge`** — A runnable local workspace demo built on the current
   stack: native deploy/inference/memory scenario configs, an interactive TUI,
   scripted tests, and raid × persona simulation.
@@ -147,11 +147,10 @@ the core and depend on it, never the reverse.
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------- | -------------------- |
 | [`core`](core/)                                       | Agent, graph, tool, model, message, inference, memory, event, telemetry, deploy, runtime | Versioned Go module  |
 | [`driver`](driver/)                                   | Provider inference adapters                                                              | Versioned Go modules |
-| [`backends`](backends/)                       | SQLite checkpoints and plugin shell (sandbox backends live in `core/sandbox`)         | Versioned Go modules |
+| [`backends`](backends/)                       | SQLite checkpoints (sandbox backends live in `core/sandbox`)                          | Versioned Go modules |
 | [`examples/forge`](examples/forge/)                   | Runnable local workspace demo                                                            | Examples             |
 | [`tools/releasegate`](tools/releasegate/)             | Release automation                                                                       | Tools                |
 | [`skills/flowcraft-config`](skills/flowcraft-config/) | Codex skill for authoring and validating FlowCraft configs                               | Codex skill          |
-| [`skills/flowcraft-plugin`](skills/flowcraft-plugin/) | Codex skill for authoring, loading, and troubleshooting FlowCraft plugins                | Codex skill          |
 
 ## Highlights
 

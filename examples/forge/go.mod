@@ -3,7 +3,6 @@ module github.com/GizClaw/flowcraft/examples/forge
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/backends/plugin v0.1.2
 	github.com/GizClaw/flowcraft/core v0.2.0
 	github.com/GizClaw/flowcraft/driver/deepseek v0.2.0
 	github.com/GizClaw/flowcraft/driver/openai v0.2.0
@@ -66,7 +65,6 @@ require (
 	go.opentelemetry.io/otel/sdk/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
-	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
