@@ -78,12 +78,12 @@ func (f *serviceFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (f *serviceFactory) New(_ context.Context, in res.Input) (any, error) {
+func (f *serviceFactory) New(ctx context.Context, in res.Input) (any, error) {
 	if f == nil {
 		return nil, errdefs.Validationf(
 			"delegation service resource: nil factory")
 	}
-	settings, err := res.DecodeTyped[ServiceSettings](in.Settings)
+	settings, err := res.DecodeTyped[ServiceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"delegation service resource: decode settings: %w", err))
@@ -210,8 +210,8 @@ func (directoryFactory) Spec() res.Spec {
 
 // New implements res.Factory: a directory takes no settings and starts
 // unbound; the deploy wire phase binds it to its generation's result.
-func (directoryFactory) New(_ context.Context, in res.Input) (any, error) {
-	if _, err := res.DecodeTyped[struct{}](in.Settings); err != nil {
+func (directoryFactory) New(ctx context.Context, in res.Input) (any, error) {
+	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
 			"delegation directory resource: decode settings: %v", err)
 	}
@@ -243,8 +243,8 @@ func (randomSessionProviderFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (randomSessionProviderFactory) New(_ context.Context, in res.Input) (any, error) {
-	if _, err := res.DecodeTyped[struct{}](in.Settings); err != nil {
+func (randomSessionProviderFactory) New(ctx context.Context, in res.Input) (any, error) {
+	if _, err := res.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, errdefs.Validationf(
 			"delegation session provider resource: decode settings: %v", err)
 	}

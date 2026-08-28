@@ -11,16 +11,19 @@ import (
 
 func TestResourceFactoryBuildsProvider(t *testing.T) {
 	t.Setenv("BYTEDANCE_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "bytedance",
 			"spec": {},
 			"profiles": [{
 				"id": "default",
 				"secrets": {"api_key": "${env:BYTEDANCE_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

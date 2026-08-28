@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/secret"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
 )
@@ -20,8 +23,10 @@ import (
 // an explicit [resource.Registry]. The registry is owned by the caller;
 // Builder never touches global state.
 type Builder struct {
-	registry *resource.Registry
-	loader   *resource.Loader
+	registry       *resource.Registry
+	loader         *resource.Loader
+	resolver       *resource.ReferenceResolver
+	secretCacheTTL time.Duration
 }
 
 // BuilderOption configures a Builder.
@@ -32,6 +37,23 @@ type BuilderOption func(*Builder)
 // passed to factories for their own source resolution.
 func WithLoader(loader *resource.Loader) BuilderOption {
 	return func(b *Builder) { b.loader = loader }
+}
+
+// WithResolver adds custom schemes to the expansion used for inline
+// ${scheme:ref} strings in every settings subtree (resources, agent
+// engine, agent hooks) before a factory decodes them. The custom
+// schemes are merged on top of the all-open default resolver (env +
+// home, plus base when the loader declares a base directory); a custom
+// scheme with the same name overrides the built-in one.
+func WithResolver(resolver *resource.ReferenceResolver) BuilderOption {
+	return func(b *Builder) { b.resolver = resolver }
+}
+
+// WithSecretCacheTTL sets how long lazy secret lookups reuse a cached
+// value before hitting the backend again. Zero keeps the default (one
+// minute); a negative value disables caching.
+func WithSecretCacheTTL(ttl time.Duration) BuilderOption {
+	return func(b *Builder) { b.secretCacheTTL = ttl }
 }
 
 // NewBuilder returns a Builder over registry. A nil registry yields an
@@ -69,38 +91,24 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	values := make(map[string]any, len(order))
+	// Secret stores are built first: their settings never reference
+	// secrets, and once assembled they feed the ${secret:...} scheme
+	// every other resource's expansion uses.
+	stores, defaultStore, err := b.buildSecretStores(ctx, doc, order, values, b.resolver)
+	if err != nil {
+		logCleanup(ctx, values, order)
+		return nil, err
+	}
+	resolver, secrets, err := b.effectiveResolver(stores, defaultStore)
+	if err != nil {
+		logCleanup(ctx, values, order)
+		return nil, err
+	}
 	for _, name := range order {
-		res := doc.Resources[name]
-		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
-		if !ok {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf(
-				"deploy: resource %q: no factory for %s/%s",
-				name, res.Kind, res.Impl)
+		if _, prebuilt := values[name]; prebuilt {
+			continue
 		}
-		if err := validateDeps(factory, res.Deps); err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-		}
-		settings := res.Settings
-		if b.loader != nil {
-			settings, err = resolveSettings(ctx, b.loader, settings)
-			if err != nil {
-				logCleanup(ctx, values, order)
-				return nil, errdefs.Validationf(
-					"deploy: resource %q: %v", name, err)
-			}
-		}
-		deps, err := resolveDeps(values, res.Deps)
-		if err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-		}
-		value, err := factory.New(ctx, resource.Input{
-			Settings: settings,
-			Deps:     deps,
-			Loader:   b.loader,
-		})
+		value, err := b.buildResource(ctx, name, doc.Resources[name], values, resolver, secrets)
 		if err != nil {
 			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
@@ -109,11 +117,145 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	return &Result{
-		values: values,
-		order:  order,
-		agents: make(map[string]*agent.Agent, len(doc.Agents)),
+		values:   values,
+		order:    order,
+		agents:   make(map[string]*agent.Agent, len(doc.Agents)),
+		resolver: resolver,
+		secrets:  secrets,
 	}, nil
 }
+
+// buildResource constructs one resource value: loader materialization,
+// inline reference expansion, dependency resolution, and factory
+// invocation. Values already built (secret stores, earlier deps) are
+// read from values.
+func (b *Builder) buildResource(
+	ctx context.Context,
+	name string,
+	res resource.Resource,
+	values map[string]any,
+	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
+) (any, error) {
+	factory, ok := b.registry.Lookup(res.Kind, res.Impl)
+	if !ok {
+		return nil, errdefs.Validationf(
+			"deploy: resource %q: no factory for %s/%s",
+			name, res.Kind, res.Impl)
+	}
+	if err := validateDeps(factory, res.Deps); err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	settings := res.Settings
+	var err error
+	if b.loader != nil {
+		settings, err = resolveSettings(ctx, b.loader, settings)
+		if err != nil {
+			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		}
+	}
+	settings, err = expandSettings(ctx, resolver, b.loader, settings)
+	if err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	deps, err := resolveDeps(values, res.Deps)
+	if err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	return factory.New(ctx, resource.Input{
+		Settings: settings,
+		Deps:     deps,
+		Loader:   b.loader,
+		Secrets:  secrets,
+	})
+}
+
+// buildSecretStores constructs every secret.Store resource ahead of the
+// main build pass. Their own settings expand with the base resolver
+// (env/home/base only — stores cannot reference secrets), and the
+// built values are recorded in values so other resources can declare
+// them as deps.
+func (b *Builder) buildSecretStores(
+	ctx context.Context,
+	doc Document,
+	order []string,
+	values map[string]any,
+	resolver *resource.ReferenceResolver,
+) (map[string]resource.SecretStore, string, error) {
+	stores := make(map[string]resource.SecretStore)
+	ids := make(map[string]string)
+	defaultStore := ""
+	for _, name := range order {
+		res := doc.Resources[name]
+		if res.Kind != secret.ResourceKind {
+			continue
+		}
+		value, err := b.buildResource(ctx, name, res, values, resolver, nil)
+		if err != nil {
+			return nil, "", errdefs.Validationf("deploy: resource %q: %v", name, err)
+		}
+		store, ok := value.(resource.SecretStore)
+		if !ok {
+			return nil, "", errdefs.Validationf(
+				"deploy: resource %q: %s/%s did not produce a secret store",
+				name, res.Kind, res.Impl)
+		}
+		id := name
+		if m, ok := value.(resource.SecretStoreID); ok && m.SecretStoreID() != "" {
+			id = m.SecretStoreID()
+		}
+		if previous, exists := ids[id]; exists {
+			return nil, "", errdefs.Validationf(
+				"deploy: duplicate secret store id %q for resources %q and %q",
+				id, previous, name)
+		}
+		if store.DefaultSecretStore() {
+			if defaultStore != "" {
+				return nil, "", errdefs.Validationf(
+					"deploy: more than one default secret store: %q and %q",
+					defaultStore, id)
+			}
+			defaultStore = id
+		}
+		values[name] = value
+		ids[id] = name
+		stores[id] = store
+	}
+	return stores, defaultStore, nil
+}
+
+// effectiveResolver returns the expansion resolver for the main build
+// pass: the all-open default resolver merged with the builder's
+// injected schemes, plus the ${secret:...} scheme assembled from the
+// built stores (each wrapped in a TTL cache for per-request
+// resolution). The second return is the resolver handed to factories
+// for lazy Secret.Resolve calls.
+func (b *Builder) effectiveResolver(
+	stores map[string]resource.SecretStore,
+	defaultStore string,
+) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
+	base := defaultExpansionResolver(b.loader)
+	if b.resolver != nil {
+		base = base.Merge(b.resolver)
+	}
+	if len(stores) == 0 {
+		return base, nil, nil
+	}
+	cached := make(map[string]resource.SecretStore, len(stores))
+	ttl := b.secretCacheTTL
+	if ttl == 0 {
+		ttl = defaultSecretCacheTTL
+	}
+	for id, store := range stores {
+		cached[id] = resource.NewCachingSecretStore(store, ttl)
+	}
+	secrets := resource.NewSecretResolver(cached, defaultStore)
+	return base.WithScheme(secrets.Scheme()), secrets, nil
+}
+
+// defaultSecretCacheTTL bounds how long lazy secret lookups reuse a
+// cached value before hitting the backend again.
+const defaultSecretCacheTTL = time.Minute
 
 // resolveSettings materializes a settings subtree when the whole
 // subtree is a file/embed reference; inline settings pass through.
@@ -139,6 +281,47 @@ func resolveSettings(
 	// Settings sub-documents may be YAML; convert to JSON so factory
 	// DecodeSettings (strict JSON) accepts them.
 	return utils.ToJSON(data)
+}
+
+// expandSettings expands inline ${scheme:ref} strings in one settings
+// subtree with the given resolver. A nil resolver falls back to the
+// all-open default: env + home, plus base when the loader declares a
+// base directory. Expansion is strict — an unknown scheme, a missing
+// env variable, or an unterminated reference fails the build.
+func expandSettings(
+	ctx context.Context,
+	resolver *resource.ReferenceResolver,
+	loader *resource.Loader,
+	raw []byte,
+) ([]byte, error) {
+	if resolver == nil {
+		resolver = defaultExpansionResolver(loader)
+	}
+	expanded, err := resource.Expand(ctx, raw, resource.WithResolver(resolver))
+	if err != nil {
+		return nil, err
+	}
+	return expanded, nil
+}
+
+// defaultExpansionResolver is the all-open expansion used when no
+// resolver is injected: env + home, plus base when the loader declares
+// a base directory. The agent board namespace is deferred — ${board:*}
+// references resolve against agent.Board at execution time (graph node
+// configs, script bridge), so deploy-time expansion passes them through
+// verbatim (including the \${board:*} escaped form, whose backslash the
+// agent layer consumes for its own literal escaping).
+func defaultExpansionResolver(loader *resource.Loader) *resource.ReferenceResolver {
+	schemes := []resource.Scheme{
+		resource.EnvScheme(os.LookupEnv),
+		resource.HomeScheme(),
+	}
+	if loader != nil && loader.BaseDir() != "" {
+		schemes = append(schemes, resource.BaseScheme(loader.BaseDir()))
+	}
+	return resource.NewResolver(append(schemes,
+		resource.PassthroughScheme{Prefix: agent.BoardRefPrefix},
+	)...)
 }
 
 // Wire runs the post-build wiring phase: resource values implementing
@@ -216,7 +399,8 @@ func logCleanup(ctx context.Context, values map[string]any, order []string) {
 // records it on the result.
 func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) error {
 	for name, def := range doc.Agents {
-		instance, err := BindAgent(ctx, b.registry, result, b.loader, name, def)
+		instance, err := BindAgent(
+			ctx, b.registry, result, b.loader, result.resolver, result.secrets, name, def)
 		if err != nil {
 			return err
 		}
@@ -241,6 +425,8 @@ func BindAgent(
 	reg *resource.Registry,
 	result *Result,
 	loader *resource.Loader,
+	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
 	name string,
 	def agent.Definition,
 ) (*agent.Agent, error) {
@@ -268,10 +454,16 @@ func BindAgent(
 		return nil, err
 	}
 
+	engineSettings, err := expandSettings(ctx, resolver, loader, def.Engine.Settings)
+	if err != nil {
+		return fail(errdefs.Validationf(
+			"deploy: agent %q engine: %v", name, err))
+	}
 	engine, err := engineFactory.New(ctx, resource.Input{
-		Settings: def.Engine.Settings,
+		Settings: engineSettings,
 		Deps:     engineDeps,
 		Loader:   loader,
+		Secrets:  secrets,
 	})
 	if err != nil {
 		return fail(errdefs.Validationf("deploy: agent %q engine: %v", name, err))
@@ -285,28 +477,28 @@ func BindAgent(
 	constructed = append(constructed, engineContract)
 
 	prepare, err := buildHookList[agent.Preparer](
-		reg, loader, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, prepare)
 
 	observe, err := buildHookList[agent.Observer](
-		reg, loader, result, ctx, name, agent.HookSlotObserver, def.Observe)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotObserver, def.Observe)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, observe)
 
 	referees, err := buildHookList[agent.Referee](
-		reg, loader, result, ctx, name, agent.HookSlotReferee, def.Referees)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotReferee, def.Referees)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, referees)
 
 	commit, err := buildHookList[agent.Committer](
-		reg, loader, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotCommitter, def.Commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -336,6 +528,8 @@ func BindAgent(
 func buildHookList[T any](
 	reg *resource.Registry,
 	loader *resource.Loader,
+	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
 	result *Result,
 	ctx context.Context,
 	name, slot string,
@@ -364,10 +558,17 @@ func buildHookList[T any](
 			return fail(errdefs.Validationf(
 				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
+		hookSettings, err := expandSettings(ctx, resolver, loader, entry.Settings)
+		if err != nil {
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v",
+				name, slot, i, err))
+		}
 		value, err := factory.New(ctx, resource.Input{
-			Settings: entry.Settings,
+			Settings: hookSettings,
 			Deps:     deps,
 			Loader:   loader,
+			Secrets:  secrets,
 		})
 		if err != nil {
 			return fail(errdefs.Validationf(
@@ -501,6 +702,11 @@ type Result struct {
 	order    []string
 	agents   map[string]*agent.Agent
 	detached map[string]struct{}
+	// resolver and secrets carry the effective expansion state from
+	// Build into Wire, so agent engine/hook settings expand with the
+	// same schemes (including ${secret:...}) and typed Secrets resolve.
+	resolver *resource.ReferenceResolver
+	secrets  *resource.SecretResolver
 }
 
 // Detach marks resource names as caller-owned: Result.Close will not

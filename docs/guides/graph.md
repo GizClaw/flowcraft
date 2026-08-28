@@ -55,16 +55,16 @@ A `*Graph` is an `agent.Engine`.
 ```
 
 `condition` and `skip_condition` use expr-lang expressions over board
-variables. `${board.<path>}` references inside config strings resolve before
+variables. `${board:<path>}` references inside config strings resolve before
 node decode, so `system_prompt` may interpolate upstream output. Paths are
-dot-separated: `${board.user.name}` reads var `user` and then its `name`
+dot-separated: `${board:user.name}` reads var `user` and then its `name`
 field (an exact variable named `user.name` wins). Nested lookup walks maps
 with string keys (`map[string]any`, `map[string]string`, ...) and exported
-struct fields. An optional default follows a colon (`${board.limit:3}`); a
+struct fields. An optional default follows a colon (`${board:limit:3}`); a
 reference standing alone keeps the variable's typed value, and defaults that
 are valid JSON literals keep their type. Referencing a missing variable is a
 validation error unless a default is given — prefix with a backslash
-(`\${board.x}`) to emit literal text. Node types must be registered in the
+(`\${board:x}`) to emit literal text. Node types must be registered in the
 registry passed to `Build`; an unregistered type fails `Build`, not
 `GraphDefinition.Validate`.
 
@@ -130,7 +130,7 @@ onto `tool_pending_key` and the graph routes onward.
 | Config field                             | Meaning                                                                                                           |
 | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `model`                                  | explicit target `{id: {provider, name}, profile?}`; absent defers selection to the wired router                   |
-| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board.model}`); the hinted target is tried first, and on failure fallback restarts at the head of the default chain |
+| `model_hint`                             | per-call model preference for the router: `provider/name` or a bare name (e.g. `${board:model}`); the hinted target is tried first, and on failure fallback restarts at the head of the default chain |
 | `messages_channel`                       | board channel holding the conversation; empty means the main channel (`__main_channel`)                          |
 | `system_prompt`                          | prepended system message when the context does not already start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key`                             | board var receiving the full assistant `Message`                                                                  |
@@ -157,8 +157,8 @@ Behavior:
   it never bypasses the router or targets a model outside the configured
   pools, and it is ignored when `model` is set. Board references resolve
   per invocation, so a per-conversation choice can ride `agent.Request`
-  inputs (`inputs: {model: ...}`) and be read with `${board.model}` — pair
-  it with a default (`${board.model:}`) so turns without the input still
+  inputs (`inputs: {model: ...}`) and be read with `${board:model}` — pair
+  it with a default (`${board:model:}`) so turns without the input still
   route with the default policy. A bare name is honored only when exactly
   one configured target carries it; an unknown, malformed, or ambiguous
   hint falls back to the default selection. The hinted model is tried
@@ -257,7 +257,7 @@ strict: unknown top-level config fields are errors.
 | `runtime`    | name of the wired `agent.ScriptRuntime` (must equal the engine's `script_runtime_name`); required |
 | `source`     | inline script source; required (may be `{file: ...}` / `{embed: ...}`)                            |
 | `name`       | execution label for errors and runtime pooling; defaults to the node ID                           |
-| `config`     | becomes the script's `config` global; values may carry `${board.*}` references                    |
+| `config`     | becomes the script's `config` global; values may carry `${board:*}` references                    |
 
 Each invocation assembles a fresh script environment with the standard
 bridges below, executes the source, and maps control signals to Go errors.
@@ -352,7 +352,7 @@ The graph can then use the type like any other:
     {
       "id": "hello",
       "type": "greet",
-      "config": { "name": "${board.user}" }
+      "config": { "name": "${board:user}" }
     }
   ],
   "edges": []
@@ -375,14 +375,14 @@ Direct read/write of the engine board.
 | `board.deleteVar(key)`           | —                                                                 |
 | `board.getVars()`                | `map`                                                             |
 | `board.hasVar(key)`              | `bool`                                                            |
-| `board.resolve(str)`             | `any` — typed `${board.*}` expansion                              |
-| `board.resolveString(str)`       | `string` — text `${board.*}` expansion                            |
+| `board.resolve(str)`             | `any` — typed `${board:*}` expansion                              |
+| `board.resolveString(str)`       | `string` — text `${board:*}` expansion                            |
 | `board.channel(name)`            | `array` of message objects (never null)                           |
 | `board.setChannel(name, msgs)`   | throws on validation errors                                       |
 | `board.appendChannel(name, msg)` | throws on validation errors                                       |
 | `board.MAIN_CHANNEL`             | the reserved default channel name (use it instead of the literal) |
 
-`resolve` / `resolveString` run the same `${board.*}` expansion the
+`resolve` / `resolveString` run the same `${board:*}` expansion the
 engine applies to node config strings: missing references error unless a
 default is given, and `resolveString` renders non-string values to text.
 

@@ -33,6 +33,75 @@ resources:
     deps:
       provider: provider
 
+## Settings reference expansion
+
+The deploy builder expands inline scalar references in every settings
+subtree — resources, agent engines, and agent hooks — before a factory
+decodes them. Supported schemes are `${env:NAME}` (missing variable fails the
+build), `${base}` / `${base:rel}` (rooted at the deployment document's base
+dir), and `${home}` / `${home:rel}` (plus the `~` / `~/...` shorthand). All
+schemes are enabled by default; a custom `resource.ReferenceResolver` can be
+injected with `deploy.WithResolver` to add application-specific schemes on
+top of the defaults (a same-named custom scheme overrides the built-in one).
+Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
+reference fails the build. A literal `${` is written as `\${...}`, matching
+the graph's `${board:*}` escaping convention — **every** literal `${` in any
+settings subtree must be escaped, and a leading `~` / `~/...` expands to the
+user home directory. Content materialized from `{file: ...}` / `{embed: ...}`
+references is expanded the same way. Deployments that previously relied on
+literal `${...}` text or `~` paths must escape/quote them after this change.
+
+The agent board namespace is exempt: `${board:<path>}` (and the escaped
+`\${board:<path>}` form, backslash preserved) is deferred to execution time,
+where it resolves against the live `agent.Board` — graph node configs and the
+script bridge's `board.resolve` both understand it. Deploy-time expansion
+never touches board references, so existing graph configs need no escaping.
+
+## Secret stores
+
+Credentials can live in declarative `secret.Store` resources instead of
+plaintext settings:
+
+```yaml
+resources:
+  secret.env:
+    kind: secret.Store
+    impl: env
+    settings:
+      id: env
+      default: true
+
+  provider:
+    kind: inference.Provider
+    impl: deepseek
+    settings:
+      profiles:
+        - secrets:
+            api_key: ${secret:DEEPSEEK_API_KEY}   # default store
+            # api_key: ${secret:env.DEEPSEEK_API_KEY}  # explicit store
+```
+
+- Stores are built ahead of every other resource, then assembled into the
+  `${secret:...}` scheme, so any resource can reference them (and may declare
+  them as deps for explicit ordering).
+- `${secret:NAME}` resolves through the default store — exactly one store may
+  declare `default: true`. `${secret:ID.NAME}` addresses a store by its `id`
+  (falling back to the resource name).
+- The store prefix is everything before the first dot; the rest is the secret
+  name.
+- Missing stores or a NAME-only reference with no default store fail the
+  build. Resolution is lazy: a `${secret:...}` reference decodes into a typed
+  `resource.Secret` that looks the value up at use time (cached per store for
+  one minute), so a missing secret surfaces at request time rather than at
+  deploy time. Secret values never appear in error messages, logs, or
+  serialized settings — `resource.Secret` always renders as `<secret>`.
+- Backends are ordinary resource factories: the built-in `env` store reads
+  environment variables and the built-in `file` store reads one file per
+  secret under a configured `base` directory (escaping the base is rejected,
+  trailing newlines are stripped, and file size is capped). External backends
+  (keychain, vault, ...) register their own `secret.Store` impls with zero
+  core changes.
+
 agents:
   assistant:
     card:

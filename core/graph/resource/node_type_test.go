@@ -107,11 +107,11 @@ func TestEngineMountsCustomScriptNode(t *testing.T) {
 	}`, map[string]any{"script_runtime": rt})
 
 	// The node config payload reaches the script as its config global,
-	// with ${board.*} references resolved first.
+	// with ${board:*} references resolved first.
 	board := agent.NewBoard()
 	board.SetVar("who", "world")
 	engine := buildCustomEngine(t,
-		customNodeDefinition(t, "greet", map[string]any{"name": "${board.who}"}),
+		customNodeDefinition(t, "greet", map[string]any{"name": "${board:who}"}),
 		map[string]any{"node_type": registrar})
 
 	if err := runCustomEngine(t, engine, board); err != nil {

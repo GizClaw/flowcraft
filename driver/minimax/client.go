@@ -1,11 +1,15 @@
 package minimax
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // defaultBaseURL is the China endpoint, matching the legacy minimax
@@ -16,8 +20,9 @@ const defaultBaseURL = "https://api.minimaxi.com/anthropic"
 // profileMaterial is one profile's resolved credentials and profile-level
 // settings, validated once at factory build time.
 type profileMaterial struct {
-	spec   ProfileSpec
-	apiKey string
+	spec     ProfileSpec
+	apiKey   resource.Secret
+	resolver *resource.SecretResolver
 }
 
 // clients carries the handles one profile opens drivers with. MiniMax
@@ -30,12 +35,12 @@ type clients struct {
 	media *mediaClient
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, fmt.Errorf("profile %q: %w", profile.ID, err)
 	}
-	material := profileMaterial{spec: spec}
+	material := profileMaterial{spec: spec, resolver: secrets}
 	for name := range profile.Secrets {
 		switch name {
 		case SecretAPIKey:
@@ -44,21 +49,26 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 		}
 	}
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" {
-		return profileMaterial{}, fmt.Errorf("profile %q resolves no api_key secret", profile.ID)
+		material.apiKey = secret
 	}
 	return material, nil
 }
 
-func (m profileMaterial) newClients(spec Spec) *clients {
+func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
+	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
+	if err != nil {
+		return nil, errdefs.Validationf("minimax profile: resolve api_key: %v", err)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errdefs.Validationf("minimax profile resolves no api_key secret")
+	}
 	baseURL := spec.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	options := []option.RequestOption{
-		option.WithAPIKey(m.apiKey),
+		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
 	}
 	if spec.HTTPRetries != nil {
@@ -67,8 +77,8 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 	}
 	return &clients{
 		api:   anthropicgo.NewClient(options...),
-		media: newMediaClient(m.apiKey, spec.mediaBaseURL(), spec),
-	}
+		media: newMediaClient(apiKey, spec.mediaBaseURL(), spec),
+	}, nil
 }
 
 // sdkMaxRetries converts a total-attempt budget (including the first) into

@@ -13,8 +13,8 @@ import (
 
 func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	t.Setenv("DEEPSEEK_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "deepseek",
 			"spec": {"api": "chat"},
 			"profiles": [{
@@ -22,8 +22,11 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 				"operations": ["generate"],
 				"secrets": {"api_key": "${env:DEEPSEEK_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -37,19 +40,21 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	}
 }
 
-func TestResourceFactoryRejectsMissingIDAndSecret(t *testing.T) {
+func TestResourceFactoryRequiresID(t *testing.T) {
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{"profiles":[]}`),
 	}); err == nil {
 		t.Fatal("New accepted settings without id")
 	}
+	// A profile without api_key builds fine: missing keys surface at
+	// request time (lazy secret resolution), not at deploy time.
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "deepseek",
 			"profiles": [{"id": "default"}]
 		}`),
-	}); err == nil {
-		t.Fatal("New accepted a profile without api_key")
+	}); err != nil {
+		t.Fatalf("New rejected a profile without api_key: %v", err)
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/resource"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -74,7 +75,7 @@ func (c *capturedAzure) body(index int) map[string]any {
 
 func azureImageClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		fmt.Sprintf(`{
 			"endpoint": %q,
 			"models": [{"name": "gpt-image-1", "kind": "image",
@@ -84,7 +85,13 @@ func azureImageClients(t *testing.T, server *httptest.Server) *clients {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	return profileMaterial{apiKey: "test-key"}.newClients(spec)
+	cls, err := profileMaterial{
+		apiKey: resource.LiteralSecret("test-key"),
+	}.newClients(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("newClients: %v", err)
+	}
+	return cls
 }
 
 func azureImageModel(name string) inference.ModelRef {

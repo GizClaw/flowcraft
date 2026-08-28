@@ -50,7 +50,7 @@ func (*Factory) Capabilities() agent.Capabilities {
 
 // New implements resource.Factory.
 func (f *Factory) New(ctx context.Context, in resource.Input) (any, error) {
-	parsed, err := resource.DecodeTyped[settings](in.Settings, resource.ExpandEnv())
+	parsed, err := resource.DecodeTyped[settings](ctx, in.Settings, resource.ExpandEnv())
 	if err != nil {
 		return nil, errdefs.Validationf("a2a: decode settings: %v", err)
 	}

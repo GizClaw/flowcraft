@@ -39,8 +39,8 @@ func (deployFactory) Spec() resource.Spec {
 	return resource.Spec{Kind: ResourceKind, Impl: "js"}
 }
 
-func (deployFactory) New(_ context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ResourceSettings](in.Settings)
+func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
+	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"jsrt: decode resource settings: %w", err))

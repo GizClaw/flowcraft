@@ -83,7 +83,7 @@ func (Factory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (f Factory) New(ctx context.Context, in resource.Input) (any, error) {
-	parsed, err := ParseSpec(in.Settings)
+	parsed, err := ParseSpec(ctx, in.Settings)
 	if err != nil {
 		return nil, err
 	}
@@ -112,8 +112,8 @@ func Register(r *resource.Registry) error {
 }
 
 // ParseSpec strictly decodes an MCP source spec.
-func ParseSpec(settings json.RawMessage) (Spec, error) {
-	spec, err := resource.DecodeTyped[Spec](settings, resource.ExpandEnv())
+func ParseSpec(ctx context.Context, settings json.RawMessage) (Spec, error) {
+	spec, err := resource.DecodeTyped[Spec](ctx, settings)
 	if err != nil {
 		return Spec{}, fmt.Errorf("mcp: %w", err)
 	}

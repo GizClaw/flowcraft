@@ -38,8 +38,8 @@ func (sourceFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (f sourceFactory) New(_ context.Context, in resource.Input) (any, error) {
-	if _, err := resource.DecodeTyped[struct{}](in.Settings); err != nil {
+func (f sourceFactory) New(ctx context.Context, in resource.Input) (any, error) {
+	if _, err := resource.DecodeTyped[struct{}](ctx, in.Settings); err != nil {
 		return nil, err
 	}
 	return &source{tools: f.tools()}, nil

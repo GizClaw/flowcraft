@@ -1,6 +1,7 @@
 package deepseek
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "deepseek"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -28,7 +29,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "deepseek"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -48,7 +49,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 }
 
 func TestMergedCatalogRejectsMissingTextOutput(t *testing.T) {
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"m","kind":"generate"}]}`,
 	))
 	if err != nil {

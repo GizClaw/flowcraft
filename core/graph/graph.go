@@ -84,7 +84,7 @@ type Stats struct {
 //   - collects topology [Warning]s (unreachable / dead-end nodes).
 //
 // Config *values* are still opaque at this point — they may contain
-// "${board.*}" references that only resolve at execution time.
+// "${board:*}" references that only resolve at execution time.
 func Build(def *GraphDefinition, reg *Registry, opts ...BuildOption) (*Graph, error) {
 	if def == nil {
 		return nil, errdefs.Validationf("graph: definition is required")

@@ -16,8 +16,8 @@ import (
 //   - getVars()        → map[string]any
 //   - hasVar(key)      → bool
 //   - deleteVar(key)
-//   - resolve(str)         → any       (typed ${board.*} expansion)
-//   - resolveString(str)   → string    (text ${board.*} expansion)
+//   - resolve(str)         → any       (typed ${board:*} expansion)
+//   - resolveString(str)   → string    (text ${board:*} expansion)
 //
 // Channels (typed conversation history; multimodal-aware via the
 // message.Message projection in project.go):

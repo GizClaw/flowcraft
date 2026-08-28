@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/resource"
 
 	"github.com/openai/openai-go/v3/responses"
 )
@@ -72,13 +73,19 @@ func (c *capturedOpenAI) body(index int) map[string]any {
 
 func testClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		fmt.Sprintf(`{"base_url":%q}`, server.URL),
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	return profileMaterial{apiKey: "test-key"}.newClients(spec)
+	cls, err := profileMaterial{
+		apiKey: resource.LiteralSecret("test-key"),
+	}.newClients(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("newClients: %v", err)
+	}
+	return cls
 }
 
 func openaiModel(name string) inference.ModelRef {
@@ -187,12 +194,12 @@ func TestSpecValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			err := error(nil)
 			if tc.ok {
-				if _, err = decodeSpec([]byte(tc.raw)); err != nil {
+				if _, err = decodeSpec(context.Background(), []byte(tc.raw)); err != nil {
 					t.Fatalf("decodeSpec: %v", err)
 				}
 				return
 			}
-			if _, err = decodeSpec([]byte(tc.raw)); err == nil {
+			if _, err = decodeSpec(context.Background(), []byte(tc.raw)); err == nil {
 				t.Fatal("decodeSpec succeeded, want validation error")
 			}
 		})
@@ -201,32 +208,93 @@ func TestSpecValidation(t *testing.T) {
 
 func TestProfileMaterial(t *testing.T) {
 	t.Run("missing api key", func(t *testing.T) {
-		_, err := newProfileMaterial(ProfileSettings{ID: "default"})
-		if err == nil {
-			t.Fatal("newProfileMaterial succeeded without api_key")
+		material, err := newProfileMaterial(context.Background(), ProfileSettings{ID: "default"}, nil)
+		if err != nil {
+			t.Fatalf("newProfileMaterial: %v", err)
+		}
+		if _, err := material.newClients(context.Background(), Spec{}); err == nil {
+			t.Fatal("newClients succeeded without api_key")
 		}
 	})
 	t.Run("unknown secret", func(t *testing.T) {
-		_, err := newProfileMaterial(ProfileSettings{
+		_, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
-			Secrets: map[string]string{"access_key": "x"},
-		})
+			Secrets: map[string]resource.Secret{"access_key": resource.LiteralSecret("x")},
+		}, nil)
 		if err == nil {
 			t.Fatal("newProfileMaterial accepted an unknown secret")
 		}
 	})
 	t.Run("api key", func(t *testing.T) {
-		material, err := newProfileMaterial(ProfileSettings{
+		material, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
-			Secrets: map[string]string{SecretAPIKey: "sk-test\n"},
-		})
+			Secrets: map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test\n")},
+		}, nil)
 		if err != nil {
 			t.Fatalf("newProfileMaterial: %v", err)
 		}
-		if material.apiKey != "sk-test" {
-			t.Fatalf("apiKey = %q", material.apiKey)
+		if value, err := material.apiKey.Resolve(context.Background(), nil); err != nil ||
+			value != "sk-test\n" {
+			t.Fatalf("apiKey = %q, %v; want literal with newline intact", value, err)
+		}
+		cls, err := material.newClients(context.Background(), Spec{})
+		if err != nil {
+			t.Fatalf("newClients: %v", err)
+		}
+		if cls == nil {
+			t.Fatal("newClients returned nil")
 		}
 	})
+}
+
+// TestEscapedEnvSecretSurvivesFactoryDecode proves builder-escaped
+// references (which become literal "${env:...}" strings) are not
+// expanded again by the driver: the factory decodes pre-expanded
+// settings as-is, so the wire Authorization header carries the literal.
+func TestEscapedEnvSecretSurvivesFactoryDecode(t *testing.T) {
+	t.Setenv("OPENAI_TEST_KEY", "sk-test")
+	var auth string
+	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{textOutputItem("ok")}))
+	})
+	defer server.Close()
+
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
+			"id": "openai",
+			"spec": {"base_url": "`+server.URL+`"},
+			"profiles": [{"id": "default", "secrets": {"api_key": "\\${env:OPENAI_TEST_KEY}"}}]
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	var impl *inference.ModelImplementation
+	for i := range provider.Models {
+		if provider.Models[i].Descriptor.ID.Name == "gpt-5.6-sol" {
+			impl = &provider.Models[i]
+		}
+	}
+	if impl == nil {
+		t.Fatal("gpt-5.6-sol missing from provider models")
+	}
+	operations, err := impl.Openers.Generate(context.Background(), openaiModel("gpt-5.6-sol"))
+	if err != nil {
+		t.Fatalf("Generate opener: %v", err)
+	}
+	if _, err := operations.Unary.Execute(context.Background(),
+		openaiModel("gpt-5.6-sol"), simpleTextRequest("hi")); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if auth != "Bearer ${env:OPENAI_TEST_KEY}" {
+		t.Fatalf("Authorization = %q, want escaped literal untouched", auth)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -242,10 +310,10 @@ func TestFactoryBuild(t *testing.T) {
 		Profiles: []ProfileSettings{{
 			ID:         "default",
 			Operations: []inference.Operation{inference.OperationGenerate, inference.OperationEmbed},
-			Secrets:    map[string]string{SecretAPIKey: "sk-test"},
+			Secrets:    map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test")},
 		}},
 	}
-	provider, err := buildProvider(input)
+	provider, err := buildProvider(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -278,10 +346,10 @@ func TestFactoryCustomModelWebSearchCapability(t *testing.T) {
 		),
 		Profiles: []ProfileSettings{{
 			ID:      "default",
-			Secrets: map[string]string{SecretAPIKey: "sk-test"},
+			Secrets: map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test")},
 		}},
 	}
-	provider, err := buildProvider(input)
+	provider, err := buildProvider(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -505,7 +573,7 @@ func TestRateLimitCarriesRetryAfter(t *testing.T) {
 }
 
 func TestSpecRejectsNegativeHTTPRetries(t *testing.T) {
-	if _, err := decodeSpec([]byte(`{"http_retries":-1}`)); err == nil {
+	if _, err := decodeSpec(context.Background(), []byte(`{"http_retries":-1}`)); err == nil {
 		t.Fatal("decodeSpec accepted negative http_retries")
 	}
 }
@@ -609,7 +677,7 @@ func TestCompileReasoningDispositions(t *testing.T) {
 	})
 
 	t.Run("reasoning on model without reasoning channel drops", func(t *testing.T) {
-		spec, err := decodeSpec([]byte(
+		spec, err := decodeSpec(context.Background(), []byte(
 			`{"models":[{"name":"my-plain-model","kind":"generate","capabilities":{"outputs":["text"]}}]}`,
 		))
 		if err != nil {

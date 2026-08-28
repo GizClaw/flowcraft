@@ -16,8 +16,8 @@ import (
 
 func TestResourceFactoryBuildsProvider(t *testing.T) {
 	t.Setenv("AZURE_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "azure",
 			"spec": {
 				"endpoint": "https://example.openai.azure.com",
@@ -27,8 +27,11 @@ func TestResourceFactoryBuildsProvider(t *testing.T) {
 				"id": "default",
 				"secrets": {"api_key": "${env:AZURE_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -71,16 +74,19 @@ func TestRegisterAddsAzureProviderFactory(t *testing.T) {
 }
 
 func TestProviderCarriesGenerateOptionsDecoder(t *testing.T) {
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "azure",
 			"spec": {
 				"endpoint": "https://example.openai.azure.com",
 				"models": [{"name": "gpt-5", "kind": "generate", "capabilities": {"outputs": ["text"]}}]
 			},
 			"profiles": [{"id": "default", "secrets": {"api_key": "sk-test"}}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

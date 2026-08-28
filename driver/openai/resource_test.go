@@ -11,8 +11,8 @@ import (
 
 func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	t.Setenv("OPENAI_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "openai",
 			"spec": {"organization": "org-1"},
 			"profiles": [{
@@ -20,8 +20,11 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 				"operations": ["generate", "embed"],
 				"secrets": {"api_key": "${env:OPENAI_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -38,6 +41,7 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	t.Setenv("OPENAI_TEST_HTTP_RETRIES", "3")
 	settings, err := resource.DecodeTyped[ResourceSettings](
+		context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
 			"spec": {"http_retries": "${env:OPENAI_TEST_HTTP_RETRIES}"}
@@ -46,7 +50,7 @@ func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeTyped: %v", err)
 	}
-	spec, err := decodeSpec(settings.Spec)
+	spec, err := decodeSpec(context.Background(), settings.Spec)
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
@@ -55,19 +59,21 @@ func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	}
 }
 
-func TestResourceFactoryRejectsMissingIDAndSecret(t *testing.T) {
+func TestResourceFactoryRequiresID(t *testing.T) {
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{"profiles":[]}`),
 	}); err == nil {
 		t.Fatal("New accepted settings without id")
 	}
+	// A profile without api_key builds fine: missing keys surface at
+	// request time (lazy secret resolution), not at deploy time.
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "openai",
 			"profiles": [{"id": "default"}]
 		}`),
-	}); err == nil {
-		t.Fatal("New accepted a profile without api_key")
+	}); err != nil {
+		t.Fatalf("New rejected a profile without api_key: %v", err)
 	}
 }
 

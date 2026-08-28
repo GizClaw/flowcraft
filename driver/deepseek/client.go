@@ -1,11 +1,15 @@
 package deepseek
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	openaigo "github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 const defaultBaseURL = "https://api.deepseek.com"
@@ -13,8 +17,9 @@ const defaultBaseURL = "https://api.deepseek.com"
 // profileMaterial is one profile's resolved credentials and profile-level
 // settings, validated once at factory build time.
 type profileMaterial struct {
-	spec   ProfileSpec
-	apiKey string
+	spec     ProfileSpec
+	apiKey   resource.Secret
+	resolver *resource.SecretResolver
 }
 
 // clients carries the SDK handle one profile opens drivers with. DeepSeek
@@ -24,12 +29,12 @@ type clients struct {
 	api openaigo.Client
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, err
 	}
-	material := profileMaterial{spec: spec}
+	material := profileMaterial{spec: spec, resolver: secrets}
 	for name := range profile.Secrets {
 		if name != SecretAPIKey {
 			return profileMaterial{}, fmt.Errorf(
@@ -40,32 +45,33 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 		}
 	}
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" {
-		return profileMaterial{}, fmt.Errorf(
-			"deepseek profile %q needs %q",
-			profile.ID,
-			SecretAPIKey,
-		)
+		material.apiKey = secret
 	}
 	return material, nil
 }
 
-func (m profileMaterial) newClients(spec Spec) *clients {
+func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
+	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
+	if err != nil {
+		return nil, errdefs.Validationf("deepseek profile: resolve api_key: %v", err)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errdefs.Validationf("deepseek profile needs %q", SecretAPIKey)
+	}
 	baseURL := spec.BaseURL
 	if baseURL == "" {
 		baseURL = defaultBaseURL
 	}
 	options := []option.RequestOption{
-		option.WithAPIKey(m.apiKey),
+		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
 	}
 	if spec.HTTPRetries != nil {
 		options = append(options,
 			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
 	}
-	return &clients{api: openaigo.NewClient(options...)}
+	return &clients{api: openaigo.NewClient(options...)}, nil
 }
 
 // sdkMaxRetries converts a total-attempt budget (including the first) into

@@ -1,6 +1,7 @@
 package bytedance
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -51,7 +52,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -120,7 +121,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 }
 
 func TestCatalogDeclaresAudioInput(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -149,7 +150,7 @@ func TestCatalogDeclaresAudioInput(t *testing.T) {
 }
 
 func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"m","kind":"image","capabilities":{"outputs":["text"]}}]}`,
 	))
 	if err != nil {

@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -16,7 +17,7 @@ type scalarSettings struct {
 func TestDecodeSettingsScalarTypes(t *testing.T) {
 	t.Run("literals decode unchanged", func(t *testing.T) {
 		var s scalarSettings
-		err := DecodeSettings(&s, []byte(`{
+		err := DecodeSettings(context.Background(), &s, []byte(`{
 			"capacity": 8,
 			"resume": true,
 			"ratio": 1.5,
@@ -51,7 +52,7 @@ func TestDecodeSettingsScalarTypes(t *testing.T) {
 			"FC_MILLIS":   "3000",
 		}
 		var s scalarSettings
-		err := DecodeSettings(&s, []byte(`{
+		err := DecodeSettings(context.Background(), &s, []byte(`{
 			"capacity": "${env:FC_CAPACITY}",
 			"resume": "${env:FC_RESUME}",
 			"ratio": "${env:FC_RATIO}",
@@ -79,7 +80,7 @@ func TestDecodeSettingsScalarTypes(t *testing.T) {
 
 	t.Run("absent stays nil", func(t *testing.T) {
 		var s scalarSettings
-		if err := DecodeSettings(&s, []byte(`{"plain": 1}`)); err != nil {
+		if err := DecodeSettings(context.Background(), &s, []byte(`{"plain": 1}`)); err != nil {
 			t.Fatalf("DecodeSettings: %v", err)
 		}
 		if s.Capacity != nil || s.Resume != nil || s.Ratio != nil ||
@@ -97,7 +98,7 @@ func TestDecodeSettingsScalarTypes(t *testing.T) {
 		} {
 			t.Run(name, func(t *testing.T) {
 				var s scalarSettings
-				err := DecodeSettings(&s, []byte(raw))
+				err := DecodeSettings(context.Background(), &s, []byte(raw))
 				if err == nil {
 					t.Fatal("DecodeSettings unexpectedly succeeded")
 				}
@@ -110,7 +111,7 @@ func TestDecodeSettingsScalarTypes(t *testing.T) {
 
 	t.Run("missing env still fails before decode", func(t *testing.T) {
 		var s scalarSettings
-		err := DecodeSettings(&s, []byte(`{"capacity": "${env:FC_UNSET}"}`),
+		err := DecodeSettings(context.Background(), &s, []byte(`{"capacity": "${env:FC_UNSET}"}`),
 			WithEnv(func(string) (string, bool) { return "", false }))
 		if err == nil {
 			t.Fatal("DecodeSettings unexpectedly succeeded")
@@ -122,7 +123,7 @@ func TestDecodeSettingsScalarTypes(t *testing.T) {
 
 	t.Run("strict unknown fields still rejected", func(t *testing.T) {
 		var s scalarSettings
-		err := DecodeSettings(&s, []byte(`{"capacity": 8, "typo": true}`))
+		err := DecodeSettings(context.Background(), &s, []byte(`{"capacity": 8, "typo": true}`))
 		if err == nil {
 			t.Fatal("DecodeSettings unexpectedly succeeded")
 		}

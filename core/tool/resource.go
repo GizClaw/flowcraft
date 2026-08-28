@@ -83,8 +83,8 @@ func (AssemblyFactory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (AssemblyFactory) New(_ context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[AssemblySettings](in.Settings)
+func (AssemblyFactory) New(ctx context.Context, in resource.Input) (any, error) {
+	settings, err := resource.DecodeTyped[AssemblySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf(
 			"tool: decode assembly settings: %v", err)

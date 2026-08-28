@@ -21,26 +21,26 @@ func TestBoardBridgeResolve(t *testing.T) {
 	resolve := b["resolve"].(func(string) (any, error))
 	resolveString := b["resolveString"].(func(string) (string, error))
 
-	v, err := resolve("${board.user.name}")
+	v, err := resolve("${board:user.name}")
 	if err != nil || v != "ada" {
 		t.Fatalf("resolve = %v, %v", v, err)
 	}
-	v, err = resolve("${board.n}")
+	v, err = resolve("${board:n}")
 	if err != nil || v != float64(3) {
 		t.Fatalf("resolve typed = %v, %v", v, err)
 	}
-	s, err := resolveString("n=${board.n}")
+	s, err := resolveString("n=${board:n}")
 	if err != nil || s != "n=3" {
 		t.Fatalf("resolveString = %q, %v", s, err)
 	}
-	s, err = resolveString("${board.user.name}")
+	s, err = resolveString("${board:user.name}")
 	if err != nil || s != "ada" {
 		t.Fatalf("resolveString typed = %q, %v", s, err)
 	}
-	if _, err := resolve("${board.missing}"); err == nil || !errdefs.IsValidation(err) {
+	if _, err := resolve("${board:missing}"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("missing ref err = %v, want validation error", err)
 	}
-	if _, err := resolveString("x ${board.missing}"); err == nil || !errdefs.IsValidation(err) {
+	if _, err := resolveString("x ${board:missing}"); err == nil || !errdefs.IsValidation(err) {
 		t.Fatalf("missing embedded ref err = %v, want validation error", err)
 	}
 }

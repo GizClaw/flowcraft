@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -33,7 +34,7 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
     max_sessions: 7
     resume: true
 `)
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -51,7 +52,7 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 
 	t.Run("defaults", func(t *testing.T) {
 		doc := parseRuntimeDocument(t, "  event_bus: events\n")
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -68,7 +69,7 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 
 	t.Run("blank checkpoint store is disabled", func(t *testing.T) {
 		doc := parseRuntimeDocument(t, "  event_bus: events\n  checkpoint_store: '   '\n")
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -99,7 +100,7 @@ func TestDecodeConfigStrictAndValidated(t *testing.T) {
 			} else {
 				doc = parseRuntimeDocument(t, runtimeYAML)
 			}
-			if _, err := DecodeConfig(doc); err == nil {
+			if _, err := DecodeConfig(context.Background(), doc); err == nil {
 				t.Fatal("DecodeConfig unexpectedly succeeded")
 			}
 		})
@@ -113,7 +114,7 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
   sessions:
     idle_timeout: ${env:FLOWCRAFT_TEST_IDLE_TIMEOUT}
 `)
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -125,7 +126,7 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
 	t.Run("string map field from env", func(t *testing.T) {
 		t.Setenv("FLOWCRAFT_TEST_EVENT_BUS", "events")
 		doc := parseRuntimeDocument(t, "  event_bus: ${env:FLOWCRAFT_TEST_EVENT_BUS}\n")
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -146,7 +147,7 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
   sessions:
     idle_timeout: ${env:FLOWCRAFT_TEST_MISSING_IDLE_TIMEOUT}
 `)
-		if _, err := DecodeConfig(doc); err == nil {
+		if _, err := DecodeConfig(context.Background(), doc); err == nil {
 			t.Fatal("DecodeConfig unexpectedly succeeded with missing env")
 		}
 	})
@@ -157,7 +158,7 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
   sessions:
     sink_buffer: ${env:FLOWCRAFT_TEST_SINK_BUFFER}
 `)
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -173,7 +174,7 @@ func TestDecodeConfig_EnvExpansion(t *testing.T) {
   sessions:
     resume: ${env:FLOWCRAFT_TEST_RESUME}
 `)
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -189,7 +190,7 @@ func TestDecodeConfig_DynamicCatalog(t *testing.T) {
   dynamic_catalog:
     tools: {default: shared_tools, researcher: research_tools}
 `)
-		cfg, err := DecodeConfig(doc)
+		cfg, err := DecodeConfig(context.Background(), doc)
 		if err != nil {
 			t.Fatalf("DecodeConfig: %v", err)
 		}
@@ -218,7 +219,7 @@ func TestDecodeConfig_DynamicCatalog(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			doc := parseRuntimeDocument(t, runtimeYAML)
-			if _, err := DecodeConfig(doc); !errdefs.IsValidation(err) {
+			if _, err := DecodeConfig(context.Background(), doc); !errdefs.IsValidation(err) {
 				t.Fatalf("DecodeConfig error = %v, want validation", err)
 			}
 		})
@@ -231,7 +232,7 @@ func TestDecodeConfigRejectsUnknownSessionField(t *testing.T) {
     idle_timeout: 30s
     mystery: true
 `)
-	_, err := DecodeConfig(doc)
+	_, err := DecodeConfig(context.Background(), doc)
 	if err == nil || !strings.Contains(err.Error(), "mystery") {
 		t.Fatalf("DecodeConfig error = %v, want unknown field mention", err)
 	}

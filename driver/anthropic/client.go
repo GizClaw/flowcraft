@@ -1,11 +1,15 @@
 package anthropic
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // SecretAPIKey is the Anthropic API key secret id.
@@ -13,11 +17,12 @@ const SecretAPIKey = "api_key"
 
 // profileMaterial is the resolved credential set for one profile.
 type profileMaterial struct {
-	apiKey string
+	apiKey   resource.Secret
+	resolver *resource.SecretResolver
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	material := profileMaterial{}
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
+	material := profileMaterial{resolver: secrets}
 	for id := range profile.Secrets {
 		if id != SecretAPIKey {
 			return profileMaterial{}, fmt.Errorf(
@@ -28,13 +33,7 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 		}
 	}
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" {
-		return profileMaterial{}, fmt.Errorf(
-			"anthropic: profile %q is missing the required api_key secret",
-			profile.ID,
-		)
+		material.apiKey = secret
 	}
 	return material, nil
 }
@@ -44,8 +43,16 @@ type clients struct {
 	api anthropicgo.Client
 }
 
-func (m profileMaterial) newClients(spec Spec) *clients {
-	options := []option.RequestOption{option.WithAPIKey(m.apiKey)}
+func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
+	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
+	if err != nil {
+		return nil, errdefs.Validationf("anthropic profile: resolve api_key: %v", err)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errdefs.Validationf("anthropic profile is missing the required api_key secret")
+	}
+	options := []option.RequestOption{option.WithAPIKey(apiKey)}
 	if spec.BaseURL != "" {
 		options = append(options, option.WithBaseURL(spec.BaseURL))
 	}
@@ -53,7 +60,7 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		options = append(options,
 			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
 	}
-	return &clients{api: anthropicgo.NewClient(options...)}
+	return &clients{api: anthropicgo.NewClient(options...)}, nil
 }
 
 // sdkMaxRetries converts a total-attempt budget (including the first) into

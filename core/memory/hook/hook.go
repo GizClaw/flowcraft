@@ -97,8 +97,8 @@ func (ContextPreparer) Spec() resource.Spec {
 }
 
 // New implements config.Factory.
-func (ContextPreparer) New(_ context.Context, input resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ContextSettings](input.Settings)
+func (ContextPreparer) New(ctx context.Context, input resource.Input) (any, error) {
+	settings, err := resource.DecodeTyped[ContextSettings](ctx, input.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", ContextType, err))
 	}
@@ -171,8 +171,8 @@ func (TurnCommitter) Spec() resource.Spec {
 }
 
 // New implements config.Factory.
-func (TurnCommitter) New(_ context.Context, input resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[TurnSettings](input.Settings)
+func (TurnCommitter) New(ctx context.Context, input resource.Input) (any, error) {
+	settings, err := resource.DecodeTyped[TurnSettings](ctx, input.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf("%s: decode settings: %w", TurnType, err))
 	}

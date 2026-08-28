@@ -265,7 +265,7 @@ func TestConformanceGenerateDataPartLowersToText(t *testing.T) {
 // no vision or reasoning support must reject those channels and still keep
 // a complete ledger on plain text.
 func TestConformanceGenerateCompilerPlainModel(t *testing.T) {
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"my-plain-model","kind":"generate","capabilities":{"outputs":["text"]}}]}`,
 	))
 	if err != nil {

@@ -1,6 +1,7 @@
 package kimi
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"strings"
@@ -91,8 +92,8 @@ func validateURL(name, value string) error {
 	return nil
 }
 
-func decodeSpec(raw []byte) (Spec, error) {
-	spec, err := resource.DecodeTyped[Spec](raw)
+func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {
+	spec, err := resource.DecodeTyped[Spec](ctx, raw)
 	if err != nil {
 		return Spec{}, fmt.Errorf("kimi spec: %w", err)
 	}
@@ -102,8 +103,8 @@ func decodeSpec(raw []byte) (Spec, error) {
 	return spec, nil
 }
 
-func decodeProfileSpec(raw []byte) (ProfileSpec, error) {
-	spec, err := resource.DecodeTyped[ProfileSpec](raw)
+func decodeProfileSpec(ctx context.Context, raw []byte) (ProfileSpec, error) {
+	spec, err := resource.DecodeTyped[ProfileSpec](ctx, raw)
 	if err != nil {
 		return ProfileSpec{}, fmt.Errorf("kimi profile spec: %w", err)
 	}

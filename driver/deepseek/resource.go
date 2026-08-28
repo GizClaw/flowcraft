@@ -31,10 +31,10 @@ type ResourceSettings struct {
 // provider-owned secret name (api_key) to a resolved or ${env:NAME}
 // referenced value.
 type ProfileSettings struct {
-	ID         string                `json:"id,omitempty"`
-	Operations []inference.Operation `json:"operations,omitempty"`
-	Secrets    map[string]string     `json:"secrets,omitempty"`
-	Spec       json.RawMessage       `json:"spec,omitempty"`
+	ID         string                     `json:"id,omitempty"`
+	Operations []inference.Operation      `json:"operations,omitempty"`
+	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
+	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
 
 type deployFactory struct{}
@@ -53,15 +53,14 @@ func (deployFactory) Spec() resource.Spec {
 // settings, resolves ${env:...} secret references, and builds the
 // immutable core/inference.ProviderDefinition.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ResourceSettings](
-		in.Settings, resource.ExpandEnv())
+	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("deepseek provider: decode settings: %w", err)
 	}
 	if settings.ID == "" {
 		return nil, fmt.Errorf("deepseek provider: settings.id is required")
 	}
-	return buildProvider(settings)
+	return buildProvider(ctx, settings, in.Secrets)
 }
 
 // Register adds the DeepSeek provider factory to r.
@@ -77,8 +76,8 @@ func Register(r *resource.Registry) error {
 // definition carries the generate_options decoder bound to the deployment
 // provider ID, so graph yaml can enable provider knobs (web_search) without
 // host-side registration.
-func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, error) {
-	spec, err := decodeSpec(settings.Spec)
+func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {
+	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
@@ -111,7 +110,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile)
+		material, err := newProfileMaterial(ctx, profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}
@@ -165,7 +164,7 @@ func openersFor(
 	profiles map[string]profileMaterial,
 	id inference.ModelID,
 ) inference.Openers {
-	open := func(profile string) (*clients, error) {
+	open := func(ctx context.Context, profile string) (*clients, error) {
 		material, ok := profiles[profile]
 		if !ok {
 			return nil, fmt.Errorf(
@@ -174,17 +173,17 @@ func openersFor(
 				profile,
 			)
 		}
-		return material.newClients(spec), nil
+		return material.newClients(ctx, spec)
 	}
 	if entry.kind != kindGenerate {
 		return inference.Openers{}
 	}
 	return inference.Openers{
 		Generate: func(
-			_ context.Context,
+			ctx context.Context,
 			model inference.ModelRef,
 		) (inference.GenerateOperations, error) {
-			cls, err := open(model.Profile)
+			cls, err := open(ctx, model.Profile)
 			if err != nil {
 				return inference.GenerateOperations{}, err
 			}

@@ -24,7 +24,7 @@ func (Factory) Spec() resource.Spec {
 }
 
 // New implements resource.Factory.
-func (Factory) New(_ context.Context, in resource.Input) (any, error) {
+func (Factory) New(ctx context.Context, in resource.Input) (any, error) {
 	dep, ok := in.Dep("target")
 	if !ok {
 		return nil, errdefs.Validationf(
@@ -35,7 +35,7 @@ func (Factory) New(_ context.Context, in resource.Input) (any, error) {
 		return nil, errdefs.Validationf(
 			"inference router: target dep is not an *inference.Assembly")
 	}
-	policy, err := resource.DecodeTyped[Policy](in.Settings)
+	policy, err := resource.DecodeTyped[Policy](ctx, in.Settings)
 	if err != nil {
 		return nil, err
 	}

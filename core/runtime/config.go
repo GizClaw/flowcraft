@@ -3,6 +3,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -79,12 +80,12 @@ type dynamicCatalogConfigWire struct {
 }
 
 // DecodeConfig strictly decodes and validates the runtime subtree.
-func DecodeConfig(doc deploy.Document) (Config, error) {
+func DecodeConfig(ctx context.Context, doc deploy.Document) (Config, error) {
 	if doc.Runtime == nil {
 		return Config{}, errdefs.Validationf("runtime config: runtime section is required")
 	}
 	var wire configWire
-	if err := resource.DecodeSettings(&wire, doc.Runtime.Bytes(), resource.ExpandEnv()); err != nil {
+	if err := resource.DecodeSettings(ctx, &wire, doc.Runtime.Bytes(), resource.ExpandEnv()); err != nil {
 		return Config{}, errdefs.Validation(fmt.Errorf("runtime config: decode: %w", err))
 	}
 	cfg := Config{

@@ -69,8 +69,8 @@ func (memoryFactory) Spec() res.Spec {
 }
 
 // New implements res.Factory.
-func (f memoryFactory) New(_ context.Context, in res.Input) (any, error) {
-	settings, err := res.DecodeTyped[MemorySettings](in.Settings)
+func (f memoryFactory) New(ctx context.Context, in res.Input) (any, error) {
+	settings, err := res.DecodeTyped[MemorySettings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validation(fmt.Errorf(
 			"delegation kanban resource: decode memory resource settings: %w", err))

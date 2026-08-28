@@ -60,7 +60,7 @@ func TestBuildRejectsReferenceRoleKey(t *testing.T) {
 		Entry: "a",
 		Nodes: []NodeDefinition{{
 			ID: "a", Type: "echo",
-			Config: []byte(`{"set_var": "${board.dynamic}"}`),
+			Config: []byte(`{"set_var": "${board:dynamic}"}`),
 		}},
 	}, reg)
 	if err == nil {
@@ -169,7 +169,7 @@ func TestAnalyzeWarnings(t *testing.T) {
 		Entry: "a",
 		Nodes: []NodeDefinition{{
 			ID: "a", Type: "echo",
-			Config: []byte(`{"set_var": "out", "message": "${board.missing_input}"}`),
+			Config: []byte(`{"set_var": "out", "message": "${board:missing_input}"}`),
 		}},
 	}, reg)
 	if !hasKind(g.Warnings(), WarningUnresolvedReference) {
@@ -182,7 +182,7 @@ func TestAnalyzeWarnings(t *testing.T) {
 		Entry: "a",
 		Nodes: []NodeDefinition{
 			{ID: "a", Type: "echo", Config: []byte(`{"set_var": "input", "set_val": 1}`)},
-			{ID: "b", Type: "echo", Config: []byte(`{"message": "${board.input}"}`)},
+			{ID: "b", Type: "echo", Config: []byte(`{"message": "${board:input}"}`)},
 		},
 		Edges: []EdgeDefinition{{From: "a", To: "b"}},
 	}, reg)

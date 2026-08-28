@@ -105,7 +105,7 @@ func TestScriptNode_ConfigMayInterpolateBoardRefs(t *testing.T) {
 	g := singleScriptGraph(t, reg, map[string]any{
 		"runtime": "fake",
 		"source":  "x",
-		"config":  map[string]any{"query": "${board.user_query}"},
+		"config":  map[string]any{"query": "${board:user_query}"},
 	})
 	board := agent.NewBoard()
 	board.SetVar("user_query", "weather in paris")

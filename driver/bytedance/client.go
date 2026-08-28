@@ -1,11 +1,14 @@
 package bytedance
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/utils"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
@@ -27,8 +30,9 @@ const defaultArkBaseURL = "https://ark.cn-beijing.volces.com/api/v3"
 // profileMaterial is one credential profile after secret resolution: the
 // decoded profile Spec plus the secret values this provider recognizes.
 type profileMaterial struct {
-	spec   ProfileSpec
-	apiKey string
+	spec     ProfileSpec
+	apiKey   resource.Secret
+	resolver *resource.SecretResolver
 }
 
 // clients bundles the service clients one profile needs. ark is nil when the
@@ -58,12 +62,12 @@ func (c *clients) endpoint(name string) string {
 	return name
 }
 
-func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
-	spec, err := decodeProfileSpec(profile.Spec)
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
+	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, err
 	}
-	material := profileMaterial{spec: spec}
+	material := profileMaterial{spec: spec, resolver: secrets}
 	for name := range profile.Secrets {
 		switch name {
 		case SecretAPIKey:
@@ -76,22 +80,24 @@ func newProfileMaterial(profile ProfileSettings) (profileMaterial, error) {
 		}
 	}
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" {
-		return profileMaterial{}, fmt.Errorf(
-			"bytedance profile %q needs an Ark credential (%q)",
-			profile.ID,
-			SecretAPIKey,
-		)
+		material.apiKey = secret
 	}
 	return material, nil
 }
 
 // newClients builds the service clients for one profile.
-func (m profileMaterial) newClients(spec Spec) *clients {
+func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, error) {
+	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
+	if err != nil {
+		return nil, errdefs.Validationf("bytedance profile: resolve api_key: %v", err)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errdefs.Validationf(
+			"bytedance profile needs an Ark credential (%q)", SecretAPIKey)
+	}
 	built := &clients{endpoints: m.spec.Endpoints}
-	built.apiKey = m.apiKey
+	built.apiKey = apiKey
 	built.baseURL = spec.BaseURL
 	if built.baseURL == "" {
 		built.baseURL = defaultArkBaseURL
@@ -122,10 +128,10 @@ func (m profileMaterial) newClients(spec Spec) *clients {
 		// replayable transient failures so attempts do not multiply.
 		arkruntime.WithRetryTimes(0),
 	)
-	if m.apiKey != "" {
-		built.ark = arkruntime.NewClientWithApiKey(m.apiKey, options...)
+	if apiKey != "" {
+		built.ark = arkruntime.NewClientWithApiKey(apiKey, options...)
 	}
-	return built
+	return built, nil
 }
 
 // requireArk returns the Ark client or a profile-scoped error.

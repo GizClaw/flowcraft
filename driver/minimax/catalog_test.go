@@ -1,6 +1,7 @@
 package minimax
 
 import (
+	"context"
 	"reflect"
 	"slices"
 	"testing"
@@ -10,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "minimax"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -43,7 +44,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(ResourceSettings{ID: "minimax"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -104,7 +105,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 }
 
 func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"m","kind":"video","capabilities":{"outputs":["text"]}}]}`,
 	))
 	if err != nil {
@@ -116,7 +117,7 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 }
 
 func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
-	spec, err := decodeSpec([]byte(
+	spec, err := decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"MiniMax-H3","kind":"video","capabilities":{"inputs":["text"],"outputs":["video"]}}]}`,
 	))
 	if err != nil {
@@ -130,7 +131,7 @@ func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
 		t.Fatal("redeclared MiniMax-H3 lost the v2 flag")
 	}
 
-	spec, err = decodeSpec([]byte(
+	spec, err = decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"MiniMax-Hailuo-02","kind":"video","capabilities":{"inputs":["text","image"],"outputs":["video"]}}]}`,
 	))
 	if err != nil {
@@ -145,7 +146,7 @@ func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
 		t.Fatalf("redeclared MiniMax-Hailuo-02 flags = %+v", entry)
 	}
 
-	spec, err = decodeSpec([]byte(
+	spec, err = decodeSpec(context.Background(), []byte(
 		`{"models":[{"name":"MiniMax-H3-Context-IR","kind":"context_ir","capabilities":{"inputs":["text"],"outputs":["text"]}}]}`,
 	))
 	if err != nil {

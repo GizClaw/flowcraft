@@ -1,16 +1,18 @@
 package resource
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
 func TestExpandNoOptionsReturnsInput(t *testing.T) {
-	out, err := Expand([]byte(`{"a": "${env:X}"}`))
+	out, err := Expand(context.Background(), []byte(`{"a": "${env:X}"}`))
 	if err != nil {
 		t.Fatalf("Expand: %v", err)
 	}
@@ -26,7 +28,7 @@ func TestExpandEnv(t *testing.T) {
 		}
 		return "", false
 	}
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"root": "${env:ROOT}",
 		"nested": {"path": "${env:ROOT}/data"},
 		"list": ["${env:ROOT}/a", "plain"]
@@ -52,7 +54,7 @@ func TestExpandEnv(t *testing.T) {
 }
 
 func TestExpandBase(t *testing.T) {
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"dir": "${base}",
 		"file": "${base:tools/tools.yaml}"
 	}`), ExpandBase("/tmp/deploy"))
@@ -72,7 +74,7 @@ func TestExpandBase(t *testing.T) {
 }
 
 func TestExpandHome(t *testing.T) {
-	out, err := Expand([]byte(`{
+	out, err := Expand(context.Background(), []byte(`{
 		"bare": "~",
 		"sub": "~/flowcraft",
 		"ref": "${home:data}",
@@ -108,7 +110,7 @@ func TestExpandErrors(t *testing.T) {
 		{"unknown ref", `{"a": "${foo}"}`, []ExpandOption{ExpandEnv()}},
 		{"unterminated", `{"a": "${env:X"}`, []ExpandOption{ExpandEnv()}},
 	} {
-		if _, err := Expand([]byte(tc.raw), tc.opts...); !errdefs.IsValidation(err) {
+		if _, err := Expand(context.Background(), []byte(tc.raw), tc.opts...); !errdefs.IsValidation(err) {
 			t.Fatalf("%s: error = %v, want validation", tc.name, err)
 		}
 	}
@@ -125,11 +127,130 @@ func TestDecodeSettingsWithExpansion(t *testing.T) {
 		return "", false
 	}
 	got, err := DecodeTyped[settings](
+		context.Background(),
 		[]byte(`{"root": "${env:ROOT}/data"}`), WithEnv(lookup))
 	if err != nil {
 		t.Fatalf("DecodeTyped: %v", err)
 	}
 	if got.Root != "/srv/flowcraft/data" {
 		t.Fatalf("Root = %q", got.Root)
+	}
+}
+
+func TestExpandEscapedReference(t *testing.T) {
+	out, err := Expand(context.Background(), []byte(`{
+		"escaped": "\\${env:NOPE}",
+		"mixed": "${env:ROOT}-\\${env:NOPE}"
+	}`), WithEnv(func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv", true
+		}
+		return "", false
+	}))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["escaped"] != "${env:NOPE}" {
+		t.Fatalf("escaped = %v, want literal ${env:NOPE}", got["escaped"])
+	}
+	if got["mixed"] != "/srv-${env:NOPE}" {
+		t.Fatalf("mixed = %v, want /srv-literal", got["mixed"])
+	}
+}
+
+func TestExpandEscapedReferenceRequiresClosingBrace(t *testing.T) {
+	if _, err := Expand(context.Background(),
+		[]byte(`{"a": "\\${env:NOPE"}`), ExpandEnv()); !errdefs.IsValidation(err) {
+		t.Fatalf("error = %v, want validation for unterminated escaped reference", err)
+	}
+}
+
+func TestExpandCustomScheme(t *testing.T) {
+	resolver := NewResolver(SchemeFunc{
+		SchemeName: "cfg",
+		Fn: func(_ context.Context, ref Reference) (any, error) {
+			if ref.Path == "x" {
+				return "value-x", nil
+			}
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref.Path)
+		},
+	})
+	out, err := Expand(context.Background(),
+		[]byte(`{"root": "${cfg:x}"}`), WithResolver(resolver))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["root"] != "value-x" {
+		t.Fatalf("root = %v, want value-x", got["root"])
+	}
+}
+
+func TestExpandDeferredBoardReferences(t *testing.T) {
+	resolver := NewResolver(EnvScheme(func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv", true
+		}
+		return "", false
+	}), PassthroughScheme{Prefix: "board"})
+	expand := func(raw string) string {
+		t.Helper()
+		out, err := Expand(context.Background(), []byte(raw), WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("Expand(%s): %v", raw, err)
+		}
+		return string(out)
+	}
+	// Plain board refs (with the unified ":path[:default]" syntax) pass
+	// through untouched for the agent layer.
+	if got := expand(`{"a": "${board:user.name}"}`); got != `{"a":"${board:user.name}"}` {
+		t.Fatalf("board ref = %s", got)
+	}
+	if got := expand(`{"a": "${board:limit:3}"}`); got != `{"a":"${board:limit:3}"}` {
+		t.Fatalf("board default ref = %s", got)
+	}
+	// The escaped board form keeps its backslash, so the graph engine's
+	// own escape semantics survive.
+	if got := expand(`{"a": "\\${board:x}"}`); got != `{"a":"\\${board:x}"}` {
+		t.Fatalf("escaped board ref = %s", got)
+	}
+	// Non-board refs still expand; non-board escapes still become
+	// literals.
+	if got := expand(`{"a": "${board:user.name}-${env:ROOT}"}`); got != `{"a":"${board:user.name}-/srv"}` {
+		t.Fatalf("mixed refs = %s", got)
+	}
+	if got := expand(`{"a": "\\${env:NOPE}"}`); got != `{"a":"${env:NOPE}"}` {
+		t.Fatalf("escaped env ref = %s", got)
+	}
+}
+
+func TestExpandDisabledSchemeErrors(t *testing.T) {
+	if _, err := Expand(context.Background(),
+		[]byte(`{"a": "${cfg:x}"}`), ExpandEnv()); !errdefs.IsValidation(err) {
+		t.Fatalf("error = %v, want validation for disabled scheme", err)
+	}
+}
+
+func TestUnknownDottedSchemeHints(t *testing.T) {
+	_, err := Expand(context.Background(),
+		[]byte(`{"a": "${board.user.name}"}`), ExpandEnv())
+	if err == nil || !strings.Contains(err.Error(), "did you mean ${board:...}?") {
+		t.Fatalf("error = %v, want did-you-mean hint", err)
+	}
+}
+
+func TestPassthroughSchemeValidatesScheme(t *testing.T) {
+	p := PassthroughScheme{Prefix: "board"}
+	if _, err := p.Resolve(context.Background(), Reference{
+		Scheme: "env", Raw: "${env:X}",
+	}); !errdefs.IsValidation(err) {
+		t.Fatalf("Resolve error = %v, want validation", err)
 	}
 }

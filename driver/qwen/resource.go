@@ -23,10 +23,10 @@ type ResourceSettings struct {
 
 // ProfileSettings is one credential profile.
 type ProfileSettings struct {
-	ID         string                `json:"id,omitempty"`
-	Operations []inference.Operation `json:"operations,omitempty"`
-	Secrets    map[string]string     `json:"secrets,omitempty"`
-	Spec       json.RawMessage       `json:"spec,omitempty"`
+	ID         string                     `json:"id,omitempty"`
+	Operations []inference.Operation      `json:"operations,omitempty"`
+	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
+	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
 
 type deployFactory struct{}
@@ -41,15 +41,14 @@ func (deployFactory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ResourceSettings](
-		in.Settings, resource.ExpandEnv())
+	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("qwen provider: decode settings: %w", err)
 	}
 	if settings.ID == "" {
 		return nil, fmt.Errorf("qwen provider: settings.id is required")
 	}
-	return buildProvider(settings)
+	return buildProvider(ctx, settings, in.Secrets)
 }
 
 // Register adds the Qwen provider factory to r.
@@ -57,8 +56,8 @@ func Register(r *resource.Registry) error {
 	return r.Register(deployFactory{})
 }
 
-func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, error) {
-	spec, err := decodeSpec(settings.Spec)
+func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {
+	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
@@ -68,7 +67,7 @@ func buildProvider(settings ResourceSettings) (inference.ProviderDefinition, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile)
+		material, err := newProfileMaterial(ctx, profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}
@@ -129,19 +128,19 @@ func openersFor(
 	profiles map[string]profileMaterial,
 	id inference.ModelID,
 ) inference.Openers {
-	open := func(profile string) (*dashClient, error) {
+	open := func(ctx context.Context, profile string) (*dashClient, error) {
 		material, exists := profiles[profile]
 		if !exists {
 			return nil, fmt.Errorf("qwen: model %q references undeclared profile %q", id.Name, profile)
 		}
-		return material.newClient(spec), nil
+		return material.newClient(ctx, spec)
 	}
 
 	var openers inference.Openers
 	switch entry.kind {
 	case kindGenerate:
-		openers.Generate = func(_ context.Context, model inference.ModelRef) (inference.GenerateOperations, error) {
-			client, err := open(model.Profile)
+		openers.Generate = func(ctx context.Context, model inference.ModelRef) (inference.GenerateOperations, error) {
+			client, err := open(ctx, model.Profile)
 			if err != nil {
 				return inference.GenerateOperations{}, err
 			}
@@ -154,8 +153,8 @@ func openersFor(
 			)
 		}
 	case kindEmbed:
-		openers.Embed = func(_ context.Context, model inference.ModelRef) (inference.EmbedDriver, error) {
-			client, err := open(model.Profile)
+		openers.Embed = func(ctx context.Context, model inference.ModelRef) (inference.EmbedDriver, error) {
+			client, err := open(ctx, model.Profile)
 			if err != nil {
 				return nil, err
 			}

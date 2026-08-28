@@ -24,7 +24,7 @@
 //     roles, and returns an immutable [*Graph]. A *Graph IS an
 //     [agent.Engine] — no per-run wrapper, no rebuild step.
 //  4. Execution — [*Graph.Execute] advances a node frontier wave by
-//     wave. Per node it resolves "${board.<path>}" references inside
+//     wave. Per node it resolves "${board:<path>}" references inside
 //     the raw config (failing on missing variables unless a default
 //     is given), decodes the typed config, validates the declared
 //     reads, invokes the handler, validates the declared writes, and

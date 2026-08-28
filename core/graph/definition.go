@@ -66,7 +66,7 @@ type NodeDefinition struct {
 	//
 	//   - at [Build] time, top-level field names are checked against
 	//     the node type's config struct (unknown fields are rejected);
-	//   - at execution time, "${board.<name>}" references inside
+	//   - at execution time, "${board:<name>}" references inside
 	//     string values are resolved against the live board before the
 	//     typed decode runs (see package doc, layer 4).
 	//
