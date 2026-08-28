@@ -1,8 +1,0 @@
-# A partial deployment fragment contributed by the plugin. It merges
-# over lower-priority layers and is overridden by higher-priority ones;
-# the kind/impl selection resolves against the host registry at build
-# time, exactly like any other deploy.Layer.
-resources:
-  greeting:
-    kind: event.Bus
-    impl: memory

@@ -1,9 +1,0 @@
-name: acme.hello-layer
-version: 1.0.0
-description: "A zero-code declaration-layer plugin for the forge demo: contributes one event.Bus resource."
-requires:
-  core: ">=0.1.5"
-artifacts:
-  - type: layer
-    path: layers/10-hello.yaml
-    priority: 200

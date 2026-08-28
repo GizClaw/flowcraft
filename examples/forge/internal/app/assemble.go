@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/GizClaw/flowcraft/backends/plugin"
 	"github.com/GizClaw/flowcraft/core/agent/scriptrt"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -25,9 +24,7 @@ import (
 func buildRuntimeFromDocument(
 	ctx context.Context,
 	a *App,
-	workspaceDir string,
-	rest []byte,
-	pluginsCfg *plugin.PluginsConfig,
+	raw []byte,
 ) (*runtime.Runtime, error) {
 	loader := resource.NewLoader(resource.WithBaseDir(a.dir))
 	reg := resource.NewRegistry()
@@ -63,33 +60,9 @@ func buildRuntimeFromDocument(
 		return nil, fmt.Errorf("register sim tools: %w", err)
 	}
 
-	doc, err := deploy.Parse(rest)
+	doc, err := deploy.Parse(raw)
 	if err != nil {
 		return nil, err
-	}
-	if pluginsCfg != nil {
-		set, err := loadPluginSet(ctx, workspaceDir, *pluginsCfg)
-		if err != nil {
-			return nil, err
-		}
-		if err := set.Apply(ctx, &plugin.Target{Resources: reg}); err != nil {
-			return nil, fmt.Errorf("apply plugins: %w", err)
-		}
-		// Merge the declaration-layer slots over the stripped base
-		// document with the same LoadLayers semantics any deploy
-		// consumer uses; the plugin set stays alive until App.Close
-		// so service-slot processes outlive the runtime.
-		base := deploy.Layer{
-			Name:     "deploy.yaml",
-			Priority: 0,
-			Source:   resource.Source{Inline: rest},
-		}
-		doc, _, err = deploy.LoadLayers(
-			ctx, append([]deploy.Layer{base}, set.Layers...))
-		if err != nil {
-			return nil, fmt.Errorf("merge plugin layers: %w", err)
-		}
-		a.plugins = set
 	}
 
 	builder := runtime.NewBuilder(reg)
