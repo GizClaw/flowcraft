@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -234,6 +235,14 @@ func TestExpandDisabledSchemeErrors(t *testing.T) {
 	if _, err := Expand(context.Background(),
 		[]byte(`{"a": "${cfg:x}"}`), ExpandEnv()); !errdefs.IsValidation(err) {
 		t.Fatalf("error = %v, want validation for disabled scheme", err)
+	}
+}
+
+func TestUnknownDottedSchemeHints(t *testing.T) {
+	_, err := Expand(context.Background(),
+		[]byte(`{"a": "${board.user.name}"}`), ExpandEnv())
+	if err == nil || !strings.Contains(err.Error(), "did you mean ${board:...}?") {
+		t.Fatalf("error = %v, want did-you-mean hint", err)
 	}
 }
 

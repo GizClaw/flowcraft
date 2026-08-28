@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,8 +83,13 @@ func (r *ReferenceResolver) Resolve(ctx context.Context, ref Reference) (any, er
 	}
 	s, ok := r.schemes[ref.Scheme]
 	if !ok {
-		return nil, errdefs.Validationf(
+		message := fmt.Sprintf(
 			"resource settings expand: reference scheme %q is not enabled", ref.Scheme)
+		if dot := strings.IndexByte(ref.Scheme, '.'); dot > 0 {
+			message += fmt.Sprintf(
+				" (did you mean ${%s:...}?)", ref.Scheme[:dot])
+		}
+		return nil, errdefs.Validationf("%s", message)
 	}
 	if ref.Escaped {
 		if es, ok := s.(EscapedResolver); ok {
