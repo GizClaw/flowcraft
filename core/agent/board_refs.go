@@ -140,6 +140,10 @@ func (r boardResolver) Resolve(_ context.Context, ref resource.Reference) (any, 
 	if ref.Escaped {
 		return ref.Literal(), nil
 	}
+	if ref.Unterminated {
+		return nil, errdefs.Validationf(
+			"malformed board reference in %q (escape literal text with \\%s)", ref.Raw, BoardRefMarker)
+	}
 	path, def, hasDef, ok := parseBoardRef(ref.Path)
 	if !ok {
 		return nil, errdefs.Validationf(

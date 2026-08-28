@@ -68,6 +68,14 @@ func NewResolver(schemes ...Scheme) *ReferenceResolver {
 
 // Resolve dispatches one reference to its scheme.
 func (r *ReferenceResolver) Resolve(ctx context.Context, ref Reference) (any, error) {
+	if ref.Unterminated {
+		if ref.Escaped {
+			return nil, errdefs.Validationf(
+				"resource settings expand: unterminated escaped reference in %q", ref.Raw)
+		}
+		return nil, errdefs.Validationf(
+			"resource settings expand: unterminated reference in %q", ref.Raw)
+	}
 	if r == nil {
 		return nil, errdefs.Validationf(
 			"resource settings expand: reference scheme %q is not enabled", ref.Scheme)

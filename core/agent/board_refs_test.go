@@ -232,6 +232,32 @@ func TestResolveStringLegacySyntaxFailsWithHint(t *testing.T) {
 	}
 }
 
+func TestResolveStringUnterminatedTolerance(t *testing.T) {
+	board := NewBoard()
+	board.SetVar("x", "Paris")
+	for _, tc := range []struct {
+		in   string
+		want string
+	}{
+		// Non-board text with an unterminated "${" passes through
+		// untouched (old scanner never matched it).
+		{"cost ${VAR", "cost ${VAR"},
+		{"\\${VAR", `\${VAR`},
+		// An escaped unterminated board marker emits the literal text
+		// with the backslash dropped.
+		{`\${board:x`, `${board:x`},
+	} {
+		got, err := board.ResolveString(tc.in)
+		if err != nil || got != tc.want {
+			t.Fatalf("ResolveString(%q) = (%q, %v), want %q", tc.in, got, err, tc.want)
+		}
+	}
+	// An unescaped unterminated board reference is still malformed.
+	if _, err := board.ResolveString("${board:x"); !errdefs.IsValidation(err) {
+		t.Fatalf("ResolveString(unterminated board) err = %v, want validation", err)
+	}
+}
+
 func TestResolveStringEscaped(t *testing.T) {
 	board := NewBoard()
 	board.SetVar("x", "Paris")

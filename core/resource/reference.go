@@ -25,6 +25,11 @@ type Reference struct {
 	// the resolved value may keep its type (a list stays a list).
 	// Embedded references must resolve to text.
 	Whole bool
+	// Unterminated reports that the "${" had no closing brace. The
+	// resolver decides how to treat it: strict phases error, lenient
+	// phases (e.g. agent board runtime text) may pass the raw span
+	// through.
+	Unterminated bool
 }
 
 // Literal returns the standard interpretation of an escaped reference:
@@ -70,11 +75,21 @@ func ExpandRefs(ctx context.Context, s string, resolve Resolver) (any, error) {
 			start := relEsc + 1 // at "${"
 			end := refEnd(rest, start+2)
 			if end < 0 {
-				return "", errdefs.Validationf(
-					"resource settings expand: unterminated escaped reference in %q", s)
+				replacement, err := resolve.Resolve(ctx, parseReference(rest[relEsc:], true, false, true))
+				if err != nil {
+					return "", err
+				}
+				str, ok := replacement.(string)
+				if !ok {
+					return "", errdefs.Validationf(
+						"resource settings expand: escaped reference %q must resolve to text", rest[relEsc:])
+				}
+				sb.WriteString(rest[:relEsc])
+				sb.WriteString(str)
+				return sb.String(), nil
 			}
 			sb.WriteString(rest[:relEsc])
-			replacement, err := resolve.Resolve(ctx, parseReference(rest[relEsc:end], true, false))
+			replacement, err := resolve.Resolve(ctx, parseReference(rest[relEsc:end], true, false, false))
 			if err != nil {
 				return "", err
 			}
@@ -93,8 +108,18 @@ func ExpandRefs(ctx context.Context, s string, resolve Resolver) (any, error) {
 		}
 		end := refEnd(rest, relPlain+2)
 		if end < 0 {
-			return "", errdefs.Validationf(
-				"resource settings expand: unterminated reference in %q", s)
+			replacement, err := resolve.Resolve(ctx, parseReference(rest[relPlain:], false, false, true))
+			if err != nil {
+				return "", err
+			}
+			str, ok := replacement.(string)
+			if !ok {
+				return "", errdefs.Validationf(
+					"resource settings expand: reference %q must resolve to text", rest[relPlain:])
+			}
+			sb.WriteString(rest[:relPlain])
+			sb.WriteString(str)
+			return sb.String(), nil
 		}
 		raw := rest[relPlain:end]
 		if strings.Contains(raw[2:len(raw)-1], "${") {
@@ -102,7 +127,7 @@ func ExpandRefs(ctx context.Context, s string, resolve Resolver) (any, error) {
 				"resource settings expand: nested references are not supported: %q", s)
 		}
 		whole := relPlain == 0 && end == len(rest)
-		replacement, err := resolve.Resolve(ctx, parseReference(raw, false, whole))
+		replacement, err := resolve.Resolve(ctx, parseReference(raw, false, whole, false))
 		if err != nil {
 			return "", err
 		}
@@ -151,18 +176,23 @@ func ExpandValue(ctx context.Context, v any, resolve Resolver) (any, error) {
 	}
 }
 
-func parseReference(raw string, escaped bool, whole bool) Reference {
+func parseReference(raw string, escaped bool, whole bool, unterminated bool) Reference {
 	body := raw
 	if escaped {
 		body = raw[1:]
 	}
-	scheme, path, _ := strings.Cut(body[2:len(body)-1], ":")
+	inner := body[2:]
+	if !unterminated {
+		inner = inner[:len(inner)-1]
+	}
+	scheme, path, _ := strings.Cut(inner, ":")
 	return Reference{
-		Scheme:  strings.TrimSpace(scheme),
-		Path:    strings.TrimSpace(path),
-		Raw:     raw,
-		Escaped: escaped,
-		Whole:   whole,
+		Scheme:       strings.TrimSpace(scheme),
+		Path:         strings.TrimSpace(path),
+		Raw:          raw,
+		Escaped:      escaped,
+		Whole:        whole,
+		Unterminated: unterminated,
 	}
 }
 
@@ -191,7 +221,11 @@ func backslashed(s string, i int) bool {
 // PassthroughScheme resolves every reference under one scheme by
 // returning the raw span unchanged (escaped form included), deferring
 // the reference to a later phase — the deploy-time handling of agent
-// board references.
+// board references. Registering a real scheme with the same name
+// overrides the passthrough (custom schemes win in ReferenceResolver
+// merges), so a deployment that adds e.g. a "board" scheme takes over
+// board references at deploy time; Resolve validates the scheme name to
+// keep the passthrough honest when used directly.
 type PassthroughScheme struct {
 	Prefix string
 }
@@ -199,9 +233,17 @@ type PassthroughScheme struct {
 func (p PassthroughScheme) Name() string { return p.Prefix }
 
 func (p PassthroughScheme) Resolve(_ context.Context, r Reference) (any, error) {
+	if r.Scheme != p.Prefix {
+		return nil, errdefs.Validationf(
+			"resource settings expand: passthrough scheme %q cannot resolve %q", p.Prefix, r.Scheme)
+	}
 	return r.Raw, nil
 }
 
 func (p PassthroughScheme) ResolveEscaped(_ context.Context, r Reference) (any, error) {
+	if r.Scheme != p.Prefix {
+		return nil, errdefs.Validationf(
+			"resource settings expand: passthrough scheme %q cannot resolve %q", p.Prefix, r.Scheme)
+	}
 	return r.Raw, nil
 }

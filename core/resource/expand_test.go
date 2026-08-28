@@ -236,3 +236,12 @@ func TestExpandDisabledSchemeErrors(t *testing.T) {
 		t.Fatalf("error = %v, want validation for disabled scheme", err)
 	}
 }
+
+func TestPassthroughSchemeValidatesScheme(t *testing.T) {
+	p := PassthroughScheme{Prefix: "board"}
+	if _, err := p.Resolve(context.Background(), Reference{
+		Scheme: "env", Raw: "${env:X}",
+	}); !errdefs.IsValidation(err) {
+		t.Fatalf("Resolve error = %v, want validation", err)
+	}
+}
