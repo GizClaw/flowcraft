@@ -15,7 +15,7 @@
 正例（允许）：
 悟空把金箍棒往地上一拄，目光穿过门缝，落在那只渗着黑水的竹篮上。他嘴唇动了动，却没有立刻出声——屋里一时静得能听见雨声。
 
-蓝图目标：${board.story_step_goal}
-当前故事状态：${board.story_state_text}
-固定角色状态：${board.cast_state_text}
-用户状态：${board.user_state_text}
+蓝图目标：${board:story_step_goal}
+当前故事状态：${board:story_state_text}
+固定角色状态：${board:cast_state_text}
+用户状态：${board:user_state_text}
