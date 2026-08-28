@@ -247,6 +247,56 @@ func TestProfileMaterial(t *testing.T) {
 	})
 }
 
+// TestEscapedEnvSecretSurvivesFactoryDecode proves builder-escaped
+// references (which become literal "${env:...}" strings) are not
+// expanded again by the driver: the factory decodes pre-expanded
+// settings as-is, so the wire Authorization header carries the literal.
+func TestEscapedEnvSecretSurvivesFactoryDecode(t *testing.T) {
+	t.Setenv("OPENAI_TEST_KEY", "sk-test")
+	var auth string
+	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		auth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{textOutputItem("ok")}))
+	})
+	defer server.Close()
+
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
+			"id": "openai",
+			"spec": {"base_url": "`+server.URL+`"},
+			"profiles": [{"id": "default", "secrets": {"api_key": "\\${env:OPENAI_TEST_KEY}"}}]
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	var impl *inference.ModelImplementation
+	for i := range provider.Models {
+		if provider.Models[i].Descriptor.ID.Name == "gpt-5.6-sol" {
+			impl = &provider.Models[i]
+		}
+	}
+	if impl == nil {
+		t.Fatal("gpt-5.6-sol missing from provider models")
+	}
+	operations, err := impl.Openers.Generate(context.Background(), openaiModel("gpt-5.6-sol"))
+	if err != nil {
+		t.Fatalf("Generate opener: %v", err)
+	}
+	if _, err := operations.Unary.Execute(context.Background(),
+		openaiModel("gpt-5.6-sol"), simpleTextRequest("hi")); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if auth != "Bearer ${env:OPENAI_TEST_KEY}" {
+		t.Fatalf("Authorization = %q, want escaped literal untouched", auth)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Factory.
 // ---------------------------------------------------------------------------

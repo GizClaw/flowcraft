@@ -41,8 +41,7 @@ func (deployFactory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ResourceSettings](
-		ctx, in.Settings, resource.ExpandEnv())
+	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("qwen provider: decode settings: %w", err)
 	}

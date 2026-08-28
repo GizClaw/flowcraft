@@ -113,7 +113,7 @@ func Register(r *resource.Registry) error {
 
 // ParseSpec strictly decodes an MCP source spec.
 func ParseSpec(ctx context.Context, settings json.RawMessage) (Spec, error) {
-	spec, err := resource.DecodeTyped[Spec](ctx, settings, resource.ExpandEnv())
+	spec, err := resource.DecodeTyped[Spec](ctx, settings)
 	if err != nil {
 		return Spec{}, fmt.Errorf("mcp: %w", err)
 	}

@@ -23,9 +23,10 @@ import (
 // an explicit [resource.Registry]. The registry is owned by the caller;
 // Builder never touches global state.
 type Builder struct {
-	registry *resource.Registry
-	loader   *resource.Loader
-	resolver *resource.ReferenceResolver
+	registry       *resource.Registry
+	loader         *resource.Loader
+	resolver       *resource.ReferenceResolver
+	secretCacheTTL time.Duration
 }
 
 // BuilderOption configures a Builder.
@@ -45,6 +46,13 @@ func WithLoader(loader *resource.Loader) BuilderOption {
 // the loader declares a base directory.
 func WithResolver(resolver *resource.ReferenceResolver) BuilderOption {
 	return func(b *Builder) { b.resolver = resolver }
+}
+
+// WithSecretCacheTTL sets how long lazy secret lookups reuse a cached
+// value before hitting the backend again. Zero keeps the default (one
+// minute); a negative value disables caching.
+func WithSecretCacheTTL(ttl time.Duration) BuilderOption {
+	return func(b *Builder) { b.secretCacheTTL = ttl }
 }
 
 // NewBuilder returns a Builder over registry. A nil registry yields an
@@ -108,9 +116,11 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	return &Result{
-		values: values,
-		order:  order,
-		agents: make(map[string]*agent.Agent, len(doc.Agents)),
+		values:   values,
+		order:    order,
+		agents:   make(map[string]*agent.Agent, len(doc.Agents)),
+		resolver: resolver,
+		secrets:  secrets,
 	}, nil
 }
 
@@ -237,16 +247,20 @@ func (b *Builder) effectiveResolver(
 		return base, nil, nil
 	}
 	cached := make(map[string]resource.SecretStore, len(stores))
+	ttl := b.secretCacheTTL
+	if ttl == 0 {
+		ttl = defaultSecretCacheTTL
+	}
 	for id, store := range stores {
-		cached[id] = resource.NewCachingSecretStore(store, secretCacheTTL)
+		cached[id] = resource.NewCachingSecretStore(store, ttl)
 	}
 	secrets := resource.NewSecretResolver(cached, defaultStore)
 	return base.WithScheme(secrets.Scheme()), secrets, nil
 }
 
-// secretCacheTTL bounds how long lazy secret lookups reuse a cached
-// value before hitting the backend again.
-const secretCacheTTL = time.Minute
+// defaultSecretCacheTTL bounds how long lazy secret lookups reuse a
+// cached value before hitting the backend again.
+const defaultSecretCacheTTL = time.Minute
 
 // resolveSettings materializes a settings subtree when the whole
 // subtree is a file/embed reference; inline settings pass through.
@@ -377,7 +391,8 @@ func logCleanup(ctx context.Context, values map[string]any, order []string) {
 // records it on the result.
 func (b *Builder) bindAgents(ctx context.Context, result *Result, doc Document) error {
 	for name, def := range doc.Agents {
-		instance, err := BindAgent(ctx, b.registry, result, b.loader, b.resolver, name, def)
+		instance, err := BindAgent(
+			ctx, b.registry, result, b.loader, result.resolver, result.secrets, name, def)
 		if err != nil {
 			return err
 		}
@@ -403,6 +418,7 @@ func BindAgent(
 	result *Result,
 	loader *resource.Loader,
 	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
 	name string,
 	def agent.Definition,
 ) (*agent.Agent, error) {
@@ -439,6 +455,7 @@ func BindAgent(
 		Settings: engineSettings,
 		Deps:     engineDeps,
 		Loader:   loader,
+		Secrets:  secrets,
 	})
 	if err != nil {
 		return fail(errdefs.Validationf("deploy: agent %q engine: %v", name, err))
@@ -452,28 +469,28 @@ func BindAgent(
 	constructed = append(constructed, engineContract)
 
 	prepare, err := buildHookList[agent.Preparer](
-		reg, loader, resolver, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotPreparer, def.Prepare)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, prepare)
 
 	observe, err := buildHookList[agent.Observer](
-		reg, loader, resolver, result, ctx, name, agent.HookSlotObserver, def.Observe)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotObserver, def.Observe)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, observe)
 
 	referees, err := buildHookList[agent.Referee](
-		reg, loader, resolver, result, ctx, name, agent.HookSlotReferee, def.Referees)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotReferee, def.Referees)
 	if err != nil {
 		return fail(err)
 	}
 	constructed = appendAny(constructed, referees)
 
 	commit, err := buildHookList[agent.Committer](
-		reg, loader, resolver, result, ctx, name, agent.HookSlotCommitter, def.Commit)
+		reg, loader, resolver, secrets, result, ctx, name, agent.HookSlotCommitter, def.Commit)
 	if err != nil {
 		return fail(err)
 	}
@@ -504,6 +521,7 @@ func buildHookList[T any](
 	reg *resource.Registry,
 	loader *resource.Loader,
 	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
 	result *Result,
 	ctx context.Context,
 	name, slot string,
@@ -542,6 +560,7 @@ func buildHookList[T any](
 			Settings: hookSettings,
 			Deps:     deps,
 			Loader:   loader,
+			Secrets:  secrets,
 		})
 		if err != nil {
 			return fail(errdefs.Validationf(
@@ -675,6 +694,11 @@ type Result struct {
 	order    []string
 	agents   map[string]*agent.Agent
 	detached map[string]struct{}
+	// resolver and secrets carry the effective expansion state from
+	// Build into Wire, so agent engine/hook settings expand with the
+	// same schemes (including ${secret:...}) and typed Secrets resolve.
+	resolver *resource.ReferenceResolver
+	secrets  *resource.SecretResolver
 }
 
 // Detach marks resource names as caller-owned: Result.Close will not

@@ -568,7 +568,7 @@ func TestBindAgentDoesNotMutateResult(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 
-	instance, err := deploy.BindAgent(context.Background(), reg, result, nil, nil, "a", agent.Definition{
+	instance, err := deploy.BindAgent(context.Background(), reg, result, nil, nil, nil, "a", agent.Definition{
 		Card:   agent.AgentCard{Name: "A"},
 		Engine: agent.EngineRef{Kind: "engine.test", Impl: "graph"},
 	})
@@ -596,7 +596,7 @@ func TestBindAgentRollsBackOnHookFailure(t *testing.T) {
 	}
 	defer func() { _ = result.Close() }()
 
-	_, err = deploy.BindAgent(context.Background(), reg, result, nil, nil, "a", agent.Definition{
+	_, err = deploy.BindAgent(context.Background(), reg, result, nil, nil, nil, "a", agent.Definition{
 		Card:    agent.AgentCard{Name: "A"},
 		Engine:  agent.EngineRef{Kind: "engine.test", Impl: "close"},
 		Observe: []agent.Hook{{Type: "close"}, {Type: "close"}},

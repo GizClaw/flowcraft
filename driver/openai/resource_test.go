@@ -11,8 +11,8 @@ import (
 
 func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	t.Setenv("OPENAI_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "openai",
 			"spec": {"organization": "org-1"},
 			"profiles": [{
@@ -20,8 +20,11 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 				"operations": ["generate", "embed"],
 				"secrets": {"api_key": "${env:OPENAI_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

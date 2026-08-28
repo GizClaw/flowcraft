@@ -40,8 +40,7 @@ func (deployFactory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
-	settings, err := resource.DecodeTyped[ResourceSettings](
-		ctx, in.Settings, resource.ExpandEnv())
+	settings, err := resource.DecodeTyped[ResourceSettings](ctx, in.Settings)
 	if err != nil {
 		return nil, fmt.Errorf("azure provider: decode settings: %w", err)
 	}
@@ -63,7 +62,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile, secrets)
+		material, err := newProfileMaterial(ctx, profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}

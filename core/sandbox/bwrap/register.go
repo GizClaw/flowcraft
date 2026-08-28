@@ -36,7 +36,7 @@ func (factory) Spec() resource.Spec {
 
 // New implements resource.Factory.
 func (factory) New(ctx context.Context, in resource.Input) (any, error) {
-	s, err := resource.DecodeTyped[settings](ctx, in.Settings, resource.ExpandEnv())
+	s, err := resource.DecodeTyped[settings](ctx, in.Settings)
 	if err != nil {
 		return nil, errdefs.Validationf("decode bwrap settings: %v", err)
 	}

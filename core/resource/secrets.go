@@ -135,7 +135,7 @@ func (r *SecretResolver) Scheme() Scheme {
 	return SchemeFunc{
 		SchemeName: "secret",
 		Fn: func(_ context.Context, ref string) (any, error) {
-			storeName, name := r.split(ref)
+			storeName, name := r.resolveRef(ref)
 			if storeName == "" {
 				return nil, errdefs.Validationf(
 					"resource settings expand: secret reference ${secret:%s} needs an explicit store or a default secret.Store",
@@ -178,15 +178,18 @@ func (r *SecretResolver) Resolve(ctx context.Context, storeName, name string) (s
 	return value, nil
 }
 
-// split parses "store.NAME" or "NAME" (default store).
-func (r *SecretResolver) split(ref string) (storeName, name string) {
-	storeName = r.defaultStore
-	name = ref
+// resolveRef parses "store.NAME" or "NAME" (default store). A dotted
+// ref whose prefix names a configured store is an explicit
+// store.NAME reference; otherwise the whole ref is the secret name in
+// the default store, so dotted names (docker/k8s file secrets like
+// "my.app.key") stay addressable via NAME-only refs.
+func (r *SecretResolver) resolveRef(ref string) (storeName, name string) {
 	if before, after, ok := strings.Cut(ref, "."); ok && strings.TrimSpace(before) != "" {
-		storeName = before
-		name = after
+		if _, exists := r.stores[before]; exists {
+			return before, after
+		}
 	}
-	return storeName, name
+	return r.defaultStore, ref
 }
 
 type secretCacheEntry struct {
@@ -213,10 +216,11 @@ func NewCachingSecretStore(inner SecretStore, ttl time.Duration) *CachingSecretS
 
 // Lookup implements SecretStore.
 func (c *CachingSecretStore) Lookup(ctx context.Context, name string) (string, bool, error) {
-	if c == nil || c.inner == nil || c.ttl <= 0 {
-		if c == nil || c.inner == nil {
-			return "", false, nil
-		}
+	if c == nil || c.inner == nil {
+		return "", false, errdefs.Validationf(
+			"resource secret: caching store has no inner store")
+	}
+	if c.ttl <= 0 {
 		return c.inner.Lookup(ctx, name)
 	}
 	now := time.Now()

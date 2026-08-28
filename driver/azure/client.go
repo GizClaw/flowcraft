@@ -22,7 +22,7 @@ type profileMaterial struct {
 	resolver *resource.SecretResolver
 }
 
-func newProfileMaterial(profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
 	material := profileMaterial{resolver: secrets}
 	for id := range profile.Secrets {
 		if id != SecretAPIKey {

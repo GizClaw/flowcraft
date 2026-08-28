@@ -66,6 +66,38 @@ func TestSecretSchemeNamedStore(t *testing.T) {
 	}
 }
 
+func TestSecretSchemeDottedNames(t *testing.T) {
+	resolver := NewSecretResolver(map[string]SecretStore{
+		"env": SecretStoreFunc{LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			if name == "my.app.key" {
+				return "dotted", true, nil
+			}
+			return "", false, nil
+		}},
+	}, "env")
+	// A dotted NAME-only ref whose prefix is not a configured store
+	// falls back to the default store with the whole ref as the name.
+	out, err := Expand(context.Background(),
+		[]byte(`{"root": "${secret:my.app.key}"}`),
+		WithResolver(NewResolver(resolver.Scheme())))
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	if string(out) != `{"root":{"store":"env","name":"my.app.key"}}` {
+		t.Fatalf("Expand = %s, want default-store dotted name", out)
+	}
+	// An explicit store keeps its prefix even with dotted names.
+	out, err = Expand(context.Background(),
+		[]byte(`{"root": "${secret:env.my.app.key}"}`),
+		WithResolver(NewResolver(resolver.Scheme())))
+	if err != nil {
+		t.Fatalf("Expand explicit: %v", err)
+	}
+	if string(out) != `{"root":{"store":"env","name":"my.app.key"}}` {
+		t.Fatalf("Expand explicit = %s, want named-store dotted name", out)
+	}
+}
+
 func TestSecretExpansionErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -220,5 +252,56 @@ func TestCachingSecretStoreHits(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls = %d, want 1 with cache hits", calls)
+	}
+}
+
+func TestCachingSecretStoreNegativeCache(t *testing.T) {
+	var calls int
+	inner := SecretStoreFunc{
+		LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			calls++
+			return "", false, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, time.Hour)
+	for i := 0; i < 3; i++ {
+		if _, found, err := cached.Lookup(context.Background(), "missing"); err != nil || found {
+			t.Fatalf("Lookup %d = (%v, %v), want not found", i, found, err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1 with negative cache hits", calls)
+	}
+}
+
+func TestCachingSecretStoreExpiry(t *testing.T) {
+	var calls int
+	inner := SecretStoreFunc{
+		LookupFn: func(_ context.Context, name string) (string, bool, error) {
+			calls++
+			return "value", true, nil
+		},
+	}
+	cached := NewCachingSecretStore(inner, 10*time.Millisecond)
+	if _, found, err := cached.Lookup(context.Background(), "x"); err != nil || !found {
+		t.Fatalf("Lookup = (%v, %v)", found, err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, found, err := cached.Lookup(context.Background(), "x"); err != nil || !found {
+		t.Fatalf("Lookup after TTL = (%v, %v)", found, err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2 after TTL expiry", calls)
+	}
+}
+
+func TestCachingSecretStoreNilInnerErrors(t *testing.T) {
+	var cached *CachingSecretStore
+	if _, found, err := cached.Lookup(context.Background(), "x"); err == nil || found {
+		t.Fatalf("nil store Lookup = (%v, %v), want error", found, err)
+	}
+	cached = NewCachingSecretStore(nil, time.Minute)
+	if _, found, err := cached.Lookup(context.Background(), "x"); err == nil || found {
+		t.Fatalf("nil inner Lookup = (%v, %v), want error", found, err)
 	}
 }

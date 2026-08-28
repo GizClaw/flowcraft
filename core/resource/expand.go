@@ -296,6 +296,13 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error)
 		// reference wins: "\${" emits a literal "${" and the scan
 		// continues after it.
 		if escStart >= 0 && (refStart < 0 || escStart < refStart) {
+			// Strictness mirrors real references: an escaped "${" must
+			// still be a well-formed reference shape with a closing
+			// brace.
+			if closeRel := strings.Index(rest[escStart+2:], "}"); closeRel < 0 {
+				return "", errdefs.Validationf(
+					"resource settings expand: unterminated escaped reference in %q", s)
+			}
 			builder.WriteString(rest[:escStart])
 			builder.WriteString("${")
 			rest = rest[escStart+3:]

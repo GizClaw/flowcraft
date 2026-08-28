@@ -140,9 +140,14 @@ func TestFactoryExpandsSettingsRefs(t *testing.T) {
 		{"home ref", "${home:ws}", filepath.Join(home, "ws")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			expanded, err := resource.Expand(context.Background(),
+				[]byte(`{"root": "`+tc.root+`"}`),
+				resource.ExpandEnv(), resource.ExpandHome(), resource.ExpandBase(base))
+			if err != nil {
+				t.Fatalf("Expand: %v", err)
+			}
 			value, err := factory.New(context.Background(), resource.Input{
-				Settings: []byte(`{"root": "` + tc.root + `"}`),
-				Loader:   resource.NewLoader(resource.WithBaseDir(base)),
+				Settings: expanded,
 			})
 			if err != nil {
 				t.Fatalf("New: %v", err)
@@ -163,12 +168,6 @@ func TestFactoryExpandsSettingsRefs(t *testing.T) {
 }
 
 func TestFactoryExpansionErrors(t *testing.T) {
-	reg := resource.NewRegistry()
-	if err := workspace.Register(reg); err != nil {
-		t.Fatal(err)
-	}
-	factory, _ := reg.Lookup("workspace.Workspace", "local")
-
 	for _, tc := range []struct {
 		name     string
 		settings string
@@ -178,11 +177,11 @@ func TestFactoryExpansionErrors(t *testing.T) {
 		{"base without base dir", `{"root": "${base}"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := factory.New(context.Background(), resource.Input{
-				Settings: []byte(tc.settings),
-			})
+			_, err := resource.Expand(context.Background(),
+				[]byte(tc.settings),
+				resource.ExpandEnv(), resource.ExpandHome(), resource.ExpandBase(""))
 			if !errdefs.IsValidation(err) {
-				t.Fatalf("New error = %v, want validation error", err)
+				t.Fatalf("Expand error = %v, want validation error", err)
 			}
 		})
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -76,12 +77,16 @@ func (f expandEngineFactory) Spec() resource.Spec {
 
 func (f expandEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
 	var settings struct {
-		Root string `json:"root"`
+		Root resource.Secret `json:"root"`
 	}
 	if err := resource.DecodeSettings(context.Background(), &settings, in.Settings); err != nil {
 		return nil, err
 	}
-	*f.records = append(*f.records, settings.Root)
+	root, err := settings.Root.Resolve(context.Background(), in.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	*f.records = append(*f.records, root)
 	return expandEngine{}, nil
 }
 
@@ -99,12 +104,16 @@ func (f expandHookFactory) Spec() resource.Spec {
 
 func (f expandHookFactory) New(_ context.Context, in resource.Input) (any, error) {
 	var settings struct {
-		Root string `json:"root"`
+		Root resource.Secret `json:"root"`
 	}
 	if err := resource.DecodeSettings(context.Background(), &settings, in.Settings); err != nil {
 		return nil, err
 	}
-	*f.records = append(*f.records, settings.Root)
+	root, err := settings.Root.Resolve(context.Background(), in.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	*f.records = append(*f.records, root)
 	return &expandHook{}, nil
 }
 
@@ -452,4 +461,113 @@ func TestBuilderFileSecretStore(t *testing.T) {
 	if len(records) != 1 || records[0] != "tok-file|" {
 		t.Fatalf("decoded settings = %v, want file-backed secret", records)
 	}
+}
+
+func TestBuilderSecretSchemeInEngineAndHookSettings(t *testing.T) {
+	t.Setenv("SECRET_TEST_ENGINE", "engine-secret")
+	t.Setenv("SECRET_TEST_HOOK", "hook-secret")
+	var records []string
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	reg.MustRegister(expandEngineFactory{records: &records})
+	reg.MustRegister(expandHookFactory{records: &records})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.env": {
+				Kind: secret.ResourceKind, Impl: "env",
+				Settings: json.RawMessage(`{"id": "env", "default": true}`),
+			},
+		},
+		Agents: map[string]agent.Definition{
+			"a": {
+				Card: agent.AgentCard{Name: "A"},
+				Engine: agent.EngineRef{
+					Kind:     "engine.test",
+					Impl:     "expand-record",
+					Settings: json.RawMessage(`{"root": "${secret:SECRET_TEST_ENGINE}"}`),
+				},
+				Observe: []agent.Hook{{
+					Type:     "expand-record",
+					Settings: json.RawMessage(`{"root": "${secret:env.SECRET_TEST_HOOK}"}`),
+				}},
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Deploy(context.Background(), doc); err != nil {
+		t.Fatalf("Deploy: %v", err)
+	}
+	joined := strings.Join(records, ",")
+	if !strings.Contains(joined, "engine-secret") || !strings.Contains(joined, "hook-secret") {
+		t.Fatalf("decoded settings = %v, want engine + hook secrets resolved", records)
+	}
+}
+
+type countingSecretStore struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (c *countingSecretStore) Lookup(context.Context, string) (string, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return "counted", true, nil
+}
+
+func (c *countingSecretStore) DefaultSecretStore() bool { return false }
+
+type countingSecretFactory struct{ store *countingSecretStore }
+
+func (f countingSecretFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: secret.ResourceKind, Impl: "count"}
+}
+
+func (f countingSecretFactory) New(context.Context, resource.Input) (any, error) {
+	return f.store, nil
+}
+
+func TestBuilderSecretCacheTTL(t *testing.T) {
+	build := func(t *testing.T, opts ...deploy.BuilderOption) *countingSecretStore {
+		t.Helper()
+		store := &countingSecretStore{}
+		reg := resource.NewRegistry()
+		reg.MustRegister(countingSecretFactory{store: store})
+		reg.MustRegister(expandRecorderFactory{
+			kind: "expand.test", impl: "record", records: &[]string{},
+		})
+		doc := deploy.Document{
+			Version: "v1",
+			Resources: resource.Resources{
+				"count": {Kind: secret.ResourceKind, Impl: "count"},
+				"a": {
+					Kind: "expand.test", Impl: "record",
+					Settings: json.RawMessage(`{"root": "${secret:count.x}"}`),
+				},
+				"b": {
+					Kind: "expand.test", Impl: "record",
+					Settings: json.RawMessage(`{"root": "${secret:count.x}"}`),
+				},
+			},
+		}
+		if _, err := deploy.NewBuilder(reg, opts...).Build(context.Background(), doc); err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		return store
+	}
+
+	t.Run("default cache hits", func(t *testing.T) {
+		store := build(t)
+		if store.calls != 1 {
+			t.Fatalf("store calls = %d, want 1 with default cache", store.calls)
+		}
+	})
+	t.Run("cache disabled", func(t *testing.T) {
+		store := build(t, deploy.WithSecretCacheTTL(-1))
+		if store.calls != 2 {
+			t.Fatalf("store calls = %d, want 2 with cache disabled", store.calls)
+		}
+	})
 }

@@ -44,7 +44,11 @@ schemes are enabled by default; a custom `resource.ReferenceResolver` can be
 injected with `deploy.WithResolver` to add application-specific schemes.
 Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
 reference fails the build. A literal `${` is written as `\${...}`, matching
-the graph's `${board.*}` escaping convention.
+the graph's `${board.*}` escaping convention — **every** literal `${` in any
+settings subtree must be escaped, and a leading `~` / `~/...` expands to the
+user home directory. Content materialized from `{file: ...}` / `{embed: ...}`
+references is expanded the same way. Deployments that previously relied on
+literal `${...}` text or `~` paths must escape/quote them after this change.
 
 ## Secret stores
 

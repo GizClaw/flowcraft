@@ -13,8 +13,8 @@ import (
 
 func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 	t.Setenv("DEEPSEEK_TEST_KEY", "sk-test")
-	value, err := Factory().New(context.Background(), resource.Input{
-		Settings: json.RawMessage(`{
+	settings, err := resource.Expand(context.Background(),
+		json.RawMessage(`{
 			"id": "deepseek",
 			"spec": {"api": "chat"},
 			"profiles": [{
@@ -22,8 +22,11 @@ func TestResourceFactoryBuildsProviderWithEnvSecret(t *testing.T) {
 				"operations": ["generate"],
 				"secrets": {"api_key": "${env:DEEPSEEK_TEST_KEY}"}
 			}]
-		}`),
-	})
+		}`), resource.ExpandEnv())
+	if err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+	value, err := Factory().New(context.Background(), resource.Input{Settings: settings})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

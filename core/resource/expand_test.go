@@ -161,6 +161,13 @@ func TestExpandEscapedReference(t *testing.T) {
 	}
 }
 
+func TestExpandEscapedReferenceRequiresClosingBrace(t *testing.T) {
+	if _, err := Expand(context.Background(),
+		[]byte(`{"a": "\\${env:NOPE"}`), ExpandEnv()); !errdefs.IsValidation(err) {
+		t.Fatalf("error = %v, want validation for unterminated escaped reference", err)
+	}
+}
+
 func TestExpandCustomScheme(t *testing.T) {
 	resolver := NewResolver(SchemeFunc{
 		SchemeName: "cfg",
