@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.1.35` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.0` - 2026-08-28
+
+### Changed
+
+- feat(core): pluggable settings reference expansion, declarative secret stores, and a unified reference grammar — resource.Scheme/ReferenceResolver open ${scheme:path[:default]} expansion (env/base/home/secret built in, \${...} escaping, strict errors, did-you-mean hints for dotted scheme typos), the deploy builder centralizes expansion across resources/engines/hooks with an all-open env/home/base default (breaking behavior: every literal ${ must be escaped as \${, a leading ~ expands to the user home directory, and {file:}/{embed:} content is expanded too), secret.Store resources (env/file impls) feed a lazy ${secret:NAME}/${secret:store.NAME} scheme with TTL caching and <secret> redaction, resource.Secret carries literals or refs resolved at request time, driver profile secrets migrate to typed values, and agent board references join the unified grammar (breaking: ${board:user.name} replaces ${board.user.name}); breaking API: Expand/DecodeSettings/DecodeTyped/DecodeConfig/ParseSpec/BindAgent gain context parameters
 
 ## `core/v0.1.35` - 2026-08-28
 
