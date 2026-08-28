@@ -240,6 +240,41 @@ func TestBuilderEscapeAndCustomScheme(t *testing.T) {
 	}
 }
 
+func TestBuilderCustomResolverKeepsBuiltinSchemes(t *testing.T) {
+	t.Setenv("EXPAND_TEST_ROOT", "/srv/flowcraft")
+	var records []string
+	reg := resource.NewRegistry()
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &records,
+	})
+	resolver := resource.NewResolver(resource.SchemeFunc{
+		SchemeName: "cfg",
+		Fn: func(_ context.Context, ref string) (any, error) {
+			if ref == "x" {
+				return "cfg-value", nil
+			}
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref)
+		},
+	})
+	builder := deploy.NewBuilder(reg, deploy.WithResolver(resolver))
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(
+					`{"root": "${env:EXPAND_TEST_ROOT}", "name": "${cfg:x}"}`),
+			},
+		},
+	}
+	if _, err := builder.Build(context.Background(), doc); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(records) != 1 || records[0] != "/srv/flowcraft|cfg-value" {
+		t.Fatalf("decoded settings = %v, want builtin env + custom cfg merged", records)
+	}
+}
+
 func TestBuilderExpansionIsStrict(t *testing.T) {
 	reg := resource.NewRegistry()
 	reg.MustRegister(expandRecorderFactory{

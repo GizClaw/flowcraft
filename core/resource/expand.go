@@ -85,6 +85,24 @@ func (r *ReferenceResolver) WithScheme(s Scheme) *ReferenceResolver {
 	return merged
 }
 
+// Merge returns a resolver carrying every scheme of r overlaid by
+// other's schemes (other wins on name collisions). Neither receiver is
+// mutated.
+func (r *ReferenceResolver) Merge(other *ReferenceResolver) *ReferenceResolver {
+	merged := NewResolver()
+	if r != nil {
+		for name, existing := range r.schemes {
+			merged.schemes[name] = existing
+		}
+	}
+	if other != nil {
+		for name, overlay := range other.schemes {
+			merged.schemes[name] = overlay
+		}
+	}
+	return merged
+}
+
 // EnvScheme resolves ${env:NAME} through lookup. A missing variable is
 // an error.
 func EnvScheme(lookup func(string) (string, bool)) Scheme {

@@ -39,11 +39,12 @@ func WithLoader(loader *resource.Loader) BuilderOption {
 	return func(b *Builder) { b.loader = loader }
 }
 
-// WithResolver supplies the reference resolver used to expand inline
+// WithResolver adds custom schemes to the expansion used for inline
 // ${scheme:ref} strings in every settings subtree (resources, agent
-// engine, agent hooks) before a factory decodes them. When unset, the
-// builder uses an all-open default resolver: env + home, plus base when
-// the loader declares a base directory.
+// engine, agent hooks) before a factory decodes them. The custom
+// schemes are merged on top of the all-open default resolver (env +
+// home, plus base when the loader declares a base directory); a custom
+// scheme with the same name overrides the built-in one.
 func WithResolver(resolver *resource.ReferenceResolver) BuilderOption {
 	return func(b *Builder) { b.resolver = resolver }
 }
@@ -224,24 +225,25 @@ func (b *Builder) buildSecretStores(
 }
 
 // effectiveResolver returns the expansion resolver for the main build
-// pass: the builder's injected resolver (or the all-open default), plus
-// the ${secret:...} scheme assembled from the built stores (each wrapped
-// in a TTL cache for per-request resolution). The second return is the
-// resolver handed to factories for lazy Secret.Resolve calls.
+// pass: the all-open default resolver merged with the builder's
+// injected schemes, plus the ${secret:...} scheme assembled from the
+// built stores (each wrapped in a TTL cache for per-request
+// resolution). The second return is the resolver handed to factories
+// for lazy Secret.Resolve calls.
 func (b *Builder) effectiveResolver(
 	stores map[string]resource.SecretStore,
 	defaultStore string,
 ) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
-	base := b.resolver
-	if base == nil {
-		schemes := []resource.Scheme{
-			resource.EnvScheme(os.LookupEnv),
-			resource.HomeScheme(),
-		}
-		if b.loader != nil && b.loader.BaseDir() != "" {
-			schemes = append(schemes, resource.BaseScheme(b.loader.BaseDir()))
-		}
-		base = resource.NewResolver(schemes...)
+	schemes := []resource.Scheme{
+		resource.EnvScheme(os.LookupEnv),
+		resource.HomeScheme(),
+	}
+	if b.loader != nil && b.loader.BaseDir() != "" {
+		schemes = append(schemes, resource.BaseScheme(b.loader.BaseDir()))
+	}
+	base := resource.NewResolver(schemes...)
+	if b.resolver != nil {
+		base = base.Merge(b.resolver)
 	}
 	if len(stores) == 0 {
 		return base, nil, nil

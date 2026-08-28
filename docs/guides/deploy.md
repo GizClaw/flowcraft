@@ -41,7 +41,8 @@ decodes them. Supported schemes are `${env:NAME}` (missing variable fails the
 build), `${base}` / `${base:rel}` (rooted at the deployment document's base
 dir), and `${home}` / `${home:rel}` (plus the `~` / `~/...` shorthand). All
 schemes are enabled by default; a custom `resource.ReferenceResolver` can be
-injected with `deploy.WithResolver` to add application-specific schemes.
+injected with `deploy.WithResolver` to add application-specific schemes on
+top of the defaults (a same-named custom scheme overrides the built-in one).
 Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
 reference fails the build. A literal `${` is written as `\${...}`, matching
 the graph's `${board.*}` escaping convention — **every** literal `${` in any
