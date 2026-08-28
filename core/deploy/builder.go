@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -84,12 +85,12 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	// Secret stores are built first: their settings never reference
 	// secrets, and once assembled they feed the ${secret:...} scheme
 	// every other resource's expansion uses.
-	stores, err := b.buildSecretStores(ctx, doc, order, values, b.resolver)
+	stores, defaultStore, err := b.buildSecretStores(ctx, doc, order, values, b.resolver)
 	if err != nil {
 		logCleanup(ctx, values, order)
 		return nil, err
 	}
-	resolver, err := b.effectiveResolver(stores)
+	resolver, secrets, err := b.effectiveResolver(stores, defaultStore)
 	if err != nil {
 		logCleanup(ctx, values, order)
 		return nil, err
@@ -98,7 +99,7 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		if _, prebuilt := values[name]; prebuilt {
 			continue
 		}
-		value, err := b.buildResource(ctx, name, doc.Resources[name], values, resolver)
+		value, err := b.buildResource(ctx, name, doc.Resources[name], values, resolver, secrets)
 		if err != nil {
 			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
@@ -123,6 +124,7 @@ func (b *Builder) buildResource(
 	res resource.Resource,
 	values map[string]any,
 	resolver *resource.ReferenceResolver,
+	secrets *resource.SecretResolver,
 ) (any, error) {
 	factory, ok := b.registry.Lookup(res.Kind, res.Impl)
 	if !ok {
@@ -153,6 +155,7 @@ func (b *Builder) buildResource(
 		Settings: settings,
 		Deps:     deps,
 		Loader:   b.loader,
+		Secrets:  secrets,
 	})
 }
 
@@ -167,21 +170,22 @@ func (b *Builder) buildSecretStores(
 	order []string,
 	values map[string]any,
 	resolver *resource.ReferenceResolver,
-) (map[string]resource.SecretStore, error) {
+) (map[string]resource.SecretStore, string, error) {
 	stores := make(map[string]resource.SecretStore)
 	ids := make(map[string]string)
+	defaultStore := ""
 	for _, name := range order {
 		res := doc.Resources[name]
 		if res.Kind != secret.ResourceKind {
 			continue
 		}
-		value, err := b.buildResource(ctx, name, res, values, resolver)
+		value, err := b.buildResource(ctx, name, res, values, resolver, nil)
 		if err != nil {
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+			return nil, "", errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
 		store, ok := value.(resource.SecretStore)
 		if !ok {
-			return nil, errdefs.Validationf(
+			return nil, "", errdefs.Validationf(
 				"deploy: resource %q: %s/%s did not produce a secret store",
 				name, res.Kind, res.Impl)
 		}
@@ -190,24 +194,34 @@ func (b *Builder) buildSecretStores(
 			id = m.SecretStoreID()
 		}
 		if previous, exists := ids[id]; exists {
-			return nil, errdefs.Validationf(
+			return nil, "", errdefs.Validationf(
 				"deploy: duplicate secret store id %q for resources %q and %q",
 				id, previous, name)
+		}
+		if store.DefaultSecretStore() {
+			if defaultStore != "" {
+				return nil, "", errdefs.Validationf(
+					"deploy: more than one default secret store: %q and %q",
+					defaultStore, id)
+			}
+			defaultStore = id
 		}
 		values[name] = value
 		ids[id] = name
 		stores[id] = store
 	}
-	return stores, nil
+	return stores, defaultStore, nil
 }
 
 // effectiveResolver returns the expansion resolver for the main build
 // pass: the builder's injected resolver (or the all-open default), plus
-// the ${secret:...} scheme assembled from the built stores. At most one
-// store may declare itself the default.
+// the ${secret:...} scheme assembled from the built stores (each wrapped
+// in a TTL cache for per-request resolution). The second return is the
+// resolver handed to factories for lazy Secret.Resolve calls.
 func (b *Builder) effectiveResolver(
 	stores map[string]resource.SecretStore,
-) (*resource.ReferenceResolver, error) {
+	defaultStore string,
+) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
 	base := b.resolver
 	if base == nil {
 		schemes := []resource.Scheme{
@@ -220,22 +234,19 @@ func (b *Builder) effectiveResolver(
 		base = resource.NewResolver(schemes...)
 	}
 	if len(stores) == 0 {
-		return base, nil
+		return base, nil, nil
 	}
-	defaultStore := ""
-	for name, store := range stores {
-		if !store.DefaultSecretStore() {
-			continue
-		}
-		if defaultStore != "" {
-			return nil, errdefs.Validationf(
-				"deploy: more than one default secret store: %q and %q",
-				defaultStore, name)
-		}
-		defaultStore = name
+	cached := make(map[string]resource.SecretStore, len(stores))
+	for id, store := range stores {
+		cached[id] = resource.NewCachingSecretStore(store, secretCacheTTL)
 	}
-	return base.WithScheme(resource.NewSecretScheme(stores, defaultStore)), nil
+	secrets := resource.NewSecretResolver(cached, defaultStore)
+	return base.WithScheme(secrets.Scheme()), secrets, nil
 }
+
+// secretCacheTTL bounds how long lazy secret lookups reuse a cached
+// value before hitting the backend again.
+const secretCacheTTL = time.Minute
 
 // resolveSettings materializes a settings subtree when the whole
 // subtree is a file/embed reference; inline settings pass through.

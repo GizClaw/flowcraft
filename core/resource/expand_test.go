@@ -164,7 +164,7 @@ func TestExpandEscapedReference(t *testing.T) {
 func TestExpandCustomScheme(t *testing.T) {
 	resolver := NewResolver(SchemeFunc{
 		SchemeName: "cfg",
-		Fn: func(_ context.Context, ref string) (string, error) {
+		Fn: func(_ context.Context, ref string) (any, error) {
 			if ref == "x" {
 				return "value-x", nil
 			}

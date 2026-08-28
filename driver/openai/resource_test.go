@@ -56,19 +56,21 @@ func TestResourceSettingsHTTPRetriesFromEnv(t *testing.T) {
 	}
 }
 
-func TestResourceFactoryRejectsMissingIDAndSecret(t *testing.T) {
+func TestResourceFactoryRequiresID(t *testing.T) {
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{"profiles":[]}`),
 	}); err == nil {
 		t.Fatal("New accepted settings without id")
 	}
+	// A profile without api_key builds fine: missing keys surface at
+	// request time (lazy secret resolution), not at deploy time.
 	if _, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "openai",
 			"profiles": [{"id": "default"}]
 		}`),
-	}); err == nil {
-		t.Fatal("New accepted a profile without api_key")
+	}); err != nil {
+		t.Fatalf("New rejected a profile without api_key: %v", err)
 	}
 }
 

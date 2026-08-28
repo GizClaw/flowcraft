@@ -36,15 +36,23 @@ func (f expandRecorderFactory) Spec() resource.Spec {
 	}
 }
 
-func (f expandRecorderFactory) New(_ context.Context, in resource.Input) (any, error) {
+func (f expandRecorderFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	var settings struct {
-		Root string `json:"root"`
-		Name string `json:"name"`
+		Root resource.Secret `json:"root"`
+		Name resource.Secret `json:"name"`
 	}
-	if err := resource.DecodeSettings(context.Background(), &settings, in.Settings); err != nil {
+	if err := resource.DecodeSettings(ctx, &settings, in.Settings); err != nil {
 		return nil, err
 	}
-	*f.records = append(*f.records, settings.Root+"|"+settings.Name)
+	root, err := settings.Root.Resolve(ctx, in.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	name, err := settings.Name.Resolve(ctx, in.Secrets)
+	if err != nil {
+		return nil, err
+	}
+	*f.records = append(*f.records, root+"|"+name)
 	return &expandRecorder{}, nil
 }
 
@@ -197,7 +205,7 @@ func TestBuilderEscapeAndCustomScheme(t *testing.T) {
 	})
 	resolver := resource.NewResolver(resource.SchemeFunc{
 		SchemeName: "cfg",
-		Fn: func(_ context.Context, ref string) (string, error) {
+		Fn: func(_ context.Context, ref string) (any, error) {
 			if ref == "x" {
 				return "cfg-value", nil
 			}

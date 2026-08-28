@@ -11,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}

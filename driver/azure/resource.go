@@ -22,10 +22,10 @@ type ResourceSettings struct {
 
 // ProfileSettings is one credential profile.
 type ProfileSettings struct {
-	ID         string                `json:"id,omitempty"`
-	Operations []inference.Operation `json:"operations,omitempty"`
-	Secrets    map[string]string     `json:"secrets,omitempty"`
-	Spec       json.RawMessage       `json:"spec,omitempty"`
+	ID         string                     `json:"id,omitempty"`
+	Operations []inference.Operation      `json:"operations,omitempty"`
+	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
+	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
 
 type deployFactory struct{}
@@ -48,7 +48,7 @@ func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	if settings.ID == "" {
 		return nil, fmt.Errorf("azure provider: settings.id is required")
 	}
-	return buildProvider(ctx, settings)
+	return buildProvider(ctx, settings, in.Secrets)
 }
 
 // Register adds the Azure provider factory to r.
@@ -56,14 +56,14 @@ func Register(r *resource.Registry) error {
 	return r.Register(deployFactory{})
 }
 
-func buildProvider(ctx context.Context, settings ResourceSettings) (inference.ProviderDefinition, error) {
+func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {
 	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(profile)
+		material, err := newProfileMaterial(profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}
@@ -112,7 +112,7 @@ func openersFor(
 	profiles map[string]profileMaterial,
 	id inference.ModelID,
 ) inference.Openers {
-	open := func(profile string) (*clients, error) {
+	open := func(ctx context.Context, profile string) (*clients, error) {
 		material, ok := profiles[profile]
 		if !ok {
 			return nil, fmt.Errorf(
@@ -121,16 +121,16 @@ func openersFor(
 				profile,
 			)
 		}
-		return material.newClients(spec), nil
+		return material.newClients(ctx, spec)
 	}
 	switch entry.kind {
 	case kindGenerate:
 		return inference.Openers{
 			Generate: func(
-				_ context.Context,
+				ctx context.Context,
 				ref inference.ModelRef,
 			) (inference.GenerateOperations, error) {
-				cls, err := open(ref.Profile)
+				cls, err := open(ctx, ref.Profile)
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
@@ -140,10 +140,10 @@ func openersFor(
 	case kindEmbed:
 		return inference.Openers{
 			Embed: func(
-				_ context.Context,
+				ctx context.Context,
 				ref inference.ModelRef,
 			) (inference.EmbedDriver, error) {
-				cls, err := open(ref.Profile)
+				cls, err := open(ctx, ref.Profile)
 				if err != nil {
 					return nil, err
 				}
@@ -153,10 +153,10 @@ func openersFor(
 	case kindImage:
 		return inference.Openers{
 			Generate: func(
-				_ context.Context,
+				ctx context.Context,
 				ref inference.ModelRef,
 			) (inference.GenerateOperations, error) {
-				cls, err := open(ref.Profile)
+				cls, err := open(ctx, ref.Profile)
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
@@ -166,10 +166,10 @@ func openersFor(
 	case kindTTS:
 		return inference.Openers{
 			Generate: func(
-				_ context.Context,
+				ctx context.Context,
 				ref inference.ModelRef,
 			) (inference.GenerateOperations, error) {
-				cls, err := open(ref.Profile)
+				cls, err := open(ctx, ref.Profile)
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}

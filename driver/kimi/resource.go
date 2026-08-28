@@ -22,10 +22,10 @@ type ResourceSettings struct {
 
 // ProfileSettings is one credential profile.
 type ProfileSettings struct {
-	ID         string                `json:"id,omitempty"`
-	Operations []inference.Operation `json:"operations,omitempty"`
-	Secrets    map[string]string     `json:"secrets,omitempty"`
-	Spec       json.RawMessage       `json:"spec,omitempty"`
+	ID         string                     `json:"id,omitempty"`
+	Operations []inference.Operation      `json:"operations,omitempty"`
+	Secrets    map[string]resource.Secret `json:"secrets,omitempty"`
+	Spec       json.RawMessage            `json:"spec,omitempty"`
 }
 
 type deployFactory struct{}
@@ -48,7 +48,7 @@ func (deployFactory) New(ctx context.Context, in resource.Input) (any, error) {
 	if settings.ID == "" {
 		return nil, fmt.Errorf("kimi provider: settings.id is required")
 	}
-	return buildProvider(ctx, settings)
+	return buildProvider(ctx, settings, in.Secrets)
 }
 
 // Register adds the Kimi provider factory to r.
@@ -56,7 +56,7 @@ func Register(r *resource.Registry) error {
 	return r.Register(deployFactory{})
 }
 
-func buildProvider(ctx context.Context, settings ResourceSettings) (inference.ProviderDefinition, error) {
+func buildProvider(ctx context.Context, settings ResourceSettings, secrets *resource.SecretResolver) (inference.ProviderDefinition, error) {
 	spec, err := decodeSpec(ctx, settings.Spec)
 	if err != nil {
 		return inference.ProviderDefinition{}, err
@@ -67,7 +67,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings) (inference.Pr
 	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
-		material, err := newProfileMaterial(ctx, profile)
+		material, err := newProfileMaterial(ctx, profile, secrets)
 		if err != nil {
 			return inference.ProviderDefinition{}, err
 		}
@@ -116,18 +116,18 @@ func openersFor(
 	profiles map[string]profileMaterial,
 	id inference.ModelID,
 ) inference.Openers {
-	open := func(profile string) (*kimiClient, error) {
+	open := func(ctx context.Context, profile string) (*kimiClient, error) {
 		material, exists := profiles[profile]
 		if !exists {
 			return nil, fmt.Errorf("kimi: model %q references undeclared profile %q", id.Name, profile)
 		}
-		return material.newClient(spec), nil
+		return material.newClient(ctx, spec)
 	}
 
 	var openers inference.Openers
 	if entry.kind == kindGenerate {
-		openers.Generate = func(_ context.Context, model inference.ModelRef) (inference.GenerateOperations, error) {
-			client, err := open(model.Profile)
+		openers.Generate = func(ctx context.Context, model inference.ModelRef) (inference.GenerateOperations, error) {
+			client, err := open(ctx, model.Profile)
 			if err != nil {
 				return inference.GenerateOperations{}, err
 			}

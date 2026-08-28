@@ -11,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 func simpleTextRequest(text string) inference.GenerateRequest {
@@ -41,7 +42,13 @@ func testClients(t *testing.T, server *httptest.Server) *clients {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	return profileMaterial{apiKey: "test-key"}.newClients(spec)
+	cls, err := profileMaterial{
+		apiKey: resource.LiteralSecret("test-key"),
+	}.newClients(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("newClients: %v", err)
+	}
+	return cls
 }
 
 // capturedServer records the last request body and delegates response

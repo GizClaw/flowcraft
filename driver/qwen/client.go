@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
 
@@ -26,8 +27,9 @@ const (
 
 // profileMaterial is one credential profile after secret resolution.
 type profileMaterial struct {
-	spec   ProfileSpec
-	apiKey string
+	spec     ProfileSpec
+	apiKey   resource.Secret
+	resolver *resource.SecretResolver
 }
 
 // dashClient speaks to DashScope's native generation API: JSON over HTTP
@@ -38,12 +40,12 @@ type dashClient struct {
 	base string
 }
 
-func newProfileMaterial(ctx context.Context, profile ProfileSettings) (profileMaterial, error) {
+func newProfileMaterial(ctx context.Context, profile ProfileSettings, secrets *resource.SecretResolver) (profileMaterial, error) {
 	spec, err := decodeProfileSpec(ctx, profile.Spec)
 	if err != nil {
 		return profileMaterial{}, err
 	}
-	material := profileMaterial{spec: spec}
+	material := profileMaterial{spec: spec, resolver: secrets}
 	for name := range profile.Secrets {
 		if name != SecretAPIKey {
 			return profileMaterial{}, fmt.Errorf(
@@ -54,19 +56,20 @@ func newProfileMaterial(ctx context.Context, profile ProfileSettings) (profileMa
 		}
 	}
 	if secret, ok := profile.Secrets[SecretAPIKey]; ok {
-		material.apiKey = strings.TrimSpace(secret)
-	}
-	if material.apiKey == "" {
-		return profileMaterial{}, fmt.Errorf(
-			"qwen profile %q needs the %q secret",
-			profile.ID,
-			SecretAPIKey,
-		)
+		material.apiKey = secret
 	}
 	return material, nil
 }
 
-func (m profileMaterial) newClient(spec Spec) *dashClient {
+func (m profileMaterial) newClient(ctx context.Context, spec Spec) (*dashClient, error) {
+	apiKey, err := m.apiKey.Resolve(ctx, m.resolver)
+	if err != nil {
+		return nil, errdefs.Validationf("qwen profile: resolve api_key: %v", err)
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errdefs.Validationf("qwen profile needs the %q secret", SecretAPIKey)
+	}
 	options := []utils.Option{
 		utils.WithTimeout(10 * time.Minute),
 		utils.WithResponseHeaderTimeout(5 * time.Minute),
@@ -77,9 +80,9 @@ func (m profileMaterial) newClient(spec Spec) *dashClient {
 	}
 	return &dashClient{
 		http: utils.NewHttpClient(options...),
-		key:  m.apiKey,
+		key:  apiKey,
 		base: spec.apiBase(),
-	}
+	}, nil
 }
 
 // request posts one JSON payload; stream requests add the SSE header and

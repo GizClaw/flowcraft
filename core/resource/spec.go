@@ -124,6 +124,9 @@ type Input struct {
 	// is the deployment-level loader injected by the assembly layer;
 	// nil means source resolution is unavailable.
 	Loader *Loader
+	// Secrets is the assembled secret resolver for typed Secret
+	// values; nil when the deployment declares no secret stores.
+	Secrets *SecretResolver
 }
 
 // Dep returns the named dependency.

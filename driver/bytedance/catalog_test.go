@@ -11,7 +11,7 @@ import (
 )
 
 func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 }
 
 func TestCatalogPublishesCapabilities(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 }
 
 func TestCatalogDeclaresAudioInput(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"})
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "bytedance"}, nil)
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}

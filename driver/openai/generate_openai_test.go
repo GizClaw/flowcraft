@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/resource"
 
 	"github.com/openai/openai-go/v3/responses"
 )
@@ -78,7 +79,13 @@ func testClients(t *testing.T, server *httptest.Server) *clients {
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
 	}
-	return profileMaterial{apiKey: "test-key"}.newClients(spec)
+	cls, err := profileMaterial{
+		apiKey: resource.LiteralSecret("test-key"),
+	}.newClients(context.Background(), spec)
+	if err != nil {
+		t.Fatalf("newClients: %v", err)
+	}
+	return cls
 }
 
 func openaiModel(name string) inference.ModelRef {
@@ -201,16 +208,19 @@ func TestSpecValidation(t *testing.T) {
 
 func TestProfileMaterial(t *testing.T) {
 	t.Run("missing api key", func(t *testing.T) {
-		_, err := newProfileMaterial(context.Background(), ProfileSettings{ID: "default"})
-		if err == nil {
-			t.Fatal("newProfileMaterial succeeded without api_key")
+		material, err := newProfileMaterial(context.Background(), ProfileSettings{ID: "default"}, nil)
+		if err != nil {
+			t.Fatalf("newProfileMaterial: %v", err)
+		}
+		if _, err := material.newClients(context.Background(), Spec{}); err == nil {
+			t.Fatal("newClients succeeded without api_key")
 		}
 	})
 	t.Run("unknown secret", func(t *testing.T) {
 		_, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
-			Secrets: map[string]string{"access_key": "x"},
-		})
+			Secrets: map[string]resource.Secret{"access_key": resource.LiteralSecret("x")},
+		}, nil)
 		if err == nil {
 			t.Fatal("newProfileMaterial accepted an unknown secret")
 		}
@@ -218,13 +228,21 @@ func TestProfileMaterial(t *testing.T) {
 	t.Run("api key", func(t *testing.T) {
 		material, err := newProfileMaterial(context.Background(), ProfileSettings{
 			ID:      "default",
-			Secrets: map[string]string{SecretAPIKey: "sk-test\n"},
-		})
+			Secrets: map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test\n")},
+		}, nil)
 		if err != nil {
 			t.Fatalf("newProfileMaterial: %v", err)
 		}
-		if material.apiKey != "sk-test" {
-			t.Fatalf("apiKey = %q", material.apiKey)
+		if value, err := material.apiKey.Resolve(context.Background(), nil); err != nil ||
+			value != "sk-test\n" {
+			t.Fatalf("apiKey = %q, %v; want literal with newline intact", value, err)
+		}
+		cls, err := material.newClients(context.Background(), Spec{})
+		if err != nil {
+			t.Fatalf("newClients: %v", err)
+		}
+		if cls == nil {
+			t.Fatal("newClients returned nil")
 		}
 	})
 }
@@ -242,10 +260,10 @@ func TestFactoryBuild(t *testing.T) {
 		Profiles: []ProfileSettings{{
 			ID:         "default",
 			Operations: []inference.Operation{inference.OperationGenerate, inference.OperationEmbed},
-			Secrets:    map[string]string{SecretAPIKey: "sk-test"},
+			Secrets:    map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test")},
 		}},
 	}
-	provider, err := buildProvider(context.Background(), input)
+	provider, err := buildProvider(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -278,10 +296,10 @@ func TestFactoryCustomModelWebSearchCapability(t *testing.T) {
 		),
 		Profiles: []ProfileSettings{{
 			ID:      "default",
-			Secrets: map[string]string{SecretAPIKey: "sk-test"},
+			Secrets: map[string]resource.Secret{SecretAPIKey: resource.LiteralSecret("sk-test")},
 		}},
 	}
-	provider, err := buildProvider(context.Background(), input)
+	provider, err := buildProvider(context.Background(), input, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}

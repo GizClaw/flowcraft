@@ -78,8 +78,12 @@ resources:
   (falling back to the resource name).
 - The store prefix is everything before the first dot; the rest is the secret
   name.
-- Missing stores, missing secrets, or a NAME-only reference with no default
-  store fail the build. Secret values never appear in error messages.
+- Missing stores or a NAME-only reference with no default store fail the
+  build. Resolution is lazy: a `${secret:...}` reference decodes into a typed
+  `resource.Secret` that looks the value up at use time (cached per store for
+  one minute), so a missing secret surfaces at request time rather than at
+  deploy time. Secret values never appear in error messages, logs, or
+  serialized settings — `resource.Secret` always renders as `<secret>`.
 - Backends are ordinary resource factories: the built-in `env` store reads
   environment variables and the built-in `file` store reads one file per
   secret under a configured `base` directory (escaping the base is rejected,

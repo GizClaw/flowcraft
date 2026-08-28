@@ -14,22 +14,27 @@ import (
 // extension point for new settings reference sources: implement Scheme,
 // build a [ReferenceResolver], and enable it with [WithResolver] (or the
 // deployment-level WithResolver on core/deploy.Builder).
+//
+// Resolve returns the materialized value. A plain string replaces the
+// reference inline; any other JSON-serializable value (e.g. the
+// {"store":..., "name":...} marker produced for lazy secret refs) is
+// spliced into the settings tree in its place.
 type Scheme interface {
 	// Name is the scheme prefix inside ${scheme:ref}.
 	Name() string
 	// Resolve materializes ref. ref is the text after "scheme:" with
 	// surrounding whitespace trimmed. An unresolvable ref is an error.
-	Resolve(ctx context.Context, ref string) (string, error)
+	Resolve(ctx context.Context, ref string) (any, error)
 }
 
 // SchemeFunc adapts a function to [Scheme].
 type SchemeFunc struct {
 	SchemeName string
-	Fn         func(context.Context, string) (string, error)
+	Fn         func(context.Context, string) (any, error)
 }
 
 func (s SchemeFunc) Name() string { return s.SchemeName }
-func (s SchemeFunc) Resolve(ctx context.Context, ref string) (string, error) {
+func (s SchemeFunc) Resolve(ctx context.Context, ref string) (any, error) {
 	return s.Fn(ctx, ref)
 }
 
@@ -52,7 +57,7 @@ func NewResolver(schemes ...Scheme) *ReferenceResolver {
 
 // Resolve materializes one reference. scheme must be registered; a
 // missing scheme is a validation error naming the scheme.
-func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (string, error) {
+func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (any, error) {
 	if r == nil {
 		return "", errdefs.Validationf(
 			"resource settings expand: reference scheme %q is not enabled", scheme)
@@ -85,7 +90,7 @@ func (r *ReferenceResolver) WithScheme(s Scheme) *ReferenceResolver {
 func EnvScheme(lookup func(string) (string, bool)) Scheme {
 	return SchemeFunc{
 		SchemeName: "env",
-		Fn: func(_ context.Context, ref string) (string, error) {
+		Fn: func(_ context.Context, ref string) (any, error) {
 			name := strings.TrimSpace(ref)
 			value, ok := lookup(name)
 			if !ok {
@@ -103,7 +108,7 @@ func EnvScheme(lookup func(string) (string, bool)) Scheme {
 func BaseScheme(dir string) Scheme {
 	return SchemeFunc{
 		SchemeName: "base",
-		Fn: func(_ context.Context, ref string) (string, error) {
+		Fn: func(_ context.Context, ref string) (any, error) {
 			if dir == "" {
 				return "", errdefs.Validationf(
 					"resource settings expand: base reference requires a base directory")
@@ -121,7 +126,7 @@ func BaseScheme(dir string) Scheme {
 func HomeScheme() Scheme {
 	return SchemeFunc{
 		SchemeName: "home",
-		Fn: func(_ context.Context, ref string) (string, error) {
+		Fn: func(_ context.Context, ref string) (any, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return "", errdefs.Validationf(
@@ -155,7 +160,7 @@ func (c *expandConfig) hasScheme(name string) bool {
 	return c != nil && c.resolver != nil && c.resolver.schemes[name] != nil
 }
 
-func (c *expandConfig) resolve(ctx context.Context, scheme, ref string) (string, error) {
+func (c *expandConfig) resolve(ctx context.Context, scheme, ref string) (any, error) {
 	if c == nil || c.resolver == nil {
 		return "", errdefs.Validationf(
 			"resource settings expand: reference scheme %q is not enabled", scheme)
@@ -267,12 +272,19 @@ func expandValue(ctx context.Context, value any, cfg *expandConfig) (any, error)
 	}
 }
 
-func expandString(ctx context.Context, s string, cfg *expandConfig) (string, error) {
+func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error) {
 	if cfg.hasScheme("home") && (s == "~" || strings.HasPrefix(s, "~/")) {
 		return cfg.resolve(ctx, "home", strings.TrimPrefix(s, "~"))
 	}
 	if !strings.Contains(s, "${") {
 		return s, nil
+	}
+	// A string that is exactly one reference splices the resolved
+	// value as-is, so schemes may return structured (non-string)
+	// values such as lazy secret refs.
+	if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") &&
+		strings.Count(s, "${") == 1 && strings.Count(s, "}") == 1 {
+		return expandExpr(ctx, s[2:len(s)-1], cfg)
 	}
 
 	var builder strings.Builder
@@ -304,13 +316,19 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (string, err
 		if err != nil {
 			return "", err
 		}
-		builder.WriteString(replacement)
+		replacementString, ok := replacement.(string)
+		if !ok {
+			return "", errdefs.Validationf(
+				"resource settings expand: reference ${%s} cannot be embedded in text",
+				rest[refStart+2:end])
+		}
+		builder.WriteString(replacementString)
 		rest = rest[end+1:]
 	}
 	return builder.String(), nil
 }
 
-func expandExpr(ctx context.Context, expr string, cfg *expandConfig) (string, error) {
+func expandExpr(ctx context.Context, expr string, cfg *expandConfig) (any, error) {
 	scheme, ref, _ := strings.Cut(expr, ":")
 	scheme = strings.TrimSpace(scheme)
 	if scheme == "" {
