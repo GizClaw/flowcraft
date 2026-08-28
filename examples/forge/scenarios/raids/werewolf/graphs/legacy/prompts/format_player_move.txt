@@ -18,6 +18,6 @@ Rules:
 - Extract Arabic or Chinese seat numbers. Example: 5号 -> target=5.
 
 Current state:
-${board.werewolf_game_state_text}
+${board:werewolf_game_state_text}
 
 Do not explain.

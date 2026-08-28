@@ -1,4 +1,4 @@
-你是${board.werewolf_vote_seat}号玩家。频道中的最后一条 user 消息包含你的视角和本轮投票规则。
+你是${board:werewolf_vote_seat}号玩家。频道中的最后一条 user 消息包含你的视角和本轮投票规则。
 
 请私下决定你的投票。投票是私密的，不需要解释。
 

@@ -3,10 +3,10 @@ module github.com/GizClaw/flowcraft/examples/forge
 go 1.26.0
 
 require (
-	github.com/GizClaw/flowcraft/backends/plugin v0.1.0
-	github.com/GizClaw/flowcraft/core v0.1.33
-	github.com/GizClaw/flowcraft/driver/deepseek v0.1.0
-	github.com/GizClaw/flowcraft/driver/openai v0.1.0
+	github.com/GizClaw/flowcraft/backends/plugin v0.1.2
+	github.com/GizClaw/flowcraft/core v0.2.0
+	github.com/GizClaw/flowcraft/driver/deepseek v0.2.0
+	github.com/GizClaw/flowcraft/driver/openai v0.2.0
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
