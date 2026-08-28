@@ -87,3 +87,43 @@ resource envelope, and only the host build can construct these factories.
 
 Engine dependencies must match the graph engine's declared dep names:
 `inference`, `router`, `tools`, `workspace`, `sandbox`, `script_runtime`.
+
+### Inference routing
+
+Declare an `inference.Router` over the assembly and wire it into the graph
+engine so inference nodes can omit `model`:
+
+```yaml
+resources:
+  infer:
+    kind: inference.Assembly
+    impl: unified
+    deps: {provider: provider}
+  router:
+    kind: inference.Router
+    impl: unified
+    deps: {target: infer}
+    settings:
+      generate:
+        - tier: fast
+          targets:
+            - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+              score: {speed: 0.9}
+        - tier: capable
+          targets:
+            - model: {id: {provider: openai, name: gpt-5.2}}
+              score: {quality: 0.95}
+
+agents:
+  assistant:
+    card: {name: Assistant}
+    engine:
+      kind: agent.Engine
+      impl: graph
+      deps: {inference: infer, router: router}
+```
+
+Prefer routing for production deployments: the router selects per request,
+filters by declared capabilities, and applies tier fallback, retry, and
+circuit-breaker policy. Pin `model` in inference nodes only when the router
+is not wired (tests, single-target demos).

@@ -10,7 +10,9 @@ builds the deployment with its own factory registry, or at runtime.
    `agent.deps` — **validator** (unknown field).
 2. `runtime.event_bus` is required when `runtime` exists — **validator**.
 3. `sessions.resume: true` requires `checkpoint_store` — **validator**.
-4. Graph model refs must use `model: {id: {provider, name}}` — host build.
+4. Graph model refs must use `model: {id: {provider, name}}`; prefer
+   omitting `model` and wiring the `inference.Router` so selection runs
+   per request — host build.
 5. Script nodes need `runtime` and `source`; `runtime` must match the bound
    script runtime — host build.
 6. Resource settings file/embed refs must be the whole settings subtree —
@@ -40,6 +42,11 @@ builds the deployment with its own factory registry, or at runtime.
 14. `UnregisterAgent` waits for active turns; a stuck engine times out
     (`WithRemoveTimeout` / ctx deadline) and the agent is left registered
     — retry, don't assume removal happened — runtime API.
+15. Hardcoding `model` in inference nodes bypasses the router: no tier
+    fallback, capability filtering, retry, or circuit-breaker policy
+    applies. Wire `inference.Router` into the graph engine and omit
+    `model` unless the deployment intentionally pins a target — host
+    build/runtime.
 
 ## Error map
 

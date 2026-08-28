@@ -76,18 +76,27 @@ appended to the same channel. The node never executes tool calls — a
 
 | Config field | Meaning |
 | --- | --- |
-| `model` | explicit target `{id: {provider, name}, profile?}`; absent defers to the wired router |
-| `model_hint` | per-call router preference: `provider/name` or a bare name (e.g. `${board.model}`); ignored when `model` is set |
+| `model` | explicit target `{id: {provider, name}, profile?}`; omit in favor of the wired router — pin only for tests or single-target demos |
+| `model_hint` | per-call router preference: `provider/name` or a bare name (e.g. `${board:model}`); ignored when `model` is set |
 | `messages_channel` | board channel holding the conversation; empty means the main channel (`__main_channel`) |
 | `system_prompt` | prepended system message when the context does not start with one (may be `{file: ...}` / `{embed: ...}`) |
 | `output_key` / `usage_key` / `tool_pending_key` | board vars receiving the message / usage / tool-pending flag |
-| `undefined_tool_recovery` | `{enabled, max_per_run}`: replay undefined-tool rejections as in-conversation feedback; disabled by default |
-| `recover_pending_key` / `recover_count_key` | board vars receiving the recovery marker / per-run recovery counter |
+| `undefined_tool_recovery` | `{enabled, max_per_run}`: store undefined-tool rejections as board feedback (never in the transcript); disabled by default |
+| `recover_pending_key` / `recover_count_key` / `recover_feedback_key` | board vars receiving the recovery marker / per-run counter / feedback text (feedback defaults to `__recover_feedback.<node id>`) |
 | `stream` | stream deltas incrementally; the board still gets one assembled message |
 | `tools` / `all_tools` | named catalog tools, or the catalog's entire visible set |
 | `tool_choice` | constrain when/which tools are called |
 | `intent` | canonical execution envelope `{text, image, audio, video}` with per-modality controls (see below) |
 | `extensions` | provider knobs `{provider, id, fields}` |
+
+**Model selection: prefer the router.** Inference nodes should omit
+`model` and rely on the wired `inference.Router`: the router's policy
+(tiers of `{model, score}` targets plus retry / circuit-breaker) selects
+per request, filters targets by their declared capabilities, and falls back
+across tiers. Hardcoding `model` pins the node to one provider/model and
+bypasses routing — keep it only for tests or single-target deployments.
+Use `model_hint` (e.g. `${board:model}` from user input) for per-call
+preferences against the router.
 
 `intent` is authoritative and covers every generation modality: text
 controls (`response`, `max_output_tokens`, `tools`, `tool_choice`,
@@ -106,11 +115,13 @@ strict decode rejects them; put them under `intent.text` instead.
 never bypasses routing and falls back to the default policy when the hint
 is unknown, malformed, or ambiguous. A response naming tools absent from
 the exposed definitions fails with a distinguishable `undefined_tool`
-error; with `undefined_tool_recovery` enabled the node replays the
-rejection as feedback (assistant `tool_call` paired with a `tool` result),
-sets `recover_pending_key` (clearing `tool_pending_key`), and returns
-success. The graph must route the recovered round back to inference —
-never to a tool node, which would execute the replayed call.
+error; with `undefined_tool_recovery` enabled the node stores a user-role
+feedback text under `recover_feedback_key` (defaulting to the reserved
+per-node `__recover_feedback.<node id>` var), sets `recover_pending_key`
+(clearing `tool_pending_key`), and returns success. The feedback never
+enters the messages channel; the recovered round consumes the stored text
+as its current input. The graph must route the recovered round back to
+inference — never to a tool node, which would execute the rejected call.
 `max_per_run` defaults to 2; past it the rejection fails the node.
 
 ### `tool` — batch tool execution
@@ -220,7 +231,7 @@ agents:
   "name": "greeter",
   "entry": "hello",
   "nodes": [
-    {"id": "hello", "type": "greet", "config": {"name": "${board.user}"}}
+    {"id": "hello", "type": "greet", "config": {"name": "${board:user}"}}
   ],
   "edges": []
 }
