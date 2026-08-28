@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/secret"
 )
 
 // expandRecorder captures the settings its factory decoded, so tests can
@@ -25,7 +26,13 @@ type expandRecorderFactory struct {
 }
 
 func (f expandRecorderFactory) Spec() resource.Spec {
-	return resource.Spec{Kind: resource.Kind(f.kind), Impl: f.impl}
+	return resource.Spec{
+		Kind: resource.Kind(f.kind),
+		Impl: f.impl,
+		Deps: []resource.DepSpec{{
+			Name: "secrets", Type: "secret.Store", Required: false,
+		}},
+	}
 }
 
 func (f expandRecorderFactory) New(_ context.Context, in resource.Input) (any, error) {
@@ -258,5 +265,147 @@ func TestBuilderMissingEnvFailsExpansion(t *testing.T) {
 	}
 	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); !errdefs.IsValidation(err) {
 		t.Fatalf("Build error = %v, want validation for missing env", err)
+	}
+}
+
+// customSecretStore is an externally registered secret.Store impl:
+// downstream backends plug in without touching core.
+type customSecretStore struct{}
+
+func (customSecretStore) Lookup(_ context.Context, name string) (string, bool, error) {
+	if name == "external" {
+		return "external-value", true, nil
+	}
+	return "", false, nil
+}
+
+func (customSecretStore) DefaultSecretStore() bool { return false }
+
+type customSecretFactory struct{}
+
+func (customSecretFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: secret.ResourceKind, Impl: "custom"}
+}
+
+func (customSecretFactory) New(context.Context, resource.Input) (any, error) {
+	return customSecretStore{}, nil
+}
+
+func TestBuilderSecretStoresFeedSecretScheme(t *testing.T) {
+	t.Setenv("SECRET_TEST_TOKEN", "tok-123")
+	var records []string
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &records,
+	})
+	reg.MustRegister(customSecretFactory{})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.env": {
+				Kind: secret.ResourceKind, Impl: "env",
+				Settings: json.RawMessage(`{"default": true}`),
+			},
+			"custom": {
+				Kind: secret.ResourceKind, Impl: "custom",
+			},
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(`{
+					"root": "${secret:SECRET_TEST_TOKEN}",
+					"name": "${secret:custom.external}"
+				}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(records) != 1 || records[0] != "tok-123|external-value" {
+		t.Fatalf("decoded settings = %v, want default + named store secrets", records)
+	}
+}
+
+func TestBuilderSecretStoreAsDependency(t *testing.T) {
+	t.Setenv("SECRET_TEST_TOKEN", "tok-123")
+	var records []string
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &records,
+	})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.env": {
+				Kind: secret.ResourceKind, Impl: "env",
+				Settings: json.RawMessage(`{"id": "env"}`),
+			},
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Deps: resource.Deps{"secrets": "secret.env"},
+				Settings: json.RawMessage(
+					`{"root": "${secret:env.SECRET_TEST_TOKEN}"}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(records) != 1 || records[0] != "tok-123|" {
+		t.Fatalf("decoded settings = %v, want named store secret", records)
+	}
+}
+
+func TestBuilderRejectsMultipleDefaultSecretStores(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.one": {
+				Kind: secret.ResourceKind, Impl: "env",
+				Settings: json.RawMessage(`{"default": true}`),
+			},
+			"secret.two": {
+				Kind: secret.ResourceKind, Impl: "env",
+				Settings: json.RawMessage(`{"default": true}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); !errdefs.IsValidation(err) {
+		t.Fatalf("Build error = %v, want validation for multiple defaults", err)
+	}
+}
+
+func TestBuilderSecretReferenceWithoutDefaultStoreFails(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &[]string{},
+	})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.env": {
+				Kind: secret.ResourceKind, Impl: "env",
+			},
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(`{"root": "${secret:SECRET_TEST_TOKEN}"}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); !errdefs.IsValidation(err) {
+		t.Fatalf("Build error = %v, want validation for NAME-only ref without default", err)
 	}
 }

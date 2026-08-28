@@ -46,6 +46,44 @@ Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
 reference fails the build. A literal `${` is written as `\${...}`, matching
 the graph's `${board.*}` escaping convention.
 
+## Secret stores
+
+Credentials can live in declarative `secret.Store` resources instead of
+plaintext settings:
+
+```yaml
+resources:
+  secret.env:
+    kind: secret.Store
+    impl: env
+    settings:
+      id: env
+      default: true
+
+  provider:
+    kind: inference.Provider
+    impl: deepseek
+    settings:
+      profiles:
+        - secrets:
+            api_key: ${secret:DEEPSEEK_API_KEY}   # default store
+            # api_key: ${secret:env.DEEPSEEK_API_KEY}  # explicit store
+```
+
+- Stores are built ahead of every other resource, then assembled into the
+  `${secret:...}` scheme, so any resource can reference them (and may declare
+  them as deps for explicit ordering).
+- `${secret:NAME}` resolves through the default store — exactly one store may
+  declare `default: true`. `${secret:ID.NAME}` addresses a store by its `id`
+  (falling back to the resource name).
+- The store prefix is everything before the first dot; the rest is the secret
+  name.
+- Missing stores, missing secrets, or a NAME-only reference with no default
+  store fail the build. Secret values never appear in error messages.
+- Backends are ordinary resource factories: the built-in `env` store reads
+  environment variables, and external backends (keychain, vault, ...) register
+  their own `secret.Store` impls with zero core changes.
+
 agents:
   assistant:
     card:

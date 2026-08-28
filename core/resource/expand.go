@@ -65,6 +65,21 @@ func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (st
 	return s.Resolve(ctx, ref)
 }
 
+// WithScheme returns a resolver carrying every scheme of r plus s.
+// s replaces a same-named scheme already present.
+func (r *ReferenceResolver) WithScheme(s Scheme) *ReferenceResolver {
+	merged := NewResolver()
+	if r != nil {
+		for name, existing := range r.schemes {
+			merged.schemes[name] = existing
+		}
+	}
+	if s != nil && s.Name() != "" {
+		merged.schemes[s.Name()] = s
+	}
+	return merged
+}
+
 // EnvScheme resolves ${env:NAME} through lookup. A missing variable is
 // an error.
 func EnvScheme(lookup func(string) (string, bool)) Scheme {

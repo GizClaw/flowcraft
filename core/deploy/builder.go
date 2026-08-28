@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/secret"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
 )
@@ -80,45 +81,24 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	values := make(map[string]any, len(order))
-	resolver := b.resolver
+	// Secret stores are built first: their settings never reference
+	// secrets, and once assembled they feed the ${secret:...} scheme
+	// every other resource's expansion uses.
+	stores, err := b.buildSecretStores(ctx, doc, order, values, b.resolver)
+	if err != nil {
+		logCleanup(ctx, values, order)
+		return nil, err
+	}
+	resolver, err := b.effectiveResolver(stores)
+	if err != nil {
+		logCleanup(ctx, values, order)
+		return nil, err
+	}
 	for _, name := range order {
-		res := doc.Resources[name]
-		factory, ok := b.registry.Lookup(res.Kind, res.Impl)
-		if !ok {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf(
-				"deploy: resource %q: no factory for %s/%s",
-				name, res.Kind, res.Impl)
+		if _, prebuilt := values[name]; prebuilt {
+			continue
 		}
-		if err := validateDeps(factory, res.Deps); err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-		}
-		settings := res.Settings
-		if b.loader != nil {
-			settings, err = resolveSettings(ctx, b.loader, settings)
-			if err != nil {
-				logCleanup(ctx, values, order)
-				return nil, errdefs.Validationf(
-					"deploy: resource %q: %v", name, err)
-			}
-		}
-		settings, err = expandSettings(ctx, resolver, b.loader, settings)
-		if err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf(
-				"deploy: resource %q: %v", name, err)
-		}
-		deps, err := resolveDeps(values, res.Deps)
-		if err != nil {
-			logCleanup(ctx, values, order)
-			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
-		}
-		value, err := factory.New(ctx, resource.Input{
-			Settings: settings,
-			Deps:     deps,
-			Loader:   b.loader,
-		})
+		value, err := b.buildResource(ctx, name, doc.Resources[name], values, resolver)
 		if err != nil {
 			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
@@ -131,6 +111,130 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		order:  order,
 		agents: make(map[string]*agent.Agent, len(doc.Agents)),
 	}, nil
+}
+
+// buildResource constructs one resource value: loader materialization,
+// inline reference expansion, dependency resolution, and factory
+// invocation. Values already built (secret stores, earlier deps) are
+// read from values.
+func (b *Builder) buildResource(
+	ctx context.Context,
+	name string,
+	res resource.Resource,
+	values map[string]any,
+	resolver *resource.ReferenceResolver,
+) (any, error) {
+	factory, ok := b.registry.Lookup(res.Kind, res.Impl)
+	if !ok {
+		return nil, errdefs.Validationf(
+			"deploy: resource %q: no factory for %s/%s",
+			name, res.Kind, res.Impl)
+	}
+	if err := validateDeps(factory, res.Deps); err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	settings := res.Settings
+	var err error
+	if b.loader != nil {
+		settings, err = resolveSettings(ctx, b.loader, settings)
+		if err != nil {
+			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		}
+	}
+	settings, err = expandSettings(ctx, resolver, b.loader, settings)
+	if err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	deps, err := resolveDeps(values, res.Deps)
+	if err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	return factory.New(ctx, resource.Input{
+		Settings: settings,
+		Deps:     deps,
+		Loader:   b.loader,
+	})
+}
+
+// buildSecretStores constructs every secret.Store resource ahead of the
+// main build pass. Their own settings expand with the base resolver
+// (env/home/base only — stores cannot reference secrets), and the
+// built values are recorded in values so other resources can declare
+// them as deps.
+func (b *Builder) buildSecretStores(
+	ctx context.Context,
+	doc Document,
+	order []string,
+	values map[string]any,
+	resolver *resource.ReferenceResolver,
+) (map[string]resource.SecretStore, error) {
+	stores := make(map[string]resource.SecretStore)
+	ids := make(map[string]string)
+	for _, name := range order {
+		res := doc.Resources[name]
+		if res.Kind != secret.ResourceKind {
+			continue
+		}
+		value, err := b.buildResource(ctx, name, res, values, resolver)
+		if err != nil {
+			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+		}
+		store, ok := value.(resource.SecretStore)
+		if !ok {
+			return nil, errdefs.Validationf(
+				"deploy: resource %q: %s/%s did not produce a secret store",
+				name, res.Kind, res.Impl)
+		}
+		id := name
+		if m, ok := value.(resource.SecretStoreID); ok && m.SecretStoreID() != "" {
+			id = m.SecretStoreID()
+		}
+		if previous, exists := ids[id]; exists {
+			return nil, errdefs.Validationf(
+				"deploy: duplicate secret store id %q for resources %q and %q",
+				id, previous, name)
+		}
+		values[name] = value
+		ids[id] = name
+		stores[id] = store
+	}
+	return stores, nil
+}
+
+// effectiveResolver returns the expansion resolver for the main build
+// pass: the builder's injected resolver (or the all-open default), plus
+// the ${secret:...} scheme assembled from the built stores. At most one
+// store may declare itself the default.
+func (b *Builder) effectiveResolver(
+	stores map[string]resource.SecretStore,
+) (*resource.ReferenceResolver, error) {
+	base := b.resolver
+	if base == nil {
+		schemes := []resource.Scheme{
+			resource.EnvScheme(os.LookupEnv),
+			resource.HomeScheme(),
+		}
+		if b.loader != nil && b.loader.BaseDir() != "" {
+			schemes = append(schemes, resource.BaseScheme(b.loader.BaseDir()))
+		}
+		base = resource.NewResolver(schemes...)
+	}
+	if len(stores) == 0 {
+		return base, nil
+	}
+	defaultStore := ""
+	for name, store := range stores {
+		if !store.DefaultSecretStore() {
+			continue
+		}
+		if defaultStore != "" {
+			return nil, errdefs.Validationf(
+				"deploy: more than one default secret store: %q and %q",
+				defaultStore, name)
+		}
+		defaultStore = name
+	}
+	return base.WithScheme(resource.NewSecretScheme(stores, defaultStore)), nil
 }
 
 // resolveSettings materializes a settings subtree when the whole
