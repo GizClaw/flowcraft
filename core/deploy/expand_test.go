@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -407,5 +408,40 @@ func TestBuilderSecretReferenceWithoutDefaultStoreFails(t *testing.T) {
 	}
 	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); !errdefs.IsValidation(err) {
 		t.Fatalf("Build error = %v, want validation for NAME-only ref without default", err)
+	}
+}
+
+func TestBuilderFileSecretStore(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok-file\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var records []string
+	reg := resource.NewRegistry()
+	if err := secret.Register(reg); err != nil {
+		t.Fatalf("secret.Register: %v", err)
+	}
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &records,
+	})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"secret.files": {
+				Kind: secret.ResourceKind, Impl: "file",
+				Settings: json.RawMessage(
+					`{"id": "files", "base": "` + dir + `"}`),
+			},
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(`{"root": "${secret:files.token}"}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(records) != 1 || records[0] != "tok-file|" {
+		t.Fatalf("decoded settings = %v, want file-backed secret", records)
 	}
 }

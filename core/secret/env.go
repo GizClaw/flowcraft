@@ -48,5 +48,8 @@ func Register(r *resource.Registry) error {
 	if err := r.Register(envFactory{}); err != nil {
 		return err
 	}
+	if err := r.Register(fileFactory{}); err != nil {
+		return err
+	}
 	return nil
 }

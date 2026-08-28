@@ -81,8 +81,11 @@ resources:
 - Missing stores, missing secrets, or a NAME-only reference with no default
   store fail the build. Secret values never appear in error messages.
 - Backends are ordinary resource factories: the built-in `env` store reads
-  environment variables, and external backends (keychain, vault, ...) register
-  their own `secret.Store` impls with zero core changes.
+  environment variables and the built-in `file` store reads one file per
+  secret under a configured `base` directory (escaping the base is rejected,
+  trailing newlines are stripped, and file size is capped). External backends
+  (keychain, vault, ...) register their own `secret.Store` impls with zero
+  core changes.
 
 agents:
   assistant:
