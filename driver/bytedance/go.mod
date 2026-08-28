@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/bytedance
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.1.34
+	github.com/GizClaw/flowcraft/core v0.2.0
 	github.com/volcengine/volcengine-go-sdk v1.2.48
 	go.opentelemetry.io/otel/log v0.19.0
 )
