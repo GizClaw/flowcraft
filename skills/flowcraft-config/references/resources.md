@@ -27,9 +27,12 @@ profiles:
 ```
 
 Provider IDs and profile IDs must be identifiers. Secret values use the
-settings expansion syntax (`${env:NAME}` for an environment variable,
-`${base:rel}` / `~` / `${home:rel}` for paths); a missing variable fails
-the build. Model capabilities mirror the built-in catalog shape and are
+unified settings reference syntax (`${env:NAME}` for an environment
+variable, `${base:rel}` / `~` / `${home:rel}` for paths, `${secret:NAME}`
+or `${secret:store.NAME}` for declared `secret.Store` backends); a missing
+variable fails the build. The deploy builder expands every settings
+subtree with env/home/base enabled by default — literal `${` must be
+escaped as `\${...}`. Model capabilities mirror the built-in catalog shape and are
 validated by the driver; routing prefers targets whose declared outputs
 cover the request intent and skips declared-incompatible tiers. Provider
 drivers are registered by the host application from provider driver

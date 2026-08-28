@@ -27,8 +27,11 @@ the L2 structural validator and fix errors against the reference cards.
    app-registered — omit implementation examples; `core/memory` contracts
    and hooks are fine to use.
 4. **Write graph JSON.** Read [references/graph.md](references/graph.md).
-   Model refs must use the nested `id` form; script nodes need `runtime`
-   and `source`; wire edges back to the inference node after tool nodes.
+   Prefer routing: wire the `inference.Router` into the graph engine and
+   omit `model` in inference nodes; pin `model` only when no router is
+   wired. Model refs must use the nested `id` form; script nodes need
+   `runtime` and `source`; wire edges back to the inference node after
+   tool nodes.
 5. **Validate structurally with L2.** Run
    `skills/flowcraft-config/scripts/validate-config.sh <deployment-file>`
    (or the installed copy's script). The validator pins the FlowCraft

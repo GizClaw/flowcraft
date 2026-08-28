@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -75,7 +76,7 @@ func validateDeploy(data []byte) error {
 		return err
 	}
 	if doc.Runtime != nil {
-		if _, err := runtime.DecodeConfig(doc); err != nil {
+		if _, err := runtime.DecodeConfig(context.Background(), doc); err != nil {
 			return err
 		}
 	}
