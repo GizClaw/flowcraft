@@ -134,12 +134,13 @@ func NewSecretResolver(stores map[string]SecretStore, defaultStore string) *Secr
 func (r *SecretResolver) Scheme() Scheme {
 	return SchemeFunc{
 		SchemeName: "secret",
-		Fn: func(_ context.Context, ref string) (any, error) {
+		Fn: func(_ context.Context, ref Reference) (any, error) {
+			path := ref.Path
 			storeName, name := r.resolveRef(ref)
 			if storeName == "" {
 				return nil, errdefs.Validationf(
 					"resource settings expand: secret reference ${secret:%s} needs an explicit store or a default secret.Store",
-					ref)
+					path)
 			}
 			if _, ok := r.stores[storeName]; !ok {
 				return nil, errdefs.Validationf(
@@ -183,13 +184,13 @@ func (r *SecretResolver) Resolve(ctx context.Context, storeName, name string) (s
 // store.NAME reference; otherwise the whole ref is the secret name in
 // the default store, so dotted names (docker/k8s file secrets like
 // "my.app.key") stay addressable via NAME-only refs.
-func (r *SecretResolver) resolveRef(ref string) (storeName, name string) {
-	if before, after, ok := strings.Cut(ref, "."); ok && strings.TrimSpace(before) != "" {
+func (r *SecretResolver) resolveRef(ref Reference) (storeName, name string) {
+	if before, after, ok := strings.Cut(ref.Path, "."); ok && strings.TrimSpace(before) != "" {
 		if _, exists := r.stores[before]; exists {
 			return before, after
 		}
 	}
-	return r.defaultStore, ref
+	return r.defaultStore, ref.Path
 }
 
 type secretCacheEntry struct {

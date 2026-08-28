@@ -11,7 +11,7 @@
 // Existing bridges:
 //
 //   - board: direct read/write view of the engine board, with
-//     resolve/resolveString for ${board.<name>} interpolation
+//     resolve/resolveString for ${board:<name>} interpolation
 //
 //   - expr: boolean expression evaluation with the same interpolation
 //
@@ -52,15 +52,15 @@
 //
 // # Interpolation
 //
-// Config values that carry ${board.<path>} references are expanded by
+// Config values that carry ${board:<path>} references are expanded by
 // the graph kernel before the script node decodes, so scripts see
 // resolved values in their config global. Scripts can also expand
 // references dynamically through the board bridge's resolve (typed)
 // and resolveString (text) helpers. References support dot paths
-// (${board.user.name}), an optional default (${board.x:default}), and
+// (${board:user.name}), an optional default (${board:x:default}), and
 // fail with a validation error when the referenced variable is missing
 // and no default is given. Prefix a reference with a backslash
-// (\${board.x}) to emit it literally.
+// (\${board:x}) to emit it literally.
 //
 // # Env shape
 //

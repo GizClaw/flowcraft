@@ -214,11 +214,11 @@ func TestBuilderEscapeAndCustomScheme(t *testing.T) {
 	})
 	resolver := resource.NewResolver(resource.SchemeFunc{
 		SchemeName: "cfg",
-		Fn: func(_ context.Context, ref string) (any, error) {
-			if ref == "x" {
+		Fn: func(_ context.Context, ref resource.Reference) (any, error) {
+			if ref.Path == "x" {
 				return "cfg-value", nil
 			}
-			return "", errdefs.Validationf("cfg: unknown ref %q", ref)
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref.Path)
 		},
 	})
 	builder := deploy.NewBuilder(reg, deploy.WithResolver(resolver))
@@ -249,11 +249,11 @@ func TestBuilderCustomResolverKeepsBuiltinSchemes(t *testing.T) {
 	})
 	resolver := resource.NewResolver(resource.SchemeFunc{
 		SchemeName: "cfg",
-		Fn: func(_ context.Context, ref string) (any, error) {
-			if ref == "x" {
+		Fn: func(_ context.Context, ref resource.Reference) (any, error) {
+			if ref.Path == "x" {
 				return "cfg-value", nil
 			}
-			return "", errdefs.Validationf("cfg: unknown ref %q", ref)
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref.Path)
 		},
 	})
 	builder := deploy.NewBuilder(reg, deploy.WithResolver(resolver))
@@ -287,8 +287,8 @@ func TestBuilderDefersBoardReferences(t *testing.T) {
 			"a": {
 				Kind: "expand.test", Impl: "record",
 				Settings: json.RawMessage(`{
-					"root": "${board.user.name}",
-					"name": "\\${board.x}"
+					"root": "${board:user.name}",
+					"name": "\\${board:x}"
 				}`),
 			},
 		},
@@ -296,7 +296,7 @@ func TestBuilderDefersBoardReferences(t *testing.T) {
 	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(records) != 1 || records[0] != "${board.user.name}|\\${board.x}" {
+	if len(records) != 1 || records[0] != "${board:user.name}|\\${board:x}" {
 		t.Fatalf("decoded settings = %v, want board refs deferred", records)
 	}
 }

@@ -10,7 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
 
-// Scheme resolves one ${scheme:ref} reference kind. Schemes are the
+// Scheme resolves one ${scheme:path} reference kind. Schemes are the
 // extension point for new settings reference sources: implement Scheme,
 // build a [ReferenceResolver], and enable it with [WithResolver] (or the
 // deployment-level WithResolver on core/deploy.Builder).
@@ -18,31 +18,41 @@ import (
 // Resolve returns the materialized value. A plain string replaces the
 // reference inline; any other JSON-serializable value (e.g. the
 // {"store":..., "name":...} marker produced for lazy secret refs) is
-// spliced into the settings tree in its place.
+// spliced into the settings tree in its place. The path is opaque to
+// the parser and scheme-interpreted.
 type Scheme interface {
-	// Name is the scheme prefix inside ${scheme:ref}.
+	// Name is the scheme prefix inside ${scheme:path}.
 	Name() string
-	// Resolve materializes ref. ref is the text after "scheme:" with
-	// surrounding whitespace trimmed. An unresolvable ref is an error.
-	Resolve(ctx context.Context, ref string) (any, error)
+	// Resolve materializes r. The standard escape (a backslash before
+	// "${") is handled by the expansion wrapper before Resolve runs
+	// unless the scheme opts in via [EscapedResolver].
+	Resolve(ctx context.Context, r Reference) (any, error)
+}
+
+// EscapedResolver is optionally implemented by schemes that handle
+// escaped references themselves (e.g. deferred namespaces that keep
+// their backslash for a later phase). Schemes without it get the
+// standard escape: the literal "${...}" text with the backslash
+// dropped.
+type EscapedResolver interface {
+	ResolveEscaped(ctx context.Context, r Reference) (any, error)
 }
 
 // SchemeFunc adapts a function to [Scheme].
 type SchemeFunc struct {
 	SchemeName string
-	Fn         func(context.Context, string) (any, error)
+	Fn         func(context.Context, Reference) (any, error)
 }
 
 func (s SchemeFunc) Name() string { return s.SchemeName }
-func (s SchemeFunc) Resolve(ctx context.Context, ref string) (any, error) {
-	return s.Fn(ctx, ref)
+func (s SchemeFunc) Resolve(ctx context.Context, r Reference) (any, error) {
+	return s.Fn(ctx, r)
 }
 
-// ReferenceResolver resolves ${scheme:ref} references by scheme name.
+// ReferenceResolver resolves ${scheme:path} references by scheme name.
 // Unknown or disabled schemes are validation errors; see [Expand].
 type ReferenceResolver struct {
-	schemes  map[string]Scheme
-	deferred []string
+	schemes map[string]Scheme
 }
 
 // NewResolver returns a resolver holding the given schemes.
@@ -56,51 +66,24 @@ func NewResolver(schemes ...Scheme) *ReferenceResolver {
 	return r
 }
 
-// Resolve materializes one reference. scheme must be registered; a
-// missing scheme is a validation error naming the scheme.
-func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (any, error) {
+// Resolve dispatches one reference to its scheme.
+func (r *ReferenceResolver) Resolve(ctx context.Context, ref Reference) (any, error) {
 	if r == nil {
-		return "", errdefs.Validationf(
-			"resource settings expand: reference scheme %q is not enabled", scheme)
+		return nil, errdefs.Validationf(
+			"resource settings expand: reference scheme %q is not enabled", ref.Scheme)
 	}
-	s, ok := r.schemes[scheme]
+	s, ok := r.schemes[ref.Scheme]
 	if !ok {
-		return "", errdefs.Validationf(
-			"resource settings expand: reference scheme %q is not enabled", scheme)
+		return nil, errdefs.Validationf(
+			"resource settings expand: reference scheme %q is not enabled", ref.Scheme)
+	}
+	if ref.Escaped {
+		if es, ok := s.(EscapedResolver); ok {
+			return es.ResolveEscaped(ctx, ref)
+		}
+		return ref.Literal(), nil
 	}
 	return s.Resolve(ctx, ref)
-}
-
-// WithDeferred returns a resolver that additionally passes references
-// under the given prefixes through expansion verbatim (both the plain
-// ${prefix...} form and the \${prefix...} escaped form keep their
-// backslash). Deferred namespaces belong to a downstream resolver that
-// runs later — e.g. the agent board's ${board.*} references, which are
-// resolved against agent.Board at execution time.
-func (r *ReferenceResolver) WithDeferred(prefixes ...string) *ReferenceResolver {
-	merged := NewResolver()
-	if r != nil {
-		for name, existing := range r.schemes {
-			merged.schemes[name] = existing
-		}
-		merged.deferred = append(merged.deferred, r.deferred...)
-	}
-	merged.deferred = append(merged.deferred, prefixes...)
-	return merged
-}
-
-// isDeferred reports whether expr (the text inside ${...}) belongs to a
-// deferred namespace.
-func (r *ReferenceResolver) isDeferred(expr string) bool {
-	if r == nil {
-		return false
-	}
-	for _, prefix := range r.deferred {
-		if expr == prefix || strings.HasPrefix(expr, prefix+".") {
-			return true
-		}
-	}
-	return false
 }
 
 // WithScheme returns a resolver carrying every scheme of r plus s.
@@ -127,13 +110,11 @@ func (r *ReferenceResolver) Merge(other *ReferenceResolver) *ReferenceResolver {
 		for name, existing := range r.schemes {
 			merged.schemes[name] = existing
 		}
-		merged.deferred = append(merged.deferred, r.deferred...)
 	}
 	if other != nil {
 		for name, overlay := range other.schemes {
 			merged.schemes[name] = overlay
 		}
-		merged.deferred = append(merged.deferred, other.deferred...)
 	}
 	return merged
 }
@@ -143,8 +124,8 @@ func (r *ReferenceResolver) Merge(other *ReferenceResolver) *ReferenceResolver {
 func EnvScheme(lookup func(string) (string, bool)) Scheme {
 	return SchemeFunc{
 		SchemeName: "env",
-		Fn: func(_ context.Context, ref string) (any, error) {
-			name := strings.TrimSpace(ref)
+		Fn: func(_ context.Context, r Reference) (any, error) {
+			name := strings.TrimSpace(r.Path)
 			value, ok := lookup(name)
 			if !ok {
 				return "", errdefs.Validationf(
@@ -161,15 +142,15 @@ func EnvScheme(lookup func(string) (string, bool)) Scheme {
 func BaseScheme(dir string) Scheme {
 	return SchemeFunc{
 		SchemeName: "base",
-		Fn: func(_ context.Context, ref string) (any, error) {
+		Fn: func(_ context.Context, r Reference) (any, error) {
 			if dir == "" {
 				return "", errdefs.Validationf(
 					"resource settings expand: base reference requires a base directory")
 			}
-			if ref == "" {
+			if r.Path == "" {
 				return dir, nil
 			}
-			return filepath.Join(dir, ref), nil
+			return filepath.Join(dir, r.Path), nil
 		},
 	}
 }
@@ -179,16 +160,16 @@ func BaseScheme(dir string) Scheme {
 func HomeScheme() Scheme {
 	return SchemeFunc{
 		SchemeName: "home",
-		Fn: func(_ context.Context, ref string) (any, error) {
+		Fn: func(_ context.Context, r Reference) (any, error) {
 			home, err := os.UserHomeDir()
 			if err != nil {
 				return "", errdefs.Validationf(
 					"resource settings expand: home: %v", err)
 			}
-			if ref == "" {
+			if r.Path == "" {
 				return home, nil
 			}
-			return filepath.Join(home, ref), nil
+			return filepath.Join(home, r.Path), nil
 		},
 	}
 }
@@ -209,27 +190,14 @@ func (c *expandConfig) add(schemes ...Scheme) {
 	}
 }
 
-func (c *expandConfig) addDeferred(prefixes ...string) {
-	if c.resolver == nil {
-		c.resolver = NewResolver()
-	}
-	c.resolver.deferred = append(c.resolver.deferred, prefixes...)
-}
-
 func (c *expandConfig) hasScheme(name string) bool {
 	return c != nil && c.resolver != nil && c.resolver.schemes[name] != nil
 }
 
-func (c *expandConfig) isDeferred(expr string) bool {
-	return c != nil && c.resolver != nil && c.resolver.isDeferred(expr)
-}
+type configResolver struct{ cfg *expandConfig }
 
-func (c *expandConfig) resolve(ctx context.Context, scheme, ref string) (any, error) {
-	if c == nil || c.resolver == nil {
-		return "", errdefs.Validationf(
-			"resource settings expand: reference scheme %q is not enabled", scheme)
-	}
-	return c.resolver.Resolve(ctx, scheme, ref)
+func (r configResolver) Resolve(ctx context.Context, ref Reference) (any, error) {
+	return r.cfg.resolver.Resolve(ctx, ref)
 }
 
 // ExpandOption configures scalar settings expansion.
@@ -242,7 +210,6 @@ func WithResolver(r *ReferenceResolver) ExpandOption {
 			for _, s := range r.schemes {
 				c.add(s)
 			}
-			c.addDeferred(r.deferred...)
 		}
 	}
 }
@@ -274,9 +241,10 @@ func ExpandHome() ExpandOption {
 // everywhere strings can appear (map values, array items). Without
 // options the input is returned unchanged. Expansion is strict: a
 // reference whose scheme is not enabled, an unknown scheme, a missing
-// env variable, a base reference without a base directory, or a
-// malformed "${" is an error. A literal "${" can be written as "\${";
-// the backslash is consumed and the reference is emitted verbatim.
+// env variable, a base reference without a base directory, a nested or
+// malformed reference, or an unterminated "${" is an error. A literal
+// "${" can be written as "\${"; the backslash is consumed and the
+// reference is emitted verbatim.
 func Expand(ctx context.Context, raw []byte, opts ...ExpandOption) (json.RawMessage, error) {
 	if len(opts) == 0 {
 		if len(raw) == 0 {
@@ -310,6 +278,21 @@ func Expand(ctx context.Context, raw []byte, opts ...ExpandOption) (json.RawMess
 	return out, nil
 }
 
+// expandString is the string-level entry for the config walk: it keeps
+// the "~" / "~/..." home shorthand, then delegates to [ExpandRefs].
+func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error) {
+	if cfg.hasScheme("home") && (s == "~" || strings.HasPrefix(s, "~/")) {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", errdefs.Validationf(
+				"resource settings expand: home: %v", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(s, "~")), nil
+	}
+	return ExpandRefs(ctx, s, configResolver{cfg: cfg})
+}
+
+// expandValue walks a decoded JSON value, expanding strings.
 func expandValue(ctx context.Context, value any, cfg *expandConfig) (any, error) {
 	switch v := value.(type) {
 	case string:
@@ -335,97 +318,4 @@ func expandValue(ctx context.Context, value any, cfg *expandConfig) (any, error)
 	default:
 		return value, nil
 	}
-}
-
-func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error) {
-	if cfg.hasScheme("home") && (s == "~" || strings.HasPrefix(s, "~/")) {
-		return cfg.resolve(ctx, "home", strings.TrimPrefix(s, "~"))
-	}
-	if !strings.Contains(s, "${") {
-		return s, nil
-	}
-	// A string that is exactly one reference splices the resolved
-	// value as-is, so schemes may return structured (non-string)
-	// values such as lazy secret refs.
-	if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") &&
-		strings.Count(s, "${") == 1 && strings.Count(s, "}") == 1 {
-		expr := s[2 : len(s)-1]
-		if cfg.isDeferred(expr) {
-			return s, nil
-		}
-		return expandExpr(ctx, expr, cfg)
-	}
-
-	var builder strings.Builder
-	rest := s
-	for {
-		refStart := strings.Index(rest, "${")
-		escStart := strings.Index(rest, `\${`)
-		// An escaped reference that starts at or before the next real
-		// reference wins: "\${" emits a literal "${" and the scan
-		// continues after it.
-		if escStart >= 0 && (refStart < 0 || escStart < refStart) {
-			// Strictness mirrors real references: an escaped "${" must
-			// still be a well-formed reference shape with a closing
-			// brace.
-			closeRel := strings.Index(rest[escStart+1:], "}")
-			if closeRel < 0 {
-				return "", errdefs.Validationf(
-					"resource settings expand: unterminated escaped reference in %q", s)
-			}
-			escEnd := escStart + 1 + closeRel
-			escExpr := rest[escStart+3 : escEnd]
-			if cfg.isDeferred(escExpr) {
-				// Deferred namespaces keep the whole escaped form
-				// (backslash included) for the downstream resolver.
-				builder.WriteString(rest[:escEnd+1])
-				rest = rest[escEnd+1:]
-				continue
-			}
-			builder.WriteString(rest[:escStart])
-			builder.WriteString("${")
-			rest = rest[escStart+3:]
-			continue
-		}
-		if refStart < 0 {
-			builder.WriteString(rest)
-			break
-		}
-		relativeEnd := strings.Index(rest[refStart:], "}")
-		if relativeEnd < 0 {
-			return "", errdefs.Validationf(
-				"resource settings expand: unterminated reference in %q", s)
-		}
-		end := refStart + relativeEnd
-		expr := rest[refStart+2 : end]
-		builder.WriteString(rest[:refStart])
-		if cfg.isDeferred(expr) {
-			builder.WriteString(rest[refStart : end+1])
-			rest = rest[end+1:]
-			continue
-		}
-		replacement, err := expandExpr(ctx, expr, cfg)
-		if err != nil {
-			return "", err
-		}
-		replacementString, ok := replacement.(string)
-		if !ok {
-			return "", errdefs.Validationf(
-				"resource settings expand: reference ${%s} cannot be embedded in text",
-				rest[refStart+2:end])
-		}
-		builder.WriteString(replacementString)
-		rest = rest[end+1:]
-	}
-	return builder.String(), nil
-}
-
-func expandExpr(ctx context.Context, expr string, cfg *expandConfig) (any, error) {
-	scheme, ref, _ := strings.Cut(expr, ":")
-	scheme = strings.TrimSpace(scheme)
-	if scheme == "" {
-		return "", errdefs.Validationf(
-			"resource settings expand: unknown reference ${%s}", expr)
-	}
-	return cfg.resolve(ctx, scheme, strings.TrimSpace(ref))
 }

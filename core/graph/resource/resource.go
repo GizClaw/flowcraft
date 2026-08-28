@@ -523,7 +523,7 @@ func scanInferenceConfig(raw json.RawMessage) (modelConfigured bool, staticTools
 		return modelConfigured, nil, true, nil
 	}
 	for _, name := range names {
-		if !strings.Contains(name, "${board.") {
+		if !strings.Contains(name, "${board:") {
 			staticTools = append(staticTools, name)
 		}
 	}

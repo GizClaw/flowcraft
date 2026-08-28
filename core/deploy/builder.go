@@ -306,10 +306,10 @@ func expandSettings(
 
 // defaultExpansionResolver is the all-open expansion used when no
 // resolver is injected: env + home, plus base when the loader declares
-// a base directory. The agent board namespace is deferred — ${board.*}
+// a base directory. The agent board namespace is deferred — ${board:*}
 // references resolve against agent.Board at execution time (graph node
 // configs, script bridge), so deploy-time expansion passes them through
-// verbatim (including the \${board.*} escaped form, whose backslash the
+// verbatim (including the \${board:*} escaped form, whose backslash the
 // agent layer consumes for its own literal escaping).
 func defaultExpansionResolver(loader *resource.Loader) *resource.ReferenceResolver {
 	schemes := []resource.Scheme{
@@ -319,7 +319,9 @@ func defaultExpansionResolver(loader *resource.Loader) *resource.ReferenceResolv
 	if loader != nil && loader.BaseDir() != "" {
 		schemes = append(schemes, resource.BaseScheme(loader.BaseDir()))
 	}
-	return resource.NewResolver(schemes...).WithDeferred(agent.BoardRefPrefix)
+	return resource.NewResolver(append(schemes,
+		resource.PassthroughScheme{Prefix: agent.BoardRefPrefix},
+	)...)
 }
 
 // Wire runs the post-build wiring phase: resource values implementing

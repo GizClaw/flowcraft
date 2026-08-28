@@ -30,7 +30,7 @@ func TestExecuteLinearRun(t *testing.T) {
 		Entry: "a",
 		Nodes: []NodeDefinition{
 			{ID: "a", Type: "echo", Config: []byte(`{"set_var": "x", "set_val": 42}`)},
-			{ID: "b", Type: "echo", Config: []byte(`{"message": "hello ${board.x}"}`)},
+			{ID: "b", Type: "echo", Config: []byte(`{"message": "hello ${board:x}"}`)},
 		},
 		Edges: []EdgeDefinition{{From: "a", To: "b"}, {From: "b", To: END}},
 	}, reg)

@@ -171,11 +171,11 @@ func TestExpandEscapedReferenceRequiresClosingBrace(t *testing.T) {
 func TestExpandCustomScheme(t *testing.T) {
 	resolver := NewResolver(SchemeFunc{
 		SchemeName: "cfg",
-		Fn: func(_ context.Context, ref string) (any, error) {
-			if ref == "x" {
+		Fn: func(_ context.Context, ref Reference) (any, error) {
+			if ref.Path == "x" {
 				return "value-x", nil
 			}
-			return "", errdefs.Validationf("cfg: unknown ref %q", ref)
+			return "", errdefs.Validationf("cfg: unknown ref %q", ref.Path)
 		},
 	})
 	out, err := Expand(context.Background(),
@@ -198,7 +198,7 @@ func TestExpandDeferredBoardReferences(t *testing.T) {
 			return "/srv", true
 		}
 		return "", false
-	})).WithDeferred("board")
+	}), PassthroughScheme{Prefix: "board"})
 	expand := func(raw string) string {
 		t.Helper()
 		out, err := Expand(context.Background(), []byte(raw), WithResolver(resolver))
@@ -207,22 +207,22 @@ func TestExpandDeferredBoardReferences(t *testing.T) {
 		}
 		return string(out)
 	}
-	// Plain board refs (with the graph ":default" syntax) pass through
-	// untouched for the graph engine.
-	if got := expand(`{"a": "${board.user.name}"}`); got != `{"a":"${board.user.name}"}` {
+	// Plain board refs (with the unified ":path[:default]" syntax) pass
+	// through untouched for the agent layer.
+	if got := expand(`{"a": "${board:user.name}"}`); got != `{"a":"${board:user.name}"}` {
 		t.Fatalf("board ref = %s", got)
 	}
-	if got := expand(`{"a": "${board.limit:3}"}`); got != `{"a":"${board.limit:3}"}` {
+	if got := expand(`{"a": "${board:limit:3}"}`); got != `{"a":"${board:limit:3}"}` {
 		t.Fatalf("board default ref = %s", got)
 	}
 	// The escaped board form keeps its backslash, so the graph engine's
 	// own escape semantics survive.
-	if got := expand(`{"a": "\\${board.x}"}`); got != `{"a":"\\${board.x}"}` {
+	if got := expand(`{"a": "\\${board:x}"}`); got != `{"a":"\\${board:x}"}` {
 		t.Fatalf("escaped board ref = %s", got)
 	}
 	// Non-board refs still expand; non-board escapes still become
 	// literals.
-	if got := expand(`{"a": "${board.user.name}-${env:ROOT}"}`); got != `{"a":"${board.user.name}-/srv"}` {
+	if got := expand(`{"a": "${board:user.name}-${env:ROOT}"}`); got != `{"a":"${board:user.name}-/srv"}` {
 		t.Fatalf("mixed refs = %s", got)
 	}
 	if got := expand(`{"a": "\\${env:NOPE}"}`); got != `{"a":"${env:NOPE}"}` {

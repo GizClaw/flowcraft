@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -9,33 +10,34 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // Board reference syntax
 //
-// Strings may embed ${board.<path>} references, where <path> is a
-// dot-separated path into the board vars (${board.user.name} reads var
+// Strings may embed ${board:path} references, where path is a
+// dot-separated path into the board vars (${board:user.name} reads var
 // "user" and then its "name" field). Nested lookup walks maps with
 // string keys (map[string]string, map[string]int, ...) and exported
 // struct fields, dereferencing pointers along the way. An exact
 // variable name is tried first, so a var literally named "user.name"
 // wins over nested lookup.
-// An optional default follows a colon: ${board.limit:3}. A reference
+// An optional default follows a second colon: ${board:limit:3}. A reference
 // standing alone in a string keeps the variable's typed value (a list
 // stays a list); when embedded in a longer string the value is
 // interpolated as text. Referencing a missing variable is a validation
 // error unless a default is given. When a reference stands alone, a
 // default that is a valid JSON literal keeps its type
-// (${board.limit:3} yields a number); otherwise it stays text. Defaults
+// (${board:limit:3} yields a number); otherwise it stays text. Defaults
 // are raw text and may not nest further references. Prefix a reference
-// with a backslash (\${board.x}) to emit it literally; within a
+// with a backslash (\${board:x}) to emit it literally; within a
 // default, \} and \\ produce "}" and "\".
 
 // BoardRefMarker is the literal prefix of every board reference.
-const BoardRefMarker = "${board."
+const BoardRefMarker = "${board:"
 
 // BoardRefPrefix is the scheme-style name of the board reference
-// namespace ("${board.<path>}"), shared by every layer that resolves
+// namespace ("${board:path}"), shared by every layer that resolves
 // references against the agent board at execution time (graph node
 // configs, the script bridge's board.resolve, ...).
 const BoardRefPrefix = "board"
@@ -44,11 +46,11 @@ var boardIdentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // boardRefPattern matches reference syntax for static analysis
 // (ContainsBoardRef / ExtractBoardRefs). Runtime expansion uses the
-// scanner in resolveString instead, which also handles escapes.
-var boardRefPattern = regexp.MustCompile(`\$\{board\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?::((?:[^}\\]|\\.)*))?\}`)
+// shared parser in resolveString instead, which also handles escapes.
+var boardRefPattern = regexp.MustCompile(`\$\{board:([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?::((?:[^}\\]|\\.)*))?\}`)
 
 // ContainsBoardRef reports whether v — a decoded JSON value or a plain
-// string — contains at least one live (unescaped) "${board.*}"
+// string — contains at least one live (unescaped) "${board:*}"
 // reference.
 func ContainsBoardRef(v any) bool {
 	return len(findBoardRefs(v)) > 0
@@ -115,79 +117,43 @@ func (b *Board) ResolveString(s string) (any, error) {
 }
 
 func (b *Board) resolveString(s string) (any, error) {
-	if !strings.Contains(s, BoardRefMarker) {
+	if !strings.Contains(s, "${") {
 		return s, nil
 	}
-	var sb strings.Builder
-	pos := 0
-	for i := 0; i < len(s); {
-		idx := strings.Index(s[i:], BoardRefMarker)
-		if idx < 0 {
-			break
-		}
-		idx += i
-		end := refEnd(s, idx+len(BoardRefMarker))
-		if backslashed(s, idx) {
-			// Escaped reference: emit the literal text, dropping the
-			// escaping backslash. Unterminated markers are fine here.
-			if end < 0 {
-				end = len(s)
-			}
-			sb.WriteString(s[pos : idx-1])
-			sb.WriteString(s[idx:end])
-			pos = end
-			i = end
-			continue
-		}
-		if end < 0 {
-			return nil, errdefs.Validationf(
-				"malformed board reference in %q (escape literal text with \\%s)", s, BoardRefMarker)
-		}
-		// A single reference spanning the whole string keeps the
-		// variable's typed value.
-		if idx == 0 && end == len(s) {
-			body := s[len(BoardRefMarker) : end-1]
-			if strings.Contains(body, BoardRefMarker) {
-				return nil, errdefs.Validationf(
-					"nested board references are not supported: %q", s)
-			}
-			path, def, hasDef, ok := parseBoardRef(body)
-			if !ok {
-				return nil, errdefs.Validationf(
-					"malformed board reference in %q (escape literal text with \\%s)", s, BoardRefMarker)
-			}
-			if v, found := b.lookupBoardRef(path); found {
-				return v, nil
-			}
-			if hasDef {
-				return typedBoardDefault(def), nil
-			}
-			return nil, boardRefMissingError(path)
-		}
-		body := s[idx+len(BoardRefMarker) : end-1]
-		if strings.Contains(body, BoardRefMarker) {
-			return nil, errdefs.Validationf(
-				"nested board references are not supported: %q", s)
-		}
-		path, def, hasDef, ok := parseBoardRef(body)
-		if !ok {
-			return nil, errdefs.Validationf(
-				"malformed board reference in %q (escape literal text with \\%s)", s, BoardRefMarker)
-		}
-		if v, found := b.lookupBoardRef(path); found {
-			sb.WriteString(s[pos:idx])
-			sb.WriteString(stringifyBoardValue(v))
-		} else if hasDef {
-			sb.WriteString(s[pos:idx])
-			sb.WriteString(def)
-		} else {
-			return nil, boardRefMissingError(path)
-		}
-		pos = end
-		i = end
+	return resource.ExpandRefs(context.Background(), s, boardResolver{b: b})
+}
+
+// boardResolver resolves ${board:path[:default]} references against the
+// live board. Non-board schemes pass through verbatim (deploy-time
+// expansion has already materialized env/secret/etc., but direct calls
+// to ResolveString should not mangle unknown references).
+type boardResolver struct{ b *Board }
+
+func (r boardResolver) Resolve(_ context.Context, ref resource.Reference) (any, error) {
+	if ref.Scheme != BoardRefPrefix {
+		return ref.Raw, nil
 	}
-	sb.WriteString(s[pos:])
-	return sb.String(), nil
+	if ref.Escaped {
+		return ref.Literal(), nil
+	}
+	path, def, hasDef, ok := parseBoardRef(ref.Path)
+	if !ok {
+		return nil, errdefs.Validationf(
+			"malformed board reference in %q (escape literal text with \\%s)", ref.Raw, BoardRefMarker)
+	}
+	if v, found := r.b.lookupBoardRef(path); found {
+		if !ref.Whole {
+			return stringifyBoardValue(v), nil
+		}
+		return v, nil
+	}
+	if hasDef {
+		if !ref.Whole {
+			return def, nil
+		}
+		return typedBoardDefault(def), nil
+	}
+	return nil, boardRefMissingError(path)
 }
 
 // Resolve expands board references throughout v, a decoded JSON value
@@ -312,18 +278,6 @@ func validBoardPath(p string) bool {
 	return true
 }
 
-// refEnd returns the index just past the closing brace of the
-// reference starting at from, or -1 when unterminated. A \} inside the
-// body is part of a default, not the terminator.
-func refEnd(s string, from int) int {
-	for i := from; i < len(s); i++ {
-		if s[i] == '}' && !backslashed(s, i) {
-			return i + 1
-		}
-	}
-	return -1
-}
-
 // backslashed reports whether s[i] is preceded by an odd number of
 // backslashes, i.e. escaped.
 func backslashed(s string, i int) bool {
@@ -353,8 +307,8 @@ func unescapeBoardDefault(s string) string {
 
 // typedBoardDefault turns a default into a typed value when it is a
 // valid JSON literal; otherwise it stays a string. This lets
-// ${board.limit:3} fill an integer config field while
-// ${board.who:anon} stays text.
+// ${board:limit:3} fill an integer config field while
+// ${board:who:anon} stays text.
 func typedBoardDefault(raw string) any {
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err == nil {
@@ -377,5 +331,5 @@ func stringifyBoardValue(v any) string {
 
 func boardRefMissingError(path string) error {
 	return errdefs.Validationf(
-		"board reference ${board.%s} does not resolve: %q is not set", path, path)
+		"board reference ${board:%s} does not resolve: %q is not set", path, path)
 }

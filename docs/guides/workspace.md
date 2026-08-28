@@ -48,7 +48,7 @@ environment variable (an unset variable fails the build), `${base}` /
 plain relative root still resolves against the deployment base dir. Expansion
 applies to the whole settings subtree, so scoped patterns expand too; they
 must remain relative paths. A literal `${` can be written as `\${...}` (the
-backslash is consumed); this matches the graph's `${board.*}` escaping rule.
+backslash is consumed); this matches the graph's `${board:*}` escaping rule.
 
 Object-store backends are app-registered and not part of the current core module.
 

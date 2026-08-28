@@ -31,7 +31,7 @@ type ScriptConfig struct {
 	// Source is the inline script source.
 	Source string `json:"source"`
 	// Config becomes the script's config global. Values may carry
-	// board references — the kernel resolves ${board.*} before the
+	// board references — the kernel resolves ${board:*} before the
 	// node ever sees them.
 	Config map[string]any `json:"config,omitempty"`
 }

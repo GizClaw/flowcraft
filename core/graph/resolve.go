@@ -10,7 +10,7 @@ import (
 )
 
 // ContainsRef reports whether v — a decoded JSON value or a plain
-// string — contains at least one live "${board.*}" reference.
+// string — contains at least one live "${board:*}" reference.
 //
 // Deprecated: use [agent.ContainsBoardRef].
 func ContainsRef(v any) bool {

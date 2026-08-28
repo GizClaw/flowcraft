@@ -20,7 +20,7 @@ import (
 )
 
 // InferenceConfig is the config of the "inference" node type. Board
-// references (${board.*}) are resolved per invocation before decode,
+// references (${board:*}) are resolved per invocation before decode,
 // so fields like system_prompt may interpolate upstream output.
 type InferenceConfig struct {
 	// Model targets a specific model through the wired Runtime. When
@@ -29,7 +29,7 @@ type InferenceConfig struct {
 
 	// ModelHint is an optional per-call model preference passed to the
 	// wired Router's generate selection: "provider/name" or a bare model
-	// name (e.g. "${board.model}"). The router honors it only when it
+	// name (e.g. "${board:model}"). The router honors it only when it
 	// names a configured target that can serve the request; otherwise it
 	// falls back to the default routing policy. Ignored when Model is
 	// set, since a static model bypasses the router entirely.

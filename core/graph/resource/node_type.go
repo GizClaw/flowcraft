@@ -51,7 +51,7 @@ type ScriptNodeTypeSettings struct {
 // script runtime with the standard script bridges (board, expr, host,
 // run, tools, inference, node, stream, parallel, fs, shell, runtime).
 // The node's config is the script's "config" global, so config values
-// may carry ${board.*} references like any other node config.
+// may carry ${board:*} references like any other node config.
 type ScriptNodeTypeFactory struct{}
 
 // Spec implements res.Factory.

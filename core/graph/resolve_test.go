@@ -13,7 +13,7 @@ func TestResolveConfigWholeStringKeepsType(t *testing.T) {
 	board.SetVar("docs", []any{"a", "b"})
 	board.SetVar("limit", float64(3))
 
-	raw := json.RawMessage(`{"docs": "${board.docs}", "n": "${board.limit}"}`)
+	raw := json.RawMessage(`{"docs": "${board:docs}", "n": "${board:limit}"}`)
 	out, err := resolveConfig(raw, board)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -34,7 +34,7 @@ func TestResolveConfigInterpolatesEmbeddedRefs(t *testing.T) {
 	board := agent.NewBoard()
 	board.SetVar("city", "Paris")
 
-	raw := json.RawMessage(`{"prompt": "weather in ${board.city} please"}`)
+	raw := json.RawMessage(`{"prompt": "weather in ${board:city} please"}`)
 	out, err := resolveConfig(raw, board)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -50,7 +50,7 @@ func TestResolveConfigInterpolatesEmbeddedRefs(t *testing.T) {
 
 func TestResolveConfigMissingVarFails(t *testing.T) {
 	board := agent.NewBoard()
-	raw := json.RawMessage(`{"prompt": "${board.nope}"}`)
+	raw := json.RawMessage(`{"prompt": "${board:nope}"}`)
 	if _, err := resolveConfig(raw, board); err == nil {
 		t.Fatal("resolveConfig should fail on a missing variable")
 	}
@@ -60,7 +60,7 @@ func TestResolveConfigDotPathAndDefault(t *testing.T) {
 	board := agent.NewBoard()
 	board.SetVar("user", map[string]any{"name": "ada"})
 
-	raw := json.RawMessage(`{"prompt": "hi ${board.user.name} (${board.fallback:anon})"}`)
+	raw := json.RawMessage(`{"prompt": "hi ${board:user.name} (${board:fallback:anon})"}`)
 	out, err := resolveConfig(raw, board)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -80,7 +80,7 @@ func TestResolveConfigEscapedRefStaysLiteral(t *testing.T) {
 	board := agent.NewBoard()
 	board.SetVar("x", "Paris")
 
-	raw := json.RawMessage(`{"prompt": "\\${board.x}"}`)
+	raw := json.RawMessage(`{"prompt": "\\${board:x}"}`)
 	out, err := resolveConfig(raw, board)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -91,8 +91,8 @@ func TestResolveConfigEscapedRefStaysLiteral(t *testing.T) {
 	if err := json.Unmarshal(out, &decoded); err != nil {
 		t.Fatalf("unmarshal resolved: %v", err)
 	}
-	if decoded.Prompt != "${board.x}" {
-		t.Fatalf("prompt = %q, want literal ${board.x}", decoded.Prompt)
+	if decoded.Prompt != "${board:x}" {
+		t.Fatalf("prompt = %q, want literal ${board:x}", decoded.Prompt)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestResolveConfigPreservesBigIntegers(t *testing.T) {
 	board.SetVar("x", "ok")
 
 	raw := json.RawMessage(
-		`{"id": 9007199254740993, "note": "see ${board.x} docs", "wide": 123456789012345678901234567890}`)
+		`{"id": 9007199254740993, "note": "see ${board:x} docs", "wide": 123456789012345678901234567890}`)
 	out, err := resolveConfig(raw, board)
 	if err != nil {
 		t.Fatalf("resolveConfig: %v", err)
@@ -149,8 +149,8 @@ func TestResolveConfigPreservesBigIntegers(t *testing.T) {
 
 func TestExtractRefs(t *testing.T) {
 	cfg := map[string]any{
-		"a": "${board.x}",
-		"b": []any{"${board.y}", "plain ${board.x}"},
+		"a": "${board:x}",
+		"b": []any{"${board:y}", "plain ${board:x}"},
 		"c": 3,
 	}
 	refs := ExtractRefs(cfg)

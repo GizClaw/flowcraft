@@ -44,7 +44,7 @@ const (
 	// intent behind a multi-way split.
 	WarningMissingDefaultBranch WarningKind = "missing_default_branch"
 
-	// WarningUnresolvedReference marks "${board.<name>}" config
+	// WarningUnresolvedReference marks "${board:<name>}" config
 	// references whose variable no node's declared writes produce and
 	// the kernel does not provide. Advisory: the host may still seed
 	// the variable before the run (e.g. user input) — in that case
@@ -193,7 +193,7 @@ func checkUnresolvedReferences(nodes map[string]*nodeSlot, order []string) []War
 		}
 		for _, ref := range ExtractRefs(cfg) {
 			// A nested path counts as provided when any node writes its
-			// root segment (e.g. ${board.user.name} is satisfied by a
+			// root segment (e.g. ${board:user.name} is satisfied by a
 			// write to "user").
 			root := ref
 			if i := strings.IndexByte(ref, '.'); i >= 0 {
@@ -204,7 +204,7 @@ func checkUnresolvedReferences(nodes map[string]*nodeSlot, order []string) []War
 					Kind:   WarningUnresolvedReference,
 					NodeID: id,
 					Message: fmt.Sprintf(
-						"config references ${board.%s} but no node declares a write for it (host-seeded input is fine — ignore if intentional)",
+						"config references ${board:%s} but no node declares a write for it (host-seeded input is fine — ignore if intentional)",
 						ref),
 				})
 			}

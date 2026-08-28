@@ -983,7 +983,7 @@ func TestInferenceNode_ModelHintFromBoard(t *testing.T) {
 	runtime := fake.Assembly(t)
 	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
-		ModelHint: "${board.model}",
+		ModelHint: "${board:model}",
 	})
 	board := userBoard()
 	board.SetVar("model", "deepseek/deepseek-v4-flash")
@@ -1000,7 +1000,7 @@ func TestInferenceNode_ModelHintMissingBoardFallsBack(t *testing.T) {
 	runtime := fake.Assembly(t)
 	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
-		ModelHint: "${board.model:}",
+		ModelHint: "${board:model:}",
 	})
 	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -1030,7 +1030,7 @@ func TestInferenceNode_StreamCarriesModelHint(t *testing.T) {
 	runtime := fake.Assembly(t)
 	reg := inferenceRegistry(t, InferenceNodeDeps{Router: fakeRouter(t, runtime)})
 	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
-		ModelHint: "${board.model}",
+		ModelHint: "${board:model}",
 		Stream:    true,
 	})
 	board := userBoard()

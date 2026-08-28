@@ -34,7 +34,7 @@ const (
 //     "messages_channel" config field names the channel it consumes).
 //
 // Exactly one of the two must be set. A ConfigKey-bound value must be
-// a compile-time constant: a "${board.*}" reference in the bound field
+// a compile-time constant: a "${board:*}" reference in the bound field
 // is rejected at Build, since dynamic keys would defeat static
 // validation.
 //
@@ -69,7 +69,7 @@ type Meta struct {
 // NodeType binds a node type to its behaviour.
 //
 // C is the node type's config struct. The kernel treats config as
-// opaque raw JSON all the way to invocation: "${board.*}" references
+// opaque raw JSON all the way to invocation: "${board:*}" references
 // are resolved first, then Decode produces the typed value the Handler
 // receives. Handlers are plain functions — no lifecycle, no shared
 // mutable state — so one registration serves any number of graphs and

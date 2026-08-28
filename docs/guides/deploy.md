@@ -45,14 +45,14 @@ injected with `deploy.WithResolver` to add application-specific schemes on
 top of the defaults (a same-named custom scheme overrides the built-in one).
 Expansion is strict: an unknown scheme, a disabled scheme, or a malformed
 reference fails the build. A literal `${` is written as `\${...}`, matching
-the graph's `${board.*}` escaping convention — **every** literal `${` in any
+the graph's `${board:*}` escaping convention — **every** literal `${` in any
 settings subtree must be escaped, and a leading `~` / `~/...` expands to the
 user home directory. Content materialized from `{file: ...}` / `{embed: ...}`
 references is expanded the same way. Deployments that previously relied on
 literal `${...}` text or `~` paths must escape/quote them after this change.
 
-The agent board namespace is exempt: `${board.<path>}` (and the escaped
-`\${board.<path>}` form, backslash preserved) is deferred to execution time,
+The agent board namespace is exempt: `${board:<path>}` (and the escaped
+`\${board:<path>}` form, backslash preserved) is deferred to execution time,
 where it resolves against the live `agent.Board` — graph node configs and the
 script bridge's `board.resolve` both understand it. Deploy-time expansion
 never touches board references, so existing graph configs need no escaping.
