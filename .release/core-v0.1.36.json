@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): pluggable settings reference expansion and declarative secret stores — resource.Scheme/ReferenceResolver open ${scheme:ref} expansion (env/base/home built in, \\${...} escaping), the deploy builder centralizes expansion across resources/engines/hooks, secret.Store resources (env/file impls) feed a lazy ${secret:NAME}/${secret:store.NAME} scheme, and resource.Secret carries literals or refs resolved at request time through Input.Secrets with per-store TTL caching and <secret> redaction; driver profile secrets migrate to typed values so missing keys fail at request time",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
