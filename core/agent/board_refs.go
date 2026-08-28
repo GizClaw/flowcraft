@@ -130,6 +130,10 @@ func (b *Board) resolveString(s string) (any, error) {
 type boardResolver struct{ b *Board }
 
 func (r boardResolver) Resolve(_ context.Context, ref resource.Reference) (any, error) {
+	if strings.HasPrefix(ref.Scheme, BoardRefPrefix+".") {
+		return nil, errdefs.Validationf(
+			"legacy board reference %s: use ${%s:...} syntax", ref.Raw, BoardRefPrefix)
+	}
 	if ref.Scheme != BoardRefPrefix {
 		return ref.Raw, nil
 	}

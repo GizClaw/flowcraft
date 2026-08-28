@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -219,6 +220,15 @@ func TestResolveStringMalformedFails(t *testing.T) {
 		if _, err := board.ResolveString(in); err == nil || !errdefs.IsValidation(err) {
 			t.Fatalf("ResolveString(%q) err = %v, want validation error", in, err)
 		}
+	}
+}
+
+func TestResolveStringLegacySyntaxFailsWithHint(t *testing.T) {
+	board := NewBoard()
+	board.SetVar("user", map[string]any{"name": "ada"})
+	_, err := board.ResolveString("${board.user.name}")
+	if err == nil || !strings.Contains(err.Error(), "${board:") {
+		t.Fatalf("ResolveString(legacy) err = %v, want migration hint", err)
 	}
 }
 
