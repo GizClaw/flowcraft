@@ -192,6 +192,44 @@ func TestExpandCustomScheme(t *testing.T) {
 	}
 }
 
+func TestExpandDeferredBoardReferences(t *testing.T) {
+	resolver := NewResolver(EnvScheme(func(name string) (string, bool) {
+		if name == "ROOT" {
+			return "/srv", true
+		}
+		return "", false
+	})).WithDeferred("board")
+	expand := func(raw string) string {
+		t.Helper()
+		out, err := Expand(context.Background(), []byte(raw), WithResolver(resolver))
+		if err != nil {
+			t.Fatalf("Expand(%s): %v", raw, err)
+		}
+		return string(out)
+	}
+	// Plain board refs (with the graph ":default" syntax) pass through
+	// untouched for the graph engine.
+	if got := expand(`{"a": "${board.user.name}"}`); got != `{"a":"${board.user.name}"}` {
+		t.Fatalf("board ref = %s", got)
+	}
+	if got := expand(`{"a": "${board.limit:3}"}`); got != `{"a":"${board.limit:3}"}` {
+		t.Fatalf("board default ref = %s", got)
+	}
+	// The escaped board form keeps its backslash, so the graph engine's
+	// own escape semantics survive.
+	if got := expand(`{"a": "\\${board.x}"}`); got != `{"a":"\\${board.x}"}` {
+		t.Fatalf("escaped board ref = %s", got)
+	}
+	// Non-board refs still expand; non-board escapes still become
+	// literals.
+	if got := expand(`{"a": "${board.user.name}-${env:ROOT}"}`); got != `{"a":"${board.user.name}-/srv"}` {
+		t.Fatalf("mixed refs = %s", got)
+	}
+	if got := expand(`{"a": "\\${env:NOPE}"}`); got != `{"a":"${env:NOPE}"}` {
+		t.Fatalf("escaped env ref = %s", got)
+	}
+}
+
 func TestExpandDisabledSchemeErrors(t *testing.T) {
 	if _, err := Expand(context.Background(),
 		[]byte(`{"a": "${cfg:x}"}`), ExpandEnv()); !errdefs.IsValidation(err) {

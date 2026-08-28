@@ -234,14 +234,7 @@ func (b *Builder) effectiveResolver(
 	stores map[string]resource.SecretStore,
 	defaultStore string,
 ) (*resource.ReferenceResolver, *resource.SecretResolver, error) {
-	schemes := []resource.Scheme{
-		resource.EnvScheme(os.LookupEnv),
-		resource.HomeScheme(),
-	}
-	if b.loader != nil && b.loader.BaseDir() != "" {
-		schemes = append(schemes, resource.BaseScheme(b.loader.BaseDir()))
-	}
-	base := resource.NewResolver(schemes...)
+	base := defaultExpansionResolver(b.loader)
 	if b.resolver != nil {
 		base = base.Merge(b.resolver)
 	}
@@ -302,20 +295,31 @@ func expandSettings(
 	raw []byte,
 ) ([]byte, error) {
 	if resolver == nil {
-		schemes := []resource.Scheme{
-			resource.EnvScheme(os.LookupEnv),
-			resource.HomeScheme(),
-		}
-		if loader != nil && loader.BaseDir() != "" {
-			schemes = append(schemes, resource.BaseScheme(loader.BaseDir()))
-		}
-		resolver = resource.NewResolver(schemes...)
+		resolver = defaultExpansionResolver(loader)
 	}
 	expanded, err := resource.Expand(ctx, raw, resource.WithResolver(resolver))
 	if err != nil {
 		return nil, err
 	}
 	return expanded, nil
+}
+
+// defaultExpansionResolver is the all-open expansion used when no
+// resolver is injected: env + home, plus base when the loader declares
+// a base directory. The agent board namespace is deferred — ${board.*}
+// references resolve against agent.Board at execution time (graph node
+// configs, script bridge), so deploy-time expansion passes them through
+// verbatim (including the \${board.*} escaped form, whose backslash the
+// agent layer consumes for its own literal escaping).
+func defaultExpansionResolver(loader *resource.Loader) *resource.ReferenceResolver {
+	schemes := []resource.Scheme{
+		resource.EnvScheme(os.LookupEnv),
+		resource.HomeScheme(),
+	}
+	if loader != nil && loader.BaseDir() != "" {
+		schemes = append(schemes, resource.BaseScheme(loader.BaseDir()))
+	}
+	return resource.NewResolver(schemes...).WithDeferred(agent.BoardRefPrefix)
 }
 
 // Wire runs the post-build wiring phase: resource values implementing

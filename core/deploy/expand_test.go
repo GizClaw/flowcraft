@@ -275,6 +275,32 @@ func TestBuilderCustomResolverKeepsBuiltinSchemes(t *testing.T) {
 	}
 }
 
+func TestBuilderDefersBoardReferences(t *testing.T) {
+	var records []string
+	reg := resource.NewRegistry()
+	reg.MustRegister(expandRecorderFactory{
+		kind: "expand.test", impl: "record", records: &records,
+	})
+	doc := deploy.Document{
+		Version: "v1",
+		Resources: resource.Resources{
+			"a": {
+				Kind: "expand.test", Impl: "record",
+				Settings: json.RawMessage(`{
+					"root": "${board.user.name}",
+					"name": "\\${board.x}"
+				}`),
+			},
+		},
+	}
+	if _, err := deploy.NewBuilder(reg).Build(context.Background(), doc); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(records) != 1 || records[0] != "${board.user.name}|\\${board.x}" {
+		t.Fatalf("decoded settings = %v, want board refs deferred", records)
+	}
+}
+
 func TestBuilderExpansionIsStrict(t *testing.T) {
 	reg := resource.NewRegistry()
 	reg.MustRegister(expandRecorderFactory{

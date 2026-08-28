@@ -34,6 +34,12 @@ import (
 // BoardRefMarker is the literal prefix of every board reference.
 const BoardRefMarker = "${board."
 
+// BoardRefPrefix is the scheme-style name of the board reference
+// namespace ("${board.<path>}"), shared by every layer that resolves
+// references against the agent board at execution time (graph node
+// configs, the script bridge's board.resolve, ...).
+const BoardRefPrefix = "board"
+
 var boardIdentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 // boardRefPattern matches reference syntax for static analysis

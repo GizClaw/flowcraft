@@ -51,6 +51,12 @@ user home directory. Content materialized from `{file: ...}` / `{embed: ...}`
 references is expanded the same way. Deployments that previously relied on
 literal `${...}` text or `~` paths must escape/quote them after this change.
 
+The agent board namespace is exempt: `${board.<path>}` (and the escaped
+`\${board.<path>}` form, backslash preserved) is deferred to execution time,
+where it resolves against the live `agent.Board` — graph node configs and the
+script bridge's `board.resolve` both understand it. Deploy-time expansion
+never touches board references, so existing graph configs need no escaping.
+
 ## Secret stores
 
 Credentials can live in declarative `secret.Store` resources instead of

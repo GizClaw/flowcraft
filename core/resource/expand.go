@@ -41,7 +41,8 @@ func (s SchemeFunc) Resolve(ctx context.Context, ref string) (any, error) {
 // ReferenceResolver resolves ${scheme:ref} references by scheme name.
 // Unknown or disabled schemes are validation errors; see [Expand].
 type ReferenceResolver struct {
-	schemes map[string]Scheme
+	schemes  map[string]Scheme
+	deferred []string
 }
 
 // NewResolver returns a resolver holding the given schemes.
@@ -70,6 +71,38 @@ func (r *ReferenceResolver) Resolve(ctx context.Context, scheme, ref string) (an
 	return s.Resolve(ctx, ref)
 }
 
+// WithDeferred returns a resolver that additionally passes references
+// under the given prefixes through expansion verbatim (both the plain
+// ${prefix...} form and the \${prefix...} escaped form keep their
+// backslash). Deferred namespaces belong to a downstream resolver that
+// runs later — e.g. the agent board's ${board.*} references, which are
+// resolved against agent.Board at execution time.
+func (r *ReferenceResolver) WithDeferred(prefixes ...string) *ReferenceResolver {
+	merged := NewResolver()
+	if r != nil {
+		for name, existing := range r.schemes {
+			merged.schemes[name] = existing
+		}
+		merged.deferred = append(merged.deferred, r.deferred...)
+	}
+	merged.deferred = append(merged.deferred, prefixes...)
+	return merged
+}
+
+// isDeferred reports whether expr (the text inside ${...}) belongs to a
+// deferred namespace.
+func (r *ReferenceResolver) isDeferred(expr string) bool {
+	if r == nil {
+		return false
+	}
+	for _, prefix := range r.deferred {
+		if expr == prefix || strings.HasPrefix(expr, prefix+".") {
+			return true
+		}
+	}
+	return false
+}
+
 // WithScheme returns a resolver carrying every scheme of r plus s.
 // s replaces a same-named scheme already present.
 func (r *ReferenceResolver) WithScheme(s Scheme) *ReferenceResolver {
@@ -94,11 +127,13 @@ func (r *ReferenceResolver) Merge(other *ReferenceResolver) *ReferenceResolver {
 		for name, existing := range r.schemes {
 			merged.schemes[name] = existing
 		}
+		merged.deferred = append(merged.deferred, r.deferred...)
 	}
 	if other != nil {
 		for name, overlay := range other.schemes {
 			merged.schemes[name] = overlay
 		}
+		merged.deferred = append(merged.deferred, other.deferred...)
 	}
 	return merged
 }
@@ -174,8 +209,19 @@ func (c *expandConfig) add(schemes ...Scheme) {
 	}
 }
 
+func (c *expandConfig) addDeferred(prefixes ...string) {
+	if c.resolver == nil {
+		c.resolver = NewResolver()
+	}
+	c.resolver.deferred = append(c.resolver.deferred, prefixes...)
+}
+
 func (c *expandConfig) hasScheme(name string) bool {
 	return c != nil && c.resolver != nil && c.resolver.schemes[name] != nil
+}
+
+func (c *expandConfig) isDeferred(expr string) bool {
+	return c != nil && c.resolver != nil && c.resolver.isDeferred(expr)
 }
 
 func (c *expandConfig) resolve(ctx context.Context, scheme, ref string) (any, error) {
@@ -196,6 +242,7 @@ func WithResolver(r *ReferenceResolver) ExpandOption {
 			for _, s := range r.schemes {
 				c.add(s)
 			}
+			c.addDeferred(r.deferred...)
 		}
 	}
 }
@@ -302,7 +349,11 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error)
 	// values such as lazy secret refs.
 	if strings.HasPrefix(s, "${") && strings.HasSuffix(s, "}") &&
 		strings.Count(s, "${") == 1 && strings.Count(s, "}") == 1 {
-		return expandExpr(ctx, s[2:len(s)-1], cfg)
+		expr := s[2 : len(s)-1]
+		if cfg.isDeferred(expr) {
+			return s, nil
+		}
+		return expandExpr(ctx, expr, cfg)
 	}
 
 	var builder strings.Builder
@@ -317,9 +368,19 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error)
 			// Strictness mirrors real references: an escaped "${" must
 			// still be a well-formed reference shape with a closing
 			// brace.
-			if closeRel := strings.Index(rest[escStart+2:], "}"); closeRel < 0 {
+			closeRel := strings.Index(rest[escStart+1:], "}")
+			if closeRel < 0 {
 				return "", errdefs.Validationf(
 					"resource settings expand: unterminated escaped reference in %q", s)
+			}
+			escEnd := escStart + 1 + closeRel
+			escExpr := rest[escStart+3 : escEnd]
+			if cfg.isDeferred(escExpr) {
+				// Deferred namespaces keep the whole escaped form
+				// (backslash included) for the downstream resolver.
+				builder.WriteString(rest[:escEnd+1])
+				rest = rest[escEnd+1:]
+				continue
 			}
 			builder.WriteString(rest[:escStart])
 			builder.WriteString("${")
@@ -336,8 +397,14 @@ func expandString(ctx context.Context, s string, cfg *expandConfig) (any, error)
 				"resource settings expand: unterminated reference in %q", s)
 		}
 		end := refStart + relativeEnd
+		expr := rest[refStart+2 : end]
 		builder.WriteString(rest[:refStart])
-		replacement, err := expandExpr(ctx, rest[refStart+2:end], cfg)
+		if cfg.isDeferred(expr) {
+			builder.WriteString(rest[refStart : end+1])
+			rest = rest[end+1:]
+			continue
+		}
+		replacement, err := expandExpr(ctx, expr, cfg)
 		if err != nil {
 			return "", err
 		}
