@@ -225,6 +225,22 @@ func (b *Board) AppendChannelMessage(name string, msg message.Message) {
 	b.mu.Unlock()
 }
 
+// PopChannelMessage removes and returns the last message on a channel.
+// The boolean reports whether a message was removed; an empty or missing
+// channel yields the zero Message and false. The returned message is the
+// channel's stored copy and must not be mutated.
+func (b *Board) PopChannelMessage(name string) (message.Message, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	msgs := b.channels[name]
+	if len(msgs) == 0 {
+		return message.Message{}, false
+	}
+	last := msgs[len(msgs)-1]
+	b.channels[name] = msgs[:len(msgs)-1]
+	return last, true
+}
+
 // ChannelsCopy returns a deep copy of all channel message lists. Used
 // by parallel branch execution to give each branch an independent
 // view that can later be merged.

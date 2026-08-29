@@ -40,6 +40,24 @@ func TestBoard_AppendChannelMessage(t *testing.T) {
 	}
 }
 
+func TestBoard_PopChannelMessage(t *testing.T) {
+	b := agent.NewBoard()
+	b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "first"))
+	b.AppendChannelMessage(agent.MainChannel, message.NewTextMessage(message.RoleUser, "second"))
+
+	popped, ok := b.PopChannelMessage(agent.MainChannel)
+	if !ok || popped.Content.Text() != "second" {
+		t.Fatalf("Pop = (%q, %v), want second/true", popped.Content.Text(), ok)
+	}
+	got := b.Channel(agent.MainChannel)
+	if len(got) != 1 || got[0].Content.Text() != "first" {
+		t.Fatalf("Channel = %+v, want [first]", got)
+	}
+	if _, ok := b.PopChannelMessage("missing"); ok {
+		t.Fatalf("Pop on missing channel must report false")
+	}
+}
+
 func TestBoard_SetChannel_DefensiveCopy(t *testing.T) {
 	b := agent.NewBoard()
 	in := []message.Message{

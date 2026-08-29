@@ -353,6 +353,95 @@ func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
 	}
 }
 
+// TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial proves
+// that when a streamed generation is rejected for an undefined tool, the
+// recovery rolls back the text-only assistant message the failed stream
+// materialized on the channel. Without the rollback, the next round's
+// success appends a reasoning + tool-call assistant message right after
+// it, leaving adjacent assistant messages that violate provider
+// reasoning round-trip rules on the following request.
+func TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.ReasoningDelta{Text: "think"}},
+			{PartIndex: 1, Delta: inference.TextPartDelta{Text: "partial"}},
+			{PartIndex: 2, Delta: inference.ToolCallDelta{ID: "call-1", Name: "ghost", ArgumentsFragment: `{}`}},
+			{FinishReason: inference.FinishToolCalls},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known"},
+		Stream:                true,
+		ToolPendingKey:        "tool_pending",
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	// The failed stream's partial text was rolled back: the channel
+	// holds only the original user turn, not the rejected text.
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 1 {
+		t.Fatalf("channel length = %d (%+v), want 1 (partial rolled back)", len(msgs), msgs)
+	}
+	feedback := board.GetVarString("recover_feedback")
+	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
+		t.Fatalf("recover_feedback var = %q, want ghost + tool_search text", feedback)
+	}
+	if v, _ := board.GetVar("recover_pending"); v != true {
+		t.Fatalf("recover_pending = %v, want true", v)
+	}
+	if v, _ := board.GetVar("recover_count"); v != 1 {
+		t.Fatalf("recover_count = %v, want 1", v)
+	}
+}
+
+// TestInferenceNode_UndefinedToolRecoveryStreamNoTextKeepsTail proves
+// the rollback never touches the tail when the failed stream buffered no
+// text (nothing was committed to roll back).
+func TestInferenceNode_UndefinedToolRecoveryStreamNoTextKeepsTail(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.ReasoningDelta{Text: "think"}},
+			{PartIndex: 1, Delta: inference.ToolCallDelta{ID: "call-1", Name: "ghost", ArgumentsFragment: `{}`}},
+			{FinishReason: inference.FinishToolCalls},
+		},
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: fake.Assembly(t),
+		Catalog:  toolCatalog(t, stubTool{name: "known", desc: "a known tool"}),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:                 ptr(inferencetest.DefaultFakeModel),
+		Tools:                 []string{"known"},
+		Stream:                true,
+		ToolPendingKey:        "tool_pending",
+		UndefinedToolRecovery: &UndefinedToolRecoveryConfig{Enabled: true, MaxPerRun: 2},
+		RecoverPendingKey:     "recover_pending",
+		RecoverCountKey:       "recover_count",
+		RecoverFeedbackKey:    "recover_feedback",
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 1 || msgs[0].Role != message.RoleUser {
+		t.Fatalf("channel = %+v, want [user] untouched", msgs)
+	}
+}
+
 func TestInferenceNode_UndefinedToolRecoveryDisabled(t *testing.T) {
 	fake := &inferencetest.GenerateFake{
 		Respond: func(inference.GenerateRequest) inference.GenerateResponse {
