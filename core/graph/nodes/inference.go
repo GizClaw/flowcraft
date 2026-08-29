@@ -211,7 +211,7 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 
 	resp, err := executeGenerate(ec, board, cfg, deps, req)
 	if err != nil {
-		return recoverUndefinedTool(ec, board, cfg, err)
+		return recoverUndefinedTool(ec, board, channel, cfg, err)
 	}
 	if cfg.RecoverPendingKey != "" {
 		// A successful round clears the recovery marker so the loop
@@ -303,7 +303,7 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 // call would be executed for real. The original error is returned when
 // recovery is disabled, the failure is not an undefined-tool rejection,
 // or the per-run budget is exhausted.
-func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, err error) error {
+func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, err error) error {
 	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
 		return err
 	}
@@ -322,6 +322,18 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg Inf
 		return err
 	}
 	call := *infErr.UndefinedToolCall
+
+	// The failed stream materialized its buffered text on the channel
+	// before the error propagated (see drainGenerateStream). The turn is
+	// being rolled back for a retry, so that rejected text must not stay
+	// in the transcript: the recovered round appends its own complete
+	// message right after it, leaving adjacent assistant messages that
+	// violate provider reasoning round-trip rules on the next request.
+	// Nothing is removed when the tail is not that text-only
+	// materialization (unary failures and streams that buffered no text
+	// never commit one).
+	rollbackFailedTurnText(board, channel)
+
 	board.SetVar(recoverFeedbackKey(ec, cfg), fmt.Sprintf(undefinedToolFeedback, call.Name))
 	if cfg.ToolPendingKey != "" {
 		board.SetVar(cfg.ToolPendingKey, false)
@@ -333,6 +345,27 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg Inf
 		otellog.String("tool.name", call.Name),
 		otellog.Int("recovery.count", count+1))
 	return nil
+}
+
+// rollbackFailedTurnText removes the standalone text-only assistant
+// message a failed stream committed to the channel. It is a no-op when
+// the channel tail is not that exact materialization, so ordinary tails
+// (user, tool, tool result) are never touched.
+func rollbackFailedTurnText(board *agent.Board, channel string) {
+	msgs := board.Channel(channel)
+	if len(msgs) == 0 {
+		return
+	}
+	last := msgs[len(msgs)-1]
+	if last.Role != message.RoleAssistant {
+		return
+	}
+	for _, part := range last.Content.Parts {
+		if _, ok := part.(message.TextPart); !ok {
+			return
+		}
+	}
+	board.PopChannelMessage(channel)
 }
 
 // recoveryCount reads the per-run undefined-tool recovery counter.
