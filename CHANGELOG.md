@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.1` - 2026-08-29
+
+### Changed
+
+- fix(core): roll back the failed turn's partial text from the messages channel on undefined-tool recovery, so the recovered round cannot leave adjacent assistant messages that violate provider reasoning round-trip rules (DeepSeek thinking mode 400 'reasoning_text must be passed back'); adds Board.PopChannelMessage
 
 ## `core/v0.2.0` - 2026-08-28
 
