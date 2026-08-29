@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): roll back the failed turn's partial text from the messages channel on undefined-tool recovery, so the recovered round cannot leave adjacent assistant messages that violate provider reasoning round-trip rules (DeepSeek thinking mode 400 'reasoning_text must be passed back'); adds Board.PopChannelMessage",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
