@@ -19,7 +19,11 @@ import (
 // confinement behaviors cannot be exercised there, so the test skips.
 func requireConfinement(t *testing.T, r *Runner) {
 	t.Helper()
-	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"}, sandbox.ExecOptions{})
+	// Probe with WriteReadOnly so the probe itself does not label the
+	// runner root (which would mask write-denial assertions in the
+	// caller's test).
+	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"},
+		sandbox.ExecOptions{Write: sandbox.WriteReadOnly})
 	if err == nil {
 		return
 	}
