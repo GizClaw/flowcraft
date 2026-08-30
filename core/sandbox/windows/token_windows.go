@@ -68,3 +68,36 @@ func restrictToken() (xwin.Token, error) {
 	}
 	return restricted, nil
 }
+
+// enableQuotaPrivilege enables SE_INCREASE_QUOTA_NAME on the current
+// process token; CreateProcessAsUser requires it. Admin tokens carry
+// it disabled, so it must be enabled per spawn; ordinary user tokens
+// do not carry it at all and CreateProcessAsUser then fails with
+// ERROR_PRIVILEGE_NOT_HELD, which the runner maps to NotAvailable.
+func enableQuotaPrivilege() error {
+	name, err := xwin.UTF16PtrFromString("SeIncreaseQuotaPrivilege")
+	if err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: encode quota privilege name: %w", err))
+	}
+	var luid xwin.LUID
+	if err := xwin.LookupPrivilegeValue(nil, name, &luid); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: lookup quota privilege: %w", err))
+	}
+	var token xwin.Token
+	if err := xwin.OpenProcessToken(xwin.CurrentProcess(),
+		xwin.TOKEN_ADJUST_PRIVILEGES|xwin.TOKEN_QUERY, &token); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: open token for privileges: %w", err))
+	}
+	defer func() { _ = token.Close() }()
+	tp := xwin.Tokenprivileges{
+		PrivilegeCount: 1,
+		Privileges: [1]xwin.LUIDAndAttributes{{
+			Luid:       luid,
+			Attributes: xwin.SE_PRIVILEGE_ENABLED,
+		}},
+	}
+	if err := xwin.AdjustTokenPrivileges(token, false, &tp, 0, nil, nil); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: enable quota privilege: %w", err))
+	}
+	return nil
+}

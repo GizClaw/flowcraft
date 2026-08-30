@@ -196,6 +196,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 		}
 		cmd.Env = withLowTempEnv(cmd.Env, r.lowTemp)
 	}
+	cmd.Env = sanitizeEnv(cmd.Env)
 	if err := ctx.Err(); err != nil {
 		return nil, errdefs.FromContext(err)
 	}
@@ -316,4 +317,18 @@ func resolveAbsolutePaths(root string, paths []string) ([]string, error) {
 		out = append(out, filepath.Clean(p))
 	}
 	return out, nil
+}
+
+// sanitizeEnv drops entries containing NUL bytes. os/exec rejects such
+// entries with a hard error, and a malformed entry in the host
+// environment must not prevent spawning.
+func sanitizeEnv(env []string) []string {
+	out := env[:0]
+	for _, kv := range env {
+		if strings.IndexByte(kv, 0) >= 0 {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
