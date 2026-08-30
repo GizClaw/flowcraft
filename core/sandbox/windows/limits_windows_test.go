@@ -42,12 +42,12 @@ func TestJobLimitsMemory(t *testing.T) {
 func TestJobLimitsCPU(t *testing.T) {
 	info := jobLimits(sandbox.ResourceLimits{CPUMillicores: 500}, 2*time.Second)
 	flags := info.BasicLimitInformation.LimitFlags
-	if flags&xwin.JOB_OBJECT_LIMIT_PROCESS_TIME == 0 {
-		t.Fatalf("LimitFlags = %#x, want JOB_OBJECT_LIMIT_PROCESS_TIME set", flags)
+	if flags&xwin.JOB_OBJECT_LIMIT_JOB_TIME == 0 {
+		t.Fatalf("LimitFlags = %#x, want JOB_OBJECT_LIMIT_JOB_TIME set", flags)
 	}
 	// 2s x 500/1000 = 1s budget in 100ns units.
-	if got := info.BasicLimitInformation.PerProcessUserTimeLimit; got != 10_000_000 {
-		t.Fatalf("PerProcessUserTimeLimit = %d, want %d", got, 10_000_000)
+	if got := info.BasicLimitInformation.PerJobUserTimeLimit; got != 10_000_000 {
+		t.Fatalf("PerJobUserTimeLimit = %d, want %d", got, 10_000_000)
 	}
 	if info.JobMemoryLimit != 0 {
 		t.Fatalf("JobMemoryLimit = %d, want 0", info.JobMemoryLimit)
@@ -59,15 +59,15 @@ func TestJobLimitsBoth(t *testing.T) {
 	flags := info.BasicLimitInformation.LimitFlags
 	want := uint32(xwin.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) |
 		xwin.JOB_OBJECT_LIMIT_JOB_MEMORY |
-		xwin.JOB_OBJECT_LIMIT_PROCESS_TIME
+		xwin.JOB_OBJECT_LIMIT_JOB_TIME
 	if flags != want {
 		t.Fatalf("LimitFlags = %#x, want %#x", flags, want)
 	}
 	if info.JobMemoryLimit != 1<<20 {
 		t.Fatalf("JobMemoryLimit = %d, want %d", info.JobMemoryLimit, 1<<20)
 	}
-	if got := info.BasicLimitInformation.PerProcessUserTimeLimit; got != 10_000_000 {
-		t.Fatalf("PerProcessUserTimeLimit = %d, want %d", got, 10_000_000)
+	if got := info.BasicLimitInformation.PerJobUserTimeLimit; got != 10_000_000 {
+		t.Fatalf("PerJobUserTimeLimit = %d, want %d", got, 10_000_000)
 	}
 }
 

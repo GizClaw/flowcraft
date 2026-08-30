@@ -32,13 +32,13 @@
 //	                              errdefs.NotAvailable.
 //	Resources.MemoryBytes         enforced as a job-wide memory limit
 //	                              (JOB_OBJECT_LIMIT_JOB_MEMORY).
-//	Resources.CPUMillicores       enforced as a per-process user-time
-//	                              limit (JOB_OBJECT_LIMIT_PROCESS_TIME)
+//	Resources.CPUMillicores       enforced as a job-wide user-time
+//	                              budget (JOB_OBJECT_LIMIT_JOB_TIME)
 //	                              derived from Timeout x millicores /
-//	                              1000; requires Timeout > 0, otherwise
-//	                              errdefs.NotAvailable. The limit is
-//	                              per process, not aggregate across the
-//	                              job.
+//	                              1000, matching the unix watcher's
+//	                              aggregate-group semantics; requires
+//	                              Timeout > 0, otherwise
+//	                              errdefs.NotAvailable.
 //	Resources.DiskBytes != 0      errdefs.NotAvailable (no quota
 //	                              mechanism).
 //	Resources.MaxOutputBytes      enforced in-process, mirroring

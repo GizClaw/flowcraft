@@ -25,6 +25,7 @@ type job struct {
 
 // Job completion-port message codes (winnt.h).
 const (
+	jobObjectMsgEndOfJobTime     = 1
 	jobObjectMsgEndOfProcessTime = 3
 	jobObjectMsgJobMemoryLimit   = 10
 
@@ -83,7 +84,7 @@ func (n *jobNotifier) run() {
 		switch qty {
 		case jobObjectMsgJobMemoryLimit:
 			n.setBudget("memory")
-		case jobObjectMsgEndOfProcessTime:
+		case jobObjectMsgEndOfJobTime, jobObjectMsgEndOfProcessTime:
 			n.setBudget("cpu")
 		}
 	}
@@ -167,10 +168,10 @@ func (j *job) budgetCap() string {
 // jobLimits maps sandbox.ResourceLimits onto the Windows extended
 // limit structure. MemoryBytes becomes a job-wide cap (the same
 // "aggregate process group" semantics as the unix watcher);
-// CPUMillicores becomes a per-process user-time cap derived from
-// Timeout x millicores/1000 (the same budget the unix watcher
-// enforces, but enforced by the kernel per process rather than
-// sampled across the group).
+// CPUMillicores becomes a job-wide user-time budget derived from
+// Timeout x millicores/1000. When the job-wide budget is exhausted the
+// kernel terminates every process in the job and posts
+// JOB_OBJECT_MSG_END_OF_JOB_TIME.
 func jobLimits(limits sandbox.ResourceLimits, timeout time.Duration) xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
 	var info xwin.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
 	info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -179,8 +180,8 @@ func jobLimits(limits sandbox.ResourceLimits, timeout time.Duration) xwin.JOBOBJ
 		info.JobMemoryLimit = uintptr(limits.MemoryBytes)
 	}
 	if limits.CPUMillicores > 0 {
-		info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_PROCESS_TIME
-		info.BasicLimitInformation.PerProcessUserTimeLimit = cpuBudget100ns(limits, timeout)
+		info.BasicLimitInformation.LimitFlags |= xwin.JOB_OBJECT_LIMIT_JOB_TIME
+		info.BasicLimitInformation.PerJobUserTimeLimit = cpuBudget100ns(limits, timeout)
 	}
 	return info
 }
