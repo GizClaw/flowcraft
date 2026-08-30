@@ -9,8 +9,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
+
+// requireConfinement probes whether the host can spawn write-confined
+// processes. Hosts without the CreateProcessAsUser privileges
+// (SE_INCREASE_QUOTA_NAME) fail closed with NotAvailable; the
+// confinement behaviors cannot be exercised there, so the test skips.
+func requireConfinement(t *testing.T, r *Runner) {
+	t.Helper()
+	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"}, sandbox.ExecOptions{})
+	if err == nil {
+		return
+	}
+	if errdefs.IsNotAvailable(err) {
+		t.Skipf("host cannot spawn write-confined processes: %v", err)
+	}
+	t.Fatalf("confinement probe: %v", err)
+}
 
 func TestWithLowTempEnvReplacesTemp(t *testing.T) {
 	got := withLowTempEnv([]string{"PATH=x", "TEMP=old", "TMP=old2", "HOME=h"}, `C:\low`)
@@ -73,6 +90,7 @@ func TestWriteConfinementAllowsWorkspaceWrite(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = r.Close() }()
+	requireConfinement(t, r)
 
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "hi", ">", "out.txt"}, sandbox.ExecOptions{})
@@ -98,6 +116,7 @@ func TestWriteConfinementReadOnlyRejectsWrite(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = r.Close() }()
+	requireConfinement(t, r)
 
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "hi", ">", "out.txt"},
@@ -120,6 +139,7 @@ func TestWriteConfinementBlocksOutsideWrite(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = r.Close() }()
+	requireConfinement(t, r)
 
 	outside, err := os.MkdirTemp("", "flowcraft-out-")
 	if err != nil {
@@ -147,6 +167,7 @@ func TestWriteConfinementTempOverride(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = r.Close() }()
+	requireConfinement(t, r)
 
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "%TEMP%"}, sandbox.ExecOptions{})

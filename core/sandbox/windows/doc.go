@@ -73,8 +73,10 @@
 //     SE_INCREASE_QUOTA_NAME; ordinary desktop processes usually do
 //     not have it, so write-confined spawns may fail with
 //     errdefs.NotAvailable unless the host runs elevated or as a
-//     service. The backend fails closed rather than degrading to an
-//     unsandboxed spawn.
+//     service. The restricted token is derived directly from the
+//     caller's primary token so the SE_ASSIGNPRIMARYTOKEN_NAME
+//     exemption applies. The backend fails closed rather than
+//     degrading to an unsandboxed spawn.
 //   - CreateProcessAsUser places the child on a non-interactive window
 //     station, so GUI applications will not be visible. Console /
 //     CLI tools are unaffected.

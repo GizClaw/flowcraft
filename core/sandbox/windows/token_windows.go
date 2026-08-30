@@ -28,11 +28,12 @@ func lowIntegritySID() (*xwin.SID, error) {
 }
 
 // restrictToken builds the primary token for a write-confined child:
-// a restricted version of the caller's own token (every privilege
-// disabled) whose integrity level is lowered to Low. CreateProcessAsUser
-// accepts a restricted version of the caller's primary token without
-// SE_ASSIGNPRIMARYTOKEN_NAME, so this works for ordinary (non-admin)
-// applications.
+// a restricted version of the caller's own primary token (every
+// privilege disabled) whose integrity level is lowered to Low. The
+// restricted token is derived directly from the caller's primary token
+// so CreateProcessAsUser's restricted-token exemption applies (no
+// SE_ASSIGNPRIMARYTOKEN_NAME required), letting ordinary applications
+// create restricted processes.
 func restrictToken() (xwin.Token, error) {
 	var current xwin.Token
 	if err := xwin.OpenProcessToken(xwin.CurrentProcess(), xwin.TOKEN_ALL_ACCESS, &current); err != nil {
@@ -40,51 +41,38 @@ func restrictToken() (xwin.Token, error) {
 	}
 	defer func() { _ = current.Close() }()
 
-	var primary xwin.Token
-	if err := xwin.DuplicateTokenEx(current, xwin.TOKEN_ALL_ACCESS, nil,
-		xwin.SecurityImpersonation, xwin.TokenPrimary, &primary); err != nil {
-		return 0, errdefs.Internal(fmt.Errorf("windows: duplicate token: %w", err))
+	restricted, err := createRestrictedToken(current)
+	if err != nil {
+		return 0, errdefs.Internal(fmt.Errorf("windows: restrict token: %w", err))
 	}
-	defer func() { _ = primary.Close() }()
 
-	// Lower the integrity level before restricting: the restricted
-	// handle's access rights mirror the source, but setting the label
-	// on the primary first avoids any TOKEN_ADJUST_DEFAULT question on
-	// the restricted token.
+	// The restricted handle mirrors the source's access rights
+	// (TOKEN_ALL_ACCESS), so lowering its integrity level afterwards is
+	// allowed.
 	lowSID, err := lowIntegritySID()
 	if err != nil {
+		_ = restricted.Close()
 		return 0, err
 	}
 	label := tokenMandatoryLabel{
 		Label: xwin.SIDAndAttributes{Sid: lowSID, Attributes: xwin.SE_GROUP_INTEGRITY},
 	}
-	if err := xwin.SetTokenInformation(primary, uint32(xwin.TokenIntegrityLevel),
+	if err := xwin.SetTokenInformation(restricted, uint32(xwin.TokenIntegrityLevel),
 		(*byte)(unsafe.Pointer(&label)), uint32(unsafe.Sizeof(label))); err != nil {
+		_ = restricted.Close()
 		return 0, errdefs.Internal(fmt.Errorf("windows: set low integrity on token: %w", err))
-	}
-
-	restricted, err := createRestrictedToken(primary)
-	if err != nil {
-		return 0, errdefs.Internal(fmt.Errorf("windows: restrict token: %w", err))
 	}
 	return restricted, nil
 }
 
-// enableCreateProcessAsUserPrivileges enables the privileges
-// CreateProcessAsUser requires on the current process token:
-// SE_INCREASE_QUOTA_NAME (always required) and
-// SE_ASSIGNPRIMARYTOKEN_NAME (required when the restricted-own-token
-// carve-out does not apply). Admin tokens carry both disabled, so they
-// must be enabled per spawn; ordinary user tokens may not carry them
-// at all, in which case the returned error lets the runner fail
-// closed instead of degrading to an unsandboxed spawn.
+// enableCreateProcessAsUserPrivileges enables SE_INCREASE_QUOTA_NAME,
+// which CreateProcessAsUser requires, on the current process token.
+// Admin tokens carry it disabled, so it must be enabled per spawn;
+// ordinary user tokens may not carry it at all, in which case the
+// returned error lets the runner fail closed instead of degrading to
+// an unsandboxed spawn.
 func enableCreateProcessAsUserPrivileges() error {
-	for _, name := range []string{"SeIncreaseQuotaPrivilege", "SeAssignPrimaryTokenPrivilege"} {
-		if err := enablePrivilege(name); err != nil {
-			return err
-		}
-	}
-	return nil
+	return enablePrivilege("SeIncreaseQuotaPrivilege")
 }
 
 // enablePrivilege enables one named privilege on the current process
