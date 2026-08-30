@@ -101,7 +101,11 @@ func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 			matched = matchDoublestar(pattern, path)
 		} else {
 			var matchErr error
-			matched, matchErr = filepath.Match(pattern, path)
+			// Normalise "/" in caller patterns to the platform
+			// separator: filepath.Match on Windows treats "\" as the
+			// path separator and "/" as a literal, so a portable
+			// "src/*.go" pattern would otherwise never match.
+			matched, matchErr = filepath.Match(filepath.FromSlash(pattern), path)
 			if matchErr != nil {
 				return matchErr
 			}
