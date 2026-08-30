@@ -36,6 +36,9 @@ Platform backends are registered from core subpackages:
 
 - `core/sandbox/bwrap` for Linux namespace isolation.
 - `core/sandbox/seatbelt` for macOS confinement.
+- `core/sandbox/windows` for Windows Job Object lifecycle and
+  resource caps (phase 1: no OS-level filesystem or network
+  confinement yet).
 
 Both isolation backends share the same settings shape:
 
@@ -65,6 +68,23 @@ that could weaken the policy (e.g. `--ro-bind` or `--args`) rejected at
 build time. The local runner is a no-isolation backend for trusted
 workflows; bwrap/seatbelt enforce the isolation boundary and reject
 policies they cannot honor.
+
+## Platform support
+
+| Backend | Platform | Isolation | Net modes | Write policy | Resource caps |
+|---|---|---|---|---|---|
+| `local` | all (interactive sessions unix-only) | none | `NetDefault` only | none enforced | memory / cpu via group watcher (unix) |
+| `bwrap` | Linux | user / mount / pid / net namespaces | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + `writable_paths`, `WriteReadOnly` | memory / cpu (watcher) |
+| `seatbelt` | macOS | Seatbelt (SBPL) | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + writable paths, `WriteReadOnly` | memory / cpu (watcher) |
+| `windows` | Windows | Job Objects (process tree, memory / cpu caps) | `NetDefault` only (phase 1) | none enforced (phase 1) | memory / cpu (job limits) |
+
+The `windows` backend is the phase-1 port that makes command execution
+work on Windows: every child runs in its own job object, timeout /
+cancel / close terminate the whole process tree, and memory / cpu
+limits are enforced by the kernel. Filesystem write confinement
+(restricted tokens + ACLs) and network filtering are planned follow-ups;
+until then the backend fails closed with `errdefs.NotAvailable` for
+policies it cannot enforce.
 
 ## Per-exec write policy
 
