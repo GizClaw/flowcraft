@@ -162,10 +162,10 @@ func TestExecBudgetExceededMemory(t *testing.T) {
 
 func TestExecBudgetExceededCPU(t *testing.T) {
 	r := mustNewRunner(t)
-	_, err := r.Exec(context.Background(), "powershell",
-		[]string{"-NoProfile", "-Command", "while ($true) { }"},
+	_, err := r.Exec(context.Background(), "cmd",
+		[]string{"/c", "for /L %i in (1,1,100000000) do rem"},
 		sandbox.ExecOptions{
-			Timeout: 5 * time.Second,
+			Timeout: 10 * time.Second,
 			Resources: sandbox.ResourceLimits{
 				CPUMillicores: 100,
 			},
