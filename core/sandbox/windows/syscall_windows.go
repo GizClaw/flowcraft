@@ -36,7 +36,7 @@ type tokenMandatoryLabel struct {
 var (
 	procCreateRestrictedToken = xwin.NewLazySystemDLL("advapi32.dll").NewProc("CreateRestrictedToken")
 	procInitializeAcl         = xwin.NewLazySystemDLL("advapi32.dll").NewProc("InitializeAcl")
-	procAddMandatoryAce       = xwin.NewLazySystemDLL("kernel32.dll").NewProc("AddMandatoryAce")
+	procAddMandatoryAce       = xwin.NewLazySystemDLL("advapi32.dll").NewProc("AddMandatoryAce")
 )
 
 // createRestrictedToken wraps CreateRestrictedToken with every
