@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -37,7 +38,7 @@ const (
 // Policy validation belongs to the runner (validatePolicy); this
 // constructor enforces mechanics only. spec.Opts.Resources.
 // MaxOutputBytes bounds the replayable output ring when positive.
-func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) (sandbox.Session, error) {
+func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, confine bool) (sandbox.Session, error) {
 	if cmd == nil {
 		return nil, errdefs.Validationf("windows: nil command for process session")
 	}
@@ -74,6 +75,18 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd) 
 	// exit is exact.
 	cmd.SysProcAttr = &xwin.SysProcAttr{
 		CreationFlags: xwin.CREATE_SUSPENDED | xwin.CREATE_NO_WINDOW,
+	}
+	if confine {
+		// The child runs under a restricted, Low-integrity token:
+		// reads everywhere, writes only where the mandatory label was
+		// lowered. The handle stays valid through Start (the process
+		// copies the token); closing it after is safe.
+		token, err := restrictToken()
+		if err != nil {
+			return abort(err)
+		}
+		defer func() { _ = token.Close() }()
+		cmd.SysProcAttr.Token = syscall.Token(token)
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
@@ -536,5 +549,10 @@ func (l *outputLog) wakeReadersLocked() {
 }
 
 func classifyStartError(path string, err error) error {
+	if errors.Is(err, xwin.ERROR_PRIVILEGE_NOT_HELD) {
+		return errdefs.NotAvailablef(
+			"windows: start %s: write confinement needs the host to hold SE_INCREASE_QUOTA_NAME (run elevated or as a service): %v",
+			path, err)
+	}
 	return errdefs.Internal(fmt.Errorf("windows: start %s: %w", path, err))
 }

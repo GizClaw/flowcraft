@@ -76,15 +76,17 @@ policies they cannot honor.
 | `local` | all (interactive sessions unix-only) | none | `NetDefault` only | none enforced | memory / cpu via group watcher (unix) |
 | `bwrap` | Linux | user / mount / pid / net namespaces | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + `writable_paths`, `WriteReadOnly` | memory / cpu (watcher) |
 | `seatbelt` | macOS | Seatbelt (SBPL) | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + writable paths, `WriteReadOnly` | memory / cpu (watcher) |
-| `windows` | Windows | Job Objects (process tree, memory / cpu caps) | `NetDefault` only (phase 1) | none enforced (phase 1) | memory / cpu (job limits) |
+| `windows` | Windows | Job Objects + optional Low-integrity token (`WithWriteConfinement`) | `NetDefault` only | root + `writable_paths`, `WriteReadOnly` (with write confinement) | memory / cpu (job limits) |
 
-The `windows` backend is the phase-1 port that makes command execution
-work on Windows: every child runs in its own job object, timeout /
-cancel / close terminate the whole process tree, and memory / cpu
-limits are enforced by the kernel. Filesystem write confinement
-(restricted tokens + ACLs) and network filtering are planned follow-ups;
-until then the backend fails closed with `errdefs.NotAvailable` for
-policies it cannot enforce.
+The `windows` backend makes command execution work on Windows: every
+child runs in its own job object, timeout / cancel / close terminate
+the whole process tree, and memory / cpu limits are enforced by the
+kernel. Write confinement is opt-in via `WithWriteConfinement`: the
+child runs with a restricted Low-integrity token and only the runner
+root plus explicit `writable_paths` are labeled writable (all reads
+stay allowed). Network filtering is still a follow-up; until then the
+backend fails closed with `errdefs.NotAvailable` for policies it
+cannot enforce.
 
 ## Per-exec write policy
 

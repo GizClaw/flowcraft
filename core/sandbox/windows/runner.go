@@ -13,7 +13,10 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+
+	otellog "go.opentelemetry.io/otel/log"
 )
 
 // defaultMaxOutputBytes is the per-stream cap used by the one-shot
@@ -49,6 +52,7 @@ type Runner struct {
 	cfg          runnerConfig
 	sessions     *sandbox.SessionRegistry
 	registryOnce sync.Once
+	lowTemp      string
 }
 
 // New constructs a Runner rooted at rootDir. The root is resolved via
@@ -68,20 +72,40 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 	for _, o := range opts {
 		o(&r.cfg)
 	}
+	if r.cfg.writeConfine {
+		var err error
+		r.cfg.writable, err = resolveAbsolutePaths(real, r.cfg.writable)
+		if err != nil {
+			return nil, err
+		}
+		r.lowTemp, err = createLowTempDir()
+		if err != nil {
+			return nil, err
+		}
+	}
 	return r, nil
 }
 
-// Capabilities declares the honest surface of the phase-1 backend:
-// env allow-lists and job-object resource caps are enforced; there is
-// no filesystem or network confinement yet, and sessions are
-// pipe-only (no TTY / signal / event features).
+// Capabilities declares the honest surface: env allow-lists and
+// job-object resource caps are always enforced; filesystem write
+// bounds are enforced when the runner was constructed with
+// WithWriteConfinement. Sessions are pipe-only (no TTY / signal /
+// event features).
 func (r *Runner) Capabilities() sandbox.Capabilities {
+	policy := sandbox.Enforcement{
+		EnvAllowList: true,
+		MemoryCap:    true,
+		CPUCap:       true,
+	}
+	if r.cfg.writeConfine {
+		policy.FilesystemBounds = true
+		policy.WriteModes = []sandbox.WritePolicy{
+			sandbox.WriteWorkspace,
+			sandbox.WriteReadOnly,
+		}
+	}
 	return sandbox.Capabilities{
-		Policy: sandbox.Enforcement{
-			EnvAllowList: true,
-			MemoryCap:    true,
-			CPUCap:       true,
-		},
+		Policy:   policy,
 		Features: sandbox.SessionFeatures{},
 	}
 }
@@ -112,7 +136,16 @@ func (r *Runner) Terminate(ctx context.Context, id string) error {
 // started through this runner. Safe to call more than once and when
 // the runner never started anything.
 func (r *Runner) Close() error {
-	return r.registry().Close()
+	err := r.registry().Close()
+	if r.lowTemp != "" {
+		if rerr := os.RemoveAll(r.lowTemp); rerr != nil {
+			telemetry.WarnErr(context.Background(),
+				"windows: remove low-IL temp dir failed", rerr,
+				otellog.String("windows.temp_dir", r.lowTemp))
+		}
+		r.lowTemp = ""
+	}
+	return err
 }
 
 // registry returns the session registry, initialising it lazily so a
@@ -151,10 +184,22 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = buildEnv(spec.Opts.Env)
+	if r.cfg.writeConfine {
+		writable := r.cfg.writable
+		if spec.Opts.Write != sandbox.WriteReadOnly {
+			writable = append([]string{r.rootDir}, writable...)
+		}
+		for _, p := range writable {
+			if err := labelLowIntegrity(p); err != nil {
+				return nil, err
+			}
+		}
+		cmd.Env = withLowTempEnv(cmd.Env, r.lowTemp)
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, errdefs.FromContext(err)
 	}
-	return startSession(ctx, spec, cmd)
+	return startSession(ctx, spec, cmd, r.cfg.writeConfine)
 }
 
 // validatePolicy mirrors sandbox.ValidateExecPolicy minus the
@@ -167,9 +212,9 @@ func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
 		return errdefs.Validationf(
 			"windows: unknown write policy %d", int(spec.Opts.Write))
 	}
-	if spec.Opts.Write == sandbox.WriteReadOnly {
+	if spec.Opts.Write == sandbox.WriteReadOnly && !r.cfg.writeConfine {
 		return errdefs.NotAvailablef(
-			"windows: write policy not supported (no OS-level write confinement yet)")
+			"windows: write policy requires the runner to be constructed with WithWriteConfinement")
 	}
 	if spec.Opts.Net.Mode != corenet.NetDefault {
 		return errdefs.NotAvailablef(
@@ -258,4 +303,17 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil
+}
+
+// resolveAbsolutePaths makes each path absolute (relative entries are
+// resolved against root) without requiring them to exist yet.
+func resolveAbsolutePaths(root string, paths []string) ([]string, error) {
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(root, p)
+		}
+		out = append(out, filepath.Clean(p))
+	}
+	return out, nil
 }

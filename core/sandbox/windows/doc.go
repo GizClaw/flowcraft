@@ -13,7 +13,7 @@
 // type references without build-tag gymnastics (the same pattern as
 // the bwrap and seatbelt backends).
 //
-// # Phase-1 capability matrix
+// # Capability matrix
 //
 //	WorkDir / Stdin / Timeout     fully supported. Every child runs
 //	                              inside a job object; timeout, cancel
@@ -23,9 +23,13 @@
 //	Net.Mode != NetDefault        errdefs.NotAvailable (no AppContainer
 //	                              / Windows Filtering Platform backend
 //	                              yet).
-//	Write == WriteReadOnly        errdefs.NotAvailable (no OS-level
-//	                              write confinement yet; phase 2 adds
-//	                              restricted tokens + ACLs).
+//	Write == WriteReadOnly        enforced when the runner is built
+//	                              with WithWriteConfinement: the child
+//	                              runs with a restricted, Low-integrity
+//	                              token and only the explicitly granted
+//	                              paths are writable. Without the
+//	                              option the call fails with
+//	                              errdefs.NotAvailable.
 //	Resources.MemoryBytes         enforced as a job-wide memory limit
 //	                              (JOB_OBJECT_LIMIT_JOB_MEMORY).
 //	Resources.CPUMillicores       enforced as a per-process user-time
@@ -50,6 +54,30 @@
 //	                              not SessionBudgetExceeded (no
 //	                              limit-violation notification port is
 //	                              wired up yet).
+//
+// # Write confinement notes
+//
+// WithWriteConfinement, the runner root (plus WithWritablePaths
+// entries) is labeled Low integrity (SYSTEM_MANDATORY_LABEL_ACE with
+// NO_WRITE_UP) so the Low-integrity child can write there and read
+// everywhere else. Caveats:
+//
+//   - The label changes are persistent on the workspace directories
+//     (they are not reverted on Close); this is the same "the
+//     workspace is writable by low-integrity processes" model as a
+//     Low-integrity cache dir.
+//   - The child gets its own Low-labeled TEMP/TMP scratch dir
+//     (flowcraft-low-*) because the user's Medium temp is
+//     write-denied for a Low subject; it is removed on Runner.Close.
+//   - CreateProcessAsUser requires the host to hold
+//     SE_INCREASE_QUOTA_NAME; ordinary desktop processes usually do
+//     not have it, so write-confined spawns may fail with
+//     errdefs.NotAvailable unless the host runs elevated or as a
+//     service. The backend fails closed rather than degrading to an
+//     unsandboxed spawn.
+//   - CreateProcessAsUser places the child on a non-interactive window
+//     station, so GUI applications will not be visible. Console /
+//     CLI tools are unaffected.
 //
 // # Files
 //
