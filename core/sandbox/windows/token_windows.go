@@ -3,6 +3,7 @@
 package windows
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -69,19 +70,35 @@ func restrictToken() (xwin.Token, error) {
 	return restricted, nil
 }
 
-// enableQuotaPrivilege enables SE_INCREASE_QUOTA_NAME on the current
-// process token; CreateProcessAsUser requires it. Admin tokens carry
-// it disabled, so it must be enabled per spawn; ordinary user tokens
-// do not carry it at all and CreateProcessAsUser then fails with
-// ERROR_PRIVILEGE_NOT_HELD, which the runner maps to NotAvailable.
-func enableQuotaPrivilege() error {
-	name, err := xwin.UTF16PtrFromString("SeIncreaseQuotaPrivilege")
+// enableCreateProcessAsUserPrivileges enables the privileges
+// CreateProcessAsUser requires on the current process token:
+// SE_INCREASE_QUOTA_NAME (always required) and
+// SE_ASSIGNPRIMARYTOKEN_NAME (required when the restricted-own-token
+// carve-out does not apply). Admin tokens carry both disabled, so they
+// must be enabled per spawn; ordinary user tokens may not carry them
+// at all, in which case the returned error lets the runner fail
+// closed instead of degrading to an unsandboxed spawn.
+func enableCreateProcessAsUserPrivileges() error {
+	for _, name := range []string{"SeIncreaseQuotaPrivilege", "SeAssignPrimaryTokenPrivilege"} {
+		if err := enablePrivilege(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enablePrivilege enables one named privilege on the current process
+// token and verifies the result: AdjustTokenPrivileges reports
+// ERROR_NOT_ALL_PRIVILEGES_ASSIGNED via its last-error without failing
+// the call, so a missing privilege must be detected by re-querying.
+func enablePrivilege(name string) error {
+	name16, err := xwin.UTF16PtrFromString(name)
 	if err != nil {
-		return errdefs.Internal(fmt.Errorf("windows: encode quota privilege name: %w", err))
+		return errdefs.Internal(fmt.Errorf("windows: encode privilege name %s: %w", name, err))
 	}
 	var luid xwin.LUID
-	if err := xwin.LookupPrivilegeValue(nil, name, &luid); err != nil {
-		return errdefs.Internal(fmt.Errorf("windows: lookup quota privilege: %w", err))
+	if err := xwin.LookupPrivilegeValue(nil, name16, &luid); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: lookup privilege %s: %w", name, err))
 	}
 	var token xwin.Token
 	if err := xwin.OpenProcessToken(xwin.CurrentProcess(),
@@ -97,7 +114,40 @@ func enableQuotaPrivilege() error {
 		}},
 	}
 	if err := xwin.AdjustTokenPrivileges(token, false, &tp, 0, nil, nil); err != nil {
-		return errdefs.Internal(fmt.Errorf("windows: enable quota privilege: %w", err))
+		return errdefs.Internal(fmt.Errorf("windows: enable privilege %s: %w", name, err))
+	}
+	enabled, err := privilegeEnabled(token, luid)
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return errdefs.NotAvailablef(
+			"windows: privilege %s is not present in the host token; write confinement requires an elevated host",
+			name)
 	}
 	return nil
+}
+
+// privilegeEnabled reports whether luid is enabled in token.
+func privilegeEnabled(token xwin.Token, luid xwin.LUID) (bool, error) {
+	var size uint32
+	if err := xwin.GetTokenInformation(token, xwin.TokenPrivileges, nil, 0, &size); err != nil {
+		if !errors.Is(err, xwin.ERROR_INSUFFICIENT_BUFFER) {
+			return false, errdefs.Internal(fmt.Errorf("windows: query privilege size: %w", err))
+		}
+	}
+	if size == 0 || size > 64*1024 {
+		return false, errdefs.Internal(fmt.Errorf("windows: unexpected privilege buffer size %d", size))
+	}
+	buf := make([]byte, size)
+	if err := xwin.GetTokenInformation(token, xwin.TokenPrivileges, &buf[0], size, &size); err != nil {
+		return false, errdefs.Internal(fmt.Errorf("windows: query privileges: %w", err))
+	}
+	tp := (*xwin.Tokenprivileges)(unsafe.Pointer(&buf[0]))
+	for _, p := range tp.AllPrivileges() {
+		if p.Luid == luid {
+			return p.Attributes&xwin.SE_PRIVILEGE_ENABLED != 0, nil
+		}
+	}
+	return false, nil
 }

@@ -81,7 +81,7 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		// reads everywhere, writes only where the mandatory label was
 		// lowered. The handle stays valid through Start (the process
 		// copies the token); closing it after is safe.
-		if err := enableQuotaPrivilege(); err != nil {
+		if err := enableCreateProcessAsUserPrivileges(); err != nil {
 			return abort(err)
 		}
 		token, err := restrictToken()
