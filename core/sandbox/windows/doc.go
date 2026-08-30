@@ -49,11 +49,9 @@
 //	                              to TerminateJobObject (Windows has no
 //	                              SIGTERM equivalent).
 //	Exit classification           a process killed by a job memory or
-//	                              cpu-time cap is reported as a plain
-//	                              SessionExited with the job exit code,
-//	                              not SessionBudgetExceeded (no
-//	                              limit-violation notification port is
-//	                              wired up yet).
+//	                              cpu-time cap is reported as
+//	                              SessionBudgetExceeded via the job
+//	                              object's completion-port messages.
 //
 // # Write confinement notes
 //

@@ -5,6 +5,7 @@ package windows
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -18,7 +19,111 @@ import (
 // terminating the job kills every descendant (not just the leader)
 // and job limits apply across the whole tree.
 type job struct {
-	h xwin.Handle
+	h      xwin.Handle
+	notify *jobNotifier // nil when no resource caps are configured
+}
+
+// Job completion-port message codes (winnt.h).
+const (
+	jobObjectMsgEndOfProcessTime = 3
+	jobObjectMsgJobMemoryLimit   = 10
+
+	// notifierKey is the completion key recorded in the job
+	// association; notifierStop is the sentinel posted to shut the
+	// notifier down. The two must differ so a stop cannot be confused
+	// with a job message (which carries notifierKey).
+	notifierKey  = uintptr(0x5A5A5A5A)
+	notifierStop = uintptr(0x5A5A5A5B)
+)
+
+// associateCompletionPort mirrors JOBOBJECT_ASSOCIATE_COMPLETION_PORT.
+type associateCompletionPort struct {
+	CompletionKey  uintptr
+	CompletionPort xwin.Handle
+}
+
+// jobNotifier drains a job object's completion port and records which
+// resource cap the kernel enforced, so a cap kill can be classified as
+// SessionBudgetExceeded instead of a plain exit.
+type jobNotifier struct {
+	port   xwin.Handle
+	done   chan struct{}
+	mu     sync.Mutex
+	budget string // "memory" or "cpu"; first cap wins
+}
+
+func (n *jobNotifier) setBudget(cap string) {
+	n.mu.Lock()
+	if n.budget == "" {
+		n.budget = cap
+	}
+	n.mu.Unlock()
+}
+
+func (n *jobNotifier) budgetCap() string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.budget
+}
+
+// run drains completion messages until stop posts the sentinel or the
+// port is closed.
+func (n *jobNotifier) run() {
+	defer close(n.done)
+	for {
+		var qty uint32
+		var key uintptr
+		var ovl *xwin.Overlapped
+		if err := xwin.GetQueuedCompletionStatus(n.port, &qty, &key, &ovl, xwin.INFINITE); err != nil {
+			return
+		}
+		if key == notifierStop {
+			return
+		}
+		switch qty {
+		case jobObjectMsgJobMemoryLimit:
+			n.setBudget("memory")
+		case jobObjectMsgEndOfProcessTime:
+			n.setBudget("cpu")
+		}
+	}
+}
+
+// stop posts the sentinel, waits for the drain goroutine (bounded),
+// and closes the port.
+func (n *jobNotifier) stop() {
+	if n == nil {
+		return
+	}
+	_ = xwin.PostQueuedCompletionStatus(n.port, 0, notifierStop, nil)
+	select {
+	case <-n.done:
+	case <-time.After(2 * time.Second):
+	}
+	_ = xwin.CloseHandle(n.port)
+}
+
+// newJobNotifier creates a completion port, associates it with the job
+// so limit-violation messages are delivered, and starts the drain
+// goroutine.
+func newJobNotifier(jobHandle xwin.Handle) (*jobNotifier, error) {
+	port, err := xwin.CreateIoCompletionPort(xwin.InvalidHandle, 0, 0, 1)
+	if err != nil {
+		return nil, errdefs.Internal(fmt.Errorf("windows: create job completion port: %w", err))
+	}
+	n := &jobNotifier{
+		port: port,
+		done: make(chan struct{}),
+	}
+	assoc := associateCompletionPort{CompletionKey: notifierKey, CompletionPort: port}
+	if _, err := xwin.SetInformationJobObject(jobHandle,
+		xwin.JobObjectAssociateCompletionPortInformation,
+		uintptr(unsafe.Pointer(&assoc)), uint32(unsafe.Sizeof(assoc))); err != nil {
+		_ = xwin.CloseHandle(port)
+		return nil, errdefs.Internal(fmt.Errorf("windows: associate job completion port: %w", err))
+	}
+	go n.run()
+	return n, nil
 }
 
 // createJob creates an anonymous job with limits derived from the
@@ -40,7 +145,23 @@ func createJob(limits sandbox.ResourceLimits, timeout time.Duration) (*job, erro
 		_ = j.close()
 		return nil, errdefs.Internal(fmt.Errorf("windows: set job limits: %w", err))
 	}
+	if limits.MemoryBytes > 0 || limits.CPUMillicores > 0 {
+		notify, err := newJobNotifier(h)
+		if err != nil {
+			_ = j.close()
+			return nil, err
+		}
+		j.notify = notify
+	}
 	return j, nil
+}
+
+// budgetCap reports which resource cap the kernel enforced, if any.
+func (j *job) budgetCap() string {
+	if j.notify == nil {
+		return ""
+	}
+	return j.notify.budgetCap()
 }
 
 // jobLimits maps sandbox.ResourceLimits onto the Windows extended
@@ -108,6 +229,9 @@ func (j *job) terminate() error {
 // close releases the job handle. With KILL_ON_JOB_CLOSE set, closing
 // the last handle terminates all remaining processes.
 func (j *job) close() error {
+	if j.notify != nil {
+		j.notify.stop()
+	}
 	return xwin.CloseHandle(j.h)
 }
 

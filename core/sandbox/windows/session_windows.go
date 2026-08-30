@@ -351,6 +351,21 @@ func (s *winSession) classifyExit(waitErr error) (sandbox.SessionExit, error) {
 	timedOut := s.timedOut
 	terminated := s.terminated
 	s.mu.Unlock()
+	// A cap-kill completion message can land a moment after the
+	// process exits; give the notifier a short grace window so a
+	// kernel-enforced limit is classified as BudgetExceeded rather
+	// than a plain exit.
+	if s.job.notify != nil {
+		deadline := time.Now().Add(100 * time.Millisecond)
+		for s.job.budgetCap() == "" && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if cap := s.job.budgetCap(); cap != "" {
+			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionBudgetExceeded},
+				errdefs.BudgetExceededf(
+					"windows: %s resource cap exceeded while running process", cap)
+		}
+	}
 	if timedOut {
 		return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTimedOut},
 			errdefs.FromContext(fmt.Errorf(

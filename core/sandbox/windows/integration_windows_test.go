@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/sandbox"
 )
 
@@ -138,6 +139,42 @@ func TestSessionStdin(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello world") {
 		t.Fatalf("output = %q, want echoed stdin", out)
+	}
+}
+
+func TestExecBudgetExceededMemory(t *testing.T) {
+	r := mustNewRunner(t)
+	_, err := r.Exec(context.Background(), "powershell",
+		[]string{"-NoProfile", "-Command", "$a = New-Object byte[] 400MB"},
+		sandbox.ExecOptions{
+			Timeout: 20 * time.Second,
+			Resources: sandbox.ResourceLimits{
+				MemoryBytes: 32 << 20,
+			},
+		})
+	if err == nil {
+		t.Fatal("Exec succeeded, want budget exceeded")
+	}
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("err = %v, want BudgetExceeded", err)
+	}
+}
+
+func TestExecBudgetExceededCPU(t *testing.T) {
+	r := mustNewRunner(t)
+	_, err := r.Exec(context.Background(), "powershell",
+		[]string{"-NoProfile", "-Command", "while ($true) { 1 }"},
+		sandbox.ExecOptions{
+			Timeout: 10 * time.Second,
+			Resources: sandbox.ResourceLimits{
+				CPUMillicores: 200,
+			},
+		})
+	if err == nil {
+		t.Fatal("Exec succeeded, want budget exceeded")
+	}
+	if !errdefs.IsBudgetExceeded(err) {
+		t.Fatalf("err = %v, want BudgetExceeded", err)
 	}
 }
 
