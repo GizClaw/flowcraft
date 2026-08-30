@@ -2,6 +2,7 @@ package sandbox_test
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -18,7 +19,19 @@ func localRunner(t *testing.T) *local.Runner {
 	return local.New(t.TempDir())
 }
 
+// skipOnWindows guards tests that exercise the unix-only session
+// machinery of core/sandbox/local (pty / process groups / signals).
+// The windows backend has its own integration coverage in
+// core/sandbox/windows.
+func skipOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("sandbox/local sessions require a unix platform")
+	}
+}
+
 func TestExecEcho(t *testing.T) {
+	skipOnWindows(t)
 	result, err := sandbox.Exec(
 		context.Background(), localRunner(t), "echo", []string{"hi"}, sandbox.ExecOptions{})
 	if err != nil {
@@ -30,6 +43,7 @@ func TestExecEcho(t *testing.T) {
 }
 
 func TestExecStdin(t *testing.T) {
+	skipOnWindows(t)
 	result, err := sandbox.Exec(
 		context.Background(), localRunner(t), "cat", nil,
 		sandbox.ExecOptions{Stdin: []byte("hello")})
@@ -42,6 +56,7 @@ func TestExecStdin(t *testing.T) {
 }
 
 func TestExecNonZeroExit(t *testing.T) {
+	skipOnWindows(t)
 	result, err := sandbox.Exec(
 		context.Background(), localRunner(t), "sh",
 		[]string{"-c", "exit 3"}, sandbox.ExecOptions{})
@@ -54,6 +69,7 @@ func TestExecNonZeroExit(t *testing.T) {
 }
 
 func TestExecTruncatesOutput(t *testing.T) {
+	skipOnWindows(t)
 	result, err := sandbox.Exec(
 		context.Background(), localRunner(t), "sh",
 		[]string{"-c", "printf 'abcdefghijklmnopqrstuvwxyz'"},
@@ -67,6 +83,7 @@ func TestExecTruncatesOutput(t *testing.T) {
 }
 
 func TestExecTimeout(t *testing.T) {
+	skipOnWindows(t)
 	_, err := sandbox.Exec(
 		context.Background(), localRunner(t), "sleep", []string{"5"},
 		sandbox.ExecOptions{Timeout: 200 * time.Millisecond})
@@ -79,6 +96,7 @@ func TestExecTimeout(t *testing.T) {
 }
 
 func TestRunnerExecMethod(t *testing.T) {
+	skipOnWindows(t)
 	result, err := localRunner(t).Exec(
 		context.Background(), "echo", []string{"ok"}, sandbox.ExecOptions{})
 	if err != nil {

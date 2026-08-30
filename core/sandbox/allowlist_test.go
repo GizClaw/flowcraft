@@ -191,6 +191,7 @@ func TestAllowlistNotAllowedPredicate(t *testing.T) {
 }
 
 func TestWithApprovalUsesAllowlist(t *testing.T) {
+	skipOnWindows(t)
 	inner := localRunner(t)
 	var approvals atomic.Int64
 	approve := sandbox.ApprovalFunc(func(context.Context, sandbox.ApprovalRequest) (sandbox.Decision, error) {
