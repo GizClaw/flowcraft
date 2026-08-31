@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -64,7 +65,7 @@ func (w *LocalWorkspace) Sub(prefix string) (*LocalWorkspace, error) {
 		return nil, fmt.Errorf("workspace local sub: open root %q: %w", cleaned, err)
 	}
 	root := local.Root()
-	if root != w.Root() && !strings.HasPrefix(root, w.Root()+string(filepath.Separator)) {
+	if !containedIn(root, w.Root()) {
 		return nil, fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, cleaned)
 	}
 	return local, nil
@@ -247,7 +248,7 @@ func (w *LocalWorkspace) resolve(path string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, path)
 	}
 	full := filepath.Join(w.root, cleaned)
-	if !strings.HasPrefix(full, w.root+string(filepath.Separator)) && full != w.root {
+	if !containedIn(full, w.root) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, path)
 	}
 
@@ -257,10 +258,24 @@ func (w *LocalWorkspace) resolve(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workspace: resolve %s: %w", path, err)
 	}
-	if !strings.HasPrefix(real, w.root+string(filepath.Separator)) && real != w.root {
+	if !containedIn(real, w.root) {
 		return "", fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, path)
 	}
 	return full, nil
+}
+
+// containedIn reports whether path is root itself or directly under
+// it. Paths are case-insensitive on Windows, so the prefix check must
+// fold case there; on case-sensitive filesystems it is byte-exact.
+func containedIn(path, root string) bool {
+	if path == root {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return strings.HasPrefix(strings.ToLower(path),
+			strings.ToLower(root)+string(filepath.Separator))
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // evalExistingPrefix resolves symlinks for the longest existing ancestor of

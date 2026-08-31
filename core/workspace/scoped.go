@@ -183,9 +183,9 @@ func (s *ScopedWorkspace) logViolation(ctx context.Context, op, path, reason str
 //
 // To match a file extension at any depth, use the explicit "**/*.ext" form.
 func matchesAny(path string, patterns []string) bool {
-	path = filepath.ToSlash(path)
+	path = foldCase(filepath.ToSlash(path))
 	for _, p := range patterns {
-		p = filepath.ToSlash(p)
+		p = foldCase(filepath.ToSlash(p))
 		if strings.HasSuffix(p, "/**") {
 			prefix := strings.TrimSuffix(p, "/**")
 			if strings.HasPrefix(prefix, "**/") {
