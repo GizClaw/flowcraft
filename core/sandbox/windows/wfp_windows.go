@@ -215,8 +215,11 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 		DisplayData: wfpDisplayData{Name: name},
 		// Maximum UINT16 weight: the sublayer must be evaluated before
 		// the built-in MPSSVC_APP_ISOLATION sublayer, whose AppContainer
-		// capability filters (e.g. the InternetClient permit) terminate
-		// classification before our package-SID block would be reached.
+		// default deny for a capability-less container would otherwise
+		// block the loopback enforcement proxy too. Evaluating our
+		// sublayer first lets the proxy-port permit terminate
+		// classification, while everything else still falls through to
+		// the AppIsolation default deny.
 		Weight: 0xffff,
 	}
 	r1, _, e1 := procFwpmSubLayerAdd0.Call(

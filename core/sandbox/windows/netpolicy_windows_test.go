@@ -127,7 +127,8 @@ func TestExecNetAllowList(t *testing.T) {
 // TestNetAllowListPinsToProxy verifies the WFP layer: with
 // allow_list mode the container may only reach the enforcement proxy
 // port, so a raw outbound TCP dial (which ignores proxy env) fails
-// even though the container carries the InternetClient capability.
+// even though the container would otherwise be reachable through the
+// proxy.
 func TestNetAllowListPinsToProxy(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
@@ -150,11 +151,11 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 	}
 }
 
-// TestNetAllowListBlocksUDP is the differential UDP check: ALE
-// filters classify the first send from an unconnected UDP socket at
-// AUTH_CONNECT, so a raw UDP sendto under allow-list must fail even
-// though the container carries the internetClient capability (DNS
-// tunneling via unconnected UDP is not a valid egress path).
+// TestNetAllowListBlocksUDP is the differential UDP check: unconnected
+// UDP sendto is classified at ALE_AUTH_SEND, which carries no filters,
+// so the block relies on the AppIsolation default-deny of the
+// capability-less container rather than the WFP filters (DNS tunneling
+// via unconnected UDP must not be a valid egress path).
 func TestNetAllowListBlocksUDP(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)

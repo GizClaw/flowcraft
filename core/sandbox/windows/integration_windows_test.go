@@ -364,10 +364,15 @@ func TestExecBudgetExceededMemory(t *testing.T) {
 
 func TestExecBudgetExceededCPU(t *testing.T) {
 	r := mustNewRunner(t)
-	_, err := r.Exec(context.Background(), "cmd",
-		[]string{"/c", "for /L %i in (1,1,100000000) do rem"},
+	// A tight PowerShell loop burns a full core as user time. The
+	// budget is Timeout x millicores / 1000 = 3s of user time, which
+	// the loop exhausts in a few seconds of wall clock, well inside
+	// the 30s deadline — unlike a cmd `for /L ... do rem` loop, which
+	// can idle in kernel waits and miss a tight 10s window.
+	_, err := r.Exec(context.Background(), "powershell",
+		[]string{"-NoProfile", "-Command", "$x = 0L; while ($true) { $x++ }"},
 		sandbox.ExecOptions{
-			Timeout: 10 * time.Second,
+			Timeout: 30 * time.Second,
 			Resources: sandbox.ResourceLimits{
 				CPUMillicores: 100,
 			},

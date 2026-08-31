@@ -20,10 +20,7 @@ var (
 	// CreateAppContainerToken is a SecurityBaseApi function exported
 	// from kernelbase (not userenv, despite the profile functions
 	// living there; kernel32 does not forward it either).
-	procCreateAppContainerToken = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("CreateAppContainerToken")
-	// DeriveCapabilitySidsFromName is a SecurityBaseApi function,
-	// exported from kernelbase (not kernel32).
-	procDeriveCapabilitySids      = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("DeriveCapabilitySidsFromName")
+	procCreateAppContainerToken   = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("CreateAppContainerToken")
 	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
 	// SetEntriesInAcl is a header macro; the real export is the
 	// Unicode variant.
@@ -111,10 +108,11 @@ type securityCapabilities struct {
 
 // createAppContainerToken derives an AppContainer (lowbox) token from
 // an existing token. The resulting token carries the package SID as
-// its user — which is what WFP scopes network filters on — plus the
-// named capabilities (e.g. InternetClient for allow_list / proxy
-// modes). The export lives in kernelbase and follows BOOL semantics
-// (nonzero success), matching Chromium's production usage.
+// its user — which is what WFP scopes network filters on — plus any
+// capability SIDs passed in. netIsolation passes none in every mode,
+// keeping the container subject to the firewall's AppIsolation
+// default-deny. The export lives in kernelbase and follows BOOL
+// semantics (nonzero success), matching Chromium's production usage.
 func createAppContainerToken(base xwin.Token, sid *xwin.SID, caps []*xwin.SID) (xwin.Token, error) {
 	sc := securityCapabilities{AppContainerSid: sid}
 	attrs := sidAttrs(caps)
@@ -133,49 +131,6 @@ func createAppContainerToken(base xwin.Token, sid *xwin.SID, caps []*xwin.SID) (
 			"windows: create appcontainer token: 0x%x (%v)", r1, e1))
 	}
 	return lowbox, nil
-}
-
-// capabilitySids resolves a named capability (e.g. "internetClient")
-// into its SID. The API returns a SID_AND_ATTRIBUTES array backed by
-// one LocalAlloc block; each SID is cloned onto the Go heap with
-// sid.Copy before the block is freed, so the returned SIDs are
-// owned by the caller and need no cleanup.
-func capabilitySids(name string) ([]*xwin.SID, error) {
-	namePtr, err := xwin.UTF16PtrFromString(name)
-	if err != nil {
-		return nil, errdefs.Internal(fmt.Errorf("windows: encode capability name: %w", err))
-	}
-	var groupSids, capSids *sidAndAttributes
-	var groupCount, capCount uint32
-	r1, _, e1 := procDeriveCapabilitySids.Call(
-		uintptr(unsafe.Pointer(namePtr)),
-		uintptr(unsafe.Pointer(&groupSids)),
-		uintptr(unsafe.Pointer(&groupCount)),
-		uintptr(unsafe.Pointer(&capSids)),
-		uintptr(unsafe.Pointer(&capCount)),
-	)
-	if r1 == 0 {
-		return nil, errdefs.Internal(fmt.Errorf(
-			"windows: derive capability sids %q: %v", name, e1))
-	}
-	defer func() {
-		if groupSids != nil {
-			_, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(groupSids)))
-		}
-		if capSids != nil {
-			_, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(capSids)))
-		}
-	}()
-	sids := make([]*xwin.SID, 0, int(capCount))
-	for _, sa := range unsafe.Slice(capSids, int(capCount)) {
-		clone, err := sa.Sid.Copy()
-		if err != nil {
-			return nil, errdefs.Internal(fmt.Errorf(
-				"windows: copy capability sid: %w", err))
-		}
-		sids = append(sids, clone)
-	}
-	return sids, nil
 }
 
 // sidAttrs wraps capability SIDs in the SID_AND_ATTRIBUTES layout

@@ -26,17 +26,20 @@
 //	                              non-default mode runs the child
 //	                              under an AppContainer token scoped to
 //	                              one per-runner profile. NetDenyAll
-//	                              grants no network capabilities, so
-//	                              the OS firewall blocks it at the
+//	                              runs without any network capability,
+//	                              so the OS firewall's AppIsolation
+//	                              default-deny blocks everything at the
 //	                              kernel. NetAllowList / NetProxy add
-//	                              the InternetClient capability, pin
-//	                              the container to a host-side
-//	                              enforcement proxy with WFP filters on
-//	                              the package SID (only the loopback
-//	                              proxy port is reachable), and inject
-//	                              the proxy environment. Hosts without
-//	                              AppContainer-profile or WFP-engine
-//	                              access fail closed with
+//	                              a maximum-weight WFP permit sublayer
+//	                              that pins the container to a
+//	                              host-side enforcement proxy (only
+//	                              the loopback proxy port is
+//	                              reachable; every other packet,
+//	                              including unconnected UDP, still
+//	                              falls through to the default deny)
+//	                              and inject the proxy environment.
+//	                              Hosts without AppContainer-profile or
+//	                              WFP-engine access fail closed with
 //	                              errdefs.NotAvailable.
 //	Write == WriteReadOnly        enforced when the runner is built
 //	                              with WithWriteConfinement: the child

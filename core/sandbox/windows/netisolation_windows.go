@@ -29,12 +29,20 @@ import (
 // restrictions (and, for allow_list / proxy modes, WFP filters) can
 // be scoped to exactly the sandboxed process tree.
 //
-// An AppContainer without network capabilities is denied all network
-// access by the OS firewall — that is how NetDenyAll is enforced with
-// no WFP involvement. Writable paths are granted to the package SID
-// through the filesystem DACL, and HOME / TEMP are redirected into a
-// per-runner sandbox directory, because AppContainers cannot read the
-// user profile by default.
+// The container is created without any network capability, so the OS
+// firewall's built-in AppIsolation sublayer denies all network access
+// by default — that is how NetDenyAll is enforced with no WFP
+// involvement. Allow-list / proxy modes add a maximum-weight WFP
+// sublayer that permits only TCP to the loopback enforcement proxy;
+// every other packet (unconnected UDP, ICMP, inbound, raw, ...) still
+// falls through to the AppIsolation default-deny. Dropping
+// internetClient entirely is what closes the unconnected-UDP sendto
+// bypass: ALE_AUTH_CONNECT filters never see those packets, but a
+// capability-less container has no firewall baseline to allow them.
+// Writable paths are granted to the package SID through the filesystem
+// DACL, and HOME / TEMP are redirected into a per-runner sandbox
+// directory, because AppContainers cannot read the user profile by
+// default.
 type netIsolation struct {
 	name  string
 	sid   *xwin.SID
@@ -66,18 +74,13 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 	}
 	name := "flowcraft.sandbox." + hex.EncodeToString(raw[:])
 
+	// No network capabilities in any mode. The built-in AppIsolation
+	// firewall sublayer denies all network for a capability-less
+	// container; allow-list / proxy modes add a higher-weight WFP
+	// permit sublayer for the loopback proxy only, so everything else
+	// (including unconnected UDP sendto, which never reaches the
+	// ALE_AUTH_CONNECT filters) is still denied by default.
 	var caps []*xwin.SID
-	var err error
-	if mode != corenet.NetDenyAll {
-		// InternetClient lets the OS firewall baseline "outbound
-		// allowed"; the WFP filters below pin it to the proxy port.
-		caps, err = capabilitySids("internetClient")
-		if err != nil {
-			return nil, err
-		}
-	}
-	// NetDenyAll gets no capabilities, so the firewall blocks all
-	// network for the container with no WFP involvement.
 	sid, err := createAppContainerProfile(name, "flowcraft sandbox", caps)
 	if err != nil {
 		return nil, err
@@ -154,9 +157,14 @@ func (n *netIsolation) setupHome() error {
 
 // setupProxy starts the host-side enforcement proxy on a loopback
 // port and pins the container's network to it with WFP filters: only
-// TCP to 127.0.0.1 / ::1 on that port is permitted, everything else
-// is blocked at the ALE_AUTH_CONNECT layer for this package SID. The
-// proxy applies the allow-list / upstream decisions.
+// TCP to 127.0.0.1 / ::1 on that port is permitted at the
+// ALE_AUTH_CONNECT layer for this package SID; an explicit block
+// filter covers every other connect, and everything the filters do
+// not see (unconnected UDP, ICMP, inbound) is denied by the
+// AppIsolation default of the capability-less container. The permit
+// filters live in the maximum-weight sublayer, so they are evaluated
+// before AppIsolation and the proxy stays reachable. The proxy applies
+// the allow-list / upstream decisions.
 func (n *netIsolation) setupProxy() error {
 	proxy, err := corenet.Start(corenet.ProxyConfig{
 		Mode:        n.policy.Mode,
