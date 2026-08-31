@@ -16,8 +16,8 @@ import (
 // every address type.
 func TestReadSocks5Request(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -44,8 +44,8 @@ func TestReadSocks5Request(t *testing.T) {
 
 func TestReadSocks5RequestIPv6AndCIDRHost(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -77,8 +77,8 @@ func TestReadSocks5RequestIPv6AndCIDRHost(t *testing.T) {
 
 func TestReadSocks5RequestRejectsBadVersion(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -97,8 +97,8 @@ func TestReadSocks5RequestRejectsBadVersion(t *testing.T) {
 
 func TestReadSocks5RequestRejectsNonConnectCommand(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -131,8 +131,8 @@ func TestReadSocks5RequestRejectsNonConnectCommand(t *testing.T) {
 
 func TestReadSocks5RequestRejectsNoAuthMethod(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 
 	done := make(chan struct{})
 	go func() {
@@ -163,7 +163,7 @@ func TestSocks5ServerTunnel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("echo listen: %v", err)
 	}
-	defer echo.Close()
+	defer func() { _ = echo.Close() }()
 	go func() {
 		for {
 			c, err := echo.Accept()
@@ -171,7 +171,7 @@ func TestSocks5ServerTunnel(t *testing.T) {
 				return
 			}
 			go func() {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_, _ = io.Copy(c, c)
 			}()
 		}
@@ -179,8 +179,8 @@ func TestSocks5ServerTunnel(t *testing.T) {
 	target := echo.Addr().String()
 
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 	srv := &socks5Server{connect: func(_ context.Context, hostport string) (net.Conn, error) {
 		if hostport != target {
 			return nil, fmt.Errorf("dial %q, want %q", hostport, target)
@@ -219,8 +219,8 @@ func TestSocks5ServerTunnel(t *testing.T) {
 // as a generic SOCKS5 failure reply.
 func TestSocks5ServerDenied(t *testing.T) {
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 	srv := &socks5Server{connect: func(_ context.Context, _ string) (net.Conn, error) {
 		return nil, errDestinationNotAllowed
 	}}
@@ -246,8 +246,8 @@ func TestSocks5ServerHandshakeTimeout(t *testing.T) {
 	socks5HandshakeTimeout = 100 * time.Millisecond
 	defer func() { socks5HandshakeTimeout = old }()
 	client, server := net.Pipe()
-	defer client.Close()
-	defer server.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
 	srv := &socks5Server{connect: func(_ context.Context, _ string) (net.Conn, error) {
 		return nil, errors.New("must not dial")
 	}}
@@ -304,9 +304,10 @@ func readSocks5ReplyCode(c net.Conn) (byte, error) {
 	}
 	atyp := buf[3]
 	addrLen := 4
-	if atyp == socks5AtypIPv6 {
+	switch atyp {
+	case socks5AtypIPv6:
 		addrLen = 16
-	} else if atyp == socks5AtypDomain {
+	case socks5AtypDomain:
 		addrLen = 1
 	}
 	skip := make([]byte, addrLen+2)
@@ -320,8 +321,8 @@ func readSocks5ReplyCode(c net.Conn) (byte, error) {
 // layout used by readSocks5ReplyCode in the session tests.
 func TestWriteSocks5ReplyShape(t *testing.T) {
 	c, s := net.Pipe()
-	defer c.Close()
-	defer s.Close()
+	defer func() { _ = c.Close() }()
+	defer func() { _ = s.Close() }()
 	done := make(chan byte, 1)
 	go func() {
 		code, err := readSocks5ReplyCode(c)

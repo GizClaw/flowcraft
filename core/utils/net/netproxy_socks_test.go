@@ -20,7 +20,7 @@ import (
 // listener (the bwrap bridge path) all enforce the same allow-list.
 func TestProxySocks5AndHTTPShareListener(t *testing.T) {
 	echo := newEchoServer(t)
-	defer echo.Close()
+	defer func() { _ = echo.Close() }()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "upstream-ok")
@@ -52,14 +52,14 @@ func TestProxySocks5AndHTTPShareListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer proxy.Close()
+	defer func() { _ = proxy.Close() }()
 
 	// SOCKS5 tunnel to the allow-listed upstream.
 	conn, err := socks5Dial(proxy.Addr().String(), echo.Addr().String())
 	if err != nil {
 		t.Fatalf("socks5 dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if _, err := conn.Write([]byte("socks-ok")); err != nil {
 		t.Fatalf("socks write: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestProxySocks5AndHTTPShareListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("denied dial: %v", err)
 	}
-	defer denied.Close()
+	defer func() { _ = denied.Close() }()
 	code, err := readSocks5ReplyCode(denied)
 	if err != nil {
 		t.Fatalf("denied reply: %v", err)
@@ -96,7 +96,7 @@ func TestProxySocks5AndHTTPShareListener(t *testing.T) {
 		t.Fatalf("http through proxy: %v", err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if string(body) != "upstream-ok" {
 		t.Fatalf("http body = %q, want upstream-ok", body)
 	}
@@ -112,12 +112,12 @@ func TestProxySocks5AndHTTPShareListener(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start uds: %v", err)
 	}
-	defer udsProxy.Close()
+	defer func() { _ = udsProxy.Close() }()
 	udsConn, err := socks5DialUnix(udsProxy.SocketPath(), echo.Addr().String())
 	if err != nil {
 		t.Fatalf("uds socks5 dial: %v", err)
 	}
-	defer udsConn.Close()
+	defer func() { _ = udsConn.Close() }()
 	if _, err := udsConn.Write([]byte("uds-ok")); err != nil {
 		t.Fatalf("uds write: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestProxySocks5DenyReasonBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer proxy.Close()
+	defer func() { _ = proxy.Close() }()
 
 	httpProxy, err := url.Parse("http://" + proxy.Addr().String())
 	if err != nil {
@@ -175,7 +175,7 @@ func TestProxySocks5DenyReasonBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "blocked for the demo") {
 		t.Fatalf("deny body = %q, want reason", body)
@@ -190,30 +190,30 @@ func socks5Dial(proxyAddr, hostport string) (net.Conn, error) {
 		return nil, err
 	}
 	if err := writeSocks5Greeting(conn); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("bad port %q: %w", port, err)
 	}
 	if err := writeSocks5Connect(conn, host, portNum); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	code, err := readSocks5ReplyCode(conn)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if code != socks5Success {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("socks5 connect refused: code 0x%02x", code)
 	}
 	return conn, nil
@@ -227,21 +227,21 @@ func socks5DialCode(proxyAddr, hostport string) (net.Conn, error) {
 		return nil, err
 	}
 	if err := writeSocks5Greeting(conn); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("bad port %q: %w", port, err)
 	}
 	if err := writeSocks5Connect(conn, host, portNum); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	return conn, nil
@@ -254,30 +254,30 @@ func socks5DialUnix(sockPath, hostport string) (net.Conn, error) {
 		return nil, err
 	}
 	if err := writeSocks5Greeting(conn); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	host, port, err := net.SplitHostPort(hostport)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	portNum, err := strconv.Atoi(port)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("bad port %q: %w", port, err)
 	}
 	if err := writeSocks5Connect(conn, host, portNum); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	code, err := readSocks5ReplyCode(conn)
 	if err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if code != socks5Success {
-		conn.Close()
+		_ = conn.Close()
 		return nil, fmt.Errorf("socks5 connect refused: code 0x%02x", code)
 	}
 	return conn, nil
@@ -297,7 +297,7 @@ func newEchoServer(t *testing.T) net.Listener {
 				return
 			}
 			go func() {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				_, _ = io.Copy(c, c)
 			}()
 		}

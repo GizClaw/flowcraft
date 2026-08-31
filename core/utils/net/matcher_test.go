@@ -55,7 +55,7 @@ func TestMatcherPortSuffixAndReason(t *testing.T) {
 	if !matched || action != NetAllow {
 		t.Fatalf("10.1.2.3:53 should match the CIDR:port rule")
 	}
-	action, _, _, matched = m.MatchIP(netip.MustParseAddr("10.1.2.3"), 54)
+	_, _, _, matched = m.MatchIP(netip.MustParseAddr("10.1.2.3"), 54)
 	if matched {
 		t.Fatalf("10.1.2.3:54 should not match the CIDR:53 rule")
 	}

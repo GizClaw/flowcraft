@@ -255,7 +255,7 @@ func (p *Proxy) acceptLoop() {
 	for {
 		c, err := p.ln.Accept()
 		if err != nil {
-			p.mux.Close()
+			_ = p.mux.Close()
 			if !errors.Is(err, net.ErrClosed) {
 				telemetry.WarnErr(context.Background(), "netproxy: accept failed", err)
 			}
