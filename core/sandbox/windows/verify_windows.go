@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -55,12 +56,12 @@ func (n *netIsolation) verifyFence() error {
 	// under the same AppContainer token.
 	want := "blocked"
 	script := fmt.Sprintf(
-		"$r=@(); foreach($p in @(%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
+		"$ProgressPreference='SilentlyContinue'; $r=@(); foreach($p in @(%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
 		probePort)
 	if n.proxyPort > 0 {
 		want = "blocked,ok"
 		script = fmt.Sprintf(
-			"$r=@(); foreach($p in @(%d,%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
+			"$ProgressPreference='SilentlyContinue'; $r=@(); foreach($p in @(%d,%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
 			probePort, n.proxyPort)
 	}
 
@@ -95,13 +96,27 @@ func (n *netIsolation) verifyFence() error {
 			return errdefs.Internal(fmt.Errorf("windows: fence probe exit: %w", err))
 		}
 	}
-	got := strings.TrimSpace(out.String())
+	// PowerShell may interleave progress records (serialized as
+	// CLIXML) with the probe result even with $ProgressPreference
+	// silenced, so match the machine-readable line instead of the
+	// whole buffer.
+	m := probeResultRE.FindStringSubmatch(out.String())
+	if m == nil {
+		return errdefs.Internal(fmt.Errorf(
+			"windows: WFP fence verify failed: unexpected probe output %q, want %q",
+			strings.TrimSpace(out.String()), want))
+	}
+	got := m[1]
 	if got != want {
 		return errdefs.Internal(fmt.Errorf(
 			"windows: WFP fence verify failed: got %q, want %q", got, want))
 	}
 	return nil
 }
+
+// probeResultRE matches the single machine-readable probe result line
+// ("blocked" or "blocked,ok"), ignoring PowerShell CLIXML noise.
+var probeResultRE = regexp.MustCompile(`(?m)^(blocked(?:,ok)?)[\r\n]*$`)
 
 // encodeCommand wraps a PowerShell script in an -EncodedCommand blob
 // (UTF-16LE base64), avoiding argument-quoting fragility entirely.
