@@ -1,0 +1,148 @@
+//go:build windows
+
+package windows
+
+import (
+	"fmt"
+	"unsafe"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+	xwin "golang.org/x/sys/windows"
+)
+
+// AppContainer API declarations. x/sys/windows does not expose the
+// userenv.dll AppContainer surface or the advapi32 DACL builders, so
+// they are declared here with LazyDLL, same as the write-confinement
+// helpers in syscall_windows.go.
+var (
+	procCreateAppContainerProfile = xwin.NewLazySystemDLL("userenv.dll").NewProc("CreateAppContainerProfile")
+	procDeleteAppContainerProfile = xwin.NewLazySystemDLL("userenv.dll").NewProc("DeleteAppContainerProfile")
+	procCreateAppContainerToken   = xwin.NewLazySystemDLL("userenv.dll").NewProc("CreateAppContainerToken")
+	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
+	procSetEntriesInAcl           = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAcl")
+)
+
+// createAppContainerProfile creates a new AppContainer profile with
+// the given capabilities (nil for none) and returns its package SID.
+// Creating a profile requires an elevated host; without it the call
+// fails closed.
+func createAppContainerProfile(name, displayName string, caps []*xwin.SID) (*xwin.SID, error) {
+	namePtr, err := xwin.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, errdefs.Internal(fmt.Errorf("windows: encode appcontainer name: %w", err))
+	}
+	displayPtr, err := xwin.UTF16PtrFromString(displayName)
+	if err != nil {
+		return nil, errdefs.Internal(fmt.Errorf("windows: encode appcontainer display name: %w", err))
+	}
+	descPtr, err := xwin.UTF16PtrFromString("flowcraft sandbox network isolation")
+	if err != nil {
+		return nil, errdefs.Internal(fmt.Errorf("windows: encode appcontainer description: %w", err))
+	}
+	var capsPtr **xwin.SID
+	if len(caps) > 0 {
+		capsPtr = &caps[0]
+	}
+	var sid *xwin.SID
+	r1, _, e1 := procCreateAppContainerProfile.Call(
+		uintptr(unsafe.Pointer(namePtr)),
+		uintptr(unsafe.Pointer(displayPtr)),
+		uintptr(unsafe.Pointer(descPtr)),
+		uintptr(unsafe.Pointer(capsPtr)),
+		uintptr(len(caps)),
+		uintptr(unsafe.Pointer(&sid)),
+	)
+	if r1 != 0 {
+		// HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED): creating profiles
+		// requires an elevated host. Fail closed with NotAvailable so
+		// callers get an actionable message instead of a raw HRESULT.
+		if r1 == 0x80070005 {
+			return nil, errdefs.NotAvailablef(
+				"windows: create appcontainer profile %s: requires an elevated host (0x80070005)", name)
+		}
+		return nil, errdefs.Internal(fmt.Errorf(
+			"windows: create appcontainer profile %s: 0x%x (%v)", name, r1, e1))
+	}
+	return sid, nil
+}
+
+// deleteAppContainerProfile removes the profile. A missing profile is
+// a successful no-op so cleanup is idempotent.
+func deleteAppContainerProfile(name string) error {
+	namePtr, err := xwin.UTF16PtrFromString(name)
+	if err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: encode appcontainer name: %w", err))
+	}
+	r1, _, _ := procDeleteAppContainerProfile.Call(uintptr(unsafe.Pointer(namePtr)))
+	if r1 != 0 {
+		return errdefs.Internal(fmt.Errorf(
+			"windows: delete appcontainer profile %s: 0x%x", name, r1))
+	}
+	return nil
+}
+
+// createAppContainerToken derives an AppContainer (lowbox) token from
+// an existing token. The resulting token carries the package SID as
+// its user, which is what WFP scopes network filters on.
+func createAppContainerToken(base xwin.Token, sid *xwin.SID) (xwin.Token, error) {
+	var lowbox xwin.Token
+	r1, _, e1 := procCreateAppContainerToken.Call(
+		uintptr(base),
+		uintptr(unsafe.Pointer(sid)),
+		uintptr(unsafe.Pointer(&lowbox)),
+	)
+	if r1 != 0 {
+		return 0, errdefs.Internal(fmt.Errorf(
+			"windows: create appcontainer token: 0x%x (%v)", r1, e1))
+	}
+	return lowbox, nil
+}
+
+// grantDaclAccess adds a GRANT_ACCESS ACE for sid to path's DACL,
+// preserving every existing entry. Directories pass inherit flags so
+// future children carry the grant.
+func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) error {
+	sd, err := xwin.GetNamedSecurityInfo(path, xwin.SE_FILE_OBJECT, xwin.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: get dacl of %s: %w", path, err))
+	}
+	var present, defaulted bool
+	var dacl *xwin.ACL
+	r1, _, e1 := procGetSecurityDescriptorDacl.Call(
+		uintptr(unsafe.Pointer(sd)),
+		uintptr(unsafe.Pointer(&present)),
+		uintptr(unsafe.Pointer(&dacl)),
+		uintptr(unsafe.Pointer(&defaulted)),
+	)
+	if r1 == 0 {
+		return errdefs.Internal(fmt.Errorf("windows: read dacl of %s: %v", path, e1))
+	}
+
+	ea := xwin.EXPLICIT_ACCESS{
+		AccessPermissions: xwin.ACCESS_MASK(access),
+		AccessMode:        xwin.GRANT_ACCESS,
+		Inheritance:       inherit,
+		Trustee: xwin.TRUSTEE{
+			TrusteeForm:  xwin.TRUSTEE_IS_SID,
+			TrusteeType:  xwin.TRUSTEE_IS_UNKNOWN,
+			TrusteeValue: xwin.TrusteeValueFromObjectsAndSid(&xwin.OBJECTS_AND_SID{Sid: sid}),
+		},
+	}
+	var newDacl *xwin.ACL
+	r2, _, e2 := procSetEntriesInAcl.Call(
+		1,
+		uintptr(unsafe.Pointer(&ea)),
+		uintptr(unsafe.Pointer(dacl)),
+		uintptr(unsafe.Pointer(&newDacl)),
+	)
+	if r2 == 0 {
+		return errdefs.Internal(fmt.Errorf("windows: merge dacl of %s: %v", path, e2))
+	}
+	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(newDacl))) }()
+
+	if err := xwin.SetNamedSecurityInfo(path, xwin.SE_FILE_OBJECT,
+		xwin.DACL_SECURITY_INFORMATION, nil, nil, newDacl, nil); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: apply dacl to %s: %w", path, err))
+	}
+	return nil
+}

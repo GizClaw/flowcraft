@@ -38,7 +38,7 @@ const (
 // Policy validation belongs to the runner (validatePolicy); this
 // constructor enforces mechanics only. spec.Opts.Resources.
 // MaxOutputBytes bounds the replayable output ring when positive.
-func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, confine bool) (sandbox.Session, error) {
+func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, confine bool, iso *netIsolation) (sandbox.Session, error) {
 	if cmd == nil {
 		return nil, errdefs.Validationf("windows: nil command for process session")
 	}
@@ -47,6 +47,12 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		return nil, err
 	}
 	abort := func(err error) (sandbox.Session, error) {
+		if iso != nil {
+			if cerr := iso.Close(); cerr != nil {
+				telemetry.WarnErr(context.Background(),
+					"windows: close net isolation after start failure", cerr)
+			}
+		}
 		// KILL_ON_JOB_CLOSE terminates the child if it already ran.
 		if cerr := j.close(); cerr != nil {
 			telemetry.WarnErr(context.Background(),
@@ -65,6 +71,7 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 		job:        j,
 		stdin:      stdin,
 		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
+		netIso:     iso,
 		done:       make(chan struct{}),
 		writeSlots: make(chan struct{}, sessionWriteConcurrency),
 	}
@@ -76,7 +83,15 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 	cmd.SysProcAttr = &xwin.SysProcAttr{
 		CreationFlags: xwin.CREATE_SUSPENDED | xwin.CREATE_NO_WINDOW,
 	}
-	if confine {
+	if iso != nil {
+		// The child runs under the AppContainer token: network is
+		// kernel-isolated and writes are bounded by the package SID's
+		// DACL grants, which replace the Low-IL confinement below.
+		if err := enableCreateProcessAsUserPrivileges(); err != nil {
+			return abort(err)
+		}
+		cmd.SysProcAttr.Token = syscall.Token(iso.token)
+	} else if confine {
 		// The child runs under a restricted, Low-integrity token:
 		// reads everywhere, writes only where the mandatory label was
 		// lowered. The handle stays valid through Start (the process
@@ -204,6 +219,7 @@ type winSession struct {
 	proc       *os.Process // pipe sessions only (nil for TTY)
 	out        *outputLog
 	writeSlots chan struct{}
+	netIso     *netIsolation // net-policy sessions (nil otherwise)
 
 	pid     int           // TTY sessions: child pid (pipe: cmd.Process.Pid)
 	ttyPty  *conpty       // TTY sessions: pseudo console (nil for pipe)
@@ -426,6 +442,12 @@ func (s *winSession) Close() error {
 	if err := s.job.close(); err != nil {
 		telemetry.WarnErr(context.Background(), "windows: close job failed", err,
 			otellog.String("windows.session_id", s.id))
+	}
+	if s.netIso != nil {
+		if err := s.netIso.Close(); err != nil {
+			telemetry.WarnErr(context.Background(), "windows: close net isolation failed", err,
+				otellog.String("windows.session_id", s.id))
+		}
 	}
 	s.out.close()
 	return nil

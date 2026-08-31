@@ -20,9 +20,14 @@
 //	                              and close terminate the whole job
 //	                              (all processes, not just the leader).
 //	Env allow-list / inject       fully supported (EnvPolicy).
-//	Net.Mode != NetDefault        errdefs.NotAvailable (no AppContainer
-//	                              / Windows Filtering Platform backend
-//	                              yet).
+//	Net.Mode                     NetDefault (host networking) and
+//	                              NetDenyAll are enforced. NetDenyAll
+//	                              runs the child under an AppContainer
+//	                              token with no network capabilities,
+//	                              which the OS firewall blocks at the
+//	                              kernel. NetAllowList / NetProxy need
+//	                              the WFP port-pinning layer and are
+//	                              errdefs.NotAvailable for now.
 //	Write == WriteReadOnly        enforced when the runner is built
 //	                              with WithWriteConfinement: the child
 //	                              runs with a restricted, Low-integrity

@@ -39,7 +39,10 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     WithWriteConfinement is NotAvailable until the restricted-token
 //     spawn path is verified against a real pseudo console.
 //   - Env: fully supported (see sandbox.EnvPolicy doc).
-//   - Net.Mode != corenet.NetDefault: errdefs.NotAvailable.
+//   - Net.Mode: NetDefault (host networking) and NetDenyAll
+//     (AppContainer without network capabilities) are supported;
+//     NetAllowList / NetProxy need the WFP layer and are
+//     errdefs.NotAvailable for now.
 //   - Write == WriteReadOnly: errdefs.NotAvailable (no OS boundary to
 //     confine writes yet).
 //   - Resources.MemoryBytes: enforced as a job-wide memory limit
@@ -108,6 +111,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			sandbox.WriteReadOnly,
 		}
 	}
+	policy.NetModes = []corenet.NetMode{corenet.NetDenyAll}
 	return sandbox.Capabilities{
 		Policy:   policy,
 		Features: sandbox.SessionFeatures{TTY: true},
@@ -182,6 +186,24 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	spec.Opts.Resources.MaxOutputBytes = maxOut
 
 	env := buildEnv(spec.Opts.Env)
+	var iso *netIsolation
+	if spec.Opts.Net.Mode != corenet.NetDefault {
+		if spec.TTY {
+			return nil, errdefs.NotAvailablef(
+				"windows: TTY sessions with a net policy are not supported yet")
+		}
+		writable := r.cfg.writable
+		if spec.Opts.Write != sandbox.WriteReadOnly {
+			writable = append([]string{r.rootDir}, writable...)
+		}
+		iso, err = newNetIsolation(r.rootDir, writable, spec.Opts.Net.Mode)
+		if err != nil {
+			return nil, err
+		}
+		// AppContainer cannot read the user profile; redirect the
+		// child's home-facing env into the sandbox home.
+		env = iso.env(env)
+	}
 	if spec.TTY {
 		if r.cfg.writeConfine {
 			return nil, errdefs.NotAvailablef(
@@ -197,7 +219,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = workDir
 	cmd.Env = env
-	if r.cfg.writeConfine {
+	if iso == nil && r.cfg.writeConfine {
 		writable := r.cfg.writable
 		if spec.Opts.Write != sandbox.WriteReadOnly {
 			writable = append([]string{r.rootDir}, writable...)
@@ -213,7 +235,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	if err := ctx.Err(); err != nil {
 		return nil, errdefs.FromContext(err)
 	}
-	return startSession(ctx, spec, cmd, r.cfg.writeConfine)
+	return startSession(ctx, spec, cmd, r.cfg.writeConfine, iso)
 }
 
 // validatePolicy mirrors sandbox.ValidateExecPolicy minus the
@@ -231,8 +253,13 @@ func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
 			"windows: write policy requires the runner to be constructed with WithWriteConfinement")
 	}
 	if spec.Opts.Net.Mode != corenet.NetDefault {
-		return errdefs.NotAvailablef(
-			"windows: net policy not supported; only NetDefault is available")
+		switch spec.Opts.Net.Mode {
+		case corenet.NetDenyAll:
+			// Supported: AppContainer without network capabilities.
+		default:
+			return errdefs.NotAvailablef(
+				"windows: net mode %d not supported yet", int(spec.Opts.Net.Mode))
+		}
 	}
 	if spec.Opts.Resources.DiskBytes != 0 {
 		return errdefs.NotAvailablef(
