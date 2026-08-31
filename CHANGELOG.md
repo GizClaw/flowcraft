@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.2` - 2026-08-31
+
+### Changed
+
+- feat(core): windows sandbox backend — job-object process-tree lifecycle (kill-on-close, job-wide memory and CPU budgets, completion-port kill classification), ConPTY interactive sessions, opt-in write confinement with restricted low-integrity tokens, windows workspace path adaptation (case-insensitive matching, delete retry, rename guard, advisory permission-bit semantics), and MCP windows stdio transport with ctrl-break graceful shutdown; AppContainer-backed network policy on windows — NetDenyAll and NetAllowList/NetProxy via a capability-less lowbox token, WFP bind-layer (ALE_RESOURCE_ASSIGNMENT) TCP permit/block filters closing UDP/ICMP egress, hard ALE_AUTH_CONNECT / ALE_AUTH_RECV_ACCEPT permits pinning the container to a host-side loopback enforcement proxy (IsLoopback-scoped, deny reasons, host:port allow rules), a SOCKS5 proxy channel with HTTP(S)_PROXY/ALL_PROXY env injection, behavioral WFP fence verification, and a windows concurrency/stress test suite
 
 ## `core/v0.2.1` - 2026-08-29
 
