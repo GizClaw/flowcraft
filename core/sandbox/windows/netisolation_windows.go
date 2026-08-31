@@ -187,11 +187,13 @@ func (n *netIsolation) setupDenyAll() error {
 // port and pins the container's network to it with WFP filters: only
 // TCP to 127.0.0.1 / ::1 on the proxy port is permitted at the
 // ALE_AUTH_CONNECT layer for this package SID, and an explicit block
-// filter covers every other connect. The same TCP-to-proxy-port
-// permit is repeated at ALE_AUTH_RECV_ACCEPT with an IsLoopback
-// condition: the built-in AppContainerLoopback block lives in that
-// layer, so a connect-layer permit alone would authorize the connect
-// and then let the loopback block silently drop the proxy connection.
+// filter covers every other connect. The proxy-port permit is
+// repeated at ALE_AUTH_RECV_ACCEPT with IsLoopback conditions on both
+// endpoints: the built-in AppContainerLoopback block lives in that
+// layer and matches both the AppContainer client and the host
+// listener, so a connect-layer permit alone would authorize the
+// connect and then let the loopback block silently drop the proxy
+// connection on either side.
 // Because the AppIsolation default does not cover UDP/ICMP, the bind
 // layer (ALE_RESOURCE_ASSIGNMENT) permits only TCP binds and blocks
 // every other socket type, so no UDP or raw datagram can leave the
@@ -264,15 +266,31 @@ func (n *netIsolation) setupProxy() error {
 	// AUTH_RECV_ACCEPT layers, where the built-in AppContainerLoopback
 	// filter blocks AppContainer loopback (and, per Project Zero's
 	// analysis, makes blocked loopback connects time out rather than
-	// fail fast). Scope the exemption to the proxy remote port so the
-	// sandbox still cannot reach arbitrary host loopback services.
+	// fail fast). The block's user-ID condition matches both the
+	// AppContainer client and the host listener, so two permits are
+	// needed: one scoped to the sandbox SID on the client side (remote
+	// port == proxy), and one on the host listener side (local port ==
+	// proxy, no SID condition because the listener runs as the host
+	// user). Both are still pinned to the loopback proxy TCP port, so
+	// the sandbox cannot reach arbitrary host loopback services.
 	for _, layer := range []xwin.GUID{fwpmLayerAleAuthRecvAcceptV4, fwpmLayerAleAuthRecvAcceptV6} {
-		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy",
+		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy (client)",
 			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight,
 			[]wfpCondition{
 				sidCondition(n.sid),
 				loopbackCondition(),
 				portCondition(uint16(port)),
+				tcpProtocolCondition(),
+			}); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy (host)",
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight,
+			[]wfpCondition{
+				loopbackCondition(),
+				localPortCondition(uint16(port)),
 				tcpProtocolCondition(),
 			}); err != nil {
 			w.Close()

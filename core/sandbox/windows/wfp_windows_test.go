@@ -49,6 +49,10 @@ func TestWFPConditionConstruction(t *testing.T) {
 	if p.value.Type != wfpDataTypeUint16 || p.value.Value != 8080 {
 		t.Fatalf("port condition = %+v", p)
 	}
+	lp := localPortCondition(8080)
+	if lp.field != fwpmConditionIPLocalPort || lp.value.Type != wfpDataTypeUint16 || lp.value.Value != 8080 {
+		t.Fatalf("local port condition = %+v", lp)
+	}
 	tp := tcpProtocolCondition()
 	if tp.value.Type != wfpDataTypeUint8 || tp.value.Value != 6 {
 		t.Fatalf("protocol condition = %+v", tp)

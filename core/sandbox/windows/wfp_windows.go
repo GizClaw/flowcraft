@@ -185,6 +185,10 @@ var (
 		Data1: 0xc35a604d, Data2: 0xd22b, Data3: 0x4e1a,
 		Data4: [8]byte{0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b},
 	}
+	fwpmConditionIPLocalPort = xwin.GUID{
+		Data1: 0x0c1ba1af, Data2: 0x5765, Data3: 0x453f,
+		Data4: [8]byte{0xaf, 0x22, 0xa8, 0xf7, 0x91, 0xac, 0x77, 0x5b},
+	}
 	fwpmConditionIPProtocol = xwin.GUID{
 		Data1: 0x3971ef2b, Data2: 0x623e, Data3: 0x4f9a,
 		Data4: [8]byte{0x8c, 0xb1, 0x6e, 0x79, 0xb8, 0x06, 0xb9, 0xa7},
@@ -313,6 +317,13 @@ func v6LoopbackCondition() wfpCondition {
 func portCondition(port uint16) wfpCondition {
 	return wfpCondition{
 		field: fwpmConditionIPRemotePort,
+		value: wfpConditionValue{Type: wfpDataTypeUint16, Value: uintptr(port)},
+	}
+}
+
+func localPortCondition(port uint16) wfpCondition {
+	return wfpCondition{
+		field: fwpmConditionIPLocalPort,
 		value: wfpConditionValue{Type: wfpDataTypeUint16, Value: uintptr(port)},
 	}
 }

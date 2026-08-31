@@ -99,7 +99,9 @@ func (n *netIsolation) verifyFence() error {
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		<-done
-		return errdefs.Internal(fmt.Errorf("windows: fence probe timed out"))
+		return errdefs.Internal(fmt.Errorf(
+			"windows: fence probe timed out (partial output %q, want %q)",
+			strings.TrimSpace(out.String()), want))
 	case err := <-done:
 		if err != nil {
 			// A probe that cannot run must not be treated as a pass.
