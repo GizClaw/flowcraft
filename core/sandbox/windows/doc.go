@@ -43,11 +43,18 @@
 //	                              mechanism).
 //	Resources.MaxOutputBytes      enforced in-process, mirroring
 //	                              core/sandbox/local.
-//	Sessions                      pipe-only (no pty). TTY, Resize,
+//	Sessions                      pipe sessions (separate stdout /
+//	                              stderr streams) and TTY sessions
+//	                              through ConPTY (merged
+//	                              SessionStreamTTY output plus Resize).
 //	                              Signal and Watch return
 //	                              errdefs.NotAvailable; Terminate maps
 //	                              to TerminateJobObject (Windows has no
-//	                              SIGTERM equivalent).
+//	                              SIGTERM equivalent). TTY combined
+//	                              with WithWriteConfinement is
+//	                              NotAvailable until the
+//	                              restricted-token ConPTY spawn path is
+//	                              verified against a real console.
 //	Exit classification           a process killed by a job memory or
 //	                              cpu-time cap is reported as
 //	                              SessionBudgetExceeded via the job
@@ -85,5 +92,6 @@
 //   - Options: options.go
 //   - Job objects: job_windows.go
 //   - Sessions: session_windows.go
+//   - ConPTY: conpty_windows.go
 //   - Deployment resource: register.go
 package windows

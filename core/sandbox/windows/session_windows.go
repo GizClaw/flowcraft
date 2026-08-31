@@ -31,7 +31,7 @@ const (
 )
 
 // startSession spawns spec.Argv under a fresh job object and returns
-// a pipe-only Session. The process is created suspended
+// a pipe Session. The process is created suspended
 // (CREATE_SUSPENDED), assigned to the job before any user code runs,
 // then resumed, so grandchildren cannot escape the job's limits.
 //
@@ -114,17 +114,101 @@ func startSession(ctx context.Context, spec sandbox.SessionSpec, cmd *exec.Cmd, 
 	return s, nil
 }
 
+// startTTYSession spawns spec.Argv attached to a ConPTY pseudo console
+// under a fresh job object. The child's stdout and stderr are merged
+// into a single SessionStreamTTY stream, Resize maps to
+// ResizePseudoConsole, and CloseInput is NotAvailable (the pseudo
+// console is bidirectional). Signal stays NotAvailable: ConPTY has no
+// portable Ctrl-C delivery, and writing the 0x03 byte is only reliable
+// in cooked console modes.
+//
+// workDir and env must already be resolved by the caller (the runner
+// applies EnvPolicy and workdir validation before calling this).
+func startTTYSession(ctx context.Context, spec sandbox.SessionSpec, workDir string, env []string) (sandbox.Session, error) {
+	rows, cols := uint32(spec.Rows), uint32(spec.Cols)
+	if rows == 0 {
+		rows = defaultTTYRows
+	}
+	if cols == 0 {
+		cols = defaultTTYCols
+	}
+
+	j, err := createJob(spec.Opts.Resources, spec.Opts.Timeout)
+	if err != nil {
+		return nil, err
+	}
+	abort := func(err error) (sandbox.Session, error) {
+		if cerr := j.close(); cerr != nil {
+			telemetry.WarnErr(context.Background(),
+				"windows: close job after tty start failure", cerr)
+		}
+		return nil, err
+	}
+
+	pt, err := newConPTY(rows, cols)
+	if err != nil {
+		return abort(err)
+	}
+	procH, pid, err := pt.spawn(spec.Argv, workDir, env)
+	if err != nil {
+		_ = pt.close()
+		return abort(err)
+	}
+	s := &winSession{
+		id:         spec.ID,
+		job:        j,
+		stdin:      pt.in,
+		out:        newOutputLog(spec.Opts.Resources.MaxOutputBytes),
+		pid:        pid,
+		ttyPty:     pt,
+		ttyProc:    procH,
+		ttyCopy:    make(chan struct{}),
+		done:       make(chan struct{}),
+		writeSlots: make(chan struct{}, sessionWriteConcurrency),
+	}
+	if err := j.assign(pid); err != nil {
+		// The child never ran; make sure it cannot linger suspended.
+		_ = xwin.TerminateProcess(procH, 1)
+		_ = xwin.CloseHandle(procH)
+		_ = pt.close()
+		return abort(err)
+	}
+	if err := resumeProcess(pid); err != nil {
+		_ = xwin.TerminateProcess(procH, 1)
+		_ = xwin.CloseHandle(procH)
+		_ = pt.close()
+		return abort(err)
+	}
+
+	go s.copyTTY()
+	if spec.Opts.Timeout > 0 {
+		timer := time.AfterFunc(spec.Opts.Timeout, s.timeoutKill)
+		go func() {
+			<-s.done
+			timer.Stop()
+		}()
+	}
+	go s.reap()
+	return s, nil
+}
+
 // winSession is the concrete Windows session: the child's stdio
 // pipes, the bounded replayable output log, and the owning job
-// object.
+// object. Pipe sessions use cmd/proc/stdin; TTY sessions use
+// ttyPty/ttyProc/pid instead (cmd and proc stay nil).
 type winSession struct {
 	id         string
-	cmd        *exec.Cmd
+	cmd        *exec.Cmd // pipe sessions only (nil for TTY)
 	job        *job
 	stdin      io.WriteCloser
-	proc       *os.Process
+	proc       *os.Process // pipe sessions only (nil for TTY)
 	out        *outputLog
 	writeSlots chan struct{}
+
+	pid     int           // TTY sessions: child pid (pipe: cmd.Process.Pid)
+	ttyPty  *conpty       // TTY sessions: pseudo console (nil for pipe)
+	ttyProc xwin.Handle   // TTY sessions: child process handle
+	ttyCopy chan struct{} // TTY sessions: copy goroutine finished
 
 	mu         sync.Mutex
 	closed     bool
@@ -138,10 +222,10 @@ type winSession struct {
 func (s *winSession) ID() string { return s.id }
 
 func (s *winSession) PID() int {
-	if s.proc == nil {
-		return 0
+	if s.proc != nil {
+		return s.proc.Pid
 	}
-	return s.proc.Pid
+	return s.pid
 }
 
 func (s *winSession) Read(ctx context.Context, afterSeq int64, maxBytes int) (sandbox.SessionOutput, error) {
@@ -189,12 +273,17 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 }
 
 // CloseInput closes the session's stdin. Pipe sessions support it;
-// there are no TTY sessions on this backend.
+// TTY sessions cannot close their input (the pseudo console is
+// bidirectional) and return NotAvailable, matching the shared
+// Session contract.
 func (s *winSession) CloseInput() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
 		return sandbox.ErrSessionClosed
+	}
+	if s.ttyPty != nil {
+		return errdefs.NotAvailablef("windows: cannot close input on a TTY session")
 	}
 	if s.stdin == nil {
 		return nil
@@ -210,13 +299,27 @@ func (s *winSession) CloseInput() error {
 	return err
 }
 
-// Resize is not available: pipe sessions have no window.
-func (s *winSession) Resize(context.Context, int, int) error {
-	return errdefs.NotAvailablef("windows: Resize requires a TTY session")
+// Resize updates the pseudo console window size on TTY sessions;
+// pipe sessions have no window and return NotAvailable.
+func (s *winSession) Resize(_ context.Context, rows, cols int) error {
+	if rows <= 0 || cols <= 0 {
+		return errdefs.Validationf("windows: rows and cols must be positive")
+	}
+	if s.isClosed() {
+		return sandbox.ErrSessionClosed
+	}
+	s.mu.Lock()
+	pt := s.ttyPty
+	s.mu.Unlock()
+	if pt == nil {
+		return errdefs.NotAvailablef("windows: Resize requires a TTY session")
+	}
+	return pt.resize(uint32(rows), uint32(cols))
 }
 
 // Signal is not available: Windows has no portable Ctrl-C delivery to
-// a detached process tree. Use Terminate.
+// a detached process tree, and ConPTY's input channel does not expose
+// a reliable interrupt path. Use Terminate.
 func (s *winSession) Signal(context.Context, sandbox.SessionSignal) error {
 	return errdefs.NotAvailablef(
 		"windows: signal delivery is not supported; use Terminate")
@@ -227,10 +330,13 @@ func (s *winSession) Watch(context.Context) (sandbox.SessionWatcher, error) {
 	return nil, errdefs.NotAvailablef("windows: event streams are not supported")
 }
 
-// Capabilities declares this session's actual surface: pipe-only,
-// with no TTY / signal / event features.
+// Capabilities declares this session's actual surface: TTY sessions
+// expose Resize + merged output; signal and event features stay off.
 func (s *winSession) Capabilities() sandbox.SessionCapabilities {
-	return sandbox.SessionCapabilities{}
+	s.mu.Lock()
+	tty := s.ttyPty != nil
+	s.mu.Unlock()
+	return sandbox.SessionCapabilities{TTY: tty}
 }
 
 // Terminate stops the whole job immediately (Windows has no SIGTERM).
@@ -301,10 +407,19 @@ func (s *winSession) Close() error {
 	s.mu.Lock()
 	stdin := s.stdin
 	s.stdin = nil
+	tty := s.ttyPty != nil
 	s.mu.Unlock()
-	if stdin != nil {
+	if stdin != nil && !tty {
 		if err := stdin.Close(); err != nil {
 			telemetry.WarnErr(context.Background(), "windows: close session stdin failed", err,
+				otellog.String("windows.session_id", s.id))
+		}
+	}
+	if tty {
+		// The TTY copy loop and waitTTY own the pseudo console pipes;
+		// close is idempotent and also unblocks a stuck copy read.
+		if err := s.ttyPty.close(); err != nil {
+			telemetry.WarnErr(context.Background(), "windows: close tty failed", err,
 				otellog.String("windows.session_id", s.id))
 		}
 	}
@@ -334,9 +449,15 @@ func (s *winSession) timeoutKill() {
 // reap reaps the child, classifies the outcome, then finishes the
 // output log. cmd.Wait also waits for the stdout/stderr copy
 // goroutines (sessionWriter), so finish() after Wait never races
-// buffered output.
+// buffered output. TTY sessions wait on the raw process handle and
+// drain the pseudo console to EOF before finishing.
 func (s *winSession) reap() {
-	waitErr := s.cmd.Wait()
+	var waitErr error
+	if s.ttyPty != nil {
+		waitErr = s.waitTTY()
+	} else {
+		waitErr = s.cmd.Wait()
+	}
 	exit, err := s.classifyExit(waitErr)
 	s.mu.Lock()
 	s.exit = exit
@@ -344,6 +465,54 @@ func (s *winSession) reap() {
 	s.mu.Unlock()
 	s.out.finish()
 	close(s.done)
+}
+
+// waitTTY waits for the ConPTY child to exit, releases the console so
+// the output channel reaches EOF, and drains the remaining output. It
+// is the TTY counterpart of cmd.Wait.
+func (s *winSession) waitTTY() error {
+	if _, err := xwin.WaitForSingleObject(s.ttyProc, xwin.INFINITE); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: wait tty process: %w", err))
+	}
+	var code uint32
+	if err := xwin.GetExitCodeProcess(s.ttyProc, &code); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: read tty exit code: %w", err))
+	}
+	_ = xwin.CloseHandle(s.ttyProc)
+	s.ttyProc = 0
+
+	// Releasing the console emits the final output frame and closes
+	// the output channel; drain it before finishing the log.
+	s.ttyPty.releaseConsole()
+	select {
+	case <-s.ttyCopy:
+	case <-time.After(sessionKillTimeout):
+		// Force a stuck copy read out of the pipe.
+		_ = s.ttyPty.close()
+		<-s.ttyCopy
+	}
+	_ = s.ttyPty.close()
+
+	if code == 0 {
+		return nil
+	}
+	return &ttyExitError{code: int(code)}
+}
+
+// copyTTY drains the pseudo console output into the merged TTY
+// stream until EOF or the pipe is closed.
+func (s *winSession) copyTTY() {
+	defer close(s.ttyCopy)
+	buf := make([]byte, 32*1024)
+	for {
+		n, err := s.ttyPty.out.Read(buf)
+		if n > 0 {
+			s.out.append(sandbox.SessionStreamTTY, buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 func (s *winSession) classifyExit(waitErr error) (sandbox.SessionExit, error) {
@@ -374,7 +543,7 @@ func (s *winSession) classifyExit(waitErr error) (sandbox.SessionExit, error) {
 	if waitErr == nil {
 		return sandbox.SessionExit{Code: 0, Reason: sandbox.SessionExited}, nil
 	}
-	if exitErr, ok := waitErr.(*exec.ExitError); ok {
+	if exitErr, ok := waitErr.(interface{ ExitCode() int }); ok {
 		if terminated {
 			return sandbox.SessionExit{Code: -1, Reason: sandbox.SessionTerminated}, nil
 		}

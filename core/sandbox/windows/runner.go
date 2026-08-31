@@ -34,6 +34,10 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //   - WorkDir / Stdin / Timeout: fully supported. Every child runs in
 //     its own job; timeout/cancel closes the job and kills the whole
 //     tree, not just the leader.
+//   - TTY sessions: supported via ConPTY (merged SessionStreamTTY,
+//     Resize). Signal stays NotAvailable. TTY combined with
+//     WithWriteConfinement is NotAvailable until the restricted-token
+//     spawn path is verified against a real pseudo console.
 //   - Env: fully supported (see sandbox.EnvPolicy doc).
 //   - Net.Mode != corenet.NetDefault: errdefs.NotAvailable.
 //   - Write == WriteReadOnly: errdefs.NotAvailable (no OS boundary to
@@ -89,8 +93,8 @@ func New(rootDir string, opts ...Option) (*Runner, error) {
 // Capabilities declares the honest surface: env allow-lists and
 // job-object resource caps are always enforced; filesystem write
 // bounds are enforced when the runner was constructed with
-// WithWriteConfinement. Sessions are pipe-only (no TTY / signal /
-// event features).
+// WithWriteConfinement. TTY sessions are supported through ConPTY;
+// signal and event features are not.
 func (r *Runner) Capabilities() sandbox.Capabilities {
 	policy := sandbox.Enforcement{
 		EnvAllowList: true,
@@ -106,7 +110,7 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 	}
 	return sandbox.Capabilities{
 		Policy:   policy,
-		Features: sandbox.SessionFeatures{},
+		Features: sandbox.SessionFeatures{TTY: true},
 	}
 }
 
@@ -167,10 +171,6 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	if err := r.validatePolicy(spec); err != nil {
 		return nil, err
 	}
-	if spec.TTY {
-		return nil, errdefs.NotAvailablef(
-			"windows: TTY sessions are not supported (pipe sessions only)")
-	}
 	workDir, err := r.resolveWorkDir(spec.Opts.WorkDir)
 	if err != nil {
 		return nil, err
@@ -181,9 +181,22 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 	}
 	spec.Opts.Resources.MaxOutputBytes = maxOut
 
+	env := buildEnv(spec.Opts.Env)
+	if spec.TTY {
+		if r.cfg.writeConfine {
+			return nil, errdefs.NotAvailablef(
+				"windows: TTY sessions with write confinement are not supported yet")
+		}
+		env = sanitizeEnv(env)
+		if err := ctx.Err(); err != nil {
+			return nil, errdefs.FromContext(err)
+		}
+		return startTTYSession(ctx, spec, workDir, env)
+	}
+
 	cmd := exec.Command(spec.Argv[0], spec.Argv[1:]...)
 	cmd.Dir = workDir
-	cmd.Env = buildEnv(spec.Opts.Env)
+	cmd.Env = env
 	if r.cfg.writeConfine {
 		writable := r.cfg.writable
 		if spec.Opts.Write != sandbox.WriteReadOnly {

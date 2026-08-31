@@ -142,6 +142,173 @@ func TestSessionStdin(t *testing.T) {
 	}
 }
 
+func TestRunnerAdvertisesTTY(t *testing.T) {
+	r := mustNewRunner(t)
+	if !r.Capabilities().Features.TTY {
+		t.Fatal("Capabilities().Features.TTY = false, want true")
+	}
+}
+
+func TestPipeSessionReportsNoTTY(t *testing.T) {
+	r := mustNewRunner(t)
+	sess, err := r.Start(context.Background(), sandbox.SessionSpec{
+		Argv: []string{"cmd", "/c", "ver"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+	if sess.Capabilities().TTY {
+		t.Fatal("pipe session reports TTY = true, want false")
+	}
+}
+
+func TestSessionTTYEcho(t *testing.T) {
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sess, err := r.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"cmd", "/c", "echo", "hello", "tty"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if !sess.Capabilities().TTY {
+		t.Fatal("Capabilities().TTY = false, want true")
+	}
+	out, err := readAll(ctx, sess)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(out, "hello tty") {
+		t.Fatalf("output = %q, want 'hello tty'", out)
+	}
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 || exit.Reason != sandbox.SessionExited {
+		t.Fatalf("exit = %+v, want exited code 0", exit)
+	}
+}
+
+func TestSessionTTYInteractive(t *testing.T) {
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sess, err := r.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"cmd"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Write(ctx, []byte("echo conpty-hi\r\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := sess.Write(ctx, []byte("exit\r\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	out, err := readAll(ctx, sess)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !strings.Contains(out, "conpty-hi") {
+		t.Fatalf("output = %q, want echoed 'conpty-hi'", out)
+	}
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 || exit.Reason != sandbox.SessionExited {
+		t.Fatalf("exit = %+v, want exited code 0", exit)
+	}
+}
+
+func TestSessionTTYResize(t *testing.T) {
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sess, err := r.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"cmd"},
+		TTY:  true,
+		Rows: 30,
+		Cols: 100,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.Resize(ctx, 40, 120); err != nil {
+		t.Fatalf("Resize: %v", err)
+	}
+	if err := sess.Resize(ctx, 0, 120); err == nil {
+		t.Fatal("Resize with zero rows succeeded, want validation error")
+	}
+	if err := sess.Write(ctx, []byte("exit\r\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := readAll(ctx, sess); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	exit, err := sess.Wait(ctx)
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if exit.Code != 0 {
+		t.Fatalf("exit = %+v, want code 0", exit)
+	}
+}
+
+func TestSessionTTYCloseInputNotAvailable(t *testing.T) {
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	sess, err := r.Start(ctx, sandbox.SessionSpec{
+		Argv: []string{"cmd"},
+		TTY:  true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if err := sess.CloseInput(); !errdefs.IsNotAvailable(err) {
+		t.Fatalf("CloseInput err = %v, want NotAvailable", err)
+	}
+	if err := sess.Write(ctx, []byte("exit\r\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := readAll(ctx, sess); err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+}
+
+func TestSessionTTYWithConfinementNotAvailable(t *testing.T) {
+	r, err := New(t.TempDir(), WithWriteConfinement())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	_, err = r.Start(context.Background(), sandbox.SessionSpec{
+		Argv: []string{"cmd"},
+		TTY:  true,
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want NotAvailable")
+	}
+	if !errdefs.IsNotAvailable(err) {
+		t.Fatalf("err = %v, want NotAvailable", err)
+	}
+}
+
 func TestExecBudgetExceededMemory(t *testing.T) {
 	r := mustNewRunner(t)
 	_, err := r.Exec(context.Background(), "powershell",
