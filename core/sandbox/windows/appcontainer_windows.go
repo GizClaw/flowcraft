@@ -47,17 +47,18 @@ func createAppContainerProfile(name, displayName string, caps []*xwin.SID) (*xwi
 	if err != nil {
 		return nil, errdefs.Internal(fmt.Errorf("windows: encode appcontainer description: %w", err))
 	}
-	var capsPtr **xwin.SID
-	if len(caps) > 0 {
-		capsPtr = &caps[0]
+	attrs := sidAttrs(caps)
+	var attrsPtr *sidAndAttributes
+	if len(attrs) > 0 {
+		attrsPtr = &attrs[0]
 	}
 	var sid *xwin.SID
 	r1, _, e1 := procCreateAppContainerProfile.Call(
 		uintptr(unsafe.Pointer(namePtr)),
 		uintptr(unsafe.Pointer(displayPtr)),
 		uintptr(unsafe.Pointer(descPtr)),
-		uintptr(unsafe.Pointer(capsPtr)),
-		uintptr(len(caps)),
+		uintptr(unsafe.Pointer(attrsPtr)),
+		uintptr(len(attrs)),
 		uintptr(unsafe.Pointer(&sid)),
 	)
 	if r1 != 0 {
@@ -114,12 +115,8 @@ type securityCapabilities struct {
 // (nonzero success), matching Chromium's production usage.
 func createAppContainerToken(base xwin.Token, sid *xwin.SID, caps []*xwin.SID) (xwin.Token, error) {
 	sc := securityCapabilities{AppContainerSid: sid}
-	var attrs []sidAndAttributes
+	attrs := sidAttrs(caps)
 	if len(caps) > 0 {
-		attrs = make([]sidAndAttributes, len(caps))
-		for i, c := range caps {
-			attrs[i] = sidAndAttributes{Sid: c, Attributes: xwin.SE_GROUP_ENABLED}
-		}
 		sc.Capabilities = &attrs[0]
 		sc.CapabilityCount = uint32(len(caps))
 	}
@@ -137,20 +134,23 @@ func createAppContainerToken(base xwin.Token, sid *xwin.SID, caps []*xwin.SID) (
 }
 
 // capabilitySids resolves a named capability (e.g. "internetClient")
-// into its SID, suitable for CreateAppContainerProfile. The returned
-// SIDs are freshly allocated and must be freed with xwin.LocalFree.
+// into its SID. The API returns a SID_AND_ATTRIBUTES array backed by
+// one LocalAlloc block; each SID is cloned onto the Go heap with
+// sid.Copy before the block is freed, so the returned SIDs are
+// owned by the caller and need no cleanup.
 func capabilitySids(name string) ([]*xwin.SID, error) {
 	namePtr, err := xwin.UTF16PtrFromString(name)
 	if err != nil {
 		return nil, errdefs.Internal(fmt.Errorf("windows: encode capability name: %w", err))
 	}
-	var groupSids, capSids *xwin.SID
-	var count uint32
+	var groupSids, capSids *sidAndAttributes
+	var groupCount, capCount uint32
 	r1, _, e1 := procDeriveCapabilitySids.Call(
 		uintptr(unsafe.Pointer(namePtr)),
 		uintptr(unsafe.Pointer(&groupSids)),
+		uintptr(unsafe.Pointer(&groupCount)),
 		uintptr(unsafe.Pointer(&capSids)),
-		uintptr(unsafe.Pointer(&count)),
+		uintptr(unsafe.Pointer(&capCount)),
 	)
 	if r1 == 0 {
 		return nil, errdefs.Internal(fmt.Errorf(
@@ -164,12 +164,26 @@ func capabilitySids(name string) ([]*xwin.SID, error) {
 			_, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(capSids)))
 		}
 	}()
-	sids := make([]*xwin.SID, int(count))
-	for i := range sids {
-		sids[i] = *(**xwin.SID)(unsafe.Pointer(
-			uintptr(unsafe.Pointer(capSids)) + uintptr(i)*unsafe.Sizeof(uintptr(0))))
+	sids := make([]*xwin.SID, 0, int(capCount))
+	for _, sa := range unsafe.Slice(capSids, int(capCount)) {
+		clone, err := sa.Sid.Copy()
+		if err != nil {
+			return nil, errdefs.Internal(fmt.Errorf(
+				"windows: copy capability sid: %w", err))
+		}
+		sids = append(sids, clone)
 	}
 	return sids, nil
+}
+
+// sidAttrs wraps capability SIDs in the SID_AND_ATTRIBUTES layout
+// that CreateAppContainerProfile and CreateAppContainerToken expect.
+func sidAttrs(caps []*xwin.SID) []sidAndAttributes {
+	attrs := make([]sidAndAttributes, len(caps))
+	for i, c := range caps {
+		attrs[i] = sidAndAttributes{Sid: c, Attributes: xwin.SE_GROUP_ENABLED}
+	}
+	return attrs
 }
 
 // grantDaclAccess adds a GRANT_ACCESS ACE for sid to path's DACL,
