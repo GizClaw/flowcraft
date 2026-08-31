@@ -139,7 +139,7 @@ func TestBuilderExpandsResourceSettingsAllOpen(t *testing.T) {
 	if _, err := builder.Build(context.Background(), doc); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	if len(records) != 1 || records[0] != "/srv/flowcraft|/tmp/deploy/sub" {
+	if len(records) != 1 || records[0] != "/srv/flowcraft|"+filepath.Join("/tmp/deploy", "sub") {
 		t.Fatalf("decoded settings = %v, want env + base expanded", records)
 	}
 }
@@ -494,6 +494,10 @@ func TestBuilderFileSecretStore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok-file\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	base, err := json.Marshal(dir)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
 	var records []string
 	reg := resource.NewRegistry()
 	if err := secret.Register(reg); err != nil {
@@ -508,7 +512,7 @@ func TestBuilderFileSecretStore(t *testing.T) {
 			"secret.files": {
 				Kind: secret.ResourceKind, Impl: "file",
 				Settings: json.RawMessage(
-					`{"id": "files", "base": "` + dir + `"}`),
+					`{"id": "files", "base": ` + string(base) + `}`),
 			},
 			"a": {
 				Kind: "expand.test", Impl: "record",

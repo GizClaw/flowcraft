@@ -49,7 +49,7 @@ func TestReconnectableStdioNilEnvInheritsAtSpawn(t *testing.T) {
 	if cmd.Env != nil {
 		t.Fatalf("child env = %v, want nil (inherit at spawn)", cmd.Env)
 	}
-	if filepath.Base(cmd.Path) != "true" {
+	if base := filepath.Base(cmd.Path); base != "true" && base != "true.exe" {
 		t.Fatalf("command path = %q, want a true binary", cmd.Path)
 	}
 }

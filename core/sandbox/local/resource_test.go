@@ -2,6 +2,7 @@ package local_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -17,8 +18,12 @@ func TestRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("sandbox.Runner/local factory not registered")
 	}
+	root, err := json.Marshal(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshal root: %v", err)
+	}
 	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "` + t.TempDir() + `"}`),
+		Settings: []byte(`{"root": ` + string(root) + `}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

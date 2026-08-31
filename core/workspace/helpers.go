@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
@@ -88,6 +89,7 @@ func Walk(ctx context.Context, ws Workspace, dir string, fn WalkFunc) error {
 // The "**" component matches zero or more directory levels.
 func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 	hasDoublestar := containsDoublestar(pattern)
+	pattern = foldCase(pattern)
 
 	var matches []string
 	err := Walk(ctx, ws, ".", func(path string, entry fs.DirEntry) error {
@@ -98,10 +100,14 @@ func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 		// leading "./" — it is relative to the workspace root as-is.
 		var matched bool
 		if hasDoublestar {
-			matched = matchDoublestar(pattern, path)
+			matched = matchDoublestar(pattern, foldCase(path))
 		} else {
 			var matchErr error
-			matched, matchErr = filepath.Match(pattern, path)
+			// Normalise "/" in caller patterns to the platform
+			// separator: filepath.Match on Windows treats "\" as the
+			// path separator and "/" as a literal, so a portable
+			// "src/*.go" pattern would otherwise never match.
+			matched, matchErr = filepath.Match(filepath.FromSlash(pattern), foldCase(path))
 			if matchErr != nil {
 				return matchErr
 			}
@@ -136,6 +142,17 @@ func matchDoublestar(pattern, path string) bool {
 // Unix) and would corrupt patterns containing a literal colon.
 func splitPath(p string) []string {
 	return split(p)
+}
+
+// foldCase returns s lower-cased on case-insensitive filesystems
+// (Windows), unchanged elsewhere. Pattern matching against workspace
+// paths must mirror the filesystem's case semantics, otherwise deny /
+// allow rules and globs silently miss (or bypass) case-variant paths.
+func foldCase(s string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToLower(s)
+	}
+	return s
 }
 
 func split(p string) []string {

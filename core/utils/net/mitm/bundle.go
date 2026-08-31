@@ -21,9 +21,11 @@ var systemBundleCandidates = []string{
 }
 
 // WriteBundle writes the temporary MITM CA alongside a copy of the
-// system roots into a fresh 0600 temp file, and returns its path plus
-// a cleanup function. The path is meant to be bound into the sandbox
-// and referenced by SSL_CERT_FILE.
+// system roots into a fresh 0600 temp file (advisory on Windows,
+// where chmod maps only to the read-only attribute and the directory
+// ACL governs access), and returns its path plus a cleanup function.
+// The path is meant to be bound into the sandbox and referenced by
+// SSL_CERT_FILE.
 func WriteBundle(caPEM []byte) (string, func(), error) {
 	dir, err := os.MkdirTemp("", "flowcraft-ca-bundle-")
 	if err != nil {

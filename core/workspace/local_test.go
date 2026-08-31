@@ -320,7 +320,7 @@ func TestLocalWorkspace_PathTraversal(t *testing.T) {
 		t.Fatal("expected path traversal error")
 	}
 
-	err = ws.Write(ctx, "/etc/passwd", []byte("x"))
+	err = ws.Write(ctx, filepath.Join(t.TempDir(), "passwd"), []byte("x"))
 	if err == nil {
 		t.Fatal("expected absolute path rejection")
 	}

@@ -73,7 +73,7 @@ func (t *reconnectableStdio) newCommand() *exec.Cmd {
 }
 
 func (t *reconnectableStdio) Connect(ctx context.Context) (mcpsdk.Connection, error) {
-	return (&mcpsdk.CommandTransport{Command: t.newCommand()}).Connect(ctx)
+	return t.connect(ctx)
 }
 
 var _ mcpsdk.Transport = (*reconnectableStdio)(nil)

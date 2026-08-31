@@ -2,6 +2,7 @@ package workspace_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -20,8 +21,12 @@ func TestRegister(t *testing.T) {
 	if !ok {
 		t.Fatal("workspace.Workspace/local factory not registered")
 	}
+	root, err := json.Marshal(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshal root: %v", err)
+	}
 	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "` + t.TempDir() + `"}`),
+		Settings: []byte(`{"root": ` + string(root) + `}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -48,8 +53,12 @@ func TestFactoryScopedDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	root, err := json.Marshal(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshal root: %v", err)
+	}
 	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "` + t.TempDir() + `",
+		Settings: []byte(`{"root": ` + string(root) + `,
 			"scoped": {"enabled": false, "deny_read": ["secret/**"]}}`),
 	})
 	if err != nil {
@@ -66,8 +75,12 @@ func TestFactoryScopedEnabled(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory, _ := reg.Lookup("workspace.Workspace", "local")
+	root, err := json.Marshal(t.TempDir())
+	if err != nil {
+		t.Fatalf("marshal root: %v", err)
+	}
 	value, err := factory.New(context.Background(), resource.Input{
-		Settings: []byte(`{"root": "` + t.TempDir() + `",
+		Settings: []byte(`{"root": ` + string(root) + `,
 			"scoped": {"enabled": true, "allow_write": ["public/**"]}}`),
 	})
 	if err != nil {

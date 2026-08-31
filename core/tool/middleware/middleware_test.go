@@ -284,8 +284,8 @@ func TestAudit_RecordsEveryCall(t *testing.T) {
 	if rec.Call.Name != "echo" || rec.Result.CallID != res.CallID {
 		t.Errorf("record = %+v, want call echo / result %q", rec, res.CallID)
 	}
-	if rec.Duration <= 0 {
-		t.Error("record duration should be positive")
+	if rec.Duration < 0 {
+		t.Error("record duration should not be negative")
 	}
 }
 

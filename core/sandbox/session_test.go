@@ -34,6 +34,7 @@ func TestRunnerCapabilities(t *testing.T) {
 }
 
 func TestStartReturnsSessionWithCapabilities(t *testing.T) {
+	skipOnWindows(t)
 	ctx := context.Background()
 	r := local.New(t.TempDir())
 
@@ -70,6 +71,7 @@ func TestStartReturnsSessionWithCapabilities(t *testing.T) {
 }
 
 func TestSessionWatch(t *testing.T) {
+	skipOnWindows(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	r := local.New(t.TempDir())
@@ -111,6 +113,7 @@ func TestSessionWatch(t *testing.T) {
 }
 
 func TestSessionSignal(t *testing.T) {
+	skipOnWindows(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	r := local.New(t.TempDir())
@@ -139,6 +142,7 @@ func TestSessionSignal(t *testing.T) {
 // every active session: after Close, no session started through the
 // runner is still running.
 func TestRunnerCloseTerminatesSessions(t *testing.T) {
+	skipOnWindows(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	r := local.New(t.TempDir())

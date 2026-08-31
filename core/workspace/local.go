@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -64,7 +65,7 @@ func (w *LocalWorkspace) Sub(prefix string) (*LocalWorkspace, error) {
 		return nil, fmt.Errorf("workspace local sub: open root %q: %w", cleaned, err)
 	}
 	root := local.Root()
-	if root != w.Root() && !strings.HasPrefix(root, w.Root()+string(filepath.Separator)) {
+	if !containedIn(root, w.Root()) {
 		return nil, fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, cleaned)
 	}
 	return local, nil
@@ -152,6 +153,28 @@ func (w *LocalWorkspace) Rename(_ context.Context, src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
 		return fmt.Errorf("workspace: mkdir for %s: %w", dst, err)
 	}
+	if runtime.GOOS == "windows" {
+		// MoveFileEx's REPLACE_EXISTING cannot replace a directory, so
+		// renaming over an existing destination directory fails with a
+		// platform-specific error where POSIX rename(2) would replace an
+		// empty directory. Directory rename is outside the Workspace
+		// contract; give a clear error for the divergent case instead of
+		// leaking Windows error codes. Moving a directory to a new name
+		// still works and is left alone.
+		if srcInfo, statErr := os.Stat(srcFull); statErr == nil {
+			if dstInfo, dstErr := os.Stat(dstFull); dstErr == nil {
+				if srcInfo.IsDir() || dstInfo.IsDir() {
+					return errdefs.Validationf(
+						"workspace: rename %s -> %s: replacing a directory is not supported",
+						src, dst)
+				}
+			} else if !os.IsNotExist(dstErr) {
+				return fmt.Errorf("workspace: stat rename destination %s: %w", dst, dstErr)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("workspace: stat rename source %s: %w", src, statErr)
+		}
+	}
 	if err := os.Rename(srcFull, dstFull); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %s", ErrNotFound, src)
@@ -173,7 +196,7 @@ func (w *LocalWorkspace) Delete(_ context.Context, path string) error {
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("workspace: delete %s: %w", path, statErr)
 	}
-	if err := os.Remove(full); err != nil {
+	if err := removeWithRetry(func() error { return os.Remove(full) }); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -190,7 +213,7 @@ func (w *LocalWorkspace) RemoveAll(_ context.Context, path string) error {
 	if full == w.root {
 		return errdefs.Forbiddenf("workspace: refusing to remove root")
 	}
-	return os.RemoveAll(full)
+	return removeWithRetry(func() error { return os.RemoveAll(full) })
 }
 
 func (w *LocalWorkspace) List(_ context.Context, dir string) ([]fs.DirEntry, error) {
@@ -247,7 +270,7 @@ func (w *LocalWorkspace) resolve(path string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, path)
 	}
 	full := filepath.Join(w.root, cleaned)
-	if !strings.HasPrefix(full, w.root+string(filepath.Separator)) && full != w.root {
+	if !containedIn(full, w.root) {
 		return "", fmt.Errorf("%w: %s", ErrPathTraversal, path)
 	}
 
@@ -257,10 +280,24 @@ func (w *LocalWorkspace) resolve(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("workspace: resolve %s: %w", path, err)
 	}
-	if !strings.HasPrefix(real, w.root+string(filepath.Separator)) && real != w.root {
+	if !containedIn(real, w.root) {
 		return "", fmt.Errorf("%w: %s (symlink escape)", ErrPathTraversal, path)
 	}
 	return full, nil
+}
+
+// containedIn reports whether path is root itself or directly under
+// it. Paths are case-insensitive on Windows, so the prefix check must
+// fold case there; on case-sensitive filesystems it is byte-exact.
+func containedIn(path, root string) bool {
+	if path == root {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return strings.HasPrefix(strings.ToLower(path),
+			strings.ToLower(root)+string(filepath.Separator))
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
 }
 
 // evalExistingPrefix resolves symlinks for the longest existing ancestor of

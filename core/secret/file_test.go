@@ -2,6 +2,7 @@ package secret
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -25,8 +26,12 @@ func TestFileStoreReadsSecretFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok-456\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	base, err := json.Marshal(dir)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
 	value, err := fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"base": "` + dir + `", "id": "files", "default": true}`),
+		Settings: []byte(`{"base": ` + string(base) + `, "id": "files", "default": true}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -46,8 +51,12 @@ func TestFileStoreReadsSecretFile(t *testing.T) {
 
 func TestFileStoreMissingAndEscape(t *testing.T) {
 	dir := t.TempDir()
+	base, err := json.Marshal(dir)
+	if err != nil {
+		t.Fatalf("marshal base: %v", err)
+	}
 	value, err := fileFactory{}.New(context.Background(), resource.Input{
-		Settings: []byte(`{"base": "` + dir + `"}`),
+		Settings: []byte(`{"base": ` + string(base) + `}`),
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
