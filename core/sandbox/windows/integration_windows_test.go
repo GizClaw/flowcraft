@@ -149,6 +149,41 @@ func TestRunnerAdvertisesTTY(t *testing.T) {
 	}
 }
 
+func TestContainedInRootFoldsCase(t *testing.T) {
+	cases := []struct {
+		path string
+		root string
+		want bool
+	}{
+		{`C:\Work\WS`, `c:\work\ws`, true},
+		{`C:\Work\WS\sub`, `c:\work\ws`, true},
+		{`C:\Work\WS\Sub\file.txt`, `c:\work\ws`, true},
+		{`C:\Work\WS2`, `c:\work\ws`, false},    // sibling prefix
+		{`C:\Work\WS\x`, `c:\work\ws\y`, false}, // different subtree
+	}
+	for _, tc := range cases {
+		if got := containedInRoot(tc.path, tc.root); got != tc.want {
+			t.Errorf("containedInRoot(%q, %q) = %v, want %v", tc.path, tc.root, got, tc.want)
+		}
+	}
+}
+
+func TestResolveWorkDirCaseVariant(t *testing.T) {
+	r := mustNewRunner(t)
+	// An absolute workdir spelled with a different case than the root
+	// must still resolve: EvalExistingPrefix canonicalizes the existing
+	// part, and the containment check folds case as a second line of
+	// defense.
+	alt := strings.ToUpper(r.rootDir)
+	got, err := r.resolveWorkDir(alt)
+	if err != nil {
+		t.Fatalf("resolveWorkDir(case variant) = _, %v", err)
+	}
+	if !strings.EqualFold(got, r.rootDir) {
+		t.Fatalf("resolveWorkDir = %q, want under root %q", got, r.rootDir)
+	}
+}
+
 func TestPipeSessionReportsNoTTY(t *testing.T) {
 	r := mustNewRunner(t)
 	sess, err := r.Start(context.Background(), sandbox.SessionSpec{

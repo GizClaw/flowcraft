@@ -313,10 +313,22 @@ func (r *Runner) resolveWorkDir(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("windows: resolve workdir: %w", err)
 	}
-	if real != r.rootDir && !strings.HasPrefix(real, r.rootDir+string(filepath.Separator)) {
+	if !containedInRoot(real, r.rootDir) {
 		return "", fmt.Errorf("%w: workdir %q escapes root", sandbox.ErrPathTraversal, dir)
 	}
 	return abs, nil
+}
+
+// containedInRoot reports whether path is root itself or directly
+// under it. Windows paths are case-insensitive, so the prefix check
+// folds case (this file only builds on Windows); the workspace layer's
+// equivalent check does the same.
+func containedInRoot(path, root string) bool {
+	if strings.EqualFold(path, root) {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(path),
+		strings.ToLower(root)+string(filepath.Separator))
 }
 
 // resolveAbsolutePaths makes each path absolute (relative entries are

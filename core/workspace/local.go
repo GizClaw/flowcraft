@@ -153,6 +153,28 @@ func (w *LocalWorkspace) Rename(_ context.Context, src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dstFull), 0o755); err != nil {
 		return fmt.Errorf("workspace: mkdir for %s: %w", dst, err)
 	}
+	if runtime.GOOS == "windows" {
+		// MoveFileEx's REPLACE_EXISTING cannot replace a directory, so
+		// renaming over an existing destination directory fails with a
+		// platform-specific error where POSIX rename(2) would replace an
+		// empty directory. Directory rename is outside the Workspace
+		// contract; give a clear error for the divergent case instead of
+		// leaking Windows error codes. Moving a directory to a new name
+		// still works and is left alone.
+		if srcInfo, statErr := os.Stat(srcFull); statErr == nil {
+			if dstInfo, dstErr := os.Stat(dstFull); dstErr == nil {
+				if srcInfo.IsDir() || dstInfo.IsDir() {
+					return errdefs.Validationf(
+						"workspace: rename %s -> %s: replacing a directory is not supported",
+						src, dst)
+				}
+			} else if !os.IsNotExist(dstErr) {
+				return fmt.Errorf("workspace: stat rename destination %s: %w", dst, dstErr)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return fmt.Errorf("workspace: stat rename source %s: %w", src, statErr)
+		}
+	}
 	if err := os.Rename(srcFull, dstFull); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("%w: %s", ErrNotFound, src)
@@ -174,7 +196,7 @@ func (w *LocalWorkspace) Delete(_ context.Context, path string) error {
 	} else if !os.IsNotExist(statErr) {
 		return fmt.Errorf("workspace: delete %s: %w", path, statErr)
 	}
-	if err := os.Remove(full); err != nil {
+	if err := removeWithRetry(func() error { return os.Remove(full) }); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -191,7 +213,7 @@ func (w *LocalWorkspace) RemoveAll(_ context.Context, path string) error {
 	if full == w.root {
 		return errdefs.Forbiddenf("workspace: refusing to remove root")
 	}
-	return os.RemoveAll(full)
+	return removeWithRetry(func() error { return os.RemoveAll(full) })
 }
 
 func (w *LocalWorkspace) List(_ context.Context, dir string) ([]fs.DirEntry, error) {
