@@ -89,7 +89,12 @@ backend fails closed with `errdefs.NotAvailable` for policies it
 cannot enforce. Interactive sessions run through ConPTY: stdout and
 stderr merge into a single TTY stream and `Resize` applies to the
 pseudo console (TTY combined with write confinement is not available
-yet).
+yet). Permission bits are advisory on Windows: `chmod`-style modes
+map only to the read-only attribute, and real access control comes
+from the directory ACLs inherited at creation. Code that passes modes
+like `0o600` / `0o755` still runs unchanged, but treat such modes as
+intent, not as an enforceable boundary (for example `0o600` does not
+hide a file from other users on a shared drive).
 
 ## Per-exec write policy
 

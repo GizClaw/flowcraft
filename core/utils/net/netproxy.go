@@ -141,8 +141,9 @@ type Proxy struct {
 // Start serves the enforcement proxy in the background and returns
 // immediately. With ProxyConfig.TCPLoopback it binds an ephemeral
 // loopback TCP port (Addr reports it); otherwise it binds a unix
-// socket in a fresh per-run temp directory (mode 0600) whose path is
-// available via SocketPath for bind-mounting into a
+// socket in a fresh per-run temp directory (mode 0600 — advisory on
+// Windows, where access is governed by the directory ACL) whose path
+// is available via SocketPath for bind-mounting into a
 func Start(cfg ProxyConfig) (*Proxy, error) {
 	if cfg.Mode != NetAllowList && cfg.Mode != NetProxy {
 		return nil, fmt.Errorf(
