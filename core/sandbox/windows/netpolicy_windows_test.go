@@ -4,6 +4,7 @@ package windows
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -151,11 +152,12 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 	}
 }
 
-// TestNetAllowListBlocksUDP is the differential UDP check: unconnected
-// UDP sendto is classified at ALE_AUTH_SEND, which carries no filters,
-// so the block relies on the AppIsolation default-deny of the
-// capability-less container rather than the WFP filters (DNS tunneling
-// via unconnected UDP must not be a valid egress path).
+// TestNetAllowListBlocksUDP is the differential UDP check. The probe
+// prints "ok" when the send call succeeds; whether that means the
+// datagram actually egressed is what the deny-all control arm
+// discriminates: if AppIsolation drops the packet without failing the
+// send call, the deny-all arm also reports ok and the probe is not
+// delivery-proving.
 func TestNetAllowListBlocksUDP(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
@@ -165,26 +167,30 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 
 	send := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"$u = New-Object Net.Sockets.UdpClient; try { $u.Send([byte[]](0),1,'1.1.1.1',53); Write-Output ok } catch { Write-Output fail; exit 1 }"}
+	sendConn := []string{"-NoProfile", "-NonInteractive", "-Command",
+		"$u = New-Object Net.Sockets.UdpClient; try { $u.Connect('1.1.1.1',53); $n = $u.Send([byte[]](0),1); Write-Output ok } catch { Write-Output fail; exit 1 }"}
+	dialTCP := []string{"-NoProfile", "-NonInteractive", "-Command",
+		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 
-	ctrl, err := r.Exec(ctx, "powershell", send, sandbox.ExecOptions{Timeout: 20 * time.Second})
-	if err != nil {
-		t.Fatalf("control Exec: %v", err)
-	}
-	if ctrl.ExitCode != 0 || !strings.Contains(ctrl.Stdout, "ok") {
-		t.Skipf("host cannot send UDP without a policy (exit=%d out=%q); skipping", ctrl.ExitCode, ctrl.Stdout)
+	run := func(label string, argv []string, net corenet.NetPolicy) string {
+		opts := sandbox.ExecOptions{Timeout: 20 * time.Second}
+		if net.Mode != corenet.NetDefault {
+			opts.Net = net
+		}
+		res, err := r.Exec(ctx, "powershell", argv, opts)
+		if err != nil {
+			return "exec-error: " + err.Error()
+		}
+		return strings.TrimSpace(res.Stdout)
 	}
 
-	denied, err := r.Exec(ctx, "powershell", send,
-		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: corenet.NetPolicy{
-			Mode:       corenet.NetAllowList,
-			AllowHosts: []string{"1.1.1.1"},
-		}})
-	if err != nil {
-		t.Fatalf("allow-list Exec: %v", err)
-	}
-	if denied.ExitCode == 0 && strings.Contains(denied.Stdout, "ok") {
-		t.Fatalf("allow-list exec sent UDP externally: stdout=%q", denied.Stdout)
-	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "control-unconnected-udp=%s\n", run("ctrl", send, corenet.NetPolicy{Mode: corenet.NetDefault}))
+	fmt.Fprintf(&sb, "denyall-unconnected-udp=%s\n", run("deny", send, corenet.NetPolicy{Mode: corenet.NetDenyAll}))
+	fmt.Fprintf(&sb, "allow-unconnected-udp=%s\n", run("allow-udp", send, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
+	fmt.Fprintf(&sb, "allow-connected-udp=%s\n", run("allow-udpc", sendConn, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
+	fmt.Fprintf(&sb, "allow-tcp=%s\n", run("allow-tcp", dialTCP, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
+	t.Fatalf("probe results:\n%s", sb.String())
 }
 
 func TestExecNetProxy(t *testing.T) {
