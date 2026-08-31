@@ -211,14 +211,15 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		},
 	}
 	var newDacl *xwin.ACL
-	r2, _, e2 := procSetEntriesInAcl.Call(
+	r1, _, e2 := procSetEntriesInAcl.Call(
 		1,
 		uintptr(unsafe.Pointer(&ea)),
 		uintptr(unsafe.Pointer(dacl)),
 		uintptr(unsafe.Pointer(&newDacl)),
 	)
-	// SetEntriesInAclW returns a Win32 error code: zero means success.
-	if r2 != 0 {
+	// SetEntriesInAclW returns a Win32 error code in r1 (RAX): zero
+	// means success. r2 is a scratch register, not the return value.
+	if r1 != 0 {
 		return errdefs.Internal(fmt.Errorf("windows: merge dacl of %s: %v", path, e2))
 	}
 	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(newDacl))) }()
