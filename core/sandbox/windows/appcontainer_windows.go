@@ -85,17 +85,47 @@ func deleteAppContainerProfile(name string) error {
 	return nil
 }
 
+// sidAndAttributes mirrors SID_AND_ATTRIBUTES for the capabilities
+// array inside SECURITY_CAPABILITIES.
+type sidAndAttributes struct {
+	Sid        *xwin.SID
+	Attributes uint32
+}
+
+// securityCapabilities mirrors SECURITY_CAPABILITIES, which
+// CreateAppContainerToken expects as its second parameter (the
+// package SID plus optional capability SIDs, not a bare SID).
+type securityCapabilities struct {
+	AppContainerSid *xwin.SID
+	Capabilities    *sidAndAttributes
+	CapabilityCount uint32
+	Reserved        uint32
+}
+
 // createAppContainerToken derives an AppContainer (lowbox) token from
 // an existing token. The resulting token carries the package SID as
-// its user, which is what WFP scopes network filters on.
-func createAppContainerToken(base xwin.Token, sid *xwin.SID) (xwin.Token, error) {
+// its user — which is what WFP scopes network filters on — plus the
+// named capabilities (e.g. InternetClient for allow_list / proxy
+// modes). The export lives in kernelbase and follows BOOL semantics
+// (nonzero success), matching Chromium's production usage.
+func createAppContainerToken(base xwin.Token, sid *xwin.SID, caps []*xwin.SID) (xwin.Token, error) {
+	sc := securityCapabilities{AppContainerSid: sid}
+	var attrs []sidAndAttributes
+	if len(caps) > 0 {
+		attrs = make([]sidAndAttributes, len(caps))
+		for i, c := range caps {
+			attrs[i] = sidAndAttributes{Sid: c, Attributes: xwin.SE_GROUP_ENABLED}
+		}
+		sc.Capabilities = &attrs[0]
+		sc.CapabilityCount = uint32(len(caps))
+	}
 	var lowbox xwin.Token
 	r1, _, e1 := procCreateAppContainerToken.Call(
 		uintptr(base),
-		uintptr(unsafe.Pointer(sid)),
+		uintptr(unsafe.Pointer(&sc)),
 		uintptr(unsafe.Pointer(&lowbox)),
 	)
-	if r1 != 0 {
+	if r1 == 0 {
 		return 0, errdefs.Internal(fmt.Errorf(
 			"windows: create appcontainer token: 0x%x (%v)", r1, e1))
 	}

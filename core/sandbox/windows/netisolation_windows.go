@@ -89,7 +89,7 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 		cleanup()
 		return nil, errdefs.Internal(fmt.Errorf("windows: open current token: %w", err))
 	}
-	lowbox, err := createAppContainerToken(current, sid)
+	lowbox, err := createAppContainerToken(current, sid, caps)
 	_ = current.Close()
 	if err != nil {
 		cleanup()
