@@ -86,6 +86,11 @@ func TestValidatePolicy(t *testing.T) {
 	if err := r.validatePolicy(valid); err != nil {
 		t.Fatalf("valid policy rejected: %v", err)
 	}
+	denyAll := valid
+	denyAll.Opts.Net = corenet.NetPolicy{Mode: corenet.NetDenyAll}
+	if err := r.validatePolicy(denyAll); err != nil {
+		t.Fatalf("net deny-all policy rejected: %v", err)
+	}
 
 	cases := []struct {
 		name string
@@ -98,10 +103,6 @@ func TestValidatePolicy(t *testing.T) {
 		{
 			name: "unknown write policy",
 			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Write: sandbox.WritePolicy(99)}},
-		},
-		{
-			name: "net deny all",
-			spec: sandbox.SessionSpec{Opts: sandbox.ExecOptions{Net: corenet.NetPolicy{Mode: corenet.NetDenyAll}}},
 		},
 		{
 			name: "disk limit",

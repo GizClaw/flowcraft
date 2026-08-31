@@ -17,7 +17,11 @@ import (
 var (
 	procCreateAppContainerProfile = xwin.NewLazySystemDLL("userenv.dll").NewProc("CreateAppContainerProfile")
 	procDeleteAppContainerProfile = xwin.NewLazySystemDLL("userenv.dll").NewProc("DeleteAppContainerProfile")
-	procCreateAppContainerToken   = xwin.NewLazySystemDLL("userenv.dll").NewProc("CreateAppContainerToken")
+	// CreateAppContainerToken is a SecurityBaseApi function exported
+	// from kernelbase (not userenv, despite the profile functions
+	// living there).
+	procCreateAppContainerToken   = xwin.NewLazySystemDLL("kernel32.dll").NewProc("CreateAppContainerToken")
+	procDeriveCapabilitySids      = xwin.NewLazySystemDLL("kernel32.dll").NewProc("DeriveCapabilitySidsFromName")
 	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
 	procSetEntriesInAcl           = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAcl")
 )
@@ -96,6 +100,42 @@ func createAppContainerToken(base xwin.Token, sid *xwin.SID) (xwin.Token, error)
 			"windows: create appcontainer token: 0x%x (%v)", r1, e1))
 	}
 	return lowbox, nil
+}
+
+// capabilitySids resolves a named capability (e.g. "internetClient")
+// into its SID, suitable for CreateAppContainerProfile. The returned
+// SIDs are freshly allocated and must be freed with xwin.LocalFree.
+func capabilitySids(name string) ([]*xwin.SID, error) {
+	namePtr, err := xwin.UTF16PtrFromString(name)
+	if err != nil {
+		return nil, errdefs.Internal(fmt.Errorf("windows: encode capability name: %w", err))
+	}
+	var groupSids, capSids *xwin.SID
+	var count uint32
+	r1, _, e1 := procDeriveCapabilitySids.Call(
+		uintptr(unsafe.Pointer(namePtr)),
+		uintptr(unsafe.Pointer(&groupSids)),
+		uintptr(unsafe.Pointer(&capSids)),
+		uintptr(unsafe.Pointer(&count)),
+	)
+	if r1 == 0 {
+		return nil, errdefs.Internal(fmt.Errorf(
+			"windows: derive capability sids %q: %v", name, e1))
+	}
+	defer func() {
+		if groupSids != nil {
+			_, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(groupSids)))
+		}
+		if capSids != nil {
+			_, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(capSids)))
+		}
+	}()
+	sids := make([]*xwin.SID, int(count))
+	for i := range sids {
+		sids[i] = *(**xwin.SID)(unsafe.Pointer(
+			uintptr(unsafe.Pointer(capSids)) + uintptr(i)*unsafe.Sizeof(uintptr(0))))
+	}
+	return sids, nil
 }
 
 // grantDaclAccess adds a GRANT_ACCESS ACE for sid to path's DACL,
