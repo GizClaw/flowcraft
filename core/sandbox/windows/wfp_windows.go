@@ -25,6 +25,7 @@ const (
 	wfpDataTypeUint64     wfpDataType = 4
 	wfpDataTypeUint8      wfpDataType = 1
 	wfpDataTypeUint16     wfpDataType = 2
+	wfpDataTypeUint32     wfpDataType = 3
 	wfpDataTypeSID        wfpDataType = 13
 	wfpDataTypeV4AddrMask wfpDataType = 256
 	wfpDataTypeV6AddrMask wfpDataType = 257
@@ -33,7 +34,17 @@ const (
 // wfpMatchType is FWP_MATCH_TYPE.
 type wfpMatchType uint32
 
-const wfpMatchEqual wfpMatchType = 0
+const (
+	wfpMatchEqual        wfpMatchType = 0
+	wfpMatchFlagsAllSet  wfpMatchType = 6
+	wfpMatchFlagsAnySet  wfpMatchType = 7
+	wfpMatchFlagsNoneSet wfpMatchType = 8
+)
+
+// wfpConditionFlag is FWP_CONDITION_FLAG_*; only IS_LOOPBACK is needed.
+type wfpConditionFlag uint32
+
+const wfpConditionFlagIsLoopback wfpConditionFlag = 0x00000001
 
 // wfpActionType is FWPM_ACTION_TYPE.
 type wfpActionType uint32
@@ -146,6 +157,14 @@ var (
 		Data1: 0x4a72393b, Data2: 0x319f, Data3: 0x44bc,
 		Data4: [8]byte{0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4},
 	}
+	fwpmLayerAleAuthRecvAcceptV4 = xwin.GUID{
+		Data1: 0xe1cd9fe7, Data2: 0xf4b5, Data3: 0x4273,
+		Data4: [8]byte{0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50},
+	}
+	fwpmLayerAleAuthRecvAcceptV6 = xwin.GUID{
+		Data1: 0xa3b42c97, Data2: 0x9f04, Data3: 0x4672,
+		Data4: [8]byte{0xb8, 0x7e, 0xce, 0xe9, 0xc4, 0x83, 0x25, 0x7f},
+	}
 	fwpmLayerAleResourceAssignmentV4 = xwin.GUID{
 		Data1: 0x1247d66d, Data2: 0x0b60, Data3: 0x4a15,
 		Data4: [8]byte{0x8d, 0x44, 0x71, 0x55, 0xd0, 0xf5, 0x3a, 0x0c},
@@ -169,6 +188,10 @@ var (
 	fwpmConditionIPProtocol = xwin.GUID{
 		Data1: 0x3971ef2b, Data2: 0x623e, Data3: 0x4f9a,
 		Data4: [8]byte{0x8c, 0xb1, 0x6e, 0x79, 0xb8, 0x06, 0xb9, 0xa7},
+	}
+	fwpmConditionFlags = xwin.GUID{
+		Data1: 0x632ce23b, Data2: 0x5167, Data3: 0x435c,
+		Data4: [8]byte{0x86, 0xd7, 0xe9, 0x03, 0x68, 0x4a, 0xa8, 0x0c},
 	}
 )
 
@@ -233,7 +256,9 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 		// the built-in MPSSVC_APP_ISOLATION sublayer, whose AppContainer
 		// default deny for a capability-less container would otherwise
 		// block the loopback enforcement proxy too. A soft permit in
-		// our sublayer still loses to that AppIsolation block, so the
+		// our sublayer still loses to a lower-priority Block — the
+		// AppIsolation default deny at AUTH_CONNECT, and the built-in
+		// AppContainerLoopback Block at AUTH_RECV_ACCEPT — so every
 		// proxy-port permit is added with CLEAR_ACTION_RIGHT to make it
 		// a hard permit that terminates classification; everything else
 		// falls through to the AppIsolation default deny (bind-layer
@@ -256,6 +281,7 @@ func wfpDeleteSublayer(engine xwin.Handle, key xwin.GUID) {
 // wfpCondition builds one filter condition value.
 type wfpCondition struct {
 	field xwin.GUID
+	match wfpMatchType
 	value wfpConditionValue
 }
 
@@ -298,6 +324,17 @@ func tcpProtocolCondition() wfpCondition {
 	}
 }
 
+// loopbackCondition matches the FWP_CONDITION_FLAGS IsLoopback flag,
+// which the built-in AppContainerLoopback filters use to scope their
+// loopback block at the AUTH_RECV_ACCEPT layers.
+func loopbackCondition() wfpCondition {
+	return wfpCondition{
+		field: fwpmConditionFlags,
+		match: wfpMatchFlagsAllSet,
+		value: wfpConditionValue{Type: wfpDataTypeUint32, Value: uintptr(wfpConditionFlagIsLoopback)},
+	}
+}
+
 // wfpAddFilter adds one filter to the session's sublayer and records
 // its ID for cleanup. flags are FWPM_FILTER_FLAG_* values; pass
 // wfpFilterFlagClearActionRight to make a permit hard (see the const
@@ -309,7 +346,7 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 	for i, c := range conds {
 		cconds[i] = wfpFilterCondition{
 			FieldKey:  c.field,
-			MatchType: wfpMatchEqual,
+			MatchType: c.match,
 			Value:     c.value,
 		}
 	}

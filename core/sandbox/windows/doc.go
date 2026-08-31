@@ -46,7 +46,14 @@
 //	                              listener multiplexes both protocols,
 //	                              so SOCKS5-aware non-HTTP clients
 //	                              traverse the same allow-list /
-//	                              upstream). Every non-default mode
+//	                              upstream). The proxy-port permit is
+//	                              installed at both ALE_AUTH_CONNECT
+//	                              and ALE_AUTH_RECV_ACCEPT: the latter
+//	                              layer is where the built-in
+//	                              AppContainerLoopback block lives, so
+//	                              a connect-layer permit alone would
+//	                              make the proxy connection time out.
+//	                              Every non-default mode
 //	                              also runs a behavioral fence probe
 //	                              under the container token before the
 //	                              isolation is handed out: a dial to a

@@ -53,4 +53,17 @@ func TestWFPConditionConstruction(t *testing.T) {
 	if tp.value.Type != wfpDataTypeUint8 || tp.value.Value != 6 {
 		t.Fatalf("protocol condition = %+v", tp)
 	}
+
+	// The loopback condition must ask for the IsLoopback flag with
+	// FWP_MATCH_FLAGS_ALL_SET on the FLAGS field.
+	lb := loopbackCondition()
+	if lb.field != fwpmConditionFlags {
+		t.Fatalf("loopback condition field = %v, want FLAGS", lb.field)
+	}
+	if lb.match != wfpMatchFlagsAllSet {
+		t.Fatalf("loopback condition match = %v, want FWP_MATCH_FLAGS_ALL_SET", lb.match)
+	}
+	if lb.value.Type != wfpDataTypeUint32 || lb.value.Value != uintptr(wfpConditionFlagIsLoopback) {
+		t.Fatalf("loopback condition = %+v", lb)
+	}
 }

@@ -187,13 +187,18 @@ func (n *netIsolation) setupDenyAll() error {
 // port and pins the container's network to it with WFP filters: only
 // TCP to 127.0.0.1 / ::1 on the proxy port is permitted at the
 // ALE_AUTH_CONNECT layer for this package SID, and an explicit block
-// filter covers every other connect. Because the AppIsolation default
-// does not cover UDP/ICMP, the bind layer (ALE_RESOURCE_ASSIGNMENT)
-// permits only TCP binds and blocks every other socket type, so no
-// UDP or raw datagram can leave the container at all. All filters live
-// in the maximum-weight sublayer and are evaluated before AppIsolation,
-// keeping the proxy reachable. The proxy applies the allow-list /
-// upstream decisions.
+// filter covers every other connect. The same TCP-to-proxy-port
+// permit is repeated at ALE_AUTH_RECV_ACCEPT with an IsLoopback
+// condition: the built-in AppContainerLoopback block lives in that
+// layer, so a connect-layer permit alone would authorize the connect
+// and then let the loopback block silently drop the proxy connection.
+// Because the AppIsolation default does not cover UDP/ICMP, the bind
+// layer (ALE_RESOURCE_ASSIGNMENT) permits only TCP binds and blocks
+// every other socket type, so no UDP or raw datagram can leave the
+// container at all. All filters live in the maximum-weight sublayer,
+// evaluated before AppIsolation and Defender, and every permit is hard
+// (CLEAR_ACTION_RIGHT) so the built-in blocks cannot override it. The
+// proxy applies the allow-list / upstream decisions.
 func (n *netIsolation) setupProxy() error {
 	proxy, err := corenet.Start(corenet.ProxyConfig{
 		Mode:        n.policy.Mode,
@@ -249,6 +254,27 @@ func (n *netIsolation) setupProxy() error {
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox egress",
 			wfpActionBlock, 0xfffffffe, 0, block); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+	}
+
+	// Loopback into the proxy must also be permitted at the
+	// AUTH_RECV_ACCEPT layers, where the built-in AppContainerLoopback
+	// filter blocks AppContainer loopback (and, per Project Zero's
+	// analysis, makes blocked loopback connects time out rather than
+	// fail fast). Scope the exemption to the proxy remote port so the
+	// sandbox still cannot reach arbitrary host loopback services.
+	for _, layer := range []xwin.GUID{fwpmLayerAleAuthRecvAcceptV4, fwpmLayerAleAuthRecvAcceptV6} {
+		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy",
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight,
+			[]wfpCondition{
+				sidCondition(n.sid),
+				loopbackCondition(),
+				portCondition(uint16(port)),
+				tcpProtocolCondition(),
+			}); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
