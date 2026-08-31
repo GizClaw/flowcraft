@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
+	"github.com/GizClaw/flowcraft/core/utils/net/mitm"
 
 	otellog "go.opentelemetry.io/otel/log"
 	xwin "golang.org/x/sys/windows"
@@ -37,14 +40,23 @@ type netIsolation struct {
 	sid   *xwin.SID
 	token xwin.Token
 	home  string
+
+	policy    corenet.NetPolicy
+	wfp       *wfpIsolation // allow_list / proxy modes
+	proxy     *corenet.Proxy
+	proxyPort int
+	bundle    string // MITM CA bundle staged inside home
 }
 
 // newNetIsolation creates the AppContainer profile, derives the lowbox
-// token, and grants the package SID write access to the same path set
-// the write-policy would allow. Hosts without the privilege to create
-// AppContainer profiles fail closed with NotAvailable.
-func newNetIsolation(root string, writable []string, mode corenet.NetMode) (*netIsolation, error) {
-	if mode != corenet.NetDenyAll {
+// token, grants the package SID write access to the same path set the
+// write-policy would allow, and (for allow_list / proxy modes) pins
+// the container's network to the enforcement proxy with WFP. Hosts
+// without the privilege to create AppContainer profiles or open a WFP
+// engine fail closed with NotAvailable.
+func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (*netIsolation, error) {
+	mode := policy.Mode
+	if mode != corenet.NetDenyAll && mode != corenet.NetAllowList && mode != corenet.NetProxy {
 		return nil, errdefs.NotAvailablef(
 			"windows: net mode %d is not implemented yet", int(mode))
 	}
@@ -54,10 +66,19 @@ func newNetIsolation(root string, writable []string, mode corenet.NetMode) (*net
 	}
 	name := "flowcraft.sandbox." + hex.EncodeToString(raw[:])
 
-	// No capabilities: the firewall blocks all network for the
-	// container. allow_list / proxy modes add InternetClient and WFP
-	// filters instead.
-	sid, err := createAppContainerProfile(name, "flowcraft sandbox", nil)
+	var caps []*xwin.SID
+	var err error
+	if mode != corenet.NetDenyAll {
+		// InternetClient lets the OS firewall baseline "outbound
+		// allowed"; the WFP filters below pin it to the proxy port.
+		caps, err = capabilitySids("internetClient")
+		if err != nil {
+			return nil, err
+		}
+	}
+	// NetDenyAll gets no capabilities, so the firewall blocks all
+	// network for the container with no WFP involvement.
+	sid, err := createAppContainerProfile(name, "flowcraft sandbox", caps)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +95,7 @@ func newNetIsolation(root string, writable []string, mode corenet.NetMode) (*net
 		cleanup()
 		return nil, errdefs.Internal(fmt.Errorf("windows: net isolation token: %w", err))
 	}
-	iso := &netIsolation{name: name, sid: sid, token: lowbox}
+	iso := &netIsolation{name: name, sid: sid, token: lowbox, policy: policy}
 	if err := iso.setupHome(); err != nil {
 		_ = iso.Close()
 		return nil, err
@@ -88,6 +109,12 @@ func newNetIsolation(root string, writable []string, mode corenet.NetMode) (*net
 			continue
 		}
 		if err := grantPathTree(p, sid, containerWriteAccess); err != nil {
+			_ = iso.Close()
+			return nil, err
+		}
+	}
+	if mode != corenet.NetDenyAll {
+		if err := iso.setupProxy(); err != nil {
 			_ = iso.Close()
 			return nil, err
 		}
@@ -125,10 +152,110 @@ func (n *netIsolation) setupHome() error {
 	return nil
 }
 
+// setupProxy starts the host-side enforcement proxy on a loopback
+// port and pins the container's network to it with WFP filters: only
+// TCP to 127.0.0.1 / ::1 on that port is permitted, everything else
+// is blocked at the ALE_AUTH_CONNECT layer for this package SID. The
+// proxy applies the allow-list / upstream decisions.
+func (n *netIsolation) setupProxy() error {
+	proxy, err := corenet.Start(corenet.ProxyConfig{
+		Mode:        n.policy.Mode,
+		AllowHosts:  n.policy.AllowHosts,
+		Rules:       n.policy.Rules,
+		Upstream:    n.policy.Proxy,
+		TCPLoopback: true,
+		MITM:        n.policy.MITM,
+		MITMFactory: mitm.New,
+	})
+	if err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: start enforcement proxy: %w", err))
+	}
+	addr, ok := proxy.Addr().(*net.TCPAddr)
+	if !ok {
+		_ = proxy.Close()
+		return errdefs.Internal(fmt.Errorf(
+			"windows: enforcement proxy bound %T, want TCP loopback", proxy.Addr()))
+	}
+	port := addr.Port
+
+	w, err := newWFPIsolation()
+	if err != nil {
+		_ = proxy.Close()
+		return err
+	}
+	permitV4 := []wfpCondition{
+		sidCondition(n.sid),
+		v4AddrCondition(0x7f000001), // 127.0.0.1
+		portCondition(uint16(port)),
+		tcpProtocolCondition(),
+	}
+	permitV6 := []wfpCondition{
+		sidCondition(n.sid),
+		v6LoopbackCondition(), // ::1
+		portCondition(uint16(port)),
+		tcpProtocolCondition(),
+	}
+	block := []wfpCondition{sidCondition(n.sid)}
+	for _, layer := range []xwin.GUID{fwpmLayerAleAuthConnectV4, fwpmLayerAleAuthConnectV6} {
+		conds := permitV4
+		if layer == fwpmLayerAleAuthConnectV6 {
+			conds = permitV6
+		}
+		if err := w.wfpAddFilter(layer, "flowcraft permit enforcement proxy",
+			wfpActionPermit, 0xffffffff, conds); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+		if err := w.wfpAddFilter(layer, "flowcraft block sandbox egress",
+			wfpActionBlock, 0xfffffffe, block); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+	}
+
+	n.wfp = w
+	n.proxy = proxy
+	n.proxyPort = port
+
+	if n.policy.MITM != nil && n.policy.MITM.Enabled {
+		path, cleanup, err := mitm.WriteBundle(proxy.CAPEM())
+		if err != nil {
+			return errdefs.Internal(fmt.Errorf("windows: write mitm bundle: %w", err))
+		}
+		defer cleanup()
+		dst := filepath.Join(n.home, "flowcraft-ca.pem")
+		if err := copyFile(path, dst); err != nil {
+			return errdefs.Internal(fmt.Errorf("windows: stage mitm bundle: %w", err))
+		}
+		n.bundle = dst
+	}
+	return nil
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 // env redirects the child's environment away from the user profile,
 // which an AppContainer cannot read, into the sandbox home. Existing
 // keys are replaced case-insensitively (Windows environment is
-// case-insensitive).
+// case-insensitive). allow_list / proxy modes also inject the proxy
+// environment the way the seatbelt backend does.
 func (n *netIsolation) env(env []string) []string {
 	repl := map[string]string{
 		"HOME":         n.home,
@@ -138,6 +265,19 @@ func (n *netIsolation) env(env []string) []string {
 		"TEMP":         filepath.Join(n.home, "Temp"),
 		"TMP":          filepath.Join(n.home, "Temp"),
 		"TMPDIR":       filepath.Join(n.home, "Temp"),
+	}
+	if n.proxyPort > 0 {
+		proxy := fmt.Sprintf("http://127.0.0.1:%d", n.proxyPort)
+		for _, k := range []string{
+			"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
+		} {
+			repl[k] = proxy
+		}
+		repl["NO_PROXY"] = ""
+		repl["no_proxy"] = ""
+	}
+	if n.bundle != "" {
+		repl["SSL_CERT_FILE"] = n.bundle
 	}
 	upper := make(map[string]string, len(repl))
 	for k, v := range repl {
@@ -166,10 +306,21 @@ func (n *netIsolation) env(env []string) []string {
 	return out
 }
 
-// Close removes the AppContainer profile and the sandbox home. It is
-// safe to call more than once.
+// Close removes the WFP filters, the enforcement proxy, the
+// AppContainer profile, and the sandbox home. It is safe to call more
+// than once.
 func (n *netIsolation) Close() error {
 	var errs []error
+	if n.wfp != nil {
+		n.wfp.Close()
+		n.wfp = nil
+	}
+	if n.proxy != nil {
+		if err := n.proxy.Close(); err != nil {
+			errs = append(errs, err)
+		}
+		n.proxy = nil
+	}
 	if n.name != "" {
 		if err := deleteAppContainerProfile(n.name); err != nil {
 			errs = append(errs, err)

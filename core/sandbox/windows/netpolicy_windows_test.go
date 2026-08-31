@@ -18,7 +18,7 @@ import (
 // net-policy behaviors cannot be exercised there, so the test skips.
 func requireNetIsolation(t *testing.T) {
 	t.Helper()
-	iso, err := newNetIsolation(t.TempDir(), nil, corenet.NetDenyAll)
+	iso, err := newNetIsolation(t.TempDir(), nil, corenet.NetPolicy{Mode: corenet.NetDenyAll})
 	if err != nil {
 		if errdefs.IsNotAvailable(err) {
 			t.Skipf("host cannot create appcontainer profiles: %v", err)
@@ -28,6 +28,21 @@ func requireNetIsolation(t *testing.T) {
 	if err := iso.Close(); err != nil {
 		t.Fatalf("net isolation probe close: %v", err)
 	}
+}
+
+// requireWFP probes whether the host can open the WFP engine, which
+// allow_list / proxy modes need. Non-elevated hosts fail closed with
+// NotAvailable.
+func requireWFP(t *testing.T) {
+	t.Helper()
+	w, err := newWFPIsolation()
+	if err != nil {
+		if errdefs.IsNotAvailable(err) {
+			t.Skipf("host cannot open the WFP engine: %v", err)
+		}
+		t.Fatalf("wfp probe: %v", err)
+	}
+	w.Close()
 }
 
 func TestExecNetDenyAll(t *testing.T) {
@@ -92,15 +107,63 @@ func TestNetPolicyTTYNotAvailable(t *testing.T) {
 	}
 }
 
-func TestNetPolicyUnsupportedModeNotAvailable(t *testing.T) {
+func TestExecNetAllowList(t *testing.T) {
+	requireNetIsolation(t)
+	requireWFP(t)
 	r := mustNewRunner(t)
-	_, err := r.Exec(context.Background(), "cmd", []string{"/c", "ver"},
-		sandbox.ExecOptions{Net: corenet.NetPolicy{Mode: corenet.NetAllowList}})
-	if err == nil {
-		t.Fatal("Exec succeeded, want NotAvailable")
+	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "allow-ok"},
+		sandbox.ExecOptions{Net: corenet.NetPolicy{
+			Mode:       corenet.NetAllowList,
+			AllowHosts: []string{"1.1.1.1"},
+		}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
 	}
-	if !errdefs.IsNotAvailable(err) {
-		t.Fatalf("err = %v, want NotAvailable", err)
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "allow-ok") {
+		t.Fatalf("exit=%d stdout=%q, want allow-ok", res.ExitCode, res.Stdout)
+	}
+}
+
+// TestNetAllowListPinsToProxy verifies the WFP layer: with
+// allow_list mode the container may only reach the enforcement proxy
+// port, so a raw outbound TCP dial (which ignores proxy env) fails
+// even though the container carries the InternetClient capability.
+func TestNetAllowListPinsToProxy(t *testing.T) {
+	requireNetIsolation(t)
+	requireWFP(t)
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dial := []string{"-NoProfile", "-NonInteractive", "-Command",
+		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
+	res, err := r.Exec(ctx, "powershell", dial,
+		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: corenet.NetPolicy{
+			Mode:       corenet.NetAllowList,
+			AllowHosts: []string{"1.1.1.1"},
+		}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode == 0 && strings.Contains(res.Stdout, "ok") {
+		t.Fatalf("allow-list exec reached the network directly: stdout=%q", res.Stdout)
+	}
+}
+
+func TestExecNetProxy(t *testing.T) {
+	requireNetIsolation(t)
+	requireWFP(t)
+	r := mustNewRunner(t)
+	res, err := r.Exec(context.Background(), "cmd", []string{"/c", "echo", "proxy-ok"},
+		sandbox.ExecOptions{Net: corenet.NetPolicy{
+			Mode:  corenet.NetProxy,
+			Proxy: "http://127.0.0.1:1",
+		}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Stdout, "proxy-ok") {
+		t.Fatalf("exit=%d stdout=%q, want proxy-ok", res.ExitCode, res.Stdout)
 	}
 }
 

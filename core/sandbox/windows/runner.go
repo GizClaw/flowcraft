@@ -39,10 +39,10 @@ const defaultMaxOutputBytes int64 = 10 * 1024 * 1024
 //     WithWriteConfinement is NotAvailable until the restricted-token
 //     spawn path is verified against a real pseudo console.
 //   - Env: fully supported (see sandbox.EnvPolicy doc).
-//   - Net.Mode: NetDefault (host networking) and NetDenyAll
-//     (AppContainer without network capabilities) are supported;
-//     NetAllowList / NetProxy need the WFP layer and are
-//     errdefs.NotAvailable for now.
+//   - Net.Mode: NetDefault (host networking), NetDenyAll (AppContainer
+//     without network capabilities), and NetAllowList / NetProxy
+//     (AppContainer + WFP port-pinning to the enforcement proxy) are
+//     supported. Non-elevated hosts fail closed with NotAvailable.
 //   - Write == WriteReadOnly: errdefs.NotAvailable (no OS boundary to
 //     confine writes yet).
 //   - Resources.MemoryBytes: enforced as a job-wide memory limit
@@ -111,7 +111,9 @@ func (r *Runner) Capabilities() sandbox.Capabilities {
 			sandbox.WriteReadOnly,
 		}
 	}
-	policy.NetModes = []corenet.NetMode{corenet.NetDenyAll}
+	policy.NetModes = []corenet.NetMode{
+		corenet.NetDenyAll, corenet.NetAllowList, corenet.NetProxy,
+	}
 	return sandbox.Capabilities{
 		Policy:   policy,
 		Features: sandbox.SessionFeatures{TTY: true},
@@ -196,7 +198,7 @@ func (r *Runner) spawnProcess(ctx context.Context, spec sandbox.SessionSpec) (sa
 		if spec.Opts.Write != sandbox.WriteReadOnly {
 			writable = append([]string{r.rootDir}, writable...)
 		}
-		iso, err = newNetIsolation(r.rootDir, writable, spec.Opts.Net.Mode)
+		iso, err = newNetIsolation(r.rootDir, writable, spec.Opts.Net)
 		if err != nil {
 			return nil, err
 		}
@@ -254,8 +256,9 @@ func (r *Runner) validatePolicy(spec sandbox.SessionSpec) error {
 	}
 	if spec.Opts.Net.Mode != corenet.NetDefault {
 		switch spec.Opts.Net.Mode {
-		case corenet.NetDenyAll:
-			// Supported: AppContainer without network capabilities.
+		case corenet.NetDenyAll, corenet.NetAllowList, corenet.NetProxy:
+			// Supported: AppContainer, plus WFP port-pinning to the
+			// enforcement proxy for allow_list / proxy modes.
 		default:
 			return errdefs.NotAvailablef(
 				"windows: net mode %d not supported yet", int(spec.Opts.Net.Mode))
