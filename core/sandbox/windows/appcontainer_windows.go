@@ -4,6 +4,7 @@ package windows
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -25,7 +26,7 @@ var (
 	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
 	// SetEntriesInAcl is a header macro; the real export is the
 	// Unicode variant.
-	procSetEntriesInAcl           = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAclW")
+	procSetEntriesInAcl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAclW")
 )
 
 // createAppContainerProfile creates a new AppContainer profile with
@@ -190,6 +191,15 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		return errdefs.Internal(fmt.Errorf("windows: read dacl of %s: %v", path, e1))
 	}
 
+	// The OBJECTS_AND_SID is referenced from TRUSTEE.TrusteeValue,
+	// which is a uintptr and invisible to the GC, so it must be
+	// pinned for the duration of the SetEntriesInAclW call (see the
+	// pinning contract on x/sys TrusteeValueFromObjectsAndSid).
+	oas := &xwin.OBJECTS_AND_SID{Sid: sid}
+	var pinner runtime.Pinner
+	pinner.Pin(oas)
+	defer pinner.Unpin()
+
 	ea := xwin.EXPLICIT_ACCESS{
 		AccessPermissions: xwin.ACCESS_MASK(access),
 		AccessMode:        xwin.GRANT_ACCESS,
@@ -197,7 +207,7 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		Trustee: xwin.TRUSTEE{
 			TrusteeForm:  xwin.TRUSTEE_IS_SID,
 			TrusteeType:  xwin.TRUSTEE_IS_UNKNOWN,
-			TrusteeValue: xwin.TrusteeValueFromObjectsAndSid(&xwin.OBJECTS_AND_SID{Sid: sid}),
+			TrusteeValue: xwin.TrusteeValueFromObjectsAndSid(oas),
 		},
 	}
 	var newDacl *xwin.ACL
@@ -207,7 +217,8 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		uintptr(unsafe.Pointer(dacl)),
 		uintptr(unsafe.Pointer(&newDacl)),
 	)
-	if r2 == 0 {
+	// SetEntriesInAclW returns a Win32 error code: zero means success.
+	if r2 != 0 {
 		return errdefs.Internal(fmt.Errorf("windows: merge dacl of %s: %v", path, e2))
 	}
 	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(newDacl))) }()

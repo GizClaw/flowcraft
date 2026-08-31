@@ -286,6 +286,10 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 			Value:     c.value,
 		}
 	}
+	// FWP_VALUE0 carries FWP_UINT64 as a pointer to the value (not the
+	// value itself); the engine dereferences it while copying the
+	// filter, so the stack slot stays valid for the call below.
+	weightValue := weight
 	var condsPtr *wfpFilterCondition
 	if len(cconds) > 0 {
 		condsPtr = &cconds[0]
@@ -294,7 +298,7 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 		DisplayData:         wfpDisplayData{Name: namePtr},
 		LayerKey:            layer,
 		SublayerKey:         w.sublayer,
-		Weight:              wfpValue{Type: wfpDataTypeUint64, Value: uintptr(weight)},
+		Weight:              wfpValue{Type: wfpDataTypeUint64, Value: uintptr(unsafe.Pointer(&weightValue))},
 		NumFilterConditions: uint32(len(cconds)),
 		FilterConditions:    condsPtr,
 		Action:              wfpAction{Type: action},
