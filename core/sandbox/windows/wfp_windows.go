@@ -43,6 +43,14 @@ const (
 	wfpActionPermit wfpActionType = 0x1002
 )
 
+// wfpFilterFlagClearActionRight is FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT:
+// the filter's action becomes "hard". A hard permit cannot be vetoed by
+// a lower-priority sublayer's Block filter (only by a callout Veto),
+// which is exactly what the proxy-port permit needs to survive the
+// AppIsolation default-deny — a plain permit would be soft and the
+// AppIsolation block would win regardless of sublayer order.
+const wfpFilterFlagClearActionRight = 0x8
+
 // The engine copies each filter before returning, so ordinary heap
 // structs are fine; no notinheap annotation is required.
 type wfpDisplayData struct {
@@ -224,11 +232,12 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 		// Maximum UINT16 weight: the sublayer must be evaluated before
 		// the built-in MPSSVC_APP_ISOLATION sublayer, whose AppContainer
 		// default deny for a capability-less container would otherwise
-		// block the loopback enforcement proxy too. Evaluating our
-		// sublayer first lets the proxy-port permit terminate
-		// classification, while everything else falls through to the
-		// AppIsolation default deny (bind-layer filters cover the
-		// UDP/ICMP flows that default misses).
+		// block the loopback enforcement proxy too. A soft permit in
+		// our sublayer still loses to that AppIsolation block, so the
+		// proxy-port permit is added with CLEAR_ACTION_RIGHT to make it
+		// a hard permit that terminates classification; everything else
+		// falls through to the AppIsolation default deny (bind-layer
+		// filters cover the UDP/ICMP flows that default misses).
 		Weight: 0xffff,
 	}
 	r1, _, e1 := procFwpmSubLayerAdd0.Call(
@@ -289,10 +298,12 @@ func tcpProtocolCondition() wfpCondition {
 	}
 }
 
-// wfpAddFilter adds one filter to the session's sublayer at
-// ALE_AUTH_CONNECT and records its ID for cleanup.
+// wfpAddFilter adds one filter to the session's sublayer and records
+// its ID for cleanup. flags are FWPM_FILTER_FLAG_* values; pass
+// wfpFilterFlagClearActionRight to make a permit hard (see the const
+// doc).
 func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActionType,
-	weight uint64, conds []wfpCondition) error {
+	weight uint64, flags uint32, conds []wfpCondition) error {
 	namePtr, _ := xwin.UTF16PtrFromString(name)
 	cconds := make([]wfpFilterCondition, len(conds))
 	for i, c := range conds {
@@ -312,6 +323,7 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 	}
 	filter := &wfpFilter{
 		DisplayData:         wfpDisplayData{Name: namePtr},
+		Flags:               flags,
 		LayerKey:            layer,
 		SublayerKey:         w.sublayer,
 		Weight:              wfpValue{Type: wfpDataTypeUint64, Value: uintptr(unsafe.Pointer(&weightValue))},

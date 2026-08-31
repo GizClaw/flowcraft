@@ -174,7 +174,7 @@ func (n *netIsolation) setupDenyAll() error {
 		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
 	} {
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox socket bind",
-			wfpActionBlock, 0xffffffff, block); err != nil {
+			wfpActionBlock, 0xffffffff, 0, block); err != nil {
 			w.Close()
 			return err
 		}
@@ -238,14 +238,17 @@ func (n *netIsolation) setupProxy() error {
 		if layer == fwpmLayerAleAuthConnectV6 {
 			conds = permitV6
 		}
+		// The proxy-port permit must survive the AppIsolation default
+		// deny: a soft permit loses to the built-in block regardless of
+		// sublayer order, so this one is made hard (CLEAR_ACTION_RIGHT).
 		if err := w.wfpAddFilter(layer, "flowcraft permit enforcement proxy",
-			wfpActionPermit, 0xffffffff, conds); err != nil {
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight, conds); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox egress",
-			wfpActionBlock, 0xfffffffe, block); err != nil {
+			wfpActionBlock, 0xfffffffe, 0, block); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
@@ -258,13 +261,13 @@ func (n *netIsolation) setupProxy() error {
 		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
 	} {
 		if err := w.wfpAddFilter(layer, "flowcraft permit tcp bind",
-			wfpActionPermit, 0xffffffff, bindPermit); err != nil {
+			wfpActionPermit, 0xffffffff, 0, bindPermit); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block non-tcp bind",
-			wfpActionBlock, 0xfffffffe, bindBlock); err != nil {
+			wfpActionBlock, 0xfffffffe, 0, bindBlock); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
