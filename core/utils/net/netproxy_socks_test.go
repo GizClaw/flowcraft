@@ -182,6 +182,66 @@ func TestProxySocks5DenyReasonBody(t *testing.T) {
 	}
 }
 
+// TestProxySocks5PipelinedData covers the classifier path the unit
+// test cannot: handleConn's br.Peek(1) fills the buffer with every
+// byte available in the first read, so a client that pipelines the
+// CONNECT request and its first payload in one write exercises the
+// buffered-bytes handoff into the tunnel.
+func TestProxySocks5PipelinedData(t *testing.T) {
+	echo := newEchoServer(t)
+	defer func() { _ = echo.Close() }()
+	echoHost, echoPort := splitHostPort(echo.Addr().String(), 0)
+	proxy, err := Start(ProxyConfig{
+		Mode: NetAllowList,
+		Rules: []NetRule{
+			{Action: NetAllow, Host: echoHost, Port: echoPort},
+		},
+		TCPLoopback: true,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = proxy.Close() }()
+
+	conn, err := net.DialTimeout("tcp", proxy.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	payload := []byte("pipelined-through-proxy")
+	req := []byte{socks5Version, 0x01, socks5NoAuth}
+	req = append(req, socks5Version, socks5CmdConnect, 0x00, socks5AtypIPv4)
+	req = append(req, net.ParseIP(echoHost).To4()...)
+	req = append(req, byte(echoPort>>8), byte(echoPort))
+	req = append(req, payload...)
+	if _, err := conn.Write(req); err != nil {
+		t.Fatalf("write pipelined request: %v", err)
+	}
+
+	greet := make([]byte, 2)
+	if _, err := io.ReadFull(conn, greet); err != nil {
+		t.Fatalf("greeting reply: %v", err)
+	}
+	if greet[1] != socks5NoAuth {
+		t.Fatalf("greeting reply = 0x%02x, want 0x00", greet[1])
+	}
+	code, err := readSocks5ReplyCode(conn)
+	if err != nil {
+		t.Fatalf("connect reply: %v", err)
+	}
+	if code != socks5Success {
+		t.Fatalf("reply code = 0x%02x, want 0x00", code)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo = %q, want %q", got, payload)
+	}
+}
+
 // socks5Dial opens a SOCKS5 tunnel to hostport through the proxy at
 // proxyAddr, asserting the server accepted it.
 func socks5Dial(proxyAddr, hostport string) (net.Conn, error) {

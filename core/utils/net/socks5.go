@@ -35,6 +35,13 @@ const (
 // variable (not a const) so tests can shrink it.
 var socks5HandshakeTimeout = 15 * time.Second
 
+// socks5DialTimeout bounds one policy-enforced dial. The dial happens
+// before the tunnel exists, so a client that disconnects during a
+// black-holed target would otherwise leave the dial waiting on the
+// system TCP timeout (minutes). Once the tunnel is up, the copy
+// goroutines observe the client side directly.
+const socks5DialTimeout = 30 * time.Second
+
 // socks5Request is one parsed CONNECT request.
 type socks5Request struct {
 	host string
@@ -72,7 +79,9 @@ func (s *socks5Server) Serve(conn net.Conn, br *bufio.Reader) {
 	_ = conn.SetDeadline(time.Time{})
 
 	hostport := net.JoinHostPort(req.host, strconv.Itoa(req.port))
-	up, err := s.connect(context.Background(), hostport)
+	ctx, cancel := context.WithTimeout(context.Background(), socks5DialTimeout)
+	defer cancel()
+	up, err := s.connect(ctx, hostport)
 	if err != nil {
 		_ = writeSocks5Reply(conn, socks5Failure, nil)
 		return
@@ -82,7 +91,12 @@ func (s *socks5Server) Serve(conn net.Conn, br *bufio.Reader) {
 		return
 	}
 	go func() {
-		_, _ = io.Copy(up, conn)
+		// Read through br: the classifier's Peek (and the handshake
+		// parser) may have buffered bytes beyond the CONNECT request —
+		// a client that pipelines the request and its first payload in
+		// one write would otherwise have those bytes silently dropped.
+		_, _ = io.Copy(up, br)
+		cancel()
 		_ = up.Close()
 	}()
 	_, _ = io.Copy(conn, up)

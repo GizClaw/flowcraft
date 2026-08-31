@@ -51,7 +51,9 @@
 //	                              under the container token before the
 //	                              isolation is handed out: a dial to a
 //	                              non-proxy loopback port must be
-//	                              blocked, and in allow-list / proxy
+//	                              blocked, an unconnected UDP send must
+//	                              be blocked (covering the bind-layer
+//	                              filters), and in allow-list / proxy
 //	                              modes a dial to the proxy port must
 //	                              succeed. A mismatch fails closed.
 //	                              Hosts without AppContainer-profile or

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -212,6 +213,79 @@ func TestSocks5ServerTunnel(t *testing.T) {
 	}
 	if string(got) != "ping" {
 		t.Fatalf("echo = %q, want ping", got)
+	}
+}
+
+// TestSocks5ServerTunnelPipelinedData sends the greeting, CONNECT
+// request, and the first payload bytes in a single write, exactly as a
+// client that does not wait for the success reply would. The payload
+// must reach the upstream — regresses the classifier-buffered-byte
+// drop where the tunnel copied from conn instead of br.
+func TestSocks5ServerTunnelPipelinedData(t *testing.T) {
+	echo, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	defer func() { _ = echo.Close() }()
+	go func() {
+		for {
+			c, err := echo.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = c.Close() }()
+				_, _ = io.Copy(c, c)
+			}()
+		}
+	}()
+
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = server.Close() }()
+	srv := &socks5Server{connect: func(_ context.Context, hostport string) (net.Conn, error) {
+		return net.Dial("tcp", hostport)
+	}}
+	go srv.Serve(server, bufio.NewReader(server))
+
+	payload := []byte("pipelined-payload")
+	host, portStr, err := net.SplitHostPort(echo.Addr().String())
+	if err != nil {
+		t.Fatalf("split echo addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("echo port: %v", err)
+	}
+	req := []byte{socks5Version, 0x01, socks5NoAuth}
+	req = append(req, socks5Version, socks5CmdConnect, 0x00, socks5AtypIPv4)
+	req = append(req, net.ParseIP(host).To4()...)
+	req = append(req, byte(port>>8), byte(port))
+	req = append(req, payload...)
+	if _, err := client.Write(req); err != nil {
+		t.Fatalf("write pipelined request: %v", err)
+	}
+
+	greet := make([]byte, 2)
+	if _, err := io.ReadFull(client, greet); err != nil {
+		t.Fatalf("greeting reply: %v", err)
+	}
+	if greet[1] != socks5NoAuth {
+		t.Fatalf("greeting reply = 0x%02x, want 0x00", greet[1])
+	}
+	code, err := readSocks5ReplyCode(client)
+	if err != nil {
+		t.Fatalf("connect reply: %v", err)
+	}
+	if code != socks5Success {
+		t.Fatalf("reply code = 0x%02x, want 0x00", code)
+	}
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("echo: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("echo = %q, want %q", got, payload)
 	}
 }
 

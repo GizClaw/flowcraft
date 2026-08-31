@@ -34,6 +34,9 @@ const verifyFenceTimeout = 15 * time.Second
 //   - a dial to a host-side loopback listener that is NOT the proxy
 //     port must be blocked (catches a missing or mis-ordered egress
 //     block, or an over-broad loopback exemption);
+//   - an unconnected UDP send must be blocked: the AppIsolation default
+//     does not constrain unconnected UDP, so a passing send proves the
+//     bind-layer (ALE_RESOURCE_ASSIGNMENT) block is actually installed;
 //   - in allow-list / proxy modes a dial to the enforcement proxy port
 //     must succeed (without a working permit, the AppIsolation default
 //     deny would make the sandbox unusable and the failure would only
@@ -54,15 +57,22 @@ func (n *netIsolation) verifyFence() error {
 	// PowerShell is the only guaranteed dial-capable builtin on
 	// Windows; the net-policy integration tests already rely on it
 	// under the same AppContainer token.
-	want := "blocked"
+	want := "blocked,blocked"
 	script := fmt.Sprintf(
-		"$ProgressPreference='SilentlyContinue'; $r=@(); foreach($p in @(%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
-		probePort)
+		"$ProgressPreference='SilentlyContinue'; $r=@(); "+
+			"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+			"try{ $u=New-Object Net.Sockets.UdpClient; $null=$u.Send([byte[]](0),1,'127.0.0.1',%d); $u.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+			"[string]::Join(',',$r)",
+		probePort, probePort)
 	if n.proxyPort > 0 {
-		want = "blocked,ok"
+		want = "blocked,blocked,ok"
 		script = fmt.Sprintf(
-			"$ProgressPreference='SilentlyContinue'; $r=@(); foreach($p in @(%d,%d)){ try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',$p); $c.Close(); $r+='ok' } catch { $r+='blocked' } }; [string]::Join(',',$r)",
-			probePort, n.proxyPort)
+			"$ProgressPreference='SilentlyContinue'; $r=@(); "+
+				"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"try{ $u=New-Object Net.Sockets.UdpClient; $null=$u.Send([byte[]](0),1,'127.0.0.1',%d); $u.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"[string]::Join(',',$r)",
+			probePort, probePort, n.proxyPort)
 	}
 
 	cmd := exec.Command("powershell",
@@ -115,8 +125,9 @@ func (n *netIsolation) verifyFence() error {
 }
 
 // probeResultRE matches the single machine-readable probe result line
-// ("blocked" or "blocked,ok"), ignoring PowerShell CLIXML noise.
-var probeResultRE = regexp.MustCompile(`(?m)^(blocked(?:,ok)?)[\r\n]*$`)
+// ("blocked,blocked" or "blocked,blocked,ok"), ignoring PowerShell
+// CLIXML noise.
+var probeResultRE = regexp.MustCompile(`(?m)^(blocked(?:,blocked)?(?:,ok)?)[\r\n]*$`)
 
 // encodeCommand wraps a PowerShell script in an -EncodedCommand blob
 // (UTF-16LE base64), avoiding argument-quoting fragility entirely.
