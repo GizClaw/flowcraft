@@ -20,8 +20,10 @@ var (
 	// CreateAppContainerToken is a SecurityBaseApi function exported
 	// from kernelbase (not userenv, despite the profile functions
 	// living there; kernel32 does not forward it either).
-	procCreateAppContainerToken   = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("CreateAppContainerToken")
-	procDeriveCapabilitySids      = xwin.NewLazySystemDLL("kernel32.dll").NewProc("DeriveCapabilitySidsFromName")
+	procCreateAppContainerToken = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("CreateAppContainerToken")
+	// DeriveCapabilitySidsFromName is a SecurityBaseApi function,
+	// exported from kernelbase (not kernel32).
+	procDeriveCapabilitySids      = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("DeriveCapabilitySidsFromName")
 	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
 	// SetEntriesInAcl is a header macro; the real export is the
 	// Unicode variant.
