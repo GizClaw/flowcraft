@@ -4,7 +4,6 @@ package windows
 
 import (
 	"fmt"
-	"runtime"
 	"unsafe"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -191,15 +190,9 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		return errdefs.Internal(fmt.Errorf("windows: read dacl of %s: %v", path, e1))
 	}
 
-	// The OBJECTS_AND_SID is referenced from TRUSTEE.TrusteeValue,
-	// which is a uintptr and invisible to the GC, so it must be
-	// pinned for the duration of the SetEntriesInAclW call (see the
-	// pinning contract on x/sys TrusteeValueFromObjectsAndSid).
-	oas := &xwin.OBJECTS_AND_SID{Sid: sid}
-	var pinner runtime.Pinner
-	pinner.Pin(oas)
-	defer pinner.Unpin()
-
+	// sid is API-allocated (LocalAlloc) and owned by the caller for
+	// the whole session, so the TrusteeValue uintptr stays valid
+	// through the call; Go GC does not manage or move that memory.
 	ea := xwin.EXPLICIT_ACCESS{
 		AccessPermissions: xwin.ACCESS_MASK(access),
 		AccessMode:        xwin.GRANT_ACCESS,
@@ -207,7 +200,7 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 		Trustee: xwin.TRUSTEE{
 			TrusteeForm:  xwin.TRUSTEE_IS_SID,
 			TrusteeType:  xwin.TRUSTEE_IS_UNKNOWN,
-			TrusteeValue: xwin.TrusteeValueFromObjectsAndSid(oas),
+			TrusteeValue: xwin.TrusteeValueFromSID(sid),
 		},
 	}
 	var newDacl *xwin.ACL
@@ -220,7 +213,8 @@ func grantDaclAccess(path string, sid *xwin.SID, access uint32, inherit uint32) 
 	// SetEntriesInAclW returns a Win32 error code in r1 (RAX): zero
 	// means success. r2 is a scratch register, not the return value.
 	if r1 != 0 {
-		return errdefs.Internal(fmt.Errorf("windows: merge dacl of %s: %v", path, e2))
+		return errdefs.Internal(fmt.Errorf(
+			"windows: merge dacl of %s: 0x%x (%v)", path, r1, e2))
 	}
 	defer func() { _, _ = xwin.LocalFree(xwin.Handle(unsafe.Pointer(newDacl))) }()
 
