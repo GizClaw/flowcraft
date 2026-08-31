@@ -86,7 +86,10 @@ child runs with a restricted Low-integrity token and only the runner
 root plus explicit `writable_paths` are labeled writable (all reads
 stay allowed). Network filtering is still a follow-up; until then the
 backend fails closed with `errdefs.NotAvailable` for policies it
-cannot enforce.
+cannot enforce. Interactive sessions run through ConPTY: stdout and
+stderr merge into a single TTY stream and `Resize` applies to the
+pseudo console (TTY combined with write confinement is not available
+yet).
 
 ## Per-exec write policy
 
