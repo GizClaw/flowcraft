@@ -387,13 +387,17 @@ func buildEnv(policy sandbox.EnvPolicy, proxyPort int) []string {
 		values[key] = value
 	}
 	if proxyPort > 0 {
-		proxy := fmt.Sprintf("http://127.0.0.1:%d", proxyPort)
-		for _, name := range []string{
-			"HTTP_PROXY", "http_proxy",
-			"HTTPS_PROXY", "https_proxy",
-			"ALL_PROXY", "all_proxy",
-		} {
-			values[name] = proxy
+		httpProxy := fmt.Sprintf("http://127.0.0.1:%d", proxyPort)
+		socksProxy := fmt.Sprintf("socks5://127.0.0.1:%d", proxyPort)
+		for _, name := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+			values[name] = httpProxy
+		}
+		// ALL_PROXY points at the same port speaking SOCKS5, so
+		// non-HTTP TCP clients that honor ALL_PROXY (curl, tools
+		// configured with --socks5-hostname or an explicit
+		// ProxyCommand) go through the same allow-list / upstream.
+		for _, name := range []string{"ALL_PROXY", "all_proxy"} {
+			values[name] = socksProxy
 		}
 		delete(values, "NO_PROXY")
 		delete(values, "no_proxy")

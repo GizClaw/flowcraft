@@ -1,0 +1,144 @@
+//go:build windows
+
+package windows
+
+import (
+	"bytes"
+	"context"
+	"encoding/base64"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"syscall"
+	"time"
+	"unicode/utf16"
+
+	"github.com/GizClaw/flowcraft/core/errdefs"
+
+	xwin "golang.org/x/sys/windows"
+)
+
+// verifyFenceTimeout bounds one behavioral probe (two TCP dials under
+// the AppContainer token). PowerShell startup dominates the cost.
+const verifyFenceTimeout = 15 * time.Second
+
+// verifyFence behaviorally confirms the WFP fence is effective after
+// filter installation. BFE enumeration is restricted to administrators,
+// and even an elevated add-filter call does not prove the kernel
+// evaluates the filter with the intended precedence, so the probe runs
+// real connections under the container token:
+//
+//   - a dial to a host-side loopback listener that is NOT the proxy
+//     port must be blocked (catches a missing or mis-ordered egress
+//     block, or an over-broad loopback exemption);
+//   - an unconnected UDP send must be blocked: the AppIsolation default
+//     does not constrain unconnected UDP, so a passing send proves the
+//     bind-layer (ALE_RESOURCE_ASSIGNMENT) block is actually installed;
+//   - in allow-list / proxy modes a dial to the enforcement proxy port
+//     must succeed (without a working permit, the AppIsolation default
+//     deny would make the sandbox unusable and the failure would only
+//     surface later, inside the sandboxed command).
+//
+// A mismatch fails closed: the isolation is never handed to a caller
+// whose fence cannot be trusted. This mirrors srt-win's `wfp verify`
+// (the sandbox-runtime Windows helper) rather than trusting filter
+// install success alone.
+func (n *netIsolation) verifyFence() error {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: fence probe listener: %w", err))
+	}
+	defer func() { _ = ln.Close() }()
+	probePort := ln.Addr().(*net.TCPAddr).Port
+
+	// PowerShell is the only guaranteed dial-capable builtin on
+	// Windows; the net-policy integration tests already rely on it
+	// under the same AppContainer token.
+	want := "blocked,blocked"
+	script := fmt.Sprintf(
+		"$ProgressPreference='SilentlyContinue'; $r=@(); "+
+			"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+			"try{ $u=New-Object Net.Sockets.UdpClient; $null=$u.Send([byte[]](0),1,'127.0.0.1',%d); $u.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+			"[string]::Join(',',$r)",
+		probePort, probePort)
+	if n.proxyPort > 0 {
+		want = "blocked,blocked,ok"
+		script = fmt.Sprintf(
+			"$ProgressPreference='SilentlyContinue'; $r=@(); "+
+				"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"try{ $u=New-Object Net.Sockets.UdpClient; $null=$u.Send([byte[]](0),1,'127.0.0.1',%d); $u.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"try{ $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',%d); $c.Close(); $r+='ok' } catch { $r+='blocked' }; "+
+				"[string]::Join(',',$r)",
+			probePort, probePort, n.proxyPort)
+	}
+
+	cmd := exec.Command("powershell",
+		"-NoProfile", "-NonInteractive", "-EncodedCommand", encodeCommand(script))
+	cmd.SysProcAttr = &xwin.SysProcAttr{
+		CreationFlags: xwin.CREATE_NO_WINDOW,
+		Token:         syscall.Token(n.token),
+	}
+	cmd.Env = n.env(os.Environ())
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := enableCreateProcessAsUserPrivileges(); err != nil {
+		return err
+	}
+	if err := cmd.Start(); err != nil {
+		return errdefs.Internal(fmt.Errorf("windows: fence probe start: %w", err))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), verifyFenceTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case <-ctx.Done():
+		_ = cmd.Process.Kill()
+		<-done
+		return errdefs.Internal(fmt.Errorf(
+			"windows: fence probe timed out (partial output %q, want %q)",
+			strings.TrimSpace(out.String()), want))
+	case err := <-done:
+		if err != nil {
+			// A probe that cannot run must not be treated as a pass.
+			return errdefs.Internal(fmt.Errorf("windows: fence probe exit: %w", err))
+		}
+	}
+	// PowerShell may interleave progress records (serialized as
+	// CLIXML) with the probe result even with $ProgressPreference
+	// silenced, so match the machine-readable line instead of the
+	// whole buffer.
+	m := probeResultRE.FindStringSubmatch(out.String())
+	if m == nil {
+		return errdefs.Internal(fmt.Errorf(
+			"windows: WFP fence verify failed: unexpected probe output %q, want %q",
+			strings.TrimSpace(out.String()), want))
+	}
+	got := m[1]
+	if got != want {
+		return errdefs.Internal(fmt.Errorf(
+			"windows: WFP fence verify failed: got %q, want %q", got, want))
+	}
+	return nil
+}
+
+// probeResultRE matches the single machine-readable probe result line
+// ("blocked,blocked" or "blocked,blocked,ok"), ignoring PowerShell
+// CLIXML noise.
+var probeResultRE = regexp.MustCompile(`(?m)^(blocked(?:,blocked)?(?:,ok)?)[\r\n]*$`)
+
+// encodeCommand wraps a PowerShell script in an -EncodedCommand blob
+// (UTF-16LE base64), avoiding argument-quoting fragility entirely.
+func encodeCommand(script string) string {
+	u := utf16.Encode([]rune(script))
+	b := make([]byte, len(u)*2)
+	for i, v := range u {
+		b[i*2] = byte(v)
+		b[i*2+1] = byte(v >> 8)
+	}
+	return base64.StdEncoding.EncodeToString(b)
+}

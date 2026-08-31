@@ -40,9 +40,31 @@
 //	                              the container to a host-side
 //	                              enforcement proxy (only the loopback
 //	                              proxy port is reachable), and inject
-//	                              the proxy environment. Hosts without
-//	                              AppContainer-profile or WFP-engine
-//	                              access fail closed with
+//	                              the proxy environment
+//	                              (HTTP(S)_PROXY -> http://loopback,
+//	                              ALL_PROXY -> socks5://loopback; the
+//	                              listener multiplexes both protocols,
+//	                              so SOCKS5-aware non-HTTP clients
+//	                              traverse the same allow-list /
+//	                              upstream). The proxy-port permit is
+//	                              installed at both ALE_AUTH_CONNECT
+//	                              and ALE_AUTH_RECV_ACCEPT: the latter
+//	                              layer is where the built-in
+//	                              AppContainerLoopback block lives, so
+//	                              a connect-layer permit alone would
+//	                              make the proxy connection time out.
+//	                              Every non-default mode
+//	                              also runs a behavioral fence probe
+//	                              under the container token before the
+//	                              isolation is handed out: a dial to a
+//	                              non-proxy loopback port must be
+//	                              blocked, an unconnected UDP send must
+//	                              be blocked (covering the bind-layer
+//	                              filters), and in allow-list / proxy
+//	                              modes a dial to the proxy port must
+//	                              succeed. A mismatch fails closed.
+//	                              Hosts without AppContainer-profile or
+//	                              WFP-engine access fail closed with
 //	                              errdefs.NotAvailable.
 //	Write == WriteReadOnly        enforced when the runner is built
 //	                              with WithWriteConfinement: the child

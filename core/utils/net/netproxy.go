@@ -116,6 +116,9 @@ type ProxyDecision struct {
 	Action NetAction
 	Mode   NetMode
 	Rule   string
+	// Reason is the deny rule's model-facing explanation ("" when the
+	// mode default or an allow rule decided).
+	Reason string
 }
 
 // Proxy is a host-side enforcement proxy listening on a unix socket
@@ -129,6 +132,8 @@ type Proxy struct {
 	upstream  *url.URL
 	socksDial proxy.ContextDialer
 	mitm      MITMEngine
+
+	mux *muxListener
 
 	matcherOnce sync.Once
 	compiled    *Matcher
@@ -230,12 +235,144 @@ func Start(cfg ProxyConfig) (*Proxy, error) {
 		p.path = path
 	}
 	p.srv = &http.Server{Handler: p}
+	p.mux = newMuxListener(p.ln.Addr())
+	go p.acceptLoop()
 	go func() {
-		if err := p.srv.Serve(p.ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := p.srv.Serve(p.mux); err != nil &&
+			!errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
 			telemetry.WarnErr(context.Background(), "netproxy: serve failed", err)
 		}
 	}()
 	return p, nil
+}
+
+// acceptLoop accepts raw connections, classifies the first byte, and
+// routes SOCKS5 (0x05) to the SOCKS5 handler while handing every
+// other byte stream to http.Server through the mux listener. One
+// listener serves both protocols, so the seatbelt loopback hole and
+// the Windows WFP proxy-port permit stay single-port.
+func (p *Proxy) acceptLoop() {
+	for {
+		c, err := p.ln.Accept()
+		if err != nil {
+			_ = p.mux.Close()
+			if !errors.Is(err, net.ErrClosed) {
+				telemetry.WarnErr(context.Background(), "netproxy: accept failed", err)
+			}
+			return
+		}
+		go p.handleConn(c)
+	}
+}
+
+// handleConn peeks the first byte to split SOCKS5 from HTTP on the
+// shared listener.
+func (p *Proxy) handleConn(c net.Conn) {
+	br := bufio.NewReader(c)
+	b, err := br.Peek(1)
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	if b[0] == socks5Version {
+		p.serveSOCKS5(c, br)
+		return
+	}
+	if !p.mux.enqueue(&bufferedConn{Conn: c, r: br}) {
+		_ = c.Close()
+	}
+}
+
+// serveSOCKS5 runs a SOCKS5 session on a connection whose first byte
+// was 0x05. br carries any classifier-buffered bytes. CONNECT targets
+// go through the same policy decision, audit, OnConnect hook, and dial
+// path as HTTP CONNECT, so allow-list and upstream modes behave
+// identically for SOCKS5-aware clients (ssh ProxyCommand, curl
+// --socks5-hostname, tools that honor ALL_PROXY=socks5://...).
+func (p *Proxy) serveSOCKS5(conn net.Conn, br *bufio.Reader) {
+	srv := &socks5Server{connect: func(ctx context.Context, hostport string) (net.Conn, error) {
+		host, port := splitHostPort(hostport, 0)
+		action, rule, reason, dialHost, err := p.decide(ctx, hostport, 0)
+		if err != nil {
+			p.audit(host, port, NetDeny, rule, reason)
+			return nil, err
+		}
+		p.audit(host, port, action, rule, reason)
+		if action != NetAllow {
+			return nil, errDestinationNotAllowed
+		}
+		if p.cfg.Hooks != nil {
+			if err := p.cfg.Hooks.OnConnect(ctx, &MITMConnectInfo{Host: host, Port: port}); err != nil {
+				return nil, err
+			}
+		}
+		return p.dialTarget(ctx, dialHost)
+	}}
+	srv.Serve(conn, br)
+}
+
+// errDestinationNotAllowed marks a policy-denied SOCKS5 CONNECT; the
+// socks5 server maps it to a generic failure reply.
+var errDestinationNotAllowed = errors.New("netproxy: destination not allowed")
+
+// denyReasonSuffix appends a deny rule's model-facing reason to an
+// HTTP denial body.
+func denyReasonSuffix(reason string) string {
+	if reason == "" {
+		return ""
+	}
+	return ": " + reason
+}
+
+// bufferedConn replays classifier-buffered bytes so http.Server sees
+// the complete request stream.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (c *bufferedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// muxListener delivers HTTP-classified connections to http.Server.
+// SOCKS5 connections never enter the channel. Accept fails with
+// net.ErrClosed once the accept loop exits, so Close unblocks Serve.
+type muxListener struct {
+	addr net.Addr
+	ch   chan net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newMuxListener(addr net.Addr) *muxListener {
+	return &muxListener{addr: addr, ch: make(chan net.Conn), done: make(chan struct{})}
+}
+
+func (l *muxListener) Accept() (net.Conn, error) {
+	select {
+	case c := <-l.ch:
+		return c, nil
+	case <-l.done:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *muxListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *muxListener) Addr() net.Addr { return l.addr }
+
+// enqueue delivers one HTTP-classified connection to http.Server,
+// closing it if the server is already shut down.
+func (l *muxListener) enqueue(c net.Conn) bool {
+	select {
+	case l.ch <- c:
+		return true
+	case <-l.done:
+		_ = c.Close()
+		return false
+	}
 }
 
 // SocketPath returns the unix socket path to bind into the
@@ -265,6 +402,9 @@ func (p *Proxy) Close() error {
 	if err := p.ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
 		telemetry.WarnErr(context.Background(), "netproxy: close listener failed", err)
 	}
+	if p.mux != nil {
+		_ = p.mux.Close()
+	}
 	p.transport.CloseIdleConnections()
 	if p.dir != "" {
 		err := os.RemoveAll(p.dir)
@@ -288,14 +428,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort(r.URL.Host, 80)
-	action, rule, dialHost, err := p.decide(r.Context(), r.URL.Host, 80)
+	action, rule, reason, dialHost, err := p.decide(r.Context(), r.URL.Host, 80)
 	if err != nil {
 		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.audit(host, port, action, rule)
+	p.audit(host, port, action, rule, reason)
 	if action != NetAllow {
-		http.Error(w, "netproxy: destination not allowed", http.StatusForbidden)
+		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
 	}
 	out := r
@@ -325,14 +465,14 @@ func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	host, port := splitHostPort(r.Host, 443)
-	action, rule, dialHost, err := p.decide(r.Context(), r.Host, 443)
+	action, rule, reason, dialHost, err := p.decide(r.Context(), r.Host, 443)
 	if err != nil {
 		http.Error(w, "netproxy: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	p.audit(host, port, action, rule)
+	p.audit(host, port, action, rule, reason)
 	if action != NetAllow {
-		http.Error(w, "netproxy: destination not allowed", http.StatusForbidden)
+		http.Error(w, "netproxy: destination not allowed"+denyReasonSuffix(reason), http.StatusForbidden)
 		return
 	}
 	if p.cfg.Hooks != nil {
@@ -388,55 +528,55 @@ func (p *Proxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 }
 
 // decide evaluates the policy for one destination. It returns the
-// verdict, the decisive rule description ("" = mode default), and the
-// concrete dial target. When IP/CIDR rules exist the hostname is
-// resolved locally and the dial target is pinned to a validated IP so
-// neither the upstream nor a rebinding DNS response can bypass the
-// rule set.
-func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (NetAction, string, string, error) {
+// verdict, the decisive rule description ("" = mode default), the
+// deny rule's model-facing reason ("" = none), and the concrete dial
+// target. When IP/CIDR rules exist the hostname is resolved locally
+// and the dial target is pinned to a validated IP so neither the
+// upstream nor a rebinding DNS response can bypass the rule set.
+func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (NetAction, string, string, string, error) {
 	host, port := splitHostPort(hostport, defaultPort)
 	dialHost := hostport
 	m := p.matcher()
 	if m == nil {
-		return NetDeny, "", dialHost, fmt.Errorf("netproxy: policy matcher unavailable")
+		return NetDeny, "", "", dialHost, fmt.Errorf("netproxy: policy matcher unavailable")
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		action, rule, matched := m.MatchIP(ip.Unmap(), port)
+		action, rule, reason, matched := m.MatchIP(ip.Unmap(), port)
 		if action == NetDeny {
-			return action, rule, dialHost, nil
+			return action, rule, reason, dialHost, nil
 		}
 		if matched {
-			return action, rule, dialHost, nil
+			return action, rule, reason, dialHost, nil
 		}
 		if p.cfg.Mode == NetAllowList {
-			return NetDeny, "", dialHost, nil
+			return NetDeny, "", "", dialHost, nil
 		}
-		return NetAllow, "", dialHost, nil
+		return NetAllow, "", "", dialHost, nil
 	}
 
-	action, rule, matched := m.Match(host, port)
+	action, rule, reason, matched := m.Match(host, port)
 	if action == NetDeny {
-		return action, rule, dialHost, nil
+		return action, rule, reason, dialHost, nil
 	}
 	if m.HasIPRules() {
 		addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 		if err != nil {
 			// With IP rules present we cannot prove the destination is
 			// not denied, so we fail closed.
-			return NetDeny, "", dialHost, fmt.Errorf(
+			return NetDeny, "", "", dialHost, fmt.Errorf(
 				"netproxy: resolve %s for IP rules: %w", host, err)
 		}
 		chosen := netip.Addr{}
 		ipAllow := false
 		for _, addr := range addrs {
 			addr = addr.Unmap()
-			if ipAction, ipRule, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetDeny {
-				return NetDeny, ipRule, dialHost, nil
+			if ipAction, ipRule, ipReason, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetDeny {
+				return NetDeny, ipRule, ipReason, dialHost, nil
 			}
 			if !chosen.IsValid() {
 				chosen = addr
 			}
-			if ipAction, _, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetAllow {
+			if ipAction, _, _, ipMatched := m.MatchIP(addr, port); ipMatched && ipAction == NetAllow {
 				ipAllow = true
 			}
 		}
@@ -444,24 +584,24 @@ func (p *Proxy) decide(ctx context.Context, hostport string, defaultPort int) (N
 			dialHost = net.JoinHostPort(chosen.String(), strconv.Itoa(port))
 		}
 		if matched || ipAllow {
-			return NetAllow, rule, dialHost, nil
+			return NetAllow, rule, reason, dialHost, nil
 		}
 		if p.cfg.Mode == NetAllowList {
-			return NetDeny, "", dialHost, nil
+			return NetDeny, "", "", dialHost, nil
 		}
-		return NetAllow, "", dialHost, nil
+		return NetAllow, "", "", dialHost, nil
 	}
 	if matched {
-		return NetAllow, rule, dialHost, nil
+		return NetAllow, rule, reason, dialHost, nil
 	}
 	if p.cfg.Mode == NetAllowList {
-		return NetDeny, "", dialHost, nil
+		return NetDeny, "", "", dialHost, nil
 	}
-	return NetAllow, "", dialHost, nil
+	return NetAllow, "", "", dialHost, nil
 }
 
 // audit emits one decision record when OnDecision is configured.
-func (p *Proxy) audit(host string, port int, action NetAction, rule string) {
+func (p *Proxy) audit(host string, port int, action NetAction, rule, reason string) {
 	if p.cfg.OnDecision != nil {
 		p.cfg.OnDecision(ProxyDecision{
 			Host:   host,
@@ -469,6 +609,7 @@ func (p *Proxy) audit(host string, port int, action NetAction, rule string) {
 			Action: action,
 			Mode:   p.cfg.Mode,
 			Rule:   rule,
+			Reason: reason,
 		})
 	}
 }

@@ -25,6 +25,7 @@ const (
 	wfpDataTypeUint64     wfpDataType = 4
 	wfpDataTypeUint8      wfpDataType = 1
 	wfpDataTypeUint16     wfpDataType = 2
+	wfpDataTypeUint32     wfpDataType = 3
 	wfpDataTypeSID        wfpDataType = 13
 	wfpDataTypeV4AddrMask wfpDataType = 256
 	wfpDataTypeV6AddrMask wfpDataType = 257
@@ -33,7 +34,17 @@ const (
 // wfpMatchType is FWP_MATCH_TYPE.
 type wfpMatchType uint32
 
-const wfpMatchEqual wfpMatchType = 0
+const (
+	wfpMatchEqual        wfpMatchType = 0
+	wfpMatchFlagsAllSet  wfpMatchType = 6
+	wfpMatchFlagsAnySet  wfpMatchType = 7
+	wfpMatchFlagsNoneSet wfpMatchType = 8
+)
+
+// wfpConditionFlag is FWP_CONDITION_FLAG_*; only IS_LOOPBACK is needed.
+type wfpConditionFlag uint32
+
+const wfpConditionFlagIsLoopback wfpConditionFlag = 0x00000001
 
 // wfpActionType is FWPM_ACTION_TYPE.
 type wfpActionType uint32
@@ -42,6 +53,14 @@ const (
 	wfpActionBlock  wfpActionType = 0x1001
 	wfpActionPermit wfpActionType = 0x1002
 )
+
+// wfpFilterFlagClearActionRight is FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT:
+// the filter's action becomes "hard". A hard permit cannot be vetoed by
+// a lower-priority sublayer's Block filter (only by a callout Veto),
+// which is exactly what the proxy-port permit needs to survive the
+// AppIsolation default-deny — a plain permit would be soft and the
+// AppIsolation block would win regardless of sublayer order.
+const wfpFilterFlagClearActionRight = 0x8
 
 // The engine copies each filter before returning, so ordinary heap
 // structs are fine; no notinheap annotation is required.
@@ -138,6 +157,14 @@ var (
 		Data1: 0x4a72393b, Data2: 0x319f, Data3: 0x44bc,
 		Data4: [8]byte{0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4},
 	}
+	fwpmLayerAleAuthRecvAcceptV4 = xwin.GUID{
+		Data1: 0xe1cd9fe7, Data2: 0xf4b5, Data3: 0x4273,
+		Data4: [8]byte{0x96, 0xc0, 0x59, 0x2e, 0x48, 0x7b, 0x86, 0x50},
+	}
+	fwpmLayerAleAuthRecvAcceptV6 = xwin.GUID{
+		Data1: 0xa3b42c97, Data2: 0x9f04, Data3: 0x4672,
+		Data4: [8]byte{0xb8, 0x7e, 0xce, 0xe9, 0xc4, 0x83, 0x25, 0x7f},
+	}
 	fwpmLayerAleResourceAssignmentV4 = xwin.GUID{
 		Data1: 0x1247d66d, Data2: 0x0b60, Data3: 0x4a15,
 		Data4: [8]byte{0x8d, 0x44, 0x71, 0x55, 0xd0, 0xf5, 0x3a, 0x0c},
@@ -158,9 +185,17 @@ var (
 		Data1: 0xc35a604d, Data2: 0xd22b, Data3: 0x4e1a,
 		Data4: [8]byte{0x91, 0xb4, 0x68, 0xf6, 0x74, 0xee, 0x67, 0x4b},
 	}
+	fwpmConditionIPLocalPort = xwin.GUID{
+		Data1: 0x0c1ba1af, Data2: 0x5765, Data3: 0x453f,
+		Data4: [8]byte{0xaf, 0x22, 0xa8, 0xf7, 0x91, 0xac, 0x77, 0x5b},
+	}
 	fwpmConditionIPProtocol = xwin.GUID{
 		Data1: 0x3971ef2b, Data2: 0x623e, Data3: 0x4f9a,
 		Data4: [8]byte{0x8c, 0xb1, 0x6e, 0x79, 0xb8, 0x06, 0xb9, 0xa7},
+	}
+	fwpmConditionFlags = xwin.GUID{
+		Data1: 0x632ce23b, Data2: 0x5167, Data3: 0x435c,
+		Data4: [8]byte{0x86, 0xd7, 0xe9, 0x03, 0x68, 0x4a, 0xa8, 0x0c},
 	}
 )
 
@@ -224,11 +259,14 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 		// Maximum UINT16 weight: the sublayer must be evaluated before
 		// the built-in MPSSVC_APP_ISOLATION sublayer, whose AppContainer
 		// default deny for a capability-less container would otherwise
-		// block the loopback enforcement proxy too. Evaluating our
-		// sublayer first lets the proxy-port permit terminate
-		// classification, while everything else falls through to the
-		// AppIsolation default deny (bind-layer filters cover the
-		// UDP/ICMP flows that default misses).
+		// block the loopback enforcement proxy too. A soft permit in
+		// our sublayer still loses to a lower-priority Block — the
+		// AppIsolation default deny at AUTH_CONNECT, and the built-in
+		// AppContainerLoopback Block at AUTH_RECV_ACCEPT — so every
+		// proxy-port permit is added with CLEAR_ACTION_RIGHT to make it
+		// a hard permit that terminates classification; everything else
+		// falls through to the AppIsolation default deny (bind-layer
+		// filters cover the UDP/ICMP flows that default misses).
 		Weight: 0xffff,
 	}
 	r1, _, e1 := procFwpmSubLayerAdd0.Call(
@@ -247,6 +285,7 @@ func wfpDeleteSublayer(engine xwin.Handle, key xwin.GUID) {
 // wfpCondition builds one filter condition value.
 type wfpCondition struct {
 	field xwin.GUID
+	match wfpMatchType
 	value wfpConditionValue
 }
 
@@ -282,6 +321,13 @@ func portCondition(port uint16) wfpCondition {
 	}
 }
 
+func localPortCondition(port uint16) wfpCondition {
+	return wfpCondition{
+		field: fwpmConditionIPLocalPort,
+		value: wfpConditionValue{Type: wfpDataTypeUint16, Value: uintptr(port)},
+	}
+}
+
 func tcpProtocolCondition() wfpCondition {
 	return wfpCondition{
 		field: fwpmConditionIPProtocol,
@@ -289,16 +335,29 @@ func tcpProtocolCondition() wfpCondition {
 	}
 }
 
-// wfpAddFilter adds one filter to the session's sublayer at
-// ALE_AUTH_CONNECT and records its ID for cleanup.
+// loopbackCondition matches the FWP_CONDITION_FLAGS IsLoopback flag,
+// which the built-in AppContainerLoopback filters use to scope their
+// loopback block at the AUTH_RECV_ACCEPT layers.
+func loopbackCondition() wfpCondition {
+	return wfpCondition{
+		field: fwpmConditionFlags,
+		match: wfpMatchFlagsAllSet,
+		value: wfpConditionValue{Type: wfpDataTypeUint32, Value: uintptr(wfpConditionFlagIsLoopback)},
+	}
+}
+
+// wfpAddFilter adds one filter to the session's sublayer and records
+// its ID for cleanup. flags are FWPM_FILTER_FLAG_* values; pass
+// wfpFilterFlagClearActionRight to make a permit hard (see the const
+// doc).
 func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActionType,
-	weight uint64, conds []wfpCondition) error {
+	weight uint64, flags uint32, conds []wfpCondition) error {
 	namePtr, _ := xwin.UTF16PtrFromString(name)
 	cconds := make([]wfpFilterCondition, len(conds))
 	for i, c := range conds {
 		cconds[i] = wfpFilterCondition{
 			FieldKey:  c.field,
-			MatchType: wfpMatchEqual,
+			MatchType: c.match,
 			Value:     c.value,
 		}
 	}
@@ -312,6 +371,7 @@ func (w *wfpIsolation) wfpAddFilter(layer xwin.GUID, name string, action wfpActi
 	}
 	filter := &wfpFilter{
 		DisplayData:         wfpDisplayData{Name: namePtr},
+		Flags:               flags,
 		LayerKey:            layer,
 		SublayerKey:         w.sublayer,
 		Weight:              wfpValue{Type: wfpDataTypeUint64, Value: uintptr(unsafe.Pointer(&weightValue))},

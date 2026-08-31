@@ -120,6 +120,12 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 		_ = iso.Close()
 		return nil, err
 	}
+	// Behavioral WFP check before the isolation is handed out: filter
+	// install success alone does not prove the fence is effective.
+	if err := iso.verifyFence(); err != nil {
+		_ = iso.Close()
+		return nil, err
+	}
 	return iso, nil
 }
 
@@ -168,7 +174,7 @@ func (n *netIsolation) setupDenyAll() error {
 		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
 	} {
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox socket bind",
-			wfpActionBlock, 0xffffffff, block); err != nil {
+			wfpActionBlock, 0xffffffff, 0, block); err != nil {
 			w.Close()
 			return err
 		}
@@ -181,13 +187,20 @@ func (n *netIsolation) setupDenyAll() error {
 // port and pins the container's network to it with WFP filters: only
 // TCP to 127.0.0.1 / ::1 on the proxy port is permitted at the
 // ALE_AUTH_CONNECT layer for this package SID, and an explicit block
-// filter covers every other connect. Because the AppIsolation default
-// does not cover UDP/ICMP, the bind layer (ALE_RESOURCE_ASSIGNMENT)
-// permits only TCP binds and blocks every other socket type, so no
-// UDP or raw datagram can leave the container at all. All filters live
-// in the maximum-weight sublayer and are evaluated before AppIsolation,
-// keeping the proxy reachable. The proxy applies the allow-list /
-// upstream decisions.
+// filter covers every other connect. The proxy-port permit is
+// repeated at ALE_AUTH_RECV_ACCEPT with IsLoopback conditions on both
+// endpoints: the built-in AppContainerLoopback block lives in that
+// layer and matches both the AppContainer client and the host
+// listener, so a connect-layer permit alone would authorize the
+// connect and then let the loopback block silently drop the proxy
+// connection on either side.
+// Because the AppIsolation default does not cover UDP/ICMP, the bind
+// layer (ALE_RESOURCE_ASSIGNMENT) permits only TCP binds and blocks
+// every other socket type, so no UDP or raw datagram can leave the
+// container at all. All filters live in the maximum-weight sublayer,
+// evaluated before AppIsolation and Defender, and every permit is hard
+// (CLEAR_ACTION_RIGHT) so the built-in blocks cannot override it. The
+// proxy applies the allow-list / upstream decisions.
 func (n *netIsolation) setupProxy() error {
 	proxy, err := corenet.Start(corenet.ProxyConfig{
 		Mode:        n.policy.Mode,
@@ -232,14 +245,54 @@ func (n *netIsolation) setupProxy() error {
 		if layer == fwpmLayerAleAuthConnectV6 {
 			conds = permitV6
 		}
+		// The proxy-port permit must survive the AppIsolation default
+		// deny: a soft permit loses to the built-in block regardless of
+		// sublayer order, so this one is made hard (CLEAR_ACTION_RIGHT).
 		if err := w.wfpAddFilter(layer, "flowcraft permit enforcement proxy",
-			wfpActionPermit, 0xffffffff, conds); err != nil {
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight, conds); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox egress",
-			wfpActionBlock, 0xfffffffe, block); err != nil {
+			wfpActionBlock, 0xfffffffe, 0, block); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+	}
+
+	// Loopback into the proxy must also be permitted at the
+	// AUTH_RECV_ACCEPT layers, where the built-in AppContainerLoopback
+	// filter blocks AppContainer loopback (and, per Project Zero's
+	// analysis, makes blocked loopback connects time out rather than
+	// fail fast). The block's user-ID condition matches both the
+	// AppContainer client and the host listener, so two permits are
+	// needed: one scoped to the sandbox SID on the client side (remote
+	// port == proxy), and one on the host listener side (local port ==
+	// proxy, no SID condition because the listener runs as the host
+	// user). Both are still pinned to the loopback proxy TCP port, so
+	// the sandbox cannot reach arbitrary host loopback services.
+	for _, layer := range []xwin.GUID{fwpmLayerAleAuthRecvAcceptV4, fwpmLayerAleAuthRecvAcceptV6} {
+		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy (client)",
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight,
+			[]wfpCondition{
+				sidCondition(n.sid),
+				loopbackCondition(),
+				portCondition(uint16(port)),
+				tcpProtocolCondition(),
+			}); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+		if err := w.wfpAddFilter(layer, "flowcraft permit loopback proxy (host)",
+			wfpActionPermit, 0xffffffff, wfpFilterFlagClearActionRight,
+			[]wfpCondition{
+				loopbackCondition(),
+				localPortCondition(uint16(port)),
+				tcpProtocolCondition(),
+			}); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
@@ -252,13 +305,13 @@ func (n *netIsolation) setupProxy() error {
 		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
 	} {
 		if err := w.wfpAddFilter(layer, "flowcraft permit tcp bind",
-			wfpActionPermit, 0xffffffff, bindPermit); err != nil {
+			wfpActionPermit, 0xffffffff, 0, bindPermit); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block non-tcp bind",
-			wfpActionBlock, 0xfffffffe, bindBlock); err != nil {
+			wfpActionBlock, 0xfffffffe, 0, bindBlock); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
@@ -317,11 +370,16 @@ func (n *netIsolation) env(env []string) []string {
 		"TMPDIR":       filepath.Join(n.home, "Temp"),
 	}
 	if n.proxyPort > 0 {
-		proxy := fmt.Sprintf("http://127.0.0.1:%d", n.proxyPort)
-		for _, k := range []string{
-			"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
-		} {
-			repl[k] = proxy
+		httpProxy := fmt.Sprintf("http://127.0.0.1:%d", n.proxyPort)
+		socksProxy := fmt.Sprintf("socks5://127.0.0.1:%d", n.proxyPort)
+		for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+			repl[k] = httpProxy
+		}
+		// ALL_PROXY speaks SOCKS5 on the same loopback port; the WFP
+		// permit covers TCP to that port regardless of protocol, so
+		// SOCKS5-aware non-HTTP clients stay inside the fence too.
+		for _, k := range []string{"ALL_PROXY", "all_proxy"} {
+			repl[k] = socksProxy
 		}
 		repl["NO_PROXY"] = ""
 		repl["no_proxy"] = ""
