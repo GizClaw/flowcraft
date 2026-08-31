@@ -20,14 +20,24 @@
 //	                              and close terminate the whole job
 //	                              (all processes, not just the leader).
 //	Env allow-list / inject       fully supported (EnvPolicy).
-//	Net.Mode                     NetDefault (host networking) and
-//	                              NetDenyAll are enforced. NetDenyAll
-//	                              runs the child under an AppContainer
-//	                              token with no network capabilities,
-//	                              which the OS firewall blocks at the
-//	                              kernel. NetAllowList / NetProxy need
-//	                              the WFP port-pinning layer and are
-//	                              errdefs.NotAvailable for now.
+//	Net.Mode                     NetDefault (host networking),
+//	                              NetDenyAll, NetAllowList and
+//	                              NetProxy are enforced. Every
+//	                              non-default mode runs the child
+//	                              under an AppContainer token scoped to
+//	                              one per-runner profile. NetDenyAll
+//	                              grants no network capabilities, so
+//	                              the OS firewall blocks it at the
+//	                              kernel. NetAllowList / NetProxy add
+//	                              the InternetClient capability, pin
+//	                              the container to a host-side
+//	                              enforcement proxy with WFP filters on
+//	                              the package SID (only the loopback
+//	                              proxy port is reachable), and inject
+//	                              the proxy environment. Hosts without
+//	                              AppContainer-profile or WFP-engine
+//	                              access fail closed with
+//	                              errdefs.NotAvailable.
 //	Write == WriteReadOnly        enforced when the runner is built
 //	                              with WithWriteConfinement: the child
 //	                              runs with a restricted, Low-integrity
