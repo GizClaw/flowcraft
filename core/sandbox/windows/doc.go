@@ -28,18 +28,21 @@
 //	                              one per-runner profile. NetDenyAll
 //	                              runs without any network capability,
 //	                              so the OS firewall's AppIsolation
-//	                              default-deny blocks everything at the
-//	                              kernel. NetAllowList / NetProxy add
-//	                              a maximum-weight WFP permit sublayer
-//	                              that pins the container to a
-//	                              host-side enforcement proxy (only
-//	                              the loopback proxy port is
-//	                              reachable; every other packet,
-//	                              including unconnected UDP, still
-//	                              falls through to the default deny)
-//	                              and inject the proxy environment.
-//	                              Hosts without AppContainer-profile or
-//	                              WFP-engine access fail closed with
+//	                              default-deny blocks TCP and connected
+//	                              flows at the kernel. Because that
+//	                              default does not constrain unconnected
+//	                              UDP or ICMP sockets, every non-default
+//	                              mode also installs WFP bind-layer
+//	                              (ALE_RESOURCE_ASSIGNMENT) filters for
+//	                              the package SID: NetDenyAll blocks
+//	                              every bind, while NetAllowList /
+//	                              NetProxy permit only TCP binds, pin
+//	                              the container to a host-side
+//	                              enforcement proxy (only the loopback
+//	                              proxy port is reachable), and inject
+//	                              the proxy environment. Hosts without
+//	                              AppContainer-profile or WFP-engine
+//	                              access fail closed with
 //	                              errdefs.NotAvailable.
 //	Write == WriteReadOnly        enforced when the runner is built
 //	                              with WithWriteConfinement: the child

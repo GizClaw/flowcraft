@@ -138,6 +138,14 @@ var (
 		Data1: 0x4a72393b, Data2: 0x319f, Data3: 0x44bc,
 		Data4: [8]byte{0x84, 0xc3, 0xba, 0x54, 0xdc, 0xb3, 0xb6, 0xb4},
 	}
+	fwpmLayerAleResourceAssignmentV4 = xwin.GUID{
+		Data1: 0x1247d66d, Data2: 0x0b60, Data3: 0x4a15,
+		Data4: [8]byte{0x8d, 0x44, 0x71, 0x55, 0xd0, 0xf5, 0x3a, 0x0c},
+	}
+	fwpmLayerAleResourceAssignmentV6 = xwin.GUID{
+		Data1: 0x55a650e1, Data2: 0x5f0a, Data3: 0x4eca,
+		Data4: [8]byte{0xa6, 0x53, 0x88, 0xf5, 0x3b, 0x26, 0xaa, 0x8c},
+	}
 	fwpmConditionAlePackageID = xwin.GUID{
 		Data1: 0x71bc78fa, Data2: 0xf17c, Data3: 0x4997,
 		Data4: [8]byte{0xa6, 0x02, 0x6a, 0xbb, 0x26, 0x1f, 0x35, 0x1c},
@@ -218,8 +226,9 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 		// default deny for a capability-less container would otherwise
 		// block the loopback enforcement proxy too. Evaluating our
 		// sublayer first lets the proxy-port permit terminate
-		// classification, while everything else still falls through to
-		// the AppIsolation default deny.
+		// classification, while everything else falls through to the
+		// AppIsolation default deny (bind-layer filters cover the
+		// UDP/ICMP flows that default misses).
 		Weight: 0xffff,
 	}
 	r1, _, e1 := procFwpmSubLayerAdd0.Call(

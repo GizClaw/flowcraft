@@ -4,7 +4,6 @@ package windows
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ func requireNetIsolation(t *testing.T) {
 	iso, err := newNetIsolation(t.TempDir(), nil, corenet.NetPolicy{Mode: corenet.NetDenyAll})
 	if err != nil {
 		if errdefs.IsNotAvailable(err) {
-			t.Skipf("host cannot create appcontainer profiles: %v", err)
+			t.Skipf("host cannot create appcontainer profiles or open the WFP engine: %v", err)
 		}
 		t.Fatalf("net isolation probe: %v", err)
 	}
@@ -48,6 +47,7 @@ func requireWFP(t *testing.T) {
 
 func TestExecNetDenyAll(t *testing.T) {
 	requireNetIsolation(t)
+	requireWFP(t)
 	r := mustNewRunner(t)
 	res, err := r.Exec(context.Background(), "cmd",
 		[]string{"/c", "echo", "deny-ok"},
@@ -68,6 +68,7 @@ func TestExecNetDenyAll(t *testing.T) {
 // NetDenyAll, proving the AppContainer has no network reach.
 func TestExecNetDenyAllBlocksNetwork(t *testing.T) {
 	requireNetIsolation(t)
+	requireWFP(t)
 	r := mustNewRunner(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -152,12 +153,13 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 	}
 }
 
-// TestNetAllowListBlocksUDP is the differential UDP check. The probe
-// prints "ok" when the send call succeeds; whether that means the
-// datagram actually egressed is what the deny-all control arm
-// discriminates: if AppIsolation drops the packet without failing the
-// send call, the deny-all arm also reports ok and the probe is not
-// delivery-proving.
+// TestNetAllowListBlocksUDP verifies UDP egress is fully closed for
+// both NetDenyAll and NetAllowList. The AppIsolation default only
+// covers AUTH_CONNECT-classified flows, so unconnected UDP sendto
+// slips past it; the backend closes that gap by blocking every
+// non-TCP bind at ALE_RESOURCE_ASSIGNMENT. The deny-all arm doubles
+// as the probe sanity check: a blocked send must fail the send call,
+// so "ok" in a sandboxed arm means real egress.
 func TestNetAllowListBlocksUDP(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)
@@ -169,28 +171,31 @@ func TestNetAllowListBlocksUDP(t *testing.T) {
 		"$u = New-Object Net.Sockets.UdpClient; try { $u.Send([byte[]](0),1,'1.1.1.1',53); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 	sendConn := []string{"-NoProfile", "-NonInteractive", "-Command",
 		"$u = New-Object Net.Sockets.UdpClient; try { $u.Connect('1.1.1.1',53); $n = $u.Send([byte[]](0),1); Write-Output ok } catch { Write-Output fail; exit 1 }"}
-	dialTCP := []string{"-NoProfile", "-NonInteractive", "-Command",
-		"try { (New-Object Net.Sockets.TcpClient).Connect('1.1.1.1',80); Write-Output ok } catch { Write-Output fail; exit 1 }"}
 
-	run := func(label string, argv []string, net corenet.NetPolicy) string {
-		opts := sandbox.ExecOptions{Timeout: 20 * time.Second}
-		if net.Mode != corenet.NetDefault {
-			opts.Net = net
-		}
-		res, err := r.Exec(ctx, "powershell", argv, opts)
-		if err != nil {
-			return "exec-error: " + err.Error()
-		}
-		return strings.TrimSpace(res.Stdout)
+	ctrl, err := r.Exec(ctx, "powershell", send, sandbox.ExecOptions{Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("control Exec: %v", err)
+	}
+	if ctrl.ExitCode != 0 || !strings.Contains(ctrl.Stdout, "ok") {
+		t.Skipf("host cannot send UDP without a policy (exit=%d out=%q); skipping", ctrl.ExitCode, ctrl.Stdout)
 	}
 
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "control-unconnected-udp=%s\n", run("ctrl", send, corenet.NetPolicy{Mode: corenet.NetDefault}))
-	fmt.Fprintf(&sb, "denyall-unconnected-udp=%s\n", run("deny", send, corenet.NetPolicy{Mode: corenet.NetDenyAll}))
-	fmt.Fprintf(&sb, "allow-unconnected-udp=%s\n", run("allow-udp", send, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
-	fmt.Fprintf(&sb, "allow-connected-udp=%s\n", run("allow-udpc", sendConn, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
-	fmt.Fprintf(&sb, "allow-tcp=%s\n", run("allow-tcp", dialTCP, corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}}))
-	t.Fatalf("probe results:\n%s", sb.String())
+	assertBlocked := func(label string, argv []string, net corenet.NetPolicy) {
+		t.Helper()
+		res, err := r.Exec(ctx, "powershell", argv,
+			sandbox.ExecOptions{Timeout: 20 * time.Second, Net: net})
+		if err != nil {
+			t.Fatalf("%s Exec: %v", label, err)
+		}
+		if res.ExitCode == 0 && strings.Contains(res.Stdout, "ok") {
+			t.Fatalf("%s exec sent UDP: stdout=%q", label, res.Stdout)
+		}
+	}
+	assertBlocked("deny-all", send, corenet.NetPolicy{Mode: corenet.NetDenyAll})
+	assertBlocked("allow-list unconnected", send,
+		corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
+	assertBlocked("allow-list connected", sendConn,
+		corenet.NetPolicy{Mode: corenet.NetAllowList, AllowHosts: []string{"1.1.1.1"}})
 }
 
 func TestExecNetProxy(t *testing.T) {

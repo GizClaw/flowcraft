@@ -105,12 +105,15 @@ kernel. Write confinement is opt-in via `WithWriteConfinement`: the
 child runs with a restricted Low-integrity token and only the runner
 root plus explicit `writable_paths` are labeled writable (all reads
 stay allowed). Network policy runs the child under an AppContainer
-token: `NetDenyAll` grants no network capabilities (the OS firewall
-blocks everything), while `NetAllowList` / `NetProxy` pin the
-container to a host-side enforcement proxy via WFP filters and inject
-the proxy environment, mirroring the seatbelt architecture. These
-modes require an elevated host and fail closed with
-`errdefs.NotAvailable` otherwise. Interactive sessions run through
+token with no network capabilities in every mode. The OS firewall's
+AppIsolation default blocks TCP and connected flows; because it does
+not constrain unconnected UDP or ICMP sockets, the backend also
+installs WFP bind-layer filters for the sandbox's package SID —
+`NetDenyAll` blocks every bind, while `NetAllowList` / `NetProxy`
+permit only TCP binds, pin the container to a host-side enforcement
+proxy, and inject the proxy environment, mirroring the seatbelt
+architecture. These modes require an elevated host and fail closed
+with `errdefs.NotAvailable` otherwise. Interactive sessions run through
 ConPTY: stdout and stderr merge into a single TTY stream and `Resize`
 applies to the pseudo console (TTY combined with write confinement or
 a net policy is not available yet). Permission bits are advisory on

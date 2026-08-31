@@ -31,18 +31,16 @@ import (
 //
 // The container is created without any network capability, so the OS
 // firewall's built-in AppIsolation sublayer denies all network access
-// by default — that is how NetDenyAll is enforced with no WFP
-// involvement. Allow-list / proxy modes add a maximum-weight WFP
-// sublayer that permits only TCP to the loopback enforcement proxy;
-// every other packet (unconnected UDP, ICMP, inbound, raw, ...) still
-// falls through to the AppIsolation default-deny. Dropping
-// internetClient entirely is what closes the unconnected-UDP sendto
-// bypass: ALE_AUTH_CONNECT filters never see those packets, but a
-// capability-less container has no firewall baseline to allow them.
-// Writable paths are granted to the package SID through the filesystem
-// DACL, and HOME / TEMP are redirected into a per-runner sandbox
-// directory, because AppContainers cannot read the user profile by
-// default.
+// by default. That default only covers ALE_AUTH_CONNECT-classified
+// flows (TCP and connected UDP); unconnected UDP sendto and ICMP are
+// not constrained by it, so every non-default mode also installs WFP
+// bind-layer (ALE_RESOURCE_ASSIGNMENT) filters for the package SID.
+// NetDenyAll blocks every bind; allow-list / proxy modes permit only
+// TCP binds (still pinned to the loopback enforcement proxy at
+// ALE_AUTH_CONNECT) and block everything else. Writable paths are
+// granted to the package SID through the filesystem DACL, and HOME /
+// TEMP are redirected into a per-runner sandbox directory, because
+// AppContainers cannot read the user profile by default.
 type netIsolation struct {
 	name  string
 	sid   *xwin.SID
@@ -74,12 +72,9 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 	}
 	name := "flowcraft.sandbox." + hex.EncodeToString(raw[:])
 
-	// No network capabilities in any mode. The built-in AppIsolation
-	// firewall sublayer denies all network for a capability-less
-	// container; allow-list / proxy modes add a higher-weight WFP
-	// permit sublayer for the loopback proxy only, so everything else
-	// (including unconnected UDP sendto, which never reaches the
-	// ALE_AUTH_CONNECT filters) is still denied by default.
+	// No network capabilities in any mode: the AppIsolation default
+	// deny covers AUTH_CONNECT-classified flows, and the bind-layer
+	// filters below cover everything it misses (UDP/ICMP).
 	var caps []*xwin.SID
 	sid, err := createAppContainerProfile(name, "flowcraft sandbox", caps)
 	if err != nil {
@@ -121,6 +116,9 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 			_ = iso.Close()
 			return nil, err
 		}
+	} else if err := iso.setupDenyAll(); err != nil {
+		_ = iso.Close()
+		return nil, err
 	}
 	return iso, nil
 }
@@ -155,16 +153,41 @@ func (n *netIsolation) setupHome() error {
 	return nil
 }
 
+// setupDenyAll closes the AppIsolation coverage gap with a WFP
+// bind-layer block: the OS default deny does not constrain unconnected
+// UDP or ICMP sockets, so every bind by the package SID is explicitly
+// blocked at ALE_RESOURCE_ASSIGNMENT (TCP included — the deny-all
+// container needs no sockets at all).
+func (n *netIsolation) setupDenyAll() error {
+	w, err := newWFPIsolation()
+	if err != nil {
+		return err
+	}
+	block := []wfpCondition{sidCondition(n.sid)}
+	for _, layer := range []xwin.GUID{
+		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
+	} {
+		if err := w.wfpAddFilter(layer, "flowcraft block sandbox socket bind",
+			wfpActionBlock, 0xffffffff, block); err != nil {
+			w.Close()
+			return err
+		}
+	}
+	n.wfp = w
+	return nil
+}
+
 // setupProxy starts the host-side enforcement proxy on a loopback
 // port and pins the container's network to it with WFP filters: only
-// TCP to 127.0.0.1 / ::1 on that port is permitted at the
-// ALE_AUTH_CONNECT layer for this package SID; an explicit block
-// filter covers every other connect, and everything the filters do
-// not see (unconnected UDP, ICMP, inbound) is denied by the
-// AppIsolation default of the capability-less container. The permit
-// filters live in the maximum-weight sublayer, so they are evaluated
-// before AppIsolation and the proxy stays reachable. The proxy applies
-// the allow-list / upstream decisions.
+// TCP to 127.0.0.1 / ::1 on the proxy port is permitted at the
+// ALE_AUTH_CONNECT layer for this package SID, and an explicit block
+// filter covers every other connect. Because the AppIsolation default
+// does not cover UDP/ICMP, the bind layer (ALE_RESOURCE_ASSIGNMENT)
+// permits only TCP binds and blocks every other socket type, so no
+// UDP or raw datagram can leave the container at all. All filters live
+// in the maximum-weight sublayer and are evaluated before AppIsolation,
+// keeping the proxy reachable. The proxy applies the allow-list /
+// upstream decisions.
 func (n *netIsolation) setupProxy() error {
 	proxy, err := corenet.Start(corenet.ProxyConfig{
 		Mode:        n.policy.Mode,
@@ -217,6 +240,25 @@ func (n *netIsolation) setupProxy() error {
 		}
 		if err := w.wfpAddFilter(layer, "flowcraft block sandbox egress",
 			wfpActionBlock, 0xfffffffe, block); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+	}
+
+	bindPermit := []wfpCondition{sidCondition(n.sid), tcpProtocolCondition()}
+	bindBlock := []wfpCondition{sidCondition(n.sid)}
+	for _, layer := range []xwin.GUID{
+		fwpmLayerAleResourceAssignmentV4, fwpmLayerAleResourceAssignmentV6,
+	} {
+		if err := w.wfpAddFilter(layer, "flowcraft permit tcp bind",
+			wfpActionPermit, 0xffffffff, bindPermit); err != nil {
+			w.Close()
+			_ = proxy.Close()
+			return err
+		}
+		if err := w.wfpAddFilter(layer, "flowcraft block non-tcp bind",
+			wfpActionBlock, 0xfffffffe, bindBlock); err != nil {
 			w.Close()
 			_ = proxy.Close()
 			return err
