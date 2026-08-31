@@ -23,7 +23,9 @@ var (
 	procCreateAppContainerToken   = xwin.NewLazySystemDLL("kernelbase.dll").NewProc("CreateAppContainerToken")
 	procDeriveCapabilitySids      = xwin.NewLazySystemDLL("kernel32.dll").NewProc("DeriveCapabilitySidsFromName")
 	procGetSecurityDescriptorDacl = xwin.NewLazySystemDLL("advapi32.dll").NewProc("GetSecurityDescriptorDacl")
-	procSetEntriesInAcl           = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAcl")
+	// SetEntriesInAcl is a header macro; the real export is the
+	// Unicode variant.
+	procSetEntriesInAcl           = xwin.NewLazySystemDLL("advapi32.dll").NewProc("SetEntriesInAclW")
 )
 
 // createAppContainerProfile creates a new AppContainer profile with
