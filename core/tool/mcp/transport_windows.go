@@ -13,7 +13,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/telemetry"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	otellog "go.opentelemetry.io/otel/log"
 	xwin "golang.org/x/sys/windows"
 )
 
@@ -118,8 +120,15 @@ func (c *windowsStdioConn) shutdown() error {
 
 	waitErr, exited := c.wait(defaultMCPShutdownGrace)
 	if !exited {
-		_ = xwin.GenerateConsoleCtrlEvent(
-			xwin.CTRL_BREAK_EVENT, uint32(c.cmd.Process.Pid))
+		if err := xwin.GenerateConsoleCtrlEvent(
+			xwin.CTRL_BREAK_EVENT, uint32(c.cmd.Process.Pid)); err != nil {
+			// Console-less hosts cannot receive CTRL+BREAK; the child
+			// is killed after the second grace instead. Surface the
+			// dropped signal so the degradation is observable.
+			telemetry.WarnErr(context.Background(),
+				"mcp: ctrl-break to child failed, escalating to kill", err,
+				otellog.Int("mcp.pid", c.cmd.Process.Pid))
+		}
 		waitErr, exited = c.wait(defaultMCPShutdownGrace)
 		if !exited {
 			if err := c.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
@@ -131,7 +140,10 @@ func (c *windowsStdioConn) shutdown() error {
 	}
 	// Close the SDK framing, releasing the stdout read pipe. The
 	// writer side is a nopCloser, so stdin is not double-closed.
-	_ = c.Connection.Close()
+	if err := c.Connection.Close(); err != nil {
+		telemetry.WarnErr(context.Background(),
+			"mcp: close sdk framing failed", err)
+	}
 	return errors.Join(stdinErr, waitErr)
 }
 
