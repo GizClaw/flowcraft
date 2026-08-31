@@ -247,3 +247,31 @@ func TestNetIsolationEnvRedirect(t *testing.T) {
 		}
 	}
 }
+
+// TestNetIsolationProxyEnvSplit verifies allow-list / proxy modes
+// inject HTTP_PROXY (http://) and ALL_PROXY (socks5://) to the same
+// loopback port, so HTTP and SOCKS5-aware clients share one fence.
+func TestNetIsolationProxyEnvSplit(t *testing.T) {
+	iso := &netIsolation{home: `C:\ac-home`, proxyPort: 45678}
+	env := iso.env([]string{"PATH=C:\\bin"})
+	got := map[string]string{}
+	for _, kv := range env {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			t.Fatalf("bad env entry %q", kv)
+		}
+		got[k] = v
+	}
+	if got["HTTP_PROXY"] != "http://127.0.0.1:45678" {
+		t.Errorf("HTTP_PROXY = %q, want http://127.0.0.1:45678", got["HTTP_PROXY"])
+	}
+	if got["HTTPS_PROXY"] != "http://127.0.0.1:45678" {
+		t.Errorf("HTTPS_PROXY = %q, want http://127.0.0.1:45678", got["HTTPS_PROXY"])
+	}
+	if got["ALL_PROXY"] != "socks5://127.0.0.1:45678" {
+		t.Errorf("ALL_PROXY = %q, want socks5://127.0.0.1:45678", got["ALL_PROXY"])
+	}
+	if got["NO_PROXY"] != "" {
+		t.Errorf("NO_PROXY = %q, want empty", got["NO_PROXY"])
+	}
+}

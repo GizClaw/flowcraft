@@ -59,8 +59,12 @@
 // allow-list (NetAllowList) or forwards to the configured upstream
 // (NetProxy); it resolves hostnames on the host, so the child needs no
 // resolver route. The child env is forced onto the proxy loopback
-// (HTTP(S)_PROXY / ALL_PROXY) and NO_PROXY is stripped, so proxy-aware
-// clients use the single enforced egress.
+// (HTTP(S)_PROXY -> http://loopback:port, ALL_PROXY ->
+// socks5://loopback:port) and NO_PROXY is stripped, so proxy-aware
+// clients use the single enforced egress. The proxy listener
+// multiplexes HTTP and SOCKS5, so SOCKS5-aware non-HTTP clients
+// (curl --socks5-hostname, ssh ProxyCommand with nc -X 5, tools that
+// honor ALL_PROXY) traverse the same allow-list / upstream policy.
 //
 // The blanket network deny also covers the Mach / AF_SYSTEM sockets
 // macOS needs for TLS and network configuration, so the restricted
@@ -68,12 +72,14 @@
 // (SecurityServer, trustd, configd, networkd, ...). See
 // writeRestrictedNetwork.
 //
-// Limitations (v1): only proxy-aware clients (HTTP(S)_PROXY) are
-// supported — raw TCP/UDP applications fail closed; there is no UDP
-// proxying; AllowHosts matches hostname suffixes or exact IP literals
-// with all ports allowed. SBPL network rules do not confine unix-domain
-// sockets; the macOS sensitive-UDS surface is small, so this is a
-// documented boundary rather than a broad file-read deny.
+// Limitations (v1): clients that neither honor HTTP(S)_PROXY nor speak
+// SOCKS5 fail closed — raw UDP is never proxied and raw TCP without a
+// proxy client has no egress at all. AllowHosts matches hostname
+// suffixes or exact IP literals, with an optional ":port" suffix on
+// rules and allow-list entries; entries without a port match any port.
+// SBPL network rules do not confine unix-domain sockets; the macOS
+// sensitive-UDS surface is small, so this is a documented boundary
+// rather than a broad file-read deny.
 //
 // Note: sandbox-exec is formally deprecated by Apple yet remains
 // functional and is the same primitive Chrome and Anthropic's
@@ -90,14 +96,15 @@
 //
 // # Proxy enhancements
 //
-// The host-side enforcement proxy supports rule-based allow/deny,
-// socks5:// upstreams, MITM (TLS termination + hooks) with
-// SSL_CERT_FILE injection, and per-decision audit callbacks. MITM
-// terminates both HTTP/1.1 and HTTP/2 clients (ALPN h2 + http/1.1);
-// MITMPolicy.Hosts / ExcludeHosts select which CONNECT tunnels are
-// terminated, so cert-pinning destinations can be raw-tunnelled
-// explicitly. Unix socket allow-lists are not enforceable under SBPL,
-// so any non-empty UnixSockets policy is rejected with
+// The host-side enforcement proxy supports rule-based allow/deny with
+// model-facing deny reasons (NetRule.Reason, surfaced in HTTP denial
+// bodies and audit records), socks5:// upstreams, MITM (TLS
+// termination + hooks) with SSL_CERT_FILE injection, and per-decision
+// audit callbacks. MITM terminates both HTTP/1.1 and HTTP/2 clients
+// (ALPN h2 + http/1.1); MITMPolicy.Hosts / ExcludeHosts select which
+// CONNECT tunnels are terminated, so cert-pinning destinations can be
+// raw-tunnelled explicitly. Unix socket allow-lists are not enforceable
+// under SBPL, so any non-empty UnixSockets policy is rejected with
 // errdefs.NotAvailable.
 //
 // macOS CA-injection caveat: Go and curl on macOS use the Security

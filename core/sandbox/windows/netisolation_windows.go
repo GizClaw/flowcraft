@@ -120,6 +120,12 @@ func newNetIsolation(root string, writable []string, policy corenet.NetPolicy) (
 		_ = iso.Close()
 		return nil, err
 	}
+	// Behavioral WFP check before the isolation is handed out: filter
+	// install success alone does not prove the fence is effective.
+	if err := iso.verifyFence(); err != nil {
+		_ = iso.Close()
+		return nil, err
+	}
 	return iso, nil
 }
 
@@ -317,11 +323,16 @@ func (n *netIsolation) env(env []string) []string {
 		"TMPDIR":       filepath.Join(n.home, "Temp"),
 	}
 	if n.proxyPort > 0 {
-		proxy := fmt.Sprintf("http://127.0.0.1:%d", n.proxyPort)
-		for _, k := range []string{
-			"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy",
-		} {
-			repl[k] = proxy
+		httpProxy := fmt.Sprintf("http://127.0.0.1:%d", n.proxyPort)
+		socksProxy := fmt.Sprintf("socks5://127.0.0.1:%d", n.proxyPort)
+		for _, k := range []string{"HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"} {
+			repl[k] = httpProxy
+		}
+		// ALL_PROXY speaks SOCKS5 on the same loopback port; the WFP
+		// permit covers TCP to that port regardless of protocol, so
+		// SOCKS5-aware non-HTTP clients stay inside the fence too.
+		for _, k := range []string{"ALL_PROXY", "all_proxy"} {
+			repl[k] = socksProxy
 		}
 		repl["NO_PROXY"] = ""
 		repl["no_proxy"] = ""

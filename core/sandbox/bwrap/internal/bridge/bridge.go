@@ -128,7 +128,8 @@ func run(argv []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // would deny anyway. Building the env explicitly (instead of mutating
 // the bridge's own env) keeps the logic testable in-process.
 func childEnv(port int) []string {
-	proxy := fmt.Sprintf("http://127.0.0.1:%d", port)
+	httpProxy := fmt.Sprintf("http://127.0.0.1:%d", port)
+	socksProxy := fmt.Sprintf("socks5://127.0.0.1:%d", port)
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, ok := strings.Cut(kv, "=")
@@ -142,9 +143,13 @@ func childEnv(port int) []string {
 		env = append(env, kv)
 	}
 	env = append(env,
-		"HTTP_PROXY="+proxy, "http_proxy="+proxy,
-		"HTTPS_PROXY="+proxy, "https_proxy="+proxy,
-		"ALL_PROXY="+proxy, "all_proxy="+proxy,
+		"HTTP_PROXY="+httpProxy, "http_proxy="+httpProxy,
+		"HTTPS_PROXY="+httpProxy, "https_proxy="+httpProxy,
+		// ALL_PROXY speaks SOCKS5 on the same port: non-HTTP TCP
+		// clients that honor it (curl, ssh ProxyCommand with
+		// -X 5, explicit --socks5-hostname) stay inside the
+		// allow-list / upstream fence.
+		"ALL_PROXY="+socksProxy, "all_proxy="+socksProxy,
 		"NO_PROXY=", "no_proxy=",
 	)
 	return env

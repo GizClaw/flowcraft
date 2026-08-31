@@ -24,7 +24,11 @@ const (
 
 // NetPolicy controls outbound networking for the child process.
 type NetPolicy struct {
-	Mode        NetMode
+	Mode NetMode
+	// AllowHosts is the legacy allow-list: hostname suffixes and exact
+	// IP literals. Entries support an optional ":port" suffix
+	// ("api.example.com:443", "[::1]:8443"); entries without a suffix
+	// match any port. Prefer Rules for new configurations.
 	AllowHosts  []string
 	Rules       []NetRule
 	Proxy       string
@@ -56,6 +60,11 @@ type NetRule struct {
 	Action NetAction
 	Host   string
 	Port   int
+	// Reason is an optional model-facing explanation attached to a
+	// deny rule. It is surfaced in proxy denial responses and audit
+	// records so an agent can see what was blocked and why (mirrors
+	// srt's deniedDomainReasons). Allow-rule reasons are ignored.
+	Reason string
 }
 
 // MITMPolicy enables TLS termination and content hooks for CONNECT
@@ -99,6 +108,12 @@ func (p NetPolicy) Validate() error {
 		}
 		if rule.Port < 0 || rule.Port > 65535 {
 			return errdefs.Validationf("net: net rule %d port %d out of range", i, rule.Port)
+		}
+		if strings.TrimSpace(rule.Reason) != rule.Reason {
+			return errdefs.Validationf("net: net rule %d reason has leading or trailing whitespace", i)
+		}
+		if strings.ContainsAny(rule.Reason, "\r\n") {
+			return errdefs.Validationf("net: net rule %d reason must be a single line", i)
 		}
 	}
 	for _, path := range p.UnixSockets {

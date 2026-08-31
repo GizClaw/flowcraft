@@ -63,7 +63,11 @@
 // connection over a unix socket to a host-side enforcement proxy
 // (core/utils/net) that evaluates the allow-list or
 // forwards to the configured upstream. The bridge injects
-// HTTP(S)_PROXY / ALL_PROXY and strips NO_PROXY.
+// HTTP(S)_PROXY -> http://loopback:port and ALL_PROXY ->
+// socks5://loopback:port and strips NO_PROXY. The proxy listener
+// multiplexes HTTP and SOCKS5, so SOCKS5-aware non-HTTP clients
+// (curl --socks5-hostname, ssh ProxyCommand with nc -X 5, tools that
+// honor ALL_PROXY) traverse the same allow-list / upstream policy.
 //
 // The bridge is not a separate executable. The runner re-executes the
 // host binary itself with a reserved marker argument
@@ -80,11 +84,13 @@
 // (docker.sock, dbus, systemd, ...) directly. NetDefault keeps the
 // host /run so host DNS (systemd's stub-resolv.conf) keeps working.
 //
-// Limitations (v1): only proxy-aware clients (HTTP(S)_PROXY) are
-// supported — raw TCP/UDP applications fail closed; there is no UDP
-// proxying; AllowHosts matches hostname suffixes or exact IP literals
-// with all ports allowed. DNS resolution happens in the host proxy, so
-// the child needs no resolver route.
+// Limitations (v1): clients that neither honor HTTP(S)_PROXY nor speak
+// SOCKS5 fail closed — raw UDP is never proxied and raw TCP without a
+// proxy client has no egress at all. AllowHosts matches hostname
+// suffixes or exact IP literals, with an optional ":port" suffix on
+// rules and allow-list entries; entries without a port match any port.
+// DNS resolution happens in the host proxy, so the child needs no
+// resolver route.
 //
 // # Resource-cap caveat
 //
