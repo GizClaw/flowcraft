@@ -84,12 +84,8 @@ func newConPTY(rows, cols uint32) (*conpty, error) {
 		_ = xwin.CloseHandle(outRead)
 		return nil, errdefs.Internal(fmt.Errorf("windows: allocate proc thread attribute list: %w", err))
 	}
-	// The attribute carries the pseudoconsole handle by value (the
-	// sample passes HPCON directly as lpValue, not a pointer to it).
-	// Passing &console here makes console apps die at startup with
-	// STATUS_DLL_INIT_FAILED (0xC0000142).
 	if err := attr.Update(xwin.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(console), unsafe.Sizeof(console)); err != nil { //nolint:govet // unsafeptr: lpValue must be the handle value itself
+		pseudoconsoleAttrValue(console), unsafe.Sizeof(console)); err != nil {
 		attr.Delete()
 		_ = xwin.CloseHandle(console)
 		_ = xwin.CloseHandle(inWrite)
@@ -103,6 +99,15 @@ func newConPTY(rows, cols uint32) (*conpty, error) {
 		in:      os.NewFile(uintptr(inWrite), "conpty-in"),
 		out:     os.NewFile(uintptr(outRead), "conpty-out"),
 	}, nil
+}
+
+// pseudoconsoleAttrValue reinterprets the pseudoconsole handle's bits
+// as the attribute value. UpdateProcThreadAttribute expects the HPCON
+// value itself in lpValue (Microsoft's sample passes hPC directly),
+// not a pointer to it: passing &console makes console apps die at
+// startup with STATUS_DLL_INIT_FAILED (0xC0000142).
+func pseudoconsoleAttrValue(h xwin.Handle) unsafe.Pointer {
+	return *(*unsafe.Pointer)(unsafe.Pointer(&h))
 }
 
 // spawn creates a suspended child attached to the pseudo console and
