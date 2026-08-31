@@ -84,8 +84,12 @@ func newConPTY(rows, cols uint32) (*conpty, error) {
 		_ = xwin.CloseHandle(outRead)
 		return nil, errdefs.Internal(fmt.Errorf("windows: allocate proc thread attribute list: %w", err))
 	}
+	// The attribute carries the pseudoconsole handle by value (the
+	// sample passes HPCON directly as lpValue, not a pointer to it).
+	// Passing &console here makes console apps die at startup with
+	// STATUS_DLL_INIT_FAILED (0xC0000142).
 	if err := attr.Update(xwin.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(&console), unsafe.Sizeof(console)); err != nil {
+		unsafe.Pointer(console), unsafe.Sizeof(console)); err != nil { //nolint:govet // unsafeptr: lpValue must be the handle value itself
 		attr.Delete()
 		_ = xwin.CloseHandle(console)
 		_ = xwin.CloseHandle(inWrite)
@@ -128,7 +132,17 @@ func (c *conpty) spawn(argv []string, dir string, env []string) (xwin.Handle, in
 		}
 	}
 
+	// STARTF_USESTDHANDLES with invalid handles stops the child from
+	// inheriting the host's stdio; the pseudoconsole attribute then
+	// wires the child's standard handles to the pseudo console
+	// (portable-pty/wezterm's production pattern).
 	siEx := &xwin.StartupInfoEx{
+		StartupInfo: xwin.StartupInfo{
+			Flags:     xwin.STARTF_USESTDHANDLES,
+			StdInput:  xwin.InvalidHandle,
+			StdOutput: xwin.InvalidHandle,
+			StdErr:    xwin.InvalidHandle,
+		},
 		ProcThreadAttributeList: c.attr.List(),
 	}
 	siEx.Cb = uint32(unsafe.Sizeof(*siEx))
