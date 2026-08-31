@@ -213,7 +213,11 @@ func wfpAddSublayer(engine xwin.Handle, key xwin.GUID) error {
 	sl := &wfpSublayer{
 		SublayerKey: key,
 		DisplayData: wfpDisplayData{Name: name},
-		Weight:      0x4000,
+		// Maximum UINT16 weight: the sublayer must be evaluated before
+		// the built-in MPSSVC_APP_ISOLATION sublayer, whose AppContainer
+		// capability filters (e.g. the InternetClient permit) terminate
+		// classification before our package-SID block would be reached.
+		Weight: 0xffff,
 	}
 	r1, _, e1 := procFwpmSubLayerAdd0.Call(
 		uintptr(engine), uintptr(unsafe.Pointer(sl)), 0)
