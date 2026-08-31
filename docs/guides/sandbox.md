@@ -76,7 +76,7 @@ policies they cannot honor.
 | `local` | all (interactive sessions unix-only) | none | `NetDefault` only | none enforced | memory / cpu via group watcher (unix) |
 | `bwrap` | Linux | user / mount / pid / net namespaces | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + `writable_paths`, `WriteReadOnly` | memory / cpu (watcher) |
 | `seatbelt` | macOS | Seatbelt (SBPL) | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + writable paths, `WriteReadOnly` | memory / cpu (watcher) |
-| `windows` | Windows | Job Objects + optional Low-integrity token (`WithWriteConfinement`) | `NetDefault` only | root + `writable_paths`, `WriteReadOnly` (with write confinement) | memory / cpu (job limits) |
+| `windows` | Windows | Job Objects + optional Low-integrity token (`WithWriteConfinement`) + AppContainer (`NetDenyAll`, `NetAllowList`, `NetProxy`) | `NetDefault`, `NetDenyAll`, `NetAllowList`, `NetProxy` | root + `writable_paths`, `WriteReadOnly` (with write confinement) | memory / cpu (job limits) |
 
 The `windows` backend makes command execution work on Windows: every
 child runs in its own job object, timeout / cancel / close terminate
@@ -84,12 +84,17 @@ the whole process tree, and memory / cpu limits are enforced by the
 kernel. Write confinement is opt-in via `WithWriteConfinement`: the
 child runs with a restricted Low-integrity token and only the runner
 root plus explicit `writable_paths` are labeled writable (all reads
-stay allowed). Network filtering is still a follow-up; until then the
-backend fails closed with `errdefs.NotAvailable` for policies it
-cannot enforce. Interactive sessions run through ConPTY: stdout and
-stderr merge into a single TTY stream and `Resize` applies to the
-pseudo console (TTY combined with write confinement is not available
-yet). Permission bits are advisory on Windows: `chmod`-style modes
+stay allowed). Network policy runs the child under an AppContainer
+token: `NetDenyAll` grants no network capabilities (the OS firewall
+blocks everything), while `NetAllowList` / `NetProxy` pin the
+container to a host-side enforcement proxy via WFP filters and inject
+the proxy environment, mirroring the seatbelt architecture. These
+modes require an elevated host and fail closed with
+`errdefs.NotAvailable` otherwise. Interactive sessions run through
+ConPTY: stdout and stderr merge into a single TTY stream and `Resize`
+applies to the pseudo console (TTY combined with write confinement or
+a net policy is not available yet). Permission bits are advisory on
+Windows: `chmod`-style modes
 map only to the read-only attribute, and real access control comes
 from the directory ACLs inherited at creation. Code that passes modes
 like `0o600` / `0o755` still runs unchanged, but treat such modes as
