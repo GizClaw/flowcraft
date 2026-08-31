@@ -2,6 +2,7 @@ package windows
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -16,7 +17,9 @@ const ResourceKind = "sandbox.Runner"
 const BackendName = "windows"
 
 type settings struct {
-	Root string `json:"root"`
+	Root          string   `json:"root"`
+	WriteConfine  bool     `json:"write_confine,omitempty"`
+	WritablePaths []string `json:"writable_paths,omitempty"`
 }
 
 type factory struct{}
@@ -39,7 +42,18 @@ func (factory) New(ctx context.Context, in resource.Input) (any, error) {
 	if s.Root == "" {
 		return nil, errdefs.Validationf("windows settings.root is required")
 	}
-	runner, err := New(s.Root)
+	var options []Option
+	if s.WriteConfine {
+		options = append(options, WithWriteConfinement())
+	}
+	writable, err := sandbox.ResolveMany(s.Root, s.WritablePaths)
+	if err != nil {
+		return nil, fmt.Errorf("windows settings.writable_paths: %w", err)
+	}
+	if writable != nil {
+		options = append(options, WithWritablePaths(writable...))
+	}
+	runner, err := New(s.Root, options...)
 	if err != nil {
 		return nil, err
 	}

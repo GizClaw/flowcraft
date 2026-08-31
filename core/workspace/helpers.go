@@ -100,7 +100,7 @@ func Glob(ctx context.Context, ws Workspace, pattern string) ([]string, error) {
 		// leading "./" — it is relative to the workspace root as-is.
 		var matched bool
 		if hasDoublestar {
-			matched = matchDoublestar(pattern, path)
+			matched = matchDoublestar(pattern, foldCase(path))
 		} else {
 			var matchErr error
 			// Normalise "/" in caller patterns to the platform

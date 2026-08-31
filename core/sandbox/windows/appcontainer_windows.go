@@ -83,7 +83,9 @@ func deleteAppContainerProfile(name string) error {
 		return errdefs.Internal(fmt.Errorf("windows: encode appcontainer name: %w", err))
 	}
 	r1, _, _ := procDeleteAppContainerProfile.Call(uintptr(unsafe.Pointer(namePtr)))
-	if r1 != 0 {
+	// HRESULT_FROM_WIN32(ERROR_NOT_FOUND): deleting an already-gone
+	// profile is the idempotent no-op the doc comment promises.
+	if r1 != 0 && r1 != 0x80070002 {
 		return errdefs.Internal(fmt.Errorf(
 			"windows: delete appcontainer profile %s: 0x%x", name, r1))
 	}

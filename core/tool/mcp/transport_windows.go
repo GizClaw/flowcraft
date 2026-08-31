@@ -74,6 +74,16 @@ func (t *reconnectableStdio) connect(ctx context.Context) (mcpsdk.Connection, er
 	if err != nil {
 		_ = stdinW.Close()
 		_ = stdoutR.Close()
+		// The child is already running; do not orphan it. Kill and
+		// reap before returning so the MCP server cannot outlive the
+		// failed connect attempt and the process handle is released.
+		if kerr := cmd.Process.Kill(); kerr != nil && !errors.Is(kerr, os.ErrProcessDone) {
+			telemetry.WarnErr(context.Background(),
+				"mcp: kill child after connect failure", kerr)
+		}
+		// Reap the child; its (expected) non-zero exit status is the
+		// outcome of the kill, not a cleanup failure.
+		_ = cmd.Wait()
 		return nil, err
 	}
 	return &windowsStdioConn{Connection: inner, cmd: cmd, stdin: stdinW}, nil

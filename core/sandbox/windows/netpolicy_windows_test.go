@@ -150,6 +150,42 @@ func TestNetAllowListPinsToProxy(t *testing.T) {
 	}
 }
 
+// TestNetAllowListBlocksUDP is the differential UDP check: ALE
+// filters classify the first send from an unconnected UDP socket at
+// AUTH_CONNECT, so a raw UDP sendto under allow-list must fail even
+// though the container carries the internetClient capability (DNS
+// tunneling via unconnected UDP is not a valid egress path).
+func TestNetAllowListBlocksUDP(t *testing.T) {
+	requireNetIsolation(t)
+	requireWFP(t)
+	r := mustNewRunner(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	send := []string{"-NoProfile", "-NonInteractive", "-Command",
+		"$u = New-Object Net.Sockets.UdpClient; try { $u.Send([byte[]](0),1,'1.1.1.1',53); Write-Output ok } catch { Write-Output fail; exit 1 }"}
+
+	ctrl, err := r.Exec(ctx, "powershell", send, sandbox.ExecOptions{Timeout: 20 * time.Second})
+	if err != nil {
+		t.Fatalf("control Exec: %v", err)
+	}
+	if ctrl.ExitCode != 0 || !strings.Contains(ctrl.Stdout, "ok") {
+		t.Skipf("host cannot send UDP without a policy (exit=%d out=%q); skipping", ctrl.ExitCode, ctrl.Stdout)
+	}
+
+	denied, err := r.Exec(ctx, "powershell", send,
+		sandbox.ExecOptions{Timeout: 20 * time.Second, Net: corenet.NetPolicy{
+			Mode:       corenet.NetAllowList,
+			AllowHosts: []string{"1.1.1.1"},
+		}})
+	if err != nil {
+		t.Fatalf("allow-list Exec: %v", err)
+	}
+	if denied.ExitCode == 0 && strings.Contains(denied.Stdout, "ok") {
+		t.Fatalf("allow-list exec sent UDP externally: stdout=%q", denied.Stdout)
+	}
+}
+
 func TestExecNetProxy(t *testing.T) {
 	requireNetIsolation(t)
 	requireWFP(t)

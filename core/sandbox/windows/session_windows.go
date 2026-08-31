@@ -255,7 +255,14 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 	if s.isClosed() {
 		return sandbox.ErrSessionClosed
 	}
-	if s.stdin == nil {
+	// Snapshot stdin under the lock: CloseInput / Close nil it out
+	// concurrently, so the writer goroutine below must never read the
+	// field itself (that would be a data race and could panic on a
+	// nil writer).
+	s.mu.Lock()
+	stdin := s.stdin
+	s.mu.Unlock()
+	if stdin == nil {
 		return sandbox.ErrSessionClosed
 	}
 	if len(data) == 0 {
@@ -271,7 +278,7 @@ func (s *winSession) Write(ctx context.Context, data []byte) error {
 	done := make(chan error, 1)
 	go func() {
 		defer func() { <-s.writeSlots }()
-		_, err := io.Copy(s.stdin, bytes.NewReader(data))
+		_, err := io.Copy(stdin, bytes.NewReader(data))
 		done <- err
 	}()
 	select {
