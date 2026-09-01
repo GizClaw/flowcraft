@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core/inference): per-model reasoning effort maps — ModelCapabilities.Reasoning becomes ReasoningCapability{Kind, EffortMap} with the canonical ladder extended to minimal/low/medium/high/xhigh, and each model declares how those levels map to its own wire tokens (built-in OpenAI, Anthropic, Kimi, Qwen, Bytedance, DeepSeek, and MiniMax catalogs migrated); legacy reasoning: \"toggle\" strings stay backward compatible and re-serialize identically when no effort map is present; DeepSeek v4 flash/pro align with the official low/high/max thinking ladder and spec-declared reasoning models without an effort dial now explicitly enable thinking instead of silently dropping the effort request; breaking Go API: ModelCapabilities.Reasoning assignments must migrate from ReasoningKind to ReasoningCapability",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
