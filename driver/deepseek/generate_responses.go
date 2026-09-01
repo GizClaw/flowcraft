@@ -410,12 +410,14 @@ func compileResponsesIntent(
 				"model has no thinking control",
 			)
 		case len(entry.capabilities.Reasoning.EffortMap) == 0:
-			// Spec-declared reasoning models without a dial think by
-			// default, so the request for reasoning itself is honored;
-			// only the level is lost.
+			// Spec-declared reasoning models without a dial: honor the
+			// request for reasoning itself at the documented default depth
+			// and report the lost level. Built-in DeepSeek models think by
+			// default, but a custom spec model has no such guarantee.
+			wire.reasoning = "high"
 			ledger.drop(
 				inference.FieldGenerateIntentReasoningEffort,
-				"model thinks by default but has no effort dial",
+				"model has no effort dial; thinking enabled at default depth",
 			)
 		default:
 			mode, _ := entry.capabilities.Reasoning.ResolveEffort(

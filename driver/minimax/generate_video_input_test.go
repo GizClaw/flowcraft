@@ -125,3 +125,29 @@ func TestM3InlineVideoBlockRendersBase64(t *testing.T) {
 		t.Fatalf("inline video block not rendered as base64: %s", rendered)
 	}
 }
+
+func TestM3VideoStreamSourceRejectsBeforeEncoding(t *testing.T) {
+	pipe := media.NewPipe[string](1)
+	source, err := media.NewVideoStream(pipe, "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoStream: %v", err)
+	}
+	compile := compileGenerate("MiniMax-M3", catalog["MiniMax-M3"])
+	request := conformanceTextRequest()
+	request.Input.Content.Parts = append(
+		request.Input.Content.Parts,
+		message.VideoPart{Source: source},
+	)
+	compiled, err := compile(
+		context.Background(),
+		conformanceModel("MiniMax-M3"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err == nil {
+		t.Fatal("stream video input unexpectedly compiled")
+	}
+	if !compiled.Report.Rejects(inference.FieldGenerateInputVideo) {
+		t.Fatal("stream video input was not rejected on the input video field")
+	}
+}

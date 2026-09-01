@@ -93,7 +93,7 @@ func TestDeepSeekResponsesReasoningEffortResolvesFromCapabilityMap(t *testing.T)
 	}
 }
 
-func TestChatSpecBinaryReasoningEffortDrops(t *testing.T) {
+func TestChatSpecBinaryReasoningEffortEnablesThinkingAndDrops(t *testing.T) {
 	compile := compileChatGenerate("spec-binary", chatEntry())
 	request := conformanceTextRequest()
 	request.Input.Content.Intent.Text = &inference.TextIntent{
@@ -113,5 +113,31 @@ func TestChatSpecBinaryReasoningEffortDrops(t *testing.T) {
 	}
 	if compiled.Wire.effort != "" {
 		t.Fatalf("wire effort = %q, want empty", compiled.Wire.effort)
+	}
+	if compiled.Wire.thinking == nil || !*compiled.Wire.thinking {
+		t.Fatalf("wire thinking = %v, want enabled", compiled.Wire.thinking)
+	}
+}
+
+func TestResponsesSpecBinaryReasoningEffortEnablesThinkingAndDrops(t *testing.T) {
+	compile := compileResponsesGenerate("spec-binary", responsesEntry())
+	request := conformanceTextRequest()
+	request.Input.Content.Intent.Text = &inference.TextIntent{
+		ReasoningEffort: inference.ReasoningHigh,
+	}
+	compiled, err := compile(
+		context.Background(),
+		conformanceModel("spec-binary"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
+		t.Fatal("binary model must drop the effort with a reason")
+	}
+	if compiled.Wire.reasoning != "high" {
+		t.Fatalf("wire reasoning = %q, want high", compiled.Wire.reasoning)
 	}
 }

@@ -195,10 +195,31 @@ func collectTaskParts(
 			case message.TextPart:
 				prompt = append(prompt, value.Text)
 			case message.ImagePart:
+				if value.Source.Kind() == media.SourceStream {
+					ledger.reject(
+						fields[message.PartImage],
+						"stream media sources must be materialized before generate",
+					)
+					continue
+				}
 				images = append(images, videoImageValue(value.Source))
 			case message.VideoPart:
+				if value.Source.Kind() == media.SourceStream {
+					ledger.reject(
+						fields[message.PartVideo],
+						"stream media sources must be materialized before generate",
+					)
+					continue
+				}
 				videos = append(videos, videoSourceURI(value.Source))
 			case message.AudioPart:
+				if value.Source.Kind() == media.SourceStream {
+					ledger.reject(
+						fields[message.PartAudio],
+						"stream media sources must be materialized before generate",
+					)
+					continue
+				}
 				audios = append(audios, audioSourceURI(value.Source))
 			default:
 				ledger.reject(

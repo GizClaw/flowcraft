@@ -242,6 +242,26 @@ func TestModelCapabilitiesBuildersDoNotAlias(t *testing.T) {
 	_ = extended
 }
 
+func TestModelCapabilitiesCloneDoesNotAliasEffortMap(t *testing.T) {
+	capabilities := inference.ModelCapabilities{
+		Reasoning: inference.ReasoningCapability{
+			Kind: inference.ReasoningToggle,
+			EffortMap: map[inference.ReasoningEffort]string{
+				inference.ReasoningMinimal: "low",
+				inference.ReasoningLow:     "low",
+				inference.ReasoningMedium:  "high",
+				inference.ReasoningHigh:    "high",
+				inference.ReasoningXHigh:   "max",
+			},
+		},
+	}
+	clone := capabilities.Clone()
+	clone.Reasoning.EffortMap[inference.ReasoningLow] = "max"
+	if got := capabilities.Reasoning.EffortMap[inference.ReasoningLow]; got != "low" {
+		t.Fatalf("clone mutated original effort map: low = %q, want low", got)
+	}
+}
+
 func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {
 	original := inference.ModelDescriptor{
 		ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},

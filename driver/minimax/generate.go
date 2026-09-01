@@ -311,12 +311,26 @@ func compileMessage(
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
+			if value.Source.Kind() == media.SourceStream {
+				ledger.reject(
+					fields[message.PartImage],
+					"stream media sources must be materialized before generate",
+				)
+				continue
+			}
 			wire.appendBlock(role, imageBlock(value.Source))
 		case message.AudioPart:
 			ledger.reject(fields[message.PartAudio], "audio input is not supported by messages models")
 		case message.VideoPart:
 			if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
 				ledger.reject(fields[message.PartVideo], "model does not accept video input")
+				continue
+			}
+			if value.Source.Kind() == media.SourceStream {
+				ledger.reject(
+					fields[message.PartVideo],
+					"stream media sources must be materialized before generate",
+				)
 				continue
 			}
 			wire.appendBlock(role, videoBlock(value.Source))

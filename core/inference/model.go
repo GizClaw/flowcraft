@@ -289,6 +289,9 @@ type ModelCapabilities struct {
 func (c ModelCapabilities) Clone() ModelCapabilities {
 	c.Inputs = append([]message.PartKind(nil), c.Inputs...)
 	c.Outputs = append([]message.PartKind(nil), c.Outputs...)
+	if c.Reasoning.EffortMap != nil {
+		c.Reasoning.EffortMap = maps.Clone(c.Reasoning.EffortMap)
+	}
 	return c
 }
 

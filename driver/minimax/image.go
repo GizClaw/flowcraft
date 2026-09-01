@@ -75,6 +75,13 @@ func compileImage(
 				case message.TextPart:
 					prompt = append(prompt, value.Text)
 				case message.ImagePart:
+					if value.Source.Kind() == media.SourceStream {
+						ledger.reject(
+							fields[message.PartImage],
+							"stream media sources must be materialized before generate",
+						)
+						continue
+					}
 					wire.references = append(wire.references, imageSourceValue(value.Source))
 				default:
 					ledger.reject(

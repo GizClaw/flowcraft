@@ -18,7 +18,14 @@ spec:
       capabilities:     # optional: content kinds, hosted web search, reasoning control
         inputs: [text, data, tool_call, tool_result]
         outputs: [text]
-        reasoning: toggle   # "always" or "toggle"
+        reasoning:
+          kind: toggle     # "always" or "toggle"; legacy string "toggle" is still accepted
+          effort_map:      # optional: canonical effort -> model wire level
+            minimal: low
+            low: low
+            medium: high
+            high: high
+            xhigh: max
         hosted_web_search: true
       responses: true
 profiles:
