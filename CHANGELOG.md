@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.2` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.3` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.3` - 2026-09-01
+
+### Changed
+
+- feat(core/inference): per-model reasoning effort maps — ModelCapabilities.Reasoning becomes ReasoningCapability{Kind, EffortMap} with the canonical ladder extended to minimal/low/medium/high/xhigh, and each model declares how those levels map to its own wire tokens (built-in OpenAI, Anthropic, Kimi, Qwen, Bytedance, DeepSeek, and MiniMax catalogs migrated); legacy reasoning: "toggle" strings stay backward compatible and re-serialize identically when no effort map is present; DeepSeek v4 flash/pro align with the official low/high/max thinking ladder and spec-declared reasoning models without an effort dial now explicitly enable thinking instead of silently dropping the effort request; breaking Go API: ModelCapabilities.Reasoning assignments must migrate from ReasoningKind to ReasoningCapability
 
 ## `core/v0.2.2` - 2026-08-31
 
