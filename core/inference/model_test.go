@@ -177,6 +177,13 @@ func TestReasoningCapabilityJSONBackwardCompat(t *testing.T) {
 		len(legacy.EffortMap) != 0 {
 		t.Fatalf("legacy decode = %+v", legacy)
 	}
+	legacyEncoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("legacy marshal: %v", err)
+	}
+	if string(legacyEncoded) != `"toggle"` {
+		t.Fatalf("legacy marshal = %s, want \"toggle\"", legacyEncoded)
+	}
 
 	var object inference.ReasoningCapability
 	if err := json.Unmarshal([]byte(`{
@@ -230,6 +237,13 @@ func TestModelCapabilitiesLegacyReasoningJSON(t *testing.T) {
 	}
 	if err := capabilities.Validate(); err != nil {
 		t.Fatalf("legacy capabilities Validate: %v", err)
+	}
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatalf("legacy capabilities marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"reasoning":"toggle"`) {
+		t.Fatalf("legacy capabilities marshal = %s, want string reasoning", encoded)
 	}
 }
 

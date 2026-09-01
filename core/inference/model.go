@@ -234,6 +234,21 @@ func (r *ReasoningCapability) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON keeps the legacy string form when no effort map is declared,
+// so a deployment that decoded `reasoning: "toggle"` re-serializes to the
+// same string instead of leaking the new object shape. Capabilities with an
+// effort map marshal as the object form.
+func (r ReasoningCapability) MarshalJSON() ([]byte, error) {
+	if r.IsZero() {
+		return []byte(`{}`), nil
+	}
+	if len(r.EffortMap) == 0 {
+		return json.Marshal(r.Kind)
+	}
+	type alias ReasoningCapability
+	return json.Marshal(alias(r))
+}
+
 // validateEffortToken checks that a wire-level token is well-formed:
 // non-empty, at most 64 characters, and free of whitespace and control
 // characters.

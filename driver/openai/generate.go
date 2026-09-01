@@ -636,12 +636,10 @@ func compileIntent(
 				"model has no reasoning effort control",
 			)
 		case len(entry.capabilities.Reasoning.EffortMap) == 0:
-			// Spec-declared reasoning models without a declared map are
-			// treated as binary: the level cannot be represented.
-			ledger.drop(
-				inference.FieldGenerateIntentReasoningEffort,
-				"model's thinking is binary; no effort dial exists",
-			)
+			// Spec-declared reasoning models without an explicit map keep
+			// the legacy pass-through behavior: OpenAI's reasoning.effort
+			// accepts the canonical effort tokens verbatim.
+			wire.reasoning = string(text.ReasoningEffort)
 		default:
 			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,

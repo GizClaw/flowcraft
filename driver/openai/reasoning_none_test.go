@@ -80,3 +80,30 @@ func TestChatModeToggleFalseStillRejects(t *testing.T) {
 		t.Fatal("disable request was not rejected in chat mode")
 	}
 }
+
+func TestSpecToggleWithoutMapPassesEffortThrough(t *testing.T) {
+	entry := catalogEntry{
+		kind:         kindGenerate,
+		api:          apiResponses,
+		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
+	}
+	compile := compileGenerate("spec-toggle", entry)
+	request := simpleTextRequest("hi")
+	request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningHigh
+
+	compiled, err := compile(
+		context.Background(),
+		openaiModel("spec-toggle"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if compiled.Wire.reasoning != "high" {
+		t.Fatalf("wire reasoning = %q, want high", compiled.Wire.reasoning)
+	}
+	if compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
+		t.Fatal("legacy spec effort unexpectedly dropped")
+	}
+}

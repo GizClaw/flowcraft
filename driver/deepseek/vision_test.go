@@ -116,6 +116,42 @@ func TestVisionChatInlineImageBecomesDataURL(t *testing.T) {
 	}
 }
 
+func TestVisionResponsesInlineImageBecomesDataURL(t *testing.T) {
+	source, err := media.NewImageBytes(
+		[]byte{0x89, 'P', 'N', 'G'},
+		"image/png",
+	)
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	request := conformanceTextRequest()
+	request.Input.Content.Parts = []message.Part{
+		message.ImagePart{Source: source},
+	}
+	compiled, err := compileResponsesGenerate(
+		visionModel(),
+		catalog[visionModel()],
+	)(
+		context.Background(),
+		conformanceModel(visionModel()),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	last := compiled.Wire.items[len(compiled.Wire.items)-1]
+	if len(last.content) != 1 {
+		t.Fatalf("user content parts = %d, want 1", len(last.content))
+	}
+	if !strings.HasPrefix(
+		last.content[0].uri,
+		"data:image/png;base64,",
+	) {
+		t.Fatalf("inline image uri = %q, want base64 data URL", last.content[0].uri)
+	}
+}
+
 func TestChatUserContentBuildsImagePart(t *testing.T) {
 	parts := chatUserContent([]wireContent{
 		{kind: wireContentText, text: "describe"},
