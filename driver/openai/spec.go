@@ -45,8 +45,8 @@ type Spec struct {
 // ModelSpec declares one model outside the built-in catalog. Capabilities
 // mirror the built-in catalog shape: content kinds, hosted web search, and
 // the reasoning control capability (validated against the kind's compiler
-// contract at merge time). Dimensions is the one control capability that no
-// capability kind expresses and stays a separate flag.
+// contract at merge time). Dimensions and EffortNone are control
+// capabilities that no capability kind expresses and stay separate flags.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
@@ -55,6 +55,10 @@ type ModelSpec struct {
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 	// Dimensions (embed) allows custom output dimensions.
 	Dimensions bool `json:"dimensions,omitempty"`
+	// EffortNone marks generate models whose reasoning.effort accepts
+	// "none" to disable reasoning (gpt-5.1+); models without it reject a
+	// ReasoningEnabled=false request.
+	EffortNone bool `json:"effort_none,omitempty"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. OpenAI addresses

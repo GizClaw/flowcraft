@@ -628,13 +628,37 @@ func compileIntent(
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		} else {
-			wire.reasoning = &wireReasoning{effort: string(text.ReasoningEffort)}
+		case len(entry.efforts) == 0:
+			// Spec-declared reasoning models without a dial: honor the
+			// request for reasoning itself and report the lost level.
+			on := true
+			wire.thinking = &on
+			ledger.drop(
+				inference.FieldGenerateIntentReasoningEffort,
+				"model's thinking is binary; no effort dial exists",
+			)
+		default:
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				entry.efforts,
+			)
+			wire.reasoning = &wireReasoning{effort: string(mode)}
+			if !exact {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model quantizes reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

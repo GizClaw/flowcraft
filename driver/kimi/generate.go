@@ -518,17 +518,27 @@ func compileReasoning(wire *generateWire, text *inference.TextIntent, entry cata
 		switch {
 		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(inference.FieldGenerateIntentReasoningEffort, "model has no thinking control")
-		case !entry.reasoningEffort:
+		case len(entry.efforts) == 0:
+			// The model's thinking is binary: the level cannot be honored,
+			// but the request for reasoning itself is — turn thinking on
+			// and report the loss.
+			wire.Thinking = &thinkingOn{Type: "enabled"}
 			ledger.drop(inference.FieldGenerateIntentReasoningEffort, "model's thinking is binary; no effort dial exists")
 		default:
-			switch text.ReasoningEffort {
-			case inference.ReasoningLow:
-				wire.Effort = "low"
-			case inference.ReasoningMedium:
-				wire.Effort = "high"
-				ledger.drop(inference.FieldGenerateIntentReasoningEffort, "kimi-k3 quantizes medium effort to high")
-			case inference.ReasoningHigh:
-				wire.Effort = "high"
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				entry.efforts,
+			)
+			wire.Effort = string(mode)
+			if !exact {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model quantizes reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
 			}
 		}
 	}

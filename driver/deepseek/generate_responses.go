@@ -384,13 +384,36 @@ func compileResponsesIntent(
 		// enabled == true is a no-op: DeepSeek thinks by default.
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		} else {
-			wire.reasoning = string(text.ReasoningEffort)
+		case len(entry.efforts) == 0:
+			// Spec-declared reasoning models without a dial think by
+			// default, so the request for reasoning itself is honored;
+			// only the level is lost.
+			ledger.drop(
+				inference.FieldGenerateIntentReasoningEffort,
+				"model thinks by default but has no effort dial",
+			)
+		default:
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				entry.efforts,
+			)
+			wire.reasoning = string(mode)
+			if !exact {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model quantizes reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

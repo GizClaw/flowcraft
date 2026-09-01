@@ -16,19 +16,19 @@ const kindGenerate modelKind = "generate"
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
 // single capability fact source: input/output content kinds and the reasoning
-// control capability. sampling, reasoningEffort, keepThinking, and
-// keepThinkingAlways are control capabilities that no capability kind
-// expresses and stay separate flags.
+// control capability. efforts, sampling, keepThinking, and keepThinkingAlways
+// are control capabilities that no capability kind expresses and stay
+// separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
 	// sampling accepts the moonshot-v1 sampling knobs (temperature,
 	// top_p); the K3 / K2.x request schemas carry none.
 	sampling bool
-	// reasoningEffort marks models with the top-level reasoning_effort
-	// dial (kimi-k3 only); elsewhere an explicit effort drops with a
-	// reason.
-	reasoningEffort bool
+	// efforts is the top-level reasoning_effort dial (kimi-k3 only:
+	// low/high/max per the Kimi docs); nil elsewhere, where an explicit
+	// effort drops with a reason.
+	efforts []inference.ReasoningEffort
 	// keepThinking marks models that optionally re-ingest history
 	// reasoning_content via thinking.keep="all" (kimi-k2.6).
 	keepThinking bool
@@ -59,7 +59,11 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningAlways),
-		reasoningEffort:    true,
+		efforts: []inference.ReasoningEffort{
+			inference.ReasoningLow,
+			inference.ReasoningHigh,
+			"max",
+		},
 		keepThinkingAlways: true,
 		maxInputTokens:     1_000_000,
 	},
@@ -117,9 +121,6 @@ func (e catalogEntry) validate() error {
 	}
 	if e.keepThinkingAlways && e.capabilities.Reasoning != inference.ReasoningAlways {
 		return fmt.Errorf("always-preserved thinking requires always-on thinking")
-	}
-	if e.reasoningEffort && e.capabilities.Reasoning == inference.ReasoningNone {
-		return fmt.Errorf("reasoning effort requires reasoning")
 	}
 	return nil
 }

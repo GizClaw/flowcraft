@@ -53,6 +53,7 @@ type wireBlockKind string
 const (
 	wireBlockText             wireBlockKind = "text"
 	wireBlockImage            wireBlockKind = "image"
+	wireBlockVideo            wireBlockKind = "video"
 	wireBlockToolUse          wireBlockKind = "tool_use"
 	wireBlockToolResult       wireBlockKind = "tool_result"
 	wireBlockThinking         wireBlockKind = "thinking"
@@ -66,6 +67,10 @@ type wireBlock struct {
 	imageURL  string
 	imageData []byte
 	imageType string
+	// video carries an absolute URL or base64 bytes with a media type.
+	videoURL  string
+	videoData []byte
+	videoType string
 	// tool_use / tool_result.
 	callID string
 	name   string // tool_use
@@ -309,7 +314,11 @@ func compileMessage(
 		case message.AudioPart:
 			ledger.reject(fields[message.PartAudio], "audio input is not supported by messages models")
 		case message.VideoPart:
-			ledger.reject(fields[message.PartVideo], "video input is not supported by messages models")
+			if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
+				ledger.reject(fields[message.PartVideo], "model does not accept video input")
+				continue
+			}
+			wire.appendBlock(role, videoBlock(value.Source))
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
@@ -406,6 +415,19 @@ func imageBlock(source media.ImageSource) wireBlock {
 		kind:      wireBlockImage,
 		imageData: bytesClone(source.Bytes()),
 		imageType: source.MediaType(),
+	}
+}
+
+// videoBlock lowers a video source: URLs pass through, inline bytes carry
+// their raw data plus media type for base64 encoding at the transport.
+func videoBlock(source media.VideoSource) wireBlock {
+	if source.Kind() == media.SourceURL {
+		return wireBlock{kind: wireBlockVideo, videoURL: source.URL()}
+	}
+	return wireBlock{
+		kind:      wireBlockVideo,
+		videoData: bytesClone(source.Bytes()),
+		videoType: source.MediaType(),
 	}
 }
 

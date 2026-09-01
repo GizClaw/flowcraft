@@ -17,16 +17,16 @@ const (
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
 // single capability fact source: input/output content kinds and the reasoning
-// control capability. reasoningEffort, preserveThinking, thinkingStreamOnly,
-// and embedDimensions are control capabilities that no capability kind
-// expresses and stay separate flags.
+// control capability. efforts, preserveThinking, thinkingStreamOnly, and
+// embedDimensions are control capabilities that no capability kind expresses
+// and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
-	// reasoningEffort accepts the reasoning_effort levels
-	// (qwen3.8-max-preview only); other thinking models take
-	// thinking_budget through the extension instead.
-	reasoningEffort bool
+	// efforts is the reasoning_effort dial (qwen3.8-max-preview only:
+	// low/medium/xhigh per the DashScope docs); other thinking models
+	// take thinking_budget through the extension instead.
+	efforts []inference.ReasoningEffort
 	// preserveThinking can re-ingest reasoning_content history
 	// (preserve_thinking); models without it drop round-trip traces.
 	preserveThinking bool
@@ -60,7 +60,11 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningAlways),
-		reasoningEffort:    true,
+		efforts: []inference.ReasoningEffort{
+			inference.ReasoningLow,
+			inference.ReasoningMedium,
+			inference.ReasoningXHigh,
+		},
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     983_616,
@@ -147,7 +151,7 @@ func (e catalogEntry) validate() error {
 	if e.kind == kindEmbed && e.capabilities.Reasoning != inference.ReasoningNone {
 		return fmt.Errorf("embed model cannot declare reasoning")
 	}
-	if e.kind == kindEmbed && (e.reasoningEffort || e.preserveThinking || e.thinkingStreamOnly) {
+	if e.kind == kindEmbed && (e.preserveThinking || e.thinkingStreamOnly) {
 		return fmt.Errorf("embed model cannot declare thinking flags")
 	}
 	return nil

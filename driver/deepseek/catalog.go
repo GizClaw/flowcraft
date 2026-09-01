@@ -29,6 +29,11 @@ const (
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
+	// efforts is the reasoning_effort dial both V4 models accept
+	// (low/medium/high/xhigh per the DeepSeek docs; the API aliases
+	// medium to high and xhigh to max). Minimal is not a DeepSeek wire
+	// level and resolves to low.
+	efforts []inference.ReasoningEffort
 	// api is the provider-level generate surface selected by Spec.API.
 	api apiMode
 	// declared marks a Spec.Models entry (as opposed to a built-in catalog
@@ -90,6 +95,12 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts: []inference.ReasoningEffort{
+			inference.ReasoningLow,
+			inference.ReasoningMedium,
+			inference.ReasoningHigh,
+			inference.ReasoningXHigh,
+		},
 		responses:      true,
 		maxInputTokens: 1_000_000,
 	},
@@ -98,6 +109,12 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts: []inference.ReasoningEffort{
+			inference.ReasoningLow,
+			inference.ReasoningMedium,
+			inference.ReasoningHigh,
+			inference.ReasoningXHigh,
+		},
 		responses:      true,
 		maxInputTokens: 1_000_000,
 	},

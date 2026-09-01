@@ -622,7 +622,7 @@ func compileIntent(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		case !entry.reasoningLevels:
+		case len(entry.efforts) == 0:
 			// The platform's thinking is binary: the level cannot be
 			// honored, but the request for reasoning itself is — turn
 			// thinking on and report the loss.
@@ -633,7 +633,21 @@ func compileIntent(
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
 		default:
-			wire.effort = string(text.ReasoningEffort)
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				entry.efforts,
+			)
+			wire.effort = string(mode)
+			if !exact {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model quantizes reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

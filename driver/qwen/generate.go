@@ -495,8 +495,8 @@ func (c *compiler) tools(text *inference.TextIntent) {
 	}
 }
 
-// reasoning compiles the reasoning switch and effort. The effort levels
-// exist only on qwen3.8-max-preview (reasoningEffort); other thinking
+// reasoning compiles the reasoning switch and effort. The effort dial
+// exists only on qwen3.8-max-preview (low/medium/xhigh); other thinking
 // models take thinking_budget through the extension instead, so an
 // explicit effort drops with a reason. Thinking mode is stream-only on
 // the commercial thinking models, so a unary compile with thinking on
@@ -533,36 +533,33 @@ func (c *compiler) reasoning(text *inference.TextIntent) {
 				inference.FieldGenerateIntentReasoningEffort,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		case !c.entry.reasoningEffort:
+		case len(c.entry.efforts) == 0:
 			c.ledger.drop(
 				inference.FieldGenerateIntentReasoningEffort,
-				fmt.Sprintf("model %s has no effort levels; bound the trace with the thinking_budget extension", c.model),
+				fmt.Sprintf(
+					"model %s has no effort dial; enable thinking with reasoning_enabled on a stream or bound the trace with the thinking_budget extension",
+					c.model,
+				),
 			)
 		default:
-			if level, ok := effortLevel(text.ReasoningEffort); ok {
-				c.wire.Parameters.ReasoningEffort = level
-			} else {
-				c.ledger.reject(
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				c.entry.efforts,
+			)
+			c.wire.Parameters.ReasoningEffort = string(mode)
+			if !exact {
+				c.ledger.drop(
 					inference.FieldGenerateIntentReasoningEffort,
-					fmt.Sprintf("reasoning effort %q is not a DashScope level", text.ReasoningEffort),
+					fmt.Sprintf(
+						"model %s quantizes reasoning effort %q to %q",
+						c.model,
+						text.ReasoningEffort,
+						mode,
+					),
 				)
 			}
 		}
 	}
-}
-
-// effortLevel maps canonical effort onto DashScope's low/medium/xhigh
-// scale: high lands on xhigh (DashScope's top level).
-func effortLevel(effort inference.ReasoningEffort) (string, bool) {
-	switch effort {
-	case inference.ReasoningLow:
-		return "low", true
-	case inference.ReasoningMedium:
-		return "medium", true
-	case inference.ReasoningHigh:
-		return "xhigh", true
-	}
-	return "", false
 }
 
 // intents rejects the non-text modality intents: this package serves

@@ -95,6 +95,25 @@ func blockToParam(block wireBlock) anthropicgo.ContentBlockParamUnion {
 			MediaType: anthropicgo.Base64ImageSourceMediaType(block.imageType),
 			Data:      base64Encode(block.imageData),
 		})
+	case wireBlockVideo:
+		// The SDK has no video content block yet, so the block rides a
+		// raw union: {"type":"video","source":{...}}.
+		source := map[string]any{"type": "url", "url": block.videoURL}
+		if block.videoURL == "" {
+			source = map[string]any{
+				"type":       "base64",
+				"media_type": block.videoType,
+				"data":       base64Encode(block.videoData),
+			}
+		}
+		// json.Marshal cannot fail here: the map holds plain strings only.
+		raw, _ := json.Marshal(map[string]any{
+			"type":   "video",
+			"source": source,
+		})
+		return param.Override[anthropicgo.ContentBlockParamUnion](
+			json.RawMessage(raw),
+		)
 	case wireBlockToolUse:
 		return anthropicgo.NewToolUseBlock(block.callID, argsValue(block.args), block.name)
 	case wireBlockToolResult:

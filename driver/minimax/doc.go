@@ -72,9 +72,9 @@
 //     back, and unsigned reasoning drops — the self-hosted kernel's
 //     policy, which matches MiniMax's requirement to preserve thinking
 //     blocks unchanged across tool-use turns.
-//   - Image input compiles for MiniMax-M3 (URL or base64) and rejects on
-//     the text-only M2.x series. Video input has no wire support in the
-//     kernel and rejects everywhere for now.
+//   - Image and video input compile for MiniMax-M3 (URL or base64; the
+//     video content block rides a raw union until the SDK models it) and
+//     reject on the text-only M2.x series.
 //   - MiniMax ignores top_k and stop_sequences on this endpoint; the
 //     canonical request has no surface for either, so nothing is lost.
 //   - service_tier (standard/priority) is MiniMax-specific and has no

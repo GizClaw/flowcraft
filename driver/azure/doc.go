@@ -16,6 +16,8 @@
 //
 // Deployments are the catalog: Azure routes by deployment name, so every
 // model in spec.models declares one deployment plus the operation kind and
-// optional capability flags. Credentials live per profile under api_key;
-// the resource endpoint and api-version live on the provider Spec.
+// optional capability flags (including effort_none for reasoning
+// deployments that accept effort "none" to disable thinking). Credentials
+// live per profile under api_key; the resource endpoint and api-version
+// live on the provider Spec.
 package azure

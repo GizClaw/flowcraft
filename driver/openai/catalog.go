@@ -33,17 +33,22 @@ const (
 
 // catalogEntry is one model in the built-in catalog. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
-// search, and the reasoning control capability. dimensions is the one
-// remaining control capability that no capability kind expresses (embed
-// custom output dimensions) and stays a separate flag. ModelSpec mirrors this
-// shape so deployment-declared models behave identically.
+// search, and the reasoning control capability. dimensions and effortNone
+// are control capabilities that no capability kind expresses (embed custom
+// output dimensions, and effort "none" to disable reasoning) and stay
+// separate flags. ModelSpec mirrors this shape so deployment-declared
+// models behave identically.
 type catalogEntry struct {
 	kind         modelKind
 	api          apiMode
 	capabilities inference.ModelCapabilities
 	// dimensions (embed) allows custom output dimensions. Control
 	// capability, likewise not a content kind.
-	dimensions  bool
+	dimensions bool
+	// effortNone marks reasoning models whose reasoning.effort accepts
+	// "none" to disable reasoning (gpt-5.1+ per the OpenAI docs); models
+	// without it reject a disable request.
+	effortNone  bool
 	deprecated  bool
 	replacement string
 	// maxInputTokens caps the input context (prompt plus prior turns) in
@@ -105,16 +110,19 @@ var catalog = map[string]catalogEntry{
 	"gpt-5.6-sol": {
 		kind:           kindGenerate,
 		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-terra": {
 		kind:           kindGenerate,
 		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-luna": {
 		kind:           kindGenerate,
 		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	// Generate — previous generations, superseded but available.
@@ -218,6 +226,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			kind:         modelKind(model.Kind),
 			capabilities: model.Capabilities,
 			dimensions:   model.Dimensions,
+			effortNone:   model.EffortNone,
 		}
 	}
 	for name, entry := range models {

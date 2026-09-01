@@ -605,6 +605,10 @@ func compileIntent(
 			)
 		case entry.capabilities.Reasoning == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
+			if entry.effortNone {
+				wire.reasoning = "none"
+				break
+			}
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"reasoning cannot be disabled through this provider",

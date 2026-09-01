@@ -617,8 +617,10 @@ func compileIntent(
 			)
 		case entry.capabilities.Reasoning == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
-			// No OpenAI surface exposes a reasoning-off switch yet; reject
-			// until a toggle-capable model and wire channel land.
+			if entry.effortNone && entry.api != apiChat {
+				wire.reasoning = "none"
+				break
+			}
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"reasoning cannot be disabled through this provider",

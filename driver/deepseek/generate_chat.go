@@ -3,6 +3,7 @@ package deepseek
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 
@@ -340,16 +341,36 @@ func compileChatIntent(
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		} else {
-			// DeepSeek documents low/medium as aliases for high and
-			// xhigh for max: pass the canonical effort through verbatim
-			// and let the API normalize it.
-			wire.effort = string(text.ReasoningEffort)
+		case len(entry.efforts) == 0:
+			// Spec-declared reasoning models without a dial think by
+			// default, so the request for reasoning itself is honored;
+			// only the level is lost.
+			ledger.drop(
+				inference.FieldGenerateIntentReasoningEffort,
+				"model thinks by default but has no effort dial",
+			)
+		default:
+			mode, exact := inference.ResolveReasoningEffort(
+				text.ReasoningEffort,
+				entry.efforts,
+			)
+			wire.effort = string(mode)
+			if !exact {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model quantizes reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

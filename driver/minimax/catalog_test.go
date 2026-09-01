@@ -56,13 +56,16 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	m3 := descriptors["MiniMax-M3"]
 	if !reflect.DeepEqual(m3.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
 		!slices.Contains(m3.Capabilities.Inputs, message.PartImage) ||
+		!slices.Contains(m3.Capabilities.Inputs, message.PartVideo) ||
 		m3.Capabilities.Reasoning != inference.ReasoningToggle {
 		t.Fatalf("M3 capabilities = %+v", m3.Capabilities)
 	}
 
 	m2 := descriptors["MiniMax-M2.7"]
-	if m2.Capabilities.Reasoning != inference.ReasoningAlways {
-		t.Fatalf("M2.7 reasoning = %q, want always", m2.Capabilities.Reasoning)
+	if m2.Capabilities.Reasoning != inference.ReasoningAlways ||
+		slices.Contains(m2.Capabilities.Inputs, message.PartImage) ||
+		slices.Contains(m2.Capabilities.Inputs, message.PartVideo) {
+		t.Fatalf("M2.7 capabilities = %+v", m2.Capabilities)
 	}
 
 	image := descriptors["image-01"]

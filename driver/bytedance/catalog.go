@@ -28,6 +28,10 @@ const (
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
+	// efforts is the reasoning_effort dial the Ark responses surface
+	// accepts (low/medium/high in the SDK enum); minimal and xhigh are
+	// not wire levels here and resolve onto low/high.
+	efforts []inference.ReasoningEffort
 	// embed: accepts custom output dimensions.
 	dimensions bool
 	// video: highest supported resolution tier ("720p", "1080p", "4k");
@@ -136,6 +140,16 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
+// arkEfforts is the effort dial shared by the Ark thinking models. The
+// SDK's reasoning_effort enum carries low/medium/high only; Doubao's
+// documented minimal level is its no-thinking mode, which the canonical
+// ReasoningEnabled switch covers instead.
+var arkEfforts = []inference.ReasoningEffort{
+	inference.ReasoningLow,
+	inference.ReasoningMedium,
+	inference.ReasoningHigh,
+}
+
 // catalog is the built-in model registry. Names are stable Volcengine model
 // families; deployment-specific endpoint IDs (ep-xxx or dated revisions like
 // doubao-seed-2-1-pro-260628) belong in Spec.Endpoints.
@@ -152,6 +166,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 1_024_000,
 	},
 
@@ -163,6 +178,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-1-turbo": {
@@ -171,6 +187,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 
@@ -184,6 +201,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-lite": {
@@ -192,6 +210,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-mini": {
@@ -200,6 +219,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-code": {
@@ -208,6 +228,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:        arkEfforts,
 		maxInputTokens: 256_000,
 	},
 
@@ -219,6 +240,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:    arkEfforts,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 		maxInputTokens: 256_000,
 	},
@@ -228,6 +250,7 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle),
+		efforts:    arkEfforts,
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 		maxInputTokens: 256_000,
 	},

@@ -39,6 +39,10 @@ type ModelSpec struct {
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
 	// Dimensions accepts the embed dimensions knob (embed only).
 	Dimensions bool `json:"dimensions,omitempty"`
+	// EffortNone marks generate deployments whose reasoning.effort accepts
+	// "none" to disable reasoning (gpt-5.1+ deployments); deployments
+	// without it reject a ReasoningEnabled=false request.
+	EffortNone bool `json:"effort_none,omitempty"`
 }
 
 func (s Spec) Validate() error {
