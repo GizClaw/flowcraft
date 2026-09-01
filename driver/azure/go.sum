@@ -6,8 +6,8 @@ github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 h1:fhqpLE3UEXi9lPaBRpQ6Xu
 github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0/go.mod h1:7dCRMLwisfRH3dBupKeNCioWYUZ4SS09Z14H+7i8ZoY=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2 h1:RHK7bS+HQMslb1sZpAokUt+zTVmue0hKSs2C791hhzU=
 github.com/AzureAD/microsoft-authentication-library-for-go v1.7.2/go.mod h1:HKpQxkWaGLJ+D/5H8QRpyQXA1eKjxkFlOMwck5+33Jk=
-github.com/GizClaw/flowcraft/core v0.2.0 h1:t2W4W4LtMT7SH4ZPyzTv3Tosu3fP6afxu/d4J8rI8rA=
-github.com/GizClaw/flowcraft/core v0.2.0/go.mod h1:2EZ+ZFBICJse3GS48m7S+IpXy2s8j/xEy/O7dN5VB+U=
+github.com/GizClaw/flowcraft/core v0.2.3 h1:spEXJ1cfzEILXGB8ERMC9QJSmiuwxHFCiaiUB9s2Slw=
+github.com/GizClaw/flowcraft/core v0.2.3/go.mod h1:hL61rLjDQOXKMMQOJUVT8ZFOoP1gs37c6uxzECZUBh4=
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
