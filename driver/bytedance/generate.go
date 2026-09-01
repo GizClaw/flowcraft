@@ -612,12 +612,12 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -629,12 +629,12 @@ func compileIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		case len(entry.efforts) == 0:
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
 			// Spec-declared reasoning models without a dial: honor the
 			// request for reasoning itself and report the lost level.
 			on := true
@@ -644,16 +644,15 @@ func compileIntent(
 				"model's thinking is binary; no effort dial exists",
 			)
 		default:
-			mode, exact := inference.ResolveReasoningEffort(
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
-				entry.efforts,
 			)
-			wire.reasoning = &wireReasoning{effort: string(mode)}
-			if !exact {
+			wire.reasoning = &wireReasoning{effort: mode}
+			if mode != string(text.ReasoningEffort) {
 				ledger.drop(
 					inference.FieldGenerateIntentReasoningEffort,
 					fmt.Sprintf(
-						"model quantizes reasoning effort %q to %q",
+						"model maps reasoning effort %q to %q",
 						text.ReasoningEffort,
 						mode,
 					),

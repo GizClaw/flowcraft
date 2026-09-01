@@ -504,12 +504,12 @@ func (c *compiler) tools(text *inference.TextIntent) {
 func (c *compiler) reasoning(text *inference.TextIntent) {
 	if text.ReasoningEnabled != nil {
 		switch {
-		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		case c.entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -528,12 +528,12 @@ func (c *compiler) reasoning(text *inference.TextIntent) {
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		case len(c.entry.efforts) == 0:
+		case len(c.entry.capabilities.Reasoning.EffortMap) == 0:
 			c.ledger.drop(
 				inference.FieldGenerateIntentReasoningEffort,
 				fmt.Sprintf(
@@ -542,16 +542,15 @@ func (c *compiler) reasoning(text *inference.TextIntent) {
 				),
 			)
 		default:
-			mode, exact := inference.ResolveReasoningEffort(
+			mode, _ := c.entry.capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
-				c.entry.efforts,
 			)
-			c.wire.Parameters.ReasoningEffort = string(mode)
-			if !exact {
+			c.wire.Parameters.ReasoningEffort = mode
+			if mode != string(text.ReasoningEffort) {
 				c.ledger.drop(
 					inference.FieldGenerateIntentReasoningEffort,
 					fmt.Sprintf(
-						"model %s quantizes reasoning effort %q to %q",
+						"model %s maps reasoning effort %q to %q",
 						c.model,
 						text.ReasoningEffort,
 						mode,
@@ -590,7 +589,7 @@ func (c *compiler) intents(request inference.GenerateRequest) {
 func (c *compiler) extensions() {
 	o := c.options
 	if o.ThinkingBudget != nil {
-		if c.entry.capabilities.Reasoning == inference.ReasoningNone {
+		if c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone {
 			c.ledger.reject(
 				inference.ExtensionField("thinking_budget").Qualify(o),
 				fmt.Sprintf("model %s has no thinking budget", c.model),

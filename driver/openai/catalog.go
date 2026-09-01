@@ -102,6 +102,16 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
+// openaiEffortMap is the canonical-to-wire identity map: OpenAI's
+// reasoning.effort accepts the canonical five verbatim.
+var openaiEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningMinimal),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningMedium),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
+}
+
 // catalog is the built-in model list, aligned with the OpenAI model lineup
 // of July 2026 (GPT-5.6 family flagship). Deployments extend or override it
 // via Spec.Models.
@@ -109,44 +119,44 @@ var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
 		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-terra": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
 		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-luna": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
 		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.4": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.4-mini": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-terra",
 		maxInputTokens: 400_000,
 	},
 	"gpt-5.4-nano": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-luna",
 		maxInputTokens: 400_000,
 	},

@@ -6,12 +6,16 @@
 //   - Chat Completions (`api: chat`, the default): text, tool calling,
 //     json_object output, thinking control, reasoning_effort, and the
 //     DeepSeek reasoning_content round-trip that thinking-mode tool loops
-//     require. json_schema output is not available on this surface.
+//     require. json_schema output is not available on this surface. The
+//     deepseek-v4-flash-vision-exp model additionally accepts image input
+//     (URL or base64) in user messages on this surface.
 //   - Responses (`api: responses`): OpenAI-compatible Responses API on
-//     https://api.deepseek.com/responses. Both deepseek-v4-flash and
-//     deepseek-v4-pro support it. The surface adds json_schema output,
-//     hosted web_search, and plain-text reasoning item round-trips.
-//     `include` is intentionally never sent: DeepSeek does not support it.
+//     https://api.deepseek.com/responses. deepseek-v4-flash,
+//     deepseek-v4-pro, and deepseek-v4-flash-vision-exp support it. The
+//     surface adds json_schema output, hosted web_search, and plain-text
+//     reasoning item round-trips. The vision model carries input_image
+//     parts in user messages here too. `include` is intentionally never
+//     sent: DeepSeek does not support it.
 //
 // Credentials come exclusively from resource profiles: `api_key`
 // authenticates every surface, and secret values may reference the

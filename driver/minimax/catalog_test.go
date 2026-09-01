@@ -57,12 +57,12 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !reflect.DeepEqual(m3.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
 		!slices.Contains(m3.Capabilities.Inputs, message.PartImage) ||
 		!slices.Contains(m3.Capabilities.Inputs, message.PartVideo) ||
-		m3.Capabilities.Reasoning != inference.ReasoningToggle {
+		m3.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
 		t.Fatalf("M3 capabilities = %+v", m3.Capabilities)
 	}
 
 	m2 := descriptors["MiniMax-M2.7"]
-	if m2.Capabilities.Reasoning != inference.ReasoningAlways ||
+	if m2.Capabilities.Reasoning.Kind != inference.ReasoningAlways ||
 		slices.Contains(m2.Capabilities.Inputs, message.PartImage) ||
 		slices.Contains(m2.Capabilities.Inputs, message.PartVideo) {
 		t.Fatalf("M2.7 capabilities = %+v", m2.Capabilities)

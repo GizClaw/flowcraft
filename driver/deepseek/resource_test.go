@@ -103,12 +103,12 @@ func TestResponsesProviderAllowsDeclaredOverride(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	provider, ok := value.(inference.ProviderDefinition)
-	if !ok || len(provider.Models) != 2 {
+	if !ok || len(provider.Models) != 3 {
 		t.Fatalf("provider = %+v", provider)
 	}
 }
 
-func TestResponsesProviderBuildsBothV4Models(t *testing.T) {
+func TestResponsesProviderBuildsV4Family(t *testing.T) {
 	value, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "deepseek",
@@ -130,8 +130,13 @@ func TestResponsesProviderBuildsBothV4Models(t *testing.T) {
 	for _, model := range provider.Models {
 		names[model.Descriptor.ID.Name] = true
 	}
-	if !names["deepseek-v4-flash"] || !names["deepseek-v4-pro"] {
-		t.Fatalf("responses provider models = %v, want flash + pro", names)
+	if !names["deepseek-v4-flash"] ||
+		!names["deepseek-v4-pro"] ||
+		!names["deepseek-v4-flash-vision-exp"] {
+		t.Fatalf(
+			"responses provider models = %v, want flash + pro + vision",
+			names,
+		)
 	}
 }
 

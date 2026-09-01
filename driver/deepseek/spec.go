@@ -44,8 +44,8 @@ type ModelSpec struct {
 	// Capabilities declares the model's input/output content kinds, hosted
 	// web search support, and reasoning control capability.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
-	// Responses declares Responses API support (deepseek-v4-flash and
-	// deepseek-v4-pro).
+	// Responses declares Responses API support (deepseek-v4-flash,
+	// deepseek-v4-pro, and deepseek-v4-flash-vision-exp).
 	Responses bool `json:"responses,omitempty"`
 }
 

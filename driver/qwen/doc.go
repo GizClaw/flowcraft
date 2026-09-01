@@ -23,12 +23,12 @@
 //   - Thinking mode is stream-only server-side, so a unary compile with
 //     thinking on rejects generate.input.content.intent.text.
 //     reasoning_enabled.
-//   - Effort levels (reasoning_effort) exist only on qwen3.8-max-preview
-//     (low/medium/xhigh per the DashScope docs); the canonical high
-//     resolves to xhigh (DashScope's top level) and the quantization is
-//     reported as a drop. On other thinking models an explicit effort
-//     drops with a reason and the GenerateOptions.ThinkingBudget
-//     extension bounds the trace instead.
+//   - Effort levels (reasoning_effort) exist only on qwen3.8-max-preview,
+//     whose capability effort map declares low/medium/xhigh per the
+//     DashScope docs; the canonical high resolves to xhigh (DashScope's
+//     top level) and the fold is reported as a drop. On other thinking
+//     models an explicit effort drops with a reason and the
+//     GenerateOptions.ThinkingBudget extension bounds the trace instead.
 //
 // Reasoning history round-trips through preserve_thinking: assistant
 // reasoning parts compile to reasoning_content on models that declare the

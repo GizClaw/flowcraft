@@ -65,7 +65,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		case "claude-fable-5", "claude-mythos-5":
 			want = inference.ReasoningAlways
 		}
-		if capabilities.Reasoning != want {
+		if capabilities.Reasoning.Kind != want {
 			t.Fatalf("%s reasoning = %q, want %q",
 				model.Descriptor.ID.Name, capabilities.Reasoning, want)
 		}

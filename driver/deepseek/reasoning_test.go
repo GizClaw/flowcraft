@@ -7,21 +7,21 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 )
 
-func TestDeepSeekReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
+func TestDeepSeekChatReasoningEffortResolvesFromCapabilityMap(t *testing.T) {
 	compile := compileChatGenerate("deepseek-v4-flash", catalog["deepseek-v4-flash"])
 	model := conformanceModel("deepseek-v4-flash")
 	field := inference.FieldGenerateIntentReasoningEffort
 
 	for _, tc := range []struct {
 		effort  inference.ReasoningEffort
-		want    inference.ReasoningEffort
+		want    string
 		dropped bool
 	}{
-		{effort: inference.ReasoningMinimal, want: inference.ReasoningLow, dropped: true},
-		{effort: inference.ReasoningLow, want: inference.ReasoningLow},
-		{effort: inference.ReasoningMedium, want: inference.ReasoningMedium},
-		{effort: inference.ReasoningHigh, want: inference.ReasoningHigh},
-		{effort: inference.ReasoningXHigh, want: inference.ReasoningXHigh},
+		{effort: inference.ReasoningMinimal, want: "low", dropped: true},
+		{effort: inference.ReasoningLow, want: "low"},
+		{effort: inference.ReasoningMedium, want: "high", dropped: true},
+		{effort: inference.ReasoningHigh, want: "high"},
+		{effort: inference.ReasoningXHigh, want: "max", dropped: true},
 	} {
 		request := conformanceTextRequest()
 		request.Input.Content.Intent.Text = &inference.TextIntent{
@@ -36,7 +36,7 @@ func TestDeepSeekReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 		if err != nil {
 			t.Fatalf("effort %q: compile: %v", tc.effort, err)
 		}
-		if compiled.Wire.effort != string(tc.want) {
+		if compiled.Wire.effort != tc.want {
 			t.Fatalf(
 				"effort %q: wire = %q, want %q",
 				tc.effort,
@@ -50,21 +50,21 @@ func TestDeepSeekReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 	}
 }
 
-func TestDeepSeekResponsesReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
+func TestDeepSeekResponsesReasoningEffortResolvesFromCapabilityMap(t *testing.T) {
 	compile := compileResponsesGenerate("deepseek-v4-flash", catalog["deepseek-v4-flash"])
 	model := conformanceModel("deepseek-v4-flash")
 	field := inference.FieldGenerateIntentReasoningEffort
 
 	for _, tc := range []struct {
 		effort  inference.ReasoningEffort
-		want    inference.ReasoningEffort
+		want    string
 		dropped bool
 	}{
-		{effort: inference.ReasoningMinimal, want: inference.ReasoningLow, dropped: true},
-		{effort: inference.ReasoningLow, want: inference.ReasoningLow},
-		{effort: inference.ReasoningMedium, want: inference.ReasoningMedium},
-		{effort: inference.ReasoningHigh, want: inference.ReasoningHigh},
-		{effort: inference.ReasoningXHigh, want: inference.ReasoningXHigh},
+		{effort: inference.ReasoningMinimal, want: "low", dropped: true},
+		{effort: inference.ReasoningLow, want: "low"},
+		{effort: inference.ReasoningMedium, want: "high", dropped: true},
+		{effort: inference.ReasoningHigh, want: "high"},
+		{effort: inference.ReasoningXHigh, want: "max", dropped: true},
 	} {
 		request := conformanceTextRequest()
 		request.Input.Content.Intent.Text = &inference.TextIntent{
@@ -79,7 +79,7 @@ func TestDeepSeekResponsesReasoningEffortResolvesAgainstPrivateDial(t *testing.T
 		if err != nil {
 			t.Fatalf("effort %q: compile: %v", tc.effort, err)
 		}
-		if compiled.Wire.reasoning != string(tc.want) {
+		if compiled.Wire.reasoning != tc.want {
 			t.Fatalf(
 				"effort %q: wire = %q, want %q",
 				tc.effort,

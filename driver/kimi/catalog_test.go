@@ -60,24 +60,24 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !reflect.DeepEqual(k3.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
 		!slices.Contains(k3.Capabilities.Inputs, message.PartImage) ||
 		!slices.Contains(k3.Capabilities.Inputs, message.PartVideo) ||
-		k3.Capabilities.Reasoning != inference.ReasoningAlways {
+		k3.Capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		t.Fatalf("kimi-k3 capabilities = %+v", k3.Capabilities)
 	}
 
 	k26 := descriptors["kimi-k2.6"]
 	if !slices.Contains(k26.Capabilities.Inputs, message.PartVideo) ||
-		k26.Capabilities.Reasoning != inference.ReasoningToggle {
+		k26.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
 		t.Fatalf("kimi-k2.6 capabilities = %+v", k26.Capabilities)
 	}
 
 	k27code := descriptors["kimi-k2.7-code"]
 	if !slices.Contains(k27code.Capabilities.Inputs, message.PartVideo) ||
-		k27code.Capabilities.Reasoning != inference.ReasoningAlways {
+		k27code.Capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		t.Fatalf("kimi-k2.7-code capabilities = %+v", k27code.Capabilities)
 	}
 
 	moonshot := descriptors["moonshot-v1-8k"]
-	if moonshot.Capabilities.Reasoning != inference.ReasoningNone ||
+	if moonshot.Capabilities.Reasoning.Kind != inference.ReasoningNone ||
 		len(moonshot.Capabilities.Inputs) == 0 {
 		t.Fatalf("moonshot-v1-8k capabilities = %+v", moonshot.Capabilities)
 	}

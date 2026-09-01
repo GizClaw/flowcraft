@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -37,6 +38,9 @@ type chatWire struct {
 type wireChatMessage struct {
 	role string // system | user | assistant | tool
 	text string
+	// content carries ordered user content parts when the message mixes
+	// text and images; it stays nil for plain text messages.
+	content []wireContent
 	// reasoning carries the assistant turn's reasoning_content round-trip.
 	// DeepSeek requires it verbatim on every assistant turn that performed
 	// tool calls while thinking ran, so the compiler attaches it natively
@@ -177,21 +181,66 @@ func compileChatMessage(
 		reasoning    strings.Builder
 		sawReasoning bool
 		toolCalls    []wireToolCall
+		content      []wireContent
 	)
+	mediaSeen := false
+	appendText := func(value string) {
+		if mediaSeen {
+			content = append(content, wireContent{
+				kind: wireContentText,
+				text: value,
+			})
+			return
+		}
+		text.WriteString(value)
+	}
 	for _, part := range parts {
 		switch value := part.(type) {
 		case message.TextPart:
-			text.WriteString(value.Text)
+			appendText(value.Text)
 		case message.ImagePart:
-			ledger.reject(fields[message.PartImage], "deepseek models are text-only")
+			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
+				ledger.reject(
+					fields[message.PartImage],
+					"model does not accept image input",
+				)
+				continue
+			}
+			if role != "user" {
+				ledger.reject(
+					fields[message.PartImage],
+					"deepseek accepts images in user messages only",
+				)
+				continue
+			}
+			if !mediaSeen {
+				mediaSeen = true
+				if text.Len() > 0 {
+					content = append(content, wireContent{
+						kind: wireContentText,
+						text: text.String(),
+					})
+					text.Reset()
+				}
+			}
+			content = append(content, wireContent{
+				kind: wireContentImage,
+				uri:  deepseekImageValue(value.Source),
+			})
 		case message.VideoPart:
-			ledger.reject(fields[message.PartVideo], "deepseek models are text-only")
+			ledger.reject(
+				fields[message.PartVideo],
+				"deepseek models do not accept video input",
+			)
 		case message.AudioPart:
-			ledger.reject(fields[message.PartAudio], "deepseek models are text-only")
+			ledger.reject(
+				fields[message.PartAudio],
+				"deepseek models do not accept audio input",
+			)
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
-			text.WriteString("\n" + string(value.Value) + "\n")
+			appendText("\n" + string(value.Value) + "\n")
 		case message.ToolCallPart:
 			toolCalls = append(toolCalls, wireToolCall{
 				id:   value.Call.ID,
@@ -226,6 +275,7 @@ func compileChatMessage(
 	wireMsg := wireChatMessage{
 		role:      role,
 		text:      text.String(),
+		content:   content,
 		toolCalls: toolCalls,
 	}
 	if sawReasoning {
@@ -325,12 +375,12 @@ func compileChatIntent(
 	wire.topP = clonePointer(text.TopP)
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -342,12 +392,12 @@ func compileChatIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		case len(entry.efforts) == 0:
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
 			// Spec-declared reasoning models without a dial think by
 			// default, so the request for reasoning itself is honored;
 			// only the level is lost.
@@ -356,16 +406,15 @@ func compileChatIntent(
 				"model thinks by default but has no effort dial",
 			)
 		default:
-			mode, exact := inference.ResolveReasoningEffort(
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
 				text.ReasoningEffort,
-				entry.efforts,
 			)
-			wire.effort = string(mode)
-			if !exact {
+			wire.effort = mode
+			if mode != string(text.ReasoningEffort) {
 				ledger.drop(
 					inference.FieldGenerateIntentReasoningEffort,
 					fmt.Sprintf(
-						"model quantizes reasoning effort %q to %q",
+						"model maps reasoning effort %q to %q",
 						text.ReasoningEffort,
 						mode,
 					),
@@ -500,10 +549,45 @@ func wireChatMessagesToParams(
 				openaigo.ChatCompletionMessageParamUnion{OfAssistant: &assistant},
 			)
 		default:
-			out = append(out, openaigo.UserMessage(message.text))
+			if len(message.content) > 0 {
+				out = append(out, openaigo.UserMessage(
+					chatUserContent(message.content),
+				))
+			} else {
+				out = append(out, openaigo.UserMessage(message.text))
+			}
 		}
 	}
 	return out
+}
+
+func chatUserContent(
+	content []wireContent,
+) []openaigo.ChatCompletionContentPartUnionParam {
+	parts := make(
+		[]openaigo.ChatCompletionContentPartUnionParam,
+		0,
+		len(content),
+	)
+	for _, part := range content {
+		switch part.kind {
+		case wireContentText:
+			parts = append(parts, openaigo.ChatCompletionContentPartUnionParam{
+				OfText: &openaigo.ChatCompletionContentPartTextParam{
+					Text: part.text,
+				},
+			})
+		case wireContentImage:
+			parts = append(parts, openaigo.ChatCompletionContentPartUnionParam{
+				OfImageURL: &openaigo.ChatCompletionContentPartImageParam{
+					ImageURL: openaigo.ChatCompletionContentPartImageImageURLParam{
+						URL: part.uri,
+					},
+				},
+			})
+		}
+	}
+	return parts
 }
 
 // transportChatGenerate executes the compiled request against the chat

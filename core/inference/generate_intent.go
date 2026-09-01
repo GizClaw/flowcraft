@@ -321,10 +321,9 @@ func (i VideoIntent) Validate() error {
 // knob. It is a wire-level string enum, but it is an inference concept
 // (not a message part, not a tool DTO) so it lives here rather than in
 // [github.com/GizClaw/flowcraft/core/message]. The five constants are the
-// portable ordinal ladder every request may name; each driver maps the
-// canonical levels onto its own model dialects privately (see
-// ResolveReasoningEffort), so no model-declared mode vocabulary lives in
-// the platform capability model.
+// portable ordinal ladder every request may name; each model declares how
+// the canonical levels map onto its own wire levels in
+// ModelCapabilities.Reasoning.EffortMap.
 type ReasoningEffort string
 
 const (
@@ -334,68 +333,6 @@ const (
 	ReasoningHigh    ReasoningEffort = "high"
 	ReasoningXHigh   ReasoningEffort = "xhigh"
 )
-
-// ResolveReasoningEffort maps a canonical reasoning effort onto a model's
-// private depth ladder. The ladder is the ordered set of wire tokens the
-// model accepts (for example ["low", "high", "max"] on kimi-k3); each
-// driver owns its ladder, so the same canonical effort can resolve to
-// different wire tokens per provider. Canonical tokens carry fixed ladder
-// ranks (minimal=0, low=1, medium=2, high=3, xhigh=4); a non-canonical
-// ladder entry gets one rung above its predecessor. A canonical effort
-// resolves to the first rung at or above its rank, or the top rung when it
-// sits above the whole ladder. The second result reports whether the
-// resolution is exact; a false value means the driver should report the
-// quantization (for example through the field ledger). An empty ladder or
-// a non-canonical effort resolves to ("", false).
-func ResolveReasoningEffort(
-	effort ReasoningEffort,
-	ladder []ReasoningEffort,
-) (ReasoningEffort, bool) {
-	target, ok := reasoningRank(effort)
-	if !ok || len(ladder) == 0 {
-		return "", false
-	}
-	for _, rung := range ladder {
-		if rung == effort {
-			return effort, true
-		}
-	}
-	anchor := -1
-	previous := -1
-	for index, rung := range ladder {
-		rank := previous + 1
-		if fixed, ok := reasoningRank(rung); ok {
-			rank = fixed
-		}
-		if anchor < 0 && rank >= target {
-			anchor = index
-		}
-		previous = rank
-	}
-	if anchor < 0 {
-		anchor = len(ladder) - 1
-	}
-	return ladder[anchor], false
-}
-
-// reasoningRank returns a canonical effort's fixed position on the
-// portable ladder.
-func reasoningRank(effort ReasoningEffort) (int, bool) {
-	switch effort {
-	case ReasoningMinimal:
-		return 0, true
-	case ReasoningLow:
-		return 1, true
-	case ReasoningMedium:
-		return 2, true
-	case ReasoningHigh:
-		return 3, true
-	case ReasoningXHigh:
-		return 4, true
-	default:
-		return 0, false
-	}
-}
 
 // FinishReason tells the caller why a generate call stopped. It is
 // part of the inference response envelope, not a property of a

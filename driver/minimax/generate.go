@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -499,12 +500,12 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -516,12 +517,13 @@ func compileIntent(
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		} else {
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
 			// MiniMax's Messages dialect is binary thinking: the level
 			// cannot be honored, but the request for reasoning itself is —
 			// turn thinking on and report the loss.
@@ -531,6 +533,21 @@ func compileIntent(
 				inference.FieldGenerateIntentReasoningEffort,
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
+		default:
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.effort = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

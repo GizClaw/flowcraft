@@ -1,8 +1,11 @@
 package inference
 
 import (
+	"encoding/json"
 	"fmt"
+	"maps"
 	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/message"
 )
@@ -133,6 +136,125 @@ func (k ReasoningKind) Validate() error {
 	}
 }
 
+// ReasoningCapability declares a model's reasoning control surface. Kind
+// keeps the switch semantics (none / always / toggle); EffortMap declares
+// exactly how the five canonical ReasoningEffort levels map onto this
+// model's own wire levels (for example kimi-k3 maps xhigh to "max"). A
+// non-nil EffortMap must cover all five canonical levels; an empty map on
+// a reasoning model means binary thinking with no depth dial.
+type ReasoningCapability struct {
+	Kind ReasoningKind `json:"kind,omitempty"`
+	// EffortMap maps each canonical ReasoningEffort onto the model's wire
+	// level token. Values may be model-specific (for example "max" on
+	// kimi-k3); a value different from its key means the canonical level
+	// folds onto another level and compilers report the drop.
+	EffortMap map[ReasoningEffort]string `json:"effort_map,omitempty"`
+}
+
+// IsZero reports whether the capability is the zero declaration.
+func (r ReasoningCapability) IsZero() bool {
+	return r.Kind == "" && len(r.EffortMap) == 0
+}
+
+// Validate checks the capability for coherence: the kind must be valid, a
+// none kind cannot carry an effort map, and a non-empty map must cover all
+// five canonical levels with well-formed wire tokens.
+func (r ReasoningCapability) Validate() error {
+	if err := r.Kind.Validate(); err != nil {
+		return err
+	}
+	if len(r.EffortMap) == 0 {
+		return nil
+	}
+	if r.Kind == ReasoningNone {
+		return fmt.Errorf("reasoning effort map requires a reasoning capability")
+	}
+	for _, effort := range []ReasoningEffort{
+		ReasoningMinimal,
+		ReasoningLow,
+		ReasoningMedium,
+		ReasoningHigh,
+		ReasoningXHigh,
+	} {
+		mode, ok := r.EffortMap[effort]
+		if !ok {
+			return fmt.Errorf(
+				"reasoning effort map misses canonical level %q",
+				effort,
+			)
+		}
+		if err := validateEffortToken(mode); err != nil {
+			return fmt.Errorf(
+				"reasoning effort map %q: %w",
+				effort,
+				err,
+			)
+		}
+	}
+	for effort := range r.EffortMap {
+		switch effort {
+		case ReasoningMinimal, ReasoningLow, ReasoningMedium,
+			ReasoningHigh, ReasoningXHigh:
+		default:
+			return fmt.Errorf(
+				"reasoning effort map has non-canonical key %q",
+				effort,
+			)
+		}
+	}
+	return nil
+}
+
+// ResolveEffort returns the wire level this model declares for a canonical
+// effort. The boolean reports whether the map declares the level at all;
+// validated maps always do.
+func (r ReasoningCapability) ResolveEffort(
+	effort ReasoningEffort,
+) (string, bool) {
+	mode, ok := r.EffortMap[effort]
+	return mode, ok
+}
+
+// UnmarshalJSON accepts both the legacy string form ("toggle") and the
+// object form ({"kind":"toggle","effort_map":{...}}) so existing
+// deployment specs keep decoding.
+func (r *ReasoningCapability) UnmarshalJSON(data []byte) error {
+	var kind ReasoningKind
+	if err := json.Unmarshal(data, &kind); err == nil {
+		r.Kind = kind
+		r.EffortMap = nil
+		return nil
+	}
+	type alias ReasoningCapability
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*r = ReasoningCapability(decoded)
+	return nil
+}
+
+// validateEffortToken checks that a wire-level token is well-formed:
+// non-empty, at most 64 characters, and free of whitespace and control
+// characters.
+func validateEffortToken(token string) error {
+	if token == "" {
+		return fmt.Errorf("reasoning level must not be empty")
+	}
+	if len(token) > 64 {
+		return fmt.Errorf("reasoning level %q exceeds 64 characters", token)
+	}
+	for _, r := range token {
+		if unicode.IsSpace(r) || unicode.IsControl(r) {
+			return fmt.Errorf(
+				"reasoning level %q contains whitespace or control characters",
+				token,
+			)
+		}
+	}
+	return nil
+}
+
 // ModelCapabilities describes optional feature bits and content kinds a model
 // can serve. Zero is the conservative declaration: every feature the struct
 // omits is treated as unsupported until a provider declares it.
@@ -151,8 +273,10 @@ type ModelCapabilities struct {
 	Outputs []message.PartKind `json:"outputs,omitempty"`
 	// Reasoning declares the model's reasoning control capability: whether it
 	// has a reasoning channel and whether reasoning can be switched or its
-	// effort adjusted. Empty (ReasoningNone) is the conservative default.
-	Reasoning ReasoningKind `json:"reasoning,omitempty"`
+	// effort adjusted, and how the canonical effort levels map onto the
+	// model's own wire levels. Empty (ReasoningNone) is the conservative
+	// default.
+	Reasoning ReasoningCapability `json:"reasoning,omitzero"`
 	// HostedWebSearch marks provider-side web_search tool support. It is
 	// discovery metadata for hosts; the search configuration itself still
 	// rides on GenerateRequest.Extensions as a provider GenerateOptions
@@ -187,7 +311,20 @@ func (c ModelCapabilities) WithOutputs(kinds ...message.PartKind) ModelCapabilit
 // WithReasoning returns a copy of the capabilities with the reasoning control
 // capability set.
 func (c ModelCapabilities) WithReasoning(kind ReasoningKind) ModelCapabilities {
-	c.Reasoning = kind
+	c.Reasoning.Kind = kind
+	return c
+}
+
+// WithReasoningEffortMap returns a copy of the capabilities with the model's
+// canonical-to-wire effort map set. The result shares no backing map with
+// the receiver or the caller.
+func (c ModelCapabilities) WithReasoningEffortMap(
+	efforts map[ReasoningEffort]string,
+) ModelCapabilities {
+	if efforts != nil {
+		efforts = maps.Clone(efforts)
+	}
+	c.Reasoning.EffortMap = efforts
 	return c
 }
 

@@ -68,101 +68,92 @@ func TestTextIntentReasoningEffortValidation(t *testing.T) {
 	}
 }
 
-func TestResolveReasoningEffort(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		effort ReasoningEffort
-		ladder []ReasoningEffort
-		want   ReasoningEffort
-		exact  bool
-	}{
-		{
-			name:   "openai ladder is the canonical five",
-			effort: ReasoningXHigh,
-			ladder: []ReasoningEffort{
-				ReasoningMinimal, ReasoningLow, ReasoningMedium,
-				ReasoningHigh, ReasoningXHigh,
+func TestReasoningCapabilityValidate(t *testing.T) {
+	kimiMap := map[ReasoningEffort]string{
+		ReasoningMinimal: "low",
+		ReasoningLow:     "low",
+		ReasoningMedium:  "high",
+		ReasoningHigh:    "high",
+		ReasoningXHigh:   "max",
+	}
+	if err := (ReasoningCapability{
+		Kind:      ReasoningAlways,
+		EffortMap: kimiMap,
+	}).Validate(); err != nil {
+		t.Fatalf("valid capability: %v", err)
+	}
+	if err := (ReasoningCapability{Kind: ReasoningToggle}).Validate(); err != nil {
+		t.Fatalf("binary capability: %v", err)
+	}
+	for name, capability := range map[string]ReasoningCapability{
+		"map without kind": {
+			EffortMap: kimiMap,
+		},
+		"missing canonical key": {
+			Kind: ReasoningAlways,
+			EffortMap: map[ReasoningEffort]string{
+				ReasoningMinimal: "low",
+				ReasoningLow:     "low",
+				ReasoningMedium:  "high",
+				ReasoningHigh:    "high",
 			},
-			want:  ReasoningXHigh,
-			exact: true,
 		},
-		{
-			name:   "kimi ladder exact low and high",
-			effort: ReasoningLow,
-			ladder: []ReasoningEffort{ReasoningLow, ReasoningHigh, "max"},
-			want:   ReasoningLow,
-			exact:  true,
-		},
-		{
-			name:   "kimi ladder maps minimal to low",
-			effort: ReasoningMinimal,
-			ladder: []ReasoningEffort{ReasoningLow, ReasoningHigh, "max"},
-			want:   ReasoningLow,
-		},
-		{
-			name:   "kimi ladder maps medium to high",
-			effort: ReasoningMedium,
-			ladder: []ReasoningEffort{ReasoningLow, ReasoningHigh, "max"},
-			want:   ReasoningHigh,
-		},
-		{
-			name:   "kimi ladder maps xhigh to max",
-			effort: ReasoningXHigh,
-			ladder: []ReasoningEffort{ReasoningLow, ReasoningHigh, "max"},
-			want:   "max",
-		},
-		{
-			name:   "qwen ladder maps high to xhigh",
-			effort: ReasoningHigh,
-			ladder: []ReasoningEffort{
-				ReasoningLow, ReasoningMedium, ReasoningXHigh,
+		"non-canonical key": {
+			Kind: ReasoningAlways,
+			EffortMap: map[ReasoningEffort]string{
+				ReasoningMinimal: "low",
+				ReasoningLow:     "low",
+				ReasoningMedium:  "high",
+				ReasoningHigh:    "high",
+				ReasoningXHigh:   "max",
+				"max":            "max",
 			},
-			want: ReasoningXHigh,
 		},
-		{
-			name:   "qwen ladder maps minimal to low",
-			effort: ReasoningMinimal,
-			ladder: []ReasoningEffort{
-				ReasoningLow, ReasoningMedium, ReasoningXHigh,
+		"invalid value": {
+			Kind: ReasoningAlways,
+			EffortMap: map[ReasoningEffort]string{
+				ReasoningMinimal: "",
+				ReasoningLow:     "low",
+				ReasoningMedium:  "high",
+				ReasoningHigh:    "high",
+				ReasoningXHigh:   "max",
 			},
-			want: ReasoningLow,
-		},
-		{
-			name:   "deepseek ladder drops minimal to low",
-			effort: ReasoningMinimal,
-			ladder: []ReasoningEffort{
-				ReasoningLow, ReasoningMedium, ReasoningHigh, ReasoningXHigh,
-			},
-			want: ReasoningLow,
-		},
-		{
-			name:   "anthropic ladder keeps xhigh exact",
-			effort: ReasoningXHigh,
-			ladder: []ReasoningEffort{
-				ReasoningLow, ReasoningMedium, ReasoningHigh,
-				ReasoningXHigh, "max",
-			},
-			want:  ReasoningXHigh,
-			exact: true,
-		},
-		{
-			name:   "effort above ladder falls back to the top",
-			effort: ReasoningXHigh,
-			ladder: []ReasoningEffort{ReasoningLow, ReasoningMedium},
-			want:   ReasoningMedium,
-		},
-		{
-			name:   "empty ladder resolves nothing",
-			effort: ReasoningHigh,
-			want:   "",
 		},
 	} {
-		got, exact := ResolveReasoningEffort(tc.effort, tc.ladder)
-		if got != tc.want || exact != tc.exact {
+		if err := capability.Validate(); err == nil {
+			t.Fatalf("%s unexpectedly accepted", name)
+		}
+	}
+}
+
+func TestReasoningCapabilityResolveEffort(t *testing.T) {
+	capability := ReasoningCapability{
+		Kind: ReasoningAlways,
+		EffortMap: map[ReasoningEffort]string{
+			ReasoningMinimal: "low",
+			ReasoningLow:     "low",
+			ReasoningMedium:  "high",
+			ReasoningHigh:    "high",
+			ReasoningXHigh:   "max",
+		},
+	}
+	for _, tc := range []struct {
+		effort ReasoningEffort
+		want   string
+	}{
+		{effort: ReasoningMinimal, want: "low"},
+		{effort: ReasoningMedium, want: "high"},
+		{effort: ReasoningXHigh, want: "max"},
+	} {
+		mode, ok := capability.ResolveEffort(tc.effort)
+		if !ok || mode != tc.want {
 			t.Fatalf(
-				"%s: resolve(%q) = (%q, %v), want (%q, %v)",
-				tc.name, tc.effort, got, exact, tc.want, tc.exact,
+				"resolve(%q) = (%q, %v), want (%q, true)",
+				tc.effort, mode, ok, tc.want,
 			)
 		}
+	}
+	if _, ok := capability.ResolveEffort("bogus"); ok {
+		t.Fatal("non-canonical effort unexpectedly resolved")
 	}
 }

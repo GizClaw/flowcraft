@@ -13,7 +13,7 @@ func TestToggleFalseCompilesToEffortNone(t *testing.T) {
 		kind: kindGenerate,
 		capabilities: inference.ModelCapabilities{
 			Outputs:   []message.PartKind{message.PartText},
-			Reasoning: inference.ReasoningToggle,
+			Reasoning: inference.ReasoningCapability{Kind: inference.ReasoningToggle},
 		},
 		effortNone: true,
 	}
@@ -44,7 +44,7 @@ func TestToggleFalseRejectsWithoutEffortNone(t *testing.T) {
 		kind: kindGenerate,
 		capabilities: inference.ModelCapabilities{
 			Outputs:   []message.PartKind{message.PartText},
-			Reasoning: inference.ReasoningToggle,
+			Reasoning: inference.ReasoningCapability{Kind: inference.ReasoningToggle},
 		},
 	}
 	compile := compileGenerate("deploy-legacy", entry)

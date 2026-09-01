@@ -17,16 +17,12 @@ const (
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
 // single capability fact source: input/output content kinds and the reasoning
-// control capability. efforts, preserveThinking, thinkingStreamOnly, and
-// embedDimensions are control capabilities that no capability kind expresses
-// and stay separate flags.
+// control capability (switch kind plus the canonical-to-wire effort map).
+// preserveThinking, thinkingStreamOnly, and embedDimensions are control
+// capabilities that no capability kind expresses and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
-	// efforts is the reasoning_effort dial (qwen3.8-max-preview only:
-	// low/medium/xhigh per the DashScope docs); other thinking models
-	// take thinking_budget through the extension instead.
-	efforts []inference.ReasoningEffort
 	// preserveThinking can re-ingest reasoning_content history
 	// (preserve_thinking); models without it drop round-trip traces.
 	preserveThinking bool
@@ -41,6 +37,17 @@ type catalogEntry struct {
 	// (最大输入长度) on the per-model pages at
 	// https://www.alibabacloud.com/help/zh/model-studio/models.
 	maxInputTokens int
+}
+
+// qwenMaxPreviewEffortMap is qwen3.8-max-preview's canonical-to-wire map
+// per the DashScope docs (low/medium/xhigh): canonical minimal folds onto
+// low and canonical high reaches the top level "xhigh".
+var qwenMaxPreviewEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningLow),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningMedium),
+	inference.ReasoningHigh:    string(inference.ReasoningXHigh),
+	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
 }
 
 // catalog reflects the DashScope commercial lineup as of 2026-07.
@@ -59,12 +66,8 @@ var catalog = map[string]catalogEntry{
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
-			WithReasoning(inference.ReasoningAlways),
-		efforts: []inference.ReasoningEffort{
-			inference.ReasoningLow,
-			inference.ReasoningMedium,
-			inference.ReasoningXHigh,
-		},
+			WithReasoning(inference.ReasoningAlways).
+			WithReasoningEffortMap(qwenMaxPreviewEffortMap),
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     983_616,
@@ -148,7 +151,7 @@ func (e catalogEntry) validate() error {
 	if e.kind == kindEmbed && len(e.capabilities.Outputs) != 0 {
 		return fmt.Errorf("embed family declares no generate output")
 	}
-	if e.kind == kindEmbed && e.capabilities.Reasoning != inference.ReasoningNone {
+	if e.kind == kindEmbed && e.capabilities.Reasoning.Kind != inference.ReasoningNone {
 		return fmt.Errorf("embed model cannot declare reasoning")
 	}
 	if e.kind == kindEmbed && (e.preserveThinking || e.thinkingStreamOnly) {
@@ -213,7 +216,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		)
 		entry.capabilities.HostedWebSearch =
 			entry.capabilities.HostedWebSearch || model.Capabilities.HostedWebSearch
-		if model.Capabilities.Reasoning != inference.ReasoningNone {
+		if model.Capabilities.Reasoning.Kind != inference.ReasoningNone {
 			entry.capabilities.Reasoning = model.Capabilities.Reasoning
 		}
 		if err := entry.validate(); err != nil {

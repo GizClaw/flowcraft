@@ -60,12 +60,12 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !reflect.DeepEqual(thinking.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
 		!slices.Contains(thinking.Capabilities.Inputs, message.PartImage) ||
 		!slices.Contains(thinking.Capabilities.Inputs, message.PartVideo) ||
-		thinking.Capabilities.Reasoning != inference.ReasoningAlways {
+		thinking.Capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		t.Fatalf("thinking model capabilities = %+v", thinking.Capabilities)
 	}
 
 	plain := descriptors["qwen-plus"]
-	if plain.Capabilities.Reasoning != inference.ReasoningNone ||
+	if plain.Capabilities.Reasoning.Kind != inference.ReasoningNone ||
 		len(plain.Capabilities.Inputs) == 0 {
 		t.Fatalf("plain model capabilities = %+v", plain.Capabilities)
 	}
