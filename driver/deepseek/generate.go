@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -9,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
 // generateRaw is the transport stage's normalized completion shared by the
@@ -37,6 +39,17 @@ type rawToolCall struct {
 	id   string
 	name string
 	args []byte
+}
+
+// deepseekImageValue renders one image input for the provider's OpenAI
+// compatible surfaces: inline bytes become a base64 data URL, and URL
+// sources pass through verbatim.
+func deepseekImageValue(source media.ImageSource) string {
+	if source.Kind() == media.SourceInline {
+		return "data:" + source.MediaType() + ";base64," +
+			base64.StdEncoding.EncodeToString(source.Bytes())
+	}
+	return source.URL()
 }
 
 type rawUsage struct {

@@ -70,7 +70,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		t.Fatalf("chat inputs = %v, want image and video input", chat.Capabilities.Inputs)
 	}
 	if !chat.Capabilities.HostedWebSearch ||
-		chat.Capabilities.Reasoning != inference.ReasoningToggle {
+		chat.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
 		t.Fatalf("chat capabilities = %+v", chat.Capabilities)
 	}
 

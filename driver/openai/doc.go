@@ -11,8 +11,10 @@
 //     round-trips and rejects the hosted web_search tool at compile time;
 //     the rest of the generate surface (tools, vision, JSON formats,
 //     streaming) is equivalent.
-//     Reasoning models cannot switch reasoning off: reasoning_enabled:
-//     false rejects at compile time; true is a no-op (the default).
+//     Reasoning_enabled: true is a no-op (the default). False rejects at
+//     compile time unless the model declares effort_none (gpt-5.1+,
+//     per-model via the spec flag): those models compile reasoning_enabled:
+//     false to reasoning.effort: "none" on the Responses surface.
 //     Reasoning items decode into canonical reasoning parts (summary text,
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always

@@ -95,13 +95,13 @@ func TestModelCapabilitiesValidate(t *testing.T) {
 		inference.ReasoningToggle,
 	} {
 		if err := (inference.ModelCapabilities{
-			Reasoning: reasoning,
+			Reasoning: inference.ReasoningCapability{Kind: reasoning},
 		}).Validate(); err != nil {
 			t.Fatalf("reasoning %q: %v", reasoning, err)
 		}
 	}
 	if err := (inference.ModelCapabilities{
-		Reasoning: "sometimes",
+		Reasoning: inference.ReasoningCapability{Kind: "sometimes"},
 	}).Validate(); err == nil {
 		t.Fatal("unknown reasoning kind unexpectedly accepted")
 	}
@@ -156,12 +156,94 @@ func TestModelCapabilitiesBuilders(t *testing.T) {
 	if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) {
 		t.Fatalf("outputs = %v", capabilities.Outputs)
 	}
-	if capabilities.Reasoning != inference.ReasoningAlways ||
+	if capabilities.Reasoning.Kind != inference.ReasoningAlways ||
 		!capabilities.HostedWebSearch {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
 	if err := capabilities.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
+	}
+}
+
+func TestReasoningCapabilityJSONBackwardCompat(t *testing.T) {
+	var legacy inference.ReasoningCapability
+	if err := json.Unmarshal(
+		[]byte(`"toggle"`),
+		&legacy,
+	); err != nil {
+		t.Fatalf("legacy string form: %v", err)
+	}
+	if legacy.Kind != inference.ReasoningToggle ||
+		len(legacy.EffortMap) != 0 {
+		t.Fatalf("legacy decode = %+v", legacy)
+	}
+	legacyEncoded, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("legacy marshal: %v", err)
+	}
+	if string(legacyEncoded) != `"toggle"` {
+		t.Fatalf("legacy marshal = %s, want \"toggle\"", legacyEncoded)
+	}
+
+	var object inference.ReasoningCapability
+	if err := json.Unmarshal([]byte(`{
+		"kind": "always",
+		"effort_map": {
+			"minimal": "low",
+			"low": "low",
+			"medium": "high",
+			"high": "high",
+			"xhigh": "max"
+		}
+	}`), &object); err != nil {
+		t.Fatalf("object form: %v", err)
+	}
+	if object.Kind != inference.ReasoningAlways ||
+		object.EffortMap[inference.ReasoningXHigh] != "max" {
+		t.Fatalf("object decode = %+v", object)
+	}
+	if err := object.Validate(); err != nil {
+		t.Fatalf("object Validate: %v", err)
+	}
+
+	encoded, err := json.Marshal(inference.ModelCapabilities{
+		Reasoning: object,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"kind":"always"`) ||
+		!strings.Contains(string(encoded), `"xhigh":"max"`) {
+		t.Fatalf("marshal object = %s", encoded)
+	}
+	if encodedZero, err := json.Marshal(inference.ModelCapabilities{}); err != nil ||
+		strings.Contains(string(encodedZero), `"reasoning"`) {
+		t.Fatalf("zero reasoning should be omitted, got %s", encodedZero)
+	}
+}
+
+func TestModelCapabilitiesLegacyReasoningJSON(t *testing.T) {
+	var capabilities inference.ModelCapabilities
+	if err := json.Unmarshal([]byte(`{
+		"inputs": ["text"],
+		"outputs": ["text"],
+		"reasoning": "toggle"
+	}`), &capabilities); err != nil {
+		t.Fatalf("legacy capabilities decode: %v", err)
+	}
+	if capabilities.Reasoning.Kind != inference.ReasoningToggle ||
+		len(capabilities.Reasoning.EffortMap) != 0 {
+		t.Fatalf("legacy capabilities decode = %+v", capabilities.Reasoning)
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("legacy capabilities Validate: %v", err)
+	}
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatalf("legacy capabilities marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"reasoning":"toggle"`) {
+		t.Fatalf("legacy capabilities marshal = %s, want string reasoning", encoded)
 	}
 }
 
@@ -172,6 +254,26 @@ func TestModelCapabilitiesBuildersDoNotAlias(t *testing.T) {
 		t.Fatalf("base inputs mutated by builder: %v", base.Inputs)
 	}
 	_ = extended
+}
+
+func TestModelCapabilitiesCloneDoesNotAliasEffortMap(t *testing.T) {
+	capabilities := inference.ModelCapabilities{
+		Reasoning: inference.ReasoningCapability{
+			Kind: inference.ReasoningToggle,
+			EffortMap: map[inference.ReasoningEffort]string{
+				inference.ReasoningMinimal: "low",
+				inference.ReasoningLow:     "low",
+				inference.ReasoningMedium:  "high",
+				inference.ReasoningHigh:    "high",
+				inference.ReasoningXHigh:   "max",
+			},
+		},
+	}
+	clone := capabilities.Clone()
+	clone.Reasoning.EffortMap[inference.ReasoningLow] = "max"
+	if got := capabilities.Reasoning.EffortMap[inference.ReasoningLow]; got != "low" {
+		t.Fatalf("clone mutated original effort map: low = %q, want low", got)
+	}
 }
 
 func TestModelDescriptorClonePreservesCapabilities(t *testing.T) {

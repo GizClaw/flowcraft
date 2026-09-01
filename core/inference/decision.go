@@ -137,6 +137,17 @@ func (r CompileReport) Rejects(field FieldID) bool {
 	return false
 }
 
+// Dropped reports whether the field was dropped with a reason while the
+// compile otherwise succeeded.
+func (r CompileReport) Dropped(field FieldID) bool {
+	for _, decision := range r.Decisions {
+		if decision.Field == field && decision.Disposition == Dropped {
+			return true
+		}
+	}
+	return false
+}
+
 func (r CompileReport) Metadata(model ModelRef) Metadata {
 	return Metadata{
 		Model:     model.ID,

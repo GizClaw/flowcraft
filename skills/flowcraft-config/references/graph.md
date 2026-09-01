@@ -100,7 +100,8 @@ preferences against the router.
 
 `intent` is authoritative and covers every generation modality: text
 controls (`response`, `max_output_tokens`, `tools`, `tool_choice`,
-`temperature`, `top_p`, `reasoning_enabled`, `reasoning_effort`), image
+`temperature`, `top_p`, `reasoning_enabled`, `reasoning_effort`
+(`minimal|low|medium|high|xhigh`), image
 (`size`, `aspect_ratio`, `count`, `seed`, `output_format`, `delivery`),
 audio/tts (`voice`, `format`, `speed`, `count`), and video
 (`duration_millis`, `resolution`, `aspect_ratio`, `seed`, `watermark`).

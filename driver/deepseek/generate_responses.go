@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -70,6 +71,9 @@ const (
 type wireContent struct {
 	kind wireContentKind
 	text string
+	// uri carries an absolute URL or a data: URI assembled from inline
+	// bytes. It is only populated for image content.
+	uri string
 }
 
 type wireTextFormat struct {
@@ -94,7 +98,8 @@ type wireWebSearch struct {
 // compileResponsesGenerate lowers a canonical request into the DeepSeek
 // Responses wire. DeepSeek's surface is OpenAI-compatible but has its own
 // rules: plain-text reasoning items (no encrypted payload), no include,
-// text-only input, and hosted web_search on supported models.
+// image input on the vision model (user messages only), and hosted
+// web_search on supported models.
 func compileResponsesGenerate(
 	model string,
 	entry catalogEntry,
@@ -198,10 +203,24 @@ func compileResponsesMessage(
 				text: "\n" + string(value.Value) + "\n",
 			})
 		case message.ImagePart:
-			ledger.reject(
-				fields[message.PartImage],
-				"deepseek responses models are text-only",
-			)
+			if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
+				ledger.reject(
+					fields[message.PartImage],
+					"model does not accept image input",
+				)
+				continue
+			}
+			if role != "user" {
+				ledger.reject(
+					fields[message.PartImage],
+					"deepseek responses accepts images in user messages only",
+				)
+				continue
+			}
+			content = append(content, wireContent{
+				kind: wireContentImage,
+				uri:  deepseekImageValue(value.Source),
+			})
 		case message.AudioPart:
 			ledger.reject(
 				fields[message.PartAudio],
@@ -254,7 +273,7 @@ func compileResponsesReasoning(
 		ledger.reject(field, "reasoning parts belong to assistant context")
 		return
 	}
-	if entry.capabilities.Reasoning == inference.ReasoningNone {
+	if entry.capabilities.Reasoning.Kind == inference.ReasoningNone {
 		ledger.drop(field, "model has no reasoning channel")
 		return
 	}
@@ -366,31 +385,55 @@ func compileResponsesIntent(
 	wire.topP = clonePointer(text.TopP)
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking control",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model cannot disable thinking",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningToggle &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
 			wire.reasoning = "none"
 		}
 		// enabled == true is a no-op: DeepSeek thinks by default.
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no thinking control",
 			)
-		} else {
-			wire.reasoning = string(text.ReasoningEffort)
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+			// Spec-declared reasoning models without a dial: honor the
+			// request for reasoning itself at the documented default depth
+			// and report the lost level. Built-in DeepSeek models think by
+			// default, but a custom spec model has no such guarantee.
+			wire.reasoning = "high"
+			ledger.drop(
+				inference.FieldGenerateIntentReasoningEffort,
+				"model has no effort dial; thinking enabled at default depth",
+			)
+		default:
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.reasoning = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }
@@ -562,6 +605,13 @@ func responseMessageContent(
 		case wireContentText:
 			list = append(list, responses.ResponseInputContentUnionParam{
 				OfInputText: &responses.ResponseInputTextParam{Text: part.text},
+			})
+		case wireContentImage:
+			list = append(list, responses.ResponseInputContentUnionParam{
+				OfInputImage: &responses.ResponseInputImageParam{
+					Detail:   responses.ResponseInputImageDetailAuto,
+					ImageURL: param.NewOpt(part.uri),
+				},
 			})
 		}
 	}

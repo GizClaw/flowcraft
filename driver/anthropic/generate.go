@@ -599,12 +599,12 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -617,12 +617,12 @@ func compileIntent(
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		case !entry.reasoningLevels:
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
 			// The platform's thinking is binary: the level cannot be
 			// honored, but the request for reasoning itself is — turn
 			// thinking on and report the loss.
@@ -633,7 +633,20 @@ func compileIntent(
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
 		default:
-			wire.effort = string(text.ReasoningEffort)
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.effort = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

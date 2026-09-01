@@ -498,12 +498,12 @@ func compileIntent(wire *generateWire, intent inference.Intent, entry catalogEnt
 func compileReasoning(wire *generateWire, text *inference.TextIntent, entry catalogEntry, ledger *ledger) {
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(inference.FieldGenerateIntentReasoningEnabled, "model has no thinking control")
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(inference.FieldGenerateIntentReasoningEnabled, "model always thinks; thinking cannot be disabled")
-		case entry.capabilities.Reasoning == inference.ReasoningAlways:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways:
 			// k3 / k2.7-code think unconditionally: an explicit true is a
 			// no-op, no wire field needed.
 		default:
@@ -516,19 +516,28 @@ func compileReasoning(wire *generateWire, text *inference.TextIntent, entry cata
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(inference.FieldGenerateIntentReasoningEffort, "model has no thinking control")
-		case !entry.reasoningEffort:
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+			// The model's thinking is binary: the level cannot be honored,
+			// but the request for reasoning itself is — turn thinking on
+			// and report the loss.
+			wire.Thinking = &thinkingOn{Type: "enabled"}
 			ledger.drop(inference.FieldGenerateIntentReasoningEffort, "model's thinking is binary; no effort dial exists")
 		default:
-			switch text.ReasoningEffort {
-			case inference.ReasoningLow:
-				wire.Effort = "low"
-			case inference.ReasoningMedium:
-				wire.Effort = "high"
-				ledger.drop(inference.FieldGenerateIntentReasoningEffort, "kimi-k3 quantizes medium effort to high")
-			case inference.ReasoningHigh:
-				wire.Effort = "high"
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.Effort = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
 			}
 		}
 	}

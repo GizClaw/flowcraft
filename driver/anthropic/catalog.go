@@ -11,15 +11,12 @@ import (
 
 // catalogEntry describes one model's compile-time capabilities.
 // capabilities is the single capability fact source: input/output content
-// kinds and the reasoning control capability. reasoningLevels is a control
-// capability that no capability kind expresses and stays a separate flag.
+// kinds and the reasoning control capability (switch kind plus the
+// canonical-to-wire effort map).
 type catalogEntry struct {
 	capabilities inference.ModelCapabilities
-	// reasoningLevels marks models whose thinking endpoint accepts effort
-	// levels; models without it enable thinking at platform-chosen depth.
-	reasoningLevels bool
-	deprecated      bool
-	replacement     string
+	deprecated   bool
+	replacement  string
 	// maxInputTokens caps the input context (system + messages + tools)
 	// in tokens; zero means undeclared. Values mirror the context window
 	// published on https://platform.claude.com/docs/en/about-claude/models.
@@ -52,6 +49,18 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
+// claudeEffortMap is the canonical-to-wire effort map shared by every
+// Claude model that accepts effort levels, aligned with the
+// adaptive-thinking effort parameter (low/medium/high/xhigh; "max" is a
+// model-side extra beyond the canonical ladder and is never mapped to).
+var claudeEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningLow),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningMedium),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
+}
+
 // catalog is the built-in model list, aligned with the Claude lineup of
 // July 2026. Fable 5 and Mythos 5 keep adaptive thinking always on (the API
 // rejects thinking: disabled); the rest of the family can toggle thinking.
@@ -59,9 +68,9 @@ var catalog = map[string]catalogEntry{
 	"claude-fable-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningAlways),
-		reasoningLevels: true,
-		maxInputTokens:  1_000_000,
+			WithReasoning(inference.ReasoningAlways).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 1_000_000,
 	},
 	// claude-mythos-5 shares Fable 5's capabilities and always-on adaptive
 	// thinking; it is a limited-release model (Project Glasswing), so
@@ -69,77 +78,77 @@ var catalog = map[string]catalogEntry{
 	"claude-mythos-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningAlways),
-		reasoningLevels: true,
-		maxInputTokens:  1_000_000,
+			WithReasoning(inference.ReasoningAlways).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 1_000_000,
 	},
 	"claude-opus-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		maxInputTokens:  1_000_000,
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 1_000_000,
 	},
 	"claude-sonnet-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		maxInputTokens:  1_000_000,
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 1_000_000,
 	},
 	"claude-haiku-4-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		maxInputTokens:  200_000,
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 200_000,
 	},
 	"claude-haiku-4-5-20251001": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		maxInputTokens:  200_000,
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		maxInputTokens: 200_000,
 	},
 
 	"claude-opus-4-8": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		deprecated:      true, replacement: "claude-opus-5",
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		deprecated: true, replacement: "claude-opus-5",
 		maxInputTokens: 1_000_000,
 	},
 	"claude-opus-4-7": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		deprecated:      true, replacement: "claude-opus-5",
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		deprecated: true, replacement: "claude-opus-5",
 		maxInputTokens: 1_000_000,
 	},
 	"claude-sonnet-4-6": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		deprecated:      true, replacement: "claude-sonnet-5",
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		deprecated: true, replacement: "claude-sonnet-5",
 		maxInputTokens: 1_000_000,
 	},
 	"claude-sonnet-4-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		deprecated:      true, replacement: "claude-sonnet-5",
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		deprecated: true, replacement: "claude-sonnet-5",
 		maxInputTokens: 200_000,
 	},
 	"claude-opus-4-1": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
-			WithReasoning(inference.ReasoningToggle),
-		reasoningLevels: true,
-		deprecated:      true, replacement: "claude-opus-5",
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(claudeEffortMap),
+		deprecated: true, replacement: "claude-opus-5",
 		maxInputTokens: 200_000,
 	},
 }

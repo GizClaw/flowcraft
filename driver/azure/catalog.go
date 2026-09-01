@@ -12,12 +12,15 @@ import (
 // Azure routes by deployment name, so the spec's models list is the whole
 // catalog: the factory maps each declared deployment onto an entry, and the
 // compiler rejects every channel the entry omits. capabilities is the single
-// capability fact source; dimensions is the one control capability that no
-// capability kind expresses and stays a separate flag.
+// capability fact source; dimensions and effortNone are control capabilities
+// that no capability kind expresses and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
 	dimensions   bool
+	// effortNone marks generate deployments whose reasoning.effort accepts
+	// "none" to disable reasoning; without it a disable request rejects.
+	effortNone bool
 }
 
 // entryFor lowers one declared deployment into a compiler entry.
@@ -26,6 +29,7 @@ func entryFor(model ModelSpec) catalogEntry {
 		kind:         modelKind(model.Kind),
 		capabilities: model.Capabilities,
 		dimensions:   model.Dimensions,
+		effortNone:   model.EffortNone,
 	}
 }
 

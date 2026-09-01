@@ -19,7 +19,10 @@
 // # Reasoning dialects
 //
 // Three model families think differently, and the compiler maps the
-// canonical ReasoningEnabled / ReasoningEffort onto each:
+// canonical ReasoningEnabled / ReasoningEffort onto each. Effort resolves
+// against the model's declared effort map in capabilities (kimi-k3 maps
+// low/high/max): canonical minimal maps to low, medium to high, and xhigh
+// to max, each fold reported as a drop.
 //
 //   - kimi-k3 always thinks and always preserves history reasoning. It
 //     takes top-level reasoning_effort ("low" | "high" | "max", default

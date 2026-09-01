@@ -157,7 +157,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 }
 
 // openersFor binds one catalog model to the generate opener for its kind.
-// DeepSeek exposes only text generate today.
+// DeepSeek exposes only text-output generate today.
 func openersFor(
 	spec Spec,
 	entry catalogEntry,

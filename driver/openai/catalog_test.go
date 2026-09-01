@@ -73,7 +73,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !flagship.Capabilities.HostedWebSearch {
 		t.Fatal("gpt-5.6-sol must declare hosted web search")
 	}
-	if flagship.Capabilities.Reasoning != inference.ReasoningToggle {
+	if flagship.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
 		t.Fatalf(
 			"gpt-5.6-sol reasoning = %q, want toggle",
 			flagship.Capabilities.Reasoning,
@@ -92,7 +92,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if !slices.Contains(nano.Capabilities.Inputs, message.PartImage) {
 		t.Fatalf("gpt-4.1-nano inputs = %v, want image input", nano.Capabilities.Inputs)
 	}
-	if nano.Capabilities.Reasoning != inference.ReasoningNone {
+	if nano.Capabilities.Reasoning.Kind != inference.ReasoningNone {
 		t.Fatalf(
 			"gpt-4.1-nano reasoning = %q, want none",
 			nano.Capabilities.Reasoning,

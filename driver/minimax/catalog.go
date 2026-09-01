@@ -114,15 +114,17 @@ func generateChatCapabilities() inference.ModelCapabilities {
 //
 // All generate entries speak the binary-thinking dialect: any requested
 // reasoning effort compiles to thinking: {type: "adaptive"} — the endpoint
-// has no effort levels. MiniMax-M3 holds a 1M token context; the M2.x
-// series holds 204,800. Music generation (music-3.0) serves the canonical
-// audio intent with lyrics/format through MusicOptions; music-cover stays
-// out because it has no honest surface in that intent.
+// has no effort levels. MiniMax-M3 is natively multimodal (text, image,
+// video) with a 1M token context; the M2.x series is text-only with tool
+// calls per the official docs and holds a 204,800-token context. Music
+// generation (music-3.0) serves the canonical audio intent with
+// lyrics/format through MusicOptions; music-cover stays out because it has
+// no honest surface in that intent.
 var catalog = map[string]catalogEntry{
 	"MiniMax-M3": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
-			WithInputs(message.PartImage).
+			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
 		maxInputTokens: 1_000_000,
 	},

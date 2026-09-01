@@ -323,7 +323,7 @@ func compileGenerate(
 		wire := generateWire{
 			model:  model,
 			stream: shape == inference.GenerateExecutionStream,
-			includeReasoning: entry.capabilities.Reasoning != inference.ReasoningNone &&
+			includeReasoning: entry.capabilities.Reasoning.Kind != inference.ReasoningNone &&
 				entry.api != apiChat,
 		}
 
@@ -489,7 +489,7 @@ func compileReasoning(
 		ledger.reject(field, "reasoning parts belong to assistant context")
 		return
 	}
-	if entry.capabilities.Reasoning == inference.ReasoningNone {
+	if entry.capabilities.Reasoning.Kind == inference.ReasoningNone {
 		ledger.drop(field, "model has no reasoning channel")
 		return
 	}
@@ -604,21 +604,23 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no reasoning to switch",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"openai reasoning models cannot disable reasoning",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningToggle &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
-			// No OpenAI surface exposes a reasoning-off switch yet; reject
-			// until a toggle-capable model and wire channel land.
+			if entry.effortNone && entry.api != apiChat {
+				wire.reasoning = "none"
+				break
+			}
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"reasoning cannot be disabled through this provider",
@@ -627,13 +629,32 @@ func compileIntent(
 		// enabled == true is a no-op: reasoning models reason by default.
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		} else {
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
+			// Spec-declared reasoning models without an explicit map keep
+			// the legacy pass-through behavior: OpenAI's reasoning.effort
+			// accepts the canonical effort tokens verbatim.
 			wire.reasoning = string(text.ReasoningEffort)
+		default:
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.reasoning = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

@@ -136,6 +136,19 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
+// arkEffortMap is the canonical-to-wire map shared by the Ark thinking
+// models. The SDK's reasoning_effort enum carries low/medium/high only, so
+// canonical minimal folds onto low and xhigh folds onto high; Doubao's
+// documented minimal level is its no-thinking mode, which the canonical
+// ReasoningEnabled switch covers instead.
+var arkEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningLow),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningMedium),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   string(inference.ReasoningHigh),
+}
+
 // catalog is the built-in model registry. Names are stable Volcengine model
 // families; deployment-specific endpoint IDs (ep-xxx or dated revisions like
 // doubao-seed-2-1-pro-260628) belong in Spec.Endpoints.
@@ -151,7 +164,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 1_024_000,
 	},
 
@@ -162,7 +176,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-1-turbo": {
@@ -170,7 +185,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 
@@ -183,7 +199,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-lite": {
@@ -191,7 +208,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-mini": {
@@ -199,7 +217,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 	"doubao-seed-2-0-code": {
@@ -207,7 +226,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		maxInputTokens: 256_000,
 	},
 
@@ -218,7 +238,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 		maxInputTokens: 256_000,
 	},
@@ -227,7 +248,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
 		maxInputTokens: 256_000,
 	},

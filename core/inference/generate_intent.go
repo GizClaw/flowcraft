@@ -177,7 +177,8 @@ func (i TextIntent) Validate() error {
 		return fmt.Errorf("top_p must be between 0 and 1")
 	}
 	switch i.ReasoningEffort {
-	case "", ReasoningLow, ReasoningMedium, ReasoningHigh:
+	case "", ReasoningMinimal, ReasoningLow, ReasoningMedium,
+		ReasoningHigh, ReasoningXHigh:
 	default:
 		return fmt.Errorf("unknown reasoning effort %q", i.ReasoningEffort)
 	}
@@ -317,15 +318,20 @@ func (i VideoIntent) Validate() error {
 }
 
 // ReasoningEffort is the request-side "how hard should the model think"
-// knob. It is a wire-level string enum, but it is an inference
-// concept (not a message part, not a tool DTO) so it lives here
-// rather than in [github.com/GizClaw/flowcraft/core/message].
+// knob. It is a wire-level string enum, but it is an inference concept
+// (not a message part, not a tool DTO) so it lives here rather than in
+// [github.com/GizClaw/flowcraft/core/message]. The five constants are the
+// portable ordinal ladder every request may name; each model declares how
+// the canonical levels map onto its own wire levels in
+// ModelCapabilities.Reasoning.EffortMap.
 type ReasoningEffort string
 
 const (
-	ReasoningLow    ReasoningEffort = "low"
-	ReasoningMedium ReasoningEffort = "medium"
-	ReasoningHigh   ReasoningEffort = "high"
+	ReasoningMinimal ReasoningEffort = "minimal"
+	ReasoningLow     ReasoningEffort = "low"
+	ReasoningMedium  ReasoningEffort = "medium"
+	ReasoningHigh    ReasoningEffort = "high"
+	ReasoningXHigh   ReasoningEffort = "xhigh"
 )
 
 // FinishReason tells the caller why a generate call stopped. It is

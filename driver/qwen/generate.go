@@ -495,8 +495,8 @@ func (c *compiler) tools(text *inference.TextIntent) {
 	}
 }
 
-// reasoning compiles the reasoning switch and effort. The effort levels
-// exist only on qwen3.8-max-preview (reasoningEffort); other thinking
+// reasoning compiles the reasoning switch and effort. The effort dial
+// exists only on qwen3.8-max-preview (low/medium/xhigh); other thinking
 // models take thinking_budget through the extension instead, so an
 // explicit effort drops with a reason. Thinking mode is stream-only on
 // the commercial thinking models, so a unary compile with thinking on
@@ -504,12 +504,12 @@ func (c *compiler) tools(text *inference.TextIntent) {
 func (c *compiler) reasoning(text *inference.TextIntent) {
 	if text.ReasoningEnabled != nil {
 		switch {
-		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		case c.entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -528,41 +528,37 @@ func (c *compiler) reasoning(text *inference.TextIntent) {
 	}
 	if text.ReasoningEffort != "" {
 		switch {
-		case c.entry.capabilities.Reasoning == inference.ReasoningNone:
+		case c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			c.ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				fmt.Sprintf("model %s has no thinking mode", c.model),
 			)
-		case !c.entry.reasoningEffort:
+		case len(c.entry.capabilities.Reasoning.EffortMap) == 0:
 			c.ledger.drop(
 				inference.FieldGenerateIntentReasoningEffort,
-				fmt.Sprintf("model %s has no effort levels; bound the trace with the thinking_budget extension", c.model),
+				fmt.Sprintf(
+					"model %s has no effort dial; enable thinking with reasoning_enabled on a stream or bound the trace with the thinking_budget extension",
+					c.model,
+				),
 			)
 		default:
-			if level, ok := effortLevel(text.ReasoningEffort); ok {
-				c.wire.Parameters.ReasoningEffort = level
-			} else {
-				c.ledger.reject(
+			mode, _ := c.entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			c.wire.Parameters.ReasoningEffort = mode
+			if mode != string(text.ReasoningEffort) {
+				c.ledger.drop(
 					inference.FieldGenerateIntentReasoningEffort,
-					fmt.Sprintf("reasoning effort %q is not a DashScope level", text.ReasoningEffort),
+					fmt.Sprintf(
+						"model %s maps reasoning effort %q to %q",
+						c.model,
+						text.ReasoningEffort,
+						mode,
+					),
 				)
 			}
 		}
 	}
-}
-
-// effortLevel maps canonical effort onto DashScope's low/medium/xhigh
-// scale: high lands on xhigh (DashScope's top level).
-func effortLevel(effort inference.ReasoningEffort) (string, bool) {
-	switch effort {
-	case inference.ReasoningLow:
-		return "low", true
-	case inference.ReasoningMedium:
-		return "medium", true
-	case inference.ReasoningHigh:
-		return "xhigh", true
-	}
-	return "", false
 }
 
 // intents rejects the non-text modality intents: this package serves
@@ -593,7 +589,7 @@ func (c *compiler) intents(request inference.GenerateRequest) {
 func (c *compiler) extensions() {
 	o := c.options
 	if o.ThinkingBudget != nil {
-		if c.entry.capabilities.Reasoning == inference.ReasoningNone {
+		if c.entry.capabilities.Reasoning.Kind == inference.ReasoningNone {
 			c.ledger.reject(
 				inference.ExtensionField("thinking_budget").Qualify(o),
 				fmt.Sprintf("model %s has no thinking budget", c.model),

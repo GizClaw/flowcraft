@@ -16,19 +16,15 @@ const kindGenerate modelKind = "generate"
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
 // single capability fact source: input/output content kinds and the reasoning
-// control capability. sampling, reasoningEffort, keepThinking, and
-// keepThinkingAlways are control capabilities that no capability kind
-// expresses and stay separate flags.
+// control capability (switch kind plus the canonical-to-wire effort map).
+// sampling, keepThinking, and keepThinkingAlways are control capabilities
+// that no capability kind expresses and stay separate flags.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
 	// sampling accepts the moonshot-v1 sampling knobs (temperature,
 	// top_p); the K3 / K2.x request schemas carry none.
 	sampling bool
-	// reasoningEffort marks models with the top-level reasoning_effort
-	// dial (kimi-k3 only); elsewhere an explicit effort drops with a
-	// reason.
-	reasoningEffort bool
 	// keepThinking marks models that optionally re-ingest history
 	// reasoning_content via thinking.keep="all" (kimi-k2.6).
 	keepThinking bool
@@ -41,6 +37,17 @@ type catalogEntry struct {
 	// https://platform.kimi.com/docs/models (moonshot-v1 variants state
 	// 8k/32k/128k).
 	maxInputTokens int
+}
+
+// kimiK3EffortMap is kimi-k3's canonical-to-wire effort map per the Kimi
+// docs (low/high/max): canonical minimal and medium fold onto low/high,
+// and xhigh reaches the model's top level "max".
+var kimiK3EffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningLow),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningHigh),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   "max",
 }
 
 // catalog reflects Kimi's public API as of 2026-07.
@@ -58,8 +65,8 @@ var catalog = map[string]catalogEntry{
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
-			WithReasoning(inference.ReasoningAlways),
-		reasoningEffort:    true,
+			WithReasoning(inference.ReasoningAlways).
+			WithReasoningEffortMap(kimiK3EffortMap),
 		keepThinkingAlways: true,
 		maxInputTokens:     1_000_000,
 	},
@@ -115,11 +122,8 @@ func (e catalogEntry) validate() error {
 	if !slices.Contains(e.capabilities.Outputs, message.PartText) {
 		return fmt.Errorf("generate family must declare text output")
 	}
-	if e.keepThinkingAlways && e.capabilities.Reasoning != inference.ReasoningAlways {
+	if e.keepThinkingAlways && e.capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		return fmt.Errorf("always-preserved thinking requires always-on thinking")
-	}
-	if e.reasoningEffort && e.capabilities.Reasoning == inference.ReasoningNone {
-		return fmt.Errorf("reasoning effort requires reasoning")
 	}
 	return nil
 }
@@ -165,7 +169,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		)
 		entry.capabilities.HostedWebSearch =
 			entry.capabilities.HostedWebSearch || declared.Capabilities.HostedWebSearch
-		if declared.Capabilities.Reasoning != inference.ReasoningNone {
+		if declared.Capabilities.Reasoning.Kind != inference.ReasoningNone {
 			entry.capabilities.Reasoning = declared.Capabilities.Reasoning
 		}
 		if err := entry.validate(); err != nil {

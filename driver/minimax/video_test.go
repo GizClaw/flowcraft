@@ -717,6 +717,24 @@ func TestVideoImageValueDataURI(t *testing.T) {
 	}
 }
 
+func TestVideoTaskStreamSourceRejects(t *testing.T) {
+	pipe := media.NewPipe[string](1)
+	source, err := media.NewVideoStream(pipe, "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoStream: %v", err)
+	}
+	_, report, err := compileVideoWire(t, "MiniMax-H3", compileVideoRequest(
+		[]message.Part{message.VideoPart{Source: source}},
+		VideoOptions{},
+	))
+	if err == nil {
+		t.Fatal("video task accepted a stream video source")
+	}
+	if !report.Rejects(inference.FieldGenerateInputVideo) {
+		t.Fatal("video task did not reject the stream on the input video field")
+	}
+}
+
 func TestTransportVideoV2(t *testing.T) {
 	var polls int
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

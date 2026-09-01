@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -53,6 +54,7 @@ type wireBlockKind string
 const (
 	wireBlockText             wireBlockKind = "text"
 	wireBlockImage            wireBlockKind = "image"
+	wireBlockVideo            wireBlockKind = "video"
 	wireBlockToolUse          wireBlockKind = "tool_use"
 	wireBlockToolResult       wireBlockKind = "tool_result"
 	wireBlockThinking         wireBlockKind = "thinking"
@@ -66,6 +68,10 @@ type wireBlock struct {
 	imageURL  string
 	imageData []byte
 	imageType string
+	// video carries an absolute URL or base64 bytes with a media type.
+	videoURL  string
+	videoData []byte
+	videoType string
 	// tool_use / tool_result.
 	callID string
 	name   string // tool_use
@@ -305,11 +311,29 @@ func compileMessage(
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
+			if value.Source.Kind() == media.SourceStream {
+				ledger.reject(
+					fields[message.PartImage],
+					"stream media sources must be materialized before generate",
+				)
+				continue
+			}
 			wire.appendBlock(role, imageBlock(value.Source))
 		case message.AudioPart:
 			ledger.reject(fields[message.PartAudio], "audio input is not supported by messages models")
 		case message.VideoPart:
-			ledger.reject(fields[message.PartVideo], "video input is not supported by messages models")
+			if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
+				ledger.reject(fields[message.PartVideo], "model does not accept video input")
+				continue
+			}
+			if value.Source.Kind() == media.SourceStream {
+				ledger.reject(
+					fields[message.PartVideo],
+					"stream media sources must be materialized before generate",
+				)
+				continue
+			}
+			wire.appendBlock(role, videoBlock(value.Source))
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
@@ -409,6 +433,19 @@ func imageBlock(source media.ImageSource) wireBlock {
 	}
 }
 
+// videoBlock lowers a video source: URLs pass through, inline bytes carry
+// their raw data plus media type for base64 encoding at the transport.
+func videoBlock(source media.VideoSource) wireBlock {
+	if source.Kind() == media.SourceURL {
+		return wireBlock{kind: wireBlockVideo, videoURL: source.URL()}
+	}
+	return wireBlock{
+		kind:      wireBlockVideo,
+		videoData: bytesClone(source.Bytes()),
+		videoType: source.MediaType(),
+	}
+}
+
 func compileIntent(
 	wire *generateWire,
 	intent inference.Intent,
@@ -477,12 +514,12 @@ func compileIntent(
 	wire.topP = text.TopP
 	if text.ReasoningEnabled != nil {
 		switch {
-		case entry.capabilities.Reasoning == inference.ReasoningNone:
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
 				"model has no thinking to switch",
 			)
-		case entry.capabilities.Reasoning == inference.ReasoningAlways &&
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningAlways &&
 			!*text.ReasoningEnabled:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEnabled,
@@ -494,12 +531,13 @@ func compileIntent(
 		}
 	}
 	if text.ReasoningEffort != "" {
-		if entry.capabilities.Reasoning == inference.ReasoningNone {
+		switch {
+		case entry.capabilities.Reasoning.Kind == inference.ReasoningNone:
 			ledger.reject(
 				inference.FieldGenerateIntentReasoningEffort,
 				"model has no reasoning effort control",
 			)
-		} else {
+		case len(entry.capabilities.Reasoning.EffortMap) == 0:
 			// MiniMax's Messages dialect is binary thinking: the level
 			// cannot be honored, but the request for reasoning itself is —
 			// turn thinking on and report the loss.
@@ -509,6 +547,21 @@ func compileIntent(
 				inference.FieldGenerateIntentReasoningEffort,
 				"platform thinking has no effort levels; enabled at platform-chosen depth",
 			)
+		default:
+			mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+				text.ReasoningEffort,
+			)
+			wire.effort = mode
+			if mode != string(text.ReasoningEffort) {
+				ledger.drop(
+					inference.FieldGenerateIntentReasoningEffort,
+					fmt.Sprintf(
+						"model maps reasoning effort %q to %q",
+						text.ReasoningEffort,
+						mode,
+					),
+				)
+			}
 		}
 	}
 }

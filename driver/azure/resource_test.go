@@ -250,7 +250,7 @@ func TestModelCapabilitiesPublish(t *testing.T) {
 	if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) ||
 		!slices.Contains(capabilities.Inputs, message.PartImage) ||
 		!capabilities.HostedWebSearch ||
-		capabilities.Reasoning != inference.ReasoningAlways {
+		capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		t.Fatalf("capabilities = %+v", capabilities)
 	}
 }

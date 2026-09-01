@@ -33,17 +33,22 @@ const (
 
 // catalogEntry is one model in the built-in catalog. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
-// search, and the reasoning control capability. dimensions is the one
-// remaining control capability that no capability kind expresses (embed
-// custom output dimensions) and stays a separate flag. ModelSpec mirrors this
-// shape so deployment-declared models behave identically.
+// search, and the reasoning control capability. dimensions and effortNone
+// are control capabilities that no capability kind expresses (embed custom
+// output dimensions, and effort "none" to disable reasoning) and stay
+// separate flags. ModelSpec mirrors this shape so deployment-declared
+// models behave identically.
 type catalogEntry struct {
 	kind         modelKind
 	api          apiMode
 	capabilities inference.ModelCapabilities
 	// dimensions (embed) allows custom output dimensions. Control
 	// capability, likewise not a content kind.
-	dimensions  bool
+	dimensions bool
+	// effortNone marks reasoning models whose reasoning.effort accepts
+	// "none" to disable reasoning (gpt-5.1+ per the OpenAI docs); models
+	// without it reject a disable request.
+	effortNone  bool
 	deprecated  bool
 	replacement string
 	// maxInputTokens caps the input context (prompt plus prior turns) in
@@ -97,6 +102,16 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
+// openaiEffortMap is the canonical-to-wire identity map: OpenAI's
+// reasoning.effort accepts the canonical five verbatim.
+var openaiEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningMinimal),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningMedium),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
+}
+
 // catalog is the built-in model list, aligned with the OpenAI model lineup
 // of July 2026 (GPT-5.6 family flagship). Deployments extend or override it
 // via Spec.Models.
@@ -104,41 +119,44 @@ var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-terra": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.6-luna": {
 		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
+		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:     true,
 		maxInputTokens: 1_050_000,
 	},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.4": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
 		maxInputTokens: 1_050_000,
 	},
 	"gpt-5.4-mini": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-terra",
 		maxInputTokens: 400_000,
 	},
 	"gpt-5.4-nano": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-luna",
 		maxInputTokens: 400_000,
 	},
@@ -218,6 +236,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			kind:         modelKind(model.Kind),
 			capabilities: model.Capabilities,
 			dimensions:   model.Dimensions,
+			effortNone:   model.EffortNone,
 		}
 	}
 	for name, entry := range models {

@@ -43,6 +43,21 @@ type catalogEntry struct {
 	maxInputTokens int
 }
 
+// deepseekEffortMap is the canonical-to-wire map the V4 family declares.
+// DeepSeek's public thinking-mode ladder is low/high/max: low stays low,
+// medium folds onto high, and the canonical top level is sent as the
+// provider's max wire level (DeepSeek's own xhigh request token folds to
+// high, so max is how this capability exposes the top tier). Minimal is
+// not a DeepSeek wire level and folds onto low. Both deepseek-v4-flash
+// and deepseek-v4-pro publish the same mapping.
+var deepseekEffortMap = map[inference.ReasoningEffort]string{
+	inference.ReasoningMinimal: string(inference.ReasoningLow),
+	inference.ReasoningLow:     string(inference.ReasoningLow),
+	inference.ReasoningMedium:  string(inference.ReasoningHigh),
+	inference.ReasoningHigh:    string(inference.ReasoningHigh),
+	inference.ReasoningXHigh:   "max",
+}
+
 // validate enforces the generate family contract: the compiler only serves
 // text output, so kind and capabilities cannot drift.
 func (e catalogEntry) validate() error {
@@ -59,8 +74,9 @@ func (e catalogEntry) validate() error {
 }
 
 // generateChatCapabilities is the capability declaration for the DeepSeek
-// text compiler family: text/data/tool parts in, text out. DeepSeek
-// consumes no image/audio/video input.
+// text compiler family: text/data/tool parts in, text out. The base family
+// consumes no image/audio/video input; the vision model extends it with
+// image input.
 func generateChatCapabilities() inference.ModelCapabilities {
 	return inference.ModelCapabilities{
 		Inputs: []message.PartKind{
@@ -78,18 +94,23 @@ func generateChatCapabilities() inference.ModelCapabilities {
 //   - https://api-docs.deepseek.com/quick_start/pricing
 //   - https://api-docs.deepseek.com/guides/responses_api
 //   - https://api-docs.deepseek.com/guides/thinking_mode
+//   - https://api-docs.deepseek.com/news/news260821
 //
 // The legacy `deepseek-chat` / `deepseek-reasoner` aliases retired on
 // 2026-07-24 and are deliberately absent. Both V4 models are hybrid
 // thinking models (thinking enabled by default) with a 1M token context.
 // The Responses API serves both V4 models; deepseek-v4-pro support
-// landed after the initial flash-only launch.
+// landed after the initial flash-only launch. The experimental vision
+// model matches V4-Flash's text/agent capabilities, adds image input
+// (JPEG/PNG/GIF/WebP via URL or base64), and supports the same Responses
+// surface and hosted web search. It has no video or audio input.
 var catalog = map[string]catalogEntry{
 	"deepseek-v4-flash": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(deepseekEffortMap),
 		responses:      true,
 		maxInputTokens: 1_000_000,
 	},
@@ -97,7 +118,18 @@ var catalog = map[string]catalogEntry{
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(deepseekEffortMap),
+		responses:      true,
+		maxInputTokens: 1_000_000,
+	},
+	"deepseek-v4-flash-vision-exp": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage).
+			WithHostedWebSearch().
+			WithReasoning(inference.ReasoningToggle).
+			WithReasoningEffortMap(deepseekEffortMap),
 		responses:      true,
 		maxInputTokens: 1_000_000,
 	},

@@ -42,10 +42,40 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 			t.Fatalf("%s inputs = %v, want tool input", model.Descriptor.ID.Name, capabilities.Inputs)
 		}
 		if !capabilities.HostedWebSearch ||
-			capabilities.Reasoning != inference.ReasoningToggle {
+			capabilities.Reasoning.Kind != inference.ReasoningToggle {
 			t.Fatalf("%s capabilities = %+v", model.Descriptor.ID.Name, capabilities)
 		}
 	}
+}
+
+func TestVisionCatalogDeclaresImageInput(t *testing.T) {
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	for _, model := range provider.Models {
+		if model.Descriptor.ID.Name != "deepseek-v4-flash-vision-exp" {
+			continue
+		}
+		if !slices.Contains(
+			model.Descriptor.Capabilities.Inputs,
+			message.PartImage,
+		) {
+			t.Fatalf(
+				"vision model inputs = %v, want image input",
+				model.Descriptor.Capabilities.Inputs,
+			)
+		}
+		if !model.Descriptor.Capabilities.HostedWebSearch ||
+			model.Descriptor.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
+			t.Fatalf(
+				"vision model capabilities = %+v",
+				model.Descriptor.Capabilities,
+			)
+		}
+		return
+	}
+	t.Fatal("vision model missing from provider catalog")
 }
 
 func TestMergedCatalogRejectsMissingTextOutput(t *testing.T) {
