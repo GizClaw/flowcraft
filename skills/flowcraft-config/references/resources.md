@@ -12,6 +12,8 @@ id: deepseek
 spec:
   api: chat             # "chat" (default) or "responses"
   base_url: https://api.deepseek.com   # optional override
+  request_metadata:     # optional; supported by deepseek/openai/azure
+    envelope: request_fields   # any non-empty top-level body field; empty disables
   models:               # optional: declare/override catalog models
     - name: deepseek-v4-flash
       kind: generate
@@ -44,6 +46,12 @@ validated by the driver; routing prefers targets whose declared outputs
 cover the request intent and skips declared-incompatible tiers. Provider
 drivers are registered by the host application from provider driver
 modules (outside `core/`).
+
+`request_metadata.envelope` names the top-level body field that receives
+canonical `GenerateRequest.RequestMetadata`. It is supported by the
+DeepSeek, OpenAI, and Azure drivers; other drivers (Anthropic, MiniMax,
+Bytedance, Kimi, Qwen) keep their native transports and report request
+metadata as `dropped` in the compile report.
 
 ## inference assembly
 

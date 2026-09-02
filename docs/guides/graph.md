@@ -152,6 +152,10 @@ Behavior:
 
 - The channel tail must have role `user` or `tool`; everything before it is
   the request context. An empty channel or wrong role is a validation error.
+- `request_metadata` is copied verbatim onto the canonical request. Only
+  drivers whose deployment sets `request_metadata.envelope` forward it;
+  unsupported or unconfigured drivers report a `dropped` compile decision
+  instead of failing the node silently.
 - `model` uses the wired `inference.Assembly`; no `model` requires the
   `inference.Router` (selector/fallback chain picks the target).
 - `model_hint` is a request-level preference consumed only by the router:
