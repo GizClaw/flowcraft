@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/kimi
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.2.3
+	github.com/GizClaw/flowcraft/core v0.2.4
 	go.opentelemetry.io/otel/log v0.19.0
 )
 
