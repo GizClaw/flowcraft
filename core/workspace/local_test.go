@@ -55,6 +55,33 @@ func TestLocalWorkspace_SubRejectsTraversalAndSymlinkEscape(t *testing.T) {
 	}
 }
 
+func TestLocalWorkspace_SubThroughInternalSymlink(t *testing.T) {
+	skipWindows(t)
+	ws, _ := newLocalWS(t)
+	if err := ws.Write(context.Background(), "real/data.txt", []byte("internal")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(ws.Root(), "link")); err != nil {
+		t.Fatal(err)
+	}
+	sub, err := ws.Sub("link")
+	if err != nil {
+		t.Fatalf("Sub through internal symlink: %v", err)
+	}
+	data, err := sub.Read(context.Background(), "data.txt")
+	if err != nil {
+		t.Fatalf("sub Read through symlink: %v", err)
+	}
+	if string(data) != "internal" {
+		t.Fatalf("got %q, want internal", data)
+	}
+	// Root() stays the logical view path; the os.Root underneath is
+	// what guarantees containment.
+	if want := filepath.Join(ws.Root(), "link"); sub.Root() != want {
+		t.Fatalf("sub.Root() = %q, want %q", sub.Root(), want)
+	}
+}
+
 func TestLocalWorkspace_ReadWrite(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
@@ -235,6 +262,65 @@ func TestLocalWorkspace_StatNotFound(t *testing.T) {
 	}
 }
 
+func TestLocalWorkspace_ReadLimited(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+	payload := []byte("0123456789")
+	if err := ws.Write(ctx, "data.txt", payload); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ws.ReadLimited(ctx, "data.txt", 4); err == nil {
+		t.Fatal("ReadLimited over the cap should fail")
+	}
+	got, err := ws.ReadLimited(ctx, "data.txt", 10)
+	if err != nil {
+		t.Fatalf("ReadLimited at exact cap: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("got %q, want %q", got, payload)
+	}
+	if _, err := ws.ReadLimited(ctx, "nope.txt", 10); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ReadLimited missing error = %v, want ErrNotFound", err)
+	}
+	if _, err := ws.ReadLimited(ctx, "data.txt", 0); err == nil {
+		t.Fatal("ReadLimited with non-positive maxBytes should fail")
+	}
+}
+
+func TestLocalWorkspace_StatAndExistsRoot(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	info, err := ws.Stat(ctx, ".")
+	if err != nil {
+		t.Fatalf("Stat(.): %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("Stat(.) should describe the workspace root directory")
+	}
+	exists, err := ws.Exists(ctx, ".")
+	if err != nil {
+		t.Fatalf("Exists(.): %v", err)
+	}
+	if !exists {
+		t.Fatal("Exists(.) should report true for the root")
+	}
+}
+
+func TestLocalWorkspace_ListNested(t *testing.T) {
+	ws, ctx := newLocalWS(t)
+
+	if err := ws.Write(ctx, "sub/deep/file.txt", []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := ws.List(ctx, "sub/deep")
+	if err != nil {
+		t.Fatalf("List(nested): %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "file.txt" {
+		t.Fatalf("nested entries = %+v, want [file.txt]", entries)
+	}
+}
+
 func TestLocalWorkspace_RemoveAll(t *testing.T) {
 	ws, ctx := newLocalWS(t)
 
@@ -371,8 +457,13 @@ func TestLocalWorkspace_SymlinkEscape(t *testing.T) {
 	if err := ws.Delete(ctx, "escape/secret.txt"); err == nil {
 		t.Fatal("expected symlink escape to be blocked on delete")
 	}
-	if err := ws.RemoveAll(ctx, "escape"); err == nil {
-		t.Fatal("expected symlink escape to be blocked on removeall")
+	// os.Root.RemoveAll never follows the final symlink: it removes
+	// the link itself, leaving the outside directory untouched.
+	if err := ws.RemoveAll(ctx, "escape"); err != nil {
+		t.Fatalf("RemoveAll of the escape symlink should remove just the link: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "secret.txt")); err != nil {
+		t.Fatalf("outside directory must be untouched after RemoveAll: %v", err)
 	}
 }
 
@@ -401,7 +492,9 @@ func TestLocalWorkspace_InternalSymlinkAllowed(t *testing.T) {
 	if err := ws.Write(ctx, "real/data.txt", []byte("internal")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(ws.Root(), "real"), filepath.Join(ws.Root(), "link")); err != nil {
+	// os.Root requires symlink targets to be relative; an absolute
+	// link is rejected even when it points inside the root.
+	if err := os.Symlink("real", filepath.Join(ws.Root(), "link")); err != nil {
 		t.Fatal(err)
 	}
 

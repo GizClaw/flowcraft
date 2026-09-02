@@ -70,6 +70,20 @@ func (s *subWorkspace) Read(ctx context.Context, path string) ([]byte, error) {
 	return s.inner.Read(ctx, p)
 }
 
+// ReadLimited forwards bounded reads to the inner workspace when it
+// supports them; otherwise it fails closed.
+func (s *subWorkspace) ReadLimited(ctx context.Context, path string, maxBytes int64) ([]byte, error) {
+	p, err := s.join(path)
+	if err != nil {
+		return nil, err
+	}
+	lr, ok := s.inner.(LimitedReader)
+	if !ok {
+		return nil, errdefs.NotAvailablef("workspace: prefixed workspace cannot perform bounded reads")
+	}
+	return lr.ReadLimited(ctx, p, maxBytes)
+}
+
 func (s *subWorkspace) Write(ctx context.Context, path string, data []byte) error {
 	p, err := s.join(path)
 	if err != nil {
