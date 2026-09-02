@@ -95,6 +95,42 @@ func TestFSBridge_ReadError_PropagatesToScript(t *testing.T) {
 	}
 }
 
+func TestFSBridge_ReadWriteLimits(t *testing.T) {
+	rt := jsrt.New(jsrt.WithPoolSize(1))
+	ws := mustFSWorkspace(t)
+	board := agent.NewBoard()
+
+	env := bindings.BuildEnv(context.Background(), nil,
+		bindings.NewBoardBridge(board),
+		bindings.NewFSBridge(ws,
+			bindings.WithMaxReadBytes(4),
+			bindings.WithMaxWriteBytes(4)),
+	)
+
+	if _, err := rt.Exec(context.Background(), "fs-writecap", `
+		fs.write("big.txt", "12345");
+	`, env); err == nil {
+		t.Fatal("fs.write over the cap should fail")
+	}
+
+	// Plant an oversized file directly so fs.read sees it.
+	if err := ws.Write(context.Background(), "big.txt", []byte("12345")); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	if _, err := rt.Exec(context.Background(), "fs-readcap", `
+		fs.read("big.txt");
+	`, env); err == nil {
+		t.Fatal("fs.read over the cap should fail")
+	}
+
+	if _, err := rt.Exec(context.Background(), "fs-within-cap", `
+		fs.write("ok.txt", "1234");
+		if (fs.read("ok.txt") !== "1234") throw new Error("round trip mismatch");
+	`, env); err != nil {
+		t.Fatalf("within-cap fs ops should succeed: %v", err)
+	}
+}
+
 func mustFSWorkspace(t *testing.T) workspace.Workspace {
 	t.Helper()
 	ws, err := workspace.NewLocalWorkspace(t.TempDir())

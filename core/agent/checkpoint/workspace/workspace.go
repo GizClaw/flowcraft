@@ -18,7 +18,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -85,7 +84,10 @@ func (s *Store) Save(ctx context.Context, cp agent.Checkpoint) error {
 	if err != nil {
 		return fmt.Errorf("workspace checkpoint: encode: %w", err)
 	}
-	tmp := s.tmpPath(cp.ExecID)
+	tmp, err := s.tmpPath(cp.ExecID)
+	if err != nil {
+		return fmt.Errorf("workspace checkpoint: temp path: %w", err)
+	}
 	if err := s.ws.Write(ctx, tmp, data); err != nil {
 		return fmt.Errorf("workspace checkpoint: write temp: %w", err)
 	}
@@ -162,8 +164,12 @@ func (s *Store) livePath(execID string) string {
 	return path.Join(s.prefix, execID+".json")
 }
 
-func (s *Store) tmpPath(execID string) string {
-	return path.Join(s.prefix, ".tmp", execID+"."+randomSuffix()+".json.tmp")
+func (s *Store) tmpPath(execID string) (string, error) {
+	suffix, err := randomSuffix()
+	if err != nil {
+		return "", err
+	}
+	return path.Join(s.prefix, ".tmp", execID+"."+suffix+".json.tmp"), nil
 }
 
 func (s *Store) dir() string {
@@ -183,12 +189,12 @@ func validateExecID(execID string) error {
 	return nil
 }
 
-func randomSuffix() string {
+func randomSuffix() (string, error) {
 	var bytes [8]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		return "", errdefs.Internal(fmt.Errorf("workspace checkpoint: allocate temp suffix: %w", err))
 	}
-	return hex.EncodeToString(bytes[:])
+	return hex.EncodeToString(bytes[:]), nil
 }
 
 func nilWorkspace(ws workspace.Workspace) bool {
