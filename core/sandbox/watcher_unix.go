@@ -5,7 +5,10 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -26,13 +29,13 @@ func groupCapsAvailable() bool { return groupSamplingUsable() }
 
 // groupSamplingUsable probes enforceability by running the very sample
 // the watcher depends on, once per process. exec.LookPath is not
-// enough: it only checks that a ps binary exists and carries the
-// execute bit, which stays true inside a restricted environment
-// (seccomp or MAC policy, a denied fork) where exec of ps fails at call
-// time. Trusting LookPath there makes Enforcement report
-// MemoryCap/CPUCap while every sample errors out and no cap ever
-// fires — silent non-enforcement, the one outcome this package promises
-// not to produce.
+// enough on platforms that fork ps: it only checks that a ps binary
+// exists and carries the execute bit, which stays true inside a
+// restricted environment (seccomp or MAC policy, a denied fork) where
+// exec of ps fails at call time. Trusting LookPath there makes
+// Enforcement report MemoryCap/CPUCap while every sample errors out and
+// no cap ever fires — silent non-enforcement, the one outcome this
+// package promises not to produce.
 //
 // The result is cached: whether ps can be executed at all is a property
 // of the process environment rather than of an individual call, and
@@ -67,6 +70,8 @@ var sampleGroupFn = sampleGroup
 // The type is exported for sandbox.Runner backend authors (e.g.
 // core/sandbox/seatbelt): start it after launching a child that leads
 // its own process group, and Stop it after reaping the child.
+// Stop must follow the child's Wait; stopping is synchronous so no
+// sampler invocation can outlive the Exec call.
 type GroupCapsWatcher struct {
 	// ctx is captured at Start time so telemetry emitted by the
 	// sampler (notably a failed SIGKILL) carries the originating
@@ -101,9 +106,7 @@ const (
 // StartGroupCapsWatcher launches sampling for pgid against the caps
 // derived from res (MemoryBytes) and res x timeout (cpu-time; see
 // deriveGroupCaps). It returns nil when neither cap is actionable, so
-// callers may invoke Stop unconditionally. Stop must follow the
-// child's Wait; stopping is synchronous so no ps invocation can
-// outlive the Exec call.
+// callers may invoke Stop unconditionally.
 func StartGroupCapsWatcher(ctx context.Context, pgid int, res ResourceLimits, timeout time.Duration) *GroupCapsWatcher {
 	maxRSSKB, maxCPU := deriveGroupCaps(res, timeout)
 	if maxRSSKB == 0 && maxCPU == 0 {
@@ -252,8 +255,18 @@ func (w *GroupCapsWatcher) Exceeded() string {
 
 // sampleGroup sums RSS (KiB) and cpu-time across every live member of
 // the process group. A group with no surviving members reports zeros,
-// which never trips a cap.
+// which never trips a cap. On Linux it reads /proc directly; elsewhere
+// it falls back to one ps invocation per sample.
 func sampleGroup(pgid int) (rssKB int64, cpu time.Duration, err error) {
+	if runtime.GOOS == "linux" {
+		return sampleGroupLinux(pgid)
+	}
+	return sampleGroupPS(pgid)
+}
+
+// sampleGroupPS is the portable fallback: one ps invocation that scans
+// the system process table.
+func sampleGroupPS(pgid int) (rssKB int64, cpu time.Duration, err error) {
 	out, err := exec.Command("ps", "-o", "pgid=,rss=,time=", "-ax").Output()
 	if err != nil {
 		return 0, 0, fmt.Errorf("ps: %w", err)
@@ -272,6 +285,81 @@ func sampleGroup(pgid int) (rssKB int64, cpu time.Duration, err error) {
 		cpu += parseProcCPUTime(fields[2])
 	}
 	return rssKB, cpu, nil
+}
+
+// sampleGroupLinux reads /proc/<pid>/stat directly, which avoids
+// forking one ps process per watched group every 250ms. Each watcher
+// still scans the full process table, so the aggregate cost grows with
+// the number of concurrently capped groups; a single shared sampler
+// that fans out per-pgid results would remove that multiplier.
+func sampleGroupLinux(pgid int) (rssKB int64, cpu time.Duration, err error) {
+	procs, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, 0, fmt.Errorf("proc: %w", err)
+	}
+	pageSize := int64(os.Getpagesize())
+	for _, proc := range procs {
+		if !proc.IsDir() {
+			continue
+		}
+		if _, perr := strconv.Atoi(proc.Name()); perr != nil {
+			continue
+		}
+		data, rerr := os.ReadFile(filepath.Join("/proc", proc.Name(), "stat"))
+		if rerr != nil {
+			continue // process exited between readdir and stat
+		}
+		fields, ok := parseProcStat(data)
+		if !ok {
+			continue
+		}
+		if fields.pgrp != pgid {
+			continue
+		}
+		rssKB += fields.rssPages * pageSize / 1024
+		cpu += time.Duration(fields.utimeTicks+fields.stimeTicks) * 10 * time.Millisecond
+	}
+	return rssKB, cpu, nil
+}
+
+type procStatFields struct {
+	pgrp       int
+	utimeTicks int64
+	stimeTicks int64
+	rssPages   int64
+}
+
+// parseProcStat parses the numeric fields of /proc/<pid>/stat. The
+// comm field may contain spaces and parentheses, so parsing starts
+// after the final ')' and field indices are relative to that point
+// (0-based: state=0, ppid=1, pgrp=2, utime=11, stime=12, rss=21).
+func parseProcStat(data []byte) (procStatFields, bool) {
+	lastParen := -1
+	for i, b := range data {
+		if b == ')' {
+			lastParen = i
+		}
+	}
+	if lastParen < 0 || lastParen+1 >= len(data) {
+		return procStatFields{}, false
+	}
+	fields := strings.Fields(string(data[lastParen+1:]))
+	if len(fields) < 22 {
+		return procStatFields{}, false
+	}
+	pgrp, err1 := strconv.Atoi(fields[2])
+	utime, err2 := strconv.ParseInt(fields[11], 10, 64)
+	stime, err3 := strconv.ParseInt(fields[12], 10, 64)
+	rss, err4 := strconv.ParseInt(fields[21], 10, 64)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return procStatFields{}, false
+	}
+	return procStatFields{
+		pgrp:       pgrp,
+		utimeTicks: utime,
+		stimeTicks: stime,
+		rssPages:   rss,
+	}, true
 }
 
 // parseProcCPUTime parses ps TIME columns in the shapes "mm:ss",
