@@ -134,6 +134,44 @@ Scores guide selection only; they never claim a request is executable.
   wires the router through its `router` dep when inference nodes omit an
   explicit `model`.
 
+## Request metadata
+
+`GenerateRequest.RequestMetadata` is an opaque `map[string]string` carried
+with every call. Core never interprets its keys; callers and hosts decide
+the vocabulary (conversation identifiers, turn identifiers, installation
+metadata, ...). Graph inference nodes expose the same field as
+`request_metadata` node config, and script/direct callers can set it on the
+canonical request.
+
+Drivers forward the bag only when their deployment enables it, because each
+provider API has a different legal shape. Provider specs accept:
+
+```yaml
+settings:
+  spec:
+    request_metadata:
+      envelope: metadata          # any non-empty top-level field name; empty disables
+```
+
+OpenAI-compatible drivers map `metadata` onto the native OpenAI metadata
+object; `client_metadata` is emitted as a passthrough object for gateways
+that speak the Codex convention. An empty configuration never sends
+anything, and core keys are forwarded verbatim.
+
+`request_metadata` forwarding is implemented by the DeepSeek, OpenAI, and
+Azure drivers. Anthropic, MiniMax, Bytedance, Kimi, and Qwen are the current
+exceptions: their official Messages/Ark/DashScope surfaces do not model
+arbitrary request metadata and the drivers deliberately keep their native
+transport paths, so canonical metadata is not forwarded until those
+SDKs/providers add a native channel.
+
+Because `RequestMetadata` is part of the compile ledger, drivers that cannot
+forward it report a `dropped` decision instead of silently ignoring it.
+Drivers that forward it report `native` when their deployment enables an
+envelope. The envelope is an arbitrary non-empty string naming the top-level
+body field; providers that type `metadata` natively lower that name through
+their SDK types, while other names ride as passthrough JSON fields.
+
 ## Streaming
 
 `GenerateStream` returns a stream of deltas plus the final result. Streaming

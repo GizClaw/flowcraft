@@ -97,6 +97,12 @@ func chatEntry() catalogEntry {
 	}
 }
 
+func chatEntryWithMetadata(envelope string) catalogEntry {
+	entry := chatEntry()
+	entry.requestMetadataEnvelope = envelope
+	return entry
+}
+
 func responsesEntry() catalogEntry {
 	return catalogEntry{
 		kind:         kindGenerate,
@@ -104,6 +110,21 @@ func responsesEntry() catalogEntry {
 		capabilities: generateChatCapabilities().WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
 		responses:    true,
 	}
+}
+
+func responsesEntryWithMetadata(envelope string) catalogEntry {
+	entry := responsesEntry()
+	entry.requestMetadataEnvelope = envelope
+	return entry
+}
+
+func metadataTextRequest(text string) inference.GenerateRequest {
+	request := simpleTextRequest(text)
+	request.RequestMetadata = map[string]string{
+		"session_id": "oc-session-1",
+		"turn_id":    "oc-turn-1",
+	}
+	return request
 }
 
 func chatCompletionJSON(reasoning string) string {
@@ -228,6 +249,61 @@ func TestChatUnaryReasoning(t *testing.T) {
 	}
 }
 
+func TestChatMetadataEnvelopeTypedCompiles(t *testing.T) {
+	compiled, err := compileChatGenerate(
+		"deepseek-v4-flash",
+		chatEntryWithMetadata("metadata"),
+	)(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		metadataTextRequest("hi"),
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	params, overrides := wireToChatParams(compiled.Wire)
+	if params.Metadata["session_id"] != "oc-session-1" ||
+		params.Metadata["turn_id"] != "oc-turn-1" {
+		t.Fatalf("metadata = %v, want session + turn", params.Metadata)
+	}
+	if len(overrides) != 0 {
+		t.Fatalf("overrides = %d, want none for typed metadata", len(overrides))
+	}
+}
+
+func TestChatClientMetadataForwardedOnUnaryBody(t *testing.T) {
+	server := newCapturedServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, chatCompletionJSON(""))
+	})
+	cls := testClients(t, server.Server)
+	operations, err := openGenerate(
+		cls,
+		chatEntryWithMetadata("client_metadata"),
+		deepseekModel("deepseek-v4-flash").ID,
+		"default",
+	)
+	if err != nil {
+		t.Fatalf("openGenerate: %v", err)
+	}
+	if _, err := operations.Unary.Execute(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		metadataTextRequest("hi"),
+	); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	metadata, ok := server.captured()["client_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("captured body = %v, want client_metadata object", server.captured())
+	}
+	if metadata["session_id"] != "oc-session-1" ||
+		metadata["turn_id"] != "oc-turn-1" {
+		t.Fatalf("client_metadata = %v, want session + turn", metadata)
+	}
+}
+
 func TestChatReasoningRoundTrip(t *testing.T) {
 	server := newCapturedServer(t, func(w http.ResponseWriter, _ map[string]any) {
 		w.Header().Set("Content-Type", "application/json")
@@ -329,6 +405,130 @@ func TestResponsesUnaryReasoningAndText(t *testing.T) {
 	if response.Usage.Input.CacheReadTokens == nil ||
 		*response.Usage.Input.CacheReadTokens != 3 {
 		t.Fatalf("cache = %+v", response.Usage.Input)
+	}
+}
+
+func TestResponsesMetadataEnvelopeTypedCompiles(t *testing.T) {
+	compiled, err := compileResponsesGenerate(
+		"deepseek-v4-flash",
+		responsesEntryWithMetadata("metadata"),
+	)(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		metadataTextRequest("hi"),
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	params := wireToResponseParams(compiled.Wire)
+	if params.Metadata["session_id"] != "oc-session-1" ||
+		params.Metadata["turn_id"] != "oc-turn-1" {
+		t.Fatalf("metadata = %v, want session + turn", params.Metadata)
+	}
+	if len(responseMetadataOptions(compiled.Wire)) != 0 {
+		t.Fatal("client_metadata options present for typed metadata envelope")
+	}
+}
+
+func TestResponsesClientMetadataForwardedOnUnaryBody(t *testing.T) {
+	server := newCapturedServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+			textOutputItem("answer"),
+		}))
+	})
+	cls := testClients(t, server.Server)
+	operations, err := openGenerate(
+		cls,
+		responsesEntryWithMetadata("client_metadata"),
+		deepseekModel("deepseek-v4-flash").ID,
+		"default",
+	)
+	if err != nil {
+		t.Fatalf("openGenerate: %v", err)
+	}
+	if _, err := operations.Unary.Execute(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		metadataTextRequest("hi"),
+	); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	metadata, ok := server.captured()["client_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("captured body = %v, want client_metadata object", server.captured())
+	}
+	if metadata["session_id"] != "oc-session-1" ||
+		metadata["turn_id"] != "oc-turn-1" {
+		t.Fatalf("client_metadata = %v, want session + turn", metadata)
+	}
+}
+
+func TestResponsesClientMetadataForwardedOnStreamBody(t *testing.T) {
+	server := newCapturedServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, sseBody(
+			map[string]any{
+				"type": "response.output_item.added", "output_index": 0,
+				"item": map[string]any{"type": "message"},
+			},
+			map[string]any{
+				"type":         "response.output_text.delta",
+				"output_index": 0, "delta": "answer",
+			},
+			map[string]any{
+				"type": "response.output_item.done", "output_index": 0,
+				"item": textOutputItem("answer"),
+			},
+			map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp_1", "status": "completed",
+					"usage": map[string]any{
+						"input_tokens":          1,
+						"output_tokens":         1,
+						"total_tokens":          2,
+						"input_tokens_details":  map[string]any{"cached_tokens": 0},
+						"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+					},
+				},
+			},
+		))
+	})
+	cls := testClients(t, server.Server)
+	operations, err := openGenerate(
+		cls,
+		responsesEntryWithMetadata("client_metadata"),
+		deepseekModel("deepseek-v4-flash").ID,
+		"default",
+	)
+	if err != nil {
+		t.Fatalf("openGenerate: %v", err)
+	}
+	stream, err := operations.Stream.Stream(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		metadataTextRequest("hi"),
+	)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	for {
+		if _, err := stream.Next(context.Background()); err == io.EOF {
+			break
+		} else if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+	}
+	metadata, ok := server.captured()["client_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("captured body = %v, want client_metadata object", server.captured())
+	}
+	if metadata["session_id"] != "oc-session-1" ||
+		metadata["turn_id"] != "oc-turn-1" {
+		t.Fatalf("client_metadata = %v, want session + turn", metadata)
 	}
 }
 

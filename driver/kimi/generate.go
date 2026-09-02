@@ -241,6 +241,12 @@ func compileGenerate(model string, entry catalogEntry) inference.GenerateCompile
 	return func(_ context.Context, _ inference.ModelRef, request inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[generateWire], error) {
 		ledger := newLedger(inference.OperationGenerate, request.ActiveFieldsFor(shape))
 		wire := generateWire{Model: model, Stream: shape == inference.GenerateExecutionStream}
+		if len(request.RequestMetadata) > 0 {
+			ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"kimi driver does not forward request metadata",
+			)
+		}
 
 		options, other := operationExtensions[GenerateOptions](request.Extensions)
 		rejectOtherExtensions("generate", other, ledger)

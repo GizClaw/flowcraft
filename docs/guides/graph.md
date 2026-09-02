@@ -146,6 +146,7 @@ onto `tool_pending_key` and the graph routes onward.
 | `tool_choice`                            | constrain when/which tools are called                                                                             |
 | `intent`                                 | canonical execution envelope: `{text, image, audio, video}` with per-modality controls (see below)                |
 | `extensions`                             | provider knobs in the `{provider, id, fields}` wire form, resolved via the assembly's decoders                    |
+| `request_metadata`                       | opaque `map[string]string` copied onto the canonical `GenerateRequest`; keys are deployment-defined and core never interprets them |
 
 Behavior:
 

@@ -29,9 +29,31 @@ type Spec struct {
 	// the route Router owns the full retry budget; nil keeps the openai-go
 	// default (two retries).
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
+	// RequestMetadata controls how canonical GenerateRequest metadata is
+	// projected onto the provider request body. The empty value disables
+	// forwarding entirely (the official DeepSeek API does not accept
+	// request metadata); any non-empty value names the top-level body
+	// field that receives the bag. "metadata" is the OpenAI-compatible
+	// typed metadata object and "client_metadata" is the Codex-style
+	// passthrough, but deployments may use other names for gateways.
+	RequestMetadata *RequestMetadataSpec `json:"request_metadata,omitempty"`
 	// Models declares models outside the built-in catalog or overrides
 	// catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
+}
+
+// RequestMetadataSpec is the provider-level lowering policy for canonical
+// GenerateRequest.RequestMetadata. Core keys and the envelope name are
+// opaque; the driver forwards the whole bag without interpreting entries.
+type RequestMetadataSpec struct {
+	// Envelope names the top-level body field that receives the metadata
+	// object. "" disables forwarding; any non-empty string is accepted.
+	Envelope string `json:"envelope,omitempty"`
+}
+
+// Validate checks the request metadata forwarding policy.
+func (s RequestMetadataSpec) Validate() error {
+	return nil
 }
 
 // ModelSpec declares one model the deployment serves. Capabilities mirror
@@ -77,6 +99,11 @@ func (s Spec) Validate() error {
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("http_retries must not be negative")
 	}
+	if s.RequestMetadata != nil {
+		if err := s.RequestMetadata.Validate(); err != nil {
+			return err
+		}
+	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for _, model := range s.Models {
 		if err := model.Validate(); err != nil {
@@ -96,6 +123,15 @@ func (s Spec) apiMode() apiMode {
 		return apiChat
 	}
 	return apiMode(s.API)
+}
+
+// requestMetadataEnvelope returns the configured forwarding envelope, or ""
+// when forwarding is disabled.
+func (s Spec) requestMetadataEnvelope() string {
+	if s.RequestMetadata == nil {
+		return ""
+	}
+	return s.RequestMetadata.Envelope
 }
 
 // ProfileSpec is the profile-level configuration surface. DeepSeek scopes

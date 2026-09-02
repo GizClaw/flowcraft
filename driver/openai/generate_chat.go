@@ -58,6 +58,9 @@ func wireToChatParams(wire generateWire) openai.ChatCompletionNewParams {
 			IncludeUsage: openai.Bool(true),
 		}
 	}
+	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
+		params.Metadata = wire.requestMetadata
+	}
 	return params
 }
 
@@ -195,7 +198,11 @@ func chatToolChoice(choice *wireToolChoice) openai.ChatCompletionToolChoiceOptio
 // completions endpoint.
 func transportChatGenerate(client openai.Client) inference.Transport[generateWire, generateRaw] {
 	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
-		response, err := client.Chat.Completions.New(ctx, wireToChatParams(wire))
+		response, err := client.Chat.Completions.New(
+			ctx,
+			wireToChatParams(wire),
+			requestMetadataOptions(wire)...,
+		)
 		if err != nil {
 			classified := classifyError(err)
 			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
@@ -306,7 +313,11 @@ func transportChatGenerateStream(
 		ctx context.Context,
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
-		stream := client.Chat.Completions.NewStreaming(ctx, wireToChatParams(wire))
+		stream := client.Chat.Completions.NewStreaming(
+			ctx,
+			wireToChatParams(wire),
+			requestMetadataOptions(wire)...,
+		)
 		if stream == nil {
 			return nil, errdefs.NotAvailablef(
 				"openai: nil chat stream handle (provider misbehaviour)")

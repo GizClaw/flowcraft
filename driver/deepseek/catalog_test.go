@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"testing"
@@ -87,5 +88,29 @@ func TestMergedCatalogRejectsMissingTextOutput(t *testing.T) {
 	}
 	if _, err := mergedCatalog(spec); err == nil {
 		t.Fatal("mergedCatalog unexpectedly accepted a generate model without text output")
+	}
+}
+
+func TestRequestMetadataEnvelopeValidationAndCatalogPropagation(t *testing.T) {
+	for _, envelope := range []string{"", "metadata", "client_metadata", "request_fields"} {
+		raw := `{}`
+		if envelope != "" {
+			raw = fmt.Sprintf(`{"request_metadata":{"envelope":%q}}`, envelope)
+		}
+		spec, err := decodeSpec(context.Background(), []byte(raw))
+		if err != nil {
+			t.Fatalf("decodeSpec(envelope %q): %v", envelope, err)
+		}
+		models, err := mergedCatalog(spec)
+		if err != nil {
+			t.Fatalf("mergedCatalog(envelope %q): %v", envelope, err)
+		}
+		if got := models["deepseek-v4-flash"].requestMetadataEnvelope; got != envelope {
+			t.Fatalf(
+				"catalog envelope = %q, want %q",
+				got,
+				envelope,
+			)
+		}
 	}
 }

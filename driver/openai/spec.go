@@ -37,9 +37,28 @@ type Spec struct {
 	// the route Router owns the full retry budget; nil keeps the openai-go
 	// default (two retries).
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
+	// RequestMetadata controls how canonical GenerateRequest metadata is
+	// projected onto the provider request body. The empty value disables
+	// forwarding; any non-empty value names the top-level body field that
+	// receives the bag. "metadata" uses the native OpenAI metadata object
+	// and "client_metadata" uses the Codex-style passthrough, but other
+	// names are allowed for gateways.
+	RequestMetadata *RequestMetadataSpec `json:"request_metadata,omitempty"`
 	// Models declares additional models beyond the built-in catalog or
 	// overrides catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
+}
+
+// RequestMetadataSpec is the provider-level lowering policy for canonical
+// GenerateRequest.RequestMetadata. Keys and the envelope are opaque and
+// forwarded verbatim.
+type RequestMetadataSpec struct {
+	Envelope string `json:"envelope,omitempty"`
+}
+
+// Validate checks the request metadata forwarding policy.
+func (s RequestMetadataSpec) Validate() error {
+	return nil
 }
 
 // ModelSpec declares one model outside the built-in catalog. Capabilities
@@ -87,6 +106,11 @@ func (s Spec) Validate() error {
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("http_retries must not be negative")
 	}
+	if s.RequestMetadata != nil {
+		if err := s.RequestMetadata.Validate(); err != nil {
+			return err
+		}
+	}
 	seen := make(map[string]struct{}, len(s.Models))
 	for index, model := range s.Models {
 		if err := model.Validate(); err != nil {
@@ -106,6 +130,13 @@ func (s Spec) apiMode() apiMode {
 		return apiResponses
 	}
 	return apiMode(s.API)
+}
+
+func (s Spec) requestMetadataEnvelope() string {
+	if s.RequestMetadata == nil {
+		return ""
+	}
+	return s.RequestMetadata.Envelope
 }
 
 func (m ModelSpec) Validate() error {

@@ -41,6 +41,9 @@ type catalogEntry struct {
 	// undeclared. Both V4 models carry the 1M context published on
 	// https://api-docs.deepseek.com/quick_start/pricing.
 	maxInputTokens int
+	// requestMetadataEnvelope is the provider-level lowering policy for
+	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
+	requestMetadataEnvelope string
 }
 
 // deepseekEffortMap is the canonical-to-wire map the V4 family declares.
@@ -157,6 +160,11 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			}
 		}
 		models[declared.Name] = entry
+	}
+	envelope := spec.requestMetadataEnvelope()
+	for name, entry := range models {
+		entry.requestMetadataEnvelope = envelope
+		models[name] = entry
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {

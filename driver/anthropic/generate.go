@@ -309,6 +309,12 @@ func compileGenerate(
 			stream:    shape == inference.GenerateExecutionStream,
 			maxTokens: DefaultMaxTokens,
 		}
+		if len(request.RequestMetadata) > 0 {
+			ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"anthropic Messages API has no arbitrary request metadata channel",
+			)
+		}
 
 		// Context messages. The system channel joins the request's system
 		// blocks; everything else becomes user/assistant turns.

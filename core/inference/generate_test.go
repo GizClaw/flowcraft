@@ -70,6 +70,65 @@ func TestGenerateRequestModelHintCloneValidateAndJSON(t *testing.T) {
 	}
 }
 
+func TestGenerateRequestRequestMetadataCloneAndJSON(t *testing.T) {
+	request := GenerateRequest{
+		Input: GenerateInput{
+			Role: InputRoleUser,
+			Content: InputContent{
+				Content: message.Content{Parts: []message.Part{
+					message.TextPart{Text: "hi"},
+				}},
+				Intent: Intent{Text: &TextIntent{}},
+			},
+		},
+		RequestMetadata: map[string]string{
+			"session_id": "s-1",
+			"turn_id":    "turn-1",
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+
+	clone := request.Clone()
+	clone.RequestMetadata["session_id"] = "mutated"
+	if request.RequestMetadata["session_id"] != "s-1" {
+		t.Fatalf(
+			"clone aliases RequestMetadata: source session_id = %q, want s-1",
+			request.RequestMetadata["session_id"],
+		)
+	}
+	if clone.RequestMetadata["turn_id"] != "turn-1" {
+		t.Fatalf("Clone().RequestMetadata turn_id = %q, want turn-1", clone.RequestMetadata["turn_id"])
+	}
+
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded GenerateRequest
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(decoded.RequestMetadata, request.RequestMetadata) {
+		t.Fatalf(
+			"JSON round-trip RequestMetadata = %v, want %v",
+			decoded.RequestMetadata,
+			request.RequestMetadata,
+		)
+	}
+	sawLedger := false
+	for _, field := range request.ActiveFieldsFor(GenerateExecutionUnary) {
+		if field == FieldGenerateRequestMetadata {
+			sawLedger = true
+			break
+		}
+	}
+	if !sawLedger {
+		t.Fatal("RequestMetadata did not enter ActiveFields")
+	}
+}
+
 func TestValidateGenerateText(t *testing.T) {
 	arraySchema := json.RawMessage(
 		`{"type":"array","items":{"type":"string"}}`,

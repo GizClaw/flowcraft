@@ -49,7 +49,11 @@ func transportGenerateStream(
 		ctx context.Context,
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
-		stream := client.Responses.NewStreaming(ctx, wireToParams(wire))
+		stream := client.Responses.NewStreaming(
+			ctx,
+			wireToParams(wire),
+			requestMetadataOptions(wire)...,
+		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
 			logInferenceStream(ctx, "generate", wire.model, classified, "")

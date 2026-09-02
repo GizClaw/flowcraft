@@ -114,6 +114,11 @@ type InferenceConfig struct {
 	// provider-carried: the deploy path aggregates them from the wired
 	// inference assembly, so only configured providers are available.
 	Extensions []inference.ExtensionEntry `json:"extensions,omitempty"`
+
+	// RequestMetadata is copied onto the canonical GenerateRequest as an
+	// opaque metadata bag. Keys are deployment-defined; core does not
+	// reserve or interpret any key name.
+	RequestMetadata map[string]string `json:"request_metadata,omitempty"`
 }
 
 // UndefinedToolRecoveryConfig configures the inference node's
@@ -469,8 +474,9 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 					Intent:  intent,
 				},
 			},
-			Extensions: extensions,
-			ModelHint:  cfg.ModelHint,
+			Extensions:      extensions,
+			ModelHint:       cfg.ModelHint,
+			RequestMetadata: cfg.RequestMetadata,
 		}, nil
 	}
 
@@ -504,8 +510,9 @@ func buildGenerateRequest(ec graph.ExecutionContext, board *agent.Board, channel
 				Intent:  intent,
 			},
 		},
-		Extensions: extensions,
-		ModelHint:  cfg.ModelHint,
+		Extensions:      extensions,
+		ModelHint:       cfg.ModelHint,
+		RequestMetadata: cfg.RequestMetadata,
 	}, nil
 }
 

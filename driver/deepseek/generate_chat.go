@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -33,6 +34,12 @@ type chatWire struct {
 	effort      string
 	thinking    *bool
 	stream      bool
+
+	// requestMetadataEnvelope names the top-level body field that carries
+	// canonical request metadata; empty disables forwarding.
+	requestMetadataEnvelope string
+	// requestMetadata is the opaque metadata bag forwarded verbatim.
+	requestMetadata map[string]string
 }
 
 type wireChatMessage struct {
@@ -89,6 +96,15 @@ func compileChatGenerate(
 		wire := chatWire{
 			model:  model,
 			stream: shape == inference.GenerateExecutionStream,
+		}
+		if entry.requestMetadataEnvelope != "" && len(request.RequestMetadata) > 0 {
+			wire.requestMetadataEnvelope = entry.requestMetadataEnvelope
+			wire.requestMetadata = maps.Clone(request.RequestMetadata)
+		} else if len(request.RequestMetadata) > 0 {
+			ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"deepseek request_metadata forwarding is disabled (set spec.request_metadata.envelope)",
+			)
 		}
 
 		for _, turn := range request.Context {
@@ -484,8 +500,19 @@ func wireToChatParams(
 			IncludeUsage: openaigo.Bool(true),
 		}
 	}
+	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
+		params.Metadata = wire.requestMetadata
+	}
 
 	var overrides []option.RequestOption
+	if wire.requestMetadataEnvelope != "" &&
+		wire.requestMetadataEnvelope != "metadata" &&
+		len(wire.requestMetadata) > 0 {
+		overrides = append(overrides, option.WithJSONSet(
+			wire.requestMetadataEnvelope,
+			wire.requestMetadata,
+		))
+	}
 	if wire.thinking != nil {
 		kind := "disabled"
 		if *wire.thinking {
