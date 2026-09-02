@@ -1,0 +1,9 @@
+{
+  "summary": "fix(core): close out core security and performance review findings — LocalWorkspace pins an os.Root handle with kernel-enforced symlink containment and bounded fs reads, one-shot sandbox Exec keeps first-max-bytes truncation under small caps, read-only classifier rejects git -c/--config-env/login-shell combined flags and PATH/GIT_/LD_/DYLD_ env assignments, Linux process-group sampling reads /proc instead of forking ps, run ids and checkpoint suffixes fail closed on entropy failure, fs bridge I/O is capped and script nodes expose FSBridgeOptions, proxy/MITM classifier peeks/upstream CONNECT reads/MITM handshakes and headers are bounded with HTTP/1.1 tunnels served by http.Server and capped leaf-cert cache, template rendering stops at a byte budget, media materialization and tool-result truncation are capped, and golang.org/x/mod is bumped to v0.40.0; feat(core): carry request metadata through inference drivers — GenerateRequest.RequestMetadata enters the compile ledger as generate.request.metadata, graph inference nodes expose request_metadata node config, DeepSeek/OpenAI/Azure forward the opaque map under a configurable arbitrary top-level envelope (typed metadata or passthrough JSON), and Anthropic/MiniMax/Bytedance/Kimi/Qwen report dropped when they cannot forward it",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
