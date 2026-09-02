@@ -68,6 +68,9 @@ func TestGoTemplateRejectsInvalidConfigurationAndOutputLimit(t *testing.T) {
 	if _, err := NewGoTemplate(GoTemplateSettings{MaxChars: -1}); err == nil {
 		t.Fatal("accepted negative max_chars")
 	}
+	if _, err := NewGoTemplate(GoTemplateSettings{MaxChars: maxSafeMaxChars + 1}); err == nil {
+		t.Fatal("accepted max_chars large enough to overflow the byte budget")
+	}
 	renderer, err := NewGoTemplate(GoTemplateSettings{Template: `too long`, MaxChars: 3})
 	if err != nil {
 		t.Fatal(err)
@@ -80,5 +83,22 @@ func TestGoTemplateRejectsInvalidConfigurationAndOutputLimit(t *testing.T) {
 	cancel()
 	if _, err := renderer.Render(cancelled, sdkmemory.ContextResult{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled render error = %v", err)
+	}
+}
+
+func TestGoTemplateStopsOverlongRenderMidExecution(t *testing.T) {
+	renderer, err := NewGoTemplate(GoTemplateSettings{
+		Template: strings.Repeat("x", 1000),
+		MaxChars: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = renderer.Render(context.Background(), sdkmemory.ContextResult{})
+	if err == nil {
+		t.Fatal("render of an output far beyond max_chars should fail")
+	}
+	if !strings.Contains(err.Error(), "exceeds max_chars 10") {
+		t.Fatalf("error = %v, want byte-budget limit error", err)
 	}
 }
