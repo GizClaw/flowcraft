@@ -204,6 +204,9 @@ jobs:
       - name: Test
         run: go test -count=1 -race ./...
         working-directory: ${{ matrix.module }}
+      - name: govulncheck
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        working-directory: ${{ matrix.module }}
 
   test-sandbox-bwrap:
     name: Integration core/sandbox/bwrap
