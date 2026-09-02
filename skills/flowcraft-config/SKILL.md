@@ -106,7 +106,7 @@ workflow.
 ## Compatibility and versioning
 
 One skill version pins one FlowCraft version. The validator's `go.mod`
-requires exactly `github.com/GizClaw/flowcraft/core v0.2.3`; the schema
+requires exactly `github.com/GizClaw/flowcraft/core v0.2.4`; the schema
 cards in this skill document that release (no `driver/*` or `backends/*`
 modules are required, since the validator never constructs factories).
 When FlowCraft releases a new version, bump the pin and reconcile the

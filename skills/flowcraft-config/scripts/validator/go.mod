@@ -2,7 +2,7 @@ module github.com/GizClaw/flowcraft/skills/flowcraft-config/scripts/validator
 
 go 1.26.0
 
-require github.com/GizClaw/flowcraft/core v0.2.3
+require github.com/GizClaw/flowcraft/core v0.2.4
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
