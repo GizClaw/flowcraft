@@ -91,9 +91,6 @@ func Execute(
 	rc := applyOptions(ag, opts)
 
 	runID := req.RunID
-	if runID == "" {
-		runID = mintRunID()
-	}
 	// Resume MUST execute under the original run id so the engine's
 	// Resumer.CanResume sees ExecID == Run.RunID. Honour the
 	// checkpoint's ExecID over a freshly-minted id; explicit
@@ -101,6 +98,12 @@ func Execute(
 	// Engine Validation when the engine compares them.
 	if rc.resumeFrom != nil && rc.resumeFrom.ExecID != "" {
 		runID = rc.resumeFrom.ExecID
+	} else if runID == "" {
+		minted, err := mintRunID()
+		if err != nil {
+			return nil, err
+		}
+		runID = minted
 	}
 
 	id := Identity{
@@ -574,15 +577,15 @@ func collectArtifacts(b *Board, channels []string) []Artifact {
 	return out
 }
 
-// mintRunID returns a fresh "run-<hex>" identifier. Falls back to a
-// nanos-suffixed string if crypto/rand is unavailable (extremely rare
-// — typically only sandboxes).
-func mintRunID() string {
-	b := make([]byte, 8)
-	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("run-%d", time.Now().UnixNano())
+// mintRunID returns a fresh "run-<hex>" identifier. It fails closed
+// when crypto/rand is unavailable instead of degrading to a
+// predictable timestamp, mirroring runtime/session's freshRunID.
+func mintRunID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", errdefs.Internal(fmt.Errorf("agent: allocate run id: %w", err))
 	}
-	return "run-" + hex.EncodeToString(b)
+	return "run-" + hex.EncodeToString(b[:]), nil
 }
 
 // ---------- Options ----------

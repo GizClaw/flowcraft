@@ -84,6 +84,14 @@ type Workspace interface {
 	Stat(ctx context.Context, path string) (fs.FileInfo, error)
 }
 
+// LimitedReader is implemented by Workspace backends that can bound a
+// single read. ReadLimited MUST NOT materialize more than maxBytes
+// bytes in memory; an oversized file fails with a bounded read error
+// instead of returning the full payload.
+type LimitedReader interface {
+	ReadLimited(ctx context.Context, path string, maxBytes int64) ([]byte, error)
+}
+
 // ViolationRecord captures a rejected operation for audit logging.
 type ViolationRecord struct {
 	Time      time.Time `json:"time"`

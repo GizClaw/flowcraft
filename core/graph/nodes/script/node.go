@@ -58,6 +58,9 @@ type ScriptNodeDeps struct {
 	// Workspace powers the "fs" global (fs.read/write/exists/delete).
 	// Nil leaves the global unregistered.
 	Workspace workspace.Workspace
+	// FSOptions configure the fs bridge, e.g. size caps via
+	// bindings.WithMaxReadBytes / WithMaxWriteBytes.
+	FSOptions []bindings.FSBridgeOption
 
 	// CommandRunner powers the "shell" global (shell.exec); options
 	// carry sandbox policy. Nil leaves the global unregistered.
@@ -129,7 +132,7 @@ func RunScript(ec graph.ExecutionContext, board *agent.Board, deps ScriptNodeDep
 			newStreamBridge(info.RunID, ec.Host),
 			newParallelBridge(),
 		).
-		AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace)).
+		AddIf(deps.Workspace != nil, bindings.NewFSBridge(deps.Workspace, deps.FSOptions...)).
 		AddIf(deps.CommandRunner != nil, bindings.NewShellBridge(deps.CommandRunner, deps.ShellOptions...)).
 		AddLate(bindings.NewRuntimeBridge(runtime)).
 		Build(execCtx)

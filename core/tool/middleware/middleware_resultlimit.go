@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -61,8 +62,10 @@ func WithResultMarker(marker string) ResultLimitOption {
 }
 
 func limitResult(res message.ToolResult, max int, marker string) message.ToolResult {
-	runes := []rune(res.Content)
-	if len(runes) <= max {
+	// Fast paths avoid materializing the whole content as []rune: a
+	// byte count at or below the limit can never exceed it in runes,
+	// and runeCountAtMost stops at the first rune past the limit.
+	if len(res.Content) <= max || runeCountAtMost(res.Content, max) {
 		return res
 	}
 	markerRunes := []rune(marker)
@@ -73,9 +76,42 @@ func limitResult(res message.ToolResult, max int, marker string) message.ToolRes
 	if keep < 0 {
 		keep = 0
 	}
-	out := make([]rune, 0, max)
-	out = append(out, runes[:keep]...)
-	out = append(out, markerRunes...)
-	res.Content = string(out)
+	res.Content = truncateRunes(res.Content, keep) + string(markerRunes)
 	return res
+}
+
+// runeCountAtMost reports whether s contains at most limit runes. It
+// stops counting as soon as the answer is known, so oversized results
+// are never converted to a full []rune just to be truncated.
+func runeCountAtMost(s string, limit int) bool {
+	if limit < 0 {
+		return false
+	}
+	count := 0
+	for range s {
+		count++
+		if count > limit {
+			return false
+		}
+	}
+	return true
+}
+
+// truncateRunes returns the first n runes of s without converting the
+// whole string to []rune.
+func truncateRunes(s string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(n) // capacity hint only; Builder grows as writes come in
+	remaining := n
+	for _, r := range s {
+		if remaining == 0 {
+			break
+		}
+		b.WriteRune(r)
+		remaining--
+	}
+	return b.String()
 }

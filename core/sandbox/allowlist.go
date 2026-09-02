@@ -205,10 +205,12 @@ func isShellName(name string) bool {
 }
 
 func isDashCArg(arg string) bool {
-	if arg == "-c" {
-		return true
-	}
-	return strings.HasPrefix(arg, "-") && strings.Contains(arg, "c")
+	// Only a bare "-c" is a script argument. Combined flags such as
+	// "-lc" (login shell) or "-ce" change semantics: a login shell
+	// reads startup files, so unwrapping it to the script body could
+	// auto-approve code the shell runs before the script. Combined
+	// forms therefore stay raw and never match the allowlist.
+	return arg == "-c"
 }
 
 // tokenizeShellScript splits a sh -c script into argument tokens and
@@ -218,7 +220,10 @@ func isDashCArg(arg string) bool {
 // newlines) or unterminated quotes are reported as unsafe, and the
 // caller then treats the call as needing approval instead of matching
 // it against the allowlist. Leading "NAME=value" assignments are
-// skipped so "FOO=1 go run main.go" still matches "go run *".
+// skipped so "FOO=1 go run main.go" still matches "go run *", but
+// assignments that can redirect execution or git configuration
+// (PATH, LD_PRELOAD, GIT_*, ...) make the invocation unsafe: the
+// visible command is not the program that actually runs.
 func tokenizeShellScript(script string) ([]string, bool) {
 	var tokens []string
 	var cur strings.Builder
@@ -271,12 +276,31 @@ func tokenizeShellScript(script string) ([]string, bool) {
 	}
 	flush()
 	for len(tokens) > 0 && isEnvAssignment(tokens[0]) {
+		if unsafeEnvKey(tokens[0]) {
+			return nil, false
+		}
 		tokens = tokens[1:]
 	}
 	if len(tokens) == 0 {
 		return nil, false
 	}
 	return tokens, true
+}
+
+// unsafeEnvKey reports whether a leading "NAME=value" assignment can
+// change which program executes or which configuration it reads.
+func unsafeEnvKey(assignment string) bool {
+	name := assignment
+	if eq := strings.IndexByte(name, '='); eq > 0 {
+		name = name[:eq]
+	}
+	switch name {
+	case "PATH", "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS":
+		return true
+	}
+	return strings.HasPrefix(name, "GIT_") ||
+		strings.HasPrefix(name, "LD_") ||
+		strings.HasPrefix(name, "DYLD_")
 }
 
 func isEnvAssignment(token string) bool {

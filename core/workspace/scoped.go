@@ -3,12 +3,14 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	otellog "go.opentelemetry.io/otel/log"
@@ -52,6 +54,19 @@ func NewScopedWorkspace(inner Workspace, opts ...ScopedOption) *ScopedWorkspace 
 	return sw
 }
 
+// Close forwards to the wrapped workspace when it owns closable
+// resources (e.g. *LocalWorkspace). This lets the deploy assembly close
+// a scoped local workspace deterministically.
+func (s *ScopedWorkspace) Close() error {
+	if s == nil || s.inner == nil {
+		return nil
+	}
+	if closer, ok := s.inner.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 // Unwrap returns the wrapped Workspace. It lets callers recover
 // implementation-specific extras (e.g. *LocalWorkspace.Root) that
 // the scoped wrapper does not forward — at the caller's own risk,
@@ -75,6 +90,20 @@ func (s *ScopedWorkspace) Read(ctx context.Context, path string) ([]byte, error)
 		return nil, err
 	}
 	return s.inner.Read(ctx, path)
+}
+
+// ReadLimited forwards to the wrapped workspace when it supports
+// bounded reads; otherwise the operation is unavailable so callers
+// fail closed instead of falling back to an unbounded materialization.
+func (s *ScopedWorkspace) ReadLimited(ctx context.Context, path string, maxBytes int64) ([]byte, error) {
+	if err := s.checkRead(ctx, path); err != nil {
+		return nil, err
+	}
+	lr, ok := s.inner.(LimitedReader)
+	if !ok {
+		return nil, errdefs.NotAvailablef("workspace: scoped workspace cannot perform bounded reads")
+	}
+	return lr.ReadLimited(ctx, path, maxBytes)
 }
 
 func (s *ScopedWorkspace) Write(ctx context.Context, path string, data []byte) error {

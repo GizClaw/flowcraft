@@ -31,6 +31,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	closeWorkspaceValue(t, value)
 	if _, ok := value.(*workspace.LocalWorkspace); !ok {
 		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
 	}
@@ -64,6 +65,7 @@ func TestFactoryScopedDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	closeWorkspaceValue(t, value)
 	if _, ok := value.(*workspace.LocalWorkspace); !ok {
 		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
 	}
@@ -86,6 +88,7 @@ func TestFactoryScopedEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	closeWorkspaceValue(t, value)
 	scoped, ok := value.(*workspace.ScopedWorkspace)
 	if !ok {
 		t.Fatalf("New returned %T, want *workspace.ScopedWorkspace", value)
@@ -113,6 +116,7 @@ func TestFactoryRelativeRootUsesLoaderBaseDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	closeWorkspaceValue(t, value)
 	local, ok := value.(*workspace.LocalWorkspace)
 	if !ok {
 		t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
@@ -165,6 +169,7 @@ func TestFactoryExpandsSettingsRefs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("New: %v", err)
 			}
+			closeWorkspaceValue(t, value)
 			local, ok := value.(*workspace.LocalWorkspace)
 			if !ok {
 				t.Fatalf("New returned %T, want *workspace.LocalWorkspace", value)
@@ -178,6 +183,15 @@ func TestFactoryExpandsSettingsRefs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func closeWorkspaceValue(t *testing.T, value any) {
+	t.Helper()
+	t.Cleanup(func() {
+		if closer, ok := value.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
 }
 
 func TestFactoryExpansionErrors(t *testing.T) {

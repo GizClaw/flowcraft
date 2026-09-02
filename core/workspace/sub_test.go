@@ -114,6 +114,7 @@ func TestSubWorkspace_LocalRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = base.Close() })
 	sub := Sub(base, filepath.Join("runtime-a", "memory"))
 	rooted, ok := sub.(*LocalWorkspace)
 	if !ok {
@@ -136,6 +137,7 @@ func TestSubWorkspace_LocalRootRejectsSymlinkEscape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = base.Close() })
 	outside := t.TempDir()
 	if err := os.Symlink(outside, filepath.Join(base.Root(), "escape")); err != nil {
 		t.Fatalf("Symlink: %v", err)

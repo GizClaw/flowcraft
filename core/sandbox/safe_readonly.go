@@ -8,10 +8,12 @@ import (
 // ClassifySafeReadOnly reports whether req is a known read-only command
 // under the codex-rs-style heuristic: a small set of base commands
 // plus argument-aware checks for the commands whose write potential
-// depends on their flags (find / rg / git / sed / sort). "sh -c" /
-// "bash -lc" wrappers are unwrapped exactly like allowlist matching,
-// so a simple `sh -c "ls"` classifies as safe while any composite
-// script falls through to false.
+// depends on their flags (find / rg / git / sed / sort). "sh -c"
+// wrappers are unwrapped exactly like allowlist matching, so a simple
+// `sh -c "ls"` classifies as safe while any composite script falls
+// through to false. Login-shell flags ("-lc" and friends) are never
+// unwrapped: a login shell executes startup files before the script,
+// so the visible body is not the whole program.
 //
 // The classifier is deliberately conservative: false means "not
 // proven read-only", and should route to the human approver, never to
@@ -171,14 +173,22 @@ func gitIsReadOnly(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
+		case arg == "-c" || strings.HasPrefix(arg, "-c") ||
+			arg == "--config-env" || strings.HasPrefix(arg, "--config-env="):
+			// -c <key>=<value> (and --config-env) can set core.pager,
+			// core.sshCommand, core.fsmonitor and friends, which git
+			// executes on read-only subcommands like log. The value is
+			// arbitrary shell, so any -c form makes the invocation
+			// unsafe for auto-approval.
+			return false
 		case strings.HasPrefix(arg, "--"):
 			if gitValueFlags[arg] && i+1 < len(args) {
 				i++
 			}
 			continue
 		case strings.HasPrefix(arg, "-"):
-			// -C and -c take a value; the rest are boolean flags.
-			if (arg == "-C" || arg == "-c") && i+1 < len(args) {
+			// -C takes a directory value; the rest are boolean flags.
+			if arg == "-C" && i+1 < len(args) {
 				i++
 			}
 			continue

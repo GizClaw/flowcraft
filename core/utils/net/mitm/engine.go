@@ -1,7 +1,6 @@
 package mitm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -12,6 +11,8 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	corenet "github.com/GizClaw/flowcraft/core/utils/net"
@@ -21,6 +22,28 @@ import (
 // DefaultMaxBodyBytes caps buffered bodies when
 // MITMPolicy.MaxBodyBytes is zero.
 const DefaultMaxBodyBytes = 64 << 10
+
+const (
+	// mitmReadHeaderTimeout bounds how long a client may take to send
+	// one HTTP/1.1 request header block on a MITM connection.
+	mitmReadHeaderTimeout = 30 * time.Second
+	// mitmResponseHeaderTimeout bounds how long the real target may
+	// take to send response headers.
+	mitmResponseHeaderTimeout = 30 * time.Second
+	// mitmTLSHandshakeTimeout bounds the upstream TLS handshake.
+	mitmTLSHandshakeTimeout = 10 * time.Second
+	// mitmIdleConnTimeout bounds idle pooled upstream connections.
+	mitmIdleConnTimeout = 90 * time.Second
+	// mitmMaxResponseHeaderBytes bounds one upstream response header
+	// block.
+	mitmMaxResponseHeaderBytes = 1 << 20
+	// mitmMaxRequestHeaderBytes bounds one client HTTP/1.1 request
+	// header block (http.Server.MaxHeaderBytes).
+	mitmMaxRequestHeaderBytes = 1 << 20
+	// mitmServerIdleTimeout bounds an idle decrypted HTTP/1.1
+	// keep-alive connection.
+	mitmServerIdleTimeout = 2 * time.Minute
+)
 
 // Engine terminates TLS for one CONNECT tunnel and runs decrypted
 // requests through hooks and an outbound transport. One Engine is
@@ -148,36 +171,98 @@ func (e *Engine) newTransport(serverName, dialHostport string) *http.Transport {
 		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return e.dialTLS(ctx, dialHostport, serverName)
 		},
-		ForceAttemptHTTP2:   true,
-		MaxIdleConns:        4,
-		MaxIdleConnsPerHost: 2,
+		ForceAttemptHTTP2:      true,
+		MaxIdleConns:           4,
+		MaxIdleConnsPerHost:    2,
+		ResponseHeaderTimeout:  mitmResponseHeaderTimeout,
+		IdleConnTimeout:        mitmIdleConnTimeout,
+		MaxResponseHeaderBytes: mitmMaxResponseHeaderBytes,
 	}
 }
 
 func (e *Engine) serveH1(tlsConn *tls.Conn, transport *http.Transport, serverName, dialHostport string) error {
-	br := bufio.NewReader(tlsConn)
-	for {
-		req, err := http.ReadRequest(br)
-		if err != nil {
-			return nil // client closed or keep-alive ended
-		}
-		resp, err := e.forward(req, transport, serverName, dialHostport)
-		if err == errBlocked {
-			writeError(tlsConn, http.StatusForbidden, "mitm: blocked by hook")
-			return nil
-		}
-		if err != nil {
-			writeError(tlsConn, http.StatusBadGateway, "mitm: upstream request failed")
-			return nil
-		}
-		closeConn := req.Close || resp.Close
-		if err := resp.Write(tlsConn); err != nil {
-			return err
-		}
-		if closeConn {
-			return nil
-		}
+	// Serve the decrypted connection through a real http.Server instead
+	// of a hand-rolled ReadRequest loop. That gives us MaxHeaderBytes,
+	// ReadHeaderTimeout/IdleTimeout, and — crucially — request contexts
+	// tied to the client connection, so a client disconnect cancels an
+	// in-flight upstream RoundTrip for HTTP/1.1 too.
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	markClosed := func() { closeOnce.Do(func() { close(done) }) }
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			e.serveH1Request(w, r, transport, serverName, dialHostport)
+		}),
+		ReadHeaderTimeout: mitmReadHeaderTimeout,
+		IdleTimeout:       mitmServerIdleTimeout,
+		MaxHeaderBytes:    mitmMaxRequestHeaderBytes,
+		ConnState: func(_ net.Conn, state http.ConnState) {
+			if state == http.StateClosed || state == http.StateHijacked {
+				markClosed()
+			}
+		},
 	}
+	ln := &singleConnListener{conn: tlsConn}
+	serveErr := srv.Serve(ln)
+	// Serve returns as soon as the single-connection listener is
+	// exhausted, which happens right after the connection is accepted —
+	// the handler still runs. Wait for StateClosed before releasing the
+	// TLS connection.
+	select {
+	case <-done:
+	case <-time.After(mitmServerIdleTimeout + mitmReadHeaderTimeout + time.Second):
+	}
+	_ = srv.Close()
+	if serveErr != nil && !errors.Is(serveErr, net.ErrClosed) &&
+		!errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	return nil
+}
+
+// singleConnListener hands out exactly one connection (the decrypted
+// TLS conn) and then reports closed, so one http.Server instance
+// serves exactly one client connection.
+type singleConnListener struct {
+	conn net.Conn
+	once sync.Once
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	var accepted net.Conn
+	l.once.Do(func() { accepted = l.conn })
+	if accepted == nil {
+		return nil, net.ErrClosed
+	}
+	return accepted, nil
+}
+
+func (l *singleConnListener) Close() error { return nil }
+
+func (l *singleConnListener) Addr() net.Addr {
+	if l.conn == nil {
+		return nil
+	}
+	return l.conn.LocalAddr()
+}
+
+func (e *Engine) serveH1Request(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
+	resp, err := e.forward(r, transport, serverName, dialHostport)
+	if err == errBlocked {
+		http.Error(w, "mitm: blocked by hook", http.StatusForbidden)
+		return
+	}
+	if err != nil {
+		http.Error(w, "mitm: upstream request failed", http.StatusBadGateway)
+		return
+	}
+	defer func() {
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	copyResponse(w, resp)
 }
 
 func (e *Engine) serveH2(w http.ResponseWriter, r *http.Request, transport *http.Transport, serverName, dialHostport string) {
@@ -211,7 +296,11 @@ func (e *Engine) forward(req *http.Request, transport *http.Transport, serverNam
 			return nil, errBlocked
 		}
 	}
-	outReq := req.Clone(context.Background())
+	// Bind the upstream request to the client-facing request context.
+	// For HTTP/2 and for the http.Server-backed HTTP/1.1 path this
+	// context is cancelled when the client connection goes away, so the
+	// upstream request is not left running after the client disconnects.
+	outReq := req.Clone(req.Context())
 	outReq.RequestURI = ""
 	outReq.URL.Scheme = "https"
 	outReq.URL.Host = dialHostport
@@ -328,7 +417,12 @@ func (e *Engine) inspectResponse(resp *http.Response) (*corenet.MITMResponseInfo
 }
 
 func (e *Engine) dialTLS(ctx context.Context, hostport, serverName string) (net.Conn, error) {
-	raw, err := e.dial(ctx, hostport)
+	// net/http ignores Transport.TLSHandshakeTimeout when DialTLSContext
+	// is set and expects the dialer to own the handshake, so enforce the
+	// bound here for both the TCP dial and the TLS handshake.
+	dialCtx, cancel := context.WithTimeout(ctx, mitmTLSHandshakeTimeout)
+	defer cancel()
+	raw, err := e.dial(dialCtx, hostport)
 	if err != nil {
 		return nil, err
 	}
@@ -337,17 +431,11 @@ func (e *Engine) dialTLS(ctx context.Context, hostport, serverName string) (net.
 		RootCAs:    e.roots,
 		MinVersion: tls.VersionTLS12,
 	})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
+	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
 		if cerr := raw.Close(); cerr != nil {
-			telemetry.WarnErr(ctx, "mitm: close upstream conn after handshake failure", cerr)
+			telemetry.WarnErr(dialCtx, "mitm: close upstream conn after handshake failure", cerr)
 		}
 		return nil, fmt.Errorf("mitm: upstream handshake: %w", err)
 	}
 	return tlsConn, nil
-}
-
-func writeError(w io.Writer, status int, msg string) {
-	body := msg + "\n"
-	_, _ = fmt.Fprintf(w, "HTTP/1.1 %d %s\r\nContent-Type: text/plain\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		status, http.StatusText(status), len(body), body)
 }

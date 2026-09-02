@@ -17,6 +17,7 @@ func newStore(t *testing.T) *checkpointworkspace.Store {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	store, err := checkpointworkspace.New(ws)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -35,6 +36,7 @@ func TestStore_SharedWorkspacePersistsAcrossInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	first, err := checkpointworkspace.New(ws)
 	if err != nil {
 		t.Fatalf("New first: %v", err)
@@ -62,6 +64,7 @@ func TestStore_PrefixIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	store, err := checkpointworkspace.New(ws, checkpointworkspace.WithPrefix("custom/ck"))
 	if err != nil {
 		t.Fatalf("New: %v", err)

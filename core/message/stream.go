@@ -10,6 +10,12 @@ import (
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
 
+// defaultMaterializeMaxBytes bounds the inline bytes produced when a
+// stream-backed audio/video part is drained into memory. A hostile or
+// runaway producer cannot force an unbounded allocation before the
+// part is validated downstream.
+const defaultMaterializeMaxBytes = 64 << 20
+
 // Stream is the canonical pull-based transport for live content: the
 // message-level instantiation of [media.Stream] over [Part].
 //
@@ -144,7 +150,12 @@ func materializeAudioPart(ctx context.Context, part AudioPart) ([]Part, error) {
 			return nil, fmt.Errorf(
 				"materialize audio: stream part must carry inline bytes")
 		}
-		data.Write(audio.Source.Bytes())
+		chunk := audio.Source.Bytes()
+		if data.Len()+len(chunk) > defaultMaterializeMaxBytes {
+			return nil, fmt.Errorf(
+				"materialize audio: stream exceeds %d bytes", defaultMaterializeMaxBytes)
+		}
+		data.Write(chunk)
 		if audio.Format == nil {
 			continue
 		}
@@ -223,7 +234,12 @@ func materializeVideoPart(ctx context.Context, part VideoPart) ([]Part, error) {
 			return nil, fmt.Errorf(
 				"materialize video: stream part must carry inline bytes")
 		}
-		data.Write(video.Source.Bytes())
+		chunk := video.Source.Bytes()
+		if data.Len()+len(chunk) > defaultMaterializeMaxBytes {
+			return nil, fmt.Errorf(
+				"materialize video: stream exceeds %d bytes", defaultMaterializeMaxBytes)
+		}
+		data.Write(chunk)
 	}
 	if data.Len() == 0 {
 		return nil, fmt.Errorf("materialize video: stream produced no video data")

@@ -82,6 +82,26 @@ func TestExecTruncatesOutput(t *testing.T) {
 	}
 }
 
+func TestExecTruncatesLargeFastOutput(t *testing.T) {
+	skipOnWindows(t)
+	// Regression: the session ring must not trim to the caller's small
+	// result cap before Exec drains it, otherwise a fast writer turns
+	// truncation into ErrSequenceGap.
+	result, err := sandbox.Exec(
+		context.Background(), localRunner(t), "sh",
+		[]string{"-c", "yes x | head -c 300000"},
+		sandbox.ExecOptions{Resources: sandbox.ResourceLimits{MaxOutputBytes: 100}})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if len(result.Stdout) != 100 {
+		t.Fatalf("stdout length = %d, want 100", len(result.Stdout))
+	}
+	if !strings.HasPrefix(result.Stdout, "x") {
+		t.Fatalf("stdout = %q, want 'x' prefix", result.Stdout)
+	}
+}
+
 func TestExecTimeout(t *testing.T) {
 	skipOnWindows(t)
 	_, err := sandbox.Exec(
