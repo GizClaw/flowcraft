@@ -3,7 +3,7 @@ module github.com/GizClaw/flowcraft/driver/deepseek
 go 1.25.0
 
 require (
-	github.com/GizClaw/flowcraft/core v0.2.3
+	github.com/GizClaw/flowcraft/core v0.2.4
 	github.com/openai/openai-go/v3 v3.50.0
 	go.opentelemetry.io/otel/log v0.19.0
 )
