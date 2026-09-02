@@ -56,6 +56,9 @@ type catalogEntry struct {
 	// window on https://developers.openai.com/api/docs/models; embedding
 	// values mirror the per-request input limit.
 	maxInputTokens int
+	// requestMetadataEnvelope is the provider-level lowering policy for
+	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
+	requestMetadataEnvelope string
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -238,6 +241,11 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			dimensions:   model.Dimensions,
 			effortNone:   model.EffortNone,
 		}
+	}
+	envelope := spec.requestMetadataEnvelope()
+	for name, entry := range models {
+		entry.requestMetadataEnvelope = envelope
+		models[name] = entry
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {

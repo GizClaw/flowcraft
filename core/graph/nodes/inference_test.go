@@ -199,6 +199,26 @@ func TestInferenceNode_Unary_WritesMessageAndVars(t *testing.T) {
 	}
 }
 
+func TestInferenceNode_RequestMetadataCopiedToGenerateRequest(t *testing.T) {
+	fake := &inferencetest.GenerateFake{}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	want := map[string]string{
+		"session_id": "oc-session-1",
+		"turn_id":    "oc-turn-1",
+	}
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:           ptr(inferencetest.DefaultFakeModel),
+		RequestMetadata: want,
+	})
+	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := fake.LastRequest().RequestMetadata
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("request metadata = %v, want %v", got, want)
+	}
+}
+
 func TestInferenceNode_SystemPromptPrepended(t *testing.T) {
 	fake := &inferencetest.GenerateFake{}
 	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})

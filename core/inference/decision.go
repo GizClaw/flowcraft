@@ -70,6 +70,7 @@ const (
 	FieldGenerateIntentReasoning             FieldID = "generate.input.content.intent.text.reasoning"
 	FieldGenerateIntentReasoningEnabled      FieldID = "generate.input.content.intent.text.reasoning_enabled"
 	FieldGenerateIntentReasoningEffort       FieldID = "generate.input.content.intent.text.reasoning_effort"
+	FieldGenerateRequestMetadata             FieldID = "generate.request.metadata"
 	FieldEmbedItems                          FieldID = "embed.items"
 	FieldEmbedItemText                       FieldID = "embed.items.content.text"
 	FieldEmbedItemImage                      FieldID = "embed.items.content.image"

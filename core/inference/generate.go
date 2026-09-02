@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -101,6 +102,13 @@ type GenerateRequest struct {
 	// to the default policy. Providers never interpret the hint — it is
 	// routing metadata, not a provider knob.
 	ModelHint string `json:"model_hint,omitempty"`
+
+	// RequestMetadata carries opaque caller/host metadata whose keys and
+	// values are deployment-defined (for example conversation or turn
+	// identifiers). Core treats it as an opaque bag: it never interprets
+	// keys, and each provider driver decides whether and how to surface
+	// it on the provider request (metadata, client_metadata, or none).
+	RequestMetadata map[string]string `json:"request_metadata,omitempty"`
 }
 
 func (r GenerateRequest) Clone() GenerateRequest {
@@ -111,6 +119,7 @@ func (r GenerateRequest) Clone() GenerateRequest {
 	}
 	clone.Input = r.Input.Clone()
 	clone.Extensions = r.Extensions.Clone()
+	clone.RequestMetadata = maps.Clone(r.RequestMetadata)
 	return clone
 }
 
@@ -146,6 +155,9 @@ func (r GenerateRequest) ActiveFields() []FieldID {
 	}
 	fields = appendGenerateInputPartFields(fields, r.Input.Content.Parts)
 	fields = appendGenerateIntentFields(fields, r.Input.Content.Intent)
+	if len(r.RequestMetadata) > 0 {
+		fields = append(fields, FieldGenerateRequestMetadata)
+	}
 	return r.Extensions.AppendActiveFields(fields)
 }
 

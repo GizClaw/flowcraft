@@ -92,6 +92,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	for _, model := range spec.Models {
 		id := inference.ModelID{Provider: settings.ID, Name: model.Name}
 		entry := entryFor(model)
+		entry.requestMetadataEnvelope = spec.requestMetadataEnvelope()
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: inference.ModelDescriptor{
 				ID:           id,

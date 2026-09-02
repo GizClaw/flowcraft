@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/responses"
 	"github.com/openai/openai-go/v3/shared"
@@ -123,7 +124,21 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 			OfToolChoiceMode: param.NewOpt(responses.ToolChoiceOptionsRequired),
 		}
 	}
+	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
+		params.Metadata = wire.requestMetadata
+	}
 	return params
+}
+
+func requestMetadataOptions(wire generateWire) []option.RequestOption {
+	if wire.requestMetadataEnvelope == "" ||
+		wire.requestMetadataEnvelope == "metadata" ||
+		len(wire.requestMetadata) == 0 {
+		return nil
+	}
+	return []option.RequestOption{
+		option.WithJSONSet(wire.requestMetadataEnvelope, wire.requestMetadata),
+	}
 }
 
 func webSearchToolParam(search *wireWebSearch) responses.WebSearchToolParam {
@@ -231,7 +246,11 @@ func transportGenerate(
 	client openai.Client,
 ) inference.Transport[generateWire, generateRaw] {
 	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
-		response, err := client.Responses.New(ctx, wireToParams(wire))
+		response, err := client.Responses.New(
+			ctx,
+			wireToParams(wire),
+			requestMetadataOptions(wire)...,
+		)
 		if err != nil {
 			classified := classifyError(err)
 			logInferenceCall(ctx, "generate", wire.model, classified, "", "")

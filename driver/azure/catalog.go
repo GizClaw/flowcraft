@@ -21,6 +21,9 @@ type catalogEntry struct {
 	// effortNone marks generate deployments whose reasoning.effort accepts
 	// "none" to disable reasoning; without it a disable request rejects.
 	effortNone bool
+	// requestMetadataEnvelope is the provider-level lowering policy for
+	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
+	requestMetadataEnvelope string
 }
 
 // entryFor lowers one declared deployment into a compiler entry.

@@ -327,6 +327,12 @@ func compileGenerate(
 			model:  endpoint,
 			stream: shape == inference.GenerateExecutionStream,
 		}
+		if len(request.RequestMetadata) > 0 {
+			ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"bytedance Ark SDK has no arbitrary request metadata channel",
+			)
+		}
 
 		// Context messages → items. System text folds into the native
 		// instructions field; non-text system parts have no native home.

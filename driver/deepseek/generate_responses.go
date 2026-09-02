@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
@@ -35,6 +37,12 @@ type responseWire struct {
 	toolChoice  *wireToolChoice
 	webSearch   *wireWebSearch
 	stream      bool
+
+	// requestMetadataEnvelope names the top-level body field that carries
+	// canonical request metadata; empty disables forwarding.
+	requestMetadataEnvelope string
+	// requestMetadata is the opaque metadata bag forwarded verbatim.
+	requestMetadata map[string]string
 }
 
 type responseWireItemKind string
@@ -117,6 +125,15 @@ func compileResponsesGenerate(
 		wire := responseWire{
 			model:  model,
 			stream: shape == inference.GenerateExecutionStream,
+		}
+		if entry.requestMetadataEnvelope != "" && len(request.RequestMetadata) > 0 {
+			wire.requestMetadataEnvelope = entry.requestMetadataEnvelope
+			wire.requestMetadata = maps.Clone(request.RequestMetadata)
+		} else if len(request.RequestMetadata) > 0 {
+			ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"deepseek request_metadata forwarding is disabled (set spec.request_metadata.envelope)",
+			)
 		}
 
 		for _, turn := range request.Context {
@@ -557,7 +574,26 @@ func wireToResponseParams(wire responseWire) responses.ResponseNewParams {
 			OfToolChoiceMode: param.NewOpt(responses.ToolChoiceOptionsRequired),
 		}
 	}
+	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
+		params.Metadata = wire.requestMetadata
+	}
 	return params
+}
+
+// responseMetadataOptions returns the per-request options that project
+// canonical request metadata onto nonstandard body fields. The standard
+// "metadata" envelope is typed by the SDK and is set in
+// wireToResponseParams; "client_metadata" has no SDK type, so it rides
+// option.WithJSONSet like DeepSeek's other extra fields.
+func responseMetadataOptions(wire responseWire) []option.RequestOption {
+	if wire.requestMetadataEnvelope == "" ||
+		wire.requestMetadataEnvelope == "metadata" ||
+		len(wire.requestMetadata) == 0 {
+		return nil
+	}
+	return []option.RequestOption{
+		option.WithJSONSet(wire.requestMetadataEnvelope, wire.requestMetadata),
+	}
 }
 
 func responseWebSearchToolParam(search *wireWebSearch) *responses.WebSearchToolParam {
@@ -679,7 +715,11 @@ func transportResponsesGenerate(
 	client openai.Client,
 ) inference.Transport[responseWire, generateRaw] {
 	return func(ctx context.Context, wire responseWire) (generateRaw, error) {
-		response, err := client.Responses.New(ctx, wireToResponseParams(wire))
+		response, err := client.Responses.New(
+			ctx,
+			wireToResponseParams(wire),
+			responseMetadataOptions(wire)...,
+		)
 		if err != nil {
 			classified := classifyError(err)
 			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
@@ -896,7 +936,11 @@ func transportResponsesGenerateStream(
 		ctx context.Context,
 		wire responseWire,
 	) (inference.ProviderStream[streamRaw], error) {
-		stream := client.Responses.NewStreaming(ctx, wireToResponseParams(wire))
+		stream := client.Responses.NewStreaming(
+			ctx,
+			wireToResponseParams(wire),
+			responseMetadataOptions(wire)...,
+		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
 			logInferenceStream(ctx, "generate", wire.model, classified, "")

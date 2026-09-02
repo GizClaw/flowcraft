@@ -179,6 +179,12 @@ func compileGenerate(
 			Model:      model,
 			Parameters: wireParameters{ResultFormat: "message"},
 		}
+		if len(request.RequestMetadata) > 0 {
+			c.ledger.drop(
+				inference.FieldGenerateRequestMetadata,
+				"qwen driver does not forward request metadata",
+			)
+		}
 		if entry.multimodal() {
 			c.wire.Path = pathMultimodalGeneration
 		} else {
