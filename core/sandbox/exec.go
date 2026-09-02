@@ -63,7 +63,13 @@ type ExecResult struct {
 //
 // Policy enforcement (net posture, workdir confinement, resource
 // watcher, timeout) belongs to the runner's Start implementation, so
-// every backend gets Exec for free.
+// every backend gets Exec for free. Exec intentionally passes a zero
+// MaxOutputBytes to Start so the session ring is bounded by the
+// runner's configured default (10 MiB for the built-in runners) while
+// the returned result is truncated to the caller's cap. Custom
+// Runners must apply the same default before calling StartSession,
+// otherwise a non-positive MaxOutputBytes leaves the replay ring
+// unbounded.
 func Exec(
 	ctx context.Context,
 	runner Runner,
@@ -84,8 +90,13 @@ func Exec(
 		Argv: append([]string{cmd}, args...),
 		Opts: opts,
 	}
-	// Keep the full output in the session log; truncation happens here
-	// with first-max-bytes semantics (the session ring keeps the tail).
+	// The one-shot Exec contract is first-max-bytes truncation on the
+	// returned result, while the session ring keeps a replayable tail
+	// for concurrent watchers. Exec itself drains the ring sequentially
+	// from seq 0, so the ring must not trim to the caller's result cap:
+	// that would drop bytes before they are read and surface as a
+	// sequence gap. Zeroing here lets every built-in runner apply its
+	// own default ring cap (see local.WithMaxOutputBytes and friends).
 	spec.Opts.Resources.MaxOutputBytes = 0
 
 	sess, err := runner.Start(ctx, spec)
