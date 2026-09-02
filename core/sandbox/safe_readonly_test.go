@@ -94,9 +94,12 @@ func TestClassifySafeReadOnly(t *testing.T) {
 
 		// Shell unwrapping: simple scripts safe, composites unsafe.
 		{name: "sh -c ls", req: sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "ls"}}, want: true},
-		{name: "bash -lc pwd", req: sandbox.ExecRequest{Command: "bash", Args: []string{"-lc", "pwd"}}, want: true},
+		{name: "bash -lc pwd", req: sandbox.ExecRequest{Command: "bash", Args: []string{"-lc", "pwd"}}, want: false},
 		{name: "sh -c composite", req: sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "ls; rm x"}}, want: false},
 		{name: "sh -c pipe", req: sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "ls | grep x"}}, want: false},
+		{name: "sh -c git env config", req: sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=x git diff"}}, want: false},
+		{name: "git -c core.pager", req: sandbox.ExecRequest{Command: "git", Args: []string{"-c", "core.pager=sh -c \"rm -rf x\"", "log"}}, want: false},
+		{name: "git --config-env", req: sandbox.ExecRequest{Command: "git", Args: []string{"--config-env=core.pager=EVIL_PAGER", "log"}}, want: false},
 
 		// Unknown / dangerous commands: conservative false.
 		{name: "rm", req: sandbox.ExecRequest{Command: "rm", Args: []string{"-rf", "x"}}, want: false},

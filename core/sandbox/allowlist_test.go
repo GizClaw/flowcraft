@@ -85,9 +85,11 @@ func TestAllowlistMatchesShellInvocation(t *testing.T) {
 	}{
 		{"sh -c simple", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "go run main.go"}}, true},
 		{"abs sh -c", sandbox.ExecRequest{Command: "/bin/sh", Args: []string{"-c", "python3 script.py"}}, true},
-		{"bash -lc", sandbox.ExecRequest{Command: "bash", Args: []string{"-lc", "ls -la"}}, true},
+		{"bash -lc not unwrapped", sandbox.ExecRequest{Command: "bash", Args: []string{"-lc", "ls -la"}}, false},
 		{"quoted arg", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", `echo 'a b'`}}, true},
 		{"env prefix", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "FOO=1 go test ./..."}}, true},
+		{"unsafe PATH assignment", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "PATH=/evil ls -la"}}, false},
+		{"unsafe git env config", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.external GIT_CONFIG_VALUE_0=x git diff"}}, false},
 		{"command chain denied", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "npm install && rm -rf /"}}, false},
 		{"pipe denied", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "go list | grep x"}}, false},
 		{"substitution denied", sandbox.ExecRequest{Command: "sh", Args: []string{"-c", "go run $(echo x)"}}, false},
