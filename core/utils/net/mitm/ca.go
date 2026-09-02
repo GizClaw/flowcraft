@@ -20,6 +20,12 @@ import (
 // issued for slightly less so they never outlive their signer.
 const caValidity = 24 * time.Hour
 
+// maxCachedLeaves bounds the per-CA leaf cache. A long-running proxy
+// that sees many distinct hostnames must not grow this map without
+// bound; eviction is FIFO, which is enough for a cache whose entries
+// are cheap to regenerate.
+const maxCachedLeaves = 1024
+
 // CA is a per-run temporary certificate authority. The private key
 // lives only in memory and is discarded when the CA is garbage
 // collected; leaf certificates are cached per host.
@@ -29,6 +35,7 @@ type CA struct {
 	pem    []byte
 	mu     sync.Mutex
 	leaves map[string]*tls.Certificate
+	order  []string
 }
 
 // NewCA generates a fresh self-signed ECDSA P-256 root CA.
@@ -83,7 +90,12 @@ func (c *CA) Leaf(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(c.leaves) >= maxCachedLeaves {
+		delete(c.leaves, c.order[0])
+		c.order = c.order[1:]
+	}
 	c.leaves[host] = leaf
+	c.order = append(c.order, host)
 	return leaf, nil
 }
 

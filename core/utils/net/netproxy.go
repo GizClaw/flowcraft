@@ -17,11 +17,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	otellog "go.opentelemetry.io/otel/log"
 	"golang.org/x/net/proxy"
+)
+
+const (
+	// proxyReadHeaderTimeout bounds how long a local client may take
+	// to send HTTP request headers (slowloris guard).
+	proxyReadHeaderTimeout = 30 * time.Second
+	// proxyIdleTimeout bounds keep-alive connections between requests.
+	proxyIdleTimeout = 2 * time.Minute
+	// proxyMaxHeaderBytes bounds one HTTP request header block.
+	proxyMaxHeaderBytes = 1 << 20
+	// proxyUpstreamResponseTimeout bounds how long an upstream proxy
+	// may take to answer a CONNECT request.
+	proxyUpstreamResponseTimeout = 30 * time.Second
 )
 
 // MITMConnectInfo describes one CONNECT attempt before tunnel or TLS
@@ -234,7 +248,12 @@ func Start(cfg ProxyConfig) (*Proxy, error) {
 		p.dir = dir
 		p.path = path
 	}
-	p.srv = &http.Server{Handler: p}
+	p.srv = &http.Server{
+		Handler:           p,
+		ReadHeaderTimeout: proxyReadHeaderTimeout,
+		IdleTimeout:       proxyIdleTimeout,
+		MaxHeaderBytes:    proxyMaxHeaderBytes,
+	}
 	p.mux = newMuxListener(p.ln.Addr())
 	go p.acceptLoop()
 	go func() {
@@ -268,8 +287,15 @@ func (p *Proxy) acceptLoop() {
 // handleConn peeks the first byte to split SOCKS5 from HTTP on the
 // shared listener.
 func (p *Proxy) handleConn(c net.Conn) {
+	// The peek happens before http.Server's ReadHeaderTimeout applies,
+	// so bound it explicitly: a client that connects and sends nothing
+	// must not pin a goroutine and connection forever.
+	_ = c.SetReadDeadline(time.Now().Add(proxyReadHeaderTimeout))
 	br := bufio.NewReader(c)
 	b, err := br.Peek(1)
+	// The classifier deadline has served its purpose; the HTTP server
+	// and the SOCKS5 handler install their own deadlines.
+	_ = c.SetReadDeadline(time.Time{})
 	if err != nil {
 		_ = c.Close()
 		return
@@ -639,8 +665,17 @@ func (p *Proxy) dialTarget(ctx context.Context, hostport string) (net.Conn, erro
 				}
 				return nil, err
 			}
+			if err := up.SetReadDeadline(time.Now().Add(proxyUpstreamResponseTimeout)); err != nil {
+				if cerr := up.Close(); cerr != nil {
+					telemetry.WarnErr(ctx, "netproxy: close upstream after deadline failure", cerr)
+				}
+				return nil, fmt.Errorf("netproxy: set upstream read deadline: %w", err)
+			}
 			br := bufio.NewReader(up)
 			resp, err := http.ReadResponse(br, &http.Request{Method: http.MethodConnect})
+			// The deadline was only for the CONNECT handshake; the
+			// tunnel itself is long-lived and must not inherit it.
+			_ = up.SetReadDeadline(time.Time{})
 			if err != nil {
 				if cerr := up.Close(); cerr != nil {
 					telemetry.WarnErr(ctx, "netproxy: close upstream after response failure", cerr)
