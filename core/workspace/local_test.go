@@ -574,6 +574,7 @@ func newLocalWS(t *testing.T) (*LocalWorkspace, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	return ws, context.Background()
 }
 

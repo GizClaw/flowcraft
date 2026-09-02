@@ -137,5 +137,6 @@ func mustFSWorkspace(t *testing.T) workspace.Workspace {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	return ws
 }

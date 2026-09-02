@@ -29,6 +29,7 @@ func TestRegister(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalWorkspace: %v", err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	value, err := factory.New(context.Background(), resource.Input{
 		Settings: []byte(`{"prefix":"custom/ck"}`),
 		Deps:     map[string]any{"workspace": ws},

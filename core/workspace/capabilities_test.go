@@ -12,6 +12,7 @@ func TestLocalWorkspace_Capabilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ws.Close() })
 	c := ws.Capabilities()
 	if !c.AtomicRename || !c.ReadAfterWrite {
 		t.Errorf("LocalWorkspace unexpectedly missing caps: %+v", c)
@@ -29,6 +30,7 @@ func TestScopedWorkspace_Capabilities_ForwardsInner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = inner.Close() })
 	scoped := NewScopedWorkspace(inner)
 	if scoped.Capabilities() != inner.Capabilities() {
 		t.Errorf("ScopedWorkspace caps %+v != inner %+v",
