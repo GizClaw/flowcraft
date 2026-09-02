@@ -47,6 +47,12 @@ builds the deployment with its own factory registry, or at runtime.
     applies. Wire `inference.Router` into the graph engine and omit
     `model` unless the deployment intentionally pins a target — host
     build/runtime.
+16. `request_metadata` is only forwarded when the selected provider driver
+    implements it and its spec configures `request_metadata.envelope`.
+    Unsupported/unconfigured drivers do not fail the request; the metadata
+    field is reported `dropped` in the compile report. Inspect
+    `response.metadata.decisions` (or `Explain`) when metadata seems
+    missing upstream — host build/runtime.
 
 ## Error map
 

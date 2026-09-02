@@ -88,6 +88,7 @@ appended to the same channel. The node never executes tool calls — a
 | `tool_choice` | constrain when/which tools are called |
 | `intent` | canonical execution envelope `{text, image, audio, video}` with per-modality controls (see below) |
 | `extensions` | provider knobs `{provider, id, fields}` |
+| `request_metadata` | opaque `map[string]string` copied onto the canonical generate request; keys are deployment-defined |
 
 **Model selection: prefer the router.** Inference nodes should omit
 `model` and rely on the wired `inference.Router`: the router's policy
@@ -111,6 +112,11 @@ the wired catalog into `intent.text.tools` / `intent.text.tool_choice` and
 may not be combined with an intent that declares those fields itself.
 Legacy node-level sampling/reasoning/response-format keys were removed —
 strict decode rejects them; put them under `intent.text` instead.
+
+`request_metadata` values are forwarded only when the selected driver's
+deployment configures `request_metadata.envelope`. Drivers without a native
+channel (or with forwarding disabled) report a `dropped` compile decision
+for the metadata field, so no metadata is silently ignored.
 
 `model_hint` is a request-level preference consumed only by the router: it
 never bypasses routing and falls back to the default policy when the hint
