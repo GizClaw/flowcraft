@@ -17,7 +17,10 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-var ErrManagerClosed = errdefs.NotAvailablef("runtime session: manager is closed")
+var (
+	ErrManagerClosed   = errdefs.NotAvailablef("runtime session: manager is closed")
+	ErrManagerDraining = errdefs.NotAvailablef("runtime session: manager is draining")
+)
 
 // InstanceResolver is the minimum borrowed deployment view needed by Manager.
 type InstanceResolver interface {
@@ -54,13 +57,14 @@ type Manager struct {
 	entries   map[Key]*managerEntry
 	removed   map[string]struct{}
 	deleting  map[Key]struct{}
+	draining  bool
 	closed    bool
 	closeOnce sync.Once
 	closeErr  error
 }
 
-// agentDrainPollInterval is how often RemoveAgent re-checks whether
-// the target agent's sessions have become idle while draining.
+// agentDrainPollInterval is how often RemoveAgent, WaitIdle, and Drain
+// re-check whether the relevant sessions have become idle.
 const agentDrainPollInterval = 10 * time.Millisecond
 
 // NewManager constructs a Session manager over borrowed runtime dependencies.
@@ -168,6 +172,64 @@ func (m *Manager) GetOrCreate(ctx context.Context, key Key) (*Lease, error) {
 	return m.open(ctx, key)
 }
 
+// Idle reports whether no live Session currently has an active turn,
+// prompt, or sink. A manager with no live Sessions is idle.
+func (m *Manager) Idle() bool {
+	if m == nil {
+		return true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.allIdleLocked()
+}
+
+func (m *Manager) isDraining() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.draining
+}
+
+// WaitIdle blocks until no live Session has an active turn, prompt, or
+// sink, bounded by ctx. It is a pure wait and never changes manager
+// state; a manager with no live Sessions returns immediately. The
+// error is nil on success or the ctx error when the deadline is
+// exceeded or the context is cancelled.
+func (m *Manager) WaitIdle(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if isNil(ctx) {
+		return errdefs.Validationf("runtime session: context is required")
+	}
+	return m.waitIdle(ctx)
+}
+
+// Drain quiesces the manager for offline replacement: it refuses new
+// Opens, new GetOrCreate calls, and new Starts on already-open leases,
+// then waits (bounded by ctx) for every live Session to finish its
+// active turns, prompts, and sinks naturally. Drain never interrupts
+// running turns. After Drain returns, the manager stays draining and
+// the caller may retry a timed-out Drain or proceed to Close.
+func (m *Manager) Drain(ctx context.Context) error {
+	if m == nil {
+		return nil
+	}
+	if isNil(ctx) {
+		return errdefs.Validationf("runtime session: context is required")
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return ErrManagerClosed
+	}
+	m.draining = true
+	m.mu.Unlock()
+	return m.waitIdle(ctx)
+}
+
 func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	if m == nil {
 		return nil, ErrManagerClosed
@@ -186,6 +248,9 @@ func (m *Manager) open(ctx context.Context, key Key) (*Lease, error) {
 	defer m.mu.Unlock()
 	if m.closed {
 		return nil, ErrManagerClosed
+	}
+	if m.draining {
+		return nil, ErrManagerDraining
 	}
 	if _, deleting := m.deleting[key]; deleting {
 		return nil, errdefs.NotAvailablef(
@@ -557,6 +622,37 @@ func (m *Manager) awaitKeyIdle(ctx context.Context, key Key) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func (m *Manager) waitIdle(ctx context.Context) error {
+	ticker := time.NewTicker(agentDrainPollInterval)
+	defer ticker.Stop()
+	for {
+		if m.Idle() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errdefs.FromContext(ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) allIdleLocked() bool {
+	for _, entry := range m.entries {
+		if entry.session.isIdle() {
+			continue
+		}
+		// A closing session whose turn already stopped never reports
+		// idle (isIdle requires !closing), but there is nothing left to
+		// drain. Mirror the keyIdle contract.
+		if entry.session.isClosing() && !entry.session.hasActiveTurn() {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (m *Manager) keyIdle(key Key) bool {

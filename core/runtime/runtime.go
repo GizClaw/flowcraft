@@ -132,6 +132,29 @@ func (r *Runtime) Resource(name string) (any, bool) {
 	return r.current.result.Value(name)
 }
 
+// Drain quiesces the runtime for offline replacement. It is serialized
+// with RegisterAgent / UnregisterAgent / Reload / Close and delegates
+// to the session manager's Drain: new session leases and new Starts on
+// already-open leases are refused, while active turns finish naturally
+// (bounded by ctx). Drain never interrupts running turns; after it
+// returns the runtime stays drained and the caller should Close it once
+// its replacement is ready. A drained Runtime cannot serve new work,
+// so a timed-out Drain may be retried or followed by Close.
+func (r *Runtime) Drain(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	if isNilContext(ctx) {
+		return errdefs.Validationf("runtime: Drain context is required")
+	}
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
+	if r.closed {
+		return errdefs.NotAvailablef("runtime: closed")
+	}
+	return r.manager.Drain(ctx)
+}
+
 // Close stops new session work, waits for active turns, and releases
 // all owned objects. Concurrent callers wait for and receive the same
 // aggregate result.

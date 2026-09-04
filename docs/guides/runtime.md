@@ -171,6 +171,33 @@ drained (bounded by ctx) before store entries are removed, and on ctx
 expiry the delete marker rolls back with no partial removal — the call is
 retryable and repeated calls are idempotent.
 
+### Draining a runtime offline
+
+`Runtime.Drain(ctx)` quiesces a runtime whose object is about to be
+replaced (for example a blue-green rebuild that `Reload` cannot express):
+new session leases and new turns on already-open leases are refused, and
+the runtime waits (bounded by `ctx`) for active turns to finish naturally.
+It never interrupts running turns. After `Drain` returns, the runtime stays
+drained; retry a timed-out drain or proceed to `Close` once the replacement
+is ready:
+
+```go
+if err := old.Drain(ctx); err != nil {
+    return err // runtime stays drained; retry or force Close
+}
+if err := old.Close(); err != nil {
+    return err
+}
+newApp, err := runtime.NewBuilder(reg).Build(ctx, doc)
+```
+
+The session manager exposes the same primitives for embedded use:
+`Manager.Idle()` reports whether any session still has active turns,
+prompts, or sinks; `Manager.WaitIdle(ctx)` waits without changing state;
+`Manager.Drain(ctx)` quiesces and waits. Prefer `Runtime.Drain` when the
+application owns a `Runtime`, since it serializes against
+`RegisterAgent` / `UnregisterAgent` / `Reload` / `Close`.
+
 ## Dynamic agent registry
 
 Agents are normally declared in the deployment document and fixed for the
