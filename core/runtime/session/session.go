@@ -356,6 +356,11 @@ func (s *Session) interruptActive(ctx context.Context) (func(), error) {
 	s.changeActivity(activityTurn, 1)
 	release := func() { s.changeActivity(activityTurn, -1) }
 
+	if s.manager.isDraining() {
+		release()
+		return nil, ErrManagerDraining
+	}
+
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()

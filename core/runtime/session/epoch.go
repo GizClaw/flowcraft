@@ -42,6 +42,10 @@ type epochState struct {
 // surfaced as an error rather than handed to the caller as empty deps.
 func (m *Manager) beginEpoch() (Deps, func(), error) {
 	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		return Deps{}, func() {}, ErrManagerDraining
+	}
 	state := m.epochs[m.epochSeq]
 	if state == nil {
 		m.mu.Unlock()
