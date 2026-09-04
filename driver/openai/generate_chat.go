@@ -54,8 +54,18 @@ func wireToChatParams(wire generateWire) openai.ChatCompletionNewParams {
 		params.ToolChoice = chatToolChoice(choice)
 	}
 	if wire.stream {
-		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
+		options := openai.ChatCompletionStreamOptionsParam{}
+		set := false
+		if wire.chatStreamIncludeUsage {
+			options.IncludeUsage = openai.Bool(true)
+			set = true
+		}
+		if obfuscation := wire.chatStreamIncludeObfuscation; obfuscation != nil {
+			options.IncludeObfuscation = openai.Bool(*obfuscation)
+			set = true
+		}
+		if set {
+			params.StreamOptions = options
 		}
 	}
 	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {

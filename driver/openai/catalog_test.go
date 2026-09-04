@@ -150,3 +150,37 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 		})
 	}
 }
+
+func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(
+		`{"api":"chat","chat_stream_options":{"include_usage":false,"include_obfuscation":false}}`,
+	))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	if models["gpt-5.6-sol"].includeChatStreamUsage() {
+		t.Fatal("chat_stream_options include_usage=false must reach catalog entries")
+	}
+	if obfuscation := models["gpt-5.6-sol"].chatStreamObfuscation(); obfuscation == nil || *obfuscation {
+		t.Fatal("chat_stream_options include_obfuscation=false must reach catalog entries")
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{"api":"chat"}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	if !models["gpt-5.6-sol"].includeChatStreamUsage() {
+		t.Fatal("nil chat_stream_options must keep the driver default of true")
+	}
+	if obfuscation := models["gpt-5.6-sol"].chatStreamObfuscation(); obfuscation != nil {
+		t.Fatal("nil chat_stream_options must keep the OpenAI default obfuscation policy")
+	}
+}
