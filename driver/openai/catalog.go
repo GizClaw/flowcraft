@@ -42,6 +42,16 @@ type catalogEntry struct {
 	kind         modelKind
 	api          apiMode
 	capabilities inference.ModelCapabilities
+	// chatStreamIncludeUsage controls whether chat-mode streams ask for
+	// the usage chunk via stream_options.include_usage. Nil keeps the
+	// driver default (true). It only affects generate entries served by
+	// the chat surface; responses-mode streams always include usage.
+	chatStreamIncludeUsage *bool
+	// chatStreamIncludeObfuscation controls whether chat-mode streams send
+	// stream_options.include_obfuscation. Nil keeps the OpenAI default
+	// (true); false disables stream obfuscation. It only affects generate
+	// entries served by the chat surface.
+	chatStreamIncludeObfuscation *bool
 	// dimensions (embed) allows custom output dimensions. Control
 	// capability, likewise not a content kind.
 	dimensions bool
@@ -87,6 +97,18 @@ func (e catalogEntry) validate() error {
 		}
 	}
 	return nil
+}
+
+// includeChatStreamUsage resolves the chat streaming usage policy to the
+// concrete wire decision.
+func (e catalogEntry) includeChatStreamUsage() bool {
+	return e.chatStreamIncludeUsage == nil || *e.chatStreamIncludeUsage
+}
+
+// chatStreamObfuscation returns the explicit stream obfuscation policy, or
+// nil when the OpenAI default should apply.
+func (e catalogEntry) chatStreamObfuscation() *bool {
+	return e.chatStreamIncludeObfuscation
 }
 
 // generateChatCapabilities is the common capability declaration for the
@@ -243,8 +265,12 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		}
 	}
 	envelope := spec.requestMetadataEnvelope()
+	chatStreamIncludeUsage := spec.chatStreamIncludeUsage()
+	chatStreamIncludeObfuscation := spec.chatStreamIncludeObfuscation()
 	for name, entry := range models {
 		entry.requestMetadataEnvelope = envelope
+		entry.chatStreamIncludeUsage = chatStreamIncludeUsage
+		entry.chatStreamIncludeObfuscation = chatStreamIncludeObfuscation
 		models[name] = entry
 	}
 	for name, entry := range models {

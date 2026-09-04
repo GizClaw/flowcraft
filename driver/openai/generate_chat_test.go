@@ -13,6 +13,10 @@ import (
 	"github.com/openai/openai-go/v3"
 )
 
+func boolPtr(value bool) *bool {
+	return &value
+}
+
 func TestChatCompileRejectsWebSearch(t *testing.T) {
 	request := simpleTextRequest("hi")
 	request.Extensions = inference.Extensions{
@@ -139,7 +143,7 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 }
 
 func TestChatStreamTransportAndDecode(t *testing.T) {
-	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, strings.Join([]string{
 			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"},"finish_reason":null}]}`,
@@ -188,6 +192,127 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 	}
 	if text != "hello" || finish != inference.FinishCompleted || usage == nil || usage.TotalTokens != 3 {
 		t.Fatalf("stream text=%q finish=%q usage=%+v", text, finish, usage)
+	}
+	streamOptions, ok := capture.body(0)["stream_options"].(map[string]any)
+	if !ok {
+		t.Fatal("chat stream request must default to stream_options")
+	}
+	if includeUsage, ok := streamOptions["include_usage"].(bool); !ok || !includeUsage {
+		t.Fatalf("stream_options = %v, want include_usage=true", streamOptions)
+	}
+	if _, ok := streamOptions["include_obfuscation"]; ok {
+		t.Fatalf("default stream_options must not set include_obfuscation: %v", streamOptions)
+	}
+}
+
+func TestChatStreamUsageOptOutOmitsStreamOptions(t *testing.T) {
+	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+			"data: [DONE]",
+		}, "\n\n")+"\n\n")
+	})
+	defer server.Close()
+
+	entry := catalogEntry{
+		kind:                   kindGenerate,
+		api:                    apiChat,
+		capabilities:           generateChatCapabilities(),
+		chatStreamIncludeUsage: boolPtr(false),
+	}
+	wire, err := compileGenerate("gpt-5.6-sol", entry)(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		simpleTextRequest("hi"),
+		inference.GenerateExecutionStream,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wire.Wire.chatStreamIncludeUsage {
+		t.Fatal("compiled wire must carry the usage opt-out")
+	}
+	stream, err := transportChatGenerateStream(testClients(t, server).api)(
+		context.Background(), wire.Wire)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	for {
+		if _, err := stream.Next(context.Background()); err != nil {
+			break
+		}
+	}
+	if _, ok := capture.body(0)["stream_options"]; ok {
+		t.Fatal("chat stream request must omit stream_options when usage opt-out is set")
+	}
+}
+
+func TestChatStreamObfuscationOptOutSendsStreamOptions(t *testing.T) {
+	cases := []struct {
+		name         string
+		includeUsage *bool
+		wantUsage    bool
+	}{
+		{name: "keeps default usage", wantUsage: true},
+		{name: "usage opt out", includeUsage: boolPtr(false)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, strings.Join([]string{
+					`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}`,
+					`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+					"data: [DONE]",
+				}, "\n\n")+"\n\n")
+			})
+			defer server.Close()
+
+			entry := catalogEntry{
+				kind:                         kindGenerate,
+				api:                          apiChat,
+				capabilities:                 generateChatCapabilities(),
+				chatStreamIncludeUsage:       tc.includeUsage,
+				chatStreamIncludeObfuscation: boolPtr(false),
+			}
+			wire, err := compileGenerate("gpt-5.6-sol", entry)(
+				context.Background(),
+				openaiModel("gpt-5.6-sol"),
+				simpleTextRequest("hi"),
+				inference.GenerateExecutionStream,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			stream, err := transportChatGenerateStream(testClients(t, server).api)(
+				context.Background(), wire.Wire)
+			if err != nil {
+				t.Fatalf("open stream: %v", err)
+			}
+			defer func() { _ = stream.Close() }()
+			for {
+				if _, err := stream.Next(context.Background()); err != nil {
+					break
+				}
+			}
+			streamOptions, ok := capture.body(0)["stream_options"].(map[string]any)
+			if !ok {
+				t.Fatal("explicit include_obfuscation=false must keep stream_options on the wire")
+			}
+			if tc.wantUsage {
+				if includeUsage, ok := streamOptions["include_usage"].(bool); !ok || !includeUsage {
+					t.Fatalf("stream_options = %v, want include_usage=true", streamOptions)
+				}
+			} else if _, ok := streamOptions["include_usage"]; ok {
+				t.Fatalf("stream_options = %v, want no include_usage", streamOptions)
+			}
+			if includeObfuscation, ok := streamOptions["include_obfuscation"].(bool); !ok || includeObfuscation {
+				t.Fatalf("stream_options = %v, want include_obfuscation=false", streamOptions)
+			}
+		})
 	}
 }
 

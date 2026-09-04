@@ -36,7 +36,12 @@
 // Credentials come exclusively from config profiles: `api_key` authenticates
 // every OpenAI surface. The provider Spec redirects transport (base_url),
 // scopes requests (organization, project), and declares extra models
-// (models); the profile Spec is reserved and currently carries no settings.
+// (models). Chat Completions streams request the usage chunk by default;
+// `chat_stream_options: {include_usage: false}` opts out for compatible
+// endpoints that reject or ignore stream_options (usage is then absent
+// from chat stream results), and `include_obfuscation: false` disables
+// stream obfuscation. The profile Spec is reserved and currently carries
+// no settings.
 //
 // Transcription (gpt-4o-transcribe family) is also absent for now:
 // core/inference does not expose the transcription operation surface yet.

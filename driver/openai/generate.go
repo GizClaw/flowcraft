@@ -35,6 +35,14 @@ type generateWire struct {
 	toolChoice  *wireToolChoice
 	webSearch   *wireWebSearch
 	stream      bool
+	// chatStreamIncludeUsage asks Chat Completions streams for the usage
+	// chunk via stream_options.include_usage. It is a transport policy
+	// lowered from the provider spec; Responses mode never consults it.
+	chatStreamIncludeUsage bool
+	// chatStreamIncludeObfuscation carries the explicit chat stream
+	// obfuscation policy. Nil keeps the OpenAI default (obfuscation on);
+	// false disables it. Responses mode never consults it.
+	chatStreamIncludeObfuscation *bool
 	// includeReasoning asks the Responses API to attach the encrypted
 	// reasoning payload. Only reasoning models can carry it; Azure rejects
 	// the include on plain chat models, so it must follow the capability
@@ -328,8 +336,10 @@ func compileGenerate(
 			request.ActiveFieldsFor(shape),
 		)
 		wire := generateWire{
-			model:  model,
-			stream: shape == inference.GenerateExecutionStream,
+			model:                        model,
+			stream:                       shape == inference.GenerateExecutionStream,
+			chatStreamIncludeUsage:       entry.includeChatStreamUsage(),
+			chatStreamIncludeObfuscation: entry.chatStreamObfuscation(),
 			includeReasoning: entry.capabilities.Reasoning.Kind != inference.ReasoningNone &&
 				entry.api != apiChat,
 		}

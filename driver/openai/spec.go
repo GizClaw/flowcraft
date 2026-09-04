@@ -25,6 +25,10 @@ type Spec struct {
 	// "chat" (Chat Completions). Chat mode is provider-wide and only
 	// affects generate; embed / image / tts use their own endpoints.
 	API string `json:"api,omitempty"`
+	// ChatStreamOptions controls chat-completions stream transport when
+	// API is "chat". Responses streams always carry usage in their
+	// terminal event and never consult this setting.
+	ChatStreamOptions *ChatStreamOptionsSpec `json:"chat_stream_options,omitempty"`
 	// BaseURL overrides the API base URL (gateways, proxies, Azure-style
 	// compatible endpoints).
 	BaseURL string `json:"base_url,omitempty"`
@@ -47,6 +51,23 @@ type Spec struct {
 	// Models declares additional models beyond the built-in catalog or
 	// overrides catalog entries by name.
 	Models []ModelSpec `json:"models,omitempty"`
+}
+
+// ChatStreamOptionsSpec is the provider-level lowering policy for Chat
+// Completions streaming. It mirrors the wire-level stream_options object.
+type ChatStreamOptionsSpec struct {
+	// IncludeUsage sends stream_options.include_usage on chat stream
+	// requests. Nil keeps the driver default (true): without the usage
+	// chunk, Chat Completions streaming reports no token usage and the
+	// unified result carries zero provider usage. Set false for compatible
+	// endpoints that reject or ignore stream_options.
+	IncludeUsage *bool `json:"include_usage,omitempty"`
+	// IncludeObfuscation sends stream_options.include_obfuscation on chat
+	// stream requests. Nil keeps the OpenAI default (true): deltas carry
+	// stream-obfuscation fields. Set false to disable stream obfuscation
+	// when the extra payload is unwanted; this keeps stream_options on the
+	// wire even when IncludeUsage is false.
+	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
 // RequestMetadataSpec is the provider-level lowering policy for canonical
@@ -98,6 +119,9 @@ func (s Spec) Validate() error {
 	default:
 		return fmt.Errorf("api must be \"responses\" or \"chat\"")
 	}
+	if s.ChatStreamOptions != nil && s.apiMode() != apiChat {
+		return fmt.Errorf("chat_stream_options requires api \"chat\"")
+	}
 	if s.BaseURL != "" &&
 		!strings.HasPrefix(s.BaseURL, "https://") &&
 		!strings.HasPrefix(s.BaseURL, "http://") {
@@ -137,6 +161,24 @@ func (s Spec) requestMetadataEnvelope() string {
 		return ""
 	}
 	return s.RequestMetadata.Envelope
+}
+
+// chatStreamIncludeUsage returns the provider policy for chat streaming,
+// or nil when the driver default (include usage) should apply.
+func (s Spec) chatStreamIncludeUsage() *bool {
+	if s.ChatStreamOptions == nil {
+		return nil
+	}
+	return s.ChatStreamOptions.IncludeUsage
+}
+
+// chatStreamIncludeObfuscation returns the provider policy for chat stream
+// obfuscation, or nil when the OpenAI default should apply.
+func (s Spec) chatStreamIncludeObfuscation() *bool {
+	if s.ChatStreamOptions == nil {
+		return nil
+	}
+	return s.ChatStreamOptions.IncludeObfuscation
 }
 
 func (m ModelSpec) Validate() error {
