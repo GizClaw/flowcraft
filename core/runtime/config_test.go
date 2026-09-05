@@ -237,3 +237,59 @@ func TestDecodeConfigRejectsUnknownSessionField(t *testing.T) {
 		t.Fatalf("DecodeConfig error = %v, want unknown field mention", err)
 	}
 }
+
+func TestDecodeConfigExternalDeps(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		doc := parseRuntimeDocument(t, `  event_bus: events
+  external_deps:
+    - name: db
+      contract: db.Pool
+    - name: cache
+      contract: cache.Client
+`)
+		cfg, err := DecodeConfig(context.Background(), doc)
+		if err != nil {
+			t.Fatalf("DecodeConfig: %v", err)
+		}
+		if len(cfg.ExternalDeps) != 2 ||
+			cfg.ExternalDeps[0] != (ExternalDependency{Name: "db", Contract: "db.Pool"}) ||
+			cfg.ExternalDeps[1] != (ExternalDependency{Name: "cache", Contract: "cache.Client"}) {
+			t.Fatalf("ExternalDeps = %#v", cfg.ExternalDeps)
+		}
+	})
+
+	for name, runtimeYAML := range map[string]string{
+		"missing contract": `  event_bus: events
+  external_deps:
+    - name: db
+`,
+		"duplicate": `  event_bus: events
+  external_deps:
+    - {name: db, contract: db.Pool}
+    - {name: db, contract: db.Other}
+`,
+		"event bus conflict": `  event_bus: events
+  external_deps:
+    - {name: events, contract: event.Bus}
+`,
+		"checkpoint conflict": `  event_bus: events
+  checkpoint_store: cps
+  external_deps:
+    - {name: cps, contract: checkpoint.Store}
+`,
+		"dynamic catalog conflict": `  event_bus: events
+  external_deps:
+    - {name: tools, contract: tool.Assembly}
+  dynamic_catalog:
+    tools:
+      bot: tools
+`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc := parseRuntimeDocument(t, runtimeYAML)
+			if _, err := DecodeConfig(context.Background(), doc); err == nil {
+				t.Fatal("DecodeConfig unexpectedly succeeded")
+			}
+		})
+	}
+}

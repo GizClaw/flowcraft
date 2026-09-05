@@ -81,3 +81,50 @@ func TestGraphDuplicateNode(t *testing.T) {
 		t.Fatalf("duplicate Add error = %v, want conflict", err)
 	}
 }
+
+func TestGraphExternalLeafResolvesDepsWithoutEnteringOrder(t *testing.T) {
+	g := NewGraph()
+	if err := g.AddExternal("db"); err != nil {
+		t.Fatalf("AddExternal: %v", err)
+	}
+	if err := g.Add("consumer", resourceWithDeps(Deps{"db": "db"})); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	order, err := g.TopoOrder()
+	if err != nil {
+		t.Fatalf("TopoOrder: %v", err)
+	}
+	if len(order) != 1 || order[0] != "consumer" {
+		t.Fatalf("TopoOrder = %v, want [consumer] only", order)
+	}
+}
+
+func TestGraphExternalDuplicateAndResourceCollision(t *testing.T) {
+	g := NewGraph()
+	if err := g.AddExternal("db"); err != nil {
+		t.Fatalf("AddExternal: %v", err)
+	}
+	if err := g.AddExternal("db"); !errdefs.IsConflict(err) {
+		t.Fatalf("duplicate AddExternal error = %v, want conflict", err)
+	}
+	if err := g.Add("db", resourceWithDeps(nil)); !errdefs.IsConflict(err) {
+		t.Fatalf("Add over external error = %v, want conflict", err)
+	}
+
+	other := NewGraph()
+	if err := other.Add("db", resourceWithDeps(nil)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if err := other.AddExternal("db"); !errdefs.IsConflict(err) {
+		t.Fatalf("AddExternal over resource error = %v, want conflict", err)
+	}
+}
+
+func TestGraphExternalInvalidName(t *testing.T) {
+	g := NewGraph()
+	for _, name := range []string{"", "db/item", "  "} {
+		if err := g.AddExternal(name); !errdefs.IsValidation(err) {
+			t.Fatalf("AddExternal(%q) error = %v, want validation", name, err)
+		}
+	}
+}
