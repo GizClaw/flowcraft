@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.4` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.5` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.5` - 2026-09-05
+
+### Changed
+
+- feat(core): add runtime drain API for offline replacement — Runtime.Drain(ctx) quiesces a running Runtime for offline replacement, serialized with RegisterAgent/UnregisterAgent/Reload/Close; it refuses new session leases and new Starts on already-open leases through session.Manager.Idle/WaitIdle/Drain and ErrManagerDraining, waits for active turns to finish naturally within ctx without interrupting them, stays drained after success or timeout so callers can retry or proceed to Close, and closes the race where a Start that already acquired an epoch could install a new turn after Drain observed the manager idle; runtime and manager drain tests plus the runtime guide cover the flow; fix(core/inference): accept dropped decisions in failed compile reports — CompileReport.ValidateFailure no longer treats a Dropped disposition as a contract violation, so a driver that drops one field with a reason while rejecting another in the same compile surfaces its structured rejection instead of CompilerContractViolation, unreasoned drops in failed reports stay rejected, and the Dropped/ValidateSuccess docs are aligned
 
 ## `core/v0.2.4` - 2026-09-02
 
