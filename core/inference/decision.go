@@ -106,10 +106,11 @@ const (
 	Native Disposition = "native"
 	// Rejected means the field cannot be honored and the compile failed.
 	Rejected Disposition = "rejected"
-	// Dropped means the compiler intentionally discarded the field while
-	// succeeding: the value cannot round-trip or has no channel, and the
-	// Reason states why. Consumers audit drops through the report; nothing
-	// is discarded silently.
+	// Dropped means the compiler intentionally discarded the field: the
+	// value cannot round-trip or has no channel, and the Reason states why.
+	// Drops are field-level audits and may appear on a successful compile
+	// or alongside a rejection on a failed one; consumers audit them
+	// through the report, so nothing is discarded silently.
 	Dropped Disposition = "dropped"
 )
 
@@ -157,8 +158,9 @@ func (r CompileReport) Metadata(model ModelRef) Metadata {
 	}
 }
 
-// ValidateSuccess proves that every active canonical field has exactly one
-// Native terminal disposition.
+// ValidateSuccess proves that a successful compile covers every active
+// canonical field with exactly one terminal disposition: Native, or Dropped
+// with a reason. Rejections invalidate a successful report.
 func (r CompileReport) ValidateSuccess(operation Operation, active []FieldID) error {
 	if r.Operation != operation {
 		return contractViolation(operation, "", "compiler reported the wrong operation")
@@ -197,7 +199,11 @@ func (r CompileReport) ValidateSuccess(operation Operation, active []FieldID) er
 }
 
 // ValidateFailure proves that a failed compile rejects at least one active
-// field and contains no duplicate or out-of-ledger decisions.
+// field and contains no duplicate or out-of-ledger decisions. Dropped
+// decisions are field-level audits: a driver may both reject one field
+// and drop another (for example an image input rejected by a text model
+// while the reasoning effort folds onto the model's wire level), so a
+// valid dropped disposition with a reason does not invalidate the report.
 func (r CompileReport) ValidateFailure(operation Operation, active []FieldID) error {
 	if r.Operation != operation {
 		return contractViolation(operation, "", "compiler reported the wrong operation")
@@ -218,6 +224,10 @@ func (r CompileReport) ValidateFailure(operation Operation, active []FieldID) er
 		seen[decision.Field] = struct{}{}
 		switch decision.Disposition {
 		case Native:
+		case Dropped:
+			if decision.Reason == "" {
+				return contractViolation(operation, decision.Field, "dropped field carries no reason")
+			}
 		case Rejected:
 			if decision.Reason == "" {
 				return contractViolation(operation, decision.Field, "rejected disposition requires a reason")

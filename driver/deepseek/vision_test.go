@@ -2,6 +2,7 @@ package deepseek
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -192,6 +193,53 @@ func TestTextModelsRejectImageInput(t *testing.T) {
 		inference.GenerateExecutionUnary,
 	); err == nil {
 		t.Fatal("responses compiler accepted an image on a text-only model")
+	}
+}
+
+// TestTextModelRejectsImageWhileDroppingEffort covers a failure report that
+// carries both a rejection and a field-level drop (the medium effort maps
+// to the model's "high" wire level): ValidateFailure must accept the report
+// and the structured image rejection must survive.
+func TestTextModelRejectsImageWhileDroppingEffort(t *testing.T) {
+	request := visionRequest()
+	request.Input.Content.Intent.Text = &inference.TextIntent{
+		ReasoningEffort: inference.ReasoningMedium,
+	}
+	compiled, err := compileChatGenerate(
+		"deepseek-v4-flash",
+		catalog["deepseek-v4-flash"],
+	)(
+		context.Background(),
+		conformanceModel("deepseek-v4-flash"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err == nil {
+		t.Fatal("chat compiler accepted an image on a text-only model")
+	}
+	active := request.ActiveFieldsFor(inference.GenerateExecutionUnary)
+	if reportErr := compiled.Report.ValidateFailure(
+		inference.OperationGenerate,
+		active,
+	); reportErr != nil {
+		t.Fatalf("drop+reject failure report must validate: %v", reportErr)
+	}
+	var inferenceErr *inference.Error
+	if !errors.As(err, &inferenceErr) ||
+		inferenceErr.Operation != inference.OperationGenerate ||
+		inferenceErr.Field != inference.FieldGenerateInputImage {
+		t.Fatalf(
+			"compile error = %+v, want structured rejection of %q",
+			err,
+			inference.FieldGenerateInputImage,
+		)
+	}
+	if !compiled.Report.Rejects(inference.FieldGenerateInputImage) ||
+		!compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
+		t.Fatalf(
+			"report = %+v, want image rejection with effort drop",
+			compiled.Report,
+		)
 	}
 }
 
