@@ -36,6 +36,9 @@ type Config struct {
 	// Sessions configures the runtime-owned session manager.
 	Sessions       SessionConfig
 	DynamicCatalog *DynamicCatalogConfig
+	// ExternalDeps declares caller-owned dependency values that the
+	// application injects through Builder.WithExternalResource.
+	ExternalDeps []ExternalDependency
 }
 
 // SessionConfig configures the runtime-owned session manager.
@@ -63,6 +66,12 @@ type configWire struct {
 	CheckpointStore string                    `json:"checkpoint_store,omitempty"`
 	Sessions        sessionConfigWire         `json:"sessions,omitempty"`
 	DynamicCatalog  *dynamicCatalogConfigWire `json:"dynamic_catalog,omitempty"`
+	ExternalDeps    []externalDependencyWire  `json:"external_deps,omitempty"`
+}
+
+type externalDependencyWire struct {
+	Name     string `json:"name"`
+	Contract string `json:"contract"`
 }
 
 type sessionConfigWire struct {
@@ -183,6 +192,38 @@ func DecodeConfig(ctx context.Context, doc deploy.Document) (Config, error) {
 				return Config{}, errdefs.Validationf(
 					"runtime config: dynamic_catalog.tools[%q] has an empty tool resource",
 					agentID)
+			}
+		}
+	}
+	for _, dep := range wire.ExternalDeps {
+		cfg.ExternalDeps = append(cfg.ExternalDeps, ExternalDependency{
+			Name:     strings.TrimSpace(dep.Name),
+			Contract: strings.TrimSpace(dep.Contract),
+		})
+	}
+	if _, err := validateExternalDependencyList(cfg.ExternalDeps); err != nil {
+		return Config{}, err
+	}
+	externalNames := make(map[string]struct{}, len(cfg.ExternalDeps))
+	for _, dep := range cfg.ExternalDeps {
+		externalNames[dep.Name] = struct{}{}
+	}
+	if _, reserved := externalNames[cfg.EventBus]; reserved {
+		return Config{}, errdefs.Validationf(
+			"runtime config: event_bus %q cannot be an external dependency",
+			cfg.EventBus)
+	}
+	if _, reserved := externalNames[cfg.CheckpointStore]; cfg.CheckpointStore != "" && reserved {
+		return Config{}, errdefs.Validationf(
+			"runtime config: checkpoint_store %q cannot be an external dependency",
+			cfg.CheckpointStore)
+	}
+	if cfg.DynamicCatalog != nil {
+		for agentID, resourceName := range cfg.DynamicCatalog.Tools {
+			if _, reserved := externalNames[resourceName]; reserved {
+				return Config{}, errdefs.Validationf(
+					"runtime config: dynamic_catalog.tools[%q] resource %q cannot be an external dependency",
+					agentID, resourceName)
 			}
 		}
 	}

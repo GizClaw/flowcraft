@@ -69,7 +69,60 @@ generation's values. Use this for access to deployment-built services
 such as a database pool. If the application must own a value's
 lifecycle or keep it across reloads, construct it outside the runtime
 and inject it through a resource factory registered in the registry
-instead.
+instead, or use the external dependency channel below.
+
+### External dependencies
+
+`runtime.external_deps` declares caller-owned dependency values that are
+built by the application and only consumed as resource/engine/hook
+dependencies:
+
+```yaml
+runtime:
+  event_bus: events
+  external_deps:
+    - name: db
+      contract: db.Pool
+  sessions:
+    idle_timeout: 10m
+```
+
+The application injects the matching value before building:
+
+```go
+builder := runtime.NewBuilder(reg)
+if err := builder.WithExternalResource(runtime.ExternalResource{
+    ExternalDependency: runtime.ExternalDependency{
+        Name:     "db",
+        Contract: "db.Pool",
+    },
+    Value: db,
+}); err != nil {
+    return err
+}
+app, err := builder.Build(ctx, doc)
+```
+
+Any resource, agent engine, or hook can then reference `db` in its
+`deps`; the consuming factory must declare `{name: db, type: db.Pool}`
+in its `resource.Spec.Deps` so deploy can check the contract.
+
+External values are borrowed, not owned:
+
+- They never participate in `Wire` / deployment binding, `Close`,
+  `Runtime.Drain`, or dynamic agent rebinding lifecycle.
+- They are not rebuilt or replaced by `Reload`; every generation
+  receives the same injected object.
+- They are hidden from `Runtime.Resource` and `Result.Names` — they
+  exist only as dependencies.
+- `Reload` may shrink the declared set, but may not require an external
+  value that was not injected when the Runtime was built.
+- The application is responsible for closing external values after all
+  Runtimes sharing them are closed.
+
+External dependencies cannot serve runtime-managed roles: `event_bus`,
+`checkpoint_store`, and `dynamic_catalog.tools` resource names must be
+regular deployment resources.
 
 ## Runtime config
 
@@ -77,6 +130,9 @@ instead.
 runtime:
   event_bus: events
   checkpoint_store: checkpoints   # optional
+  external_deps:                  # optional
+    - name: db
+      contract: db.Pool
   sessions:
     idle_timeout: 10m
     sink_buffer: 256

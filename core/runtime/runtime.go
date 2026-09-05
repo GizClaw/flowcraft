@@ -45,6 +45,10 @@ type Runtime struct {
 	// current is the active deployment generation. Reload replaces it
 	// atomically; Close retires and closes it.
 	current *Generation
+	// externalResources are caller-owned dependency values injected by
+	// the Builder. They outlive every generation and are never closed
+	// by the Runtime.
+	externalResources map[string]ExternalResource
 	// nextGenID allocates generation ids.
 	nextGenID uint64
 

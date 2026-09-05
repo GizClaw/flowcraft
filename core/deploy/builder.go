@@ -23,10 +23,11 @@ import (
 // an explicit [resource.Registry]. The registry is owned by the caller;
 // Builder never touches global state.
 type Builder struct {
-	registry       *resource.Registry
-	loader         *resource.Loader
-	resolver       *resource.ReferenceResolver
-	secretCacheTTL time.Duration
+	registry          *resource.Registry
+	loader            *resource.Loader
+	resolver          *resource.ReferenceResolver
+	secretCacheTTL    time.Duration
+	externalResources []ExternalResource
 }
 
 // BuilderOption configures a Builder.
@@ -78,10 +79,19 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	if err := doc.Validate(); err != nil {
 		return nil, err
 	}
+	externals, err := normalizeExternalResources(b.externalResources)
+	if err != nil {
+		return nil, err
+	}
 
 	graph := resource.NewGraph()
 	for name, res := range doc.Resources {
 		if err := graph.Add(name, res); err != nil {
+			return nil, err
+		}
+	}
+	for name := range externals {
+		if err := graph.AddExternal(name); err != nil {
 			return nil, err
 		}
 	}
@@ -94,7 +104,8 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	// Secret stores are built first: their settings never reference
 	// secrets, and once assembled they feed the ${secret:...} scheme
 	// every other resource's expansion uses.
-	stores, defaultStore, err := b.buildSecretStores(ctx, doc, order, values, b.resolver)
+	stores, defaultStore, err := b.buildSecretStores(
+		ctx, doc, order, values, externals, b.resolver)
 	if err != nil {
 		logCleanup(ctx, values, order)
 		return nil, err
@@ -108,7 +119,8 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 		if _, prebuilt := values[name]; prebuilt {
 			continue
 		}
-		value, err := b.buildResource(ctx, name, doc.Resources[name], values, resolver, secrets)
+		value, err := b.buildResource(
+			ctx, name, doc.Resources[name], values, externals, resolver, secrets)
 		if err != nil {
 			logCleanup(ctx, values, order)
 			return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
@@ -117,11 +129,12 @@ func (b *Builder) Build(ctx context.Context, doc Document) (*Result, error) {
 	}
 
 	return &Result{
-		values:   values,
-		order:    order,
-		agents:   make(map[string]*agent.Agent, len(doc.Agents)),
-		resolver: resolver,
-		secrets:  secrets,
+		values:    values,
+		order:     order,
+		agents:    make(map[string]*agent.Agent, len(doc.Agents)),
+		resolver:  resolver,
+		secrets:   secrets,
+		externals: externals,
 	}, nil
 }
 
@@ -134,6 +147,7 @@ func (b *Builder) buildResource(
 	name string,
 	res resource.Resource,
 	values map[string]any,
+	externals map[string]ExternalResource,
 	resolver *resource.ReferenceResolver,
 	secrets *resource.SecretResolver,
 ) (any, error) {
@@ -144,6 +158,9 @@ func (b *Builder) buildResource(
 			name, res.Kind, res.Impl)
 	}
 	if err := validateDeps(factory, res.Deps); err != nil {
+		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
+	}
+	if err := validateExternalContracts(factory, res.Deps, externals); err != nil {
 		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 	}
 	settings := res.Settings
@@ -158,7 +175,7 @@ func (b *Builder) buildResource(
 	if err != nil {
 		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 	}
-	deps, err := resolveDeps(values, res.Deps)
+	deps, err := resolveDeps(values, externals, res.Deps)
 	if err != nil {
 		return nil, errdefs.Validationf("deploy: resource %q: %v", name, err)
 	}
@@ -180,6 +197,7 @@ func (b *Builder) buildSecretStores(
 	doc Document,
 	order []string,
 	values map[string]any,
+	externals map[string]ExternalResource,
 	resolver *resource.ReferenceResolver,
 ) (map[string]resource.SecretStore, string, error) {
 	stores := make(map[string]resource.SecretStore)
@@ -190,7 +208,8 @@ func (b *Builder) buildSecretStores(
 		if res.Kind != secret.ResourceKind {
 			continue
 		}
-		value, err := b.buildResource(ctx, name, res, values, resolver, nil)
+		value, err := b.buildResource(
+			ctx, name, res, values, externals, resolver, nil)
 		if err != nil {
 			return nil, "", errdefs.Validationf("deploy: resource %q: %v", name, err)
 		}
@@ -443,7 +462,11 @@ func BindAgent(
 	if err := validateDeps(engineFactory, def.Engine.Deps); err != nil {
 		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
 	}
-	engineDeps, err := resolveDeps(result.values, def.Engine.Deps)
+	if err := validateExternalContracts(
+		engineFactory, def.Engine.Deps, result.externals); err != nil {
+		return nil, errdefs.Validationf("deploy: agent %q engine: %v", name, err)
+	}
+	engineDeps, err := resolveDeps(result.values, result.externals, def.Engine.Deps)
 	if err != nil {
 		return nil, errdefs.Validationf("deploy: agent %q: %v", name, err)
 	}
@@ -553,7 +576,12 @@ func buildHookList[T any](
 			return fail(errdefs.Validationf(
 				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
 		}
-		deps, err := resolveDeps(result.values, entry.Deps)
+		if err := validateExternalContracts(
+			factory, entry.Deps, result.externals); err != nil {
+			return fail(errdefs.Validationf(
+				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
+		}
+		deps, err := resolveDeps(result.values, result.externals, entry.Deps)
 		if err != nil {
 			return fail(errdefs.Validationf(
 				"deploy: agent %q: hook %s[%d]: %v", name, slot, i, err))
@@ -667,26 +695,84 @@ func validateDeps(factory resource.Factory, deps resource.Deps) error {
 	return nil
 }
 
+// validateExternalContracts checks that every dep reference pointing at
+// an external value declares a matching DepSpec.Type.
+func validateExternalContracts(
+	factory resource.Factory,
+	deps resource.Deps,
+	externals map[string]ExternalResource,
+) error {
+	if len(externals) == 0 {
+		return nil
+	}
+	spec := factory.Spec()
+	for key, ref := range deps {
+		ext, ok := externals[ref.ResourceName()]
+		if !ok {
+			continue
+		}
+		dep, ok := depSpecFor(spec, key)
+		if !ok {
+			// validateDeps reports undeclared deps; keep this helper
+			// focused on contract mismatches.
+			continue
+		}
+		if dep.Type != ext.Contract {
+			return errdefs.Validationf(
+				"dep %q external %q contract %q does not match declared type %q for %s/%s",
+				key, ext.Name, ext.Contract, dep.Type, spec.Kind, spec.Impl)
+		}
+	}
+	return nil
+}
+
+func depSpecFor(spec resource.Spec, key string) (resource.DepSpec, bool) {
+	for _, dep := range spec.Deps {
+		if dep.Name == key || (dep.Many && strings.HasPrefix(key, dep.Name+".")) {
+			return dep, true
+		}
+	}
+	return resource.DepSpec{}, false
+}
+
 // resolveDeps maps each declared dep to the built value, resolving
 // "resource/item" refs through the container's [resource.ItemResolver].
-func resolveDeps(values map[string]any, deps resource.Deps) (map[string]any, error) {
+func resolveDeps(
+	values map[string]any,
+	externals map[string]ExternalResource,
+	deps resource.Deps,
+) (map[string]any, error) {
 	resolved := make(map[string]any, len(deps))
 	for name, ref := range deps {
-		value, ok := values[ref.ResourceName()]
+		refName := ref.ResourceName()
+		value, ok := values[refName]
 		if !ok {
-			return nil, errdefs.Validationf(
-				"dep %q references unbuilt resource %q", name, ref.ResourceName())
+			ext, external := externals[refName]
+			if !external {
+				return nil, errdefs.Validationf(
+					"dep %q references unbuilt resource %q", name, refName)
+			}
+			if _, hasItem := ref.ItemName(); hasItem {
+				return nil, errdefs.Validationf(
+					"dep %q: external resource %q does not support item references",
+					name, refName)
+			}
+			value = ext.Value
+		}
+		if _, isExternal := externals[refName]; isExternal {
+			resolved[name] = value
+			continue
 		}
 		if item, hasItem := ref.ItemName(); hasItem {
 			resolver, ok := value.(resource.ItemResolver)
 			if !ok {
 				return nil, errdefs.Validationf(
-					"dep %q: resource %q does not expose items", name, ref.ResourceName())
+					"dep %q: resource %q does not expose items", name, refName)
 			}
 			itemValue, ok := resolver.ResolveItem(item)
 			if !ok {
 				return nil, errdefs.Validationf(
-					"dep %q: resource %q has no item %q", name, ref.ResourceName(), item)
+					"dep %q: resource %q has no item %q", name, refName, item)
 			}
 			value = itemValue
 		}
@@ -698,10 +784,11 @@ func resolveDeps(values map[string]any, deps resource.Deps) (map[string]any, err
 // Result owns the built resource values in construction order.
 // The caller closes it (or the runtime layer closes it) when done.
 type Result struct {
-	values   map[string]any
-	order    []string
-	agents   map[string]*agent.Agent
-	detached map[string]struct{}
+	values    map[string]any
+	order     []string
+	agents    map[string]*agent.Agent
+	detached  map[string]struct{}
+	externals map[string]ExternalResource
 	// resolver and secrets carry the effective expansion state from
 	// Build into Wire, so agent engine/hook settings expand with the
 	// same schemes (including ${secret:...}) and typed Secrets resolve.

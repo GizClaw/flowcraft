@@ -172,6 +172,13 @@ can also be assembled individually at runtime via the exported
 `deploy.BindAgent` — the same path `core/runtime` uses for its live agent
 registry (see [runtime.md](runtime.md)).
 
+Caller-owned dependencies can be supplied with
+`deploy.WithExternalResources`; they are visible to dependency
+resolution but are never constructed, wired, or closed by deploy. The
+runtime layer exposes this through its `runtime.external_deps` document
+declaration and `runtime.Builder.WithExternalResource` (see
+[runtime.md](runtime.md)).
+
 ## Layered configuration
 
 `deploy.LoadLayers` loads multiple `Layer` values, merges them in ascending

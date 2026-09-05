@@ -2,6 +2,7 @@ package resource
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -9,12 +10,16 @@ import (
 // Graph is the resource dependency DAG of one deployment document.
 // Nodes are named resources; edges come from each resource's Deps.
 type Graph struct {
-	nodes map[string]Resource
+	nodes    map[string]Resource
+	external map[string]struct{}
 }
 
 // NewGraph returns an empty graph.
 func NewGraph() *Graph {
-	return &Graph{nodes: make(map[string]Resource)}
+	return &Graph{
+		nodes:    make(map[string]Resource),
+		external: make(map[string]struct{}),
+	}
 }
 
 // Add inserts a named resource, rejecting duplicates and invalid
@@ -23,10 +28,34 @@ func (g *Graph) Add(name string, res Resource) error {
 	if _, dup := g.nodes[name]; dup {
 		return errdefs.Conflictf("resource graph: duplicate node %q", name)
 	}
+	if _, dup := g.external[name]; dup {
+		return errdefs.Conflictf("resource graph: node %q duplicates an external node", name)
+	}
 	if err := res.Validate(); err != nil {
 		return errdefs.Validationf("resource graph: node %q: %v", name, err)
 	}
 	g.nodes[name] = res
+	return nil
+}
+
+// AddExternal inserts an externally supplied leaf dependency. External
+// nodes may be referenced by document resources but are never built,
+// wired, or returned by TopoOrder.
+func (g *Graph) AddExternal(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.Contains(name, "/") {
+		return errdefs.Validationf(
+			"resource graph: external node %q must be a non-empty resource name without '/'", name)
+	}
+	if _, dup := g.nodes[name]; dup {
+		return errdefs.Conflictf(
+			"resource graph: external node %q duplicates a resource", name)
+	}
+	if _, dup := g.external[name]; dup {
+		return errdefs.Conflictf(
+			"resource graph: duplicate external node %q", name)
+	}
+	g.external[name] = struct{}{}
 	return nil
 }
 
@@ -54,10 +83,13 @@ func (g *Graph) Validate() error {
 			return errdefs.Validationf("resource graph: node %q: %v", name, err)
 		}
 		for depName, ref := range res.Deps {
-			if _, ok := g.nodes[ref.ResourceName()]; !ok {
-				return errdefs.Validationf(
-					"resource graph: node %q dep %q references missing resource %q",
-					name, depName, ref.ResourceName())
+			refName := ref.ResourceName()
+			if _, ok := g.nodes[refName]; !ok {
+				if _, ok := g.external[refName]; !ok {
+					return errdefs.Validationf(
+						"resource graph: node %q dep %q references missing resource %q",
+						name, depName, refName)
+				}
 			}
 		}
 	}
@@ -82,7 +114,10 @@ func (g *Graph) TopoOrder() ([]string, error) {
 				dependents[ref.ResourceName()], name)
 		}
 	}
-	ready := make([]string, 0, len(g.nodes))
+	ready := make([]string, 0, len(g.nodes)+len(g.external))
+	for name := range g.external {
+		ready = append(ready, name)
+	}
 	for name, degree := range indegree {
 		if degree == 0 {
 			ready = append(ready, name)
@@ -93,6 +128,16 @@ func (g *Graph) TopoOrder() ([]string, error) {
 	for len(ready) > 0 {
 		name := ready[0]
 		ready = ready[1:]
+		if _, external := g.external[name]; external {
+			for _, dependent := range dependents[name] {
+				indegree[dependent]--
+				if indegree[dependent] == 0 {
+					ready = append(ready, dependent)
+					sort.Strings(ready)
+				}
+			}
+			continue
+		}
 		order = append(order, name)
 		for _, dependent := range dependents[name] {
 			indegree[dependent]--
@@ -121,6 +166,9 @@ func (g *Graph) findCycle() []string {
 		stack = append(stack, name)
 		for _, ref := range g.nodes[name].Deps {
 			next := ref.ResourceName()
+			if _, external := g.external[next]; external {
+				continue
+			}
 			switch state[next] {
 			case gray:
 				// Found a cycle: cut the stack at next.

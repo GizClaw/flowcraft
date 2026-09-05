@@ -40,6 +40,7 @@ type Builder struct {
 	hostDecorator       HostFactoryDecorator
 	resultHostDecorator ResultHostFactoryDecorator
 	loader              *resource.Loader
+	externalResources   []ExternalResource
 }
 
 // NewBuilder creates a Runtime builder over a resource registry. The
@@ -115,6 +116,38 @@ func (b *Builder) WithLoader(loader *resource.Loader) error {
 	return nil
 }
 
+// WithExternalResource injects one caller-owned dependency value. The
+// name and contract must be declared in the deployment document's
+// runtime.external_deps before Build. It is rejected after Build
+// starts.
+func (b *Builder) WithExternalResource(ext ExternalResource) error {
+	return b.withExternalResources([]ExternalResource{ext})
+}
+
+// WithExternalResources injects caller-owned dependency values. See
+// WithExternalResource.
+func (b *Builder) WithExternalResources(externals []ExternalResource) error {
+	return b.withExternalResources(externals)
+}
+
+func (b *Builder) withExternalResources(externals []ExternalResource) error {
+	if b == nil {
+		return errdefs.Validationf("runtime Builder is nil")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used {
+		return ErrBuilderUsed
+	}
+	for _, ext := range externals {
+		if err := ext.Validate(); err != nil {
+			return err
+		}
+		b.externalResources = append(b.externalResources, ext)
+	}
+	return nil
+}
+
 // Build constructs one fully started Runtime. A Builder may be used for
 // exactly one Build attempt.
 func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, error) {
@@ -144,9 +177,26 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		return nil, err
 	}
 
-	deployBuilder := deploy.NewBuilder(reg)
+	injected, err := validateExternalResourceList(b.externalResources)
+	if err != nil {
+		return nil, err
+	}
+	effective, err := effectiveExternalResources(cfg.ExternalDeps, injected, false)
+	if err != nil {
+		return nil, err
+	}
+	var deployOptions []deploy.BuilderOption
+	if len(effective) > 0 {
+		deployValues := make([]deploy.ExternalResource, 0, len(effective))
+		for _, ext := range effective {
+			deployValues = append(deployValues, toDeployExternalResource(ext))
+		}
+		deployOptions = append(deployOptions, deploy.WithExternalResources(deployValues))
+	}
+	deployBuilder := deploy.NewBuilder(reg, deployOptions...)
 	if b.loader != nil {
-		deployBuilder = deploy.NewBuilder(reg, deploy.WithLoader(b.loader))
+		deployOptions = append(deployOptions, deploy.WithLoader(b.loader))
+		deployBuilder = deploy.NewBuilder(reg, deployOptions...)
 	}
 	result, err := deployBuilder.Deploy(ctx, doc)
 	if err != nil {
@@ -274,6 +324,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		hostDecorator:       b.hostDecorator,
 		resultHostDecorator: b.resultHostDecorator,
 		current:             initial,
+		externalResources:   injected,
 		nextGenID:           1,
 	}, nil
 }

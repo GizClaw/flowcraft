@@ -113,10 +113,23 @@ func (r *Runtime) Reload(
 	}
 
 	// Build the new deployment result transactionally.
-	deployBuilder := deploy.NewBuilder(r.resources)
+	effective, err := effectiveExternalResources(
+		cfg.ExternalDeps, r.externalResources, true)
+	if err != nil {
+		return fail(err)
+	}
+	var deployOptions []deploy.BuilderOption
+	if len(effective) > 0 {
+		deployValues := make([]deploy.ExternalResource, 0, len(effective))
+		for _, ext := range effective {
+			deployValues = append(deployValues, toDeployExternalResource(ext))
+		}
+		deployOptions = append(deployOptions, deploy.WithExternalResources(deployValues))
+	}
+	deployBuilder := deploy.NewBuilder(r.resources, deployOptions...)
 	if r.loader != nil {
-		deployBuilder = deploy.NewBuilder(
-			r.resources, deploy.WithLoader(r.loader))
+		deployOptions = append(deployOptions, deploy.WithLoader(r.loader))
+		deployBuilder = deploy.NewBuilder(r.resources, deployOptions...)
 	}
 	newResult, err := deployBuilder.Deploy(ctx, doc)
 	if err != nil {
