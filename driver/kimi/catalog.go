@@ -219,3 +219,40 @@ func sortedNames(models map[string]catalogEntry) []string {
 	sort.Strings(names)
 	return names
 }
+
+// descriptorFor lowers one catalog entry into its public discovery
+// descriptor under id. buildProvider and Catalog share this lowering so
+// offline catalog views cannot drift from deployed provider models.
+func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDescriptor {
+	descriptor := inference.ModelDescriptor{
+		ID:           id,
+		Capabilities: entry.capabilities,
+	}
+	if entry.maxInputTokens > 0 {
+		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
+	}
+	if entry.maxOutputTokens > 0 {
+		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
+	}
+	return descriptor
+}
+
+// Catalog returns every built-in model descriptor under provider, sorted by
+// model name. Descriptors carry the driver-declared capabilities, limits, and
+// lifecycle; Operations stay empty because the inference assembly derives them
+// from the model's openers after deployment. Provider IDs are a deployment
+// property, so callers supply the identity that appears in each descriptor.
+func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+	if provider == "" {
+		return nil, fmt.Errorf("catalog: provider is required")
+	}
+	descriptors := make([]inference.ModelDescriptor, 0, len(catalog))
+	for _, name := range sortedNames(catalog) {
+		descriptor := descriptorFor(
+			inference.ModelID{Provider: provider, Name: name},
+			catalog[name],
+		)
+		descriptors = append(descriptors, descriptor)
+	}
+	return descriptors, nil
+}

@@ -63,3 +63,13 @@ func (e catalogEntry) validate() error {
 	}
 	return nil
 }
+
+// Catalog returns the built-in model catalog under provider. Azure routes by
+// deployment name and has no built-in lineup: every model is declared in the
+// deployment spec, so Catalog always reports an empty catalog.
+func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+	if provider == "" {
+		return nil, fmt.Errorf("catalog: provider is required")
+	}
+	return []inference.ModelDescriptor{}, nil
+}
