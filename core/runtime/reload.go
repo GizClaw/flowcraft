@@ -126,11 +126,13 @@ func (r *Runtime) Reload(
 		}
 		deployOptions = append(deployOptions, deploy.WithExternalResources(deployValues))
 	}
-	deployBuilder := deploy.NewBuilder(r.resources, deployOptions...)
 	if r.loader != nil {
 		deployOptions = append(deployOptions, deploy.WithLoader(r.loader))
-		deployBuilder = deploy.NewBuilder(r.resources, deployOptions...)
 	}
+	if r.resolver != nil {
+		deployOptions = append(deployOptions, deploy.WithResolver(r.resolver))
+	}
+	deployBuilder := deploy.NewBuilder(r.resources, deployOptions...)
 	newResult, err := deployBuilder.Deploy(ctx, doc)
 	if err != nil {
 		return fail(fmt.Errorf("runtime reload build deployment: %w", err))

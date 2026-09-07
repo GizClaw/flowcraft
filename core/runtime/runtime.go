@@ -33,7 +33,11 @@ type Runtime struct {
 	// resolution as deployment time.
 	resources *resource.Registry
 	loader    *resource.Loader
-	bus       event.Bus
+	// resolver is retained from the Builder (like loader) so a later
+	// Reload rebuilds generations with the same custom expansion
+	// schemes as the initial build.
+	resolver *resource.ReferenceResolver
+	bus      event.Bus
 	// hostDecorator is retained from the Builder so a later Reload can
 	// rebuild a host factory for a new deployment generation with the
 	// exact same decoration policy.
