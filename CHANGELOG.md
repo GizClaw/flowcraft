@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.7` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.8` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.8` - 2026-09-07
+
+### Changed
+
+- feat(core/runtime): add WithResolver for custom expansion schemes (closes #513) — the runtime builder can now register custom ${scheme:ref} expansion schemes via WithResolver, passed through unchanged to deploy.WithResolver so per-workspace configuration sources resolve inside resource, agent-engine, and agent-hook settings subtrees before factories decode them; custom schemes shadow same-named built-ins while ${secret:...} always wins, the built-in env/base/home schemes stay available unless overridden, Reload keeps the resolver across generations, and runtime-layer tests pin engine-settings expansion rather than leaving that contract to deploy-layer tests alone
 
 ## `core/v0.2.7` - 2026-09-07
 
