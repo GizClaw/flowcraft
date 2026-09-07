@@ -117,14 +117,12 @@ func (b *Builder) WithLoader(loader *resource.Loader) error {
 	return nil
 }
 
-// WithResolver adds custom expansion schemes for inline ${scheme:ref}
+// WithResolver registers custom schemes for inline ${scheme:ref}
 // strings in every settings subtree (resources, agent engines, agent
-// hooks) before a factory decodes them. The custom schemes are merged
-// on top of the deployment's all-open default resolver (env + home,
-// plus base when a loader with a base directory is installed); a custom
-// scheme of the same name overrides the built-in one, except
-// ${secret:...}, which is assembled after the merge and always wins.
-// It is rejected when nil, when already set, or after Build starts.
+// hooks) before a factory decodes them. Expansion semantics are
+// identical to deploy.WithResolver, which this option passes through
+// unchanged; see that option for the authoritative merge rules. It is
+// rejected when nil, when already set, or after Build starts.
 func (b *Builder) WithResolver(resolver *resource.ReferenceResolver) error {
 	if b == nil {
 		return errdefs.Validationf("runtime Builder is nil")

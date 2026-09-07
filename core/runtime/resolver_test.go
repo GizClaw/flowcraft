@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
@@ -67,6 +68,37 @@ func (f resolverCaptureFactory) New(_ context.Context, in resource.Input) (any, 
 	}
 	f.records.add(captureEntry{root: settings.Root, name: settings.Name})
 	return &struct{}{}, nil
+}
+
+// resolverCaptureEngineFactory decodes the expanded settings of one
+// agent engine and records what it saw, so tests can assert that the
+// runtime's resolver reaches engine settings subtrees, not only
+// resource settings.
+type resolverCaptureEngineFactory struct {
+	records *captureRecorder
+}
+
+func (resolverCaptureEngineFactory) Spec() resource.Spec {
+	return resource.Spec{Kind: "resolver.test.engine"}
+}
+
+func (f resolverCaptureEngineFactory) New(_ context.Context, in resource.Input) (any, error) {
+	var settings struct {
+		Root string `json:"root"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(in.Settings, &settings); err != nil {
+		return nil, err
+	}
+	f.records.add(captureEntry{root: settings.Root, name: settings.Name})
+	return agent.EngineFunc(func(
+		_ context.Context,
+		_ agent.Run,
+		_ agent.Host,
+		board *agent.Board,
+	) (*agent.Board, error) {
+		return board, nil
+	}), nil
 }
 
 // ocwsResolver returns a resolver exposing a single "ocws" scheme that
@@ -136,6 +168,19 @@ func TestWithResolverValidation(t *testing.T) {
 		!strings.Contains(err.Error(), "already set") {
 		t.Fatalf("duplicate resolver error = %v, want validation mentioning already set", err)
 	}
+
+	// A consumed builder rejects any further option set, even when the
+	// Build attempt itself failed.
+	if _, err := builder.Build(context.Background(),
+		reloadDoc(t, `  bot:
+    card: {name: Bot}
+    engine: {kind: append-engine}
+`, "")); err == nil {
+		t.Fatal("Build over an empty registry: want error")
+	}
+	if err := builder.WithResolver(ocwsResolver(nil)); !errors.Is(err, ErrBuilderUsed) {
+		t.Fatalf("WithResolver after Build error = %v, want ErrBuilderUsed", err)
+	}
 }
 
 func TestBuildExpandsCustomScheme(t *testing.T) {
@@ -155,9 +200,42 @@ func TestBuildExpandsCustomScheme(t *testing.T) {
 
 	assertEntries(t, records.got(),
 		[]captureEntry{{root: "/srv/ocws", name: "alpha"}})
-	if err := builder.WithResolver(ocwsResolver(nil)); !errors.Is(err, ErrBuilderUsed) {
-		t.Fatalf("WithResolver after Build error = %v, want ErrBuilderUsed", err)
+}
+
+// TestBuildExpandsEngineSettings pins the pass-through contract at the
+// runtime layer: a custom scheme inside an agent engine's settings
+// subtree expands before the engine factory decodes them, exactly like
+// resource settings. Runtime consumers (per-workspace configuration in
+// engine or hook settings) rely on this path.
+func TestBuildExpandsEngineSettings(t *testing.T) {
+	records := &captureRecorder{}
+	reg := resource.NewRegistry()
+	reg.MustRegister(event.NewFactory())
+	reg.MustRegister(resolverCaptureEngineFactory{records: records})
+
+	doc := reloadDoc(t, `  bot:
+    card: {name: Bot}
+    engine: {kind: resolver.test.engine}
+`, "")
+	bot := doc.Agents["bot"]
+	bot.Engine.Settings = json.RawMessage(
+		`{"root": "${ocws:root}", "name": "${ocws:name}"}`)
+	doc.Agents["bot"] = bot
+
+	builder := NewBuilder(reg)
+	if err := builder.WithResolver(ocwsResolver(map[string]string{
+		"root": "/srv/ocws", "name": "alpha",
+	})); err != nil {
+		t.Fatalf("WithResolver: %v", err)
 	}
+	app, err := builder.Build(context.Background(), doc)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer func() { _ = app.Close() }()
+
+	assertEntries(t, records.got(),
+		[]captureEntry{{root: "/srv/ocws", name: "alpha"}})
 }
 
 func TestBuildRejectsUnknownSchemeWithoutResolver(t *testing.T) {
