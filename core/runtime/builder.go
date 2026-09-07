@@ -40,6 +40,7 @@ type Builder struct {
 	hostDecorator       HostFactoryDecorator
 	resultHostDecorator ResultHostFactoryDecorator
 	loader              *resource.Loader
+	resolver            *resource.ReferenceResolver
 	externalResources   []ExternalResource
 }
 
@@ -113,6 +114,31 @@ func (b *Builder) WithLoader(loader *resource.Loader) error {
 		return errdefs.Validationf("runtime loader is already set")
 	}
 	b.loader = loader
+	return nil
+}
+
+// WithResolver registers custom schemes for inline ${scheme:ref}
+// strings in every settings subtree (resources, agent engines, agent
+// hooks) before a factory decodes them. Expansion semantics are
+// identical to deploy.WithResolver, which this option passes through
+// unchanged; see that option for the authoritative merge rules. It is
+// rejected when nil, when already set, or after Build starts.
+func (b *Builder) WithResolver(resolver *resource.ReferenceResolver) error {
+	if b == nil {
+		return errdefs.Validationf("runtime Builder is nil")
+	}
+	if resolver == nil {
+		return errdefs.Validationf("runtime resolver is nil")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.used {
+		return ErrBuilderUsed
+	}
+	if b.resolver != nil {
+		return errdefs.Validationf("runtime resolver is already set")
+	}
+	b.resolver = resolver
 	return nil
 }
 
@@ -193,11 +219,13 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		}
 		deployOptions = append(deployOptions, deploy.WithExternalResources(deployValues))
 	}
-	deployBuilder := deploy.NewBuilder(reg, deployOptions...)
 	if b.loader != nil {
 		deployOptions = append(deployOptions, deploy.WithLoader(b.loader))
-		deployBuilder = deploy.NewBuilder(reg, deployOptions...)
 	}
+	if b.resolver != nil {
+		deployOptions = append(deployOptions, deploy.WithResolver(b.resolver))
+	}
+	deployBuilder := deploy.NewBuilder(reg, deployOptions...)
 	result, err := deployBuilder.Deploy(ctx, doc)
 	if err != nil {
 		return nil, fmt.Errorf("runtime build deployment: %w", err)
@@ -320,6 +348,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 		liveCatalog:         liveCatalog,
 		resources:           reg,
 		loader:              b.loader,
+		resolver:            b.resolver,
 		bus:                 bus,
 		hostDecorator:       b.hostDecorator,
 		resultHostDecorator: b.resultHostDecorator,
