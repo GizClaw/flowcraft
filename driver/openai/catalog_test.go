@@ -285,3 +285,27 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 			overridden.maxOutputTokens)
 	}
 }
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	generateCapabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "gpt-4.1",
+			"kind": "generate",
+			"capabilities": `+generateCapabilities+`,
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["gpt-4.1"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 32_768 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/32768",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}

@@ -151,6 +151,29 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 	}
 }
 
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	capabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "deepseek-v4-flash",
+			"capabilities": `+capabilities+`,
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["deepseek-v4-flash"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 384_000 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/384000",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}
+
 func TestRequestMetadataEnvelopeValidationAndCatalogPropagation(t *testing.T) {
 	for _, envelope := range []string{"", "metadata", "client_metadata", "request_fields"} {
 		raw := `{}`

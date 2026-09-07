@@ -163,3 +163,26 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	capabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "claude-sonnet-5",
+			"capabilities": `+capabilities+`,
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["claude-sonnet-5"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 128_000 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/128000",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}

@@ -244,3 +244,27 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	generateCapabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "doubao-seed-2-1-pro",
+			"kind": "generate",
+			"capabilities": `+generateCapabilities+`,
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["doubao-seed-2-1-pro"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 256_000 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/256000",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}

@@ -169,3 +169,25 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "qwen3.7-flash",
+			"capabilities": {"inputs":["text"],"outputs":["text"]},
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["qwen3.7-flash"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 131_072 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/131072",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}
