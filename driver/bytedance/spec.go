@@ -39,28 +39,28 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model outside the built-in catalog. Capabilities
-// mirror the built-in catalog shape: content kinds, hosted web search, and
-// the reasoning control capability (validated against the kind's compiler
-// contract at merge time). Dimensions and max resolution are control
-// capabilities that no capability kind expresses and stay separate flags.
-// Addressing a custom model at a deployment endpoint works exactly like
-// catalog models: map its name in Spec.Endpoints.
+// ModelSpec declares one model outside the built-in catalog, or a delta over
+// a same-named, same-kind built-in catalog entry. Capabilities is a patch
+// with field-presence semantics: leaves it names replace that leaf of the
+// entry it overrides and leaves it does not name are inherited. Dimensions
+// and max resolution is a control capability that no capability kind
+// expresses and stays a separate flag; nil inherits the overridden built-in
+// value, explicit values override. Addressing a custom model at a
+// deployment endpoint works exactly like catalog models: map its name in
+// Spec.Endpoints.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds, hosted
-	// web search support, and reasoning control capability.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
 	Limits inference.ModelLimits `json:"limits,omitempty"`
-	// Dimensions (embed) allows custom output dimensions.
-	Dimensions bool `json:"dimensions,omitempty"`
 	// MaxResolution (video) caps the supported resolution tier, e.g. "720p"
-	// or "4k"; empty leaves resolution unconstrained.
-	MaxResolution string `json:"max_resolution,omitempty"`
+	// or "4k". Nil inherits the built-in value; an explicit empty string
+	// declares resolution unconstrained.
+	MaxResolution *string `json:"max_resolution,omitempty"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. Endpoint IDs
@@ -134,6 +134,19 @@ func (m ModelSpec) Validate() error {
 	case kindGenerate, kindEmbed, kindImage, kindVideo:
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
+	}
+	kind := modelKind(m.Kind)
+	if m.Capabilities != nil &&
+		m.Capabilities.CustomEmbedDimensions != nil &&
+		kind != kindEmbed {
+		return fmt.Errorf(
+			"model %q sets custom_embed_dimensions on kind %q",
+			m.Name,
+			m.Kind,
+		)
+	}
+	if m.MaxResolution != nil && kind != kindVideo {
+		return fmt.Errorf("model %q sets max_resolution on kind %q", m.Name, m.Kind)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

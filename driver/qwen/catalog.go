@@ -16,10 +16,13 @@ const (
 )
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
-// single capability fact source: input/output content kinds and the reasoning
-// control capability (switch kind plus the canonical-to-wire effort map).
-// preserveThinking, thinkingStreamOnly, and embedDimensions are control
-// capabilities that no capability kind expresses and stay separate flags.
+// single capability fact source: input/output content kinds, the reasoning
+// control capability (switch kind plus the canonical-to-wire effort map),
+// and custom embed output dimensions. preserveThinking, thinkingStreamOnly,
+// and embedDimensions are control facts that no capability kind expresses
+// and stay separate fields; embedDimensions additionally carries the exact
+// sizes the published custom_embed_dimensions capability allows and must
+// agree with it (validated in catalogEntry.validate).
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
@@ -32,17 +35,12 @@ type catalogEntry struct {
 	// embedDimensions lists the vector sizes an embed model accepts; nil
 	// means the model takes no dimension parameter.
 	embedDimensions []int
-	// maxInputTokens caps the input context in tokens; zero means
-	// undeclared. Values mirror the published maximum input length
-	// (最大输入长度) on the per-model pages at
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Values mirror the published maximum input
+	// length (最大输入长度) and output length (最大输出长度) on the
+	// per-model pages at
 	// https://www.alibabacloud.com/help/zh/model-studio/models.
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single response may emit
-	// (thinking plus answer tokens share the budget); zero means
-	// undeclared. Values mirror the published maximum output length
-	// (最大输出长度) on the per-model pages at
-	// https://www.alibabacloud.com/help/zh/model-studio/models.
-	maxOutputTokens int
+	limits inference.ModelLimits
 }
 
 // qwenMaxPreviewEffortMap is qwen3.8-max-preview's canonical-to-wire map
@@ -76,8 +74,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoningEffortMap(qwenMaxPreviewEffortMap),
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
-		maxInputTokens:     983_616,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(983_616).
+			WithMaxOutputTokens(131_072),
 	},
 	"qwen3.7-max": {
 		kind: kindGenerate,
@@ -86,8 +85,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle),
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
-		maxInputTokens:     991_808,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(991_808).
+			WithMaxOutputTokens(131_072),
 	},
 	"qwen3.7-plus": {
 		kind: kindGenerate,
@@ -96,8 +96,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle),
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
-		maxInputTokens:     991_808,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(991_808).
+			WithMaxOutputTokens(131_072),
 	},
 	"qwen3.7-flash": {
 		kind: kindGenerate,
@@ -106,8 +107,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle),
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
-		maxInputTokens:     991_808,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(991_808).
+			WithMaxOutputTokens(131_072),
 	},
 	"qwen3-vl-plus": {
 		kind: kindGenerate,
@@ -115,8 +117,9 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
 		thinkingStreamOnly: true,
-		maxInputTokens:     260_096,
-		maxOutputTokens:    32_768,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(260_096).
+			WithMaxOutputTokens(32_768),
 	},
 	"qwen3-vl-flash": {
 		kind: kindGenerate,
@@ -124,29 +127,57 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
 		thinkingStreamOnly: true,
-		maxInputTokens:     260_096,
-		maxOutputTokens:    32_768,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(260_096).
+			WithMaxOutputTokens(32_768),
 	},
 
-	"qwen-plus":  {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952, maxOutputTokens: 32_768},
-	"qwen-turbo": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 98_304, maxOutputTokens: 16_384},
-	"qwen-flash": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952, maxOutputTokens: 32_768},
-	"qwen-max":   {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 30_720, maxOutputTokens: 8_192},
+	"qwen-plus": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(997_952).
+			WithMaxOutputTokens(32_768),
+	},
+	"qwen-turbo": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(98_304).
+			WithMaxOutputTokens(16_384),
+	},
+	"qwen-flash": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(997_952).
+			WithMaxOutputTokens(32_768),
+	},
+	"qwen-max": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(30_720).
+			WithMaxOutputTokens(8_192),
+	},
 
 	// Embeddings. The multimodal model is served in the Beijing region
 	// only; text-embedding-v4 batches at most 10 rows per request.
 	"text-embedding-v4": {
-		kind:            kindEmbed,
-		capabilities:    inference.ModelCapabilities{}.WithInputs(message.PartText),
+		kind: kindEmbed,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithCustomEmbedDimensions(),
 		embedDimensions: []int{2048, 1536, 1024, 768, 512, 256, 128, 64},
-		maxInputTokens:  8_192,
+		limits:          inference.ModelLimits{}.WithMaxInputTokens(8_192),
 	},
 	"qwen3-vl-embedding": {
 		kind: kindEmbed,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage, message.PartVideo),
+			WithInputs(message.PartText, message.PartImage, message.PartVideo).
+			WithCustomEmbedDimensions(),
 		embedDimensions: []int{2560, 2048, 1536, 1024, 768, 512, 256},
-		maxInputTokens:  32_000,
+		limits:          inference.ModelLimits{}.WithMaxInputTokens(32_000),
 	},
 }
 
@@ -169,7 +200,15 @@ func (e catalogEntry) validate() error {
 	if e.kind == kindEmbed && (e.preserveThinking || e.thinkingStreamOnly) {
 		return fmt.Errorf("embed model cannot declare thinking flags")
 	}
-	return nil
+	if e.kind == kindEmbed &&
+		(len(e.embedDimensions) > 0) != e.capabilities.CustomEmbedDimensions {
+		return fmt.Errorf(
+			"embed model custom_embed_dimensions capability must match its "+
+				"dimension whitelist (%d sizes)",
+			len(e.embedDimensions),
+		)
+	}
+	return e.limits.Validate()
 }
 
 // generateChatCapabilities is the capability declaration for the Qwen text
@@ -232,10 +271,12 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			entry.capabilities.Reasoning = model.Capabilities.Reasoning
 		}
 		if model.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *model.Limits.MaxInputTokens
+			value := *model.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if model.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+			value := *model.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", model.Name, err)
@@ -266,12 +307,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

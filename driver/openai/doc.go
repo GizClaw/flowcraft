@@ -11,10 +11,17 @@
 //     round-trips and rejects the hosted web_search tool at compile time;
 //     the rest of the generate surface (tools, vision, JSON formats,
 //     streaming) is equivalent.
-//     Reasoning_enabled: true is a no-op (the default). False rejects at
-//     compile time unless the model declares effort_none (gpt-5.1+,
-//     per-model via the spec flag): those models compile reasoning_enabled:
-//     false to reasoning.effort: "none" on the Responses surface.
+//     Reasoning_enabled: true is a no-op (the default). False compiles to
+//     reasoning.effort: "none" for every model published as reasoning
+//     "toggle" on the Responses surface (gpt-5.1+ models per the OpenAI
+//     docs) and rejects at compile time for models published as reasoning
+//     "always". Descriptors stay truthful per surface: the chat surface
+//     cannot express reasoning off, so chat catalogs publish reasoning
+//     "always" even for models that toggle on Responses. A spec that
+//     redeclares a built-in model by name and kind is a leaf-level patch:
+//     capability leaves it omits (including custom_embed_dimensions) and
+//     numeric limits are inherited, so redeclaring gpt-5.6-sol to adjust
+//     one channel cannot silently revoke the built-in toggle route.
 //     Reasoning items decode into canonical reasoning parts (summary text,
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always

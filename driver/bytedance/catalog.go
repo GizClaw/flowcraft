@@ -22,14 +22,12 @@ const (
 
 // catalogEntry is one model's declared capability set. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
-// search, and the reasoning control capability. dimensions and maxResolution
-// are control capabilities that no capability kind expresses and stay
-// separate flags.
+// search, the reasoning control capability, and custom embed output
+// dimensions. maxResolution is a control capability that no capability kind
+// expresses and stays a separate flag.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
-	// embed: accepts custom output dimensions.
-	dimensions bool
 	// video: highest supported resolution tier ("720p", "1080p", "4k");
 	// empty leaves resolution unconstrained.
 	maxResolution string
@@ -38,20 +36,12 @@ type catalogEntry struct {
 	// lifecycle: deprecated models stay routable but announce a replacement.
 	deprecated  bool
 	replacement string
-	// maxInputTokens caps the input context in tokens; zero means
-	// undeclared. Generate values mirror the family context window on
-	// the Volcengine Ark model detail pages; the official model list
-	// (https://www.volcengine.com/docs/82379/1330310) reports separate
-	// per-version max-input values (typically 224K or 256K, with 1M
-	// long-context tiers), so these entries are the family-level upper
-	// bound. Embedding values mirror the documented per-input limit.
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single generate response may emit
-	// (thinking plus answer tokens share the budget); zero means
-	// undeclared. Generate values mirror the per-version max-output on the
-	// official model list
-	// (https://www.volcengine.com/docs/82379/1330310).
-	maxOutputTokens int
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Generate values mirror the family context
+	// window and per-version max output on the Volcengine Ark model detail
+	// pages (https://www.volcengine.com/docs/82379/1330310); embedding
+	// values mirror the documented per-input limit.
+	limits inference.ModelLimits
 }
 
 // videoParams is the Seedance task-parameter support matrix for one video
@@ -59,9 +49,11 @@ type catalogEntry struct {
 // (https://www.volcengine.com/docs/82379/1520757): each field mirrors one
 // parameter's documented "model support" column, so the compiler can reject
 // parameters the strong-validation endpoint would otherwise fault on.
-// Zero values mean "undeclared": Spec.Models entries keep a zero matrix and
-// compile with syntax-only validation (the deployment declares the
-// capability); built-in entries declare the full matrix.
+// Zero values mean "undeclared": custom Spec.Models entries (names outside
+// the built-in catalog) keep a zero matrix and compile with syntax-only
+// validation (the deployment declares the capability); redeclarations of
+// built-in video models inherit the built-in matrix, exactly like every
+// other control flag.
 type videoParams struct {
 	seed          bool // supports seed
 	cameraFixed   bool // supports camera_fixed
@@ -123,7 +115,7 @@ func (e catalogEntry) validate() error {
 			return fmt.Errorf("%s family declares no generate output", e.kind)
 		}
 	}
-	return nil
+	return e.limits.Validate()
 }
 
 // generateChatCapabilities is the common capability declaration for the Ark
@@ -172,8 +164,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  1_024_000,
-		maxOutputTokens: 256_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_024_000).
+			WithMaxOutputTokens(256_000),
 	},
 
 	// Seed 2.1 (2026-06) — current flagship tier. The whole Seed 2.x line is
@@ -185,8 +178,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 256_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(256_000),
 	},
 	"doubao-seed-2-1-turbo": {
 		kind: kindGenerate,
@@ -195,8 +189,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 256_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(256_000),
 	},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
@@ -210,8 +205,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"doubao-seed-2-0-lite": {
 		kind: kindGenerate,
@@ -220,8 +216,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"doubao-seed-2-0-mini": {
 		kind: kindGenerate,
@@ -230,8 +227,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"doubao-seed-2-0-code": {
 		kind: kindGenerate,
@@ -240,8 +238,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens:  256_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(128_000),
 	},
 
 	// Seed 1.x — superseded by the 2.x line; kept routable for existing
@@ -254,8 +253,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		maxInputTokens:  256_000,
-		maxOutputTokens: 64_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(64_000),
 	},
 	"doubao-seed-1-6-vision": {
 		kind: kindGenerate,
@@ -265,22 +265,24 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		maxInputTokens:  256_000,
-		maxOutputTokens: 64_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(64_000),
 	},
 
 	"doubao-embedding-large": {
-		kind:           kindEmbed,
-		capabilities:   inference.ModelCapabilities{}.WithInputs(message.PartText),
-		dimensions:     true,
-		maxInputTokens: 4_095,
+		kind: kindEmbed,
+		capabilities: inference.ModelCapabilities{}.
+			WithInputs(message.PartText).
+			WithCustomEmbedDimensions(),
+		limits: inference.ModelLimits{}.WithMaxInputTokens(4_095),
 	},
 	"doubao-embedding-vision": {
 		kind: kindEmbed,
 		capabilities: inference.ModelCapabilities{}.
-			WithInputs(message.PartText, message.PartImage),
-		dimensions:     true,
-		maxInputTokens: 8_191,
+			WithInputs(message.PartText, message.PartImage).
+			WithCustomEmbedDimensions(),
+		limits: inference.ModelLimits{}.WithMaxInputTokens(8_191),
 	},
 
 	// Seedream image generation; 5.0-pro/5.0/4.5 current, 4.0 superseded.
@@ -477,28 +479,42 @@ var catalog = map[string]catalogEntry{
 }
 
 // mergedCatalog overlays Spec.Models onto the built-in catalog and returns
-// the merged view. Spec entries replace catalog entries by name; numeric
-// limits are inherited from the replaced entry unless the declaration sets
-// them explicitly.
+// the merged view. A spec entry with a built-in name under the same kind is
+// a leaf-level patch: capability leaves it names replace the built-in's and
+// everything else (numeric limits, max resolution, the video parameter
+// matrix) is inherited unless declared explicitly. Video entries
+// intentionally keep a zero parameter matrix (syntax-only validation) when
+// the deployment declares its own capability set; see videoParams.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	merged := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(merged, catalog)
 	for _, model := range spec.Models {
-		entry := catalogEntry{
-			kind:          modelKind(model.Kind),
-			capabilities:  model.Capabilities,
-			dimensions:    model.Dimensions,
-			maxResolution: model.MaxResolution,
-		}
-		if builtin, exists := merged[model.Name]; exists && builtin.kind == entry.kind {
-			entry.maxInputTokens = builtin.maxInputTokens
-			entry.maxOutputTokens = builtin.maxOutputTokens
+		kind := modelKind(model.Kind)
+		builtin, exists := merged[model.Name]
+		entry := catalogEntry{kind: kind}
+		if exists && builtin.kind == kind {
+			entry.capabilities = model.Capabilities.Apply(builtin.capabilities)
+			entry.limits = builtin.limits.Clone()
+			entry.video = builtin.video
+			entry.maxResolution = builtin.maxResolution
+			if model.MaxResolution != nil {
+				entry.maxResolution = *model.MaxResolution
+			}
+		} else {
+			entry.capabilities = model.Capabilities.Apply(
+				inference.ModelCapabilities{},
+			)
+			if model.MaxResolution != nil {
+				entry.maxResolution = *model.MaxResolution
+			}
 		}
 		if model.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *model.Limits.MaxInputTokens
+			value := *model.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if model.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+			value := *model.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		merged[model.Name] = entry
 	}
@@ -528,12 +544,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 			descriptor.Lifecycle.Replacement = &replacement
 		}
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

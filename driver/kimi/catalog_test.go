@@ -20,14 +20,15 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}
 	for name, entry := range catalog {
-		if entry.maxInputTokens <= 0 {
+		if entry.limits.MaxInputTokens == nil {
 			t.Errorf("model %q: max input tokens not declared", name)
 		}
 		descriptor := descriptors[name]
-		if descriptor.Limits.MaxInputTokens == nil ||
-			*descriptor.Limits.MaxInputTokens != entry.maxInputTokens {
+		in, _ := entry.limits.Values()
+		din, _ := descriptor.Limits.Values()
+		if din != in {
 			t.Errorf("model %q: descriptor limit = %v, want %d",
-				name, descriptor.Limits.MaxInputTokens, entry.maxInputTokens)
+				name, descriptor.Limits.MaxInputTokens, in)
 		}
 	}
 	checks := map[string]int{
@@ -56,14 +57,15 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}
 	for name, entry := range catalog {
-		if entry.maxOutputTokens <= 0 {
+		if entry.limits.MaxOutputTokens == nil {
 			continue // family entries without a documented ceiling stay nil.
 		}
 		descriptor := descriptors[name]
-		if descriptor.Limits.MaxOutputTokens == nil ||
-			*descriptor.Limits.MaxOutputTokens != entry.maxOutputTokens {
+		_, out := entry.limits.Values()
+		_, dout := descriptor.Limits.Values()
+		if dout != out {
 			t.Errorf("model %q: descriptor limit = %v, want %d",
-				name, descriptor.Limits.MaxOutputTokens, entry.maxOutputTokens)
+				name, descriptor.Limits.MaxOutputTokens, out)
 		}
 	}
 	checks := map[string]int{
@@ -145,9 +147,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["kimi-k3"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 1_048_576 {
+	in, out := entry.limits.Values()
+	if in != 1_000_000 || out != 1_048_576 {
 		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/1048576",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 
 	spec, err = decodeSpec(context.Background(), []byte(`{
@@ -165,9 +168,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry = models["kimi-k3"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 4096 {
+	in, out = entry.limits.Values()
+	if in != 1_000_000 || out != 4096 {
 		t.Fatalf("overridden limits = %d/%d, want 1000000/4096",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }
 
@@ -187,8 +191,9 @@ func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["kimi-k3"]
-	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 1_048_576 {
+	in, out := entry.limits.Values()
+	if in != 65_536 || out != 1_048_576 {
 		t.Fatalf("declared input limits = %d/%d, want 65536/1048576",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }

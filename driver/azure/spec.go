@@ -52,20 +52,15 @@ func (s RequestMetadataSpec) Validate() error {
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"` // generate | embed | image | tts
-	// Capabilities declares the deployment's input/output content kinds,
-	// hosted web search support, and reasoning control capability, validated
-	// against the kind's compiler contract.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the deployment's capability leaves (input/output
+	// content kinds, hosted web search, reasoning control). Azure has no
+	// built-in line-up to inherit from, so every leaf a deployment publishes
+	// must be stated; unstated leaves stay the conservative zero declaration.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the deployment. Azure
 	// routes by deployment name and has no built-in catalog, so limits only
 	// ever come from the declaration.
 	Limits inference.ModelLimits `json:"limits,omitempty"`
-	// Dimensions accepts the embed dimensions knob (embed only).
-	Dimensions bool `json:"dimensions,omitempty"`
-	// EffortNone marks generate deployments whose reasoning.effort accepts
-	// "none" to disable reasoning (gpt-5.1+ deployments); deployments
-	// without it reject a ReasoningEnabled=false request.
-	EffortNone bool `json:"effort_none,omitempty"`
 }
 
 func (s Spec) Validate() error {
@@ -119,12 +114,18 @@ func (s Spec) Validate() error {
 				model.Kind,
 			)
 		}
-		if model.Dimensions && modelKind(model.Kind) != kindEmbed {
+		kind := modelKind(model.Kind)
+		if model.Capabilities != nil &&
+			model.Capabilities.CustomEmbedDimensions != nil &&
+			kind != kindEmbed {
 			return fmt.Errorf(
-				"azure: deployment %q sets dimensions on kind %q",
+				"azure: deployment %q sets custom_embed_dimensions on kind %q",
 				model.Name,
 				model.Kind,
 			)
+		}
+		if err := model.Capabilities.Validate(); err != nil {
+			return fmt.Errorf("azure: deployment %q: %w", model.Name, err)
 		}
 		if err := entryFor(model).validate(); err != nil {
 			return fmt.Errorf("azure: deployment %q: %w", model.Name, err)

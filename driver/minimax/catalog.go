@@ -50,16 +50,11 @@ type catalogEntry struct {
 	// a multimodal content array, 768P/2K tiers, 4-15s durations, and
 	// ratio control. The Hailuo 2.x/02 trio rides the flat v1 API.
 	videoV2 bool
-	// maxInputTokens caps the input context in tokens; zero means
-	// undeclared. M3 holds the 1M context and the M2.x series holds
-	// 204,800 per https://platform.minimaxi.com/docs/guides/text-generation.
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single generate response may emit
-	// (thinking plus answer tokens share the budget); zero means
-	// undeclared. M3's Anthropic-compatible surface caps max_tokens at
-	// 524288 (recommended 131072) per
-	// https://platform.minimaxi.com/docs/guides/text-generation.
-	maxOutputTokens int
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. M3 holds the 1M context with a 524288
+	// max_tokens cap (recommended 131072); the M2.x series holds 204,800 —
+	// per https://platform.minimaxi.com/docs/guides/text-generation.
+	limits inference.ModelLimits
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -93,7 +88,7 @@ func (e catalogEntry) validate() error {
 	default:
 		return fmt.Errorf("unsupported kind %q", e.kind)
 	}
-	return nil
+	return e.limits.Validate()
 }
 
 // generateChatCapabilities is the common capability declaration for the
@@ -132,50 +127,51 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
-		maxInputTokens:  1_000_000,
-		maxOutputTokens: 524_288,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_000_000).
+			WithMaxOutputTokens(524_288),
 	},
 	"MiniMax-M2.7": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2.7-highspeed": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2.5": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2.5-highspeed": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2.1": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2.1-highspeed": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 	"MiniMax-M2": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithReasoning(inference.ReasoningAlways),
-		maxInputTokens: 204_800,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
 	},
 
 	// Speech synthesis (t2a_v2): HD and turbo tiers.
@@ -323,28 +319,29 @@ var catalog = map[string]catalogEntry{
 }
 
 // mergedCatalog overlays the built-in catalog with the spec's model
-// declarations: a spec entry with a catalog name replaces that entry, and
-// unknown names extend the catalog. Models stay fail closed — the factory
-// only exposes what the merged catalog declares.
+// declarations: a spec entry with a catalog name is a leaf-level patch over
+// the built-in entry, and unknown names extend the catalog. Models stay
+// fail closed — the factory only exposes what the merged catalog declares.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
 		entry := catalogEntry{
-			kind:         modelKind(declared.Kind),
-			capabilities: declared.Capabilities,
+			kind: modelKind(declared.Kind),
 		}
+		base := inference.ModelCapabilities{}
 		if existing, exists := models[declared.Name]; exists {
 			if entry.kind == "" {
 				entry.kind = existing.kind
 			}
 			if entry.kind == existing.kind {
 				// Redeclaring a built-in model under the same kind keeps
-				// the family's control flags and limits; only capabilities
-				// come from the declaration. Without this, a spec entry for
-				// MiniMax-H3 would silently fall back to the v1 video API
-				// and a redeclared Hailuo model would lose its 10s/1080P
-				// support.
+				// the family's control flags and limits; capability leaves
+				// the declaration does not name are inherited too. Without
+				// this, a spec entry for MiniMax-H3 would silently fall
+				// back to the v1 video API and a redeclared Hailuo model
+				// would lose its 10s/1080P support.
+				base = existing.capabilities
 				entry.wireModel = existing.wireModel
 				entry.video10s = existing.video10s
 				entry.videoHD = existing.videoHD
@@ -352,19 +349,24 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 				entry.videoLastFrame = existing.videoLastFrame
 				entry.videoI2VOnly = existing.videoI2VOnly
 				entry.videoV2 = existing.videoV2
-				entry.maxInputTokens = existing.maxInputTokens
-				entry.maxOutputTokens = existing.maxOutputTokens
+				entry.limits = existing.limits.Clone()
 			}
 		} else {
 			if entry.kind == "" {
 				entry.kind = kindGenerate
 			}
 		}
+		// The declaration's capability leaves always apply; the base is the
+		// built-in entry under the same kind, and the conservative zero
+		// declaration for new names and cross-kind redeclarations.
+		entry.capabilities = declared.Capabilities.Apply(base)
 		if declared.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+			value := *declared.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if declared.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
+			value := *declared.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		models[declared.Name] = entry
 	}
@@ -405,12 +407,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

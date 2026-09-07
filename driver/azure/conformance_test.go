@@ -170,7 +170,14 @@ func TestConformanceGenerateStreamFailure(t *testing.T) {
 func TestConformanceEmbedUnary(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	deployment := "embed-deploy"
-	entry := entryFor(ModelSpec{Name: deployment, Kind: "embed", Dimensions: true})
+	dimensions := true
+	entry := entryFor(ModelSpec{
+		Name: deployment,
+		Kind: "embed",
+		Capabilities: &inference.CapabilitiesPatch{
+			CustomEmbedDimensions: &dimensions,
+		},
+	})
 	driver := conformanceEmbedDriver(t, compileEmbed(deployment, entry), calls)
 	inferencetest.RunEmbedUnary(t, inferencetest.EmbedUnarySuite{
 		Model: conformanceModel(deployment),

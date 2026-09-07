@@ -161,6 +161,12 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if len(embed.Capabilities.Outputs) != 0 {
 		t.Fatalf("embed model outputs = %v, want none", embed.Capabilities.Outputs)
 	}
+	if !descriptors["text-embedding-3-large"].Capabilities.CustomEmbedDimensions {
+		t.Fatal("text-embedding-3-large must publish custom embed dimensions support")
+	}
+	if descriptors["text-embedding-ada-002"].Capabilities.CustomEmbedDimensions {
+		t.Fatal("text-embedding-ada-002 must not publish custom embed dimensions support")
+	}
 }
 
 func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
@@ -249,15 +255,17 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	custom := models["custom"]
-	if custom.maxInputTokens != 100 || custom.maxOutputTokens != 200 {
+	in, out := custom.limits.Values()
+	if in != 100 || out != 200 {
 		t.Fatalf("custom limits = %d/%d, want 100/200",
-			custom.maxInputTokens, custom.maxOutputTokens)
+			in, out)
 	}
 	// Redeclaring a built-in model without limits keeps the catalog values.
 	builtin := models["gpt-4.1"]
-	if builtin.maxInputTokens != 1_047_576 || builtin.maxOutputTokens != 32_768 {
+	in, out = builtin.limits.Values()
+	if in != 1_047_576 || out != 32_768 {
 		t.Fatalf("gpt-4.1 limits = %d/%d, want catalog 1047576/32768",
-			builtin.maxInputTokens, builtin.maxOutputTokens)
+			in, out)
 	}
 
 	spec, err = decodeSpec(context.Background(), []byte(`{
@@ -276,13 +284,14 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	overridden := models["gpt-4.1"]
-	if overridden.maxInputTokens != 1_047_576 {
+	in, out = overridden.limits.Values()
+	if in != 1_047_576 {
 		t.Fatalf("gpt-4.1 max input = %d, want built-in 1047576",
-			overridden.maxInputTokens)
+			in)
 	}
-	if overridden.maxOutputTokens != 1000 {
+	if out != 1000 {
 		t.Fatalf("gpt-4.1 max output = %d, want declared 1000",
-			overridden.maxOutputTokens)
+			out)
 	}
 }
 
@@ -304,8 +313,161 @@ func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["gpt-4.1"]
-	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 32_768 {
+	in, out := entry.limits.Values()
+	if in != 65_536 || out != 32_768 {
 		t.Fatalf("declared input limits = %d/%d, want 65536/32768",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
+	}
+}
+
+func TestMergedCatalogRedeclareKeepsCustomEmbedDimensions(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{"name": "text-embedding-3-small", "kind": "embed"}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["text-embedding-3-small"]
+	if !entry.capabilities.CustomEmbedDimensions {
+		t.Fatal("redeclaration must inherit the custom embed dimensions capability")
+	}
+	in, _ := entry.limits.Values()
+	if in != 8_192 {
+		t.Fatalf("max input tokens = %d, want built-in 8192", in)
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "text-embedding-3-small",
+			"kind": "embed",
+			"capabilities": {"custom_embed_dimensions": false}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	if models["text-embedding-3-small"].capabilities.CustomEmbedDimensions {
+		t.Fatal("custom_embed_dimensions: false must clear the built-in capability")
+	}
+}
+
+func TestMergedCatalogLegacyReasoningStringKeepsEffortMap(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "gpt-5.6-sol",
+			"kind": "generate",
+			"capabilities": {
+				"outputs": ["text"],
+				"reasoning": "toggle"
+			}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["gpt-5.6-sol"]
+	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+		t.Fatalf("reasoning kind = %q, want toggle", entry.capabilities.Reasoning.Kind)
+	}
+	if len(entry.capabilities.Reasoning.EffortMap) != 5 {
+		t.Fatalf("legacy string form must keep the built-in effort map, got %v",
+			entry.capabilities.Reasoning.EffortMap)
+	}
+}
+
+// TestMergedCatalogLeafOverrides locks leaf-level override semantics:
+// explicit leaves replace, absent leaves inherit — hosted web search can be
+// removed with false, and a declared effort map replaces the built-in one
+// while an undeclared kind stays inherited.
+func TestMergedCatalogLeafOverrides(t *testing.T) {
+	// hosted_web_search: false removes the built-in capability while
+	// reasoning and limits stay inherited.
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "gpt-5.6-sol",
+			"kind": "generate",
+			"capabilities": {
+				"outputs": ["text"],
+				"hosted_web_search": false
+			}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["gpt-5.6-sol"]
+	if entry.capabilities.HostedWebSearch {
+		t.Fatal("hosted_web_search: false must remove the built-in capability")
+	}
+	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle ||
+		len(entry.capabilities.Reasoning.EffortMap) != 5 {
+		t.Fatalf("undeclared reasoning must stay inherited: %+v",
+			entry.capabilities.Reasoning)
+	}
+
+	// A declared effort map replaces the built-in one (minimal folds onto
+	// low here) while the reasoning kind stays inherited.
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "gpt-5.6-sol",
+			"kind": "generate",
+			"capabilities": {
+				"outputs": ["text"],
+				"reasoning": {
+					"effort_map": {
+						"minimal": "low", "low": "low", "medium": "medium",
+						"high": "high", "xhigh": "xhigh"
+					}
+				}
+			}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry = models["gpt-5.6-sol"]
+	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+		t.Fatalf("reasoning kind = %q, want inherited toggle",
+			entry.capabilities.Reasoning.Kind)
+	}
+	if mode, _ := entry.capabilities.Reasoning.ResolveEffort(
+		inference.ReasoningMinimal,
+	); mode != "low" {
+		t.Fatalf("declared effort map must replace the built-in one, minimal -> %q",
+			mode)
+	}
+}
+
+// TestCustomEmbedDimensionsRequiresEmbedKind guards the capability leaf's
+// family contract on the spec side.
+func TestCustomEmbedDimensionsRequiresEmbedKind(t *testing.T) {
+	if _, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "m",
+			"kind": "generate",
+			"capabilities": {"outputs": ["text"], "custom_embed_dimensions": true}
+		}]
+	}`)); err == nil {
+		t.Fatal("custom_embed_dimensions on a generate model unexpectedly accepted")
 	}
 }

@@ -58,13 +58,21 @@ func TestResourceFactoryRequiresID(t *testing.T) {
 	}
 }
 
-func TestResponsesProviderRejectsUnsupportedModels(t *testing.T) {
-	_, err := Factory().New(context.Background(), resource.Input{
+// TestResponsesProviderServesDeclaredModels locks the surface contract
+// after the per-model responses flag removal: api: responses serves every
+// declared generate model, so custom models no longer need a per-model
+// assertion.
+func TestResponsesProviderServesDeclaredModels(t *testing.T) {
+	value, err := Factory().New(context.Background(), resource.Input{
 		Settings: json.RawMessage(`{
 			"id": "deepseek",
 			"spec": {
 				"api": "responses",
-				"models": [{"name": "my-chat-only-model", "kind": "generate"}]
+				"models": [{
+					"name": "my-model",
+					"kind": "generate",
+					"capabilities": {"outputs": ["text"]}
+				}]
 			},
 			"profiles": [{
 				"id": "default",
@@ -72,8 +80,12 @@ func TestResponsesProviderRejectsUnsupportedModels(t *testing.T) {
 			}]
 		}`),
 	})
-	if err == nil {
-		t.Fatal("responses provider accepted deepseek-v4-pro")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider, ok := value.(inference.ProviderDefinition)
+	if !ok || len(provider.Models) != 4 {
+		t.Fatalf("provider = %+v", provider)
 	}
 }
 
@@ -86,7 +98,6 @@ func TestResponsesProviderAllowsDeclaredOverride(t *testing.T) {
 				"models": [{
 					"name": "deepseek-v4-flash",
 					"kind": "generate",
-					"responses": true,
 					"capabilities": {
 						"outputs": ["text"],
 						"hosted_web_search": true

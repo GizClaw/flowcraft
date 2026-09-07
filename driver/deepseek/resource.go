@@ -85,29 +85,6 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	if err != nil {
 		return inference.ProviderDefinition{}, err
 	}
-	if spec.apiMode() == apiResponses {
-		for name, entry := range models {
-			if !entry.responses {
-				if entry.declared {
-					return inference.ProviderDefinition{}, fmt.Errorf(
-						"deepseek provider %q: model %q does not support the Responses API",
-						settings.ID,
-						name,
-					)
-				}
-				// Built-in models without the responses capability are
-				// excluded from a Responses provider rather than failing
-				// the whole deployment.
-				delete(models, name)
-			}
-		}
-		if len(models) == 0 {
-			return inference.ProviderDefinition{}, fmt.Errorf(
-				"deepseek provider %q: Responses API requires at least one responses-capable model",
-				settings.ID,
-			)
-		}
-	}
 	profiles := make(map[string]profileMaterial, len(settings.Profiles))
 	for _, profile := range settings.Profiles {
 		material, err := newProfileMaterial(ctx, profile, secrets)

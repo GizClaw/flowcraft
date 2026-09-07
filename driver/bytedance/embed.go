@@ -64,7 +64,7 @@ func compileEmbed(
 			multimodal: slices.Contains(entry.capabilities.Inputs, message.PartImage),
 			dimensions: request.Dimensions,
 		}
-		if request.Dimensions != nil && !entry.dimensions {
+		if request.Dimensions != nil && !entry.capabilities.CustomEmbedDimensions {
 			ledger.reject(
 				inference.FieldEmbedDimensions,
 				"model does not accept custom dimensions",

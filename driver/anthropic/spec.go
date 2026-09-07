@@ -20,12 +20,14 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one catalog overlay entry.
+// ModelSpec declares one catalog overlay entry: a leaf-level patch over the
+// same-named built-in model (or a fresh declaration for unknown names).
+// Capability leaves the entry does not name are inherited from the built-in
+// entry, so tweaking one channel cannot silently revoke the rest.
 type ModelSpec struct {
 	Name string `json:"name"`
-	// Capabilities declares the model's input/output content kinds and the
-	// reasoning control capability.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
@@ -53,6 +55,17 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("anthropic: duplicate model %q", model.Name)
 		}
 		seen[model.Name] = true
+		if err := model.Capabilities.Validate(); err != nil {
+			return fmt.Errorf("anthropic: model %q: %w", model.Name, err)
+		}
+		if model.Capabilities != nil &&
+			model.Capabilities.CustomEmbedDimensions != nil {
+			return fmt.Errorf(
+				"anthropic: model %q: custom_embed_dimensions is unsupported "+
+					"(anthropic serves text generation only)",
+				model.Name,
+			)
+		}
 		if err := model.Limits.Validate(); err != nil {
 			return fmt.Errorf("anthropic: model %q: %w", model.Name, err)
 		}

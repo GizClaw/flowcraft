@@ -63,6 +63,13 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
+	if m.Capabilities.CustomEmbedDimensions {
+		return fmt.Errorf(
+			"model %q declares custom_embed_dimensions, but qwen embed "+
+				"sizes come from the built-in catalog whitelist",
+			m.Name,
+		)
+	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err
 	}

@@ -17,8 +17,9 @@ const SecretAPIKey = "api_key"
 // secrets resolve per profile and never appear here.
 type Spec struct {
 	// API selects the generate surface: "chat" (default) or "responses".
-	// Built-in models without the capability are excluded from a
-	// Responses provider, and declared models without it are rejected.
+	// Every catalog model is served on the selected surface; the official
+	// DeepSeek line-up supports both (see
+	// https://api-docs.deepseek.com/guides/responses_api).
 	API string `json:"api,omitempty"`
 	// BaseURL overrides the API endpoint. Defaults to
 	// https://api.deepseek.com (the OpenAI-compatible surface shared by
@@ -56,23 +57,20 @@ func (s RequestMetadataSpec) Validate() error {
 	return nil
 }
 
-// ModelSpec declares one model the deployment serves. Capabilities mirror
-// the built-in catalog shape: content kinds, hosted web search, and the
-// reasoning control capability. Responses is a wire-surface fact and stays a
-// separate flag.
+// ModelSpec declares one model the deployment serves, or a delta over a
+// same-named built-in catalog entry. Capabilities is a patch with
+// field-presence semantics: leaves it names replace that leaf of the entry
+// it overrides and leaves it does not name are inherited. The generate
+// surface is provider-wide (Spec.API), not per-model.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds, hosted
-	// web search support, and reasoning control capability.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
 	Limits inference.ModelLimits `json:"limits,omitempty"`
-	// Responses declares Responses API support (deepseek-v4-flash,
-	// deepseek-v4-pro, and deepseek-v4-flash-vision-exp).
-	Responses bool `json:"responses,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -84,6 +82,13 @@ func (m ModelSpec) Validate() error {
 	}
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
+	}
+	if m.Capabilities != nil && m.Capabilities.CustomEmbedDimensions != nil {
+		return fmt.Errorf(
+			"model %q declares custom_embed_dimensions, but deepseek "+
+				"serves text generation only",
+			m.Name,
+		)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err
