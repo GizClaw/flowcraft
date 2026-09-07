@@ -93,16 +93,7 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	for _, name := range sortedNames(models) {
 		entry := models[name]
 		id := inference.ModelID{Provider: settings.ID, Name: name}
-		descriptor := inference.ModelDescriptor{
-			ID:           id,
-			Capabilities: entry.capabilities,
-		}
-		if entry.maxInputTokens > 0 {
-			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-		}
-		if entry.maxOutputTokens > 0 {
-			descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-		}
+		descriptor := descriptorFor(id, entry)
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
 			Openers:    openersFor(spec, entry, profiles, id),
