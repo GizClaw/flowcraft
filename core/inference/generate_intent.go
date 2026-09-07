@@ -98,11 +98,13 @@ type TextIntent struct {
 	// Sampling controls: temperature in [0, 2], top_p in [0, 1].
 	Temperature *float64 `json:"temperature,omitempty"`
 	TopP        *float64 `json:"top_p,omitempty"`
-	// ReasoningEnabled is the universal reasoning switch — every
-	// provider can turn thinking on or off, so the compiler honors it
-	// exactly (or rejects where a model cannot comply). ReasoningEffort
-	// tunes depth where the platform has levels; platforms whose
-	// thinking is binary quantize it, and the compiler reports the loss.
+	// ReasoningEnabled is the universal reasoning switch. The model's
+	// published ReasoningKind decides how a compiler honors it: "toggle"
+	// models must compile reasoning_enabled=false on the publishing
+	// provider surface, "always" models reject it, and "none" models have
+	// no reasoning to switch. ReasoningEffort tunes depth where the
+	// platform has levels; platforms whose thinking is binary quantize it,
+	// and the compiler reports the loss.
 	ReasoningEnabled *bool           `json:"reasoning_enabled,omitempty"`
 	ReasoningEffort  ReasoningEffort `json:"reasoning_effort,omitempty"`
 }
