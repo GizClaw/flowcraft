@@ -117,7 +117,6 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 	slices.Sort(names)
 	for _, name := range names {
 		entry := models[name]
-		entry.api = spec.apiMode()
 		id := inference.ModelID{Provider: settings.ID, Name: name}
 		descriptor := descriptorFor(id, entry)
 		provider.Models = append(provider.Models, inference.ModelImplementation{

@@ -10,12 +10,11 @@
 //     deepseek-v4-flash-vision-exp model additionally accepts image input
 //     (URL or base64) in user messages on this surface.
 //   - Responses (`api: responses`): OpenAI-compatible Responses API on
-//     https://api.deepseek.com/responses. deepseek-v4-flash,
-//     deepseek-v4-pro, and deepseek-v4-flash-vision-exp support it. The
-//     surface adds json_schema output, hosted web_search, and plain-text
-//     reasoning item round-trips. The vision model carries input_image
-//     parts in user messages here too. `include` is intentionally never
-//     sent: DeepSeek does not support it.
+//     https://api.deepseek.com/responses. Every model in the catalog is
+//     served on this surface when selected. The surface adds json_schema
+//     output, hosted web_search, and plain-text reasoning item round-trips.
+//     The vision model carries input_image parts in user messages here too.
+//     `include` is intentionally never sent: DeepSeek does not support it.
 //
 // Credentials come exclusively from resource profiles: `api_key`
 // authenticates every surface, and secret values may reference the

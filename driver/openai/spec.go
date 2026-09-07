@@ -82,27 +82,24 @@ func (s RequestMetadataSpec) Validate() error {
 	return nil
 }
 
-// ModelSpec declares one model outside the built-in catalog. Capabilities
-// mirror the built-in catalog shape: content kinds, hosted web search, and
-// the reasoning control capability (validated against the kind's compiler
-// contract at merge time). Dimensions and EffortNone are control
-// capabilities that no capability kind expresses and stay separate flags.
+// ModelSpec declares a model outside the built-in catalog, or a delta over a
+// same-named, same-kind built-in catalog entry. Capabilities is a patch with
+// field-presence semantics: every leaf it names replaces that leaf of the
+// entry it overrides, and leaves it does not name are inherited — so
+// redeclaring a built-in to tweak one channel keeps every other declared
+// fact, including the reasoning effort map and custom embed output
+// dimensions. Reasoning off needs no separate declaration: "toggle" on the
+// Responses surface means this model honors reasoning.effort="none", and
+// models whose endpoint cannot disable reasoning publish "always".
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds, hosted
-	// web search support, and reasoning control capability.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
 	Limits inference.ModelLimits `json:"limits,omitempty"`
-	// Dimensions (embed) allows custom output dimensions.
-	Dimensions bool `json:"dimensions,omitempty"`
-	// EffortNone marks generate models whose reasoning.effort accepts
-	// "none" to disable reasoning (gpt-5.1+); models without it reject a
-	// ReasoningEnabled=false request.
-	EffortNone bool `json:"effort_none,omitempty"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. OpenAI addresses
@@ -189,10 +186,21 @@ func (m ModelSpec) Validate() error {
 	if !modelNamePattern.MatchString(m.Name) {
 		return fmt.Errorf("invalid model name %q", m.Name)
 	}
-	switch modelKind(m.Kind) {
+	kind := modelKind(m.Kind)
+	switch kind {
 	case kindGenerate, kindEmbed, kindImage, kindTTS:
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
+	}
+	if m.Capabilities != nil &&
+		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions &&
+		kind != kindEmbed {
+		return fmt.Errorf(
+			"model %q sets custom_embed_dimensions on kind %q",
+			m.Name,
+			m.Kind,
+		)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

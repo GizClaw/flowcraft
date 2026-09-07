@@ -24,28 +24,19 @@ const (
 
 // catalogEntry declares what one catalog model accepts. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
-// search, and the reasoning control capability. api, declared, and responses
-// are wire-surface facts, not content capabilities, and stay separate flags.
+// search, and the reasoning control capability. api is a wire-surface fact,
+// not a content capability, and stays a separate flag: every catalog model
+// is served on the surface Spec.API selects.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
 	// api is the provider-level generate surface selected by Spec.API.
 	api apiMode
-	// declared marks a Spec.Models entry (as opposed to a built-in catalog
-	// model). Responses-mode filtering treats declared entries fail-fast.
-	declared bool
-	// responses accepts the Responses API surface. Chat completions work
-	// for every catalog model; responses is per-model.
-	responses bool
-	// maxInputTokens caps the input context in tokens; zero means
-	// undeclared. Both V4 models carry the 1M context published on
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Both V4 models carry the 1M context and 384K
+	// maximum output published on
 	// https://api-docs.deepseek.com/quick_start/pricing.
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single response may emit
-	// (thinking plus answer tokens share the budget); zero means
-	// undeclared. Values mirror the 384K maximum published on
-	// https://api-docs.deepseek.com/quick_start/pricing.
-	maxOutputTokens int
+	limits inference.ModelLimits
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
@@ -78,7 +69,7 @@ func (e catalogEntry) validate() error {
 	if !slices.Contains(e.capabilities.Outputs, message.PartText) {
 		return fmt.Errorf("generate family must declare text output")
 	}
-	return nil
+	return e.limits.Validate()
 }
 
 // generateChatCapabilities is the capability declaration for the DeepSeek
@@ -119,9 +110,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:       true,
-		maxInputTokens:  1_000_000,
-		maxOutputTokens: 384_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_000_000).
+			WithMaxOutputTokens(384_000),
 	},
 	"deepseek-v4-pro": {
 		kind: kindGenerate,
@@ -129,9 +120,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:       true,
-		maxInputTokens:  1_000_000,
-		maxOutputTokens: 384_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_000_000).
+			WithMaxOutputTokens(384_000),
 	},
 	"deepseek-v4-flash-vision-exp": {
 		kind: kindGenerate,
@@ -140,26 +131,25 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:       true,
-		maxInputTokens:  1_000_000,
-		maxOutputTokens: 384_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_000_000).
+			WithMaxOutputTokens(384_000),
 	},
 }
 
 // mergedCatalog overlays the built-in catalog with the spec's model
-// declarations: a spec entry with a catalog name replaces that entry, and
-// unknown names extend the catalog. Replacing a built-in keeps its numeric
-// limits unless the declaration sets them explicitly. Models stay fail
-// closed — the factory only exposes what the merged catalog declares.
+// declarations: a spec entry with a catalog name is a leaf-level patch over
+// the built-in entry (capability leaves and numeric limits are inherited
+// unless declared explicitly), and unknown names extend the catalog. Models
+// stay fail closed — the factory only exposes what the merged catalog
+// declares. Every generate model is served on whichever surface Spec.API
+// selects.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
 		entry := catalogEntry{
-			kind:         modelKind(declared.Kind),
-			capabilities: declared.Capabilities,
-			responses:    declared.Responses,
-			declared:     true,
+			kind: modelKind(declared.Kind),
 		}
 		if entry.kind == "" {
 			if existing, exists := models[declared.Name]; exists {
@@ -169,14 +159,22 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			}
 		}
 		if existing, exists := models[declared.Name]; exists {
-			entry.maxInputTokens = existing.maxInputTokens
-			entry.maxOutputTokens = existing.maxOutputTokens
+			entry.capabilities = declared.Capabilities.Apply(
+				existing.capabilities,
+			)
+			entry.limits = existing.limits.Clone()
+		} else {
+			entry.capabilities = declared.Capabilities.Apply(
+				inference.ModelCapabilities{},
+			)
 		}
 		if declared.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+			value := *declared.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if declared.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
+			value := *declared.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		models[declared.Name] = entry
 	}
@@ -212,12 +210,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

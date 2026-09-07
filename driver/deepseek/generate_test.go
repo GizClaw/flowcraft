@@ -108,7 +108,6 @@ func responsesEntry() catalogEntry {
 		kind:         kindGenerate,
 		api:          apiResponses,
 		capabilities: generateChatCapabilities().WithHostedWebSearch().WithReasoning(inference.ReasoningToggle),
-		responses:    true,
 	}
 }
 

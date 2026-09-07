@@ -16,8 +16,9 @@
 //
 // Deployments are the catalog: Azure routes by deployment name, so every
 // model in spec.models declares one deployment plus the operation kind and
-// optional capability flags (including effort_none for reasoning
-// deployments that accept effort "none" to disable thinking). Credentials
-// live per profile under api_key; the resource endpoint and api-version
-// live on the provider Spec.
+// optional capability flags. Reasoning off needs no separate flag: a
+// deployment published as reasoning kind "toggle" asserts the endpoint
+// honors reasoning.effort="none", and deployments that cannot disable
+// reasoning publish "always". Credentials live per profile under api_key;
+// the resource endpoint and api-version live on the provider Spec.
 package azure

@@ -24,7 +24,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 		if !ok {
 			t.Fatalf("catalog model %q missing from provider", name)
 		}
-		if entry.maxInputTokens <= 0 || descriptor.Limits.MaxInputTokens == nil {
+		if entry.limits.MaxInputTokens == nil || descriptor.Limits.MaxInputTokens == nil {
 			t.Errorf("model %q: max input tokens not declared", name)
 		}
 	}
@@ -61,7 +61,7 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 		if !ok {
 			t.Fatalf("catalog model %q missing from provider", name)
 		}
-		if entry.maxOutputTokens <= 0 || descriptor.Limits.MaxOutputTokens == nil {
+		if entry.limits.MaxOutputTokens == nil || descriptor.Limits.MaxOutputTokens == nil {
 			t.Errorf("model %q: max output tokens not declared", name)
 		}
 	}
@@ -138,9 +138,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["claude-sonnet-5"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 128_000 {
+	in, out := entry.limits.Values()
+	if in != 1_000_000 || out != 128_000 {
 		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/128000",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 
 	spec, err = decodeSpec(context.Background(), []byte(`{
@@ -158,9 +159,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry = models["claude-sonnet-5"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 4096 {
+	in, out = entry.limits.Values()
+	if in != 1_000_000 || out != 4096 {
 		t.Fatalf("overridden limits = %d/%d, want 1000000/4096",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }
 
@@ -181,8 +183,9 @@ func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["claude-sonnet-5"]
-	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 128_000 {
+	in, out := entry.limits.Values()
+	if in != 65_536 || out != 128_000 {
 		t.Fatalf("declared input limits = %d/%d, want 65536/128000",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }

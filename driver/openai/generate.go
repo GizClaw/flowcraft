@@ -643,7 +643,11 @@ func compileIntent(
 			)
 		case entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
-			if entry.effortNone && entry.api != apiChat {
+			// Toggle is only published where the surface can express off:
+			// Responses lowers it to reasoning.effort "none", while chat
+			// entries are lowered to always at merge time. The chat guard
+			// stays as compiler-level defense for direct entry misuse.
+			if entry.api != apiChat {
 				wire.reasoning = "none"
 				break
 			}

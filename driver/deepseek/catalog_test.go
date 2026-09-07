@@ -18,7 +18,7 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	}
 	for _, model := range provider.Models {
 		name := model.Descriptor.ID.Name
-		if catalog[name].maxInputTokens <= 0 {
+		if catalog[name].limits.MaxInputTokens == nil {
 			t.Errorf("model %q: max input tokens not declared", name)
 		}
 		if model.Descriptor.Limits.MaxInputTokens == nil ||
@@ -36,7 +36,7 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 	}
 	for _, model := range provider.Models {
 		name := model.Descriptor.ID.Name
-		if catalog[name].maxOutputTokens <= 0 {
+		if catalog[name].limits.MaxOutputTokens == nil {
 			t.Errorf("model %q: max output tokens not declared", name)
 		}
 		if model.Descriptor.Limits.MaxOutputTokens == nil ||
@@ -125,9 +125,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["deepseek-v4-flash"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 384_000 {
+	in, out := entry.limits.Values()
+	if in != 1_000_000 || out != 384_000 {
 		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/384000",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 
 	spec, err = decodeSpec(context.Background(), []byte(`{
@@ -145,9 +146,10 @@ func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry = models["deepseek-v4-flash"]
-	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 64_000 {
+	in, out = entry.limits.Values()
+	if in != 1_000_000 || out != 64_000 {
 		t.Fatalf("overridden limits = %d/%d, want 1000000/64000",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }
 
@@ -168,9 +170,10 @@ func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["deepseek-v4-flash"]
-	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 384_000 {
+	in, out := entry.limits.Values()
+	if in != 65_536 || out != 384_000 {
 		t.Fatalf("declared input limits = %d/%d, want 65536/384000",
-			entry.maxInputTokens, entry.maxOutputTokens)
+			in, out)
 	}
 }
 

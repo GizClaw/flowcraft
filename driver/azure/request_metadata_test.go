@@ -9,12 +9,14 @@ import (
 )
 
 func TestRequestMetadataCompilesAndLoweringOptions(t *testing.T) {
+	inputs := []message.PartKind{message.PartText}
+	outputs := []message.PartKind{message.PartText}
 	entry := entryFor(ModelSpec{
 		Name: "gpt-test",
 		Kind: "generate",
-		Capabilities: inference.ModelCapabilities{
-			Inputs:  []message.PartKind{message.PartText},
-			Outputs: []message.PartKind{message.PartText},
+		Capabilities: &inference.CapabilitiesPatch{
+			Inputs:  &inputs,
+			Outputs: &outputs,
 		},
 	})
 	request := inference.GenerateRequest{

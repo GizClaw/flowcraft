@@ -36,14 +36,17 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves.
+// ModelSpec declares one model the deployment serves, or a delta over a
+// same-named, same-kind built-in catalog entry. Capabilities is a patch
+// with field-presence semantics: leaves it names replace that leaf of the
+// entry it overrides and leaves it does not name are inherited, so
+// redeclaring a built-in to tweak one channel keeps every other declared
+// fact.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds and the
-	// reasoning control capability, validated against the kind's compiler
-	// contract at merge time.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
@@ -64,6 +67,13 @@ func (m ModelSpec) Validate() error {
 		modelKind(m.Kind) != kindContextIR &&
 		modelKind(m.Kind) != kindMusic {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
+	}
+	if m.Capabilities != nil && m.Capabilities.CustomEmbedDimensions != nil {
+		return fmt.Errorf(
+			"model %q declares custom_embed_dimensions, but minimax has "+
+				"no embed family",
+			m.Name,
+		)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

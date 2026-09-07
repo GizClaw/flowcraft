@@ -32,18 +32,13 @@ type catalogEntry struct {
 	// reasoning (kimi-k3, kimi-k2.7-code): traces round-trip natively and
 	// no knob exists to turn the behaviour off.
 	keepThinkingAlways bool
-	// maxInputTokens caps the input context in tokens; zero means
-	// undeclared. Values mirror the context windows published on
-	// https://platform.kimi.com/docs/models (moonshot-v1 variants state
-	// 8k/32k/128k).
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single response may emit
-	// (thinking plus answer tokens share the budget); zero means
-	// undeclared. kimi-k3's ceiling comes from the official quickstart
-	// (max_completion_tokens up to 1048576,
-	// https://platform.kimi.com/docs/guide/kimi-k3-quickstart);
-	// kimi-k2.7-code values follow the family's 131072 ceiling.
-	maxOutputTokens int
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Values mirror the context windows published
+	// on https://platform.kimi.com/docs/models (moonshot-v1 variants state
+	// 8k/32k/128k); kimi-k3's output ceiling comes from the official
+	// quickstart (max_completion_tokens up to 1048576,
+	// https://platform.kimi.com/docs/guide/kimi-k3-quickstart).
+	limits inference.ModelLimits
 }
 
 // kimiK3EffortMap is kimi-k3's canonical-to-wire effort map per the Kimi
@@ -75,8 +70,9 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningAlways).
 			WithReasoningEffortMap(kimiK3EffortMap),
 		keepThinkingAlways: true,
-		maxInputTokens:     1_000_000,
-		maxOutputTokens:    1_048_576,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_000_000).
+			WithMaxOutputTokens(1_048_576),
 	},
 	"kimi-k2.7-code": {
 		kind: kindGenerate,
@@ -84,8 +80,9 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
-		maxInputTokens:     256_000,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(131_072),
 	},
 	"kimi-k2.7-code-highspeed": {
 		kind: kindGenerate,
@@ -93,33 +90,67 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
-		maxInputTokens:     256_000,
-		maxOutputTokens:    131_072,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(256_000).
+			WithMaxOutputTokens(131_072),
 	},
 	"kimi-k2.6": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
-		keepThinking:   true,
-		maxInputTokens: 256_000,
+		keepThinking: true,
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(256_000),
 	},
 	"kimi-k2.5": {
 		kind: kindGenerate,
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningToggle),
-		maxInputTokens: 256_000,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(256_000),
 	},
 
 	// moonshot-v1: text generation plus vision previews; the only family
 	// with sampling knobs and the only one without thinking.
-	"moonshot-v1-8k":                  {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 8_192},
-	"moonshot-v1-32k":                 {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 32_768},
-	"moonshot-v1-128k":                {kind: kindGenerate, capabilities: generateChatCapabilities(), sampling: true, maxInputTokens: 131_072},
-	"moonshot-v1-8k-vision-preview":   {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 8_192},
-	"moonshot-v1-32k-vision-preview":  {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 32_768},
-	"moonshot-v1-128k-vision-preview": {kind: kindGenerate, capabilities: generateChatCapabilities().WithInputs(message.PartImage), sampling: true, maxInputTokens: 131_072},
+	"moonshot-v1-8k": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		sampling:     true,
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(8_192),
+	},
+	"moonshot-v1-32k": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		sampling:     true,
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(32_768),
+	},
+	"moonshot-v1-128k": {
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities(),
+		sampling:     true,
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(131_072),
+	},
+	"moonshot-v1-8k-vision-preview": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage),
+		sampling: true,
+		limits:   inference.ModelLimits{}.WithMaxInputTokens(8_192),
+	},
+	"moonshot-v1-32k-vision-preview": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage),
+		sampling: true,
+		limits:   inference.ModelLimits{}.WithMaxInputTokens(32_768),
+	},
+	"moonshot-v1-128k-vision-preview": {
+		kind: kindGenerate,
+		capabilities: generateChatCapabilities().
+			WithInputs(message.PartImage),
+		sampling: true,
+		limits:   inference.ModelLimits{}.WithMaxInputTokens(131_072),
+	},
 }
 
 func (e catalogEntry) validate() error {
@@ -135,7 +166,7 @@ func (e catalogEntry) validate() error {
 	if e.keepThinkingAlways && e.capabilities.Reasoning.Kind != inference.ReasoningAlways {
 		return fmt.Errorf("always-preserved thinking requires always-on thinking")
 	}
-	return nil
+	return e.limits.Validate()
 }
 
 // generateChatCapabilities is the capability declaration for the Kimi text
@@ -152,41 +183,42 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
-// mergedCatalog overlays the built-in catalog with the spec's model
-// declarations: capability lists union onto the same-named catalog entry,
-// and unknown names extend the catalog as bare generate models.
+// mergedCatalog overlays the spec's declared models on the built-in
+// catalog: a spec entry that names a catalog entry is a leaf patch over it
+// (capability leaves and numeric limits are inherited unless declared),
+// and unknown names start from the conservative zero declaration. Models
+// stay fail closed — the factory only exposes what the merged catalog
+// declares.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
-		if entry, exists := models[declared.Name]; exists {
-			if declared.Kind != "" && modelKind(declared.Kind) != entry.kind {
-				return nil, fmt.Errorf("model %q kind %q conflicts with catalog %q",
-					declared.Name, declared.Kind, entry.kind)
+		entry := catalogEntry{kind: modelKind(declared.Kind)}
+		base := inference.ModelCapabilities{}
+		if existing, exists := models[declared.Name]; exists {
+			if entry.kind == "" {
+				entry.kind = existing.kind
+			}
+			if entry.kind == existing.kind {
+				// Same-kind redeclarations keep the catalog's driver
+				// control facts and limits; capability leaves the
+				// declaration does not name are inherited too.
+				entry = existing
+				base = existing.capabilities
+			}
+		} else {
+			if entry.kind == "" {
+				entry.kind = kindGenerate
 			}
 		}
-		entry := models[declared.Name]
-		if entry.kind == "" {
-			entry.kind = kindGenerate
-		}
-		entry.capabilities.Inputs = unionKinds(
-			entry.capabilities.Inputs,
-			declared.Capabilities.Inputs,
-		)
-		entry.capabilities.Outputs = unionKinds(
-			entry.capabilities.Outputs,
-			declared.Capabilities.Outputs,
-		)
-		entry.capabilities.HostedWebSearch =
-			entry.capabilities.HostedWebSearch || declared.Capabilities.HostedWebSearch
-		if declared.Capabilities.Reasoning.Kind != inference.ReasoningNone {
-			entry.capabilities.Reasoning = declared.Capabilities.Reasoning
-		}
+		entry.capabilities = declared.Capabilities.Apply(base)
 		if declared.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+			value := *declared.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if declared.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
+			value := *declared.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", declared.Name, err)
@@ -194,19 +226,6 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		models[declared.Name] = entry
 	}
 	return models, nil
-}
-
-// unionKinds appends any kind from addition that is not already present in
-// base, preserving base order. Spec declarations overlay catalog entries
-// additively.
-func unionKinds(base, addition []message.PartKind) []message.PartKind {
-	result := append([]message.PartKind(nil), base...)
-	for _, kind := range addition {
-		if !slices.Contains(result, kind) {
-			result = append(result, kind)
-		}
-	}
-	return result
 }
 
 // sortedNames returns catalog names in deterministic order so factory
@@ -228,12 +247,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

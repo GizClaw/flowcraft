@@ -33,11 +33,11 @@ const (
 
 // catalogEntry is one model in the built-in catalog. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
-// search, and the reasoning control capability. dimensions and effortNone
-// are control capabilities that no capability kind expresses (embed custom
-// output dimensions, and effort "none" to disable reasoning) and stay
-// separate flags. ModelSpec mirrors this shape so deployment-declared
-// models behave identically.
+// search, the reasoning control capability, and custom embed output
+// dimensions. Reasoning off is not a separate flag: on the Responses
+// surface OpenAI expresses it as reasoning.effort="none", so a model
+// published as ReasoningToggle has an off route by construction (see
+// mergedCatalog for the per-surface resolution).
 type catalogEntry struct {
 	kind         modelKind
 	api          apiMode
@@ -52,25 +52,13 @@ type catalogEntry struct {
 	// (true); false disables stream obfuscation. It only affects generate
 	// entries served by the chat surface.
 	chatStreamIncludeObfuscation *bool
-	// dimensions (embed) allows custom output dimensions. Control
-	// capability, likewise not a content kind.
-	dimensions bool
-	// effortNone marks reasoning models whose reasoning.effort accepts
-	// "none" to disable reasoning (gpt-5.1+ per the OpenAI docs); models
-	// without it reject a disable request.
-	effortNone  bool
-	deprecated  bool
-	replacement string
-	// maxInputTokens caps the input context (prompt plus prior turns) in
-	// tokens; zero means undeclared. Generate values mirror the context
-	// window on https://developers.openai.com/api/docs/models; embedding
-	// values mirror the per-request input limit.
-	maxInputTokens int
-	// maxOutputTokens caps the tokens a single generate response may emit
-	// (reasoning plus answer tokens share the budget); zero means
-	// undeclared. Values mirror the maximum output on
-	// https://developers.openai.com/api/docs/models.
-	maxOutputTokens int
+	deprecated                   bool
+	replacement                  string
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Generate values mirror the context window and
+	// maximum output on https://developers.openai.com/api/docs/models;
+	// embedding values mirror the per-request input limit.
+	limits inference.ModelLimits
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
@@ -101,7 +89,7 @@ func (e catalogEntry) validate() error {
 			return fmt.Errorf("embed family declares no generate output")
 		}
 	}
-	return nil
+	return e.limits.Validate()
 }
 
 // includeChatStreamUsage resolves the chat streaming usage policy to the
@@ -148,84 +136,99 @@ var openaiEffortMap = map[inference.ReasoningEffort]string{
 var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
-		kind:            kindGenerate,
-		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:      true,
-		maxInputTokens:  1_050_000,
-		maxOutputTokens: 128_000,
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_050_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.6-terra": {
-		kind:            kindGenerate,
-		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:      true,
-		maxInputTokens:  1_050_000,
-		maxOutputTokens: 128_000,
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_050_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.6-luna": {
-		kind:            kindGenerate,
-		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:      true,
-		maxInputTokens:  1_050_000,
-		maxOutputTokens: 128_000,
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_050_000).
+			WithMaxOutputTokens(128_000),
 	},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		maxInputTokens:  1_050_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_050_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		maxInputTokens:  1_050_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_050_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4-mini": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-terra",
-		maxInputTokens:  400_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(400_000).
+			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4-nano": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		maxInputTokens:  400_000,
-		maxOutputTokens: 128_000,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(400_000).
+			WithMaxOutputTokens(128_000),
 	},
 	// Generate — GPT-4.1 line: vision without the reasoning control.
 	"gpt-4.1": {
-		kind:            kindGenerate,
-		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		maxInputTokens:  1_047_576,
-		maxOutputTokens: 32_768,
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_047_576).
+			WithMaxOutputTokens(32_768),
 	},
 	"gpt-4.1-mini": {
-		kind:            kindGenerate,
-		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		maxInputTokens:  1_047_576,
-		maxOutputTokens: 32_768,
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_047_576).
+			WithMaxOutputTokens(32_768),
 	},
 	// gpt-4.1-nano has no hosted web_search tool.
 	"gpt-4.1-nano": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		maxInputTokens:  1_047_576,
-		maxOutputTokens: 32_768,
+		limits: inference.ModelLimits{}.
+			WithMaxInputTokens(1_047_576).
+			WithMaxOutputTokens(32_768),
 	},
 
 	// Embed.
-	"text-embedding-3-small": {kind: kindEmbed, dimensions: true, maxInputTokens: 8_192},
-	"text-embedding-3-large": {kind: kindEmbed, dimensions: true, maxInputTokens: 8_192},
+	"text-embedding-3-small": {
+		kind:         kindEmbed,
+		capabilities: inference.ModelCapabilities{}.WithCustomEmbedDimensions(),
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(8_192),
+	},
+	"text-embedding-3-large": {
+		kind:         kindEmbed,
+		capabilities: inference.ModelCapabilities{}.WithCustomEmbedDimensions(),
+		limits:       inference.ModelLimits{}.WithMaxInputTokens(8_192),
+	},
 	"text-embedding-ada-002": {
 		kind:       kindEmbed,
 		deprecated: true, replacement: "text-embedding-3-small",
-		maxInputTokens: 8_192,
+		limits: inference.ModelLimits{}.WithMaxInputTokens(8_192),
 	},
 
 	// Image.
@@ -266,39 +269,58 @@ var catalog = map[string]catalogEntry{
 	},
 }
 
-// mergedCatalog overlays Spec.Models onto the built-in catalog. A custom
-// entry replaces the same-named built-in entirely, except that numeric
-// limits are inherited from the built-in entry and only replaced when the
-// declaration sets them explicitly.
+// mergedCatalog overlays Spec.Models onto the built-in catalog and resolves
+// every entry to the provider instance's surface. A declaration that names a
+// built-in model under the same kind is a leaf-level patch: capability
+// leaves it names replace the built-in's, everything else (capability
+// leaves, numeric limits) is inherited unless declared explicitly.
+// Reasoning kind "toggle" is then resolved per surface: OpenAI expresses
+// reasoning off as reasoning.effort="none" on Responses only, so a model
+// published as "toggle" there is a deployment assertion that the endpoint
+// honors that route, while the chat surface cannot express off at all and
+// those entries publish "always" instead of promising a switch the
+// compiler would reject.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, model := range spec.Models {
-		entry := catalogEntry{
-			kind:         modelKind(model.Kind),
-			capabilities: model.Capabilities,
-			dimensions:   model.Dimensions,
-			effortNone:   model.EffortNone,
-		}
-		if builtin, exists := models[model.Name]; exists && builtin.kind == entry.kind {
-			entry.maxInputTokens = builtin.maxInputTokens
-			entry.maxOutputTokens = builtin.maxOutputTokens
+		kind := modelKind(model.Kind)
+		builtin, exists := models[model.Name]
+		entry := catalogEntry{kind: kind}
+		if exists && builtin.kind == kind {
+			// Same-kind redeclarations inherit the built-in capabilities as
+			// the patch base plus the limits below.
+			entry.capabilities = model.Capabilities.Apply(builtin.capabilities)
+			entry.limits = builtin.limits.Clone()
+		} else {
+			entry.capabilities = model.Capabilities.Apply(inference.ModelCapabilities{})
 		}
 		if model.Limits.MaxInputTokens != nil {
-			entry.maxInputTokens = *model.Limits.MaxInputTokens
+			value := *model.Limits.MaxInputTokens
+			entry.limits.MaxInputTokens = &value
 		}
 		if model.Limits.MaxOutputTokens != nil {
-			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+			value := *model.Limits.MaxOutputTokens
+			entry.limits.MaxOutputTokens = &value
 		}
 		models[model.Name] = entry
 	}
 	envelope := spec.requestMetadataEnvelope()
 	chatStreamIncludeUsage := spec.chatStreamIncludeUsage()
 	chatStreamIncludeObfuscation := spec.chatStreamIncludeObfuscation()
+	api := spec.apiMode()
 	for name, entry := range models {
+		entry.api = api
 		entry.requestMetadataEnvelope = envelope
 		entry.chatStreamIncludeUsage = chatStreamIncludeUsage
 		entry.chatStreamIncludeObfuscation = chatStreamIncludeObfuscation
+		if entry.kind == kindGenerate &&
+			entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
+			entry.api == apiChat {
+			// Chat Completions has no way to express reasoning off for any
+			// model, so the truthful per-surface capability is always-on.
+			entry.capabilities.Reasoning.Kind = inference.ReasoningAlways
+		}
 		models[name] = entry
 	}
 	for name, entry := range models {
@@ -327,12 +349,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 			descriptor.Lifecycle.Replacement = &replacement
 		}
 	}
-	if entry.maxInputTokens > 0 {
-		descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
-	}
-	if entry.maxOutputTokens > 0 {
-		descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
-	}
+	descriptor.Limits = entry.limits.Clone()
 	return descriptor
 }
 

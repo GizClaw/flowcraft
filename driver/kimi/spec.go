@@ -25,20 +25,21 @@ type Spec struct {
 	// Router owns the full retry budget; nil keeps the httpkit default.
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Models declares models outside the built-in catalog or extends
-	// catalog entries by name.
+	// catalog entries by name. Same-name entries are leaf-level patches
+	// over the built-in: written leaves replace, unstated leaves inherit.
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves. Capability lists union
-// onto the catalog entry of the same name (or a fresh generate entry for
-// unknown names): a spec model can widen a model's surface, never narrow it
-// below what the catalog already promises.
+// ModelSpec declares one model the deployment serves, or a delta over a
+// same-named built-in catalog entry. Capabilities is a patch with
+// field-presence semantics: leaves it names replace that leaf of the entry
+// it overrides and leaves it does not name are inherited. Kimi serves text
+// generation only.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds and the
-	// reasoning control capability.
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
@@ -54,6 +55,15 @@ func (m ModelSpec) Validate() error {
 	}
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
+	}
+	if m.Capabilities != nil &&
+		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions {
+		return fmt.Errorf(
+			"model %q declares custom_embed_dimensions, but kimi serves "+
+				"text generation only",
+			m.Name,
+		)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err

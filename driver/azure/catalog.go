@@ -12,27 +12,25 @@ import (
 // Azure routes by deployment name, so the spec's models list is the whole
 // catalog: the factory maps each declared deployment onto an entry, and the
 // compiler rejects every channel the entry omits. capabilities is the single
-// capability fact source; dimensions and effortNone are control capabilities
-// that no capability kind expresses and stay separate flags.
+// capability fact source, including custom embed output dimensions.
+// Reasoning off needs no separate flag: Azure OpenAI expresses it as
+// reasoning.effort="none", so a deployment published as ReasoningToggle has
+// an off route by construction.
 type catalogEntry struct {
 	kind         modelKind
 	capabilities inference.ModelCapabilities
-	dimensions   bool
-	// effortNone marks generate deployments whose reasoning.effort accepts
-	// "none" to disable reasoning; without it a disable request rejects.
-	effortNone bool
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
 }
 
-// entryFor lowers one declared deployment into a compiler entry.
+// entryFor lowers one declared deployment into a compiler entry. Azure has
+// no built-in catalog, so capability leaves are applied to the conservative
+// zero base: every published capability must be stated.
 func entryFor(model ModelSpec) catalogEntry {
 	return catalogEntry{
 		kind:         modelKind(model.Kind),
-		capabilities: model.Capabilities,
-		dimensions:   model.Dimensions,
-		effortNone:   model.EffortNone,
+		capabilities: model.Capabilities.Apply(inference.ModelCapabilities{}),
 	}
 }
 

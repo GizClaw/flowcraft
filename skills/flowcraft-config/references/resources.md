@@ -17,11 +17,11 @@ spec:
   models:               # optional: declare/override catalog models
     - name: deepseek-v4-flash
       kind: generate
-      capabilities:     # optional: content kinds, hosted web search, reasoning control
+      capabilities:     # optional: capability leaves (see "Model declarations" below)
         inputs: [text, data, tool_call, tool_result]
         outputs: [text]
         reasoning:
-          kind: toggle     # "always" or "toggle"; legacy string "toggle" is still accepted
+          kind: toggle     # "always" or "toggle" (legacy string form accepted); toggle promises reasoning_enabled=false compiles on this surface
           effort_map:      # optional: canonical effort -> model wire level
             minimal: low
             low: low
@@ -29,7 +29,6 @@ spec:
             high: high
             xhigh: max
         hosted_web_search: true
-      responses: true
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}
@@ -41,11 +40,37 @@ variable, `${base:rel}` / `~` / `${home:rel}` for paths, `${secret:NAME}`
 or `${secret:store.NAME}` for declared `secret.Store` backends); a missing
 variable fails the build. The deploy builder expands every settings
 subtree with env/home/base enabled by default — literal `${` must be
-escaped as `\${...}`. Model capabilities mirror the built-in catalog shape and are
-validated by the driver; routing prefers targets whose declared outputs
-cover the request intent and skips declared-incompatible tiers. Provider
-drivers are registered by the host application from provider driver
-modules (outside `core/`).
+escaped as `\${...}`. Provider drivers are registered by the host
+application from provider driver modules (outside `core/`).
+
+## Model declarations
+
+`spec.models` entries extend a provider's built-in catalog or override an
+entry by name. An entry that names a built-in model under the same kind is
+a **leaf-level patch**: capability leaves the entry writes replace only
+those leaves, and everything unstated — other capability leaves, numeric
+limits, and driver control facts such as Bytedance's `max_resolution` —
+is inherited from the built-in entry. Unknown names start from the
+conservative zero base, so every published capability must be stated.
+Qwen and Kimi follow the same leaf semantics as the catalog-backed
+drivers.
+
+Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
+compiles on that provider surface; models whose wire cannot turn reasoning
+off publish `always` instead. OpenAI-family reasoning off is
+`reasoning.effort: "none"` and needs no per-model knob (`effort_none` was
+removed); OpenAI `api: chat` catalogs always publish `always` because the
+chat surface has no off route.
+
+Embed models that accept custom output dimensions declare the capability
+leaf `custom_embed_dimensions` (OpenAI, Azure, Bytedance). The old
+top-level `dimensions:` key is gone, drivers without an embed family reject
+the leaf, and Qwen's accepted sizes come from its built-in catalog
+whitelist — a declaration can restate the leaf on a whitelisted entry but
+cannot grant it to a model without one.
+
+Routing prefers targets whose declared outputs cover the request intent
+and skips declared-incompatible tiers.
 
 `request_metadata.envelope` names the top-level body field that receives
 canonical `GenerateRequest.RequestMetadata`. It is supported by the

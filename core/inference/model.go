@@ -119,6 +119,15 @@ func (l ModelLifecycle) ValidateFor(model ModelID) error {
 // ReasoningKind declares a model's reasoning control capability. Zero is the
 // conservative declaration: a model without a declared reasoning capability
 // has no reasoning channel or reasoning controls.
+//
+// Kind is a promise about the provider surface that publishes it, not just
+// about the physical model: a model published as ReasoningToggle must compile
+// reasoning_enabled=false successfully on that provider instance, and one
+// published as ReasoningAlways may reject it. Providers whose wire cannot
+// express "off" for a model on a given surface (for example Chat Completions
+// for models whose Responses surface accepts reasoning.effort=none) must
+// publish ReasoningAlways on that surface; driver conformance suites verify
+// the promise for every published entry.
 type ReasoningKind string
 
 const (
@@ -137,11 +146,13 @@ func (k ReasoningKind) Validate() error {
 }
 
 // ReasoningCapability declares a model's reasoning control surface. Kind
-// keeps the switch semantics (none / always / toggle); EffortMap declares
-// exactly how the five canonical ReasoningEffort levels map onto this
-// model's own wire levels (for example kimi-k3 maps xhigh to "max"). A
-// non-nil EffortMap must cover all five canonical levels; an empty map on
-// a reasoning model means binary thinking with no depth dial.
+// keeps the switch semantics (none / always / toggle): none has no
+// reasoning channel, always cannot be turned off, and toggle promises that
+// reasoning_enabled=false compiles on the publishing provider surface.
+// EffortMap declares exactly how the five canonical ReasoningEffort levels
+// map onto this model's own wire levels (for example kimi-k3 maps xhigh to
+// "max"). A non-nil EffortMap must cover all five canonical levels; an
+// empty map on a reasoning model means binary thinking with no depth dial.
 type ReasoningCapability struct {
 	Kind ReasoningKind `json:"kind,omitempty"`
 	// EffortMap maps each canonical ReasoningEffort onto the model's wire
@@ -163,11 +174,22 @@ func (r ReasoningCapability) Validate() error {
 	if err := r.Kind.Validate(); err != nil {
 		return err
 	}
-	if len(r.EffortMap) == 0 {
-		return nil
-	}
 	if r.Kind == ReasoningNone {
+		if len(r.EffortMap) == 0 {
+			return nil
+		}
 		return fmt.Errorf("reasoning effort map requires a reasoning capability")
+	}
+	return validateReasoningEffortMap(r.EffortMap)
+}
+
+// validateReasoningEffortMap checks a canonical-to-wire effort map: a
+// non-empty map must cover all five canonical levels with well-formed wire
+// tokens and contain no foreign keys. An empty map is the no-dial
+// declaration.
+func validateReasoningEffortMap(efforts map[ReasoningEffort]string) error {
+	if len(efforts) == 0 {
+		return nil
 	}
 	for _, effort := range []ReasoningEffort{
 		ReasoningMinimal,
@@ -176,7 +198,7 @@ func (r ReasoningCapability) Validate() error {
 		ReasoningHigh,
 		ReasoningXHigh,
 	} {
-		mode, ok := r.EffortMap[effort]
+		mode, ok := efforts[effort]
 		if !ok {
 			return fmt.Errorf(
 				"reasoning effort map misses canonical level %q",
@@ -191,7 +213,7 @@ func (r ReasoningCapability) Validate() error {
 			)
 		}
 	}
-	for effort := range r.EffortMap {
+	for effort := range efforts {
 		switch effort {
 		case ReasoningMinimal, ReasoningLow, ReasoningMedium,
 			ReasoningHigh, ReasoningXHigh:
@@ -297,6 +319,14 @@ type ModelCapabilities struct {
 	// rides on GenerateRequest.Extensions as a provider GenerateOptions
 	// extension.
 	HostedWebSearch bool `json:"hosted_web_search,omitempty"`
+	// CustomEmbedDimensions marks embed models whose API accepts the
+	// optional output-dimensions parameter on EmbedRequest. Like
+	// HostedWebSearch it is discovery metadata: hosts surface the knob from
+	// the descriptor, and compilers reject the field for models without
+	// it. Drivers with exact-size constraints (for example Qwen's embed
+	// whitelist) validate the requested size against their own catalog
+	// facts at compile time.
+	CustomEmbedDimensions bool `json:"custom_embed_dimensions,omitempty"`
 }
 
 // Clone returns a defensive copy of the capabilities: the returned value
@@ -353,29 +383,47 @@ func (c ModelCapabilities) WithHostedWebSearch() ModelCapabilities {
 	return c
 }
 
+// WithCustomEmbedDimensions returns a copy of the capabilities with custom
+// embed output dimensions marked supported.
+func (c ModelCapabilities) WithCustomEmbedDimensions() ModelCapabilities {
+	c.CustomEmbedDimensions = true
+	return c
+}
+
 func (c ModelCapabilities) Validate() error {
 	if err := c.Reasoning.Validate(); err != nil {
 		return err
 	}
-	seenInputs := make(map[message.PartKind]struct{}, len(c.Inputs))
-	for _, kind := range c.Inputs {
-		if err := kind.Validate(); err != nil {
-			return fmt.Errorf("input content kind: %w", err)
-		}
-		if _, ok := seenInputs[kind]; ok {
-			return fmt.Errorf("duplicate input content kind %q", kind)
-		}
-		seenInputs[kind] = struct{}{}
+	if err := validatePartKinds(c.Inputs, true); err != nil {
+		return err
 	}
-	seenOutputs := make(map[message.PartKind]struct{}, len(c.Outputs))
-	for _, kind := range c.Outputs {
-		if !isOutputModality(kind) {
-			return fmt.Errorf("output content kind %q is not a representable output modality", kind)
+	return validatePartKinds(c.Outputs, false)
+}
+
+// validatePartKinds checks one content-kind list: kinds must be valid
+// (inputs) or representable output modalities (outputs) and must not
+// repeat.
+func validatePartKinds(kinds []message.PartKind, inputs bool) error {
+	seen := make(map[message.PartKind]struct{}, len(kinds))
+	for _, kind := range kinds {
+		if inputs {
+			if err := kind.Validate(); err != nil {
+				return fmt.Errorf("input content kind: %w", err)
+			}
+		} else if !isOutputModality(kind) {
+			return fmt.Errorf(
+				"output content kind %q is not a representable output modality",
+				kind,
+			)
 		}
-		if _, ok := seenOutputs[kind]; ok {
-			return fmt.Errorf("duplicate output content kind %q", kind)
+		if _, ok := seen[kind]; ok {
+			word := "input"
+			if !inputs {
+				word = "output"
+			}
+			return fmt.Errorf("duplicate %s content kind %q", word, kind)
 		}
-		seenOutputs[kind] = struct{}{}
+		seen[kind] = struct{}{}
 	}
 	return nil
 }
@@ -410,6 +458,39 @@ func (l ModelLimits) Clone() ModelLimits {
 		MaxInputTokens:  clonePointer(l.MaxInputTokens),
 		MaxOutputTokens: clonePointer(l.MaxOutputTokens),
 	}
+}
+
+// WithMaxInputTokens returns limits declaring the input-context window.
+// Values at or below zero leave the window undeclared (the conservative
+// zero declaration), matching the built-in catalog convention.
+func (l ModelLimits) WithMaxInputTokens(value int) ModelLimits {
+	if value > 0 {
+		l.MaxInputTokens = &value
+	}
+	return l
+}
+
+// WithMaxOutputTokens returns limits declaring the output window. Values at
+// or below zero leave the window undeclared.
+func (l ModelLimits) WithMaxOutputTokens(value int) ModelLimits {
+	if value > 0 {
+		l.MaxOutputTokens = &value
+	}
+	return l
+}
+
+// Values returns the declared windows as plain ints; undeclared windows
+// read as zero. Resolved catalog entries and their tests use it to compare
+// limits without dereferencing pointers.
+func (l ModelLimits) Values() (maxInputTokens, maxOutputTokens int) {
+	maxInputTokens, maxOutputTokens = 0, 0
+	if l.MaxInputTokens != nil {
+		maxInputTokens = *l.MaxInputTokens
+	}
+	if l.MaxOutputTokens != nil {
+		maxOutputTokens = *l.MaxOutputTokens
+	}
+	return maxInputTokens, maxOutputTokens
 }
 
 func (l ModelLimits) Validate() error {

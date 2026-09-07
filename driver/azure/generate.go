@@ -621,14 +621,9 @@ func compileIntent(
 			)
 		case entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
 			!*text.ReasoningEnabled:
-			if entry.effortNone {
-				wire.reasoning = "none"
-				break
-			}
-			ledger.reject(
-				inference.FieldGenerateIntentReasoningEnabled,
-				"reasoning cannot be disabled through this provider",
-			)
+			// Azure OpenAI expresses reasoning off as effort "none", so a
+			// published toggle always has this off route.
+			wire.reasoning = "none"
 		}
 		// enabled == true is a no-op: reasoning models reason by default.
 	}

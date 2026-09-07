@@ -35,14 +35,18 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
-// ModelSpec declares one model the deployment serves.
+// ModelSpec declares one model outside the built-in catalog, or a delta
+// over a same-named, same-kind built-in catalog entry. Capabilities is a
+// patch with field-presence semantics: leaves it names replace that leaf
+// of the entry it overrides and leaves it does not name are inherited.
+// Embed dimension sizes stay catalog facts backed by a private whitelist,
+// so a declaration cannot grant custom_embed_dimensions to a model without
+// one.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
-	// Capabilities declares the model's input/output content kinds and the
-	// reasoning control capability. Spec declarations overlay catalog
-	// entries additively (inputs/outputs union, reasoning overrides).
-	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Capabilities declares the capability leaves this model changes.
+	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
@@ -62,6 +66,16 @@ func (m ModelSpec) Validate() error {
 	case "", kindGenerate, kindEmbed:
 	default:
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
+	}
+	if kind := modelKind(m.Kind); kind != "" && kind != kindEmbed &&
+		m.Capabilities != nil &&
+		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions {
+		return fmt.Errorf(
+			"model %q sets custom_embed_dimensions on kind %q",
+			m.Name,
+			m.Kind,
+		)
 	}
 	if err := m.Capabilities.Validate(); err != nil {
 		return err
