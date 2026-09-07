@@ -119,8 +119,11 @@ func TestReasoningPatchSubLeavesAndLegacyString(t *testing.T) {
 		t.Fatalf("legacy empty string must mean kind none, got %#v", nonePatch.Kind)
 	}
 	got = nonePatch.Apply(base)
-	if got.Kind != ReasoningNone || len(got.EffortMap) != 5 {
-		t.Fatalf("none patch = %#v, want kind none with inherited map", got)
+	if got.Kind != ReasoningNone || len(got.EffortMap) != 0 {
+		t.Fatalf("none patch = %#v, want kind none with no effort map", got)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatalf("removed reasoning must stay valid, got %v", err)
 	}
 }
 
@@ -133,6 +136,7 @@ func TestCapabilitiesPatchValidation(t *testing.T) {
 		{"duplicate inputs", `{"inputs":["text","text"]}`, "duplicate input"},
 		{"invalid output modality", `{"outputs":["tool_call"]}`, "not a representable output modality"},
 		{"invalid kind", `{"reasoning":{"kind":"maybe"}}`, "unknown reasoning kind"},
+		{"none with map", `{"reasoning":{"kind":"","effort_map":{"minimal":"minimal","low":"low","medium":"medium","high":"high","xhigh":"xhigh"}}}`, "cannot declare an effort map"},
 		{"map misses level", `{"reasoning":{"kind":"toggle","effort_map":{"low":"low"}}}`, "misses canonical level"},
 		{"non-canonical key", `{"reasoning":{"kind":"toggle","effort_map":{"low":"low","medium":"medium","high":"high","minimal":"minimal","xhigh":"xhigh","none":"none"}}}`, "non-canonical key"},
 	} {

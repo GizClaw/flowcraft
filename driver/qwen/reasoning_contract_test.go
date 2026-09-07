@@ -9,16 +9,15 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-// TestRedeclaredBuiltinKeepsReasoning locks Qwen's additive overlay
-// contract: a spec declaration can widen a built-in's surface but never
-// drop what the catalog already promises, so redeclaring qwen3.7-max keeps
-// its reasoning toggle and a published toggle still compiles
+// TestRedeclaredBuiltinKeepsReasoning locks the leaf-patch contract:
+// redeclaring qwen3.7-max without naming its reasoning leaf keeps the
+// built-in reasoning toggle, and a published toggle still compiles
 // reasoning_enabled=false.
 func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(`{
 		"models": [{
 			"name": "qwen3.7-max",
-			"capabilities": {"inputs": ["text"]}
+			"capabilities": {"outputs": ["text"]}
 		}]
 	}`))
 	if err != nil {
@@ -35,7 +34,7 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 			entry.capabilities.Reasoning.Kind)
 	}
 	if !equalKinds(entry.capabilities.Inputs, builtin.capabilities.Inputs) {
-		t.Fatalf("redeclaration must not narrow built-in inputs: %v vs %v",
+		t.Fatalf("unstated inputs must be inherited: %v vs %v",
 			entry.capabilities.Inputs, builtin.capabilities.Inputs)
 	}
 	if _, err := compileGenerate("qwen3.7-max", entry)(
@@ -45,6 +44,39 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 		inference.GenerateExecutionUnary,
 	); err != nil {
 		t.Fatalf("toggle model rejected reasoning off: %v", err)
+	}
+}
+
+// TestRedeclaredBuiltinCanNarrow locks the leaf-replacement direction:
+// a written inputs list narrows the built-in surface while unstated
+// reasoning and limits are inherited.
+func TestRedeclaredBuiltinCanNarrow(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "qwen3.7-max",
+			"capabilities": {"inputs": ["text"]}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["qwen3.7-max"]
+	want := []message.PartKind{message.PartText}
+	if !equalKinds(entry.capabilities.Inputs, want) {
+		t.Fatalf("written inputs must replace the built-in list, got %v",
+			entry.capabilities.Inputs)
+	}
+	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+		t.Fatalf("unstated reasoning must be inherited, got %q",
+			entry.capabilities.Reasoning.Kind)
+	}
+	in, out := entry.limits.Values()
+	if in != 991_808 || out != 131_072 {
+		t.Fatalf("unstated limits must be inherited, got %d/%d", in, out)
 	}
 }
 
@@ -96,11 +128,43 @@ func equalKinds(a, b []message.PartKind) bool {
 	return true
 }
 
-// TestCustomEmbedDimensionsNotConfigurable guards the capability leaf on
-// Qwen specs: exact sizes come from the built-in whitelist, so a
-// declaration cannot be honored and must fail at decode time.
-func TestCustomEmbedDimensionsNotConfigurable(t *testing.T) {
+// TestCustomEmbedDimensionsFamilyContract guards the capability leaf on
+// Qwen specs: only whitelisted catalog entries carry the capability, so a
+// declaration that tries to grant it to a non-embed model or to a custom
+// embed model fails, while a same-kind redeclaration of a whitelisted
+// entry stays consistent.
+func TestCustomEmbedDimensionsFamilyContract(t *testing.T) {
 	if _, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "m",
+			"kind": "generate",
+			"capabilities": {
+				"outputs": ["text"],
+				"custom_embed_dimensions": true
+			}
+		}]
+	}`)); err == nil {
+		t.Fatal("custom_embed_dimensions on a generate model unexpectedly accepted")
+	}
+
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "custom-embed",
+			"kind": "embed",
+			"capabilities": {
+				"inputs": ["text"],
+				"custom_embed_dimensions": true
+			}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	if _, err := mergedCatalog(spec); err == nil {
+		t.Fatal("custom embed model without a whitelist unexpectedly accepted")
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
 		"models": [{
 			"name": "text-embedding-v4",
 			"kind": "embed",
@@ -109,8 +173,16 @@ func TestCustomEmbedDimensionsNotConfigurable(t *testing.T) {
 				"custom_embed_dimensions": true
 			}
 		}]
-	}`)); err == nil {
-		t.Fatal("custom_embed_dimensions on a qwen spec unexpectedly accepted")
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("whitelisted redeclaration rejected: %v", err)
+	}
+	if !models["text-embedding-v4"].capabilities.CustomEmbedDimensions {
+		t.Fatal("whitelisted redeclaration lost the custom dimensions capability")
 	}
 }
 

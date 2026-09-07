@@ -117,6 +117,7 @@ func (s Spec) Validate() error {
 		kind := modelKind(model.Kind)
 		if model.Capabilities != nil &&
 			model.Capabilities.CustomEmbedDimensions != nil &&
+			*model.Capabilities.CustomEmbedDimensions &&
 			kind != kindEmbed {
 			return fmt.Errorf(
 				"azure: deployment %q sets custom_embed_dimensions on kind %q",

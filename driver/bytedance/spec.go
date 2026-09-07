@@ -42,12 +42,13 @@ type Spec struct {
 // ModelSpec declares one model outside the built-in catalog, or a delta over
 // a same-named, same-kind built-in catalog entry. Capabilities is a patch
 // with field-presence semantics: leaves it names replace that leaf of the
-// entry it overrides and leaves it does not name are inherited. Dimensions
-// and max resolution is a control capability that no capability kind
-// expresses and stays a separate flag; nil inherits the overridden built-in
-// value, explicit values override. Addressing a custom model at a
-// deployment endpoint works exactly like catalog models: map its name in
-// Spec.Endpoints.
+// entry it overrides and leaves it does not name are inherited. Custom
+// embed output dimensions live in capabilities.custom_embed_dimensions;
+// max_resolution is a control fact that no capability kind expresses and
+// stays a separate flag — nil inherits the overridden built-in value, an
+// explicit empty string declares resolution unconstrained. Addressing a
+// custom model at a deployment endpoint works exactly like catalog models:
+// map its name in Spec.Endpoints.
 type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
@@ -138,6 +139,7 @@ func (m ModelSpec) Validate() error {
 	kind := modelKind(m.Kind)
 	if m.Capabilities != nil &&
 		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions &&
 		kind != kindEmbed {
 		return fmt.Errorf(
 			"model %q sets custom_embed_dimensions on kind %q",

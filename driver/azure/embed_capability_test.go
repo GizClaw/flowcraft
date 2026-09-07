@@ -76,3 +76,19 @@ func TestCustomEmbedDimensionsRequiresEmbedKind(t *testing.T) {
 		t.Fatal("custom_embed_dimensions on a generate deployment unexpectedly accepted")
 	}
 }
+
+// TestCustomEmbedDimensionsFalseOnGenerateAccepted guards the leaf
+// contract: an explicit false is the conservative declaration and must be
+// a harmless no-op on deployments that never embed.
+func TestCustomEmbedDimensionsFalseOnGenerateAccepted(t *testing.T) {
+	if _, err := decodeSpec(context.Background(), []byte(`{
+		"endpoint": "https://example.openai.azure.com",
+		"models": [{
+			"name": "m",
+			"kind": "generate",
+			"capabilities": {"outputs": ["text"], "custom_embed_dimensions": false}
+		}]
+	}`)); err != nil {
+		t.Fatalf("explicit false on a generate deployment rejected: %v", err)
+	}
+}

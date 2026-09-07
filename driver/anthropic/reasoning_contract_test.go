@@ -51,6 +51,34 @@ func TestRedeclaredBuiltinKeepsReasoning(t *testing.T) {
 	}
 }
 
+// TestRedeclaredBuiltinRemovesReasoning locks the removal contract: the
+// legacy `reasoning: ""` leaf strips a built-in's reasoning kind and the
+// effort map inherited with it, leaving a coherent none capability that
+// still passes merged-catalog validation.
+func TestRedeclaredBuiltinRemovesReasoning(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "claude-sonnet-5",
+			"capabilities": {"reasoning": ""}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["claude-sonnet-5"]
+	if entry.capabilities.Reasoning.Kind != inference.ReasoningNone {
+		t.Fatalf("reasoning kind = %q, want none", entry.capabilities.Reasoning.Kind)
+	}
+	if len(entry.capabilities.Reasoning.EffortMap) != 0 {
+		t.Fatalf("removed reasoning must drop the inherited effort map, got %v",
+			entry.capabilities.Reasoning.EffortMap)
+	}
+}
+
 // TestPublishedToggleCompilesReasoningOff is the generic conformance
 // contract for every built-in model that publishes toggle.
 func TestPublishedToggleCompilesReasoningOff(t *testing.T) {

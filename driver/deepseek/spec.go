@@ -83,7 +83,9 @@ func (m ModelSpec) Validate() error {
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	if m.Capabilities != nil && m.Capabilities.CustomEmbedDimensions != nil {
+	if m.Capabilities != nil &&
+		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions {
 		return fmt.Errorf(
 			"model %q declares custom_embed_dimensions, but deepseek "+
 				"serves text generation only",

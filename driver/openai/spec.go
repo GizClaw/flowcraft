@@ -194,6 +194,7 @@ func (m ModelSpec) Validate() error {
 	}
 	if m.Capabilities != nil &&
 		m.Capabilities.CustomEmbedDimensions != nil &&
+		*m.Capabilities.CustomEmbedDimensions &&
 		kind != kindEmbed {
 		return fmt.Errorf(
 			"model %q sets custom_embed_dimensions on kind %q",

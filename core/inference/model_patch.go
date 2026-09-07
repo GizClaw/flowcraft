@@ -2,6 +2,7 @@ package inference
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 
 	"github.com/GizClaw/flowcraft/core/message"
@@ -94,7 +95,9 @@ func (p *CapabilitiesPatch) Validate() error {
 type ReasoningPatch struct {
 	// Kind replaces the reasoning kind when present. An explicit empty
 	// string (ReasoningNone) removes reasoning control from a base that
-	// declares it; the legacy `reasoning: ""` string form spells this.
+	// declares it, dropping the inherited effort map with it (a none kind
+	// cannot carry a dial); the legacy `reasoning: ""` string form spells
+	// this.
 	Kind *ReasoningKind `json:"kind,omitempty"`
 	// EffortMap replaces the canonical-to-wire effort map when present. An
 	// empty map clears a base dial, leaving binary thinking with no depth
@@ -118,6 +121,12 @@ func (p *ReasoningPatch) Apply(base ReasoningCapability) ReasoningCapability {
 	if p.EffortMap != nil {
 		out.EffortMap = maps.Clone(*p.EffortMap)
 	}
+	if out.Kind == ReasoningNone && p.EffortMap == nil {
+		// None cannot carry a dial: removing the reasoning capability with
+		// the legacy empty-string kind must also drop any inherited effort
+		// map, or the merged capability fails validation downstream.
+		out.EffortMap = nil
+	}
 	return out
 }
 
@@ -131,6 +140,12 @@ func (p *ReasoningPatch) Validate() error {
 	if p.Kind != nil {
 		if err := p.Kind.Validate(); err != nil {
 			return err
+		}
+		if *p.Kind == ReasoningNone &&
+			p.EffortMap != nil && len(*p.EffortMap) > 0 {
+			return fmt.Errorf(
+				"reasoning kind none cannot declare an effort map",
+			)
 		}
 	}
 	if p.EffortMap != nil {

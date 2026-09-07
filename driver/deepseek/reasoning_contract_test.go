@@ -117,3 +117,18 @@ func TestCustomEmbedDimensionsUnsupported(t *testing.T) {
 		t.Fatal("custom_embed_dimensions on deepseek unexpectedly accepted")
 	}
 }
+
+// TestCustomEmbedDimensionsFalseAccepted guards the leaf contract: deepseek
+// serves text generation only, so an explicit false is the conservative
+// declaration and must decode without error.
+func TestCustomEmbedDimensionsFalseAccepted(t *testing.T) {
+	if _, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "m",
+			"kind": "generate",
+			"capabilities": {"outputs": ["text"], "custom_embed_dimensions": false}
+		}]
+	}`)); err != nil {
+		t.Fatalf("explicit false on a generate model rejected: %v", err)
+	}
+}

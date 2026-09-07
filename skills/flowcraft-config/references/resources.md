@@ -46,15 +46,14 @@ application from provider driver modules (outside `core/`).
 ## Model declarations
 
 `spec.models` entries extend a provider's built-in catalog or override an
-entry by name. For drivers with a built-in line-up (Anthropic, Bytedance,
-DeepSeek, MiniMax, OpenAI), an entry that names a built-in model under the
-same kind is a **leaf-level patch**: capability leaves the entry writes
-replace only those leaves, and everything unstated — other capability
-leaves, numeric limits, and driver control facts such as Bytedance's
-`max_resolution` — is inherited from the built-in entry. Unknown names
-start from the conservative zero base, so every published capability must
-be stated. Qwen and Kimi are additive only: a declaration can widen a
-built-in surface but never narrow it.
+entry by name. An entry that names a built-in model under the same kind is
+a **leaf-level patch**: capability leaves the entry writes replace only
+those leaves, and everything unstated — other capability leaves, numeric
+limits, and driver control facts such as Bytedance's `max_resolution` —
+is inherited from the built-in entry. Unknown names start from the
+conservative zero base, so every published capability must be stated.
+Qwen and Kimi follow the same leaf semantics as the catalog-backed
+drivers.
 
 Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
 compiles on that provider surface; models whose wire cannot turn reasoning
@@ -67,7 +66,8 @@ Embed models that accept custom output dimensions declare the capability
 leaf `custom_embed_dimensions` (OpenAI, Azure, Bytedance). The old
 top-level `dimensions:` key is gone, drivers without an embed family reject
 the leaf, and Qwen's accepted sizes come from its built-in catalog
-whitelist rather than the declaration.
+whitelist — a declaration can restate the leaf on a whitelisted entry but
+cannot grant it to a model without one.
 
 Routing prefers targets whose declared outputs cover the request intent
 and skips declared-incompatible tiers.

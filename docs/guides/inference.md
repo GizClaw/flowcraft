@@ -62,12 +62,14 @@ reg.MustRegister(inference.Factory{})
 
 Providers expose built-in model catalogs that deployments extend or
 override through the provider spec's `models` list. Declarations are
-leaf-level patches against the same-named built-in entry (Anthropic,
-Bytedance, DeepSeek, MiniMax, OpenAI): a capability leaf that is written
-replaces that leaf, while unstated capability leaves, numeric limits, and
-driver control facts are inherited — redeclaring a model to tweak one
-channel cannot silently revoke the rest. Qwen and Kimi overlay additively
-(a declaration can widen a built-in surface, never narrow it).
+leaf-level patches against the same-named, same-kind built-in entry: a
+capability leaf that is written replaces that leaf, while unstated
+capability leaves, numeric limits, and driver control facts are inherited —
+redeclaring a model to tweak one channel cannot silently revoke the rest,
+and removal is explicit (`hosted_web_search: false`, an empty inputs or
+outputs list, or reasoning kind `none`). Qwen and Kimi follow the same
+leaf semantics; Qwen's custom embed dimensions additionally stay tied to
+its built-in size whitelist.
 
 Capability declarations are promises validated per provider surface: a
 model published with reasoning kind `toggle` must compile

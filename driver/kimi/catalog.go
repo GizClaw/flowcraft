@@ -183,36 +183,35 @@ func generateChatCapabilities() inference.ModelCapabilities {
 	}
 }
 
-// mergedCatalog overlays the built-in catalog with the spec's model
-// declarations: capability lists union onto the same-named catalog entry,
-// and unknown names extend the catalog as bare generate models.
+// mergedCatalog overlays the spec's declared models on the built-in
+// catalog: a spec entry that names a catalog entry is a leaf patch over it
+// (capability leaves and numeric limits are inherited unless declared),
+// and unknown names start from the conservative zero declaration. Models
+// stay fail closed — the factory only exposes what the merged catalog
+// declares.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, declared := range spec.Models {
-		if entry, exists := models[declared.Name]; exists {
-			if declared.Kind != "" && modelKind(declared.Kind) != entry.kind {
-				return nil, fmt.Errorf("model %q kind %q conflicts with catalog %q",
-					declared.Name, declared.Kind, entry.kind)
+		entry := catalogEntry{kind: modelKind(declared.Kind)}
+		base := inference.ModelCapabilities{}
+		if existing, exists := models[declared.Name]; exists {
+			if entry.kind == "" {
+				entry.kind = existing.kind
+			}
+			if entry.kind == existing.kind {
+				// Same-kind redeclarations keep the catalog's driver
+				// control facts and limits; capability leaves the
+				// declaration does not name are inherited too.
+				entry = existing
+				base = existing.capabilities
+			}
+		} else {
+			if entry.kind == "" {
+				entry.kind = kindGenerate
 			}
 		}
-		entry := models[declared.Name]
-		if entry.kind == "" {
-			entry.kind = kindGenerate
-		}
-		entry.capabilities.Inputs = unionKinds(
-			entry.capabilities.Inputs,
-			declared.Capabilities.Inputs,
-		)
-		entry.capabilities.Outputs = unionKinds(
-			entry.capabilities.Outputs,
-			declared.Capabilities.Outputs,
-		)
-		entry.capabilities.HostedWebSearch =
-			entry.capabilities.HostedWebSearch || declared.Capabilities.HostedWebSearch
-		if declared.Capabilities.Reasoning.Kind != inference.ReasoningNone {
-			entry.capabilities.Reasoning = declared.Capabilities.Reasoning
-		}
+		entry.capabilities = declared.Capabilities.Apply(base)
 		if declared.Limits.MaxInputTokens != nil {
 			value := *declared.Limits.MaxInputTokens
 			entry.limits.MaxInputTokens = &value
@@ -227,19 +226,6 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		models[declared.Name] = entry
 	}
 	return models, nil
-}
-
-// unionKinds appends any kind from addition that is not already present in
-// base, preserving base order. Spec declarations overlay catalog entries
-// additively.
-func unionKinds(base, addition []message.PartKind) []message.PartKind {
-	result := append([]message.PartKind(nil), base...)
-	for _, kind := range addition {
-		if !slices.Contains(result, kind) {
-			result = append(result, kind)
-		}
-	}
-	return result
 }
 
 // sortedNames returns catalog names in deterministic order so factory
