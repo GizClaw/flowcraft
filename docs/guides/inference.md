@@ -58,6 +58,24 @@ reg.MustRegister(deepseek.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
 
+## Model declarations
+
+Providers expose built-in model catalogs that deployments extend or
+override through the provider spec's `models` list. Declarations are
+leaf-level patches against the same-named built-in entry (Anthropic,
+Bytedance, DeepSeek, MiniMax, OpenAI): a capability leaf that is written
+replaces that leaf, while unstated capability leaves, numeric limits, and
+driver control facts are inherited — redeclaring a model to tweak one
+channel cannot silently revoke the rest. Qwen and Kimi overlay additively
+(a declaration can widen a built-in surface, never narrow it).
+
+Capability declarations are promises validated per provider surface: a
+model published with reasoning kind `toggle` must compile
+`reasoning_enabled=false` on that surface, and one published as `always`
+rejects it. Discovery bits such as `hosted_web_search` and
+`custom_embed_dimensions` ride on the model descriptor, so hosts can
+surface per-model options without driver-specific knowledge.
+
 ## Routing
 
 Optional target selection is an `inference.Router` resource. It consumes
