@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.6` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.2.7` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.2.7` - 2026-09-07
+
+### Changed
+
+- feat(core/inference): unify model capability declarations and tighten the reasoning contract — new CapabilitiesPatch/ReasoningPatch give provider specs leaf-level overlay semantics (written leaves replace, unstated leaves inherit, and the legacy `reasoning: "toggle"` string form stays backward compatible and now patches only the kind), ModelCapabilities gains CustomEmbedDimensions as a published per-model capability bit alongside hosted web search, ModelLimits grows WithMaxInputTokens/WithMaxOutputTokens/Values so resolved catalog limits share one type with descriptors, and ReasoningKind semantics are made explicit: a model published as `toggle` must compile reasoning_enabled=false on its provider surface while `always` rejects it, enforced by a shared ReasoningOffProbe conformance helper and conformance tests across every driver; drivers (anthropic, azure, bytedance, deepseek, kimi, minimax, openai, qwen) migrated catalog merges to the shared overlay and limits type and removed driver-private control flags (openai/azure effort_none, per-driver top-level dimensions, deepseek per-model responses), so deployment specs changed accordingly: removed keys are rejected by strict decoding, custom_embed_dimensions lives under capabilities, reasoning off needs no knob, and capability/limits/guard behavior is covered by contract tests
 
 ## `core/v0.2.6` - 2026-09-07
 
