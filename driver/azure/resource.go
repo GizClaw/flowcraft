@@ -97,11 +97,27 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			Descriptor: inference.ModelDescriptor{
 				ID:           id,
 				Capabilities: entry.capabilities,
+				Limits:       limitsFor(model),
 			},
 			Openers: openersFor(spec, entry, profiles, id),
 		})
 	}
 	return provider, nil
+}
+
+// limitsFor copies the deployment's declared limits onto a fresh
+// descriptor so the provider definition never aliases the spec's pointers.
+func limitsFor(model ModelSpec) inference.ModelLimits {
+	var limits inference.ModelLimits
+	if model.Limits.MaxInputTokens != nil {
+		value := *model.Limits.MaxInputTokens
+		limits.MaxInputTokens = &value
+	}
+	if model.Limits.MaxOutputTokens != nil {
+		value := *model.Limits.MaxOutputTokens
+		limits.MaxOutputTokens = &value
+	}
+	return limits
 }
 
 // openersFor binds one deployment to the operation openers its kind serves,

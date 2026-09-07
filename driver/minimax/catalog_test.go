@@ -43,6 +43,44 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	}
 }
 
+func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	for _, model := range provider.Models {
+		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	}
+	for name, entry := range catalog {
+		if entry.kind != kindGenerate {
+			continue
+		}
+		descriptor := descriptors[name]
+		if entry.maxOutputTokens <= 0 {
+			if descriptor.Limits.MaxOutputTokens != nil {
+				t.Errorf("model %q: undeclared max output tokens = %d",
+					name, *descriptor.Limits.MaxOutputTokens)
+			}
+			continue
+		}
+		if descriptor.Limits.MaxOutputTokens == nil {
+			t.Errorf("model %q: max output tokens not declared", name)
+		}
+	}
+	checks := map[string]int{
+		"MiniMax-M3": 524_288,
+	}
+	for name, want := range checks {
+		descriptor := descriptors[name]
+		if descriptor.Limits.MaxOutputTokens == nil ||
+			*descriptor.Limits.MaxOutputTokens != want {
+			t.Errorf("model %q: max output tokens = %v, want %d",
+				name, descriptor.Limits.MaxOutputTokens, want)
+		}
+	}
+}
+
 func TestCatalogPublishesCapabilities(t *testing.T) {
 	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
@@ -161,5 +199,48 @@ func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
 	}
 	if entry := models["MiniMax-H3-Context-IR"]; entry.wireModel != "MiniMax-H3" {
 		t.Fatalf("redeclared Context-IR wireModel = %q, want MiniMax-H3", entry.wireModel)
+	}
+}
+
+func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "MiniMax-M3",
+			"kind": "generate",
+			"capabilities": {"inputs":["text"],"outputs":["text"]}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["MiniMax-M3"]
+	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 524_288 {
+		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/524288",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "MiniMax-M3",
+			"kind": "generate",
+			"capabilities": {"inputs":["text"],"outputs":["text"]},
+			"limits": {"max_output_tokens": 4096}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry = models["MiniMax-M3"]
+	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 4096 {
+		t.Fatalf("overridden limits = %d/%d, want 1000000/4096",
+			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }

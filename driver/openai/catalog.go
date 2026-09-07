@@ -66,6 +66,11 @@ type catalogEntry struct {
 	// window on https://developers.openai.com/api/docs/models; embedding
 	// values mirror the per-request input limit.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single generate response may emit
+	// (reasoning plus answer tokens share the budget); zero means
+	// undeclared. Values mirror the maximum output on
+	// https://developers.openai.com/api/docs/models.
+	maxOutputTokens int
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
@@ -143,65 +148,75 @@ var openaiEffortMap = map[inference.ReasoningEffort]string{
 var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:     true,
-		maxInputTokens: 1_050_000,
+		kind:            kindGenerate,
+		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:      true,
+		maxInputTokens:  1_050_000,
+		maxOutputTokens: 128_000,
 	},
 	"gpt-5.6-terra": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:     true,
-		maxInputTokens: 1_050_000,
+		kind:            kindGenerate,
+		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:      true,
+		maxInputTokens:  1_050_000,
+		maxOutputTokens: 128_000,
 	},
 	"gpt-5.6-luna": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		effortNone:     true,
-		maxInputTokens: 1_050_000,
+		kind:            kindGenerate,
+		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		effortNone:      true,
+		maxInputTokens:  1_050_000,
+		maxOutputTokens: 128_000,
 	},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		maxInputTokens: 1_050_000,
+		maxInputTokens:  1_050_000,
+		maxOutputTokens: 128_000,
 	},
 	"gpt-5.4": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		maxInputTokens: 1_050_000,
+		maxInputTokens:  1_050_000,
+		maxOutputTokens: 128_000,
 	},
 	"gpt-5.4-mini": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-terra",
-		maxInputTokens: 400_000,
+		maxInputTokens:  400_000,
+		maxOutputTokens: 128_000,
 	},
 	"gpt-5.4-nano": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		maxInputTokens: 400_000,
+		maxInputTokens:  400_000,
+		maxOutputTokens: 128_000,
 	},
 	// Generate — GPT-4.1 line: vision without the reasoning control.
 	"gpt-4.1": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		maxInputTokens: 1_047_576,
+		kind:            kindGenerate,
+		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
+		maxInputTokens:  1_047_576,
+		maxOutputTokens: 32_768,
 	},
 	"gpt-4.1-mini": {
-		kind:           kindGenerate,
-		capabilities:   generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		maxInputTokens: 1_047_576,
+		kind:            kindGenerate,
+		capabilities:    generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
+		maxInputTokens:  1_047_576,
+		maxOutputTokens: 32_768,
 	},
 	// gpt-4.1-nano has no hosted web_search tool.
 	"gpt-4.1-nano": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		maxInputTokens: 1_047_576,
+		maxInputTokens:  1_047_576,
+		maxOutputTokens: 32_768,
 	},
 
 	// Embed.
@@ -252,17 +267,30 @@ var catalog = map[string]catalogEntry{
 }
 
 // mergedCatalog overlays Spec.Models onto the built-in catalog. A custom
-// entry replaces the same-named built-in entirely.
+// entry replaces the same-named built-in entirely, except that numeric
+// limits are inherited from the built-in entry and only replaced when the
+// declaration sets them explicitly.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, model := range spec.Models {
-		models[model.Name] = catalogEntry{
+		entry := catalogEntry{
 			kind:         modelKind(model.Kind),
 			capabilities: model.Capabilities,
 			dimensions:   model.Dimensions,
 			effortNone:   model.EffortNone,
 		}
+		if builtin, exists := models[model.Name]; exists && builtin.kind == entry.kind {
+			entry.maxInputTokens = builtin.maxInputTokens
+			entry.maxOutputTokens = builtin.maxOutputTokens
+		}
+		if model.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *model.Limits.MaxInputTokens
+		}
+		if model.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+		}
+		models[model.Name] = entry
 	}
 	envelope := spec.requestMetadataEnvelope()
 	chatStreamIncludeUsage := spec.chatStreamIncludeUsage()

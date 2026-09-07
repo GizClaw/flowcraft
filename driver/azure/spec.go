@@ -56,6 +56,10 @@ type ModelSpec struct {
 	// hosted web search support, and reasoning control capability, validated
 	// against the kind's compiler contract.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the deployment. Azure
+	// routes by deployment name and has no built-in catalog, so limits only
+	// ever come from the declaration.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 	// Dimensions accepts the embed dimensions knob (embed only).
 	Dimensions bool `json:"dimensions,omitempty"`
 	// EffortNone marks generate deployments whose reasoning.effort accepts
@@ -123,6 +127,9 @@ func (s Spec) Validate() error {
 			)
 		}
 		if err := entryFor(model).validate(); err != nil {
+			return fmt.Errorf("azure: deployment %q: %w", model.Name, err)
+		}
+		if err := model.Limits.Validate(); err != nil {
 			return fmt.Errorf("azure: deployment %q: %w", model.Name, err)
 		}
 	}

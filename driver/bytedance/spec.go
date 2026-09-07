@@ -52,6 +52,10 @@ type ModelSpec struct {
 	// Capabilities declares the model's input/output content kinds, hosted
 	// web search support, and reasoning control capability.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the model. Overriding a
+	// built-in catalog entry by name keeps the catalog limit for any field
+	// left nil; declaring a value replaces it.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 	// Dimensions (embed) allows custom output dimensions.
 	Dimensions bool `json:"dimensions,omitempty"`
 	// MaxResolution (video) caps the supported resolution tier, e.g. "720p"
@@ -131,7 +135,10 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q has unknown kind %q", m.Name, m.Kind)
 	}
-	return m.Capabilities.Validate()
+	if err := m.Capabilities.Validate(); err != nil {
+		return err
+	}
+	return m.Limits.Validate()
 }
 
 func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {

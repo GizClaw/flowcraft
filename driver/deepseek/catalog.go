@@ -41,6 +41,11 @@ type catalogEntry struct {
 	// undeclared. Both V4 models carry the 1M context published on
 	// https://api-docs.deepseek.com/quick_start/pricing.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. Values mirror the 384K maximum published on
+	// https://api-docs.deepseek.com/quick_start/pricing.
+	maxOutputTokens int
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
@@ -114,8 +119,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:      true,
-		maxInputTokens: 1_000_000,
+		responses:       true,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 384_000,
 	},
 	"deepseek-v4-pro": {
 		kind: kindGenerate,
@@ -123,8 +129,9 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:      true,
-		maxInputTokens: 1_000_000,
+		responses:       true,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 384_000,
 	},
 	"deepseek-v4-flash-vision-exp": {
 		kind: kindGenerate,
@@ -133,15 +140,17 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(deepseekEffortMap),
-		responses:      true,
-		maxInputTokens: 1_000_000,
+		responses:       true,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 384_000,
 	},
 }
 
 // mergedCatalog overlays the built-in catalog with the spec's model
 // declarations: a spec entry with a catalog name replaces that entry, and
-// unknown names extend the catalog. Models stay fail closed — the factory
-// only exposes what the merged catalog declares.
+// unknown names extend the catalog. Replacing a built-in keeps its numeric
+// limits unless the declaration sets them explicitly. Models stay fail
+// closed — the factory only exposes what the merged catalog declares.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
@@ -158,6 +167,16 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			} else {
 				entry.kind = kindGenerate
 			}
+		}
+		if existing, exists := models[declared.Name]; exists {
+			entry.maxInputTokens = existing.maxInputTokens
+			entry.maxOutputTokens = existing.maxOutputTokens
+		}
+		if declared.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+		}
+		if declared.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
 		}
 		models[declared.Name] = entry
 	}

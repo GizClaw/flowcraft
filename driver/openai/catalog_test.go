@@ -50,6 +50,45 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	}
 }
 
+func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "openai"}, nil)
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	for _, model := range provider.Models {
+		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	}
+	for name, entry := range catalog {
+		if entry.kind != kindGenerate {
+			continue
+		}
+		descriptor, ok := descriptors[name]
+		if !ok {
+			t.Fatalf("catalog model %q missing from provider", name)
+		}
+		if descriptor.Limits.MaxOutputTokens == nil {
+			t.Errorf("model %q: max output tokens not declared", name)
+		}
+	}
+	checks := map[string]int{
+		"gpt-5.6-sol":  128_000,
+		"gpt-5.4-mini": 128_000,
+		"gpt-4.1":      32_768,
+	}
+	for name, want := range checks {
+		descriptor, ok := descriptors[name]
+		if !ok {
+			t.Fatalf("model %q missing from provider", name)
+		}
+		if descriptor.Limits.MaxOutputTokens == nil ||
+			*descriptor.Limits.MaxOutputTokens != want {
+			t.Errorf("model %q: max output tokens = %v, want %d",
+				name, descriptor.Limits.MaxOutputTokens, want)
+		}
+	}
+}
+
 func TestCatalogPublishesCapabilities(t *testing.T) {
 	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "openai"}, nil)
 	if err != nil {
@@ -182,5 +221,67 @@ func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
 	}
 	if obfuscation := models["gpt-5.6-sol"].chatStreamObfuscation(); obfuscation != nil {
 		t.Fatal("nil chat_stream_options must keep the OpenAI default obfuscation policy")
+	}
+}
+
+func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
+	generateCapabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [
+			{
+				"name": "custom",
+				"kind": "generate",
+				"capabilities": `+generateCapabilities+`,
+				"limits": {"max_input_tokens": 100, "max_output_tokens": 200}
+			},
+			{
+				"name": "gpt-4.1",
+				"kind": "generate",
+				"capabilities": `+generateCapabilities+`
+			}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	custom := models["custom"]
+	if custom.maxInputTokens != 100 || custom.maxOutputTokens != 200 {
+		t.Fatalf("custom limits = %d/%d, want 100/200",
+			custom.maxInputTokens, custom.maxOutputTokens)
+	}
+	// Redeclaring a built-in model without limits keeps the catalog values.
+	builtin := models["gpt-4.1"]
+	if builtin.maxInputTokens != 1_047_576 || builtin.maxOutputTokens != 32_768 {
+		t.Fatalf("gpt-4.1 limits = %d/%d, want catalog 1047576/32768",
+			builtin.maxInputTokens, builtin.maxOutputTokens)
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "gpt-4.1",
+			"kind": "generate",
+			"capabilities": `+generateCapabilities+`,
+			"limits": {"max_output_tokens": 1000}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	overridden := models["gpt-4.1"]
+	if overridden.maxInputTokens != 1_047_576 {
+		t.Fatalf("gpt-4.1 max input = %d, want built-in 1047576",
+			overridden.maxInputTokens)
+	}
+	if overridden.maxOutputTokens != 1000 {
+		t.Fatalf("gpt-4.1 max output = %d, want declared 1000",
+			overridden.maxOutputTokens)
 	}
 }

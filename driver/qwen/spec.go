@@ -43,6 +43,10 @@ type ModelSpec struct {
 	// reasoning control capability. Spec declarations overlay catalog
 	// entries additively (inputs/outputs union, reasoning overrides).
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the model. Overriding a
+	// built-in catalog entry by name keeps the catalog limit for any field
+	// left nil; declaring a value replaces it.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 }
 
 // ProfileSpec carries per-profile overrides; currently empty.
@@ -59,7 +63,10 @@ func (m ModelSpec) Validate() error {
 	default:
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return m.Capabilities.Validate()
+	if err := m.Capabilities.Validate(); err != nil {
+		return err
+	}
+	return m.Limits.Validate()
 }
 
 func (s Spec) Validate() error {

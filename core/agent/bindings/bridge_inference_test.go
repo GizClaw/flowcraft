@@ -570,11 +570,13 @@ func TestInferenceBridge_RouteExplain_NoRouter(t *testing.T) {
 
 func TestInferenceBridge_Models_RoundTrip(t *testing.T) {
 	limit := 128_000
+	outputLimit := 32_768
 	fake := &inferencetest.GenerateFake{
 		Descriptor: inference.ModelDescriptor{
 			ID: inferencetest.DefaultFakeModel.ID,
 			Limits: inference.ModelLimits{
-				MaxInputTokens: &limit,
+				MaxInputTokens:  &limit,
+				MaxOutputTokens: &outputLimit,
 			},
 		},
 	}
@@ -594,7 +596,12 @@ func TestInferenceBridge_Models_RoundTrip(t *testing.T) {
 	}
 	limits, ok := descriptor["limits"].(map[string]any)
 	if !ok || limits["max_input_tokens"] != float64(limit) {
-		t.Fatalf("descriptor limits = %v, want max_input_tokens %d", descriptor["limits"], limit)
+		t.Fatalf("descriptor limits = %v, want max_input_tokens %d",
+			descriptor["limits"], limit)
+	}
+	if limits["max_output_tokens"] != float64(outputLimit) {
+		t.Fatalf("descriptor limits = %v, want max_output_tokens %d",
+			descriptor["limits"], outputLimit)
 	}
 }
 
