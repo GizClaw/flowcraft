@@ -1,0 +1,9 @@
+{
+  "summary": "feat(core): add runtime external dependency injection — a new external_deps channel lets deploy/runtime accept caller-owned dependency values consumed only as resource/engine/hook dependencies: runtime.external_deps document declarations carry a name and contract, runtime.Builder.WithExternalResource(s), deploy.WithExternalResources, and resource.Graph.AddExternal provide the wiring, and externals are borrowed rather than owned so deploy/runtime never construct, wire, deployment-bind, or close them; Reload never rebuilds or replaces them so every generation receives the same injected object, and they stay hidden from Runtime.Resource and Result.Names; Reload may shrink the declared set but cannot require values that were not injected, the declared contract must match the consuming factory's DepSpec.Type, external item refs are rejected in the v1 deploy schema, and dynamic RegisterAgent engine/hook dependencies may reference externals including after Reload re-binds dynamic agents; feat(core/inference): publish model max output token limits — ModelLimits.MaxOutputTokens declares the maximum tokens a model may emit in a single response alongside the existing max input limit, with JSON round-trip, Clone, positive-value validation, and bridge round-trip coverage, while provider catalogs can now publish provider-documented max-output values on generated model descriptors",
+  "releases": [
+    {
+      "module": "core",
+      "bump": "patch"
+    }
+  ]
+}
