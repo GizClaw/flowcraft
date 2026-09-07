@@ -37,6 +37,12 @@ type catalogEntry struct {
 	// (最大输入长度) on the per-model pages at
 	// https://www.alibabacloud.com/help/zh/model-studio/models.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. Values mirror the published maximum output length
+	// (最大输出长度) on the per-model pages at
+	// https://www.alibabacloud.com/help/zh/model-studio/models.
+	maxOutputTokens int
 }
 
 // qwenMaxPreviewEffortMap is qwen3.8-max-preview's canonical-to-wire map
@@ -71,6 +77,7 @@ var catalog = map[string]catalogEntry{
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     983_616,
+		maxOutputTokens:    131_072,
 	},
 	"qwen3.7-max": {
 		kind: kindGenerate,
@@ -80,6 +87,7 @@ var catalog = map[string]catalogEntry{
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     991_808,
+		maxOutputTokens:    131_072,
 	},
 	"qwen3.7-plus": {
 		kind: kindGenerate,
@@ -89,6 +97,7 @@ var catalog = map[string]catalogEntry{
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     991_808,
+		maxOutputTokens:    131_072,
 	},
 	"qwen3.7-flash": {
 		kind: kindGenerate,
@@ -98,6 +107,7 @@ var catalog = map[string]catalogEntry{
 		preserveThinking:   true,
 		thinkingStreamOnly: true,
 		maxInputTokens:     991_808,
+		maxOutputTokens:    131_072,
 	},
 	"qwen3-vl-plus": {
 		kind: kindGenerate,
@@ -106,6 +116,7 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle),
 		thinkingStreamOnly: true,
 		maxInputTokens:     260_096,
+		maxOutputTokens:    32_768,
 	},
 	"qwen3-vl-flash": {
 		kind: kindGenerate,
@@ -114,12 +125,13 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle),
 		thinkingStreamOnly: true,
 		maxInputTokens:     260_096,
+		maxOutputTokens:    32_768,
 	},
 
-	"qwen-plus":  {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952},
-	"qwen-turbo": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 98_304},
-	"qwen-flash": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952},
-	"qwen-max":   {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 30_720},
+	"qwen-plus":  {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952, maxOutputTokens: 32_768},
+	"qwen-turbo": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 98_304, maxOutputTokens: 16_384},
+	"qwen-flash": {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 997_952, maxOutputTokens: 32_768},
+	"qwen-max":   {kind: kindGenerate, capabilities: generateChatCapabilities(), maxInputTokens: 30_720, maxOutputTokens: 8_192},
 
 	// Embeddings. The multimodal model is served in the Beijing region
 	// only; text-embedding-v4 batches at most 10 rows per request.
@@ -218,6 +230,12 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			entry.capabilities.HostedWebSearch || model.Capabilities.HostedWebSearch
 		if model.Capabilities.Reasoning.Kind != inference.ReasoningNone {
 			entry.capabilities.Reasoning = model.Capabilities.Reasoning
+		}
+		if model.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *model.Limits.MaxInputTokens
+		}
+		if model.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
 		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", model.Name, err)

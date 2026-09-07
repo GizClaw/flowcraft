@@ -26,6 +26,10 @@ type ModelSpec struct {
 	// Capabilities declares the model's input/output content kinds and the
 	// reasoning control capability.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the model. Overriding a
+	// built-in catalog entry by name keeps the catalog limit for any field
+	// left nil; declaring a value replaces it.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 }
 
 func (s Spec) Validate() error {
@@ -49,6 +53,9 @@ func (s Spec) Validate() error {
 			return fmt.Errorf("anthropic: duplicate model %q", model.Name)
 		}
 		seen[model.Name] = true
+		if err := model.Limits.Validate(); err != nil {
+			return fmt.Errorf("anthropic: model %q: %w", model.Name, err)
+		}
 	}
 	return nil
 }

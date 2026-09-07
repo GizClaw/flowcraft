@@ -277,3 +277,81 @@ func TestSpecRejectsFamilyContractViolation(t *testing.T) {
 		t.Fatal("image deployment with text output unexpectedly accepted")
 	}
 }
+
+func TestModelLimitsPublish(t *testing.T) {
+	t.Setenv("AZURE_TEST_KEY", "sk-test")
+	value, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{
+					"name": "gpt-5",
+					"kind": "generate",
+					"capabilities": {"outputs": ["text"]},
+					"limits": {
+						"max_input_tokens": 1000000,
+						"max_output_tokens": 65536
+					}
+				}]
+			},
+			"profiles": [{
+				"id": "default",
+				"secrets": {"api_key": "${env:AZURE_TEST_KEY}"}
+			}]
+		}`),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	provider := value.(inference.ProviderDefinition)
+	limits := provider.Models[0].Descriptor.Limits
+	if limits.MaxInputTokens == nil || *limits.MaxInputTokens != 1_000_000 ||
+		limits.MaxOutputTokens == nil || *limits.MaxOutputTokens != 65_536 {
+		t.Fatalf("limits = %+v, want 1000000/65536", limits)
+	}
+
+	// limitsFor must hand out fresh pointers: mutating one descriptor's
+	// limits must not affect a sibling descriptor built from the same spec.
+	inputTokens := 1_000_000
+	outputTokens := 65_536
+	model := ModelSpec{
+		Name: "gpt-5",
+		Kind: string(kindGenerate),
+		Limits: inference.ModelLimits{
+			MaxInputTokens:  &inputTokens,
+			MaxOutputTokens: &outputTokens,
+		},
+	}
+	first := limitsFor(model)
+	second := limitsFor(model)
+	*first.MaxInputTokens = 1
+	*first.MaxOutputTokens = 2
+	if *second.MaxInputTokens != 1_000_000 || *second.MaxOutputTokens != 65_536 {
+		t.Fatalf("limitsFor shares pointers: second = %+v", second)
+	}
+}
+
+func TestSpecRejectsNonPositiveLimits(t *testing.T) {
+	_, err := Factory().New(context.Background(), resource.Input{
+		Settings: json.RawMessage(`{
+			"id": "azure",
+			"spec": {
+				"endpoint": "https://example.openai.azure.com",
+				"models": [{
+					"name": "gpt-5",
+					"kind": "generate",
+					"capabilities": {"outputs": ["text"]},
+					"limits": {"max_output_tokens": 0}
+				}]
+			},
+			"profiles": [{
+				"id": "default",
+				"secrets": {"api_key": "sk-test"}
+			}]
+		}`),
+	})
+	if err == nil {
+		t.Fatal("deployment with non-positive max output tokens unexpectedly accepted")
+	}
+}

@@ -44,6 +44,10 @@ type ModelSpec struct {
 	// reasoning control capability, validated against the kind's compiler
 	// contract at merge time.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the model. Overriding a
+	// built-in catalog entry by name keeps the catalog limit for any field
+	// left nil; declaring a value replaces it.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 }
 
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -61,7 +65,10 @@ func (m ModelSpec) Validate() error {
 		modelKind(m.Kind) != kindMusic {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return m.Capabilities.Validate()
+	if err := m.Capabilities.Validate(); err != nil {
+		return err
+	}
+	return m.Limits.Validate()
 }
 
 // Validate checks the provider spec for structural sanity.

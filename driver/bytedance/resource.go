@@ -123,6 +123,9 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 		if entry.maxInputTokens > 0 {
 			descriptor.Limits.MaxInputTokens = &entry.maxInputTokens
 		}
+		if entry.maxOutputTokens > 0 {
+			descriptor.Limits.MaxOutputTokens = &entry.maxOutputTokens
+		}
 		provider.Models = append(provider.Models, inference.ModelImplementation{
 			Descriptor: descriptor,
 			Openers:    openersFor(spec, entry, profiles, id),

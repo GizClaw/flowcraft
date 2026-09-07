@@ -29,6 +29,24 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	}
 }
 
+func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	for _, model := range provider.Models {
+		name := model.Descriptor.ID.Name
+		if catalog[name].maxOutputTokens <= 0 {
+			t.Errorf("model %q: max output tokens not declared", name)
+		}
+		if model.Descriptor.Limits.MaxOutputTokens == nil ||
+			*model.Descriptor.Limits.MaxOutputTokens != 384_000 {
+			t.Errorf("model %q: max output tokens = %v, want 384000",
+				name, model.Descriptor.Limits.MaxOutputTokens)
+		}
+	}
+}
+
 func TestCatalogPublishesCapabilities(t *testing.T) {
 	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "deepseek"}, nil)
 	if err != nil {
@@ -88,6 +106,71 @@ func TestMergedCatalogRejectsMissingTextOutput(t *testing.T) {
 	}
 	if _, err := mergedCatalog(spec); err == nil {
 		t.Fatal("mergedCatalog unexpectedly accepted a generate model without text output")
+	}
+}
+
+func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
+	capabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "deepseek-v4-flash",
+			"capabilities": `+capabilities+`
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["deepseek-v4-flash"]
+	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 384_000 {
+		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/384000",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "deepseek-v4-flash",
+			"capabilities": `+capabilities+`,
+			"limits": {"max_output_tokens": 64000}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry = models["deepseek-v4-flash"]
+	if entry.maxInputTokens != 1_000_000 || entry.maxOutputTokens != 64_000 {
+		t.Fatalf("overridden limits = %d/%d, want 1000000/64000",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	capabilities := `{"inputs":["text","data","tool_call","tool_result"],"outputs":["text"]}`
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "deepseek-v4-flash",
+			"capabilities": `+capabilities+`,
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["deepseek-v4-flash"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 384_000 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/384000",
+			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }
 

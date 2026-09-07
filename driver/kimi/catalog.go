@@ -37,6 +37,13 @@ type catalogEntry struct {
 	// https://platform.kimi.com/docs/models (moonshot-v1 variants state
 	// 8k/32k/128k).
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. kimi-k3's ceiling comes from the official quickstart
+	// (max_completion_tokens up to 1048576,
+	// https://platform.kimi.com/docs/guide/kimi-k3-quickstart);
+	// kimi-k2.7-code values follow the family's 131072 ceiling.
+	maxOutputTokens int
 }
 
 // kimiK3EffortMap is kimi-k3's canonical-to-wire effort map per the Kimi
@@ -69,6 +76,7 @@ var catalog = map[string]catalogEntry{
 			WithReasoningEffortMap(kimiK3EffortMap),
 		keepThinkingAlways: true,
 		maxInputTokens:     1_000_000,
+		maxOutputTokens:    1_048_576,
 	},
 	"kimi-k2.7-code": {
 		kind: kindGenerate,
@@ -77,6 +85,7 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
 		maxInputTokens:     256_000,
+		maxOutputTokens:    131_072,
 	},
 	"kimi-k2.7-code-highspeed": {
 		kind: kindGenerate,
@@ -85,6 +94,7 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningAlways),
 		keepThinkingAlways: true,
 		maxInputTokens:     256_000,
+		maxOutputTokens:    131_072,
 	},
 	"kimi-k2.6": {
 		kind: kindGenerate,
@@ -171,6 +181,12 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			entry.capabilities.HostedWebSearch || declared.Capabilities.HostedWebSearch
 		if declared.Capabilities.Reasoning.Kind != inference.ReasoningNone {
 			entry.capabilities.Reasoning = declared.Capabilities.Reasoning
+		}
+		if declared.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+		}
+		if declared.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
 		}
 		if err := entry.validate(); err != nil {
 			return nil, fmt.Errorf("model %q: %w", declared.Name, err)

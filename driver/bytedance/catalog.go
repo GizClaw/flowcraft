@@ -46,6 +46,12 @@ type catalogEntry struct {
 	// long-context tiers), so these entries are the family-level upper
 	// bound. Embedding values mirror the documented per-input limit.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single generate response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. Generate values mirror the per-version max-output on the
+	// official model list
+	// (https://www.volcengine.com/docs/82379/1330310).
+	maxOutputTokens int
 }
 
 // videoParams is the Seedance task-parameter support matrix for one video
@@ -166,7 +172,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 1_024_000,
+		maxInputTokens:  1_024_000,
+		maxOutputTokens: 256_000,
 	},
 
 	// Seed 2.1 (2026-06) — current flagship tier. The whole Seed 2.x line is
@@ -178,7 +185,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 256_000,
 	},
 	"doubao-seed-2-1-turbo": {
 		kind: kindGenerate,
@@ -187,7 +195,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 256_000,
 	},
 
 	// Seed 2.0 (2026-02) — general agent line plus the code-tuned variant.
@@ -201,7 +210,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 128_000,
 	},
 	"doubao-seed-2-0-lite": {
 		kind: kindGenerate,
@@ -210,7 +220,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 128_000,
 	},
 	"doubao-seed-2-0-mini": {
 		kind: kindGenerate,
@@ -219,7 +230,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 128_000,
 	},
 	"doubao-seed-2-0-code": {
 		kind: kindGenerate,
@@ -228,7 +240,8 @@ var catalog = map[string]catalogEntry{
 			WithHostedWebSearch().
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 128_000,
 	},
 
 	// Seed 1.x — superseded by the 2.x line; kept routable for existing
@@ -241,7 +254,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 64_000,
 	},
 	"doubao-seed-1-6-vision": {
 		kind: kindGenerate,
@@ -251,7 +265,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		maxInputTokens: 256_000,
+		maxInputTokens:  256_000,
+		maxOutputTokens: 64_000,
 	},
 
 	"doubao-embedding-large": {
@@ -462,17 +477,30 @@ var catalog = map[string]catalogEntry{
 }
 
 // mergedCatalog overlays Spec.Models onto the built-in catalog and returns
-// the merged view. Spec entries replace catalog entries by name.
+// the merged view. Spec entries replace catalog entries by name; numeric
+// limits are inherited from the replaced entry unless the declaration sets
+// them explicitly.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	merged := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(merged, catalog)
 	for _, model := range spec.Models {
-		merged[model.Name] = catalogEntry{
+		entry := catalogEntry{
 			kind:          modelKind(model.Kind),
 			capabilities:  model.Capabilities,
 			dimensions:    model.Dimensions,
 			maxResolution: model.MaxResolution,
 		}
+		if builtin, exists := merged[model.Name]; exists && builtin.kind == entry.kind {
+			entry.maxInputTokens = builtin.maxInputTokens
+			entry.maxOutputTokens = builtin.maxOutputTokens
+		}
+		if model.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *model.Limits.MaxInputTokens
+		}
+		if model.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+		}
+		merged[model.Name] = entry
 	}
 	for name, entry := range merged {
 		if err := entry.validate(); err != nil {

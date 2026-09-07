@@ -399,17 +399,25 @@ type ModelLimits struct {
 	// input context (prompt plus any prior turns). Nil when the provider
 	// catalog does not declare a limit.
 	MaxInputTokens *int `json:"max_input_tokens,omitempty"`
+	// MaxOutputTokens caps the tokens a model may emit in a single response
+	// (including reasoning tokens when the provider counts them against the
+	// same budget). Nil when the provider catalog does not declare a limit.
+	MaxOutputTokens *int `json:"max_output_tokens,omitempty"`
 }
 
 func (l ModelLimits) Clone() ModelLimits {
 	return ModelLimits{
-		MaxInputTokens: clonePointer(l.MaxInputTokens),
+		MaxInputTokens:  clonePointer(l.MaxInputTokens),
+		MaxOutputTokens: clonePointer(l.MaxOutputTokens),
 	}
 }
 
 func (l ModelLimits) Validate() error {
 	if l.MaxInputTokens != nil && *l.MaxInputTokens <= 0 {
 		return fmt.Errorf("max input tokens must be positive")
+	}
+	if l.MaxOutputTokens != nil && *l.MaxOutputTokens <= 0 {
+		return fmt.Errorf("max output tokens must be positive")
 	}
 	return nil
 }

@@ -20,6 +20,12 @@ func TestModelLimitsValidate(t *testing.T) {
 	}).Validate(); err != nil {
 		t.Fatalf("positive limit: %v", err)
 	}
+	positiveOutput := 64_000
+	if err := (inference.ModelLimits{
+		MaxOutputTokens: &positiveOutput,
+	}).Validate(); err != nil {
+		t.Fatalf("positive output limit: %v", err)
+	}
 	for _, value := range []int{0, -1} {
 		limit := value
 		if err := (inference.ModelLimits{
@@ -27,36 +33,66 @@ func TestModelLimitsValidate(t *testing.T) {
 		}).Validate(); err == nil {
 			t.Fatalf("limit %d unexpectedly accepted", value)
 		}
+		if err := (inference.ModelLimits{
+			MaxOutputTokens: &limit,
+		}).Validate(); err == nil {
+			t.Fatalf("output limit %d unexpectedly accepted", value)
+		}
 	}
 }
 
-func TestModelDescriptorValidateRejectsNonPositiveInputLimit(t *testing.T) {
-	limit := 0
-	descriptor := inference.ModelDescriptor{
-		ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},
-		Operations: []inference.Operation{inference.OperationGenerate},
-		Limits:     inference.ModelLimits{MaxInputTokens: &limit},
-	}
-	if err := descriptor.Validate(); err == nil {
-		t.Fatal("non-positive max input tokens unexpectedly accepted")
+func TestModelDescriptorValidateRejectsNonPositiveLimits(t *testing.T) {
+	zero := 0
+	for _, test := range []struct {
+		name   string
+		limits inference.ModelLimits
+	}{
+		{
+			name:   "input",
+			limits: inference.ModelLimits{MaxInputTokens: &zero},
+		},
+		{
+			name:   "output",
+			limits: inference.ModelLimits{MaxOutputTokens: &zero},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			descriptor := inference.ModelDescriptor{
+				ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},
+				Operations: []inference.Operation{inference.OperationGenerate},
+				Limits:     test.limits,
+			}
+			if err := descriptor.Validate(); err == nil {
+				t.Fatalf("non-positive max %s tokens unexpectedly accepted", test.name)
+			}
+		})
 	}
 }
 
 func TestModelDescriptorClonePreservesLimits(t *testing.T) {
-	limit := 200_000
+	inputLimit := 200_000
+	outputLimit := 16_384
 	original := inference.ModelDescriptor{
 		ID:         inference.ModelID{Provider: "openai", Name: "gpt-x"},
 		Operations: []inference.Operation{inference.OperationGenerate},
 		Limits: inference.ModelLimits{
-			MaxInputTokens: &limit,
+			MaxInputTokens:  &inputLimit,
+			MaxOutputTokens: &outputLimit,
 		},
 	}
 	clone := original.Clone()
 	*clone.Limits.MaxInputTokens = 100
+	*clone.Limits.MaxOutputTokens = 200
 	if *original.Limits.MaxInputTokens != 200_000 {
 		t.Fatalf(
 			"clone shares max input tokens pointer: original = %d",
 			*original.Limits.MaxInputTokens,
+		)
+	}
+	if *original.Limits.MaxOutputTokens != 16_384 {
+		t.Fatalf(
+			"clone shares max output tokens pointer: original = %d",
+			*original.Limits.MaxOutputTokens,
 		)
 	}
 }
@@ -323,11 +359,18 @@ func TestModelDescriptorJSONLimits(t *testing.T) {
 		t.Fatalf("empty limits should be omitted, got %s", got)
 	}
 
-	limit := 128_000
-	descriptor.Limits.MaxInputTokens = &limit
+	inputLimit := 128_000
+	outputLimit := 32_768
+	descriptor.Limits.MaxInputTokens = &inputLimit
+	descriptor.Limits.MaxOutputTokens = &outputLimit
 	encoded, err = json.Marshal(descriptor)
 	if err != nil {
 		t.Fatalf("marshal limits: %v", err)
+	}
+	for _, tag := range []string{`"max_input_tokens"`, `"max_output_tokens"`} {
+		if !strings.Contains(string(encoded), tag) {
+			t.Fatalf("encoded limits %s missing %s", encoded, tag)
+		}
 	}
 	var decoded struct {
 		Limits inference.ModelLimits `json:"limits"`
@@ -336,7 +379,12 @@ func TestModelDescriptorJSONLimits(t *testing.T) {
 		t.Fatalf("unmarshal limits: %v", err)
 	}
 	if decoded.Limits.MaxInputTokens == nil ||
-		*decoded.Limits.MaxInputTokens != 128_000 {
-		t.Fatalf("decoded limits = %+v, want max_input_tokens 128000", decoded.Limits)
+		*decoded.Limits.MaxInputTokens != inputLimit ||
+		decoded.Limits.MaxOutputTokens == nil ||
+		*decoded.Limits.MaxOutputTokens != outputLimit {
+		t.Fatalf(
+			"decoded limits = %+v, want max_input_tokens %d max_output_tokens %d",
+			decoded.Limits, inputLimit, outputLimit,
+		)
 	}
 }

@@ -66,6 +66,10 @@ type ModelSpec struct {
 	// Capabilities declares the model's input/output content kinds, hosted
 	// web search support, and reasoning control capability.
 	Capabilities inference.ModelCapabilities `json:"capabilities,omitempty"`
+	// Limits declares numeric capacity limits for the model. Overriding a
+	// built-in catalog entry by name keeps the catalog limit for any field
+	// left nil; declaring a value replaces it.
+	Limits inference.ModelLimits `json:"limits,omitempty"`
 	// Responses declares Responses API support (deepseek-v4-flash,
 	// deepseek-v4-pro, and deepseek-v4-flash-vision-exp).
 	Responses bool `json:"responses,omitempty"`
@@ -81,7 +85,10 @@ func (m ModelSpec) Validate() error {
 	if m.Kind != "" && m.Kind != string(kindGenerate) {
 		return fmt.Errorf("model %q declares unsupported kind %q", m.Name, m.Kind)
 	}
-	return m.Capabilities.Validate()
+	if err := m.Capabilities.Validate(); err != nil {
+		return err
+	}
+	return m.Limits.Validate()
 }
 
 // Validate checks the provider spec for structural sanity.

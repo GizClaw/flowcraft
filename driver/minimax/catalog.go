@@ -54,6 +54,12 @@ type catalogEntry struct {
 	// undeclared. M3 holds the 1M context and the M2.x series holds
 	// 204,800 per https://platform.minimaxi.com/docs/guides/text-generation.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single generate response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. M3's Anthropic-compatible surface caps max_tokens at
+	// 524288 (recommended 131072) per
+	// https://platform.minimaxi.com/docs/guides/text-generation.
+	maxOutputTokens int
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -126,7 +132,8 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithReasoning(inference.ReasoningToggle),
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 524_288,
 	},
 	"MiniMax-M2.7": {
 		kind: kindGenerate,
@@ -346,11 +353,18 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 				entry.videoI2VOnly = existing.videoI2VOnly
 				entry.videoV2 = existing.videoV2
 				entry.maxInputTokens = existing.maxInputTokens
+				entry.maxOutputTokens = existing.maxOutputTokens
 			}
 		} else {
 			if entry.kind == "" {
 				entry.kind = kindGenerate
 			}
+		}
+		if declared.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *declared.Limits.MaxInputTokens
+		}
+		if declared.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *declared.Limits.MaxOutputTokens
 		}
 		models[declared.Name] = entry
 	}

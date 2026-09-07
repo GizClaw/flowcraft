@@ -46,6 +46,46 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	}
 }
 
+func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
+	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "qwen"}, nil)
+	if err != nil {
+		t.Fatalf("buildProvider: %v", err)
+	}
+	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	for _, model := range provider.Models {
+		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	}
+	for name, entry := range catalog {
+		if entry.kind != kindGenerate {
+			continue
+		}
+		if entry.maxOutputTokens <= 0 {
+			t.Errorf("model %q: max output tokens not declared", name)
+		}
+		descriptor := descriptors[name]
+		if descriptor.Limits.MaxOutputTokens == nil ||
+			*descriptor.Limits.MaxOutputTokens != entry.maxOutputTokens {
+			t.Errorf("model %q: descriptor limit = %v, want %d",
+				name, descriptor.Limits.MaxOutputTokens, entry.maxOutputTokens)
+		}
+	}
+	checks := map[string]int{
+		"qwen3.8-max-preview": 131_072,
+		"qwen3.7-flash":       131_072,
+		"qwen3-vl-flash":      32_768,
+		"qwen-turbo":          16_384,
+		"qwen-max":            8_192,
+	}
+	for name, want := range checks {
+		descriptor := descriptors[name]
+		if descriptor.Limits.MaxOutputTokens == nil ||
+			*descriptor.Limits.MaxOutputTokens != want {
+			t.Errorf("model %q: max output tokens = %v, want %d",
+				name, descriptor.Limits.MaxOutputTokens, want)
+		}
+	}
+}
+
 func TestCatalogPublishesCapabilities(t *testing.T) {
 	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "qwen"}, nil)
 	if err != nil {
@@ -86,5 +126,68 @@ func TestMergedCatalogRejectsEmbedReasoning(t *testing.T) {
 	}
 	if _, err := mergedCatalog(spec); err == nil {
 		t.Fatal("mergedCatalog unexpectedly accepted an embed model with reasoning")
+	}
+}
+
+func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "qwen3.7-flash",
+			"capabilities": {"inputs":["text"],"outputs":["text"]}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["qwen3.7-flash"]
+	if entry.maxInputTokens != 991_808 || entry.maxOutputTokens != 131_072 {
+		t.Fatalf("redeclared limits = %d/%d, want catalog 991808/131072",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+
+	spec, err = decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "qwen3.7-flash",
+			"capabilities": {"inputs":["text"],"outputs":["text"]},
+			"limits": {"max_output_tokens": 4096}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err = mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry = models["qwen3.7-flash"]
+	if entry.maxInputTokens != 991_808 || entry.maxOutputTokens != 4096 {
+		t.Fatalf("overridden limits = %d/%d, want 991808/4096",
+			entry.maxInputTokens, entry.maxOutputTokens)
+	}
+}
+
+func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
+	spec, err := decodeSpec(context.Background(), []byte(`{
+		"models": [{
+			"name": "qwen3.7-flash",
+			"capabilities": {"inputs":["text"],"outputs":["text"]},
+			"limits": {"max_input_tokens": 65536}
+		}]
+	}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(spec)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry := models["qwen3.7-flash"]
+	if entry.maxInputTokens != 65_536 || entry.maxOutputTokens != 131_072 {
+		t.Fatalf("declared input limits = %d/%d, want 65536/131072",
+			entry.maxInputTokens, entry.maxOutputTokens)
 	}
 }

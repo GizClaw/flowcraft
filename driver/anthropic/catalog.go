@@ -21,6 +21,11 @@ type catalogEntry struct {
 	// in tokens; zero means undeclared. Values mirror the context window
 	// published on https://platform.claude.com/docs/en/about-claude/models.
 	maxInputTokens int
+	// maxOutputTokens caps the tokens a single response may emit
+	// (thinking plus answer tokens share the budget); zero means
+	// undeclared. Values mirror the maximum output published on
+	// https://platform.claude.com/docs/en/about-claude/models.
+	maxOutputTokens int
 }
 
 // validate enforces the generate family contract: Claude compilers only
@@ -70,7 +75,8 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningAlways).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	// claude-mythos-5 shares Fable 5's capabilities and always-on adaptive
 	// thinking; it is a limited-release model (Project Glasswing), so
@@ -80,35 +86,40 @@ var catalog = map[string]catalogEntry{
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningAlways).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-opus-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-sonnet-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-haiku-4-5": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 200_000,
+		maxInputTokens:  200_000,
+		maxOutputTokens: 64_000,
 	},
 	"claude-haiku-4-5-20251001": {
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
-		maxInputTokens: 200_000,
+		maxInputTokens:  200_000,
+		maxOutputTokens: 64_000,
 	},
 
 	"claude-opus-4-8": {
@@ -117,7 +128,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-opus-4-7": {
 		capabilities: generateChatCapabilities().
@@ -125,7 +137,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-sonnet-4-6": {
 		capabilities: generateChatCapabilities().
@@ -133,7 +146,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-sonnet-5",
-		maxInputTokens: 1_000_000,
+		maxInputTokens:  1_000_000,
+		maxOutputTokens: 128_000,
 	},
 	"claude-sonnet-4-5": {
 		capabilities: generateChatCapabilities().
@@ -141,7 +155,8 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-sonnet-5",
-		maxInputTokens: 200_000,
+		maxInputTokens:  200_000,
+		maxOutputTokens: 64_000,
 	},
 	"claude-opus-4-1": {
 		capabilities: generateChatCapabilities().
@@ -149,18 +164,33 @@ var catalog = map[string]catalogEntry{
 			WithReasoning(inference.ReasoningToggle).
 			WithReasoningEffortMap(claudeEffortMap),
 		deprecated: true, replacement: "claude-opus-5",
-		maxInputTokens: 200_000,
+		maxInputTokens:  200_000,
+		maxOutputTokens: 32_000,
 	},
 }
 
-// mergedCatalog overlays Spec.Models onto the built-in catalog.
+// mergedCatalog overlays Spec.Models onto the built-in catalog. A spec
+// entry with a catalog name replaces that entry, except that numeric
+// limits are inherited from the built-in entry and only replaced when the
+// declaration sets them explicitly.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(models, catalog)
 	for _, model := range spec.Models {
-		models[model.Name] = catalogEntry{
+		entry := catalogEntry{
 			capabilities: model.Capabilities,
 		}
+		if builtin, exists := models[model.Name]; exists {
+			entry.maxInputTokens = builtin.maxInputTokens
+			entry.maxOutputTokens = builtin.maxOutputTokens
+		}
+		if model.Limits.MaxInputTokens != nil {
+			entry.maxInputTokens = *model.Limits.MaxInputTokens
+		}
+		if model.Limits.MaxOutputTokens != nil {
+			entry.maxOutputTokens = *model.Limits.MaxOutputTokens
+		}
+		models[model.Name] = entry
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {
