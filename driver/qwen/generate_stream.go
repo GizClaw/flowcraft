@@ -112,6 +112,10 @@ type sseStream struct {
 	mu        sync.Mutex
 	done      bool
 	closeOnce sync.Once
+	// requestID is the request identifier of the last decoded envelope.
+	// It survives truncation where the terminal finish fragment does not,
+	// so the runtime can attach it to a provider_truncated failure.
+	requestID string
 }
 
 func transportGenerateStream(
@@ -200,8 +204,21 @@ func (s *sseStream) Next(ctx context.Context) (streamFragment, error) {
 	}
 	fragment := s.queue[0]
 	s.queue = s.queue[1:]
+	if fragment.requestID != "" {
+		s.mu.Lock()
+		s.requestID = fragment.requestID
+		s.mu.Unlock()
+	}
 	return fragment, nil
 }
+
+func (s *sseStream) RequestID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.requestID
+}
+
+func (*sseStream) ResponseID() string { return "" }
 
 func (s *sseStream) Close() error {
 	s.mu.Lock()

@@ -170,15 +170,19 @@ type rawUsage struct {
 // canonical part indices (it is the stateful stage) so the decoder function
 // stays pure and concurrency-safe.
 type streamRaw struct {
-	kind            streamRawKind
-	part            int    // canonical part index (text / tool / reasoning kinds)
-	text            string // text / summary delta
-	signature       string // terminal reasoning encrypted payload
-	id              string // terminal reasoning item id
-	responseID      string // response-level id from the terminal event
-	tool            streamRawTool
-	usage           *rawUsage
-	finish          inference.FinishReason
+	kind       streamRawKind
+	part       int    // canonical part index (text / tool / reasoning kinds)
+	text       string // text / summary delta
+	signature  string // terminal reasoning encrypted payload
+	id         string // terminal reasoning item id
+	responseID string // response-level id from the terminal event
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
+	// synthesized marks a finish reason fabricated by the adapter when
+	// the stream ended without a provider terminal event (e.g. a clean
+	// EOF between frames). It rides the finish raw to the decoded event.
+	synthesized     bool
 	providerOutputs inference.ProviderOutputs
 }
 

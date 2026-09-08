@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/param"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/shared"
@@ -313,6 +314,13 @@ type chatStream struct {
 	sawTools  bool
 	ended     bool
 	id        string
+
+	// requestID is the provider x-request-id header captured at stream
+	// open; it survives truncation where the terminal event does not.
+	requestID string
+
+	// model identifies the requested model for stream lifecycle warnings.
+	model string
 }
 
 // transportChatGenerateStream opens the streaming chat request.
@@ -323,10 +331,13 @@ func transportChatGenerateStream(
 		ctx context.Context,
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
+		var requestID string
+		opts := append([]option.RequestOption(nil), requestMetadataOptions(wire)...)
+		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Chat.Completions.NewStreaming(
 			ctx,
 			wireToChatParams(wire),
-			requestMetadataOptions(wire)...,
+			opts...,
 		)
 		if stream == nil {
 			return nil, errdefs.NotAvailablef(
@@ -342,9 +353,14 @@ func transportChatGenerateStream(
 			stream:    stream,
 			textPart:  -1,
 			toolParts: make(map[int64]int),
+			requestID: requestID,
+			model:     wire.model,
 		}, nil
 	}
 }
+
+func (s *chatStream) RequestID() string  { return s.requestID }
+func (s *chatStream) ResponseID() string { return s.id }
 
 func (s *chatStream) Close() error {
 	if s.stream == nil {
@@ -372,7 +388,10 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 				logInferenceStream(ctx, "generate", "", classified, "")
 				return streamRaw{}, classified
 			}
-			s.end()
+			if synthesized := s.end(); synthesized != "" {
+				logChatFinishSynthesized(
+					ctx, s.model, s.requestID, s.id, synthesized)
+			}
 			continue
 		}
 		s.apply(s.stream.Current())
@@ -432,27 +451,37 @@ func (s *chatStream) apply(chunk openai.ChatCompletionChunk) {
 	}
 }
 
-func (s *chatStream) end() {
+// end emits the terminal event exactly once: the recorded finish reason
+// (defaulting to completed, or tool_calls when calls streamed without an
+// explicit reason) plus the usage chunk's accounting. It returns the
+// synthesized reason when the provider never sent an explicit one, so
+// callers can warn that the stream may have been truncated.
+func (s *chatStream) end() string {
 	if s.ended {
-		return
+		return ""
 	}
 	s.ended = true
 	if s.finishErr != nil {
-		return
+		return ""
 	}
+	synthesized := ""
 	finish := s.finish
 	if finish == "" && s.sawTools {
 		finish = inference.FinishToolCalls
+		synthesized = string(finish)
 	}
 	if finish == "" {
 		finish = inference.FinishCompleted
+		synthesized = string(finish)
 	}
 	s.pending = append(s.pending, streamRaw{
-		kind:       streamRawFinish,
-		finish:     finish,
-		usage:      s.usage,
-		responseID: s.id,
+		kind:        streamRawFinish,
+		finish:      finish,
+		usage:       s.usage,
+		responseID:  s.id,
+		synthesized: synthesized != "",
 	})
+	return synthesized
 }
 
 func (s *chatStream) assignPart() int {

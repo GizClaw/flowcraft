@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
+	arkmodel "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model"
 	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime/utils"
 )
@@ -20,6 +21,10 @@ import (
 // into deltas, so the decoder function stays pure.
 type responsesStream struct {
 	reader *utils.ResponsesStreamReader
+	// requestID is the provider-echoed X-Client-Request-Id header captured
+	// from the stream response at open; it survives truncation where the
+	// terminal event does not.
+	requestID string
 
 	parts    map[int64]*streamPart // ark output index → canonical part
 	nextPart int
@@ -55,11 +60,15 @@ func transportGenerateStream(
 		}
 		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &responsesStream{
-			reader: reader,
-			parts:  make(map[int64]*streamPart),
+			reader:    reader,
+			requestID: reader.Header().Get(arkmodel.ClientRequestHeader),
+			parts:     make(map[int64]*streamPart),
 		}, nil
 	}
 }
+
+func (s *responsesStream) RequestID() string  { return s.requestID }
+func (s *responsesStream) ResponseID() string { return "" }
 
 func (s *responsesStream) Close() error {
 	if s.reader == nil {

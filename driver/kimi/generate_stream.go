@@ -58,6 +58,10 @@ type streamRaw struct {
 	tool       streamRawTool
 	usage      *rawUsage
 	finish     inference.FinishReason
+	// synthesized marks a finish reason fabricated by the adapter when
+	// the stream ended without a provider terminal event (e.g. a clean
+	// EOF between frames). It rides the finish raw to the decoded event.
+	synthesized bool
 }
 
 type streamRawTool struct {
@@ -87,6 +91,9 @@ type chatStream struct {
 	sawTools bool
 	ended    bool
 	id       string // chat completion id from the stream chunks
+
+	// model identifies the requested model for stream lifecycle warnings.
+	model string
 }
 
 // transportGenerateStream opens the streaming request and returns the
@@ -132,6 +139,7 @@ func transportGenerateStream(client *kimiClient) inference.Transport[generateWir
 			reasoningPart: -1,
 			textPart:      -1,
 			toolParts:     make(map[int64]int),
+			model:         wire.Model,
 		}, nil
 	}
 }
@@ -152,7 +160,10 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 		select {
 		case event, ok := <-s.events:
 			if !ok {
-				s.end()
+				if synthesized := s.end(); synthesized != "" {
+					logChatFinishSynthesized(
+						ctx, s.model, "", s.id, synthesized)
+				}
 				continue
 			}
 			if err := s.apply(event.data); err != nil {
@@ -220,25 +231,32 @@ func (s *chatStream) apply(data []byte) error {
 
 // end emits the terminal event exactly once: the recorded finish reason
 // (defaulting to completed, or tool_calls when calls streamed without an
-// explicit reason) plus the usage chunk's accounting.
-func (s *chatStream) end() {
+// explicit reason) plus the usage chunk's accounting. It returns the
+// synthesized reason when the provider never sent an explicit one, so
+// callers can warn that the stream may have been truncated.
+func (s *chatStream) end() string {
 	if s.ended {
-		return
+		return ""
 	}
 	s.ended = true
+	synthesized := ""
 	finish := s.finish
 	if finish == "" && s.sawTools {
 		finish = inference.FinishToolCalls
+		synthesized = string(finish)
 	}
 	if finish == "" {
 		finish = inference.FinishCompleted
+		synthesized = string(finish)
 	}
 	s.pending = append(s.pending, streamRaw{
-		kind:       streamRawFinish,
-		finish:     finish,
-		usage:      s.usage,
-		responseID: s.id,
+		kind:        streamRawFinish,
+		finish:      finish,
+		usage:       s.usage,
+		responseID:  s.id,
+		synthesized: synthesized != "",
 	})
+	return synthesized
 }
 
 func (s *chatStream) assignPart() int {
@@ -286,8 +304,9 @@ func decodeGenerateStream(ctx context.Context, raw streamRaw) (inference.Generat
 		}, nil
 	case streamRawFinish:
 		event := inference.GenerateStreamEvent{
-			FinishReason: raw.finish,
-			ResponseID:   raw.responseID,
+			FinishReason:      raw.finish,
+			FinishSynthesized: raw.synthesized,
+			ResponseID:        raw.responseID,
 		}
 		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {

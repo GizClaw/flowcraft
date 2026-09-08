@@ -59,6 +59,22 @@ func logInferenceStreamEnd(ctx context.Context, op, responseID string) {
 		inferenceAttrs(op, "", nil, "", responseID)...)
 }
 
+// logChatFinishSynthesized warns when a chat stream ended cleanly without
+// an explicit finish_reason and the adapter fabricated the terminal
+// reason. The provider (or an intermediary) may have truncated the stream
+// mid-flight, so the synthesized finish must not be silently trusted.
+func logChatFinishSynthesized(
+	ctx context.Context,
+	model, requestID, responseID, synthesized string,
+) {
+	attrs := inferenceAttrs("generate", model, nil, requestID, responseID)
+	attrs = append(attrs,
+		otellog.String("stream.finish.synthesized", synthesized))
+	telemetry.Warn(ctx,
+		"chat stream ended without a finish reason; finish synthesized",
+		attrs...)
+}
+
 func inferenceAttrs(
 	op, model string,
 	err error,
