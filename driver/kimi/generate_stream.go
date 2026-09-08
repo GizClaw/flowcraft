@@ -92,6 +92,10 @@ type chatStream struct {
 	ended    bool
 	id       string // chat completion id from the stream chunks
 
+	// requestID is the provider x-request-id header captured at stream
+	// open; it survives truncation where the terminal event does not.
+	requestID string
+
 	// model identifies the requested model for stream lifecycle warnings.
 	model string
 }
@@ -139,10 +143,14 @@ func transportGenerateStream(client *kimiClient) inference.Transport[generateWir
 			reasoningPart: -1,
 			textPart:      -1,
 			toolParts:     make(map[int64]int),
+			requestID:     response.Header.Get("x-request-id"),
 			model:         wire.Model,
 		}, nil
 	}
 }
+
+func (s *chatStream) RequestID() string  { return s.requestID }
+func (s *chatStream) ResponseID() string { return s.id }
 
 func (s *chatStream) Close() error {
 	s.cancel()
@@ -162,7 +170,7 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 			if !ok {
 				if synthesized := s.end(); synthesized != "" {
 					logChatFinishSynthesized(
-						ctx, s.model, "", s.id, synthesized)
+						ctx, s.model, s.requestID, s.id, synthesized)
 				}
 				continue
 			}
