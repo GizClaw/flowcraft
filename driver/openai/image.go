@@ -623,6 +623,9 @@ func (s *imageStream) Close() error {
 	return classifyError(s.sdk.Close())
 }
 
+func (s *imageStream) RequestID() string  { return s.requestID }
+func (s *imageStream) ResponseID() string { return "" }
+
 func transportImageStream(
 	client openai.Client,
 ) inference.Transport[imageWire, inference.ProviderStream[imageStreamRaw]] {

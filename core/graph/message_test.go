@@ -84,3 +84,47 @@ func TestMessageStream_MaterializeIsIdempotent(t *testing.T) {
 		t.Fatalf("repeated empty materialization appended %d messages", len(got))
 	}
 }
+
+func TestMessageStream_DropLeavesBoardClean(t *testing.T) {
+	board := agent.NewBoard()
+	ec := ExecutionContext{Context: context.Background(), Host: agent.NoopHost{}, NodeID: "n1"}
+
+	s := ec.NewMessageStream("")
+	if err := s.Emit("partial"); err != nil {
+		t.Fatal(err)
+	}
+	s.Drop()
+	msg, err := s.Close(board)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.Role != "" || msg.Content.Text() != "" {
+		t.Fatalf("dropped stream Close = %+v, want empty message", msg)
+	}
+	if got := board.Channel(agent.MainChannel); len(got) != 0 {
+		t.Fatalf("dropped stream appended %d messages, want 0", len(got))
+	}
+
+	// Close and Drop after Drop are no-ops.
+	s.Drop()
+	if _, err := s.Close(board); err != nil {
+		t.Fatal(err)
+	}
+	if got := board.Channel(agent.MainChannel); len(got) != 0 {
+		t.Fatalf("second Close after Drop appended %d messages, want 0", len(got))
+	}
+
+	// A committed stream is not undone by a later Drop.
+	s2 := ec.NewMessageStream("other")
+	if err := s2.Emit("kept"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s2.Close(board); err != nil {
+		t.Fatal(err)
+	}
+	s2.Drop()
+	if got := board.Channel("other"); len(got) != 1 ||
+		got[0].Content.Text() != "kept" {
+		t.Fatalf("Drop after Close removed the committed message: %+v", got)
+	}
+}

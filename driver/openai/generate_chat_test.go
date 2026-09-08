@@ -145,6 +145,7 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 func TestChatStreamTransportAndDecode(t *testing.T) {
 	server, capture := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("x-request-id", "req_chat_stream_1")
 		_, _ = fmt.Fprint(w, strings.Join([]string{
 			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"he"},"finish_reason":null}]}`,
 			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"llo"},"finish_reason":null}]}`,
@@ -167,9 +168,17 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 		t.Fatalf("open stream: %v", err)
 	}
 	defer func() { _ = stream.Close() }()
+	meta, ok := stream.(inference.ProviderStreamMetadata)
+	if !ok {
+		t.Fatal("chat stream must expose provider stream metadata")
+	}
+	if got := meta.RequestID(); got != "req_chat_stream_1" {
+		t.Fatalf("stream request id = %q, want req_chat_stream_1", got)
+	}
 
 	var text string
 	var finish inference.FinishReason
+	var synthesized bool
 	var usage *inference.Usage
 	for {
 		raw, err := stream.Next(context.Background())
@@ -185,13 +194,16 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 		}
 		if event.FinishReason != "" {
 			finish = event.FinishReason
+			synthesized = event.FinishSynthesized
 		}
 		if event.Usage != nil {
 			usage = event.Usage
 		}
 	}
-	if text != "hello" || finish != inference.FinishCompleted || usage == nil || usage.TotalTokens != 3 {
-		t.Fatalf("stream text=%q finish=%q usage=%+v", text, finish, usage)
+	if text != "hello" || finish != inference.FinishCompleted ||
+		synthesized || usage == nil || usage.TotalTokens != 3 {
+		t.Fatalf("stream text=%q finish=%q synthesized=%v usage=%+v",
+			text, finish, synthesized, usage)
 	}
 	streamOptions, ok := capture.body(0)["stream_options"].(map[string]any)
 	if !ok {
@@ -202,6 +214,58 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 	}
 	if _, ok := streamOptions["include_obfuscation"]; ok {
 		t.Fatalf("default stream_options must not set include_obfuscation: %v", streamOptions)
+	}
+}
+
+func TestChatStreamTruncatedEOFSurfacesSynthesizedFinish(t *testing.T) {
+	server, _ := newCapturedOpenAI(t, func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		// The provider sends content chunks and then closes the stream
+		// without a terminal finish_reason chunk — the truncation shape a
+		// chat-completions adapter cannot distinguish from a clean EOF.
+		_, _ = fmt.Fprint(w, strings.Join([]string{
+			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"},"finish_reason":null}]}`,
+			`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"lo"},"finish_reason":null}]}`,
+		}, "\n\n")+"\n\n")
+	})
+	defer server.Close()
+
+	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
+		kind: kindGenerate, api: apiChat,
+	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionStream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := transportChatGenerateStream(testClients(t, server).api)(
+		context.Background(), wire.Wire)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+
+	var text string
+	var finish inference.FinishReason
+	synthesized := false
+	for {
+		raw, err := stream.Next(context.Background())
+		if err != nil {
+			break
+		}
+		event, err := decodeChatGenerateStream(context.Background(), raw)
+		if err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if delta, ok := event.Delta.(inference.TextPartDelta); ok {
+			text += delta.Text
+		}
+		if event.FinishReason != "" {
+			finish = event.FinishReason
+			synthesized = event.FinishSynthesized
+		}
+	}
+	if text != "hello" || finish != inference.FinishCompleted || !synthesized {
+		t.Fatalf("truncated stream text=%q finish=%q synthesized=%v, want hello/completed/true",
+			text, finish, synthesized)
 	}
 }
 

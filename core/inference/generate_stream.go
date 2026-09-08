@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -132,6 +134,13 @@ type GenerateStreamEvent struct {
 	// Usage is a cumulative snapshot and replaces the previous snapshot.
 	Usage        *Usage       `json:"usage,omitempty"`
 	FinishReason FinishReason `json:"finish_reason,omitempty"`
+	// FinishSynthesized marks a finish reason the adapter fabricated
+	// because the provider ended the stream without emitting a terminal
+	// finish event (for example a chat stream that closed cleanly between
+	// frames). It is false for provider-emitted finish reasons. A
+	// synthesized finish may mean the response was truncated mid-flight,
+	// so consumers can treat the result with reduced trust.
+	FinishSynthesized bool `json:"finish_synthesized,omitempty"`
 	// ProviderOutputs carries a cumulative snapshot per provider output
 	// family (citations, search-call status). An entry with the same
 	// provider/extension identity replaces the previous snapshot, matching
@@ -159,6 +168,18 @@ type GenerateStream interface {
 type ProviderStream[RawEvent any] interface {
 	Next(context.Context) (RawEvent, error)
 	Close() error
+}
+
+// ProviderStreamMetadata is an optional capability of ProviderStream.
+// Streams that learn a provider-assigned request or response identifier
+// before their terminal event (the x-request-id header at open, the first
+// chunk id, or response.created) implement it so the runtime can attach the
+// identifier to mid-stream and truncated-stream failures. Without it,
+// identifiers ride only the terminal finish event and are lost when the
+// provider stream ends early.
+type ProviderStreamMetadata interface {
+	RequestID() string
+	ResponseID() string
 }
 
 type generateStreamDriver[Wire, RawEvent any] struct {
@@ -196,18 +217,21 @@ func (d *generateStreamDriver[Wire, RawEvent]) Stream(
 	}
 	raw, err := d.pipeline.transport(ctx, compiled.Wire)
 	if err != nil {
-		return nil, newProviderError(OperationGenerate, model.ID.Provider, err)
+		return nil, streamProviderError(model.ID.Provider, "stream.open", err)
 	}
 	if isNilValue(raw) {
-		return nil, NewError(
-			InvalidProviderResponse,
-			OperationGenerate,
-			"",
+		return nil, newStreamError(
+			"stream.open.nil",
 			fmt.Errorf("provider opened a nil generate stream"),
 		)
 	}
+	var meta ProviderStreamMetadata
+	if ids, ok := raw.(ProviderStreamMetadata); ok {
+		meta = ids
+	}
 	return &decodedGenerateStream[RawEvent]{
 		raw:       raw,
+		meta:      meta,
 		decode:    d.decode,
 		model:     model,
 		request:   request.Clone(),
@@ -237,18 +261,23 @@ type generatePartAccumulator struct {
 }
 
 type decodedGenerateStream[RawEvent any] struct {
-	raw        ProviderStream[RawEvent]
-	decode     GenerateStreamDecoder[RawEvent]
-	model      ModelRef
-	request    GenerateRequest
-	report     CompileReport
-	parts      map[int]*generatePartAccumulator
-	usage      Usage
-	finish     FinishReason
-	requestID  string
-	responseID string
-	outputs    ProviderOutputs
-	startedAt  time.Time
+	raw     ProviderStream[RawEvent]
+	meta    ProviderStreamMetadata
+	decode  GenerateStreamDecoder[RawEvent]
+	model   ModelRef
+	request GenerateRequest
+	report  CompileReport
+	parts   map[int]*generatePartAccumulator
+	usage   Usage
+	finish  FinishReason
+	// finishSynthesized mirrors the terminal event's FinishSynthesized
+	// flag; it is stamped onto the result so a fabricated finish reason
+	// is visible to the caller.
+	finishSynthesized bool
+	requestID         string
+	responseID        string
+	outputs           ProviderOutputs
+	startedAt         time.Time
 
 	done      bool
 	result    GenerateResponse
@@ -271,27 +300,27 @@ func (s *decodedGenerateStream[RawEvent]) Next(
 			return GenerateStreamEvent{}, io.EOF
 		}
 		s.done = true
-		s.resultErr = newProviderError(OperationGenerate, s.model.ID.Provider, err)
+		s.resultErr = s.streamProviderFailure("stream.read", err)
 		return GenerateStreamEvent{}, s.resultErr
 	}
 	event, err := s.decode(ctx, rawEvent)
 	if err != nil {
 		s.done = true
-		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+		s.resultErr = s.streamError("stream.decode", err)
 		return GenerateStreamEvent{}, s.resultErr
 	}
 	if event.Delta != nil {
 		normalized, err := normalizePartDelta(event.Delta)
 		if err != nil {
 			s.done = true
-			s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+			s.resultErr = s.streamError("stream.normalize", err)
 			return GenerateStreamEvent{}, s.resultErr
 		}
 		event.Delta = normalized
 	}
 	if err := s.accumulate(event); err != nil {
 		s.done = true
-		s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+		s.resultErr = s.streamError(streamAccumulateDetail(err), err)
 		return GenerateStreamEvent{}, s.resultErr
 	}
 	return event, nil
@@ -299,10 +328,8 @@ func (s *decodedGenerateStream[RawEvent]) Next(
 
 func (s *decodedGenerateStream[RawEvent]) Result() (GenerateResponse, error) {
 	if !s.done {
-		return GenerateResponse{}, NewError(
-			InvalidProviderResponse,
-			OperationGenerate,
-			"",
+		return GenerateResponse{}, s.streamError(
+			"stream.result.premature",
 			fmt.Errorf("stream is not complete"),
 		)
 	}
@@ -311,9 +338,103 @@ func (s *decodedGenerateStream[RawEvent]) Result() (GenerateResponse, error) {
 
 func (s *decodedGenerateStream[RawEvent]) Close() error {
 	if err := s.raw.Close(); err != nil {
-		return newProviderError(OperationGenerate, s.model.ID.Provider, err)
+		return s.streamProviderFailure("stream.close", err)
 	}
 	return nil
+}
+
+// newStreamError builds the InvalidProviderResponse error used by the
+// generate stream failure points. detail is a stable, redacted stage label
+// (see Error.Detail) identifying where the failure was detected.
+func newStreamError(detail string, cause error) *Error {
+	out := NewError(InvalidProviderResponse, OperationGenerate, "", cause)
+	out.Detail = detail
+	if requestID, ok := errdefs.RequestID(out); ok {
+		out.RequestID = requestID
+	}
+	return out
+}
+
+// streamProviderError builds a ProviderFailure error for a generate stream
+// transport failure with the same stable stage label as newStreamError.
+func streamProviderError(provider, detail string, cause error) *Error {
+	out := newProviderError(OperationGenerate, provider, cause)
+	out.Detail = detail
+	return out
+}
+
+// providerID returns the provider identifier this stream can still attach
+// when it ends early: the transport-level request id when provider metadata
+// exposed one, otherwise the response id observed before truncation,
+// otherwise an identifier carried by an earlier event.
+func (s *decodedGenerateStream[RawEvent]) providerID() string {
+	if s.meta != nil {
+		if id := s.meta.RequestID(); id != "" {
+			return id
+		}
+		if id := s.meta.ResponseID(); id != "" {
+			return id
+		}
+	}
+	return s.requestID
+}
+
+// withProviderID wraps cause with the stream's provider identifier unless
+// the chain already carries one, so errdefs.RequestID consumers (span
+// attributes, run event payloads) see it on failures raised after the
+// provider stream opened.
+func (s *decodedGenerateStream[RawEvent]) withProviderID(cause error) error {
+	if id := s.providerID(); id != "" {
+		if _, ok := errdefs.RequestID(cause); !ok {
+			cause = errdefs.WithRequestID(cause, id)
+		}
+	}
+	return cause
+}
+
+func (s *decodedGenerateStream[RawEvent]) streamError(
+	detail string,
+	cause error,
+) *Error {
+	return newStreamError(detail, s.withProviderID(cause))
+}
+
+func (s *decodedGenerateStream[RawEvent]) streamProviderFailure(
+	detail string,
+	cause error,
+) *Error {
+	return streamProviderError(s.model.ID.Provider, detail, s.withProviderID(cause))
+}
+
+// truncatedStreamError builds the ProviderTruncated error for a stream that
+// ended without a terminal finish event, attaching any provider identifier
+// the stream still knows.
+func (s *decodedGenerateStream[RawEvent]) truncatedStreamError(cause error) *Error {
+	out := NewError(ProviderTruncated, OperationGenerate, "", s.withProviderID(cause))
+	out.Detail = "stream.finish.missing"
+	if requestID, ok := errdefs.RequestID(out); ok {
+		out.RequestID = requestID
+	}
+	return out
+}
+
+// toolCallConflictError marks an accumulation failure where incremental
+// tool-call fragments contradict each other (a changed id or name). It lets
+// Next attach a distinct Detail without parsing error text.
+type toolCallConflictError struct {
+	err error
+}
+
+func (e *toolCallConflictError) Error() string { return e.err.Error() }
+func (e *toolCallConflictError) Unwrap() error { return e.err }
+
+// streamAccumulateDetail picks the Detail for an accumulate failure.
+func streamAccumulateDetail(err error) string {
+	var conflict *toolCallConflictError
+	if errors.As(err, &conflict) {
+		return "stream.accumulate.tool_call"
+	}
+	return "stream.accumulate"
 }
 
 func (s *decodedGenerateStream[RawEvent]) accumulate(
@@ -328,6 +449,10 @@ func (s *decodedGenerateStream[RawEvent]) accumulate(
 		if err := event.FinishReason.Validate(); err != nil {
 			return err
 		}
+	}
+	if event.FinishSynthesized && event.FinishReason == "" {
+		return fmt.Errorf(
+			"generate stream finish_synthesized requires a finish reason")
 	}
 	if err := event.ProviderOutputs.Validate(); err != nil {
 		return err
@@ -372,6 +497,7 @@ func (s *decodedGenerateStream[RawEvent]) accumulate(
 			return fmt.Errorf("stream emitted multiple finish reasons")
 		}
 		s.finish = event.FinishReason
+		s.finishSynthesized = event.FinishSynthesized
 	}
 	return nil
 }
@@ -383,13 +509,13 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 	case ToolCallDelta:
 		if value.ID != "" {
 			if p.toolID != "" && p.toolID != value.ID {
-				return fmt.Errorf("tool call changed id")
+				return &toolCallConflictError{err: fmt.Errorf("tool call changed id")}
 			}
 			p.toolID = value.ID
 		}
 		if value.Name != "" {
 			if p.toolName != "" && p.toolName != value.Name {
-				return fmt.Errorf("tool call changed name")
+				return &toolCallConflictError{err: fmt.Errorf("tool call changed name")}
 			}
 			p.toolName = value.Name
 		}
@@ -431,10 +557,7 @@ func (p *generatePartAccumulator) add(delta PartDelta) error {
 func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	s.done = true
 	if s.finish == "" {
-		s.resultErr = NewError(
-			InvalidProviderResponse,
-			OperationGenerate,
-			"",
+		s.resultErr = s.truncatedStreamError(
 			fmt.Errorf("stream ended without a finish reason"),
 		)
 		return
@@ -448,7 +571,7 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	for _, index := range indices {
 		part, err := s.parts[index].result()
 		if err != nil {
-			s.resultErr = NewError(InvalidProviderResponse, OperationGenerate, "", err)
+			s.resultErr = s.streamError("stream.finish.part", err)
 			return
 		}
 		parts = append(parts, part)
@@ -458,9 +581,10 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 			Role:    message.RoleAssistant,
 			Content: message.Content{Parts: parts},
 		},
-		FinishReason:    s.finish,
-		Usage:           s.usage,
-		ProviderOutputs: s.outputs.Clone(),
+		FinishReason:      s.finish,
+		FinishSynthesized: s.finishSynthesized,
+		Usage:             s.usage,
+		ProviderOutputs:   s.outputs.Clone(),
 	}
 	metadata := s.report.Metadata(s.model)
 	metadata.RequestID = s.requestID
@@ -473,10 +597,43 @@ func (s *decodedGenerateStream[RawEvent]) finishResult() {
 	response.Usage.Model = s.model
 	response.Usage.LatencyMs = time.Since(s.startedAt).Milliseconds()
 	if err := response.ValidateFor(s.request); err != nil {
-		s.resultErr = newResponseValidationError(OperationGenerate, err)
+		out := newResponseValidationError(OperationGenerate, s.withProviderID(err))
+		out.Detail = terminalValidationDetail(out, response)
+		if requestID, ok := errdefs.RequestID(out); ok {
+			out.RequestID = requestID
+		}
+		s.resultErr = out
 		return
 	}
 	s.result = response
+}
+
+// terminalValidationDetail picks the Detail for a terminal response
+// validation failure. Structurally invalid tool-call parts and
+// finish-reason/tool-call mismatches each get a distinct label (both mean
+// the provider ended cleanly with a corrupt tool payload); undefined-tool
+// calls keep their own label alongside the rejected call; everything else
+// is a generic response validation failure.
+func terminalValidationDetail(out *Error, response GenerateResponse) string {
+	if out.Kind == UndefinedTool {
+		return "stream.finish.undefined_tool"
+	}
+	for _, part := range response.Message.Content.Parts {
+		normalized, err := message.NormalizePart(part)
+		if err != nil {
+			continue
+		}
+		if call, ok := normalized.(message.ToolCallPart); ok {
+			if err := call.Validate(); err != nil {
+				return "stream.finish.tool_call"
+			}
+		}
+	}
+	hasToolCalls := response.Message.HasToolCalls()
+	if (response.FinishReason == FinishToolCalls) != hasToolCalls {
+		return "stream.finish.mismatch"
+	}
+	return "stream.finish.validation"
 }
 
 func (p *generatePartAccumulator) result() (message.Part, error) {

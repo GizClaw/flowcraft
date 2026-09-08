@@ -918,6 +918,10 @@ type deepseekStream struct {
 	sawTools bool
 
 	webSearchOutput WebSearchOutput
+
+	// requestID is the provider x-request-id header captured at stream
+	// open; it survives truncation where the terminal event does not.
+	requestID string
 }
 
 type deepseekStreamPart struct {
@@ -936,10 +940,13 @@ func transportResponsesGenerateStream(
 		ctx context.Context,
 		wire responseWire,
 	) (inference.ProviderStream[streamRaw], error) {
+		var requestID string
+		opts := append([]option.RequestOption(nil), responseMetadataOptions(wire)...)
+		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Responses.NewStreaming(
 			ctx,
 			wireToResponseParams(wire),
-			responseMetadataOptions(wire)...,
+			opts...,
 		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
@@ -948,11 +955,15 @@ func transportResponsesGenerateStream(
 		}
 		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &deepseekStream{
-			stream: stream,
-			parts:  make(map[int64]*deepseekStreamPart),
+			stream:    stream,
+			parts:     make(map[int64]*deepseekStreamPart),
+			requestID: requestID,
 		}, nil
 	}
 }
+
+func (s *deepseekStream) RequestID() string  { return s.requestID }
+func (s *deepseekStream) ResponseID() string { return "" }
 
 func (s *deepseekStream) Close() error {
 	if s.stream == nil {

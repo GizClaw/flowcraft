@@ -61,6 +61,9 @@ func (s *messagesStream) Close() error {
 	return classifyError(s.stream.Close())
 }
 
+func (s *messagesStream) RequestID() string  { return "" }
+func (s *messagesStream) ResponseID() string { return s.id }
+
 func (s *messagesStream) Next(ctx context.Context) (streamRaw, error) {
 	if err := ctx.Err(); err != nil {
 		return streamRaw{}, errdefs.FromContext(err)

@@ -141,6 +141,7 @@ onto `tool_pending_key` and the graph routes onward.
 | `recover_count_key`                      | board var receiving the per-run recovery counter (node hard-fails past `max_per_run`)                               |
 | `recover_feedback_key`                   | board var receiving the user-role feedback text for the recovered round; the recovered inference round consumes it as its current input; defaults to the reserved per-node `__recover_feedback.<node id>` var when unset |
 | `stream`                                 | open a `GenerateStream`; text/reasoning deltas stream incrementally, the board still gets one assembled message   |
+| `stream_failure_policy`                  | `{on_error, on_interrupt}` actions (`commit_partial`, default, or `discard`) for what happens to buffered partial text when a streamed call fails or is interrupted; a recoverable undefined-tool rejection always discards |
 | `tools`                                  | named catalog tools the model may call this turn                                                                  |
 | `all_tools`                              | send the catalog's entire visible set; with `tools`, names are declared `RequiredByName` and must exist           |
 | `tool_choice`                            | constrain when/which tools are called                                                                             |
@@ -219,7 +220,11 @@ Behavior:
   recovered.
 - Usage is reported to the host on every call. In stream mode a mid-stream
   failure commits the buffered partial text to the board and reports the
-  last usage snapshot before propagating the error.
+  last usage snapshot before propagating the error — unless
+  `stream_failure_policy` is `discard` for that termination category, or
+  the failure is a recoverable undefined-tool rejection (which never
+  materializes partial text so the recovered round keeps a clean
+  transcript).
 
 ```json
 {

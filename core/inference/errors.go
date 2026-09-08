@@ -24,6 +24,17 @@ const (
 	CompilerContractViolation ErrorKind = "compiler_contract_violation"
 	ProviderFailure           ErrorKind = "provider_failure"
 	InvalidProviderResponse   ErrorKind = "invalid_provider_response"
+	// ProviderTruncated marks a stream that ended before the provider
+	// emitted a terminal finish event. It is distinct from
+	// InvalidProviderResponse so retry/degradation policies can treat it
+	// as transient (the request may simply have been cut off mid-flight)
+	// instead of permanent response corruption.
+	// Contract: core never auto-retries this error. Its NotAvailable/503
+	// classification means "this attempt is void and worth re-initiating
+	// at caller granularity" — partial content may already have been
+	// committed by the inference node before the error propagated, so an
+	// internal mid-stream retry would duplicate output.
+	ProviderTruncated ErrorKind = "provider_truncated"
 	// UndefinedTool marks a response whose tool calls name tools absent
 	// from the request's definitions. It is distinct from
 	// InvalidProviderResponse so callers can offer a recoverable path
@@ -43,6 +54,13 @@ type Error struct {
 	Kind      ErrorKind
 	Operation Operation
 	Field     FieldID
+	// Detail is a stable, redacted stage label identifying where within
+	// the operation the failure was detected (for example
+	// "stream.finish.missing" for a stream that ended without a finish
+	// reason). Unlike cause it never carries provider wire payloads,
+	// prompts, or raw response fragments, so it is safe for Error()
+	// text, routine logs, and API responses.
+	Detail string
 	// RetryAfter is a server-provided backoff hint (Retry-After) when a
 	// provider failure carries one. Zero means no hint. It is diagnostic
 	// metadata, not part of the redacted Error() text.
@@ -53,6 +71,10 @@ type Error struct {
 	WireAttempts int
 	// RequestID is the provider-assigned request identifier attached to
 	// this failure when the provider reported one. Empty otherwise.
+	// Stream failures that end early may carry the provider's response
+	// identifier (chat/message id) instead when the transport-level request
+	// id is unknown, so operators can still correlate the truncated
+	// request with the provider.
 	// Runtime telemetry mirrors it onto error spans and logs as
 	// llm.request.id.
 	RequestID string
@@ -104,6 +126,9 @@ func (e *Error) Error() string {
 	if e.Field != "" {
 		message += " at " + string(e.Field)
 	}
+	if e.Detail != "" {
+		message += ": " + e.Detail
+	}
 	return message
 }
 
@@ -141,6 +166,8 @@ func (kind ErrorKind) classify(cause error) error {
 		return errdefs.Aborted(classified)
 	case CompilerContractViolation, InvalidProviderResponse:
 		return errdefs.Internal(cause)
+	case ProviderTruncated:
+		return errdefs.NotAvailable(cause)
 	case UndefinedTool:
 		// Deterministic response violation: the model referenced a tool
 		// it was never shown. Retrying the same request cannot help, so

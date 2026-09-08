@@ -76,13 +76,17 @@ const (
 )
 
 type streamRaw struct {
-	kind            streamRawKind
-	part            int // canonical part index, assigned by the transport
-	text            string
-	responseID      string
-	tool            streamRawTool
-	usage           *rawUsage
-	finish          inference.FinishReason
+	kind       streamRawKind
+	part       int // canonical part index, assigned by the transport
+	text       string
+	responseID string
+	tool       streamRawTool
+	usage      *rawUsage
+	finish     inference.FinishReason
+	// synthesized marks a finish reason fabricated by the adapter when
+	// the stream ended without a provider terminal event (e.g. a clean
+	// EOF between frames). It rides the finish raw to the decoded event.
+	synthesized     bool
 	providerOutputs inference.ProviderOutputs
 	reasoningID     string
 }
@@ -317,9 +321,10 @@ func decodeGenerateStream(
 		}, nil
 	case streamRawFinish:
 		event := inference.GenerateStreamEvent{
-			FinishReason:    raw.finish,
-			ResponseID:      raw.responseID,
-			ProviderOutputs: raw.providerOutputs.Clone(),
+			FinishReason:      raw.finish,
+			FinishSynthesized: raw.synthesized,
+			ResponseID:        raw.responseID,
+			ProviderOutputs:   raw.providerOutputs.Clone(),
 		}
 		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {

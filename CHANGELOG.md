@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.2.8` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.3.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.3.0` - 2026-09-08
+
+### Changed
+
+- feat(core/inference): surface generate-stream truncation and finish integrity to callers — streams that end before a terminal finish classify as ProviderTruncated (NotAvailable/503, never auto-retried by core; attempt-void semantics live at the caller), failures carry stable Error.Detail stage labels plus provider request/response ids captured at stream open via the optional ProviderStreamMetadata contract (x-request-id/apim-request-id headers, envelope/message ids), error spans mirror inference.error.detail and llm ids, and adapter-synthesized chat finishes are marked FinishSynthesized end to end on the generate event and response and mirrored as inference.finish.synthesized on success spans, with core rejecting a synthesized flag that carries no finish reason; feat(core/graph,core/agent): make stream failure handling a first-class inference-node policy — MessageStream gains an explicit Drop terminal, the inference node exposes stream_failure_policy {on_error,on_interrupt} with commit_partial (default) or discard actions classified per termination category (errdefs aborted/interrupted markers), recoverable undefined-tool streams discard partial text at the drain site so recovered rounds keep a clean transcript, partial usage reporting stays policy-independent, and stream-delta events are documented as advisory previews with board channels authoritative
 
 ## `core/v0.2.8` - 2026-09-07
 

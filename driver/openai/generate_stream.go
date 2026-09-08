@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/packages/ssestream"
 	"github.com/openai/openai-go/v3/responses"
 )
@@ -30,6 +31,10 @@ type responsesStream struct {
 	// hosted web_search tool. Stream events replace it as calls and
 	// citations arrive.
 	webSearchOutput WebSearchOutput
+
+	// requestID is the provider x-request-id header captured at stream
+	// open; it survives truncation where the terminal event does not.
+	requestID string
 }
 
 type streamPart struct {
@@ -49,10 +54,13 @@ func transportGenerateStream(
 		ctx context.Context,
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
+		var requestID string
+		opts := append([]option.RequestOption(nil), requestMetadataOptions(wire)...)
+		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Responses.NewStreaming(
 			ctx,
 			wireToParams(wire),
-			requestMetadataOptions(wire)...,
+			opts...,
 		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
@@ -61,11 +69,15 @@ func transportGenerateStream(
 		}
 		logInferenceStream(ctx, "generate", wire.model, nil, "")
 		return &responsesStream{
-			stream: stream,
-			parts:  make(map[int64]*streamPart),
+			stream:    stream,
+			parts:     make(map[int64]*streamPart),
+			requestID: requestID,
 		}, nil
 	}
 }
+
+func (s *responsesStream) RequestID() string  { return s.requestID }
+func (s *responsesStream) ResponseID() string { return "" }
 
 func (s *responsesStream) Close() error {
 	if s.stream == nil {
@@ -403,9 +415,10 @@ func decodeGenerateStream(
 		}, nil
 	case streamRawFinish:
 		event := inference.GenerateStreamEvent{
-			FinishReason:    raw.finish,
-			ResponseID:      raw.responseID,
-			ProviderOutputs: raw.providerOutputs.Clone(),
+			FinishReason:      raw.finish,
+			FinishSynthesized: raw.synthesized,
+			ResponseID:        raw.responseID,
+			ProviderOutputs:   raw.providerOutputs.Clone(),
 		}
 		logInferenceStreamEnd(ctx, "generate", raw.responseID)
 		if raw.usage != nil {

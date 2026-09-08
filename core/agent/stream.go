@@ -24,6 +24,13 @@ import (
 // node, a wrapper engine, or a test harness can publish a valid stream
 // delta in a single line:
 //
+// Stream deltas are advisory previews, not durable transcript state: the
+// authoritative content is the board channel message materialized by the
+// producing node, and an attempt may be discarded after its deltas were
+// published (see graph.MessageStream failure policies). Consumers that
+// persist output should key off the board/terminal state instead of
+// accumulating deltas from an attempt that may later be dropped.
+//
 //	// Inside a custom long-running graph node:
 //	engine.EmitStreamToken(ctx, pub, runID, nodeID, "loaded chunk 3/10")
 //
