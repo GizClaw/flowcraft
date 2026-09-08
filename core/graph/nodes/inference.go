@@ -86,6 +86,14 @@ type InferenceConfig struct {
 	// still receives exactly one assembled message (tool_call parts
 	// included).
 	Stream bool `json:"stream,omitempty"`
+	// StreamFailurePolicy controls what happens to the buffered partial
+	// text when a streamed call terminates without a successful result.
+	// on_error covers provider/run failures; on_interrupt covers user or
+	// run stops (context.Canceled / aborted / interrupted errors).
+	// Absent keys default to commit_partial, preserving the historical
+	// behavior of committing the partial text before the error
+	// propagates.
+	StreamFailurePolicy *StreamFailurePolicy `json:"stream_failure_policy,omitempty"`
 
 	// Tools names the catalog tools the model may call this turn.
 	Tools []string `json:"tools,omitempty"`
@@ -119,6 +127,63 @@ type InferenceConfig struct {
 	// opaque metadata bag. Keys are deployment-defined; core does not
 	// reserve or interpret any key name.
 	RequestMetadata map[string]string `json:"request_metadata,omitempty"`
+}
+
+// StreamFailurePolicy maps a streamed inference's termination category to
+// the action applied to its buffered partial text.
+type StreamFailurePolicy struct {
+	// OnError is the action for provider and run failures (anything that
+	// is not an interrupt). Defaults to commit_partial.
+	OnError graph.StreamFailureAction `json:"on_error,omitempty"`
+	// OnInterrupt is the action for user or run stops: errors classified
+	// aborted or interrupted by errdefs (context.Canceled lands here).
+	// Defaults to commit_partial.
+	OnInterrupt graph.StreamFailureAction `json:"on_interrupt,omitempty"`
+}
+
+func (p *StreamFailurePolicy) validate() error {
+	if p == nil {
+		return nil
+	}
+	check := func(field string, action graph.StreamFailureAction) error {
+		switch action {
+		case "", graph.StreamFailureCommitPartial, graph.StreamFailureDiscard:
+			return nil
+		default:
+			return errdefs.Validationf(
+				"inference node: stream_failure_policy.%s = %q, want %q or %q",
+				field, action, graph.StreamFailureCommitPartial,
+				graph.StreamFailureDiscard)
+		}
+	}
+	if err := check("on_error", p.OnError); err != nil {
+		return err
+	}
+	return check("on_interrupt", p.OnInterrupt)
+}
+
+// action resolves the effective action for an interrupt-classified
+// termination. Nil policy and empty actions fall back to commit_partial.
+func (p *StreamFailurePolicy) action(interrupt bool) graph.StreamFailureAction {
+	var action graph.StreamFailureAction
+	if p != nil {
+		action = p.OnError
+		if interrupt {
+			action = p.OnInterrupt
+		}
+	}
+	if action == "" {
+		return graph.StreamFailureCommitPartial
+	}
+	return action
+}
+
+// isInterruptTermination reports whether err terminates a stream because
+// the user or the run stopped it (context.Canceled classifies as Aborted
+// in errdefs; an explicit Interrupted marker lands here too). Timeouts and
+// provider failures stay in the failure category.
+func isInterruptTermination(err error) bool {
+	return errdefs.IsAborted(err) || errdefs.IsInterrupted(err)
 }
 
 // UndefinedToolRecoveryConfig configures the inference node's
@@ -209,6 +274,9 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 		return errdefs.Validationf(
 			"inference node: undefined_tool_recovery requires recover_pending_key and recover_count_key")
 	}
+	if err := cfg.StreamFailurePolicy.validate(); err != nil {
+		return err
+	}
 	req, err := buildGenerateRequest(ec, board, channel, cfg, deps)
 	if err != nil {
 		return err
@@ -216,7 +284,7 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 
 	resp, err := executeGenerate(ec, board, cfg, deps, req)
 	if err != nil {
-		return recoverUndefinedTool(ec, board, channel, cfg, err)
+		return recoverUndefinedTool(ec, board, cfg, err)
 	}
 	if cfg.RecoverPendingKey != "" {
 		// A successful round clears the recovery marker so the loop
@@ -308,37 +376,12 @@ func runInference(ec graph.ExecutionContext, board *agent.Board, cfg InferenceCo
 // call would be executed for real. The original error is returned when
 // recovery is disabled, the failure is not an undefined-tool rejection,
 // or the per-run budget is exhausted.
-func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel string, cfg InferenceConfig, err error) error {
-	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
+func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, err error) error {
+	call, recoverable := recoverableUndefinedToolCall(board, cfg, err)
+	if !recoverable {
 		return err
-	}
-	var infErr *inference.Error
-	if !errors.As(err, &infErr) ||
-		infErr.Kind != inference.UndefinedTool ||
-		infErr.UndefinedToolCall == nil {
-		return err
-	}
-	max := cfg.UndefinedToolRecovery.MaxPerRun
-	if max <= 0 {
-		max = defaultUndefinedToolMaxRecoveries
 	}
 	count := recoveryCount(board, cfg)
-	if count >= max {
-		return err
-	}
-	call := *infErr.UndefinedToolCall
-
-	// The failed stream materialized its buffered text on the channel
-	// before the error propagated (see drainGenerateStream). The turn is
-	// being rolled back for a retry, so that rejected text must not stay
-	// in the transcript: the recovered round appends its own complete
-	// message right after it, leaving adjacent assistant messages that
-	// violate provider reasoning round-trip rules on the next request.
-	// Nothing is removed when the tail is not that text-only
-	// materialization (unary failures and streams that buffered no text
-	// never commit one).
-	rollbackFailedTurnText(board, channel)
-
 	board.SetVar(recoverFeedbackKey(ec, cfg), fmt.Sprintf(undefinedToolFeedback, call.Name))
 	if cfg.ToolPendingKey != "" {
 		board.SetVar(cfg.ToolPendingKey, false)
@@ -352,25 +395,34 @@ func recoverUndefinedTool(ec graph.ExecutionContext, board *agent.Board, channel
 	return nil
 }
 
-// rollbackFailedTurnText removes the standalone text-only assistant
-// message a failed stream committed to the channel. It is a no-op when
-// the channel tail is not that exact materialization, so ordinary tails
-// (user, tool, tool result) are never touched.
-func rollbackFailedTurnText(board *agent.Board, channel string) {
-	msgs := board.Channel(channel)
-	if len(msgs) == 0 {
-		return
+// recoverableUndefinedToolCall reports whether err is an undefined-tool
+// rejection this node may convert into recoverable feedback, and returns
+// the rejected call when it is. Streamed attempts that are recoverable
+// discard their partial text before materialization (see
+// drainGenerateStream), so the recovered round never leaves adjacent
+// assistant messages in the transcript.
+func recoverableUndefinedToolCall(
+	board *agent.Board,
+	cfg InferenceConfig,
+	err error,
+) (*message.ToolCall, bool) {
+	if cfg.UndefinedToolRecovery == nil || !cfg.UndefinedToolRecovery.Enabled {
+		return nil, false
 	}
-	last := msgs[len(msgs)-1]
-	if last.Role != message.RoleAssistant {
-		return
+	var infErr *inference.Error
+	if !errors.As(err, &infErr) ||
+		infErr.Kind != inference.UndefinedTool ||
+		infErr.UndefinedToolCall == nil {
+		return nil, false
 	}
-	for _, part := range last.Content.Parts {
-		if _, ok := part.(message.TextPart); !ok {
-			return
-		}
+	max := cfg.UndefinedToolRecovery.MaxPerRun
+	if max <= 0 {
+		max = defaultUndefinedToolMaxRecoveries
 	}
-	board.PopChannelMessage(channel)
+	if recoveryCount(board, cfg) >= max {
+		return nil, false
+	}
+	return infErr.UndefinedToolCall, true
 }
 
 // recoveryCount reads the per-run undefined-tool recovery counter.
@@ -680,13 +732,16 @@ func executeGenerate(ec graph.ExecutionContext, board *agent.Board, cfg Inferenc
 // response (complete message, tool_calls included). On a mid-stream
 // failure — driver error or run interruption — the buffered partial
 // text is committed to the board as one assistant message before the
-// error propagates, so downstream consumers and a host-saved board keep
-// the progress instead of silently losing every token. Partial
-// reasoning is streamed but not committed to the board: an unsigned
-// fragment must not round-trip into a conversation context that
-// requires signed reasoning. The last cumulative usage snapshot seen
-// before the failure is still reported to the host, so budget
-// accounting observes the tokens the provider already billed.
+// error propagates unless the node's StreamFailurePolicy discards it or
+// an undefined-tool recovery is pending (which always discards so the
+// recovered round leaves a clean transcript). Downstream consumers and a
+// host-saved board therefore keep progress by default instead of
+// silently losing every token. Partial reasoning is streamed but not
+// committed to the board: an unsigned fragment must not round-trip
+// into a conversation context that requires signed reasoning. The last
+// cumulative usage snapshot seen before the failure is still reported
+// to the host, so budget accounting observes the tokens the provider
+// already billed — regardless of the failure policy.
 func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg InferenceConfig, deps InferenceNodeDeps, req inference.GenerateRequest) (inference.GenerateResponse, error) {
 	var stream inference.GenerateStream
 	var err error
@@ -711,10 +766,19 @@ func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg In
 		}
 	}()
 
-	return drainGenerateStream(ec, board, cfg.MessagesChannel, stream)
+	return drainGenerateStream(ec, board, cfg, stream)
 }
 
-func drainGenerateStream(ec graph.ExecutionContext, board *agent.Board, channel string, stream inference.GenerateStream) (response inference.GenerateResponse, err error) {
+func drainGenerateStream(
+	ec graph.ExecutionContext,
+	board *agent.Board,
+	cfg InferenceConfig,
+	stream inference.GenerateStream,
+) (response inference.GenerateResponse, err error) {
+	channel := cfg.MessagesChannel
+	if channel == "" {
+		channel = agent.MainChannel
+	}
 	s := ec.NewMessageStream(channel)
 	var (
 		lastUsage inference.Usage
@@ -736,6 +800,16 @@ func drainGenerateStream(ec graph.ExecutionContext, board *agent.Board, channel 
 			// failed; surface the last cumulative usage snapshot so
 			// budget accounting still observes the partial spend.
 			reportPartialUsage()
+			// An undefined-tool rejection that will be recovered always
+			// discards: the recovered round must not follow a partial
+			// assistant message in the transcript. Otherwise the node's
+			// configured failure policy decides whether the partial text
+			// is committed (default) or dropped for a clean retry.
+			if _, recoverable := recoverableUndefinedToolCall(board, cfg, err); recoverable ||
+				cfg.StreamFailurePolicy.action(isInterruptTermination(err)) == graph.StreamFailureDiscard {
+				s.Drop()
+				return
+			}
 			// Preserve the original stream error; partial materialization
 			// is best effort, but if Close itself fails the caller should
 			// still see why their partial materialization didn't land.

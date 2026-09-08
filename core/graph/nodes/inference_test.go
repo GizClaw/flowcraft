@@ -373,14 +373,14 @@ func TestInferenceNode_UndefinedToolRecovery(t *testing.T) {
 	}
 }
 
-// TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial proves
+// TestInferenceNode_UndefinedToolRecoveryStreamDiscardsPartial proves
 // that when a streamed generation is rejected for an undefined tool, the
-// recovery rolls back the text-only assistant message the failed stream
-// materialized on the channel. Without the rollback, the next round's
-// success appends a reasoning + tool-call assistant message right after
+// partial text is discarded before materialization instead of being
+// rolled back after the fact. Committing it would let the next round's
+// success append a reasoning + tool-call assistant message right after
 // it, leaving adjacent assistant messages that violate provider
 // reasoning round-trip rules on the following request.
-func TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial(t *testing.T) {
+func TestInferenceNode_UndefinedToolRecoveryStreamDiscardsPartial(t *testing.T) {
 	fake := &inferencetest.GenerateFake{
 		Events: []inference.GenerateStreamEvent{
 			{PartIndex: 0, Delta: inference.ReasoningDelta{Text: "think"}},
@@ -408,11 +408,12 @@ func TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial(t *testing.T)
 		t.Fatalf("Execute: %v", err)
 	}
 
-	// The failed stream's partial text was rolled back: the channel
-	// holds only the original user turn, not the rejected text.
+	// The failed stream's partial text was discarded before
+	// materialization: the channel holds only the original user turn,
+	// not the rejected text.
 	msgs := board.Channel(agent.MainChannel)
 	if len(msgs) != 1 {
-		t.Fatalf("channel length = %d (%+v), want 1 (partial rolled back)", len(msgs), msgs)
+		t.Fatalf("channel length = %d (%+v), want 1 (partial discarded)", len(msgs), msgs)
 	}
 	feedback := board.GetVarString("recover_feedback")
 	if !strings.Contains(feedback, "ghost") || !strings.Contains(feedback, "tool_search") {
@@ -427,8 +428,8 @@ func TestInferenceNode_UndefinedToolRecoveryStreamRollsBackPartial(t *testing.T)
 }
 
 // TestInferenceNode_UndefinedToolRecoveryStreamNoTextKeepsTail proves
-// the rollback never touches the tail when the failed stream buffered no
-// text (nothing was committed to roll back).
+// the discard path is a no-op when the failed stream buffered no text:
+// the tail is never touched.
 func TestInferenceNode_UndefinedToolRecoveryStreamNoTextKeepsTail(t *testing.T) {
 	fake := &inferencetest.GenerateFake{
 		Events: []inference.GenerateStreamEvent{
@@ -1886,6 +1887,124 @@ func TestInferenceNode_StreamMidFailureCommitsPartial(t *testing.T) {
 	}
 }
 
+// TestInferenceNode_StreamMidFailureDiscardLeavesChannelClean proves the
+// on_error discard policy leaves the board untouched when a streamed call
+// fails mid-generation, so a caller-level retry can replay without
+// duplicating partial output.
+func TestInferenceNode_StreamMidFailureDiscardLeavesChannelClean(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hel"}},
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "lo"}},
+		},
+		StreamErr:   errors.New("connection reset"),
+		StreamErrAt: 2, // both deltas delivered, then the stream dies
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+		StreamFailurePolicy: &StreamFailurePolicy{
+			OnError: graph.StreamFailureDiscard,
+		},
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, &captureHost{}, board); err == nil {
+		t.Fatal("mid-stream failure must propagate")
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 1 {
+		t.Fatalf("channel len = %d, want user only (partial discarded)", len(msgs))
+	}
+	if msgs[0].Role != message.RoleUser {
+		t.Fatalf("channel = %+v, want the original user turn untouched", msgs)
+	}
+}
+
+// TestInferenceNode_StreamInterruptDiscardLeavesChannelClean proves the
+// on_interrupt discard policy applies to aborted (user/run stop)
+// terminations, distinct from the on_error policy.
+func TestInferenceNode_StreamInterruptDiscardLeavesChannelClean(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hel"}},
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "lo"}},
+		},
+		StreamErr:   errdefs.Aborted(errors.New("user stop")),
+		StreamErrAt: 2,
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+		StreamFailurePolicy: &StreamFailurePolicy{
+			OnError:     graph.StreamFailureCommitPartial,
+			OnInterrupt: graph.StreamFailureDiscard,
+		},
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, &captureHost{}, board); err == nil {
+		t.Fatal("interrupted stream must propagate")
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 1 {
+		t.Fatalf("channel len = %d, want user only (interrupted partial discarded)", len(msgs))
+	}
+}
+
+// TestInferenceNode_StreamInterruptCommitsPartialByDefault proves the
+// default on_interrupt policy (commit_partial) still commits the partial
+// text for aborted terminations, preserving the historical behavior.
+func TestInferenceNode_StreamInterruptCommitsPartialByDefault(t *testing.T) {
+	fake := &inferencetest.GenerateFake{
+		Events: []inference.GenerateStreamEvent{
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "hel"}},
+			{PartIndex: 0, Delta: inference.TextPartDelta{Text: "lo"}},
+		},
+		StreamErr:   errdefs.Aborted(errors.New("user stop")),
+		StreamErrAt: 2,
+	}
+	reg := inferenceRegistry(t, InferenceNodeDeps{Assembly: fake.Assembly(t)})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+	})
+	board := userBoard()
+	if err := executeGraph(t, g, &captureHost{}, board); err == nil {
+		t.Fatal("interrupted stream must propagate")
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 {
+		t.Fatalf("channel len = %d, want user + partial assistant", len(msgs))
+	}
+	if msgs[1].Role != message.RoleAssistant || msgs[1].Content.Text() != "hello" {
+		t.Fatalf("partial message = %+v, want assistant \"hello\"", msgs[1])
+	}
+}
+
+// TestInferenceNode_RejectsUnknownStreamFailurePolicy proves config
+// validation rejects actions outside the commit_partial/discard
+// vocabulary before any provider call.
+func TestInferenceNode_RejectsUnknownStreamFailurePolicy(t *testing.T) {
+	reg := inferenceRegistry(t, InferenceNodeDeps{
+		Assembly: (&inferencetest.GenerateFake{}).Assembly(t),
+	})
+	g := singleNodeGraph(t, reg, "inference", InferenceConfig{
+		Model:  ptr(inferencetest.DefaultFakeModel),
+		Stream: true,
+		StreamFailurePolicy: &StreamFailurePolicy{
+			OnError: "explode",
+		},
+	})
+	err := executeGraph(t, g, agent.NoopHost{}, userBoard())
+	if err == nil || !strings.Contains(err.Error(), "stream_failure_policy.on_error") {
+		t.Fatalf("Execute error = %v, want stream_failure_policy.on_error rejection", err)
+	}
+}
+
 type resultFailingStream struct {
 	next int
 	err  error
@@ -1913,7 +2032,7 @@ func TestInferenceNode_StreamResultFailureCommitsPartialExactlyOnce(t *testing.T
 	stream := &resultFailingStream{err: errors.New("invalid terminal response")}
 	ec := graph.ExecutionContext{Context: context.Background(), Host: agent.NoopHost{}, NodeID: "n"}
 
-	if _, err := drainGenerateStream(ec, board, "", stream); !errors.Is(err, stream.err) {
+	if _, err := drainGenerateStream(ec, board, InferenceConfig{}, stream); !errors.Is(err, stream.err) {
 		t.Fatalf("drainGenerateStream error = %v, want %v", err, stream.err)
 	}
 	msgs := board.Channel(agent.MainChannel)
