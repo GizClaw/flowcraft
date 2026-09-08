@@ -275,6 +275,90 @@ func TestTelemetryGenerateStreamRecordsIDsAtResult(t *testing.T) {
 	assertUsageAttrs(t, spans[0])
 }
 
+func TestTelemetryGenerateStreamRecordsSynthesizedFinish(t *testing.T) {
+	rec := installTestTracer(t)
+	_, call := startInferenceCall(
+		context.Background(), OperationGenerate,
+		ModelRef{ID: ModelID{Provider: "fake", Name: "model-1"}},
+	)
+	stream := &telemetryGenerateStream{
+		inner: &telemetryFakeStream{
+			events: []GenerateStreamEvent{
+				{PartIndex: 0, Delta: TextPartDelta{Text: "hi"}},
+			},
+			result: GenerateResponse{
+				FinishSynthesized: true,
+				Usage:             testUsage(),
+			},
+		},
+		tel: call,
+	}
+	_ = drainGenerateStreamResult(t, stream)
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	got, ok := spanAttr(spans[0], "inference.finish.synthesized")
+	if !ok || !got.AsBool() {
+		t.Fatalf("inference.finish.synthesized = %v/%v, want true", got, ok)
+	}
+}
+
+func TestTelemetryGenerateStreamOmitsSynthesizedForExplicitFinish(t *testing.T) {
+	rec := installTestTracer(t)
+	_, call := startInferenceCall(
+		context.Background(), OperationGenerate,
+		ModelRef{ID: ModelID{Provider: "fake", Name: "model-1"}},
+	)
+	stream := &telemetryGenerateStream{
+		inner: &telemetryFakeStream{
+			events: []GenerateStreamEvent{
+				{PartIndex: 0, Delta: TextPartDelta{Text: "hi"}},
+			},
+			result: GenerateResponse{
+				Usage: testUsage(),
+			},
+		},
+		tel: call,
+	}
+	_ = drainGenerateStreamResult(t, stream)
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	if _, ok := spanAttr(spans[0], "inference.finish.synthesized"); ok {
+		t.Fatal("explicit finish must not record inference.finish.synthesized")
+	}
+}
+
+func TestTelemetryMirrorsInferenceErrorKindAndDetail(t *testing.T) {
+	rec := installTestTracer(t)
+	_, call := startInferenceCall(
+		context.Background(), OperationGenerate,
+		ModelRef{ID: ModelID{Provider: "fake", Name: "model-1"}},
+	)
+	infErr := NewError(ProviderTruncated, OperationGenerate, "", errors.New("boom"))
+	infErr.Detail = "stream.finish.missing"
+	call.finish(Metadata{}, Usage{}, infErr)
+
+	spans := rec.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("ended spans = %d, want 1", len(spans))
+	}
+	if got, ok := spanAttr(spans[0], "inference.error_kind"); !ok ||
+		got.AsString() != string(ProviderTruncated) {
+		t.Fatalf("inference.error_kind = %q/%v, want %q",
+			got.AsString(), ok, string(ProviderTruncated))
+	}
+	if got, ok := spanAttr(spans[0], "inference.error.detail"); !ok ||
+		got.AsString() != "stream.finish.missing" {
+		t.Fatalf("inference.error.detail = %q/%v, want stream.finish.missing",
+			got.AsString(), ok)
+	}
+}
+
 func TestAssemblyGenerateEmitsUsageMetrics(t *testing.T) {
 	prev := otel.GetMeterProvider()
 	reader := sdkmetric.NewManualReader()

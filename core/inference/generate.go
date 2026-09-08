@@ -356,8 +356,16 @@ func appendGenerateIntentFields(fields []FieldID, intent Intent) []FieldID {
 type GenerateResponse struct {
 	Message      message.Message `json:"message"`
 	FinishReason FinishReason    `json:"finish_reason"`
-	Usage        Usage           `json:"usage"`
-	Metadata     Metadata        `json:"metadata"`
+	// FinishSynthesized marks a finish reason the adapter fabricated
+	// because the provider ended the stream without emitting a terminal
+	// finish event (false for provider-emitted reasons). A synthesized
+	// finish may mean the response was truncated mid-flight; callers that
+	// need to trust the response as complete can use the flag to decide
+	// whether to treat the attempt as void and re-initiate at their own
+	// granularity.
+	FinishSynthesized bool     `json:"finish_synthesized,omitempty"`
+	Usage             Usage    `json:"usage"`
+	Metadata          Metadata `json:"metadata"`
 	// ProviderOutputs carries provider-owned structured output that is not
 	// part of Message. It is never fed back into a model request implicitly;
 	// only Message becomes conversation context.

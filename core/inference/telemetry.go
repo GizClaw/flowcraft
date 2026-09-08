@@ -139,6 +139,9 @@ func (c inferenceCall) finish(metadata Metadata, usage Usage, err error) {
 	}
 	kind := classifyInferenceError(err)
 	c.span.SetAttributes(attribute.String("inference.error_kind", kind))
+	if detail := inferenceErrorDetail(err); detail != "" {
+		c.span.SetAttributes(attribute.String("inference.error.detail", detail))
+	}
 	inferenceExecCount.Add(c.ctx, 1, c.metricAttrs(attribute.String("status", "error")))
 	inferenceErrorCount.Add(c.ctx, 1, c.metricAttrs(attribute.String("error_kind", kind)))
 	if !c.reuse {
@@ -269,6 +272,17 @@ func classifyInferenceError(err error) string {
 	return "unclassified"
 }
 
+// inferenceErrorDetail returns the redacted stage label carried by
+// Error.Detail when the failure is an inference error; anything else has no
+// detail to mirror.
+func inferenceErrorDetail(err error) string {
+	var inferenceErr *Error
+	if errors.As(err, &inferenceErr) {
+		return inferenceErr.Detail
+	}
+	return ""
+}
+
 // costMicros converts a Money (Units / 10^Scale) into the integer
 // micro-unit representation the AttrLLMCostMicros attribute uses. It
 // reports ok=false when converting would overflow or a sub-micro
@@ -331,6 +345,10 @@ func (s *telemetryGenerateStream) Next(ctx context.Context) (GenerateStreamEvent
 func (s *telemetryGenerateStream) Result() (GenerateResponse, error) {
 	response, err := s.inner.Result()
 	s.tel.stampUsage(&response.Usage)
+	if err == nil && response.FinishSynthesized {
+		s.tel.span.SetAttributes(
+			attribute.Bool("inference.finish.synthesized", true))
+	}
 	s.finish(response.Metadata, response.Usage, err)
 	return response, err
 }
