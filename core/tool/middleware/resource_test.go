@@ -26,7 +26,11 @@ func TestAssemblyFactory(t *testing.T) {
 
 	value, err := factory.New(context.Background(), resource.Input{
 		Settings: []byte(`{
-			"middlewares": {"timeout": {"default": "5ms"}, "recover": {"enabled": true}},
+			"middlewares": {
+				"recover": {"enabled": true},
+				"telemetry": {"enabled": true},
+				"timeout": {"default": "5ms"}
+			},
 			"dynamic": {"default": "deferred"}
 		}`),
 		Deps: map[string]any{

@@ -114,17 +114,19 @@ resources:
     settings:
       middlewares:
         recover: {enabled: true}
+        telemetry: {enabled: true}
         timeout: {default: 30s}
         concurrency: {limit: 8}
 ```
 
 Each entry is optional; absent entries are skipped. `recover` converts a
 panicking tool (or inner middleware) into an `IsError` result instead of
-crashing the caller's goroutine; `timeout.default` bounds each call with a
-Go duration (calls that already carry a deadline pass through);
-`concurrency.limit` caps in-flight executions, with excess callers waiting
-(respecting context cancellation). The plain `memory` impl rejects the
-`middlewares` key.
+crashing the caller's goroutine; `telemetry.enabled` records an
+OpenTelemetry span, executions/duration/error metrics, and a warning log
+for each call; `timeout.default` bounds each call with a Go duration (calls
+that already carry a deadline pass through); `concurrency.limit` caps
+in-flight executions, with excess callers waiting (respecting context
+cancellation). The plain `memory` impl rejects the `middlewares` key.
 
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`
