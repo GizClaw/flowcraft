@@ -10,13 +10,19 @@ Release PR before their tags are published.
 
 | Module | Latest tag | Notes |
 | --- | --- | --- |
-| `core` | `core/v0.3.0` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
+| `core` | `core/v0.3.1` | Unified platform module: contracts, deploy, runtime, and built-in resources. |
 
 ## [Unreleased]
 
 _No pending changes._
 
 <!-- releasegate:releases -->
+
+## `core/v0.3.1` - 2026-09-09
+
+### Changed
+
+- feat(core/tool): add a per-session discovery pool with an independent byte/count budget — Session.Select becomes Discover with per-name Exposed/Reason and Evicted outcomes, dynamic.discovery gains max_tools/max_bytes/idle_rounds (defaults 32 tools, 16 KiB, 10 rounds) with idle sweep and least-recently-used overflow eviction (Deferred before Direct on recency ties), per-round dynamic.budget still caps what reaches the model with tool_search (Always) surviving pruning, tool_search drops select for query+limit and reports hits/exposed/failed/evicted instead of skipping unknown or unloadable names, and dynamic assemblies auto-record while RecordCalls and selected_retention/recent_window are deprecated; feat(core/tool): expose telemetry as a configurable assembly middleware — FromSettings appends middleware.Telemetry() after recover when telemetry.enabled is set, and the resource factory settings decode accepts the telemetry entry
 
 ## `core/v0.3.0` - 2026-09-08
 
