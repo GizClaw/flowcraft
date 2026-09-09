@@ -13,6 +13,7 @@ type Settings struct {
 	Recover     *RecoverSettings     `json:"recover,omitempty"`
 	Timeout     *TimeoutSettings     `json:"timeout,omitempty"`
 	Concurrency *ConcurrencySettings `json:"concurrency,omitempty"`
+	Telemetry   *TelemetrySettings   `json:"telemetry,omitempty"`
 }
 
 type RecoverSettings struct {
@@ -29,12 +30,22 @@ type ConcurrencySettings struct {
 	Limit int `json:"limit"`
 }
 
+// TelemetrySettings enables the standard per-call observability
+// middleware: one span per execution plus executions/duration/error
+// metrics and a warning log for failed calls.
+type TelemetrySettings struct {
+	Enabled bool `json:"enabled"`
+}
+
 // FromSettings builds the middleware chain declared by s, outermost
 // first.
 func FromSettings(s Settings) ([]tool.Middleware, error) {
 	var mws []tool.Middleware
 	if s.Recover != nil && s.Recover.Enabled {
 		mws = append(mws, Recover())
+	}
+	if s.Telemetry != nil && s.Telemetry.Enabled {
+		mws = append(mws, Telemetry())
 	}
 	if s.Timeout != nil && s.Timeout.Default != "" {
 		d, err := time.ParseDuration(s.Timeout.Default)

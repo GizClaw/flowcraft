@@ -210,15 +210,18 @@ tools:
   settings:
     middlewares:
       recover: {enabled: true}
+      telemetry: {enabled: true}
       timeout: {default: 30s}
       concurrency: {limit: 8}
     dynamic: {default: deferred, exposures: {tool_search: always}}
 ```
 
 Each middleware entry is optional; absent entries are skipped. `recover`
-converts tool panics into error results, `timeout.default` bounds each
-call (calls that already carry a deadline pass through), and
-`concurrency.limit` caps in-flight executions.
+converts tool panics into error results, `telemetry.enabled` records an
+OpenTelemetry span plus executions/duration/error metrics and a warning
+log per call, `timeout.default` bounds each call (calls that already
+carry a deadline pass through), and `concurrency.limit` caps in-flight
+executions.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host
