@@ -67,6 +67,11 @@ builds the deployment with its own factory registry, or at runtime.
     unknown fields. OpenAI-family reasoning off is implied by
     `reasoning: toggle`; embed custom dimensions now live under
     `capabilities.custom_embed_dimensions` — host build.
+19. With dynamic injection, `tool_search` must be exposed as `always`.
+    Configuring it as `direct`/`deferred`/`hidden` disables discovery and
+    is rejected at host build; omit it from `exposures` (it is forced to
+    `always`) or set it explicitly. `tool_search` no longer accepts a
+    `select` argument — matching tools auto-expose from the query hits.
 
 ## Error map
 
@@ -88,6 +93,7 @@ builds the deployment with its own factory registry, or at runtime.
 | `runtime: agent "x" is a deployed agent` | runtime API | register/remove collides with a document agent | register under a new name, or change the deployment |
 | `dynamic catalog has no default; agent "x" needs WithToolAssembly` | runtime API | runtime registration without a tool mapping | add `WithToolAssembly` or configure `default` |
 | removal `DeadlineExceeded` | runtime API | active turn did not finish in time | wait/retry; the agent is still registered |
+| `tool: tool_search must be registered with exposure "always"` | host build | `tool_search` explicitly set to a non-always exposure | remove it from `exposures` or set `tool_search: always` |
 
 ## Debug order
 

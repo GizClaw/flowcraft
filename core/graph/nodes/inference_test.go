@@ -957,8 +957,10 @@ func (f *fakeVisibleCatalog) Definitions() []message.ToolDefinition {
 func (f *fakeVisibleCatalog) Require(names ...string) {
 	f.required = append(f.required, names...)
 }
-func (f *fakeVisibleCatalog) AdvanceTurn()                { f.advances++ }
-func (f *fakeVisibleCatalog) Select(...string)            {}
+func (f *fakeVisibleCatalog) AdvanceTurn() { f.advances++ }
+func (f *fakeVisibleCatalog) Discover(...string) tool.DiscoverOutcome {
+	return tool.DiscoverOutcome{}
+}
 func (f *fakeVisibleCatalog) RecordCall(message.ToolCall) {}
 func (f *fakeVisibleCatalog) Load(context.Context) error  { return nil }
 func (f *fakeVisibleCatalog) EnsureLoaded(context.Context, ...string) error {

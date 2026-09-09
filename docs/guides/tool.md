@@ -61,7 +61,31 @@ resources:
         default: deferred
         exposures:
           tool_search: always
+        budget:                   # per-round visible set
+          max_definitions: 32
+          max_bytes: 16384
+        discovery:                # persistent discovery pool
+          max_tools: 32
+          max_bytes: 16384        # independent byte cap
+          idle_rounds: 10
 ```
+
+`tool_search` is the discovery tool: a query plus an optional limit.
+Matching tools are loaded and added to the session's discovery pool
+automatically (no `select` step), and their real schemas become visible
+from the next round. Pool entries stay visible while they are used:
+every executed call refreshes the entry, idle entries are evicted after
+`discovery.idle_rounds`, and the pool never exceeds
+`discovery.max_tools` / `discovery.max_bytes` — the per-round
+`budget` still caps what is actually sent to the model each turn.
+`discovery.max_bytes` is independent of `budget.max_bytes`; raising it
+above the per-round budget keeps lower-priority entries as a loaded
+cache that costs no tokens; they return to the visible set when used or
+re-searched.
+`tool_search` must stay `always`; a different exposure is rejected at
+assembly build time. The legacy `selected_retention` and `recent_window`
+policy keys are deprecated and only seed `discovery.idle_rounds` when it
+is unset.
 
 MCP servers are registered as a `tool.Source/mcp` resource. Attach is
 best-effort: a server that is unreachable at startup is retried in the

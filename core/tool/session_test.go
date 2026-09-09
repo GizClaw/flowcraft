@@ -51,7 +51,7 @@ func TestDynamicSession_ExposureBaseline(t *testing.T) {
 	}
 }
 
-func TestDynamicSession_RequireSelectRecordAdvance(t *testing.T) {
+func TestDynamicSession_DiscoverRecordAdvance(t *testing.T) {
 	assembly, _ := dynamicAssembly(t, "always", "direct", "deferred", "hidden")
 	session := assembly.NewSession()
 
@@ -61,30 +61,33 @@ func TestDynamicSession_RequireSelectRecordAdvance(t *testing.T) {
 		t.Fatalf("required hidden tool missing: %v", names)
 	}
 
-	session.Select("deferred")
+	outcome := session.Discover("deferred")
+	if len(outcome.Results) != 1 || !outcome.Results[0].Exposed {
+		t.Fatalf("Discover deferred outcome = %+v, want exposed", outcome.Results)
+	}
 	names = definitionNames(session.Definitions())
 	if !contains(names, "deferred") {
-		t.Fatalf("selected deferred tool missing: %v", names)
+		t.Fatalf("discovered deferred tool missing: %v", names)
 	}
 
 	session.RecordCall(message.ToolCall{ID: "c1", Name: "direct", Arguments: []byte(`{}`)})
 	names = definitionNames(session.Definitions())
 	if !contains(names, "direct") {
-		t.Fatalf("recent direct tool missing: %v", names)
+		t.Fatalf("used direct tool missing: %v", names)
 	}
 
 	session.AdvanceTurn()
 	names = definitionNames(session.Definitions())
 	if !contains(names, "direct") || !contains(names, "deferred") {
-		t.Fatalf("recent/selected tools must survive one advance: %v", names)
+		t.Fatalf("used/discovered tools must survive one advance: %v", names)
 	}
-	// recent window is 10, selected retention is 5 — advance past both.
+	// The discovery idle horizon is 10 — advance past it.
 	for i := 0; i < 11; i++ {
 		session.AdvanceTurn()
 	}
 	names = definitionNames(session.Definitions())
 	if contains(names, "direct") || contains(names, "deferred") {
-		t.Fatalf("tools survived retention windows: %v", names)
+		t.Fatalf("idle tools survived the discovery horizon: %v", names)
 	}
 }
 
@@ -146,7 +149,7 @@ func TestStaticSession(t *testing.T) {
 	if len(definitionNames(session.Definitions())) != 2 {
 		t.Fatalf("static session must show every tool")
 	}
-	session.Select("a")
+	session.Discover("a")
 	session.AdvanceTurn()
 	session.RecordCall(message.ToolCall{ID: "c", Name: "a", Arguments: []byte(`{}`)})
 	if _, err := session.Search(context.Background(), "a", 8); !errdefs.IsNotAvailable(err) {

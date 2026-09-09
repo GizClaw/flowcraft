@@ -18,9 +18,11 @@ type stubToolSession struct{}
 func (stubToolSession) Get(string) (tool.Tool, bool)          { return nil, false }
 func (stubToolSession) Definitions() []message.ToolDefinition { return nil }
 func (stubToolSession) Require(...string)                     {}
-func (stubToolSession) Select(...string)                      {}
-func (stubToolSession) RecordCall(message.ToolCall)           {}
-func (stubToolSession) AdvanceTurn()                          {}
+func (stubToolSession) Discover(...string) tool.DiscoverOutcome {
+	return tool.DiscoverOutcome{}
+}
+func (stubToolSession) RecordCall(message.ToolCall) {}
+func (stubToolSession) AdvanceTurn()                {}
 func (stubToolSession) Search(context.Context, string, int) ([]tool.SearchHit, error) {
 	return nil, nil
 }

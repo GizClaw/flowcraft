@@ -213,7 +213,7 @@ const defaultRecoverFeedbackPrefix = "__recover_feedback."
 // user feedback message when a response names a tool the model was
 // never shown.
 const undefinedToolFeedback = "tool %q is not exposed in this round's tool set; " +
-	"call tool_search to find and select it before calling it again"
+	"call tool_search to find it before calling it again"
 
 // InferenceNodeDeps wires the inference node's collaborators. Runtime
 // serves configs carrying an explicit model; Router serves configs

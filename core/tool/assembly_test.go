@@ -50,16 +50,39 @@ func TestAssembly_SearchToolExecutesAgainstSession(t *testing.T) {
 	session := assembly.NewSession()
 	ctx := tool.WithSession(context.Background(), session)
 	search, _ := assembly.Catalog().Get(tool.ToolName)
-	out, err := search.Execute(ctx, `{"query":"web search","select":["web.search"]}`)
+	out, err := search.Execute(ctx, `{"query":"web search"}`)
 	if err != nil {
 		t.Fatalf("Execute tool_search: %v", err)
 	}
-	if !strings.Contains(out, `"web.search"`) {
+	if !strings.Contains(out, `"exposed":["web.search"]`) {
 		t.Fatalf("tool_search output = %s", out)
 	}
 	names := definitionNames(session.Definitions())
 	if !contains(names, "web.search") {
-		t.Fatalf("selected tool not visible next round: %v", names)
+		t.Fatalf("discovered tool not visible next round: %v", names)
+	}
+}
+
+func TestAssembly_SessionRecorderRefreshesDiscovery(t *testing.T) {
+	assembly, err := tool.NewAssembly(
+		[]tool.Source{source{tools: []tool.Tool{funcTool("web.search", "find things")}}},
+		tool.WithDynamic(tool.Policy{Default: tool.ExposureDeferred}),
+	)
+	if err != nil {
+		t.Fatalf("NewAssembly: %v", err)
+	}
+	session := assembly.NewSession()
+	ctx := tool.WithSession(context.Background(), session)
+
+	res := assembly.Execute(ctx, message.ToolCall{
+		ID: "c1", Name: "web.search", Arguments: []byte(`{}`),
+	})
+	if res.IsError {
+		t.Fatalf("Execute = %+v", res)
+	}
+	names := definitionNames(session.Definitions())
+	if !contains(names, "web.search") {
+		t.Fatalf("executed tool not in discovery pool: %v", names)
 	}
 }
 

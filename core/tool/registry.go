@@ -271,7 +271,7 @@ func (p *lazyProxy) Execute(ctx context.Context, arguments string) (string, erro
 }
 
 // EnsureLoaded forces the deferred load without executing the tool.
-// It is how tool_search makes a selected tool's real definition
+// It is how tool_search makes a discovered tool's real definition
 // available to the next round.
 func (p *lazyProxy) EnsureLoaded(ctx context.Context) error {
 	_, err := p.load(ctx)

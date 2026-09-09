@@ -16,10 +16,12 @@ const (
 	// turn. Keep this set small; it is the stable baseline.
 	ExposureAlways Exposure = "always"
 	// ExposureDirect marks a tool that appears only when it is
-	// RequiredByName or has been selected/used recently.
+	// RequiredByName or sits in the discovery pool (found via
+	// tool_search or used recently).
 	ExposureDirect Exposure = "direct"
 	// ExposureDeferred marks a tool that is hidden until tool_search
-	// surfaces it; once selected it stays visible for M rounds.
+	// surfaces it; discovered tools stay visible while they are used
+	// and expire after idle rounds or discovery-budget eviction.
 	ExposureDeferred Exposure = "deferred"
 	// ExposureHidden marks a tool that never appears in Definitions
 	// (not even via search). RequiredByName can still surface it, and
@@ -76,6 +78,36 @@ var DefaultBudget = Budget{
 	MaxBytes:       16 * 1024,
 }
 
+// DiscoveryPolicy bounds the session-level discovery pool: tools the
+// model has found via tool_search or used, kept loaded across rounds.
+// The pool budget is independent from the per-round Budget: Budget caps
+// what reaches the model this turn, Discovery caps what the session
+// remembers.
+type DiscoveryPolicy struct {
+	// MaxTools caps the number of pool entries. Zero falls back to
+	// DefaultDiscoveryPolicy.MaxTools.
+	MaxTools int `json:"max_tools,omitempty"`
+	// MaxBytes caps the total serialized definition size across pool
+	// entries, measured with definitionBytes. Zero falls back to the
+	// per-round DefaultBudget.MaxBytes, so the default pool fits the
+	// default visible set.
+	MaxBytes int64 `json:"max_bytes,omitempty"`
+	// IdleRounds evicts an entry that has not been used or refreshed
+	// within this many rounds. Zero falls back to 10.
+	IdleRounds int `json:"idle_rounds,omitempty"`
+}
+
+// DefaultDiscoveryPolicy returns the recommended discovery pool bounds:
+// the same size as the default per-round budget, with a 10-round idle
+// horizon.
+func DefaultDiscoveryPolicy() DiscoveryPolicy {
+	return DiscoveryPolicy{
+		MaxTools:   DefaultBudget.MaxDefinitions,
+		MaxBytes:   DefaultBudget.MaxBytes,
+		IdleRounds: 10,
+	}
+}
+
 // Policy is the host-declared injection policy for one assembly.
 // Zero values mean "use DefaultPolicy" for every field except
 // Exposures, so a partial settings subtree is sufficient.
@@ -85,29 +117,35 @@ type Policy struct {
 	Default Exposure `json:"default,omitempty"`
 	// Exposures maps tool names to explicit exposure levels.
 	Exposures map[string]Exposure `json:"exposures,omitempty"`
-	// SelectedRetention is how many rounds a selected tool stays
-	// visible (M). Zero falls back to 5.
-	SelectedRetention int `json:"selected_retention,omitempty"`
-	// RecentWindow is how many rounds a recently used direct tool stays
-	// visible. Zero falls back to 10.
-	RecentWindow int `json:"recent_window,omitempty"`
 	// Budget caps the visible set. Zero uses DefaultBudget.
 	Budget Budget `json:"budget,omitempty"`
 	// SearchWithLoad makes tool_search load every deferred source
 	// before ranking, so hits are computed over real metadata instead
 	// of placeholder declarations. Default is false (lazy search).
 	SearchWithLoad bool `json:"search_with_load,omitempty"`
+	// Discovery bounds the persistent discovery pool. Zero fields fall
+	// back to DefaultDiscoveryPolicy.
+	Discovery DiscoveryPolicy `json:"discovery,omitempty"`
+
+	// SelectedRetention is deprecated: when Discovery.IdleRounds is
+	// unset it seeds the idle horizon, then it is ignored. Zero means
+	// "unset".
+	SelectedRetention int `json:"selected_retention,omitempty"`
+	// RecentWindow is deprecated: when Discovery.IdleRounds is unset
+	// and SelectedRetention is not set either, it seeds the idle
+	// horizon. It no longer drives a separate recency window. Zero
+	// means "unset".
+	RecentWindow int `json:"recent_window,omitempty"`
 }
 
 // DefaultPolicy returns the recommended policy: everything deferred by
-// default, 5 selected rounds, 10 recent rounds, and the default budget.
+// default, the per-round budget, and the default discovery pool.
 func DefaultPolicy() Policy {
 	return Policy{
-		Default:           ExposureDeferred,
-		Exposures:         map[string]Exposure{},
-		SelectedRetention: 5,
-		RecentWindow:      10,
-		Budget:            DefaultBudget,
+		Default:   ExposureDeferred,
+		Exposures: map[string]Exposure{},
+		Budget:    DefaultBudget,
+		Discovery: DefaultDiscoveryPolicy(),
 	}
 }
 
@@ -118,17 +156,27 @@ func normalizePolicy(p Policy) Policy {
 	if out.Default == "" {
 		out.Default = DefaultPolicy().Default
 	}
-	if out.SelectedRetention <= 0 {
-		out.SelectedRetention = DefaultPolicy().SelectedRetention
-	}
-	if out.RecentWindow <= 0 {
-		out.RecentWindow = DefaultPolicy().RecentWindow
-	}
 	if out.Budget.MaxDefinitions <= 0 {
 		out.Budget.MaxDefinitions = DefaultBudget.MaxDefinitions
 	}
 	if out.Budget.MaxBytes <= 0 {
 		out.Budget.MaxBytes = DefaultBudget.MaxBytes
+	}
+	if out.Discovery.MaxTools <= 0 {
+		out.Discovery.MaxTools = DefaultDiscoveryPolicy().MaxTools
+	}
+	if out.Discovery.MaxBytes <= 0 {
+		out.Discovery.MaxBytes = DefaultDiscoveryPolicy().MaxBytes
+	}
+	if out.Discovery.IdleRounds <= 0 {
+		switch {
+		case out.SelectedRetention > 0:
+			out.Discovery.IdleRounds = out.SelectedRetention
+		case out.RecentWindow > 0:
+			out.Discovery.IdleRounds = out.RecentWindow
+		default:
+			out.Discovery.IdleRounds = DefaultDiscoveryPolicy().IdleRounds
+		}
 	}
 	return out
 }
@@ -148,6 +196,20 @@ func (p Policy) Validate() error {
 			return errdefs.Validationf(
 				"tool: exposure %q for tool %q is invalid", e, name)
 		}
+		if name == ToolName && e != ExposureAlways {
+			return errdefs.Validationf(
+				"tool: %s must be registered with exposure %q; exposure %q disables tool discovery",
+				ToolName, ExposureAlways, e)
+		}
+	}
+	if p.Discovery.MaxTools < 0 {
+		return errdefs.Validationf("tool: discovery max_tools must not be negative")
+	}
+	if p.Discovery.MaxBytes < 0 {
+		return errdefs.Validationf("tool: discovery max_bytes must not be negative")
+	}
+	if p.Discovery.IdleRounds < 0 {
+		return errdefs.Validationf("tool: discovery idle_rounds must not be negative")
 	}
 	return nil
 }
