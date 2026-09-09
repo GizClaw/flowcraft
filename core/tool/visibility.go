@@ -28,7 +28,7 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 	}
 
 	// Deterministic pruning order: exposure rank, RequiredByName,
-	// selected rounds, recency, then name.
+	// discovery-pool recency, then name.
 	sort.SliceStable(visible, func(i, j int) bool {
 		return lessPriority(visible[i], visible[j], st)
 	})
@@ -55,15 +55,14 @@ func visibleCandidates(cands []candidate, st stateSnapshot, policy Policy) []can
 
 func include(c candidate, st stateSnapshot, policy Policy) bool {
 	required := st.isRequired(c.name)
-	selected := st.selected[c.name] > 0
-	recent := st.isRecent(c.name, policy.RecentWindow)
+	discovered := st.isDiscovered(c.name)
 	switch c.exp {
 	case ExposureAlways:
 		return true
 	case ExposureDirect:
-		return required || selected || recent
+		return required || discovered
 	case ExposureDeferred:
-		return required || selected
+		return required || discovered
 	case ExposureHidden:
 		return required
 	default:
@@ -78,11 +77,23 @@ func lessPriority(a, b candidate, st stateSnapshot) bool {
 	if ar, br := st.isRequired(a.name), st.isRequired(b.name); ar != br {
 		return ar
 	}
-	if as, bs := st.selected[a.name], st.selected[b.name]; as != bs {
-		return as > bs
+	ad, aOK := st.discovered[a.name]
+	bd, bOK := st.discovered[b.name]
+	if aOK != bOK {
+		return aOK
 	}
-	if ar, br := st.recent[a.name], st.recent[b.name]; ar != br {
-		return ar > br
+	if aOK && bOK {
+		if ad.lastUse != bd.lastUse {
+			return ad.lastUse > bd.lastUse
+		}
+		if ad.seq != bd.seq {
+			return ad.seq > bd.seq
+		}
+	}
+	// tool_search is the discovery escape hatch: among otherwise equal
+	// candidates it always sorts first, so per-round pruning keeps it.
+	if a.name != b.name && (a.name == ToolName || b.name == ToolName) {
+		return a.name == ToolName
 	}
 	return a.name < b.name
 }

@@ -21,8 +21,10 @@ func (f *fakeSessionCatalog) Get(string) (sdktool.Tool, bool) { return nil, fals
 func (f *fakeSessionCatalog) Definitions() []message.ToolDefinition {
 	return f.defs
 }
-func (f *fakeSessionCatalog) Require(...string)           {}
-func (f *fakeSessionCatalog) Select(...string)            {}
+func (f *fakeSessionCatalog) Require(...string) {}
+func (f *fakeSessionCatalog) Discover(...string) sdktool.DiscoverOutcome {
+	return sdktool.DiscoverOutcome{}
+}
 func (f *fakeSessionCatalog) RecordCall(message.ToolCall) {}
 func (f *fakeSessionCatalog) AdvanceTurn()                {}
 func (f *fakeSessionCatalog) Load(context.Context) error  { return nil }

@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"sort"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
@@ -15,24 +16,29 @@ import (
 //
 // When the assembly was built without dynamic injection, the session
 // is static: Definitions() shows every tool, and the stateful
-// operations (Select/Require/RecordCall/AdvanceTurn) are no-ops while
+// operations (Require/Discover/RecordCall/AdvanceTurn) are no-ops while
 // Search returns NotAvailable.
 type Session interface {
 	Catalog
 
 	// Require adds names to the RequiredByName set. Idempotent.
 	Require(names ...string)
-	// Select marks names as selected for the policy's retention
-	// rounds. Selection carries an implicit load contract: a selected
-	// tool must be loaded before the next Definitions call, otherwise
-	// the model would see its placeholder schema. tool_search enforces
-	// this by loading each name before selecting.
-	Select(names ...string)
+	// Discover adds names to the discovery pool (or refreshes their
+	// recency). The pool is bounded by Policy.Discovery: entries are
+	// evicted least-recently-used when the pool is over budget and
+	// swept after idle rounds. A discovered tool must be loaded before
+	// the next Definitions call, otherwise the model would see its
+	// placeholder schema — tool_search loads each name before
+	// discovering it.
+	Discover(names ...string) DiscoverOutcome
 	// RecordCall records that the model called name this round,
-	// refreshing its Selected and UsedRecently state.
+	// refreshing its discovery-pool recency. Always and Hidden tools
+	// are skipped: the former are always visible, the latter must
+	// never surface through use.
 	RecordCall(call message.ToolCall)
-	// AdvanceTurn moves to the next round, expiring Selected and
-	// UsedRecently entries. Call it once per inference round.
+	// AdvanceTurn moves to the next round, expiring discovery entries
+	// that went idle and dropping names no longer in the catalog. Call
+	// it once per inference round.
 	AdvanceTurn()
 	// Search ranks searchable definitions against query with BM25.
 	// Search never loads deferred tools.
@@ -51,9 +57,25 @@ type Session interface {
 	EnsureLoaded(ctx context.Context, names ...string) error
 }
 
+// DiscoverResult reports one tool's discovery-pool outcome.
+type DiscoverResult struct {
+	Name    string `json:"name"`
+	Exposed bool   `json:"exposed"`
+	Reason  string `json:"reason,omitempty"` // "unknown" | "not_discoverable" | "over_budget"
+}
+
+// DiscoverOutcome summarizes one Discover call.
+type DiscoverOutcome struct {
+	// Results carries one entry per requested name, in input order.
+	Results []DiscoverResult `json:"results"`
+	// Evicted lists pool entries dropped by budget pressure (LRU)
+	// while fitting the newly discovered names.
+	Evicted []string `json:"evicted,omitempty"`
+}
+
 // dynamicSession is the stateful injection view. It reads tools from
 // the shared registry (the execution surface) and applies Exposure /
-// budget / selection purely on the read side.
+// discovery pool / budget purely on the read side.
 type dynamicSession struct {
 	catalog Catalog
 	policy  Policy
@@ -73,19 +95,69 @@ func (s *dynamicSession) Definitions() []message.ToolDefinition {
 	s.mu.Unlock()
 
 	all := s.catalog.Definitions()
+	sizes := make(map[string]int64, len(all))
 	cands := make([]candidate, 0, len(all))
 	for _, def := range all {
+		sizes[def.Name] = definitionBytes(def)
 		cands = append(cands, candidate{
 			name: def.Name,
 			def:  def,
 			exp:  policy.exposureOf(def.Name),
 		})
 	}
+	st = fitDiscoveryPool(st, sizes, policy.Discovery)
+
 	visible := visibleCandidates(cands, st, policy)
 	out := make([]message.ToolDefinition, 0, len(visible))
 	for _, cand := range visible {
 		out = append(out, cand.def)
 	}
+	return out
+}
+
+// fitDiscoveryPool restricts the snapshot's discovered set to the pool
+// budget, measured against the live definitions of the current round.
+// Most-recently-used entries stay first; required tools are unaffected
+// (they live in their own set). The read path never mutates state, so
+// entries trimmed here are evicted for real on the next mutation or
+// AdvanceTurn. Like the per-round budget, at least one entry is kept so
+// an oversized single tool remains discoverable.
+func fitDiscoveryPool(st stateSnapshot, sizes map[string]int64, pool DiscoveryPolicy) stateSnapshot {
+	if len(st.discovered) == 0 {
+		return st
+	}
+	names := make([]string, 0, len(st.discovered))
+	for name := range st.discovered {
+		if _, ok := sizes[name]; ok {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		a, b := st.discovered[names[i]], st.discovered[names[j]]
+		if a.lastUse != b.lastUse {
+			return a.lastUse > b.lastUse
+		}
+		if a.seq != b.seq {
+			return a.seq > b.seq
+		}
+		return names[i] < names[j]
+	})
+
+	var total int64
+	kept := make(map[string]discoveredEntry, len(names))
+	for _, name := range names {
+		if pool.MaxTools > 0 && len(kept) >= pool.MaxTools {
+			break
+		}
+		size := sizes[name]
+		if total+size > pool.MaxBytes && len(kept) > 0 {
+			break
+		}
+		total += size
+		kept[name] = st.discovered[name]
+	}
+	out := st
+	out.discovered = kept
 	return out
 }
 
@@ -95,22 +167,130 @@ func (s *dynamicSession) Require(names ...string) {
 	s.st.require(names...)
 }
 
-func (s *dynamicSession) Select(names ...string) {
+// Discover adds or refreshes discovery entries. Each requested name
+// must already be loaded (call EnsureLoaded first) so the pool measures
+// real definitions; entries are then evicted LRU until the pool fits
+// Policy.Discovery.
+func (s *dynamicSession) Discover(names ...string) DiscoverOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.selectNames(names, s.policy.SelectedRetention)
+
+	reasons := make(map[string]string, len(names))
+	changed := false
+	for _, name := range names {
+		t, ok := s.catalog.Get(name)
+		if !ok {
+			reasons[name] = "unknown"
+			continue
+		}
+		switch s.policy.exposureOf(name) {
+		case ExposureDirect, ExposureDeferred:
+		default:
+			reasons[name] = "not_discoverable"
+			continue
+		}
+		s.st.touch(name, definitionBytes(t.Definition()))
+		changed = true
+	}
+
+	var evicted []string
+	if changed {
+		evicted = s.evictForFitLocked()
+	}
+	results := make([]DiscoverResult, 0, len(names))
+	for _, name := range names {
+		_, present := s.st.discovered[name]
+		result := DiscoverResult{Name: name, Exposed: present}
+		if !present {
+			if reason, ok := reasons[name]; ok {
+				result.Reason = reason
+			} else {
+				result.Reason = "over_budget"
+			}
+		}
+		results = append(results, result)
+	}
+	return DiscoverOutcome{Results: results, Evicted: evicted}
+}
+
+// evictForFitLocked removes least-recently-used discovery entries until
+// the pool fits MaxTools and MaxBytes. Between equally recent entries,
+// Deferred tools are evicted before Direct ones; a single oversized
+// entry is kept so discovery cannot dead-end on one big schema. Callers
+// hold mu.
+func (s *dynamicSession) evictForFitLocked() []string {
+	pool := s.policy.Discovery
+	var evicted []string
+	for {
+		tools, total := s.st.discoveredTotals()
+		if tools <= pool.MaxTools && (total <= pool.MaxBytes || tools <= 1) {
+			return evicted
+		}
+		if tools == 0 {
+			return evicted
+		}
+
+		var victim string
+		var victimEntry discoveredEntry
+		victimDeferred := false
+		first := true
+		for name, entry := range s.st.discovered {
+			deferred := s.policy.exposureOf(name) == ExposureDeferred
+			if first || evictsBefore(entry, deferred, victimEntry, victimDeferred) {
+				victim = name
+				victimEntry = entry
+				victimDeferred = deferred
+				first = false
+			}
+		}
+		s.st.removeDiscovered(victim)
+		evicted = append(evicted, victim)
+	}
+}
+
+// evictsBefore reports whether a should be evicted before b: least
+// recently used first; on recency ties Deferred before Direct; then
+// oldest discovery sequence.
+func evictsBefore(a discoveredEntry, aDeferred bool, b discoveredEntry, bDeferred bool) bool {
+	if a.lastUse != b.lastUse {
+		return a.lastUse < b.lastUse
+	}
+	if aDeferred != bDeferred {
+		return aDeferred
+	}
+	return a.seq < b.seq
 }
 
 func (s *dynamicSession) RecordCall(call message.ToolCall) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.recordCall(call.Name, s.policy.SelectedRetention)
+
+	switch s.policy.exposureOf(call.Name) {
+	case ExposureDirect, ExposureDeferred:
+	default:
+		return
+	}
+	t, ok := s.catalog.Get(call.Name)
+	if !ok {
+		return
+	}
+	s.st.touch(call.Name, definitionBytes(t.Definition()))
+	s.evictForFitLocked()
 }
 
 func (s *dynamicSession) AdvanceTurn() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.st.advanceTurn(s.policy.RecentWindow)
+
+	alive := func(name string) bool {
+		_, ok := s.catalog.Get(name)
+		return ok
+	}
+	s.st.advanceTurn(s.policy.Discovery.IdleRounds, alive)
+	// Definitions() only trims overflow in its read view; re-enforce the
+	// pool cap on state here so entries dropped by the view are really
+	// evicted even when no further Discover/RecordCall happens.
+	s.evictForFitLocked()
 }
 
 func (s *dynamicSession) Search(ctx context.Context, query string, limit int) ([]SearchHit, error) {
@@ -187,8 +367,12 @@ func (s *staticSession) Definitions() []message.ToolDefinition {
 	return s.catalog.Definitions()
 }
 
-func (s *staticSession) Require(...string)           {}
-func (s *staticSession) Select(...string)            {}
+func (s *staticSession) Require(...string) {}
+
+func (s *staticSession) Discover(...string) DiscoverOutcome {
+	return DiscoverOutcome{}
+}
+
 func (s *staticSession) RecordCall(message.ToolCall) {}
 func (s *staticSession) AdvanceTurn()                {}
 func (s *staticSession) Load(context.Context) error  { return nil }
@@ -207,8 +391,8 @@ func (s *staticSession) SearchWithLoad(context.Context, string, int) ([]SearchHi
 }
 
 // SessionFromContext returns the per-run session attached by the
-// engine. Only tool_search and RecordCalls read it; the session is
-// explicit run state, not assembly wiring.
+// engine. Only tool_search and the session recorder read it; the
+// session is explicit run state, not assembly wiring.
 func SessionFromContext(ctx context.Context) (Session, bool) {
 	s, ok := ctx.Value(sessionContextKey{}).(Session)
 	return s, ok

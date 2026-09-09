@@ -196,7 +196,28 @@ tools:
       default: deferred
       exposures:
         tool_search: always
+      budget:               # per-round visible set
+        max_definitions: 32
+        max_bytes: 16384
+      discovery:            # persistent discovery pool
+        max_tools: 32
+        max_bytes: 16384    # independent byte cap
+        idle_rounds: 10
 ```
+
+`tool_search` must stay `always`; any other exposure is rejected at host
+build. It takes a `query` and an optional `limit` (default 8): matching
+Direct/Deferred tools are loaded and added to the session discovery pool
+automatically — there is no `select` step (a legacy caller that still
+passes `select` is ignored) — and their real schemas become visible from
+the next round. Executed calls refresh pool recency; entries idle beyond
+`discovery.idle_rounds` (default 10) are evicted, and the pool never
+exceeds `discovery.max_tools` / `discovery.max_bytes` (defaults 32 /
+16 KiB), an independent byte cap. The per-round `budget` still caps what
+the model actually receives each turn; raising `discovery.max_bytes`
+above it keeps extra entries as a no-token loaded cache until they are
+used or re-searched. The legacy `selected_retention` and `recent_window`
+policy keys only seed `discovery.idle_rounds` when it is unset.
 
 The `middleware` impl is the same assembly with a settings-declared
 middleware chain; the `memory` impl rejects the `middlewares` key:
@@ -216,7 +237,9 @@ tools:
     dynamic: {default: deferred, exposures: {tool_search: always}}
 ```
 
-Each middleware entry is optional; absent entries are skipped. `recover`
+The `dynamic` subtree takes the same keys as the memory sample above
+(`budget`, `discovery`, ...). Each middleware entry is optional; absent
+entries are skipped. `recover`
 converts tool panics into error results, `telemetry.enabled` records an
 OpenTelemetry span plus executions/duration/error metrics and a warning
 log per call, `timeout.default` bounds each call (calls that already

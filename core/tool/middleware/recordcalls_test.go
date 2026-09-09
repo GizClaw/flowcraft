@@ -18,6 +18,7 @@ func TestRecordCalls_FeedsSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
+	//nolint:staticcheck // standalone deprecated middleware: covered for custom dispatchers
 	exec := tool.NewExecutor(assembly.Catalog(), RecordCalls())
 	session := assembly.NewSession()
 	ctx := tool.WithSession(context.Background(), session)
@@ -43,6 +44,7 @@ func TestRecordCalls_NoSessionIsNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAssembly: %v", err)
 	}
+	//nolint:staticcheck // standalone deprecated middleware: covered for custom dispatchers
 	exec := tool.NewExecutor(assembly.Catalog(), RecordCalls())
 	res := exec.Execute(context.Background(), call("direct"))
 	if res.IsError {

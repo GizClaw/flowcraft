@@ -85,9 +85,16 @@ func NewAssembly(sources []Source, opts ...AssemblyOption) (*Assembly, error) {
 			attacher.Attach(registry)
 		}
 	}
+	mws := o.middleware
+	if policy != nil {
+		// Dynamic sessions keep their discovery pool fresh on every
+		// executed call. The recorder is a no-op without a session on
+		// the context, so one chain serves static and dynamic hosts.
+		mws = append(append([]Middleware{}, mws...), recordSessionCalls())
+	}
 	return &Assembly{
 		registry: registry,
-		executor: NewExecutor(registry, o.middleware...),
+		executor: NewExecutor(registry, mws...),
 		policy:   policy,
 	}, nil
 }
@@ -98,6 +105,21 @@ type searchToolSource struct{}
 
 func (searchToolSource) Tools() []Tool         { return []Tool{SearchTool{}} }
 func (searchToolSource) LazyTools() []LazyTool { return nil }
+
+// recordSessionCalls feeds every dispatched tool call back into the
+// session found on the execution context so active use refreshes the
+// discovery pool. Without a session on the context it is a no-op.
+func recordSessionCalls() Middleware {
+	return func(next Dispatch) Dispatch {
+		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+			res := next(ctx, call)
+			if session, ok := SessionFromContext(ctx); ok {
+				session.RecordCall(call)
+			}
+			return res
+		}
+	}
+}
 
 // Catalog returns the aggregated read surface.
 func (a *Assembly) Catalog() Catalog { return a.registry }

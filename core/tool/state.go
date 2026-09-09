@@ -5,44 +5,48 @@ package tool
 // snapshot, so the visibility computation stays a pure function of
 // (candidates, state, policy).
 type sessionState struct {
-	required map[string]struct{}
-	selected map[string]int
-	recent   map[string]uint64
-	turn     uint64
+	required   map[string]struct{}
+	discovered map[string]discoveredEntry
+	turn       uint64
+	seq        uint64
 }
 
 func newSessionState() *sessionState {
 	return &sessionState{
-		required: make(map[string]struct{}),
-		selected: make(map[string]int),
-		recent:   make(map[string]uint64),
+		required:   make(map[string]struct{}),
+		discovered: make(map[string]discoveredEntry),
 	}
+}
+
+// discoveredEntry tracks one tool in the discovery pool. lastUse is the
+// turn of the latest use/discovery refresh; seq breaks same-turn ties in
+// deterministic MRU order. bytes is the serialized definition size used
+// for budget accounting (re-measured from live definitions each round).
+type discoveredEntry struct {
+	lastUse uint64
+	seq     uint64
+	bytes   int64
 }
 
 func (s *sessionState) snapshot() stateSnapshot {
 	snap := stateSnapshot{
-		required: make(map[string]struct{}, len(s.required)),
-		selected: make(map[string]int, len(s.selected)),
-		recent:   make(map[string]uint64, len(s.recent)),
-		turn:     s.turn,
+		required:   make(map[string]struct{}, len(s.required)),
+		discovered: make(map[string]discoveredEntry, len(s.discovered)),
+		turn:       s.turn,
 	}
 	for name := range s.required {
 		snap.required[name] = struct{}{}
 	}
-	for name, rounds := range s.selected {
-		snap.selected[name] = rounds
-	}
-	for name, at := range s.recent {
-		snap.recent[name] = at
+	for name, entry := range s.discovered {
+		snap.discovered[name] = entry
 	}
 	return snap
 }
 
 type stateSnapshot struct {
-	required map[string]struct{}
-	selected map[string]int
-	recent   map[string]uint64
-	turn     uint64
+	required   map[string]struct{}
+	discovered map[string]discoveredEntry
+	turn       uint64
 }
 
 func (s stateSnapshot) isRequired(name string) bool {
@@ -50,12 +54,9 @@ func (s stateSnapshot) isRequired(name string) bool {
 	return ok
 }
 
-func (s stateSnapshot) isRecent(name string, window int) bool {
-	at, ok := s.recent[name]
-	if !ok || window <= 0 {
-		return false
-	}
-	return s.turn-at <= uint64(window)
+func (s stateSnapshot) isDiscovered(name string) bool {
+	_, ok := s.discovered[name]
+	return ok
 }
 
 func (s *sessionState) require(names ...string) {
@@ -64,29 +65,44 @@ func (s *sessionState) require(names ...string) {
 	}
 }
 
-func (s *sessionState) selectNames(names []string, retention int) {
-	for _, name := range names {
-		s.selected[name] = retention
+// touch inserts or refreshes one discovery pool entry as the most
+// recently used item, recording the current definition size.
+func (s *sessionState) touch(name string, size int64) {
+	s.seq++
+	s.discovered[name] = discoveredEntry{
+		lastUse: s.turn,
+		seq:     s.seq,
+		bytes:   size,
 	}
 }
 
-func (s *sessionState) recordCall(name string, retention int) {
-	s.selected[name] = retention
-	s.recent[name] = s.turn
+func (s *sessionState) removeDiscovered(name string) {
+	delete(s.discovered, name)
 }
 
-func (s *sessionState) advanceTurn(recentWindow int) {
+func (s *sessionState) discoveredTotals() (int, int64) {
+	var total int64
+	for _, entry := range s.discovered {
+		total += entry.bytes
+	}
+	return len(s.discovered), total
+}
+
+// advanceTurn increments the round counter and returns the names whose
+// discovery entries have gone idle (no use for idleRounds rounds) or
+// whose tools are no longer in the catalog. Callers perform the actual
+// removal so the catalog check stays outside the state type.
+func (s *sessionState) advanceTurn(idleRounds int, alive func(string) bool) []string {
 	s.turn++
-	for name, rounds := range s.selected {
-		if rounds <= 1 {
-			delete(s.selected, name)
-			continue
-		}
-		s.selected[name] = rounds - 1
-	}
-	for name, at := range s.recent {
-		if s.turn-at > uint64(recentWindow) {
-			delete(s.recent, name)
+	var stale []string
+	for name, entry := range s.discovered {
+		idle := idleRounds > 0 && s.turn-entry.lastUse > uint64(idleRounds)
+		if idle || !alive(name) {
+			stale = append(stale, name)
 		}
 	}
+	for _, name := range stale {
+		delete(s.discovered, name)
+	}
+	return stale
 }

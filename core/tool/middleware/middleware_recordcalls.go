@@ -11,6 +11,12 @@ import (
 // found on the execution context. Without a session on the context the
 // middleware is a no-op, so one chain serves runs with and without
 // dynamic injection.
+//
+// Deprecated: dynamic assemblies already append a built-in session
+// recorder when WithDynamic is enabled (see core/tool assembly.go), so
+// this middleware is redundant for hosts executing through an assembly.
+// Keep it only when constructing a raw tool.Executor without the
+// assembly's recorder.
 func RecordCalls() tool.Middleware {
 	return func(next tool.Dispatch) tool.Dispatch {
 		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
