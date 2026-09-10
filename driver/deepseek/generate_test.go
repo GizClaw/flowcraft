@@ -602,6 +602,67 @@ func TestResponsesUnaryReasoningAndText(t *testing.T) {
 	}
 }
 
+// DeepSeek's Responses surface round-trips reasoning as plain text merged
+// into the adjacent assistant message: the docs state summary and
+// encrypted_content are not supported, so a replayed item must carry the
+// reasoning_text content and must not copy the OpenAI-only fields.
+func TestResponsesReasoningReplayUsesPlainContent(t *testing.T) {
+	server := newCapturedServer(t, func(w http.ResponseWriter, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, responsesResponseJSON([]map[string]any{
+			reasoningOutputItem("thinking aloud"),
+			textOutputItem("answer"),
+		}))
+	})
+	cls := testClients(t, server.Server)
+	operations, err := openGenerate(cls, responsesEntry(), deepseekModel("deepseek-v4-flash").ID, "default")
+	if err != nil {
+		t.Fatalf("openGenerate: %v", err)
+	}
+	request := simpleTextRequest("again")
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{Text: "thinking aloud", ID: "rs_1"},
+			message.TextPart{Text: "answer"},
+		}},
+	}}
+	if _, err := operations.Unary.Execute(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		request,
+	); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	body := server.captured()
+	input, ok := body["input"].([]any)
+	if !ok || len(input) == 0 {
+		t.Fatalf("input = %#v, want the replayed context", body["input"])
+	}
+	reasoning, ok := input[0].(map[string]any)
+	if !ok || reasoning["id"] != "rs_1" {
+		t.Fatalf("item[0] = %#v, want the replayed reasoning item first", input[0])
+	}
+	for _, unsupported := range []string{"summary", "encrypted_content"} {
+		if value, exists := reasoning[unsupported]; exists {
+			t.Fatalf(
+				"item[0] carries %s = %#v, which this surface does not support",
+				unsupported,
+				value,
+			)
+		}
+	}
+	content, ok := reasoning["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("content = %#v, want the replayed reasoning text", reasoning["content"])
+	}
+	part, _ := content[0].(map[string]any)
+	if part["text"] != "thinking aloud" {
+		t.Fatalf("content[0] = %#v, want the reasoning text", content[0])
+	}
+}
+
 func TestResponsesMetadataEnvelopeTypedCompiles(t *testing.T) {
 	compiled, err := compileResponsesGenerate(
 		"deepseek-v4-flash",

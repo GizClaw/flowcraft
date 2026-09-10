@@ -751,6 +751,77 @@ func TestWireToParamsReasoningItem(t *testing.T) {
 	}
 }
 
+// TestWireToParamsReasoningItemWithoutSummary locks the field-presence
+// contract for replayed reasoning items. Summaries are opt-in
+// (reasoning.summary), so an item routinely round-trips with its id and
+// encrypted payload but no summary text; the Responses API still requires the
+// summary field, so it must serialize as an empty array instead of being
+// omitted (omitting it fails the whole request with
+// missing_required_parameter).
+func TestWireToParamsReasoningItemWithoutSummary(t *testing.T) {
+	request := simpleTextRequest("current")
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{Signature: "enc-1", ID: "rs_1"},
+			message.TextPart{Text: "answer"},
+		}},
+	}}
+	compiled, err := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compileGenerate: %v", err)
+	}
+	for _, decision := range compiled.Report.Decisions {
+		if decision.Field == inference.FieldGenerateContextReasoning &&
+			decision.Disposition != inference.Native {
+			t.Fatalf("summary-less reasoning must still round-trip: %+v", decision)
+		}
+	}
+
+	items := wireToParams(compiled.Wire).Input.OfInputItemList
+	if len(items) == 0 || items[0].OfReasoning == nil {
+		t.Fatalf("items = %+v, want a reasoning item first", items)
+	}
+	reasoning := items[0].OfReasoning
+	if reasoning.ID != "rs_1" || reasoning.EncryptedContent.Value != "enc-1" {
+		t.Fatalf("reasoning param = %+v", reasoning)
+	}
+	if reasoning.Summary == nil || len(reasoning.Summary) != 0 {
+		t.Fatalf("summary = %#v, want a non-nil empty slice", reasoning.Summary)
+	}
+	assertEmptySummaryField(t, reasoning)
+}
+
+// assertEmptySummaryField asserts a marshaled reasoning item carries the
+// summary field as an empty array. Presence is the contract: the field is
+// required, and only a non-nil slice survives the encoder's omitzero. The
+// item is decoded instead of substring-matched so the assertion does not
+// depend on the encoder's key order or whitespace.
+func assertEmptySummaryField(t *testing.T, reasoning *responses.ResponseReasoningItemParam) {
+	t.Helper()
+	raw, err := json.Marshal(reasoning)
+	if err != nil {
+		t.Fatalf("marshal reasoning: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal reasoning %s: %v", raw, err)
+	}
+	summary, ok := fields["summary"]
+	if !ok {
+		t.Fatalf("reasoning json = %s, want the summary field present", raw)
+	}
+	entries, ok := summary.([]any)
+	if !ok || len(entries) != 0 {
+		t.Fatalf("summary = %#v, want a serialized empty array", summary)
+	}
+}
+
 func TestCompileReasoningDispositions(t *testing.T) {
 	model := openaiModel("gpt-5.6-sol")
 	compile := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])
