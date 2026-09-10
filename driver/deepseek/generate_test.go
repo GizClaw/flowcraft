@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -867,5 +868,72 @@ func TestResponsesJSONSchemaCompiles(t *testing.T) {
 	params := wireToResponseParams(compiled.Wire)
 	if params.Text.Format.OfJSONSchema == nil {
 		t.Fatalf("text format = %+v, want json_schema", params.Text.Format)
+	}
+}
+
+// Assistant context must ride an output-message item: the Responses API
+// accepts output_text and refusal under the assistant role only, and an
+// input_text part under that role fails the whole request with 400
+// invalid_value. See issue #524.
+func TestResponsesAssistantContextUsesOutputText(t *testing.T) {
+	request := simpleTextRequest("current")
+	request.Context = []message.Message{
+		{
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "prior"},
+			}},
+		},
+		{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "answer"},
+			}},
+		},
+	}
+	compiled, err := compileResponsesGenerate(
+		"deepseek-v4-flash",
+		responsesEntry(),
+	)(
+		context.Background(),
+		deepseekModel("deepseek-v4-flash"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("Compile: %v", err)
+	}
+	items := wireToResponseParams(compiled.Wire).Input.OfInputItemList
+	if len(items) != 3 {
+		t.Fatalf("items = %d, want 3 (user, assistant, current)", len(items))
+	}
+	assistant := items[1]
+	if assistant.OfOutputMessage == nil {
+		t.Fatalf("assistant item = %+v, want an output-message item", assistant)
+	}
+	content := assistant.OfOutputMessage.Content
+	if len(content) != 1 || content[0].OfOutputText == nil ||
+		content[0].OfOutputText.Text != "answer" {
+		t.Fatalf("assistant content = %+v, want one output_text part", content)
+	}
+	raw, err := json.Marshal(assistant)
+	if err != nil {
+		t.Fatalf("marshal assistant item: %v", err)
+	}
+	if !strings.Contains(string(raw), `"type":"output_text"`) {
+		t.Fatalf("assistant item = %s, want output_text content", raw)
+	}
+	for _, index := range []int{0, 2} {
+		other := items[index]
+		if other.OfMessage == nil {
+			t.Fatalf("item[%d] = %+v, want an easy-message item", index, other)
+		}
+		raw, err := json.Marshal(other)
+		if err != nil {
+			t.Fatalf("marshal item[%d]: %v", index, err)
+		}
+		if !strings.Contains(string(raw), `"type":"input_text"`) {
+			t.Fatalf("item[%d] = %s, want input_text content", index, raw)
+		}
 	}
 }

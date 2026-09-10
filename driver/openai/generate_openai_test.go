@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
 
 	"github.com/openai/openai-go/v3/responses"
@@ -447,6 +449,107 @@ func TestWireToParamsMessages(t *testing.T) {
 	if items[4].OfFunctionCallOutput == nil ||
 		items[4].OfFunctionCallOutput.Output.OfString.Value != "found" {
 		t.Fatalf("tool output item = %+v", items[4])
+	}
+}
+
+// Assistant context must ride an output-message item: the Responses API
+// accepts output_text and refusal under the assistant role only, and an
+// input_text part under that role fails the whole request with 400
+// invalid_value. See issue #524.
+func TestWireToParamsAssistantContextUsesOutputText(t *testing.T) {
+	request := simpleTextRequest("current")
+	request.Context = []message.Message{
+		{
+			Role: message.RoleSystem,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "be terse"},
+			}},
+		},
+		{
+			Role: message.RoleUser,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "prior"},
+			}},
+		},
+		{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "answer"},
+			}},
+		},
+	}
+	items := wireToParams(compileTextWire(t, request)).Input.OfInputItemList
+	if len(items) != 4 {
+		t.Fatalf("items = %d, want 4 (system, user, assistant, current)", len(items))
+	}
+	assistant := items[2]
+	if assistant.OfOutputMessage == nil {
+		t.Fatalf("assistant item = %+v, want an output-message item", assistant)
+	}
+	if assistant.OfMessage != nil {
+		t.Fatalf("assistant item kept the easy-message shape: %+v", assistant.OfMessage)
+	}
+	content := assistant.OfOutputMessage.Content
+	if len(content) != 1 || content[0].OfOutputText == nil ||
+		content[0].OfOutputText.Text != "answer" {
+		t.Fatalf("assistant content = %+v, want one output_text part", content)
+	}
+	raw, err := json.Marshal(assistant)
+	if err != nil {
+		t.Fatalf("marshal assistant item: %v", err)
+	}
+	if !strings.Contains(string(raw), `"type":"output_text"`) ||
+		!strings.Contains(string(raw), `"annotations":[]`) {
+		t.Fatalf("assistant item = %s, want output_text content", raw)
+	}
+	// Every other role stays on the easy-message path with input_text.
+	for _, index := range []int{0, 1, 3} {
+		other := items[index]
+		if other.OfMessage == nil {
+			t.Fatalf("item[%d] = %+v, want an easy-message item", index, other)
+		}
+		raw, err := json.Marshal(other)
+		if err != nil {
+			t.Fatalf("marshal item[%d]: %v", index, err)
+		}
+		if !strings.Contains(string(raw), `"type":"input_text"`) {
+			t.Fatalf("item[%d] = %s, want input_text content", index, raw)
+		}
+	}
+}
+
+// The assistant output-message shape carries output_text only, so a media
+// part on an assistant turn has no wire form: the responses compiler fails
+// it locally instead of emitting a body the provider refuses.
+func TestCompileRejectsAssistantContextImage(t *testing.T) {
+	source, err := media.NewImageURL("https://example.com/cat.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+	request := simpleTextRequest("current")
+	request.Context = []message.Message{
+		{
+			Role: message.RoleAssistant,
+			Content: message.Content{Parts: []message.Part{
+				message.TextPart{Text: "answer"},
+				message.ImagePart{Source: source},
+			}},
+		},
+	}
+	_, err = compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err == nil {
+		t.Fatal("responses compiler accepted an image in an assistant turn")
+	}
+	var inferenceErr *inference.Error
+	if !errors.As(err, &inferenceErr) ||
+		inferenceErr.Field != inference.FieldGenerateContextImage {
+		t.Fatalf("compile error = %+v, want rejection of %q",
+			err, inference.FieldGenerateContextImage)
 	}
 }
 

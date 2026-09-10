@@ -437,6 +437,17 @@ func compileMessage(
 				ledger.reject(fields[message.PartImage], "model does not accept image input")
 				continue
 			}
+			// Assistant context rides an output-message item, whose content
+			// is output_text/refusal only: an assistant image has no wire
+			// form, so it fails here rather than reaching the provider as an
+			// item the API refuses.
+			if role == "assistant" {
+				ledger.reject(
+					fields[message.PartImage],
+					"assistant context cannot carry image input",
+				)
+				continue
+			}
 			content = append(content, wireContent{
 				kind: wireContentImage,
 				uri:  sourceURI(value.Source),
