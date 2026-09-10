@@ -10,6 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // azureEntry declares one deployment for the compiler tests: text in, text
@@ -35,6 +37,15 @@ func azureModel() inference.ModelRef {
 
 func azureWire(t *testing.T, entry catalogEntry, request inference.GenerateRequest) generateWire {
 	t.Helper()
+	return azureCompiled(t, entry, request).Wire
+}
+
+func azureCompiled(
+	t *testing.T,
+	entry catalogEntry,
+	request inference.GenerateRequest,
+) inference.Compiled[generateWire] {
+	t.Helper()
 	compiled, err := compileGenerate("gpt-test", entry)(
 		context.Background(),
 		azureModel(),
@@ -44,7 +55,7 @@ func azureWire(t *testing.T, entry catalogEntry, request inference.GenerateReque
 	if err != nil {
 		t.Fatalf("compileGenerate: %v", err)
 	}
-	return compiled.Wire
+	return compiled
 }
 
 func azureTextRequest(text string) inference.GenerateRequest {
@@ -58,6 +69,76 @@ func azureTextRequest(text string) inference.GenerateRequest {
 				Intent: inference.Intent{Text: &inference.TextIntent{}},
 			},
 		},
+	}
+}
+
+// Replayed reasoning items must carry the summary field even when they have
+// no summary text: Azure's Responses surface requires it, and the driver
+// never opts into summaries, so an empty array is the normal shape.
+func TestWireToParamsReasoningItemWithoutSummary(t *testing.T) {
+	inputs := []message.PartKind{message.PartText}
+	outputs := []message.PartKind{message.PartText}
+	kind := inference.ReasoningToggle
+	entry := entryFor(ModelSpec{
+		Name: "gpt-test",
+		Kind: "generate",
+		Capabilities: &inference.CapabilitiesPatch{
+			Inputs:    &inputs,
+			Outputs:   &outputs,
+			Reasoning: &inference.ReasoningPatch{Kind: &kind},
+		},
+	})
+	request := azureTextRequest("current")
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{Signature: "enc-1", ID: "rs_1"},
+			message.TextPart{Text: "answer"},
+		}},
+	}}
+	compiled := azureCompiled(t, entry, request)
+	for _, decision := range compiled.Report.Decisions {
+		if decision.Field == inference.FieldGenerateContextReasoning &&
+			decision.Disposition != inference.Native {
+			t.Fatalf("summary-less reasoning must still round-trip: %+v", decision)
+		}
+	}
+	items := wireToParams(compiled.Wire).Input.OfInputItemList
+	if len(items) == 0 || items[0].OfReasoning == nil {
+		t.Fatalf("items = %+v, want a reasoning item first", items)
+	}
+	reasoning := items[0].OfReasoning
+	if reasoning.ID != "rs_1" || reasoning.EncryptedContent.Value != "enc-1" {
+		t.Fatalf("reasoning param = %+v", reasoning)
+	}
+	if reasoning.Summary == nil || len(reasoning.Summary) != 0 {
+		t.Fatalf("summary = %#v, want a non-nil empty slice", reasoning.Summary)
+	}
+	assertEmptySummaryField(t, reasoning)
+}
+
+// assertEmptySummaryField asserts a marshaled reasoning item carries the
+// summary field as an empty array. Presence is the contract: the field is
+// required, and only a non-nil slice survives the encoder's omitzero. The
+// item is decoded instead of substring-matched so the assertion does not
+// depend on the encoder's key order or whitespace.
+func assertEmptySummaryField(t *testing.T, reasoning *responses.ResponseReasoningItemParam) {
+	t.Helper()
+	raw, err := json.Marshal(reasoning)
+	if err != nil {
+		t.Fatalf("marshal reasoning: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal reasoning %s: %v", raw, err)
+	}
+	summary, ok := fields["summary"]
+	if !ok {
+		t.Fatalf("reasoning json = %s, want the summary field present", raw)
+	}
+	entries, ok := summary.([]any)
+	if !ok || len(entries) != 0 {
+		t.Fatalf("summary = %#v, want a serialized empty array", summary)
 	}
 }
 

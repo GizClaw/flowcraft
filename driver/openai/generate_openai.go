@@ -49,6 +49,12 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 			reasoning := responses.ResponseReasoningItemParam{
 				ID:               item.reasoningID,
 				EncryptedContent: param.NewOpt(item.encrypted),
+				// The API requires the summary field on a replayed reasoning
+				// item even when it carries no summary text: summaries are
+				// opt-in via reasoning.summary, so an empty array is the
+				// normal shape. Omitting the field fails the whole request
+				// with missing_required_parameter.
+				Summary: []responses.ResponseReasoningItemSummaryParam{},
 			}
 			if item.summary != "" {
 				reasoning.Summary = []responses.ResponseReasoningItemSummaryParam{
