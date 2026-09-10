@@ -494,12 +494,7 @@ func wireToResponseParams(wire responseWire) responses.ResponseNewParams {
 	for _, item := range wire.items {
 		switch item.kind {
 		case responseWireItemMessage:
-			items = append(items, responses.ResponseInputItemUnionParam{
-				OfMessage: &responses.EasyInputMessageParam{
-					Role:    responses.EasyInputMessageRole(item.role),
-					Content: responseMessageContent(item.content),
-				},
-			})
+			items = append(items, responseMessageInputItem(item))
 		case responseWireItemToolCall:
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCall: &responses.ResponseFunctionToolCallParam{
@@ -652,6 +647,52 @@ func responseMessageContent(
 		}
 	}
 	return responses.EasyInputMessageContentUnionParam{OfInputItemContentList: list}
+}
+
+// responseMessageInputItem lowers one compiled message into an input item.
+// Assistant text rides an output-message item: the Responses API accepts
+// output_text and refusal under the assistant role only, and the SDK's
+// EasyInputMessage content union can express neither, so an assistant item
+// built that way carries input_text and the provider rejects the whole
+// request (400 invalid_value). Every other role keeps the message path.
+func responseMessageInputItem(item responseWireItem) responses.ResponseInputItemUnionParam {
+	if item.role == string(message.RoleAssistant) {
+		return responses.ResponseInputItemUnionParam{
+			OfOutputMessage: &responses.ResponseOutputMessageParam{
+				Content: responseAssistantContent(item.content),
+			},
+		}
+	}
+	return responses.ResponseInputItemUnionParam{
+		OfMessage: &responses.EasyInputMessageParam{
+			Role:    responses.EasyInputMessageRole(item.role),
+			Content: responseMessageContent(item.content),
+		},
+	}
+}
+
+// responseAssistantContent lowers assistant parts to output_text. The
+// compiler keeps images on user turns and rejects everything else, so text
+// is the only kind that arrives here; anything else is skipped rather than
+// marshalled into a shape the provider would refuse.
+func responseAssistantContent(
+	content []wireContent,
+) []responses.ResponseOutputMessageContentUnionParam {
+	parts := make([]responses.ResponseOutputMessageContentUnionParam, 0, len(content))
+	for _, part := range content {
+		if part.kind != wireContentText {
+			continue
+		}
+		parts = append(parts, responses.ResponseOutputMessageContentUnionParam{
+			OfOutputText: &responses.ResponseOutputTextParam{
+				Text: part.text,
+				// Annotations are declared required on the output-text
+				// shape, and a replayed turn has none to carry.
+				Annotations: []responses.ResponseOutputTextAnnotationUnionParam{},
+			},
+		})
+	}
+	return parts
 }
 
 func responseTextFormatParam(format *wireTextFormat) responses.ResponseTextConfigParam {

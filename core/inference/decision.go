@@ -244,10 +244,18 @@ func (r CompileReport) ValidateFailure(operation Operation, active []FieldID) er
 }
 
 func contractViolation(operation Operation, field FieldID, message string) error {
-	return NewError(
+	err := NewError(
 		CompilerContractViolation,
 		operation,
 		field,
 		fmt.Errorf("%s", message),
 	)
+	// The message names the exact check that failed, and several checks
+	// share a field path while pointing at different owners (a missing
+	// disposition is a driver bug, an inactive decision is a caller bug).
+	// It is a static stage label, so it belongs in Detail where Error(),
+	// logs, and spans can reach it; the cause keeps the chain for
+	// errors.Is/errors.As.
+	err.Detail = message
+	return err
 }
