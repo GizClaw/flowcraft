@@ -71,6 +71,11 @@ resources:
       id: openai
       spec:
         api: responses
+        # FlowCraft replays context itself, so nothing needs to be retained
+        # server-side; the OpenAI default (store: true, 30-day retention) is
+        # stated off explicitly.
+        wire:
+          store: false
         models:
           - {name: gpt-5.6-luna, kind: generate}
       profiles:
