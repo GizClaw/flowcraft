@@ -78,7 +78,9 @@ type wireBlock struct {
 	callID string
 	name   string // tool_use
 	args   []byte // tool_use: JSON object
-	output string // tool_result
+	// result carries a tool result's lowered content: one block per part, in
+	// order, so a multimodal result reaches the model intact.
+	result []wireBlock
 	// signature carries the thinking block's verification signature; for
 	// redacted_thinking it carries the opaque redacted data.
 	signature string
@@ -329,7 +331,7 @@ func compileGenerate(
 			case message.RoleSystem:
 				compileSystem(&wire, turn.Content.Parts, contextPartFields, ledger)
 			case message.RoleTool:
-				compileToolResults(&wire, turn.Content.Parts, contextPartFields, ledger)
+				compileToolResults(&wire, turn.Content.Parts, entry, contextPartFields, ledger)
 			default: // user / assistant
 				compileMessage(&wire, string(turn.Role), turn.Content.Parts, entry, contextPartFields, ledger)
 			}
@@ -338,7 +340,7 @@ func compileGenerate(
 		// Current input.
 		switch request.Input.Role {
 		case inference.InputRoleTool:
-			compileToolResults(&wire, request.Input.Content.Parts, inputPartFields, ledger)
+			compileToolResults(&wire, request.Input.Content.Parts, entry, inputPartFields, ledger)
 		default:
 			compileMessage(&wire, "user", request.Input.Content.Parts, entry, inputPartFields, ledger)
 		}
@@ -477,7 +479,12 @@ func compileMessage(
 			wire.appendBlock("user", wireBlock{
 				kind:   wireBlockToolResult,
 				callID: value.Result.CallID,
-				output: value.Result.Content.Text(),
+				result: compileToolResultContent(
+					value.Result.Content,
+					entry,
+					fields[message.PartToolResult],
+					ledger,
+				),
 			})
 		case message.ReasoningPart:
 			compileReasoning(wire, role, value, fields, ledger)
@@ -525,6 +532,7 @@ func compileReasoning(
 func compileToolResults(
 	wire *generateWire,
 	parts []message.Part,
+	entry catalogEntry,
 	fields map[message.PartKind]inference.FieldID,
 	ledger *ledger,
 ) {
@@ -540,8 +548,89 @@ func compileToolResults(
 		wire.appendBlock("user", wireBlock{
 			kind:   wireBlockToolResult,
 			callID: result.Result.CallID,
-			output: result.Result.Content.Text(),
+			result: compileToolResultContent(
+				result.Result.Content,
+				entry,
+				fields[message.PartToolResult],
+				ledger,
+			),
 		})
+	}
+}
+
+// compileToolResultContent lowers one tool result's content parts. Text and
+// structured data always ride; an image needs a model that declares image
+// input and a materialized source, and a video needs the endpoint's video
+// extension plus the model's declaration. A part that cannot ride is replaced
+// in place by a text placeholder, so the model sees where something was
+// missing, and the loss lands on the ledger.
+func compileToolResultContent(
+	content message.Content,
+	entry catalogEntry,
+	field inference.FieldID,
+	ledger *ledger,
+) []wireBlock {
+	vision := slices.Contains(entry.capabilities.Inputs, message.PartImage)
+	video := entry.videoInput &&
+		slices.Contains(entry.capabilities.Inputs, message.PartVideo)
+	out := make([]wireBlock, 0, len(content.Parts))
+	omitted := make([]string, 0, len(content.Parts))
+	for _, part := range content.Parts {
+		switch value := part.(type) {
+		case message.TextPart:
+			out = append(out, wireBlock{kind: wireBlockText, text: value.Text})
+		case message.DataPart:
+			out = append(out, wireBlock{
+				kind: wireBlockText,
+				text: "\n" + string(value.Value) + "\n",
+			})
+		case message.ImagePart:
+			reason := ""
+			switch {
+			case !vision:
+				reason = "image (model does not accept image input)"
+			case value.Source.Kind() == media.SourceStream:
+				reason = "image (stream source was not materialized)"
+			}
+			if reason != "" {
+				omitted = append(omitted, reason)
+				out = append(out, toolResultPlaceholder(reason))
+				continue
+			}
+			out = append(out, imageBlock(value.Source))
+		case message.VideoPart:
+			reason := ""
+			switch {
+			case !entry.videoInput:
+				reason = "video (endpoint does not accept video blocks)"
+			case !video:
+				reason = "video (model does not accept video input)"
+			case value.Source.Kind() == media.SourceStream:
+				reason = "video (stream source was not materialized)"
+			}
+			if reason != "" {
+				omitted = append(omitted, reason)
+				out = append(out, toolResultPlaceholder(reason))
+				continue
+			}
+			out = append(out, videoBlock(value.Source))
+		default:
+			reason := string(part.Kind())
+			omitted = append(omitted, reason)
+			out = append(out, toolResultPlaceholder(reason))
+		}
+	}
+	if len(omitted) > 0 {
+		ledger.drop(field, "tool output omitted "+strings.Join(omitted, ", "))
+	}
+	return out
+}
+
+// toolResultPlaceholder keeps a dropped part's slot in the result list.
+func toolResultPlaceholder(reason string) wireBlock {
+	return wireBlock{
+		kind: wireBlockText,
+		text: "[omitted tool output: " + reason + "]",
 	}
 }
 

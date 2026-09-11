@@ -81,6 +81,28 @@ func wireToParams(wire generateWire) anthropicgo.MessageNewParams {
 }
 
 // blockToParam lowers one wire block into the SDK's content block union.
+// toolResultParam lowers one result part into the tool_result content union,
+// which carries text and image blocks.
+func toolResultParam(block wireBlock) anthropicgo.ToolResultBlockParamContentUnion {
+	if block.kind == wireBlockImage {
+		source := anthropicgo.ImageBlockParamSourceUnion{}
+		if block.imageURL != "" {
+			source.OfURL = &anthropicgo.URLImageSourceParam{URL: block.imageURL}
+		} else {
+			source.OfBase64 = &anthropicgo.Base64ImageSourceParam{
+				Data:      base64.StdEncoding.EncodeToString(block.imageData),
+				MediaType: anthropicgo.Base64ImageSourceMediaType(block.imageType),
+			}
+		}
+		return anthropicgo.ToolResultBlockParamContentUnion{
+			OfImage: &anthropicgo.ImageBlockParam{Source: source},
+		}
+	}
+	return anthropicgo.ToolResultBlockParamContentUnion{
+		OfText: &anthropicgo.TextBlockParam{Text: block.text},
+	}
+}
+
 func blockToParam(block wireBlock) anthropicgo.ContentBlockParamUnion {
 	switch block.kind {
 	case wireBlockVideo:
@@ -111,7 +133,27 @@ func blockToParam(block wireBlock) anthropicgo.ContentBlockParamUnion {
 	case wireBlockToolUse:
 		return anthropicgo.NewToolUseBlock(block.callID, argsValue(block.args), block.name)
 	case wireBlockToolResult:
-		return anthropicgo.NewToolResultBlock(block.callID, block.output, false)
+		// A single text part keeps the string form every model accepts
+		// verbatim; anything richer rides the content list.
+		if len(block.result) <= 1 &&
+			(len(block.result) == 0 || block.result[0].kind == wireBlockText) {
+			text := ""
+			if len(block.result) == 1 {
+				text = block.result[0].text
+			}
+			return anthropicgo.NewToolResultBlock(block.callID, text, false)
+		}
+		content := make([]anthropicgo.ToolResultBlockParamContentUnion, 0, len(block.result))
+		for _, part := range block.result {
+			content = append(content, toolResultParam(part))
+		}
+		return anthropicgo.ContentBlockParamUnion{
+			OfToolResult: &anthropicgo.ToolResultBlockParam{
+				ToolUseID: block.callID,
+				Content:   content,
+				IsError:   anthropicgo.Bool(false),
+			},
+		}
 	case wireBlockThinking:
 		return anthropicgo.NewThinkingBlock(block.signature, block.text)
 	case wireBlockRedactedThinking:
