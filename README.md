@@ -24,8 +24,9 @@ start with the forge demo in `examples/forge` for a runnable local workspace.
   model, message, inference, memory contracts, event bus, telemetry,
   workspace, sandbox, deployment/resource assembly, runtime, sessions, and
   delegation contracts.
-- **`driver/*`** — Provider adapters built on `core`: Anthropic, Azure,
-  ByteDance, DeepSeek, Kimi, MiniMax, OpenAI, and Qwen.
+- **`driver/*`** — Provider adapters built on `core`: OpenAI (serving the
+  whole OpenAI wire family), Anthropic (the Messages family), ByteDance, and
+  MiniMax.
 - **`backends/*`** — Platform-specific implementations: SQLite checkpoints
   (`backends/checkpoint`); the sandbox backends (`bwrap`, `seatbelt`) live in
   `core/sandbox`.
@@ -170,8 +171,9 @@ the core and depend on it, never the reverse.
 
 - One runtime for Generate / Embed / Transcription (Realtime reserved), with exact
   `ModelRef` addressing and compile-time capability checks.
-- Providers registered as factories: Anthropic, Azure, ByteDance, DeepSeek,
-  Kimi, MiniMax, OpenAI, and Qwen.
+- Providers registered as factories: OpenAI (OpenAI, Azure, DeepSeek, Kimi and
+  compatible gateways), Anthropic (Anthropic and compatible Messages
+  endpoints), ByteDance, and MiniMax.
 
 ### Runnable local workspace demo (`examples/forge`)
 

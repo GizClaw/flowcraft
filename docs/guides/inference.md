@@ -133,9 +133,9 @@ capability leaf that is written replaces that leaf, while unstated
 capability leaves, numeric limits, and driver control facts are inherited —
 redeclaring a model to tweak one channel cannot silently revoke the rest,
 and removal is explicit (`hosted_web_search: false`, an empty inputs or
-outputs list, or reasoning kind `none`). Qwen and Kimi follow the same
-leaf semantics; Qwen's custom embed dimensions additionally stay tied to
-its built-in size whitelist.
+outputs list, or reasoning kind `none`). Compatible endpoints configured
+through the OpenAI and Anthropic drivers follow the same leaf semantics,
+and custom embed dimensions stay tied to the built-in size whitelist.
 
 Capability declarations are promises validated per provider surface: a
 model published with reasoning kind `toggle` must compile
@@ -258,9 +258,9 @@ that speak the Codex convention. An empty configuration never sends
 anything, and core keys are forwarded verbatim.
 
 `request_metadata` forwarding is implemented by the OpenAI driver, which
-covers OpenAI, Azure, and any compatible endpoint configured through its
-`endpoint` block. Anthropic, MiniMax, Bytedance, and Qwen are the current
-exceptions: their official Messages/Ark/DashScope surfaces do not model
+covers OpenAI, Azure, DeepSeek, Kimi and any compatible endpoint configured
+through its `endpoint` block. Anthropic, MiniMax, and Bytedance are the
+current exceptions: their official Messages/Ark surfaces do not model
 arbitrary request metadata and the drivers deliberately keep their native
 transport paths, so canonical metadata is not forwarded until those
 SDKs/providers add a native channel.

@@ -68,8 +68,8 @@ those leaves, and everything unstated — other capability leaves, numeric
 limits, and driver control facts such as Bytedance's `max_resolution` —
 is inherited from the built-in entry. Unknown names start from the
 conservative zero base, so every published capability must be stated.
-Qwen and Kimi follow the same leaf semantics as the catalog-backed
-drivers.
+Compatible endpoints configured through the OpenAI and Anthropic drivers
+follow the same leaf semantics.
 
 Reasoning kind `toggle` is a promise that `reasoning_enabled=false`
 compiles on that provider surface; models whose wire cannot turn reasoning
@@ -81,18 +81,18 @@ chat surface has no off route.
 Embed models that accept custom output dimensions declare the capability
 leaf `custom_embed_dimensions` (OpenAI, Azure, Bytedance). The old
 top-level `dimensions:` key is gone, drivers without an embed family reject
-the leaf, and Qwen's accepted sizes come from its built-in catalog
-whitelist — a declaration can restate the leaf on a whitelisted entry but
-cannot grant it to a model without one.
+the leaf, and accepted sizes come from the built-in catalog whitelist — a
+declaration can restate the leaf on a whitelisted entry but cannot grant it
+to a model without one.
 
 Routing prefers targets whose declared outputs cover the request intent
 and skips declared-incompatible tiers.
 
 `request_metadata.envelope` names the top-level body field that receives
 canonical `GenerateRequest.RequestMetadata`. It is supported by the
-DeepSeek, OpenAI, and Azure drivers; other drivers (Anthropic, MiniMax,
-Bytedance, Kimi, Qwen) keep their native transports and report request
-metadata as `dropped` in the compile report.
+OpenAI driver, which covers OpenAI, Azure, DeepSeek, Kimi and compatible
+gateways; the Anthropic, MiniMax, and Bytedance drivers keep their native
+transports and report request metadata as `dropped` in the compile report.
 
 ## inference assembly
 

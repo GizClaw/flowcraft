@@ -5,7 +5,6 @@ use (
 	./driver/openai
 	./driver/anthropic
 	./driver/minimax
-	./driver/qwen
 	./driver/bytedance
 	./examples/forge
 	./backends/checkpoint
