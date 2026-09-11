@@ -15,6 +15,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 )
 
@@ -232,8 +233,8 @@ func TestTracingMiddleware_ReportUsageAttribs(t *testing.T) {
 	rec := installTestTracer(t)
 	host := agent.ComposeHost(agent.NoopHost{}, agent.TracingMiddleware())
 	if err := host.ReportUsage(context.Background(), inference.Usage{
-		Model: inference.ModelRef{
-			ID: inference.ModelID{Provider: "openai", Name: "gpt-4o"},
+		Model: model.ModelRef{
+			ID: model.ModelID{Provider: "openai", Name: "gpt-4o"},
 		},
 		InputTokens: 12, OutputTokens: 34,
 	}); err != nil {

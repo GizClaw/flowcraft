@@ -5,17 +5,22 @@ title: Inference Runtime
 # Inference Runtime Guide
 
 `core/inference` is the unified, instance-owned runtime for model inference.
-Active workloads are `Generate`, `Embed`, and `Transcription`. `Realtime`
-is reserved in the operation enum and field ledger but has no request or
-session surface yet — it lands in a later milestone.
+Active workloads are `Generate`, `Embed`, and `Transcription`; they are
+enumerated once, by `model.Operations()` in `core/inference/model`.
+
+The model declaration vocabulary — identity, descriptor, capabilities,
+limits, lifecycle, and the catalog patch language — lives in
+`core/inference/model`. `core/inference` re-exports it through deprecated
+aliases (`inference.ModelRef` and friends) so existing callers keep
+compiling; new code should import `core/inference/model` directly.
 
 ## Exact addressing
 
 Every call takes a concrete `ModelRef`:
 
 ```go
-model := inference.ModelRef{
-    ID: inference.ModelID{
+model := model.ModelRef{
+    ID: model.ModelID{
         Provider: "deepseek",
         Name:     "deepseek-flash",
     },
@@ -71,6 +76,54 @@ reg.MustRegister(openai.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
 
+## Provider lifecycle
+
+Opening a model resolves its credentials and constructs its provider clients.
+The default call path (`Assembly.Generate`, `Embed`, `Transcribe`, ...) resolves
+the target per call, so nothing is cached behind the caller's back and a
+deployment never needs credentials at build time: `Validate` and `InspectModel`
+work without them, and a missing credential surfaces on first use.
+
+Callers that want opened drivers to outlive a single call say so explicitly.
+`Assembly.Bind(ctx, ref)` opens every operation the model declares and returns
+a `Binding`: immutable, safe for concurrent use, owning its drivers until
+dropped. Binding again picks up rotated credentials. A binding compiles per
+request:
+
+```go
+binding, err := assembly.Bind(ctx, model)
+prepared, err := binding.PrepareGenerate(ctx, request) // compiles once
+response, err := prepared.Execute(ctx)                 // provider I/O only
+```
+
+A `Prepared` attempt is what keeps preflight and execution from compiling the
+same request twice. `Assembly.Prepare*` returns the same kind of handle for
+callers that do not hold a binding, and executing one performs provider I/O
+only while still carrying the span, metrics, and usage envelope of a direct
+call. Routing uses exactly this: a routed attempt opens and compiles once, then
+executes that compilation.
+
+The graph `inference` node is the in-tree example of the binding lifetime: a
+node's model is static graph config and the node outlives the turns that run
+through it, so it opens each configured model once (keyed by the full model
+reference, shared by every node in the graph) and compiles per turn.
+
+The script bridge does the same for script calls: `inference.generate`,
+`explain`, `stream`, `embed`, `transcribe`, and `transcribeSession` resolve
+their model through one `inference.BindingCache` owned by the bridge, so a
+script that keeps addressing the same model reuses its drivers. Both hosts rely
+on the same cache type, and both keep working when the model is not one they
+have seen before: a miss simply opens it.
+
+That reuse has a staleness window: a credential or client setting rotated after
+a model was opened stays in effect until the deployment is rebuilt (or the node
+addresses a different profile). Opening is logged with `llm.provider`,
+`llm.model`, and `llm.profile`, so "the deployment is still using the previous
+key" is diagnosable rather than silent. The node keeps at most 16 bindings;
+past that it evicts the least recently used one, so a board-derived model
+reference cannot accumulate drivers while the models the graph keeps addressing
+stay open.
+
 ## Model declarations
 
 Providers expose built-in model catalogs that deployments extend or
@@ -90,6 +143,19 @@ model published with reasoning kind `toggle` must compile
 rejects it. Discovery bits such as `hosted_web_search` and
 `custom_embed_dimensions` ride on the model descriptor, so hosts can
 surface per-model options without driver-specific knowledge.
+
+Declared limits are enforced before any provider work. A `Generate` request
+whose `max_output_tokens` exceeds the target model's declared
+`max_output_tokens` is rejected at declaration time — the driver is not
+opened, and the rejection is transport-safe, so a routed request falls back
+to a target that declares room for it instead of failing. The limit is a
+promise, not a clamp: the caller's budget is never silently lowered, and an
+undeclared limit rejects nothing.
+
+`max_input_tokens` is not enforced: the module has no tokenizer, and a
+missing or approximate count would be worse than none. Hosts that own the
+conversation history can read the declared input window from
+`InspectModel` and enforce it where they already trim context.
 
 ## Routing
 

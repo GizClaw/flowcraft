@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -41,7 +42,7 @@ func WithExtensionDecoder(provider, id string, decoder inference.ExtensionDecode
 //
 //   - generate(request): one Runtime.Generate call. The request is the
 //     canonical inference.GenerateRequest wire JSON plus a required
-//     "model" key (inference.ModelRef JSON, stripped before the strict
+//     "model" key (model.ModelRef JSON, stripped before the strict
 //     decode): { model: {id: {provider, name}, profile?}, context,
 //     input }
 //
@@ -151,6 +152,11 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 	for _, o := range opts {
 		o(cfg)
 	}
+	// The bridge outlives the script calls that run through it, and script
+	// arguments can name any configured model, so one cache serves the whole
+	// bridge: models a script keeps addressing stay open, one-off targets cycle
+	// out (see inference.BindingCache).
+	bindings := &inferenceBindings{cache: inference.NewBindingCache(assembly)}
 	return func(ctx context.Context) (string, any) {
 		return "inference", map[string]any{
 			"generate": func(raw any) (any, error) {
@@ -165,7 +171,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				resp, err := assembly.Generate(ctx, ref, req)
+				resp, err := bindings.generate(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -206,7 +212,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				explanation, err := assembly.ExplainGenerate(ctx, ref, req)
+				explanation, err := bindings.explainGenerate(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -246,7 +252,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if assembly == nil {
 					return nil, errdefs.NotAvailablef("inference.inspect: no assembly wired")
 				}
-				var ref inference.ModelRef
+				var ref model.ModelRef
 				if err := decodeStrictJSON(raw, &ref, "inference.inspect.model"); err != nil {
 					return nil, err
 				}
@@ -268,7 +274,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				explanation, err := assembly.ExplainGenerateStream(ctx, ref, req)
+				explanation, err := bindings.explainGenerateStream(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -310,7 +316,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				resp, err := assembly.Embed(ctx, ref, req)
+				resp, err := bindings.embed(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -351,7 +357,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				explanation, err := assembly.ExplainEmbed(ctx, ref, req)
+				explanation, err := bindings.explainEmbed(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -394,7 +400,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 					return nil, err
 				}
 				req.Extensions = extensions
-				resp, err := assembly.Transcribe(ctx, ref, req)
+				resp, err := bindings.transcribe(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -436,7 +442,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 					return nil, err
 				}
 				req.Extensions = extensions
-				explanation, err := assembly.ExplainTranscribe(ctx, ref, req)
+				explanation, err := bindings.explainTranscribe(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -479,7 +485,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 					return nil, err
 				}
 				req.Extensions = extensions
-				session, err := assembly.TranscribeSession(ctx, ref, req)
+				session, err := bindings.transcribeSession(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -516,7 +522,7 @@ func NewInferenceBridge(assembly *inference.Assembly, router *route.Router, opts
 				if err != nil {
 					return nil, err
 				}
-				stream, err := assembly.GenerateStream(ctx, ref, req)
+				stream, err := bindings.generateStream(ctx, ref, req)
 				if err != nil {
 					return nil, err
 				}
@@ -731,7 +737,7 @@ func parseInferenceGenerateCall(
 	raw any,
 	decoders map[string]inference.ExtensionDecoder,
 	field string,
-) (inference.ModelRef, inference.GenerateRequest, error) {
+) (model.ModelRef, inference.GenerateRequest, error) {
 	ref, req, extensions, err := parseInferenceModelCall[inference.GenerateRequest](
 		raw,
 		decoders,
@@ -756,8 +762,8 @@ func parseInferenceModelCall[T any](
 	raw any,
 	decoders map[string]inference.ExtensionDecoder,
 	field string,
-) (inference.ModelRef, T, inference.Extensions, error) {
-	var ref inference.ModelRef
+) (model.ModelRef, T, inference.Extensions, error) {
+	var ref model.ModelRef
 	var req T
 	obj, ok := raw.(map[string]any)
 	if !ok {
@@ -797,7 +803,7 @@ func parseInferenceEmbedCall(
 	raw any,
 	decoders map[string]inference.ExtensionDecoder,
 	field string,
-) (inference.ModelRef, inference.EmbedRequest, error) {
+) (model.ModelRef, inference.EmbedRequest, error) {
 	ref, req, extensions, err := parseInferenceModelCall[inference.EmbedRequest](
 		raw,
 		decoders,

@@ -5,6 +5,21 @@ import (
 	"testing"
 )
 
+// preparedStub adapts a canned response to the Prepared shape, so a test double
+// can satisfy a driver interface without standing up a pipeline.
+func preparedStub[Result any](
+	model ModelRef,
+	operation Operation,
+	run func() (Result, error),
+) *Prepared[Result] {
+	return newPrepared(
+		model,
+		operation,
+		CompileReport{Operation: operation},
+		func(context.Context) (Result, error) { return run() },
+	)
+}
+
 type stubGenerateDriver struct {
 	resp GenerateResponse
 }
@@ -23,6 +38,14 @@ func (d stubGenerateDriver) Execute(
 	return d.resp, nil
 }
 
+func (d stubGenerateDriver) Prepare(
+	_ context.Context, model ModelRef, _ GenerateRequest,
+) (*Prepared[GenerateResponse], error) {
+	return preparedStub(model, OperationGenerate, func() (GenerateResponse, error) {
+		return d.resp, nil
+	}), nil
+}
+
 type stubEmbedDriver struct {
 	resp EmbedResponse
 }
@@ -39,6 +62,14 @@ func (d stubEmbedDriver) Execute(
 	context.Context, ModelRef, EmbedRequest,
 ) (EmbedResponse, error) {
 	return d.resp, nil
+}
+
+func (d stubEmbedDriver) Prepare(
+	_ context.Context, model ModelRef, _ EmbedRequest,
+) (*Prepared[EmbedResponse], error) {
+	return preparedStub(model, OperationEmbed, func() (EmbedResponse, error) {
+		return d.resp, nil
+	}), nil
 }
 
 func testProvider() ProviderDefinition {

@@ -79,6 +79,14 @@ func (d errGenerateDriver) Execute(
 	return GenerateResponse{}, nil
 }
 
+func (d errGenerateDriver) Prepare(
+	_ context.Context, model ModelRef, req GenerateRequest,
+) (*Prepared[GenerateResponse], error) {
+	return preparedStub(model, OperationGenerate, func() (GenerateResponse, error) {
+		return d.Execute(context.Background(), model, req)
+	}), nil
+}
+
 func TestAssemblyGenerateSuccessRecordsIDsOnActiveSpan(t *testing.T) {
 	rec := installTestTracer(t)
 	assembly := telemetryGenerateProvider(t, func(GenerateRequest) (GenerateResponse, error) {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
@@ -47,7 +48,7 @@ var (
 		metric.WithDescription("Half-open circuit probes"))
 )
 
-func startRouteSpan(ctx context.Context, operation inference.Operation) (context.Context, trace.Span) {
+func startRouteSpan(ctx context.Context, operation model.Operation) (context.Context, trace.Span) {
 	return telemetry.Tracer().Start(ctx, "inference.route."+string(operation),
 		trace.WithAttributes(attribute.String("inference.operation", string(operation))))
 }
@@ -58,7 +59,7 @@ func startRouteSpan(ctx context.Context, operation inference.Operation) (context
 func recordRoute(
 	ctx context.Context,
 	span trace.Span,
-	operation inference.Operation,
+	operation model.Operation,
 	routeTrace Trace,
 	metadata inference.Metadata,
 	err error,
@@ -127,7 +128,7 @@ func recordRoute(
 			otellog.String("inference.operation", string(operation)),
 			otellog.String(telemetry.AttrErrorMessage, err.Error()),
 		}
-		if executed := routeTrace.Executed; executed.ID != (inference.ModelID{}) {
+		if executed := routeTrace.Executed; executed.ID != (model.ModelID{}) {
 			logAttrs = append(logAttrs,
 				otellog.String(telemetry.AttrLLMProvider, executed.ID.Provider),
 				otellog.String(telemetry.AttrLLMModel, executed.ID.Name))
@@ -169,7 +170,7 @@ type routeGenerateStream struct {
 	inner      inference.GenerateStream
 	ctx        context.Context
 	span       trace.Span
-	operation  inference.Operation
+	operation  model.Operation
 	routeTrace Trace
 	once       sync.Once
 }
@@ -177,7 +178,7 @@ type routeGenerateStream struct {
 func wrapRouteStream(
 	ctx context.Context,
 	span trace.Span,
-	operation inference.Operation,
+	operation model.Operation,
 	routeTrace Trace,
 	inner inference.GenerateStream,
 ) inference.GenerateStream {
@@ -225,7 +226,7 @@ type routeTranscriptionSession struct {
 	inner      inference.TranscriptionSession
 	ctx        context.Context
 	span       trace.Span
-	operation  inference.Operation
+	operation  model.Operation
 	routeTrace Trace
 	once       sync.Once
 }
@@ -233,7 +234,7 @@ type routeTranscriptionSession struct {
 func wrapRouteTranscriptionSession(
 	ctx context.Context,
 	span trace.Span,
-	operation inference.Operation,
+	operation model.Operation,
 	routeTrace Trace,
 	inner inference.TranscriptionSession,
 ) inference.TranscriptionSession {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	"go.opentelemetry.io/otel"
@@ -66,8 +67,8 @@ func (*fakeRouteStream) Close() error { return nil }
 
 func TestRecordRouteErrorRecordsRequestID(t *testing.T) {
 	rec := installTestTracer(t)
-	ctx, span := startRouteSpan(context.Background(), inference.OperationGenerate)
-	recordRoute(ctx, span, inference.OperationGenerate, Trace{},
+	ctx, span := startRouteSpan(context.Background(), model.OperationGenerate)
+	recordRoute(ctx, span, model.OperationGenerate, Trace{},
 		inference.Metadata{},
 		errdefs.WithRequestID(errdefs.Validation(errors.New("boom")), "req-err-1"))
 
@@ -85,8 +86,8 @@ func TestRecordRouteErrorRecordsRequestID(t *testing.T) {
 
 func TestRouteStreamRecordsIDsOnCompletion(t *testing.T) {
 	rec := installTestTracer(t)
-	ctx, span := startRouteSpan(context.Background(), inference.OperationGenerate)
-	wrapped := wrapRouteStream(ctx, span, inference.OperationGenerate, Trace{}, &fakeRouteStream{
+	ctx, span := startRouteSpan(context.Background(), model.OperationGenerate)
+	wrapped := wrapRouteStream(ctx, span, model.OperationGenerate, Trace{}, &fakeRouteStream{
 		events: []inference.GenerateStreamEvent{{
 			PartIndex: 0,
 			Delta:     inference.TextPartDelta{Text: "hi"},
@@ -126,8 +127,8 @@ func TestRouteStreamRecordsIDsOnCompletion(t *testing.T) {
 
 func TestRouteStreamRecordsRequestIDOnFailure(t *testing.T) {
 	rec := installTestTracer(t)
-	ctx, span := startRouteSpan(context.Background(), inference.OperationGenerate)
-	wrapped := wrapRouteStream(ctx, span, inference.OperationGenerate, Trace{}, &fakeRouteStream{
+	ctx, span := startRouteSpan(context.Background(), model.OperationGenerate)
+	wrapped := wrapRouteStream(ctx, span, model.OperationGenerate, Trace{}, &fakeRouteStream{
 		err: errdefs.WithRequestID(errdefs.Validation(errors.New("boom")), "req-err-2"),
 	})
 

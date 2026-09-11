@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
@@ -1699,7 +1700,7 @@ func TestInferenceNode_Intent_TextControlsReachRequest(t *testing.T) {
 			TopP:             ptr(0.9),
 			MaxOutputTokens:  ptr(512),
 			ReasoningEnabled: ptr(true),
-			ReasoningEffort:  inference.ReasoningHigh,
+			ReasoningEffort:  model.ReasoningHigh,
 		}},
 	})
 	if err := executeGraph(t, g, agent.NoopHost{}, userBoard()); err != nil {
@@ -1719,7 +1720,7 @@ func TestInferenceNode_Intent_TextControlsReachRequest(t *testing.T) {
 	if text.ReasoningEnabled == nil || !*text.ReasoningEnabled {
 		t.Fatalf("reasoning_enabled = %+v, want true", text.ReasoningEnabled)
 	}
-	if text.ReasoningEffort != inference.ReasoningHigh {
+	if text.ReasoningEffort != model.ReasoningHigh {
 		t.Fatalf("reasoning_effort = %q, want high", text.ReasoningEffort)
 	}
 }

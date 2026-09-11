@@ -6,22 +6,23 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // UnarySuite verifies contracts shared by Generate and Embed drivers.
 type UnarySuite[Request, Response any] struct {
-	Operation inference.Operation
-	Model     inference.ModelRef
+	Operation model.Operation
+	Model     model.ModelRef
 
 	Request func() Request
 	// Snapshot returns an owned, comparable representation of Request.
 	Snapshot func(Request) any
 	Explain  func(
 		context.Context,
-		inference.ModelRef,
+		model.ModelRef,
 		Request,
 	) (inference.Explanation, error)
-	Execute  func(context.Context, inference.ModelRef, Request) (Response, error)
+	Execute  func(context.Context, model.ModelRef, Request) (Response, error)
 	Metadata func(Response) inference.Metadata
 
 	TransportCalls func() int64
@@ -29,7 +30,7 @@ type UnarySuite[Request, Response any] struct {
 }
 
 type GenerateUnarySuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.GenerateRequest
 	Driver  inference.GenerateDriver
 
@@ -44,7 +45,7 @@ func RunGenerateUnary(t *testing.T, suite GenerateUnarySuite) {
 	}
 	assertResponse := suite.AssertResponse
 	RunUnary(t, UnarySuite[inference.GenerateRequest, inference.GenerateResponse]{
-		Operation: inference.OperationGenerate,
+		Operation: model.OperationGenerate,
 		Model:     suite.Model,
 		Request:   suite.Request,
 		Snapshot: func(request inference.GenerateRequest) any {

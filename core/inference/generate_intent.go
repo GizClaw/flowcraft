@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/santhosh-tekuri/jsonschema/v5"
@@ -121,7 +122,7 @@ func (i TextIntent) Clone() TextIntent {
 		response.Schema = json.RawMessage(append([]byte(nil), response.Schema...))
 		i.Response = &response
 	}
-	i.MaxOutputTokens = clonePointer(i.MaxOutputTokens)
+	i.MaxOutputTokens = model.ClonePointer(i.MaxOutputTokens)
 	if i.Tools != nil {
 		tools := make([]message.ToolDefinition, len(i.Tools))
 		for index, definition := range i.Tools {
@@ -129,10 +130,10 @@ func (i TextIntent) Clone() TextIntent {
 		}
 		i.Tools = tools
 	}
-	i.ToolChoice = clonePointer(i.ToolChoice)
-	i.Temperature = clonePointer(i.Temperature)
-	i.TopP = clonePointer(i.TopP)
-	i.ReasoningEnabled = clonePointer(i.ReasoningEnabled)
+	i.ToolChoice = model.ClonePointer(i.ToolChoice)
+	i.Temperature = model.ClonePointer(i.Temperature)
+	i.TopP = model.ClonePointer(i.TopP)
+	i.ReasoningEnabled = model.ClonePointer(i.ReasoningEnabled)
 	return i
 }
 
@@ -201,9 +202,9 @@ type ImageIntent struct {
 }
 
 func (i ImageIntent) Clone() ImageIntent {
-	i.Size = clonePointer(i.Size)
-	i.Count = clonePointer(i.Count)
-	i.Seed = clonePointer(i.Seed)
+	i.Size = model.ClonePointer(i.Size)
+	i.Count = model.ClonePointer(i.Count)
+	i.Seed = model.ClonePointer(i.Seed)
 	return i
 }
 
@@ -254,8 +255,8 @@ type AudioIntent struct {
 }
 
 func (i AudioIntent) Clone() AudioIntent {
-	i.Speed = clonePointer(i.Speed)
-	i.Count = clonePointer(i.Count)
+	i.Speed = model.ClonePointer(i.Speed)
+	i.Count = model.ClonePointer(i.Count)
 	return i
 }
 
@@ -293,9 +294,9 @@ type VideoIntent struct {
 }
 
 func (i VideoIntent) Clone() VideoIntent {
-	i.DurationMillis = clonePointer(i.DurationMillis)
-	i.Seed = clonePointer(i.Seed)
-	i.Watermark = clonePointer(i.Watermark)
+	i.DurationMillis = model.ClonePointer(i.DurationMillis)
+	i.Seed = model.ClonePointer(i.Seed)
+	i.Watermark = model.ClonePointer(i.Watermark)
 	return i
 }
 
@@ -318,23 +319,6 @@ func (i VideoIntent) Validate() error {
 	}
 	return nil
 }
-
-// ReasoningEffort is the request-side "how hard should the model think"
-// knob. It is a wire-level string enum, but it is an inference concept
-// (not a message part, not a tool DTO) so it lives here rather than in
-// [github.com/GizClaw/flowcraft/core/message]. The five constants are the
-// portable ordinal ladder every request may name; each model declares how
-// the canonical levels map onto its own wire levels in
-// ModelCapabilities.Reasoning.EffortMap.
-type ReasoningEffort string
-
-const (
-	ReasoningMinimal ReasoningEffort = "minimal"
-	ReasoningLow     ReasoningEffort = "low"
-	ReasoningMedium  ReasoningEffort = "medium"
-	ReasoningHigh    ReasoningEffort = "high"
-	ReasoningXHigh   ReasoningEffort = "xhigh"
-)
 
 // FinishReason tells the caller why a generate call stopped. It is
 // part of the inference response envelope, not a property of a

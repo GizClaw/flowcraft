@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -39,11 +40,11 @@ func TestRunEmbedUnary(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	driver, err := inference.BindEmbed(
 		inference.Compiler[inference.EmbedRequest, string](
-			func(_ context.Context, _ inference.ModelRef, request inference.EmbedRequest) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.EmbedRequest) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationEmbed,
+						model.OperationEmbed,
 						request.ActiveFields()...,
 					),
 				}, nil
@@ -79,11 +80,11 @@ func TestRunGenerateStreamFailure(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	driver, err := inference.BindGenerateStream(
 		inference.GenerateCompiler[string](
-			func(_ context.Context, _ inference.ModelRef, request inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationGenerate,
+						model.OperationGenerate,
 						request.ActiveFieldsFor(shape)...,
 					),
 				}, nil
@@ -126,11 +127,11 @@ func TestRunGenerateConcurrent(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	operations, err := inference.BindGenerateOperations(
 		inference.GenerateCompiler[string](
-			func(_ context.Context, _ inference.ModelRef, request inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationGenerate,
+						model.OperationGenerate,
 						request.ActiveFieldsFor(shape)...,
 					),
 				}, nil
@@ -240,11 +241,11 @@ func TestRunTranscribeUnary(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	driver, err := inference.BindTranscribe(
 		inference.Compiler[inference.TranscriptionRequest, string](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationTranscription,
+						model.OperationTranscription,
 						request.ActiveFields()...,
 					),
 				}, nil
@@ -349,11 +350,11 @@ func bindScriptedSession(
 ) (inference.TranscriptionSessionDriver, error) {
 	return inference.BindTranscribeSession(
 		inference.Compiler[inference.TranscriptionSessionRequest, string](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationTranscription,
+						model.OperationTranscription,
 						request.ActiveFields()...,
 					),
 				}, nil
@@ -491,11 +492,11 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 	raw := &scriptedRawSession{events: []scriptedRawEvent{{Text: "hi", Final: true}}}
 	operations, err := inference.BindTranscribeOperations(
 		inference.Compiler[inference.TranscriptionRequest, string](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionRequest) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationTranscription,
+						model.OperationTranscription,
 						request.ActiveFields()...,
 					),
 				}, nil
@@ -513,11 +514,11 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 			},
 		),
 		inference.Compiler[inference.TranscriptionSessionRequest, string](
-			func(_ context.Context, _ inference.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
+			func(_ context.Context, _ model.ModelRef, request inference.TranscriptionSessionRequest) (inference.Compiled[string], error) {
 				return inference.Compiled[string]{
 					Wire: "wire",
 					Report: inferencetest.NativeReport(
-						inference.OperationTranscription,
+						model.OperationTranscription,
 						request.ActiveFields()...,
 					),
 				}, nil
@@ -545,19 +546,19 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 		t.Fatalf("TranscribeOperations.Validate: %v", err)
 	}
 
-	model := inferencetest.DefaultFakeTranscribeModel
+	ref := inferencetest.DefaultFakeTranscribeModel
 	definition := inference.ProviderDefinition{
-		ID: model.ID.Provider,
+		ID: ref.ID.Provider,
 		Profiles: []inference.ProfileDefinition{{
-			ID:         model.Profile,
-			Operations: []inference.Operation{inference.OperationTranscription},
+			ID:         ref.Profile,
+			Operations: []model.Operation{model.OperationTranscription},
 		}},
 		Models: []inference.ModelImplementation{{
-			Descriptor: inference.ModelDescriptor{ID: model.ID},
+			Descriptor: model.ModelDescriptor{ID: ref.ID},
 			Openers: inference.Openers{
 				Transcribe: func(
 					_ context.Context,
-					_ inference.ModelRef,
+					_ model.ModelRef,
 				) (inference.TranscribeOperations, error) {
 					return operations, nil
 				},
@@ -565,7 +566,7 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 		}},
 	}
 	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + model.ID.Provider: definition},
+		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
 	})
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
@@ -574,7 +575,7 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 
 	response, err := assembly.Transcribe(
 		context.Background(),
-		model,
+		ref,
 		inference.TranscriptionRequest{Audio: mustAudioSource(t)},
 	)
 	if err != nil {
@@ -585,7 +586,7 @@ func TestRunTranscribeDualOperations(t *testing.T) {
 	}
 	session, err := assembly.TranscribeSession(
 		context.Background(),
-		model,
+		ref,
 		sessionRequest(),
 	)
 	if err != nil {

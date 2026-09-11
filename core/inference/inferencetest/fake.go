@@ -7,14 +7,15 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
 // DefaultFakeModel is GenerateFake's default model ref.
-var DefaultFakeModel = inference.ModelRef{
-	ID:      inference.ModelID{Provider: "fake", Name: "echo"},
+var DefaultFakeModel = model.ModelRef{
+	ID:      model.ModelID{Provider: "fake", Name: "echo"},
 	Profile: "default",
 }
 
@@ -26,11 +27,11 @@ var DefaultFakeModel = inference.ModelRef{
 type GenerateFake struct {
 	// Model is the ref the runtime resolves. Defaults to
 	// DefaultFakeModel.
-	Model inference.ModelRef
+	Model model.ModelRef
 	// Descriptor overrides the model's discovery metadata. The zero
 	// value falls back to {ID: Model.ID}, so tests can declare limits
 	// or lifecycle without rebuilding the provider.
-	Descriptor inference.ModelDescriptor
+	Descriptor model.ModelDescriptor
 	// Respond answers unary Generate calls. Default: a one-part "ok"
 	// text message with inference.FinishCompleted.
 	Respond func(inference.GenerateRequest) inference.GenerateResponse
@@ -56,9 +57,9 @@ type GenerateFake struct {
 // Assembly builds the fake's inference assembly.
 func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 	t.Helper()
-	model := f.Model
-	if model.ID.Provider == "" {
-		model = DefaultFakeModel
+	ref := f.Model
+	if ref.ID.Provider == "" {
+		ref = DefaultFakeModel
 	}
 	respond := f.Respond
 	if respond == nil {
@@ -81,13 +82,13 @@ func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 
 	compile := inference.GenerateCompiler[string](
-		func(_ context.Context, _ inference.ModelRef, req inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
+		func(_ context.Context, _ model.ModelRef, req inference.GenerateRequest, shape inference.GenerateExecutionShape) (inference.Compiled[string], error) {
 			f.mu.Lock()
 			f.requests = append(f.requests, req.Clone())
 			f.mu.Unlock()
 			return inference.Compiled[string]{
 				Wire:   "wire",
-				Report: NativeReport(inference.OperationGenerate, req.ActiveFieldsFor(shape)...),
+				Report: NativeReport(model.OperationGenerate, req.ActiveFieldsFor(shape)...),
 			}, nil
 		},
 	)
@@ -119,26 +120,26 @@ func (f *GenerateFake) Assembly(t *testing.T) *inference.Assembly {
 	}
 	descriptor := f.Descriptor
 	if descriptor.ID.Provider == "" {
-		descriptor = inference.ModelDescriptor{ID: model.ID}
+		descriptor = model.ModelDescriptor{ID: ref.ID}
 	}
 	definition := inference.ProviderDefinition{
-		ID:                model.ID.Provider,
+		ID:                ref.ID.Provider,
 		ExtensionDecoders: f.ExtensionDecoders,
 		Profiles: []inference.ProfileDefinition{{
-			ID:         model.Profile,
-			Operations: []inference.Operation{inference.OperationGenerate},
+			ID:         ref.Profile,
+			Operations: []model.Operation{model.OperationGenerate},
 		}},
 		Models: []inference.ModelImplementation{{
 			Descriptor: descriptor,
 			Openers: inference.Openers{
-				Generate: func(_ context.Context, _ inference.ModelRef) (inference.GenerateOperations, error) {
+				Generate: func(_ context.Context, _ model.ModelRef) (inference.GenerateOperations, error) {
 					return operations, nil
 				},
 			},
 		}},
 	}
 	value, err := inference.Factory{}.New(context.Background(), resource.Input{
-		Deps: map[string]any{"provider." + model.ID.Provider: definition},
+		Deps: map[string]any{"provider." + ref.ID.Provider: definition},
 	})
 	if err != nil {
 		t.Fatalf("build assembly: %v", err)
@@ -175,10 +176,10 @@ func (f *GenerateFake) lastRequest() inference.GenerateRequest {
 // StaticGenerateSelector returns a route.GenerateSelector that always
 // selects ref on the primary tier — the smallest router wiring for
 // tests that need the route path without a policy engine.
-func StaticGenerateSelector(ref inference.ModelRef) route.GenerateSelector {
+func StaticGenerateSelector(ref model.ModelRef) route.GenerateSelector {
 	return generateSelectorFunc(func(context.Context, inference.GenerateRequest) (route.Decision, error) {
 		return route.Decision{
-			Operation: inference.OperationGenerate,
+			Operation: model.OperationGenerate,
 			Tier:      "primary",
 			Proposed:  ref,
 			Selected:  ref,
@@ -195,10 +196,10 @@ func (f generateSelectorFunc) SelectGenerate(ctx context.Context, req inference.
 // StaticEmbedSelector returns a route.EmbedSelector that always
 // selects ref on the primary tier — the smallest router wiring for
 // tests that need the embed route path without a policy engine.
-func StaticEmbedSelector(ref inference.ModelRef) route.EmbedSelector {
+func StaticEmbedSelector(ref model.ModelRef) route.EmbedSelector {
 	return embedSelectorFunc(func(context.Context, inference.EmbedRequest) (route.Decision, error) {
 		return route.Decision{
-			Operation: inference.OperationEmbed,
+			Operation: model.OperationEmbed,
 			Tier:      "primary",
 			Proposed:  ref,
 			Selected:  ref,
@@ -215,10 +216,10 @@ func (f embedSelectorFunc) SelectEmbed(ctx context.Context, req inference.EmbedR
 // StaticTranscribeSelector returns a route.TranscribeSelector that always
 // selects ref on the primary tier — the smallest router wiring for tests
 // that need the unary transcription route path.
-func StaticTranscribeSelector(ref inference.ModelRef) route.TranscribeSelector {
+func StaticTranscribeSelector(ref model.ModelRef) route.TranscribeSelector {
 	return transcribeSelectorFunc(func(context.Context, inference.TranscriptionRequest) (route.Decision, error) {
 		return route.Decision{
-			Operation: inference.OperationTranscription,
+			Operation: model.OperationTranscription,
 			Tier:      "primary",
 			Proposed:  ref,
 			Selected:  ref,
@@ -237,10 +238,10 @@ func (f transcribeSelectorFunc) SelectTranscribe(
 
 // StaticTranscribeSessionSelector returns a route.TranscriptionSessionSelector
 // that always selects ref on the primary tier.
-func StaticTranscribeSessionSelector(ref inference.ModelRef) route.TranscriptionSessionSelector {
+func StaticTranscribeSessionSelector(ref model.ModelRef) route.TranscriptionSessionSelector {
 	return transcribeSessionSelectorFunc(func(context.Context, inference.TranscriptionSessionRequest) (route.Decision, error) {
 		return route.Decision{
-			Operation: inference.OperationTranscription,
+			Operation: model.OperationTranscription,
 			Tier:      "primary",
 			Proposed:  ref,
 			Selected:  ref,

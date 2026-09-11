@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 
 	otellog "go.opentelemetry.io/otel/log"
@@ -28,14 +29,14 @@ type Selectors struct {
 // Decision is the selector output before inference execution. Proposed records
 // the selector's initial choice; Selected records any policy-adjusted target.
 type Decision struct {
-	Operation inference.Operation `json:"operation"`
-	Tier      Tier                `json:"tier"`
-	Proposed  inference.ModelRef  `json:"proposed"`
-	Selected  inference.ModelRef  `json:"selected"`
-	Reason    string              `json:"reason,omitempty"`
+	Operation model.Operation `json:"operation"`
+	Tier      Tier            `json:"tier"`
+	Proposed  model.ModelRef  `json:"proposed"`
+	Selected  model.ModelRef  `json:"selected"`
+	Reason    string          `json:"reason,omitempty"`
 }
 
-func (d Decision) ValidateFor(operation inference.Operation) error {
+func (d Decision) ValidateFor(operation model.Operation) error {
 	if err := operation.Validate(); err != nil {
 		return err
 	}
@@ -62,9 +63,9 @@ func (d Decision) ValidateFor(operation inference.Operation) error {
 }
 
 type FallbackHop struct {
-	From   inference.ModelRef `json:"from"`
-	To     inference.ModelRef `json:"to"`
-	Reason string             `json:"reason"`
+	From   model.ModelRef `json:"from"`
+	To     model.ModelRef `json:"to"`
+	Reason string         `json:"reason"`
 }
 
 type AttemptPhase string
@@ -104,7 +105,7 @@ const (
 // Attempt records only observable route facts. In particular, an opened
 // stream is not reported as completed because its events belong to the caller.
 type Attempt struct {
-	Target           inference.ModelRef  `json:"target"`
+	Target           model.ModelRef      `json:"target"`
 	Phase            AttemptPhase        `json:"phase"`
 	Trigger          AttemptTrigger      `json:"trigger"`
 	Outcome          AttemptOutcome      `json:"outcome"`
@@ -135,10 +136,10 @@ type Attempt struct {
 // metadata confirms the public model identity. A returned Trace is an immutable
 // snapshot: stream and session activity after a successful open never mutates it.
 type Trace struct {
-	Decision  Decision           `json:"decision"`
-	Executed  inference.ModelRef `json:"executed"`
-	Fallbacks []FallbackHop      `json:"fallbacks,omitempty"`
-	Attempts  []Attempt          `json:"attempts,omitempty"`
+	Decision  Decision       `json:"decision"`
+	Executed  model.ModelRef `json:"executed"`
+	Fallbacks []FallbackHop  `json:"fallbacks,omitempty"`
+	Attempts  []Attempt      `json:"attempts,omitempty"`
 }
 
 // Clone returns an owned copy safe to share beyond the call that produced the
@@ -177,14 +178,14 @@ func New(
 		return nil, errdefs.Validationf("at least one route selector is required")
 	}
 	orphans := []struct {
-		operation inference.Operation
+		operation model.Operation
 		selector  any
 		fallback  any
 	}{
-		{inference.OperationGenerate, selectors.Generate, selectors.GenerateFallback},
-		{inference.OperationEmbed, selectors.Embed, selectors.EmbedFallback},
-		{inference.OperationTranscription, selectors.Transcribe, selectors.TranscribeFallback},
-		{inference.OperationTranscription, selectors.TranscribeSession, selectors.TranscribeSessionFallback},
+		{model.OperationGenerate, selectors.Generate, selectors.GenerateFallback},
+		{model.OperationEmbed, selectors.Embed, selectors.EmbedFallback},
+		{model.OperationTranscription, selectors.Transcribe, selectors.TranscribeFallback},
+		{model.OperationTranscription, selectors.TranscribeSession, selectors.TranscribeSessionFallback},
 	}
 	for _, orphan := range orphans {
 		if !isNilInterface(orphan.fallback) && isNilInterface(orphan.selector) {
@@ -227,12 +228,12 @@ func validateRetryPolicies(
 	selectors Selectors,
 ) error {
 	entries := []struct {
-		operation inference.Operation
+		operation model.Operation
 		policy    *RetryPolicy
 		selector  any
 	}{
-		{inference.OperationGenerate, policies.Generate, selectors.Generate},
-		{inference.OperationEmbed, policies.Embed, selectors.Embed},
+		{model.OperationGenerate, policies.Generate, selectors.Generate},
+		{model.OperationEmbed, policies.Embed, selectors.Embed},
 	}
 	for _, entry := range entries {
 		if entry.policy == nil {
@@ -285,252 +286,56 @@ func (r *Router) Target() *inference.Assembly {
 // initially selected target.
 const maxFallbackTargets = 8
 
-// executeWithFallback runs one unary operation (Generate, Embed, Transcribe)
-// across fallback targets with per-target retry/backoff and the circuit
-// breaker. snapshot must already be an owned clone; selectors and fallback
-// policies receive their own clones so they cannot mutate the request being
-// executed. preflight may be nil: without it the compiler runs inside execute,
-// and a local rejection still surfaces with a fallback-eligible kind before
-// any provider I/O.
-func executeWithFallback[Request any, Response any](
-	r *Router,
-	ctx context.Context,
-	operation inference.Operation,
-	snapshot Request,
-	clone func(Request) Request,
-	validate func(Request) error,
-	selector any,
-	selectRequest func(context.Context, Request) (Decision, error),
-	fallbackNext func(context.Context, Request, Attempt) (inference.ModelRef, bool, error),
-	preflight func(context.Context, inference.ModelRef, Request) error,
-	execute func(context.Context, inference.ModelRef, Request) (Response, inference.Metadata, error),
-) (Response, Trace, error) {
-	var zero Response
-	decision, err := selectTarget(
-		ctx, r.target, operation, snapshot, clone, validate, selector, selectRequest,
-	)
-	if err != nil {
-		return zero, Trace{}, err
-	}
-	trace := Trace{Decision: decision}
-	target := decision.Selected
-	trigger := AttemptTriggerSelection
-	seen := map[inference.ModelRef]struct{}{target: {}}
-	policy := r.retry.policyFor(operation).effective()
-	var lastErr error
-	totalAttempts := 0
-	for {
-		breakerAllowed := false
-		var key circuitKey
-		if r.breaker != nil {
-			key = circuitKey{operation: operation, model: target}
-			gate := r.breaker.begin(ctx, key)
-			breakerAllowed = gate.allowed
-			if !breakerAllowed {
-				skipped := Attempt{
-					Target: target, Phase: AttemptPhaseExecute, Trigger: trigger,
-					Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
-				}
-				trace.Attempts = append(trace.Attempts, skipped)
-				logRouteAttempt(telemetry.Warn, ctx, operation,
-					"inference route: target circuit open, skipping",
-					skipped, inference.ModelRef{}, nil)
-				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, operation, snapshot, clone,
-					skipped,
-					&trace, seen, fallbackNext, true, false, AttemptPhaseExecute,
-				)
-				if fallbackErr != nil {
-					return zero, trace, fallbackErr
-				}
-				if !ok {
-					if lastErr != nil {
-						return zero, trace, lastErr
-					}
-					return zero, trace, NewError(
-						CircuitOpen,
-						operation,
-						errors.New("all route targets are circuit-open"),
-					)
-				}
-				target, trigger = next, AttemptTriggerFallback
-				continue
-			}
-		}
-
-		attemptNumber := 0
-		var backoffMillis int64
-		for {
-			if policy.MaxTotalAttempts > 0 &&
-				totalAttempts >= policy.MaxTotalAttempts {
-				if lastErr != nil {
-					return zero, trace, lastErr
-				}
-				return zero, trace, errors.New("retry total attempt budget exhausted")
-			}
-			attemptNumber++
-			totalAttempts++
-			attemptTrigger := trigger
-			if attemptNumber > 1 {
-				attemptTrigger = AttemptTriggerRetry
-			}
-			if attemptNumber > 1 {
-				delay := retryDelay(policy.Backoff, attemptNumber-1, lastErr)
-				if err := r.sleeper(ctx, delay); err != nil {
-					return zero, trace, err
-				}
-				backoffMillis = delay.Milliseconds()
-			}
-			if preflight != nil {
-				if err := preflight(ctx, target, snapshot); err != nil {
-					attempt := failedAttempt(target, AttemptPhasePreflight, attemptTrigger, err)
-					attempt.Number = attemptNumber
-					attempt.BackoffMillis = backoffMillis
-					if r.breaker != nil {
-						attempt.CircuitTransition = r.breaker.finish(
-							ctx, key, err, false,
-						)
-					}
-					trace.Attempts = append(trace.Attempts, attempt)
-					if policy.MaxTotalAttempts > 0 &&
-						totalAttempts >= policy.MaxTotalAttempts {
-						return zero, trace, err
-					}
-					if fallbackEligible(attempt) {
-						next, ok, fallbackErr := nextFallbackTarget(r,
-							ctx, operation, snapshot, clone,
-							attempt, &trace, seen, fallbackNext, false, false, AttemptPhaseExecute,
-						)
-						if fallbackErr != nil {
-							return zero, trace, fallbackErr
-						}
-						if !ok {
-							return zero, trace, err
-						}
-						logRouteAttempt(telemetry.Warn, ctx, operation,
-							"inference route: falling back to another target",
-							attempt, next, err)
-						target, trigger = next, AttemptTriggerFallback
-						break
-					}
-					decision := retryDecision(
-						operation, AttemptPhasePreflight, attemptTrigger, err, attemptNumber,
-					)
-					if retryEligible(ctx, &policy, decision) {
-						logRouteAttempt(telemetry.Debug, ctx, operation,
-							"inference route: attempt failed, will retry",
-							attempt, inference.ModelRef{}, err)
-						lastErr = err
-						continue
-					}
-					allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
-					next, ok, fallbackErr := nextFallbackTarget(r,
-						ctx, operation, snapshot, clone,
-						attempt, &trace, seen, fallbackNext, false, allowTransient, AttemptPhaseExecute,
-					)
-					if fallbackErr != nil {
-						return zero, trace, fallbackErr
-					}
-					if !ok {
-						return zero, trace, err
-					}
-					logRouteAttempt(telemetry.Warn, ctx, operation,
-						"inference route: falling back after retries exhausted",
-						attempt, next, err)
-					target, trigger = next, AttemptTriggerFallback
-					break
-				}
-				trace.Attempts = append(trace.Attempts, Attempt{
-					Target: target, Phase: AttemptPhasePreflight, Trigger: trigger,
-					Outcome: AttemptOutcomeSucceeded, Number: attemptNumber,
-				})
-			}
-			response, metadata, err := execute(ctx, target, snapshot)
-			if err != nil {
-				attempt := failedAttempt(target, AttemptPhaseExecute, attemptTrigger, err)
-				attempt.Number = attemptNumber
-				attempt.BackoffMillis = backoffMillis
-				if r.breaker != nil {
-					attempt.CircuitTransition = r.breaker.finish(
-						ctx, key, err, attempt.Transient,
-					)
-				}
-				trace.Attempts = append(trace.Attempts, attempt)
-				if policy.MaxTotalAttempts > 0 &&
-					totalAttempts >= policy.MaxTotalAttempts {
-					return zero, trace, err
-				}
-				decision := retryDecision(
-					operation, AttemptPhaseExecute, attemptTrigger, err, attemptNumber,
-				)
-				if retryEligible(ctx, &policy, decision) {
-					logRouteAttempt(telemetry.Debug, ctx, operation,
-						"inference route: attempt failed, will retry",
-						attempt, inference.ModelRef{}, err)
-					lastErr = err
-					continue
-				}
-				allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
-				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, operation, snapshot, clone,
-					attempt, &trace, seen, fallbackNext, false, allowTransient, AttemptPhaseExecute,
-				)
-				if fallbackErr != nil {
-					return zero, trace, fallbackErr
-				}
-				if !ok {
-					return zero, trace, err
-				}
-				logRouteAttempt(telemetry.Warn, ctx, operation,
-					"inference route: falling back after retries exhausted",
-					attempt, next, err)
-				target, trigger = next, AttemptTriggerFallback
-				break
-			}
-			transition := ""
-			if r.breaker != nil {
-				transition = r.breaker.finish(ctx, key, nil, false)
-			}
-			trace.Attempts = append(trace.Attempts, Attempt{
-				Target: target, Phase: AttemptPhaseExecute, Trigger: attemptTrigger,
-				Outcome: AttemptOutcomeSucceeded, Number: attemptNumber,
-				CircuitTransition: transition,
-			})
-			trace.Executed = target
-			if metadata.Operation != operation || metadata.Model != target.ID {
-				return zero, trace, NewError(
-					SelectorContractViolation,
-					operation,
-					errors.New("inference response does not match selected route"),
-				)
-			}
-			return response, trace, nil
-		}
-	}
+// attemptPlan describes one operation's attempt loop. What differs between a
+// unary execution and a stream/session open is which function performs the work
+// and how the attempt is labelled in the trace; the retry budget, backoff,
+// circuit breaker, and fallback chain are the same for every workload and live
+// in runAttempts.
+type attemptPlan[Req any, Result any] struct {
+	operation model.Operation
+	// snapshot must already be an owned clone: selectors and fallback
+	// policies receive their own clones, so they cannot mutate the request
+	// the work is executed with.
+	snapshot      Req
+	clone         func(Req) Req
+	validate      func(Req) error
+	selector      any
+	selectRequest func(context.Context, Req) (Decision, error)
+	fallbackNext  func(context.Context, Req, Attempt) (model.ModelRef, bool, error)
+	// prepare, when non-nil, binds the target and compiles the attempt before
+	// the work runs. It is what lets a local rejection surface as a
+	// fallback-eligible attempt rather than a provider failure — and, because
+	// it returns the compiled attempt, what keeps the work from compiling the
+	// same request a second time.
+	prepare func(context.Context, model.ModelRef, Req) (*inference.Prepared[Result], error)
+	// work performs one attempt. prepared is the handle plan.prepare returned,
+	// or nil when the plan has no prepare step (the work then resolves,
+	// compiles, and executes in one call). A completed attempt returns the
+	// response metadata that proves which model served it; an attempt that
+	// merely opens a stream or session returns the zero Metadata and hands the
+	// result to the caller.
+	work func(context.Context, model.ModelRef, Req, *inference.Prepared[Result]) (Result, inference.Metadata, error)
+	// phase and outcome label the work attempt, and completed selects the
+	// completed-attempt contract (metadata must match the selected target).
+	phase     AttemptPhase
+	outcome   AttemptOutcome
+	completed bool
 }
 
-// openSessionWithFallback opens a stream or session across fallback targets
-// with per-target retry/backoff and the circuit breaker. Fallback and retry
-// only exist before open: an opened session is owned by the caller and never
-// migrates. preflight is optional and only used by GenerateStream; without it
-// opening already compiles locally before any provider I/O, so a compiler
-// rejection surfaces with a fallback-eligible kind.
-func openSessionWithFallback[Request any, Session any](
+// runAttempts runs one operation across fallback targets with per-target
+// retry/backoff and the circuit breaker, and reports every observable route
+// fact in the returned trace. It is the single attempt engine: a stream or
+// session open is the same loop with a work function that hands the opened
+// result to the caller instead of completing inside the attempt.
+func runAttempts[Req any, Result any](
 	r *Router,
 	ctx context.Context,
-	operation inference.Operation,
-	snapshot Request,
-	clone func(Request) Request,
-	validate func(Request) error,
-	selector any,
-	selectRequest func(context.Context, Request) (Decision, error),
-	fallbackNext func(context.Context, Request, Attempt) (inference.ModelRef, bool, error),
-	preflight func(context.Context, inference.ModelRef, Request) error,
-	open func(context.Context, inference.ModelRef, Request) (Session, error),
-) (Session, Trace, error) {
-	var zero Session
+	plan attemptPlan[Req, Result],
+) (Result, Trace, error) {
+	var zero Result
 	decision, err := selectTarget(
-		ctx, r.target, operation, snapshot, clone, validate, selector, selectRequest,
+		ctx, r.target, plan.operation, plan.snapshot, plan.clone, plan.validate,
+		plan.selector, plan.selectRequest,
 	)
 	if err != nil {
 		return zero, Trace{}, err
@@ -538,10 +343,12 @@ func openSessionWithFallback[Request any, Session any](
 	trace := Trace{Decision: decision}
 	target := decision.Selected
 	trigger := AttemptTriggerSelection
-	seen := map[inference.ModelRef]struct{}{target: {}}
-	policy := r.retry.policyFor(operation).effective()
-	skipPhase := AttemptPhaseOpen
-	if preflight != nil {
+	seen := map[model.ModelRef]struct{}{target: {}}
+	policy := r.retry.policyFor(plan.operation).effective()
+	// A skipped attempt is reported in the phase that would have run: the
+	// preflight when the operation has one, the work itself otherwise.
+	skipPhase := plan.phase
+	if plan.prepare != nil {
 		skipPhase = AttemptPhasePreflight
 	}
 	var lastErr error
@@ -550,7 +357,7 @@ func openSessionWithFallback[Request any, Session any](
 		breakerAllowed := false
 		var key circuitKey
 		if r.breaker != nil {
-			key = circuitKey{operation: operation, model: target}
+			key = circuitKey{operation: plan.operation, model: target}
 			gate := r.breaker.begin(ctx, key)
 			breakerAllowed = gate.allowed
 			if !breakerAllowed {
@@ -559,13 +366,13 @@ func openSessionWithFallback[Request any, Session any](
 					Outcome: AttemptOutcomeSkipped, Circuit: string(gate.state),
 				}
 				trace.Attempts = append(trace.Attempts, skipped)
-				logRouteAttempt(telemetry.Warn, ctx, operation,
+				logRouteAttempt(telemetry.Warn, ctx, plan.operation,
 					"inference route: target circuit open, skipping",
-					skipped, inference.ModelRef{}, nil)
+					skipped, model.ModelRef{}, nil)
 				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, operation, snapshot, clone,
+					ctx, plan.operation, plan.snapshot, plan.clone,
 					skipped,
-					&trace, seen, fallbackNext, true, false, skipPhase,
+					&trace, seen, plan.fallbackNext, true, false, skipPhase,
 				)
 				if fallbackErr != nil {
 					return zero, trace, fallbackErr
@@ -576,7 +383,7 @@ func openSessionWithFallback[Request any, Session any](
 					}
 					return zero, trace, NewError(
 						CircuitOpen,
-						operation,
+						plan.operation,
 						errors.New("all route targets are circuit-open"),
 					)
 				}
@@ -608,9 +415,12 @@ func openSessionWithFallback[Request any, Session any](
 				}
 				backoffMillis = delay.Milliseconds()
 			}
-			if preflight != nil {
-				if err := preflight(ctx, target, snapshot); err != nil {
-					attempt := failedAttempt(target, AttemptPhasePreflight, attemptTrigger, err)
+			var prepared *inference.Prepared[Result]
+			if plan.prepare != nil {
+				prepared, err = plan.prepare(ctx, target, plan.snapshot)
+				if err != nil {
+					attempt := failedAttempt(
+						target, AttemptPhasePreflight, attemptTrigger, err)
 					attempt.Number = attemptNumber
 					attempt.BackoffMillis = backoffMillis
 					if r.breaker != nil {
@@ -623,10 +433,14 @@ func openSessionWithFallback[Request any, Session any](
 						totalAttempts >= policy.MaxTotalAttempts {
 						return zero, trace, err
 					}
+					// A preflight failure is a local compiler rejection: it
+					// is deterministic, so it is never retried on the same
+					// target (retryEligible refuses the preflight phase). It
+					// either falls back to another target or stops here.
 					if fallbackEligible(attempt) {
 						next, ok, fallbackErr := nextFallbackTarget(r,
-							ctx, operation, snapshot, clone,
-							attempt, &trace, seen, fallbackNext, false, false, skipPhase,
+							ctx, plan.operation, plan.snapshot, plan.clone,
+							attempt, &trace, seen, plan.fallbackNext, false, false, skipPhase,
 						)
 						if fallbackErr != nil {
 							return zero, trace, fallbackErr
@@ -634,25 +448,16 @@ func openSessionWithFallback[Request any, Session any](
 						if !ok {
 							return zero, trace, err
 						}
-						logRouteAttempt(telemetry.Warn, ctx, operation,
+						logRouteAttempt(telemetry.Warn, ctx, plan.operation,
 							"inference route: falling back to another target",
 							attempt, next, err)
 						target, trigger = next, AttemptTriggerFallback
 						break
 					}
-					if retryEligible(ctx, &policy, retryDecision(
-						operation, AttemptPhasePreflight, attemptTrigger, err, attemptNumber,
-					)) {
-						logRouteAttempt(telemetry.Debug, ctx, operation,
-							"inference route: attempt failed, will retry",
-							attempt, inference.ModelRef{}, err)
-						lastErr = err
-						continue
-					}
 					allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
 					next, ok, fallbackErr := nextFallbackTarget(r,
-						ctx, operation, snapshot, clone,
-						attempt, &trace, seen, fallbackNext, false, allowTransient, skipPhase,
+						ctx, plan.operation, plan.snapshot, plan.clone,
+						attempt, &trace, seen, plan.fallbackNext, false, allowTransient, skipPhase,
 					)
 					if fallbackErr != nil {
 						return zero, trace, fallbackErr
@@ -660,7 +465,7 @@ func openSessionWithFallback[Request any, Session any](
 					if !ok {
 						return zero, trace, err
 					}
-					logRouteAttempt(telemetry.Warn, ctx, operation,
+					logRouteAttempt(telemetry.Warn, ctx, plan.operation,
 						"inference route: falling back after retries exhausted",
 						attempt, next, err)
 					target, trigger = next, AttemptTriggerFallback
@@ -671,9 +476,9 @@ func openSessionWithFallback[Request any, Session any](
 					Outcome: AttemptOutcomeSucceeded, Number: attemptNumber,
 				})
 			}
-			session, err := open(ctx, target, snapshot)
+			result, metadata, err := plan.work(ctx, target, plan.snapshot, prepared)
 			if err != nil {
-				attempt := failedAttempt(target, AttemptPhaseOpen, attemptTrigger, err)
+				attempt := failedAttempt(target, plan.phase, attemptTrigger, err)
 				attempt.Number = attemptNumber
 				attempt.BackoffMillis = backoffMillis
 				if r.breaker != nil {
@@ -687,18 +492,18 @@ func openSessionWithFallback[Request any, Session any](
 					return zero, trace, err
 				}
 				if retryEligible(ctx, &policy, retryDecision(
-					operation, AttemptPhaseOpen, attemptTrigger, err, attemptNumber,
+					plan.operation, plan.phase, attemptTrigger, err, attemptNumber,
 				)) {
-					logRouteAttempt(telemetry.Debug, ctx, operation,
+					logRouteAttempt(telemetry.Debug, ctx, plan.operation,
 						"inference route: attempt failed, will retry",
-						attempt, inference.ModelRef{}, err)
+						attempt, model.ModelRef{}, err)
 					lastErr = err
 					continue
 				}
 				allowTransient := policy.FallbackOnRetryExhausted && attempt.Transient
 				next, ok, fallbackErr := nextFallbackTarget(r,
-					ctx, operation, snapshot, clone,
-					attempt, &trace, seen, fallbackNext, false, allowTransient, skipPhase,
+					ctx, plan.operation, plan.snapshot, plan.clone,
+					attempt, &trace, seen, plan.fallbackNext, false, allowTransient, skipPhase,
 				)
 				if fallbackErr != nil {
 					return zero, trace, fallbackErr
@@ -706,7 +511,7 @@ func openSessionWithFallback[Request any, Session any](
 				if !ok {
 					return zero, trace, err
 				}
-				logRouteAttempt(telemetry.Warn, ctx, operation,
+				logRouteAttempt(telemetry.Warn, ctx, plan.operation,
 					"inference route: falling back after retries exhausted",
 					attempt, next, err)
 				target, trigger = next, AttemptTriggerFallback
@@ -717,12 +522,20 @@ func openSessionWithFallback[Request any, Session any](
 				transition = r.breaker.finish(ctx, key, nil, false)
 			}
 			trace.Attempts = append(trace.Attempts, Attempt{
-				Target: target, Phase: AttemptPhaseOpen, Trigger: attemptTrigger,
-				Outcome: AttemptOutcomeOpened, Number: attemptNumber,
+				Target: target, Phase: plan.phase, Trigger: attemptTrigger,
+				Outcome: plan.outcome, Number: attemptNumber,
 				CircuitTransition: transition,
 			})
 			trace.Executed = target
-			return session, trace, nil
+			if plan.completed &&
+				(metadata.Operation != plan.operation || metadata.Model != target.ID) {
+				return zero, trace, NewError(
+					SelectorContractViolation,
+					plan.operation,
+					errors.New("inference response does not match selected route"),
+				)
+			}
+			return result, trace, nil
 		}
 	}
 }
@@ -736,61 +549,61 @@ func openSessionWithFallback[Request any, Session any](
 func nextFallbackTarget[Request any](
 	r *Router,
 	ctx context.Context,
-	operation inference.Operation,
+	operation model.Operation,
 	snapshot Request,
 	clone func(Request) Request,
 	attempt Attempt,
 	trace *Trace,
-	seen map[inference.ModelRef]struct{},
-	fallbackNext func(context.Context, Request, Attempt) (inference.ModelRef, bool, error),
+	seen map[model.ModelRef]struct{},
+	fallbackNext func(context.Context, Request, Attempt) (model.ModelRef, bool, error),
 	skipEligibility bool,
 	allowTransient bool,
 	skipPhase AttemptPhase,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	if fallbackNext == nil {
-		return inference.ModelRef{}, false, nil
+		return model.ModelRef{}, false, nil
 	}
 	if !skipEligibility {
 		eligible := fallbackEligible(attempt)
 		if !eligible && (!allowTransient || !attempt.Transient) {
-			return inference.ModelRef{}, false, nil
+			return model.ModelRef{}, false, nil
 		}
 	}
 	next, ok, err := fallbackNext(ctx, clone(snapshot), attempt)
 	if err != nil {
 		var routeErr *Error
 		if errors.As(err, &routeErr) {
-			return inference.ModelRef{}, false, err
+			return model.ModelRef{}, false, err
 		}
-		return inference.ModelRef{}, false, NewError(FallbackFailed, operation, err)
+		return model.ModelRef{}, false, NewError(FallbackFailed, operation, err)
 	}
 	if !ok {
-		if next != (inference.ModelRef{}) {
-			return inference.ModelRef{}, false, NewError(
+		if next != (model.ModelRef{}) {
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				errors.New("fallback stop returned a target"),
 			)
 		}
-		return inference.ModelRef{}, false, nil
+		return model.ModelRef{}, false, nil
 	}
 	for {
 		if len(seen) >= maxFallbackTargets {
-			return inference.ModelRef{}, false, NewError(
+			return model.ModelRef{}, false, NewError(
 				FallbackLimitExceeded,
 				operation,
 				fmt.Errorf("%s fallback exceeds %d targets", operation, maxFallbackTargets),
 			)
 		}
 		if err := next.Validate(); err != nil {
-			return inference.ModelRef{}, false, NewError(
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				fmt.Errorf("invalid fallback target: %w", err),
 			)
 		}
 		if _, duplicate := seen[next]; duplicate {
-			return inference.ModelRef{}, false, NewError(
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				errors.New("fallback returned a previously attempted target"),
@@ -798,21 +611,21 @@ func nextFallbackTarget[Request any](
 		}
 		descriptor, err := r.target.InspectModel(next)
 		if err != nil {
-			return inference.ModelRef{}, false, NewError(
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				err,
 			)
 		}
 		if !supportsOperation(descriptor, operation) {
-			return inference.ModelRef{}, false, NewError(
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				errors.New("fallback returned a model without the operation"),
 			)
 		}
-		if descriptor.Lifecycle.Status == inference.ModelStatusRetired {
-			return inference.ModelRef{}, false, NewError(
+		if descriptor.Lifecycle.Status == model.ModelStatusRetired {
+			return model.ModelRef{}, false, NewError(
 				FallbackContractViolation,
 				operation,
 				errors.New("fallback returned a retired model"),
@@ -827,7 +640,7 @@ func nextFallbackTarget[Request any](
 				Outcome: AttemptOutcomeSkipped, Circuit: "open",
 			})
 			if len(seen) >= maxFallbackTargets {
-				return inference.ModelRef{}, false, NewError(
+				return model.ModelRef{}, false, NewError(
 					FallbackLimitExceeded,
 					operation,
 					fmt.Errorf("%s fallback exceeds %d targets", operation, maxFallbackTargets),
@@ -840,19 +653,19 @@ func nextFallbackTarget[Request any](
 			if err != nil {
 				var routeErr *Error
 				if errors.As(err, &routeErr) {
-					return inference.ModelRef{}, false, err
+					return model.ModelRef{}, false, err
 				}
-				return inference.ModelRef{}, false, NewError(FallbackFailed, operation, err)
+				return model.ModelRef{}, false, NewError(FallbackFailed, operation, err)
 			}
 			if !ok {
-				if next != (inference.ModelRef{}) {
-					return inference.ModelRef{}, false, NewError(
+				if next != (model.ModelRef{}) {
+					return model.ModelRef{}, false, NewError(
 						FallbackContractViolation,
 						operation,
 						errors.New("fallback stop returned a target"),
 					)
 				}
-				return inference.ModelRef{}, false, nil
+				return model.ModelRef{}, false, nil
 			}
 			continue
 		}
@@ -868,7 +681,7 @@ func nextFallbackTarget[Request any](
 // drives fallback eligibility. Non-inference errors leave ErrorKind empty,
 // which is never eligible.
 func failedAttempt(
-	target inference.ModelRef,
+	target model.ModelRef,
 	phase AttemptPhase,
 	trigger AttemptTrigger,
 	err error,
@@ -887,7 +700,7 @@ func failedAttempt(
 }
 
 func retryDecision(
-	operation inference.Operation,
+	operation model.Operation,
 	phase AttemptPhase,
 	trigger AttemptTrigger,
 	err error,
@@ -923,7 +736,7 @@ func fallbackEligible(attempt Attempt) bool {
 func selectTarget[Request any](
 	ctx context.Context,
 	target *inference.Assembly,
-	operation inference.Operation,
+	operation model.Operation,
 	snapshot Request,
 	clone func(Request) Request,
 	validate func(Request) error,
@@ -955,7 +768,7 @@ func selectTarget[Request any](
 	if err != nil {
 		return Decision{}, NewError(SelectionFailed, operation, err)
 	}
-	if descriptor.Lifecycle.Status == inference.ModelStatusRetired {
+	if descriptor.Lifecycle.Status == model.ModelStatusRetired {
 		return Decision{}, NewError(
 			SelectorContractViolation,
 			operation,
@@ -992,10 +805,10 @@ func isNilInterface(value any) bool {
 func logRouteAttempt(
 	log func(context.Context, string, ...otellog.KeyValue),
 	ctx context.Context,
-	operation inference.Operation,
+	operation model.Operation,
 	msg string,
 	attempt Attempt,
-	next inference.ModelRef,
+	next model.ModelRef,
 	err error,
 ) {
 	attrs := []otellog.KeyValue{
@@ -1015,7 +828,7 @@ func logRouteAttempt(
 	if attempt.Circuit != "" {
 		attrs = append(attrs, otellog.String("circuit", attempt.Circuit))
 	}
-	if next.ID != (inference.ModelID{}) {
+	if next.ID != (model.ModelID{}) {
 		attrs = append(attrs,
 			otellog.String("next.provider", next.ID.Provider),
 			otellog.String("next.model", next.ID.Name))

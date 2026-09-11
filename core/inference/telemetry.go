@@ -405,3 +405,85 @@ func (s *telemetryTranscriptionSession) Close() error {
 		"inference: transcription session closed before completion"))
 	return err
 }
+
+// The instrument* helpers attach the Assembly's execution instrumentation to a
+// prepared attempt. Instrumentation lives on the handle rather than on the
+// Assembly entry point because a prepared attempt can be executed outside
+// Assembly: route executes the attempt it preflighted, and a host holding a
+// Binding executes the handles that binding produces. Attaching it here keeps
+// one implementation for every execution path, and it measures the provider
+// round trip (transport, decode, response check) that the span describes.
+
+func instrumentGenerateCall(
+	prepared *Prepared[GenerateResponse],
+) *Prepared[GenerateResponse] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (GenerateResponse, error) {
+		ctx, call := startInferenceCall(ctx, OperationGenerate, prepared.model)
+		response, err := inner(ctx)
+		call.stampUsage(&response.Usage)
+		call.finish(response.Metadata, response.Usage, err)
+		return response, err
+	}
+	return prepared
+}
+
+func instrumentGenerateStreamCall(
+	prepared *Prepared[GenerateStream],
+) *Prepared[GenerateStream] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (GenerateStream, error) {
+		ctx, call := startInferenceCall(ctx, OperationGenerate, prepared.model)
+		stream, err := inner(ctx)
+		if err != nil {
+			call.finish(Metadata{}, Usage{}, err)
+			return nil, err
+		}
+		return &telemetryGenerateStream{inner: stream, tel: call}, nil
+	}
+	return prepared
+}
+
+func instrumentEmbedCall(
+	prepared *Prepared[EmbedResponse],
+) *Prepared[EmbedResponse] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (EmbedResponse, error) {
+		ctx, call := startInferenceCall(ctx, OperationEmbed, prepared.model)
+		response, err := inner(ctx)
+		call.recordEmbedUsage(ctx, response.Usage)
+		call.finish(response.Metadata, Usage{}, err)
+		return response, err
+	}
+	return prepared
+}
+
+func instrumentTranscribeCall(
+	prepared *Prepared[TranscriptionResponse],
+) *Prepared[TranscriptionResponse] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (TranscriptionResponse, error) {
+		ctx, call := startInferenceCall(ctx, OperationTranscription, prepared.model)
+		response, err := inner(ctx)
+		call.stampUsage(&response.Usage)
+		call.finish(response.Metadata, response.Usage, err)
+		return response, err
+	}
+	return prepared
+}
+
+func instrumentTranscribeSessionCall(
+	prepared *Prepared[TranscriptionSession],
+) *Prepared[TranscriptionSession] {
+	inner := prepared.run
+	prepared.run = func(ctx context.Context) (TranscriptionSession, error) {
+		ctx, call := startInferenceCall(ctx, OperationTranscription, prepared.model)
+		session, err := inner(ctx)
+		if err != nil {
+			call.finish(Metadata{}, Usage{}, err)
+			return nil, err
+		}
+		return &telemetryTranscriptionSession{inner: session, tel: call}, nil
+	}
+	return prepared
+}

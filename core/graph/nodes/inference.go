@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/inference/route"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
@@ -25,7 +26,7 @@ import (
 type InferenceConfig struct {
 	// Model targets a specific model through the wired Runtime. When
 	// absent the node defers target selection to the wired Router.
-	Model *inference.ModelRef `json:"model,omitempty"`
+	Model *model.ModelRef `json:"model,omitempty"`
 
 	// ModelHint is an optional per-call model preference passed to the
 	// wired Router's generate selection: "provider/name" or a bare model
@@ -230,6 +231,11 @@ type InferenceNodeDeps struct {
 	// The deploy path populates it from the inference assembly's
 	// provider-carried decoders.
 	Extensions map[string]inference.ExtensionDecoder
+
+	// bindings caches the opened drivers of each model a node in this graph
+	// addresses. Inference fills it in: it is a per-node-type detail, not a
+	// host setting, and a nil cache (no assembly wired) means the router path.
+	bindings *inference.BindingCache
 }
 
 // Inference returns the "inference" node type: one Generate call per
@@ -237,6 +243,7 @@ type InferenceNodeDeps struct {
 // node never executes tool calls — finish_reason == tool_calls is
 // flagged onto tool_pending_key and the graph routes onward.
 func Inference(deps InferenceNodeDeps) graph.NodeType[InferenceConfig] {
+	deps.bindings = inference.NewBindingCache(deps.Assembly)
 	return graph.NodeType[InferenceConfig]{
 		Meta: graph.Meta{
 			Desc: "single-shot generation (text, image, audio, video): channel tail in, one assistant message out",
@@ -716,7 +723,13 @@ func executeGenerate(ec graph.ExecutionContext, board *agent.Board, cfg Inferenc
 		if deps.Assembly == nil {
 			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: model configured but no runtime wired")
 		}
-		return deps.Assembly.Generate(ec.Context, *cfg.Model, req)
+		// The node's model is static config and the node outlives the turns
+		// that run through it, so the drivers are opened once and reused.
+		prepared, err := deps.bindings.PrepareGenerate(ec.Context, *cfg.Model, req)
+		if err != nil {
+			return inference.GenerateResponse{}, err
+		}
+		return prepared.Execute(ec.Context)
 	}
 	if deps.Router == nil {
 		return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: no model configured and no router wired")
@@ -749,7 +762,12 @@ func executeGenerateStream(ec graph.ExecutionContext, board *agent.Board, cfg In
 		if deps.Assembly == nil {
 			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: model configured but no runtime wired")
 		}
-		stream, err = deps.Assembly.GenerateStream(ec.Context, *cfg.Model, req)
+		prepared, prepareErr := deps.bindings.PrepareGenerateStream(
+			ec.Context, *cfg.Model, req)
+		if prepareErr != nil {
+			return inference.GenerateResponse{}, prepareErr
+		}
+		stream, err = prepared.Execute(ec.Context)
 	} else {
 		if deps.Router == nil {
 			return inference.GenerateResponse{}, errdefs.NotAvailablef("inference node: no model configured and no router wired")

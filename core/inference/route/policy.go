@@ -11,6 +11,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 var tierPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
@@ -45,10 +46,10 @@ func (s ModelScore) IsZero() bool {
 
 func (s ModelScore) Clone() ModelScore {
 	return ModelScore{
-		Quality:     clonePointer(s.Quality),
-		Economy:     clonePointer(s.Economy),
-		Speed:       clonePointer(s.Speed),
-		Reliability: clonePointer(s.Reliability),
+		Quality:     model.ClonePointer(s.Quality),
+		Economy:     model.ClonePointer(s.Economy),
+		Speed:       model.ClonePointer(s.Speed),
+		Reliability: model.ClonePointer(s.Reliability),
 	}
 }
 
@@ -76,8 +77,8 @@ func (s ModelScore) Validate() error {
 
 // Target is one exact executable model candidate plus route-only signals.
 type Target struct {
-	Model inference.ModelRef `json:"model"`
-	Score ModelScore         `json:"score,omitzero"`
+	Model model.ModelRef `json:"model"`
+	Score ModelScore     `json:"score,omitzero"`
 }
 
 func (t Target) Clone() Target {
@@ -114,7 +115,7 @@ func (p Pool) Validate() error {
 	if len(p.Targets) == 0 {
 		return fmt.Errorf("route tier %q has no targets", p.Tier)
 	}
-	seen := make(map[inference.ModelRef]struct{}, len(p.Targets))
+	seen := make(map[model.ModelRef]struct{}, len(p.Targets))
 	for index, target := range p.Targets {
 		if err := target.Validate(); err != nil {
 			return fmt.Errorf("route tier %q target %d: %w", p.Tier, index, err)
@@ -159,15 +160,7 @@ func (p Policy) Validate() error {
 	if total == 0 {
 		return fmt.Errorf("route policy has no pools")
 	}
-	operations := []struct {
-		operation inference.Operation
-		pools     []Pool
-	}{
-		{operation: inference.OperationGenerate, pools: p.Generate},
-		{operation: inference.OperationEmbed, pools: p.Embed},
-		{operation: inference.OperationTranscription, pools: p.Transcription},
-	}
-	for _, entry := range operations {
+	for _, entry := range p.poolsByOperation() {
 		seen := make(map[Tier]struct{}, len(entry.pools))
 		for index, pool := range entry.pools {
 			if err := pool.Validate(); err != nil {
@@ -184,7 +177,7 @@ func (p Policy) Validate() error {
 		}
 	}
 	if p.Retry != nil {
-		if err := p.Retry.validate(hasPools(p)); err != nil {
+		if err := p.Retry.validate(p.hasPools); err != nil {
 			return err
 		}
 	}
@@ -196,19 +189,41 @@ func (p Policy) Validate() error {
 	return nil
 }
 
-func hasPools(policy Policy) func(inference.Operation) bool {
-	return func(operation inference.Operation) bool {
-		switch operation {
-		case inference.OperationGenerate:
-			return len(policy.Generate) > 0
-		case inference.OperationEmbed:
-			return len(policy.Embed) > 0
-		case inference.OperationTranscription:
-			return len(policy.Transcription) > 0
-		default:
-			return false
+// operationPools pairs one declared operation with the pools the policy
+// configures for it.
+type operationPools struct {
+	operation model.Operation
+	pools     []Pool
+}
+
+// poolsByOperation is the policy's single enumeration of the operation axis:
+// validation and the retry gate both read it, so an operation cannot be
+// checked in one place and forgotten in another. Transcription pools used to
+// be skipped by ValidateFor for exactly that reason.
+// TestPolicyTablesCoverOperationVocabulary pins that the table covers
+// model.Operations().
+func (p Policy) poolsByOperation() []operationPools {
+	return []operationPools{
+		{operation: model.OperationGenerate, pools: p.Generate},
+		{operation: model.OperationEmbed, pools: p.Embed},
+		{operation: model.OperationTranscription, pools: p.Transcription},
+	}
+}
+
+// pools returns the declared pools of one operation; nil when the policy
+// declares none.
+func (p Policy) pools(operation model.Operation) []Pool {
+	for _, entry := range p.poolsByOperation() {
+		if entry.operation == operation {
+			return entry.pools
 		}
 	}
+	return nil
+}
+
+// hasPools reports whether the policy declared pools for operation.
+func (p Policy) hasPools(operation model.Operation) bool {
+	return len(p.pools(operation)) > 0
 }
 
 // RetryConfig is the JSON-only deployment form of RetryPolicies.
@@ -240,16 +255,26 @@ func (c RetryConfig) Clone() RetryConfig {
 	}
 }
 
-func (c RetryConfig) validate(hasPools func(inference.Operation) bool) error {
-	entries := []struct {
-		operation inference.Operation
-		config    *RetryPolicyConfig
-	}{
-		{inference.OperationGenerate, c.Generate},
-		{inference.OperationEmbed, c.Embed},
-		{inference.OperationTranscription, c.Transcription},
+// retryConfigEntry pairs one operation with its configured retry section.
+type retryConfigEntry struct {
+	operation model.Operation
+	config    *RetryPolicyConfig
+}
+
+// byOperation is the retry configuration's enumeration of the operation axis;
+// validate and policies both read it.
+// TestPolicyTablesCoverOperationVocabulary pins that it covers
+// model.Operations().
+func (c RetryConfig) byOperation() []retryConfigEntry {
+	return []retryConfigEntry{
+		{operation: model.OperationGenerate, config: c.Generate},
+		{operation: model.OperationEmbed, config: c.Embed},
+		{operation: model.OperationTranscription, config: c.Transcription},
 	}
-	for _, entry := range entries {
+}
+
+func (c RetryConfig) validate(hasPools func(model.Operation) bool) error {
+	for _, entry := range c.byOperation() {
 		if entry.config == nil {
 			continue
 		}
@@ -269,15 +294,13 @@ func (c RetryConfig) validate(hasPools func(inference.Operation) bool) error {
 
 func (c RetryConfig) policies() (RetryPolicies, error) {
 	var out RetryPolicies
-	var err error
-	if out.Generate, err = c.Generate.policy(); err != nil {
-		return RetryPolicies{}, fmt.Errorf("generate retry policy: %w", err)
-	}
-	if out.Embed, err = c.Embed.policy(); err != nil {
-		return RetryPolicies{}, fmt.Errorf("embed retry policy: %w", err)
-	}
-	if out.Transcription, err = c.Transcription.policy(); err != nil {
-		return RetryPolicies{}, fmt.Errorf("transcription retry policy: %w", err)
+	for _, entry := range c.byOperation() {
+		policy, err := entry.config.policy()
+		if err != nil {
+			return RetryPolicies{}, fmt.Errorf(
+				"%s retry policy: %w", entry.operation, err)
+		}
+		out.set(entry.operation, policy)
 	}
 	return out, nil
 }
@@ -428,14 +451,7 @@ func (p Policy) ValidateFor(assembly *inference.Assembly) error {
 	if err := p.Validate(); err != nil {
 		return err
 	}
-	operations := []struct {
-		operation inference.Operation
-		pools     []Pool
-	}{
-		{operation: inference.OperationGenerate, pools: p.Generate},
-		{operation: inference.OperationEmbed, pools: p.Embed},
-	}
-	for _, entry := range operations {
+	for _, entry := range p.poolsByOperation() {
 		for _, pool := range entry.pools {
 			for _, target := range pool.Targets {
 				descriptor, err := assembly.InspectModel(target.Model)
@@ -448,7 +464,7 @@ func (p Policy) ValidateFor(assembly *inference.Assembly) error {
 						err,
 					)
 				}
-				if descriptor.Lifecycle.Status == inference.ModelStatusRetired {
+				if descriptor.Lifecycle.Status == model.ModelStatusRetired {
 					return fmt.Errorf(
 						"%s tier %q target %q is retired",
 						entry.operation,
@@ -470,7 +486,7 @@ func (p Policy) ValidateFor(assembly *inference.Assembly) error {
 	return nil
 }
 
-func supportsOperation(descriptor inference.ModelDescriptor, operation inference.Operation) bool {
+func supportsOperation(descriptor model.ModelDescriptor, operation model.Operation) bool {
 	return slices.Contains(descriptor.Operations, operation)
 }
 
@@ -483,12 +499,4 @@ func clonePools(pools []Pool) []Pool {
 		clone[index] = pool.Clone()
 	}
 	return clone
-}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	clone := *value
-	return &clone
 }

@@ -89,16 +89,6 @@ const (
 	FieldTranscriptionPrompt                 FieldID = "transcription.prompt"
 	FieldTranscriptionTimestamps             FieldID = "transcription.timestamps"
 	FieldTranscriptionInputFormat            FieldID = "transcription.session.input_format"
-	FieldRealtimeInstructions                FieldID = "realtime.instructions"
-	FieldRealtimeModalities                  FieldID = "realtime.modalities"
-	FieldRealtimeInputAudioFormat            FieldID = "realtime.input_audio_format"
-	FieldRealtimeOutputAudioFormat           FieldID = "realtime.output_audio_format"
-	FieldRealtimeVoice                       FieldID = "realtime.voice"
-	FieldRealtimeTools                       FieldID = "realtime.tools"
-	FieldRealtimeInputText                   FieldID = "realtime.input.text"
-	FieldRealtimeInputAudio                  FieldID = "realtime.input.audio"
-	FieldRealtimeInputVideo                  FieldID = "realtime.input.video"
-	FieldRealtimeInputToolResult             FieldID = "realtime.input.tool_result"
 )
 
 type Disposition string

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 type GenerateSelector interface {
@@ -18,35 +19,54 @@ type GenerateFallbackPolicy interface {
 		context.Context,
 		inference.GenerateRequest,
 		Attempt,
-	) (inference.ModelRef, bool, error)
+	) (model.ModelRef, bool, error)
 }
 
 func (r *Router) Generate(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (inference.GenerateResponse, Trace, error) {
-	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
-	response, trace, err := executeWithFallback(r,
-		ctx,
-		inference.OperationGenerate,
-		request.Clone(),
-		inference.GenerateRequest.Clone,
-		inference.GenerateRequest.Validate,
-		r.selectors.Generate,
-		func(ctx context.Context, snapshot inference.GenerateRequest) (Decision, error) {
-			return r.selectors.Generate.SelectGenerate(ctx, snapshot)
-		},
-		generateFallbackNext(r.selectors.GenerateFallback),
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.GenerateRequest) error {
-			_, err := r.target.ExplainGenerate(ctx, target, snapshot)
-			return err
-		},
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.GenerateRequest) (inference.GenerateResponse, inference.Metadata, error) {
-			response, err := r.target.Generate(ctx, target, snapshot)
-			return response, response.Metadata, err
-		},
-	)
-	recordRoute(ctx, span, inference.OperationGenerate, trace, response.Metadata, err)
+	ctx, span := startRouteSpan(ctx, model.OperationGenerate)
+	response, trace, err := runAttempts(r, ctx,
+		attemptPlan[inference.GenerateRequest, inference.GenerateResponse]{
+			operation: model.OperationGenerate,
+			snapshot:  request.Clone(),
+			clone:     inference.GenerateRequest.Clone,
+			validate:  inference.GenerateRequest.Validate,
+			selector:  r.selectors.Generate,
+			selectRequest: func(
+				ctx context.Context, snapshot inference.GenerateRequest,
+			) (Decision, error) {
+				return r.selectors.Generate.SelectGenerate(ctx, snapshot)
+			},
+			fallbackNext: generateFallbackNext(r.selectors.GenerateFallback),
+			// The preflight binds the target and compiles the request; the
+			// work then executes that very compilation, so a routed attempt
+			// opens and compiles once instead of twice.
+			prepare: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.GenerateRequest,
+			) (*inference.Prepared[inference.GenerateResponse], error) {
+				return r.target.PrepareGenerate(ctx, target, snapshot)
+			},
+			work: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.GenerateRequest,
+				prepared *inference.Prepared[inference.GenerateResponse],
+			) (inference.GenerateResponse, inference.Metadata, error) {
+				response, err := prepared.Execute(ctx)
+				if err != nil {
+					return inference.GenerateResponse{}, inference.Metadata{}, err
+				}
+				return response, response.Metadata, nil
+			},
+			phase:     AttemptPhaseExecute,
+			outcome:   AttemptOutcomeSucceeded,
+			completed: true,
+		})
+	recordRoute(ctx, span, model.OperationGenerate, trace, response.Metadata, err)
 	return response, trace, err
 }
 
@@ -54,36 +74,49 @@ func (r *Router) GenerateStream(
 	ctx context.Context,
 	request inference.GenerateRequest,
 ) (stream inference.GenerateStream, routeTrace Trace, err error) {
-	ctx, span := startRouteSpan(ctx, inference.OperationGenerate)
+	ctx, span := startRouteSpan(ctx, model.OperationGenerate)
 	snapshot := request.Clone()
-	stream, routeTrace, err = openSessionWithFallback(r,
-		ctx,
-		inference.OperationGenerate,
-		snapshot,
-		inference.GenerateRequest.Clone,
-		inference.GenerateRequest.Validate,
-		r.selectors.Generate,
-		func(ctx context.Context, snapshot inference.GenerateRequest) (Decision, error) {
-			return r.selectors.Generate.SelectGenerate(ctx, snapshot)
-		},
-		generateFallbackNext(r.selectors.GenerateFallback),
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.GenerateRequest) error {
-			_, err := r.target.ExplainGenerateStream(ctx, target, snapshot)
-			return err
-		},
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.GenerateRequest) (inference.GenerateStream, error) {
-			return r.target.GenerateStream(ctx, target, snapshot)
-		},
-	)
+	stream, routeTrace, err = runAttempts(r, ctx,
+		attemptPlan[inference.GenerateRequest, inference.GenerateStream]{
+			operation: model.OperationGenerate,
+			snapshot:  snapshot,
+			clone:     inference.GenerateRequest.Clone,
+			validate:  inference.GenerateRequest.Validate,
+			selector:  r.selectors.Generate,
+			selectRequest: func(
+				ctx context.Context, snapshot inference.GenerateRequest,
+			) (Decision, error) {
+				return r.selectors.Generate.SelectGenerate(ctx, snapshot)
+			},
+			fallbackNext: generateFallbackNext(r.selectors.GenerateFallback),
+			prepare: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.GenerateRequest,
+			) (*inference.Prepared[inference.GenerateStream], error) {
+				return r.target.PrepareGenerateStream(ctx, target, snapshot)
+			},
+			work: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.GenerateRequest,
+				prepared *inference.Prepared[inference.GenerateStream],
+			) (inference.GenerateStream, inference.Metadata, error) {
+				stream, err := prepared.Execute(ctx)
+				return stream, inference.Metadata{}, err
+			},
+			phase:   AttemptPhaseOpen,
+			outcome: AttemptOutcomeOpened,
+		})
 	if err != nil {
 		recordRoute(
-			ctx, span, inference.OperationGenerate, routeTrace,
+			ctx, span, model.OperationGenerate, routeTrace,
 			inference.Metadata{}, err,
 		)
 		return stream, routeTrace, err
 	}
 	stream = wrapRouteStream(
-		ctx, span, inference.OperationGenerate, routeTrace, stream)
+		ctx, span, model.OperationGenerate, routeTrace, stream)
 	return stream, routeTrace, err
 }
 
@@ -127,7 +160,7 @@ func (r *Router) selectGenerate(
 	return selectTarget(
 		ctx,
 		r.target,
-		inference.OperationGenerate,
+		model.OperationGenerate,
 		snapshot,
 		inference.GenerateRequest.Clone,
 		inference.GenerateRequest.Validate,
@@ -142,7 +175,7 @@ func (r *Router) selectGenerate(
 // engine; nil disables fallback for the operation.
 func generateFallbackNext(
 	policy GenerateFallbackPolicy,
-) func(context.Context, inference.GenerateRequest, Attempt) (inference.ModelRef, bool, error) {
+) func(context.Context, inference.GenerateRequest, Attempt) (model.ModelRef, bool, error) {
 	if isNilInterface(policy) {
 		return nil
 	}

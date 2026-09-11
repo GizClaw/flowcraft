@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -21,7 +22,7 @@ type TranscribeFallbackPolicy interface {
 		context.Context,
 		inference.TranscriptionRequest,
 		Attempt,
-	) (inference.ModelRef, bool, error)
+	) (model.ModelRef, bool, error)
 }
 
 type TranscriptionSessionSelector interface {
@@ -39,32 +40,41 @@ type TranscriptionSessionFallbackPolicy interface {
 		context.Context,
 		inference.TranscriptionSessionRequest,
 		Attempt,
-	) (inference.ModelRef, bool, error)
+	) (model.ModelRef, bool, error)
 }
 
 func (r *Router) Transcribe(
 	ctx context.Context,
 	request inference.TranscriptionRequest,
 ) (inference.TranscriptionResponse, Trace, error) {
-	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
-	response, trace, err := executeWithFallback(r,
-		ctx,
-		inference.OperationTranscription,
-		request.Clone(),
-		inference.TranscriptionRequest.Clone,
-		inference.TranscriptionRequest.Validate,
-		r.selectors.Transcribe,
-		func(ctx context.Context, snapshot inference.TranscriptionRequest) (Decision, error) {
-			return r.selectors.Transcribe.SelectTranscribe(ctx, snapshot)
-		},
-		transcribeFallbackNext(r.selectors.TranscribeFallback),
-		nil,
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.TranscriptionRequest) (inference.TranscriptionResponse, inference.Metadata, error) {
-			response, err := r.target.Transcribe(ctx, target, snapshot)
-			return response, response.Metadata, err
-		},
-	)
-	recordRoute(ctx, span, inference.OperationTranscription, trace, response.Metadata, err)
+	ctx, span := startRouteSpan(ctx, model.OperationTranscription)
+	response, trace, err := runAttempts(r, ctx,
+		attemptPlan[inference.TranscriptionRequest, inference.TranscriptionResponse]{
+			operation: model.OperationTranscription,
+			snapshot:  request.Clone(),
+			clone:     inference.TranscriptionRequest.Clone,
+			validate:  inference.TranscriptionRequest.Validate,
+			selector:  r.selectors.Transcribe,
+			selectRequest: func(
+				ctx context.Context, snapshot inference.TranscriptionRequest,
+			) (Decision, error) {
+				return r.selectors.Transcribe.SelectTranscribe(ctx, snapshot)
+			},
+			fallbackNext: transcribeFallbackNext(r.selectors.TranscribeFallback),
+			work: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.TranscriptionRequest,
+				_ *inference.Prepared[inference.TranscriptionResponse],
+			) (inference.TranscriptionResponse, inference.Metadata, error) {
+				response, err := r.target.Transcribe(ctx, target, snapshot)
+				return response, response.Metadata, err
+			},
+			phase:     AttemptPhaseExecute,
+			outcome:   AttemptOutcomeSucceeded,
+			completed: true,
+		})
+	recordRoute(ctx, span, model.OperationTranscription, trace, response.Metadata, err)
 	return response, trace, err
 }
 
@@ -76,7 +86,7 @@ func (r *Router) ExplainTranscribe(
 	decision, err := selectTarget(
 		ctx,
 		r.target,
-		inference.OperationTranscription,
+		model.OperationTranscription,
 		snapshot,
 		inference.TranscriptionRequest.Clone,
 		inference.TranscriptionRequest.Validate,
@@ -100,36 +110,49 @@ func (r *Router) TranscribeSession(
 	ctx context.Context,
 	request inference.TranscriptionSessionRequest,
 ) (session inference.TranscriptionSession, routeTrace Trace, err error) {
-	ctx, span := startRouteSpan(ctx, inference.OperationTranscription)
+	ctx, span := startRouteSpan(ctx, model.OperationTranscription)
 	snapshot := request.Clone()
-	session, routeTrace, err = openSessionWithFallback(r,
-		ctx,
-		inference.OperationTranscription,
-		snapshot,
-		inference.TranscriptionSessionRequest.Clone,
-		inference.TranscriptionSessionRequest.Validate,
-		r.selectors.TranscribeSession,
-		func(ctx context.Context, snapshot inference.TranscriptionSessionRequest) (Decision, error) {
-			return r.selectors.TranscribeSession.SelectTranscribeSession(ctx, snapshot)
-		},
-		transcribeSessionFallbackNext(r.selectors.TranscribeSessionFallback),
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.TranscriptionSessionRequest) error {
-			_, err := r.target.ExplainTranscribeSession(ctx, target, snapshot)
-			return err
-		},
-		func(ctx context.Context, target inference.ModelRef, snapshot inference.TranscriptionSessionRequest) (inference.TranscriptionSession, error) {
-			return r.target.TranscribeSession(ctx, target, snapshot)
-		},
-	)
+	session, routeTrace, err = runAttempts(r, ctx,
+		attemptPlan[inference.TranscriptionSessionRequest, inference.TranscriptionSession]{
+			operation: model.OperationTranscription,
+			snapshot:  snapshot,
+			clone:     inference.TranscriptionSessionRequest.Clone,
+			validate:  inference.TranscriptionSessionRequest.Validate,
+			selector:  r.selectors.TranscribeSession,
+			selectRequest: func(
+				ctx context.Context, snapshot inference.TranscriptionSessionRequest,
+			) (Decision, error) {
+				return r.selectors.TranscribeSession.SelectTranscribeSession(ctx, snapshot)
+			},
+			fallbackNext: transcribeSessionFallbackNext(r.selectors.TranscribeSessionFallback),
+			prepare: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.TranscriptionSessionRequest,
+			) (*inference.Prepared[inference.TranscriptionSession], error) {
+				return r.target.PrepareTranscribeSession(ctx, target, snapshot)
+			},
+			work: func(
+				ctx context.Context,
+				target model.ModelRef,
+				snapshot inference.TranscriptionSessionRequest,
+				prepared *inference.Prepared[inference.TranscriptionSession],
+			) (inference.TranscriptionSession, inference.Metadata, error) {
+				session, err := prepared.Execute(ctx)
+				return session, inference.Metadata{}, err
+			},
+			phase:   AttemptPhaseOpen,
+			outcome: AttemptOutcomeOpened,
+		})
 	if err != nil {
 		recordRoute(
-			ctx, span, inference.OperationTranscription, routeTrace,
+			ctx, span, model.OperationTranscription, routeTrace,
 			inference.Metadata{}, err,
 		)
 		return session, routeTrace, err
 	}
 	session = wrapRouteTranscriptionSession(
-		ctx, span, inference.OperationTranscription, routeTrace, session)
+		ctx, span, model.OperationTranscription, routeTrace, session)
 	return session, routeTrace, err
 }
 
@@ -174,7 +197,7 @@ func (r *Router) ExplainTranscribeSession(
 	decision, err := selectTarget(
 		ctx,
 		r.target,
-		inference.OperationTranscription,
+		model.OperationTranscription,
 		snapshot,
 		inference.TranscriptionSessionRequest.Clone,
 		inference.TranscriptionSessionRequest.Validate,
@@ -196,7 +219,7 @@ func (r *Router) ExplainTranscribeSession(
 
 func transcribeFallbackNext(
 	policy TranscribeFallbackPolicy,
-) func(context.Context, inference.TranscriptionRequest, Attempt) (inference.ModelRef, bool, error) {
+) func(context.Context, inference.TranscriptionRequest, Attempt) (model.ModelRef, bool, error) {
 	if isNilInterface(policy) {
 		return nil
 	}
@@ -205,7 +228,7 @@ func transcribeFallbackNext(
 
 func transcribeSessionFallbackNext(
 	policy TranscriptionSessionFallbackPolicy,
-) func(context.Context, inference.TranscriptionSessionRequest, Attempt) (inference.ModelRef, bool, error) {
+) func(context.Context, inference.TranscriptionSessionRequest, Attempt) (model.ModelRef, bool, error) {
 	if isNilInterface(policy) {
 		return nil
 	}

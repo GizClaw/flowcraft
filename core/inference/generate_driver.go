@@ -28,21 +28,47 @@ func (d *generateDriver[Wire, Raw]) Execute(
 	model ModelRef,
 	request GenerateRequest,
 ) (GenerateResponse, error) {
-	start := time.Now()
-	response, report, err := d.pipeline.execute(ctx, model, request)
+	prepared, err := d.Prepare(ctx, model, request)
 	if err != nil {
 		return GenerateResponse{}, err
 	}
-	deriveGenerateUsage(request, &response)
-	// Stamp the call-context envelope the driver never sees: the exact
-	// model (including credential profile) that produced the call and the
-	// wall-clock latency of the producing call. Hosts bucket and enforce
-	// per-model budgets off Usage.Model; without this stamp the field
-	// would be zero for every provider.
-	response.Usage.Model = model
-	response.Usage.LatencyMs = time.Since(start).Milliseconds()
-	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
-	return response, nil
+	return prepared.Execute(ctx)
+}
+
+// Prepare compiles one unary request against model and returns a handle that
+// executes it without compiling again.
+func (d *generateDriver[Wire, Raw]) Prepare(
+	ctx context.Context,
+	model ModelRef,
+	request GenerateRequest,
+) (*Prepared[GenerateResponse], error) {
+	compiled, err := d.pipeline.prepare(ctx, model, request)
+	if err != nil {
+		return nil, err
+	}
+	return newPrepared(
+		model,
+		OperationGenerate,
+		compiled.Report,
+		func(runCtx context.Context) (GenerateResponse, error) {
+			start := time.Now()
+			response, err := d.pipeline.executeCompiled(runCtx, model, request, compiled)
+			if err != nil {
+				return GenerateResponse{}, err
+			}
+			deriveGenerateUsage(request, &response)
+			// Stamp the call-context envelope the driver never sees: the
+			// exact model (including credential profile) that produced the
+			// call and the wall-clock latency of the producing call. Hosts
+			// bucket and enforce per-model budgets off Usage.Model; without
+			// this stamp the field would be zero for every provider.
+			response.Usage.Model = model
+			response.Usage.LatencyMs = time.Since(start).Milliseconds()
+			response.Metadata = mergeProviderIDs(
+				compiled.Report.Metadata(model), response.Metadata)
+			return response, nil
+		},
+	), nil
 }
 
 type embedDriver[Wire, Raw any] struct {
@@ -64,13 +90,39 @@ func (d *embedDriver[Wire, Raw]) Execute(
 	model ModelRef,
 	request EmbedRequest,
 ) (EmbedResponse, error) {
-	response, report, err := d.pipeline.execute(ctx, model, request)
+	prepared, err := d.Prepare(ctx, model, request)
 	if err != nil {
 		return EmbedResponse{}, err
 	}
-	response.Usage.ItemCount = len(response.Embeddings)
-	response.Metadata = mergeProviderIDs(report.Metadata(model), response.Metadata)
-	return response, nil
+	return prepared.Execute(ctx)
+}
+
+// Prepare compiles one embedding request against model and returns a handle
+// that executes it without compiling again.
+func (d *embedDriver[Wire, Raw]) Prepare(
+	ctx context.Context,
+	model ModelRef,
+	request EmbedRequest,
+) (*Prepared[EmbedResponse], error) {
+	compiled, err := d.pipeline.prepare(ctx, model, request)
+	if err != nil {
+		return nil, err
+	}
+	return newPrepared(
+		model,
+		OperationEmbed,
+		compiled.Report,
+		func(runCtx context.Context) (EmbedResponse, error) {
+			response, err := d.pipeline.executeCompiled(runCtx, model, request, compiled)
+			if err != nil {
+				return EmbedResponse{}, err
+			}
+			response.Usage.ItemCount = len(response.Embeddings)
+			response.Metadata = mergeProviderIDs(
+				compiled.Report.Metadata(model), response.Metadata)
+			return response, nil
+		},
+	), nil
 }
 
 // mergeProviderIDs keeps provider-reported request/response identifiers

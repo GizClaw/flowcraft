@@ -1,8 +1,8 @@
-package inference
+package model
 
 import (
 	"encoding/json"
-	"maps"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -44,16 +44,93 @@ func decodePatch(t *testing.T, raw string) *CapabilitiesPatch {
 	return &patch
 }
 
-func decodeReasoningPatch(t *testing.T, raw string) *ReasoningPatch {
-	t.Helper()
-	var patch ReasoningPatch
-	if err := json.Unmarshal([]byte(raw), &patch); err != nil {
-		t.Fatalf("decode reasoning patch: %v", err)
+func TestModelCapabilitiesValidate(t *testing.T) {
+	capabilities := ModelCapabilities{
+		Inputs:  []message.PartKind{message.PartText, message.PartImage},
+		Outputs: []message.PartKind{message.PartText},
 	}
-	if err := patch.Validate(); err != nil {
-		t.Fatalf("validate reasoning patch: %v", err)
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("valid capabilities: %v", err)
 	}
-	return &patch
+
+	for _, outputs := range [][]message.PartKind{
+		{message.PartToolCall},
+		{message.PartFile, message.PartImage},
+		{message.PartText, message.PartText},
+		{message.PartImage, message.PartText, message.PartImage},
+	} {
+		if err := (ModelCapabilities{Outputs: outputs}).Validate(); err == nil {
+			t.Fatalf("outputs %v unexpectedly accepted", outputs)
+		}
+	}
+
+	for _, inputs := range [][]message.PartKind{
+		{message.PartText, message.PartText},
+		{"unknown_kind"},
+	} {
+		if err := (ModelCapabilities{Inputs: inputs}).Validate(); err == nil {
+			t.Fatalf("inputs %v unexpectedly accepted", inputs)
+		}
+	}
+
+	for _, reasoning := range []ReasoningKind{
+		ReasoningAlways,
+		ReasoningToggle,
+	} {
+		if err := (ModelCapabilities{
+			Reasoning: ReasoningCapability{Kind: reasoning},
+		}).Validate(); err != nil {
+			t.Fatalf("reasoning %q: %v", reasoning, err)
+		}
+	}
+	if err := (ModelCapabilities{
+		Reasoning: ReasoningCapability{Kind: "sometimes"},
+	}).Validate(); err == nil {
+		t.Fatal("unknown reasoning kind unexpectedly accepted")
+	}
+}
+
+func TestModelCapabilitiesCloneDoesNotShareSlices(t *testing.T) {
+	original := ModelCapabilities{
+		Inputs:  []message.PartKind{message.PartText, message.PartImage},
+		Outputs: []message.PartKind{message.PartText},
+	}
+	clone := original.Clone()
+	clone.Inputs[0] = message.PartAudio
+	clone.Outputs[0] = message.PartImage
+	if original.Inputs[0] != message.PartText || original.Outputs[0] != message.PartText {
+		t.Fatalf(
+			"clone shares capability slices: original = %+v",
+			original,
+		)
+	}
+}
+
+func TestModelCapabilitiesBuilders(t *testing.T) {
+	capabilities := ModelCapabilities{}.
+		WithInputs(message.PartText, message.PartImage).
+		WithInputs(message.PartData).
+		WithOutputs(message.PartText).
+		WithReasoning(ReasoningAlways).
+		WithHostedWebSearch()
+	wantInputs := []message.PartKind{
+		message.PartText,
+		message.PartImage,
+		message.PartData,
+	}
+	if !reflect.DeepEqual(capabilities.Inputs, wantInputs) {
+		t.Fatalf("inputs = %v, want %v", capabilities.Inputs, wantInputs)
+	}
+	if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) {
+		t.Fatalf("outputs = %v", capabilities.Outputs)
+	}
+	if capabilities.Reasoning.Kind != ReasoningAlways ||
+		!capabilities.HostedWebSearch {
+		t.Fatalf("capabilities = %+v", capabilities)
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
 }
 
 func TestCapabilitiesPatchAbsentLeavesInherit(t *testing.T) {
@@ -93,37 +170,6 @@ func TestCapabilitiesPatchWholeDeclarationOverZeroBase(t *testing.T) {
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("merged capabilities invalid: %v", err)
-	}
-}
-
-func TestReasoningPatchSubLeavesAndLegacyString(t *testing.T) {
-	base := reasoningPatchCapabilities().Reasoning
-
-	kindOnly := decodeReasoningPatch(t, `"toggle"`)
-	got := kindOnly.Apply(base)
-	if got.Kind != ReasoningToggle || len(got.EffortMap) != 5 {
-		t.Fatalf("legacy string must keep base map, got kind %q map %v", got.Kind, got.EffortMap)
-	}
-
-	mapOnly := decodeReasoningPatch(t, `{"effort_map":{}}`)
-	got = mapOnly.Apply(base)
-	if got.Kind != ReasoningToggle {
-		t.Fatalf("kind = %q, want inherited toggle", got.Kind)
-	}
-	if len(got.EffortMap) != 0 {
-		t.Fatalf("effort_map: {} must clear the base dial, got %v", got.EffortMap)
-	}
-
-	nonePatch := decodeReasoningPatch(t, `""`)
-	if nonePatch.Kind == nil || *nonePatch.Kind != ReasoningNone {
-		t.Fatalf("legacy empty string must mean kind none, got %#v", nonePatch.Kind)
-	}
-	got = nonePatch.Apply(base)
-	if got.Kind != ReasoningNone || len(got.EffortMap) != 0 {
-		t.Fatalf("none patch = %#v, want kind none with no effort map", got)
-	}
-	if err := got.Validate(); err != nil {
-		t.Fatalf("removed reasoning must stay valid, got %v", err)
 	}
 }
 
@@ -191,71 +237,56 @@ func TestCustomEmbedDimensionsLeaf(t *testing.T) {
 	}
 }
 
-func TestReasoningCapabilityEmptyMapSemantics(t *testing.T) {
-	empty := map[ReasoningEffort]string{}
-	for name, capability := range map[string]ReasoningCapability{
-		"none without map":    {Kind: ReasoningNone},
-		"none with empty map": {Kind: ReasoningNone, EffortMap: empty},
-		"toggle with empty map": {
-			Kind:      ReasoningToggle,
-			EffortMap: empty,
+func TestModelCapabilitiesLegacyReasoningJSON(t *testing.T) {
+	var capabilities ModelCapabilities
+	if err := json.Unmarshal([]byte(`{
+		"inputs": ["text"],
+		"outputs": ["text"],
+		"reasoning": "toggle"
+	}`), &capabilities); err != nil {
+		t.Fatalf("legacy capabilities decode: %v", err)
+	}
+	if capabilities.Reasoning.Kind != ReasoningToggle ||
+		len(capabilities.Reasoning.EffortMap) != 0 {
+		t.Fatalf("legacy capabilities decode = %+v", capabilities.Reasoning)
+	}
+	if err := capabilities.Validate(); err != nil {
+		t.Fatalf("legacy capabilities Validate: %v", err)
+	}
+	encoded, err := json.Marshal(capabilities)
+	if err != nil {
+		t.Fatalf("legacy capabilities marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"reasoning":"toggle"`) {
+		t.Fatalf("legacy capabilities marshal = %s, want string reasoning", encoded)
+	}
+}
+
+func TestModelCapabilitiesBuildersDoNotAlias(t *testing.T) {
+	base := ModelCapabilities{}.WithInputs(message.PartText)
+	extended := base.WithInputs(message.PartImage)
+	if len(base.Inputs) != 1 || base.Inputs[0] != message.PartText {
+		t.Fatalf("base inputs mutated by builder: %v", base.Inputs)
+	}
+	_ = extended
+}
+
+func TestModelCapabilitiesCloneDoesNotAliasEffortMap(t *testing.T) {
+	capabilities := ModelCapabilities{
+		Reasoning: ReasoningCapability{
+			Kind: ReasoningToggle,
+			EffortMap: map[ReasoningEffort]string{
+				ReasoningMinimal: "low",
+				ReasoningLow:     "low",
+				ReasoningMedium:  "high",
+				ReasoningHigh:    "high",
+				ReasoningXHigh:   "max",
+			},
 		},
-	} {
-		if err := capability.Validate(); err != nil {
-			t.Fatalf("%s unexpectedly invalid: %v", name, err)
-		}
 	}
-}
-
-func TestModelLimitsBuilders(t *testing.T) {
-	got := (ModelLimits{}).
-		WithMaxInputTokens(1_000_000).
-		WithMaxOutputTokens(128_000)
-	if in, out := got.Values(); in != 1_000_000 || out != 128_000 {
-		t.Fatalf("values = %d/%d, want 1000000/128000", in, out)
+	clone := capabilities.Clone()
+	clone.Reasoning.EffortMap[ReasoningLow] = "max"
+	if got := capabilities.Reasoning.EffortMap[ReasoningLow]; got != "low" {
+		t.Fatalf("clone mutated original effort map: low = %q, want low", got)
 	}
-	if err := got.Validate(); err != nil {
-		t.Fatalf("validate: %v", err)
-	}
-	zero := (ModelLimits{}).WithMaxInputTokens(0)
-	if in, _ := zero.Values(); in != 0 {
-		t.Fatalf("non-positive input must stay undeclared, got %d", in)
-	}
-	one := (ModelLimits{}).WithMaxInputTokens(1)
-	if in, _ := one.Values(); in != 1 {
-		t.Fatalf("positive input must be declared, got %d", in)
-	}
-}
-
-func TestReasoningPatchJSONRoundTrip(t *testing.T) {
-	for _, raw := range []string{
-		`"toggle"`,
-		`"always"`,
-		`{"kind":"toggle","effort_map":{"minimal":"minimal","low":"low","medium":"medium","high":"high","xhigh":"xhigh"}}`,
-	} {
-		var patch ReasoningPatch
-		if err := json.Unmarshal([]byte(raw), &patch); err != nil {
-			t.Fatalf("decode %s: %v", raw, err)
-		}
-		encoded, err := json.Marshal(patch)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		var decoded ReasoningPatch
-		if err := json.Unmarshal(encoded, &decoded); err != nil {
-			t.Fatalf("re-decode %s: %v", encoded, err)
-		}
-		if (decoded.Kind == nil) != (patch.Kind == nil) ||
-			(decoded.Kind != nil && *decoded.Kind != *patch.Kind) ||
-			!maps.Equal(nonNilMap(decoded.EffortMap), nonNilMap(patch.EffortMap)) {
-			t.Fatalf("round trip %s = %#v, want %#v", raw, decoded, patch)
-		}
-	}
-}
-
-func nonNilMap(m *map[ReasoningEffort]string) map[ReasoningEffort]string {
-	if m == nil {
-		return map[ReasoningEffort]string{}
-	}
-	return *m
 }

@@ -7,10 +7,11 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 type GenerateCompileParitySuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.GenerateRequest
 	Unary   inference.GenerateDriver
 	Stream  inference.GenerateStreamDriver
@@ -66,7 +67,7 @@ func hasDecision(decisions []inference.Decision, field inference.FieldID) bool {
 }
 
 type GenerateStreamSuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.GenerateRequest
 	Driver  inference.GenerateStreamDriver
 
@@ -97,7 +98,7 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 		t.Fatalf("Explain: %v", err)
 	}
 	if suite.TransportCalls() != before ||
-		explanation.Operation != inference.OperationGenerate ||
+		explanation.Operation != model.OperationGenerate ||
 		len(explanation.Decisions) == 0 {
 		t.Fatalf("Explain performed I/O or lost decisions: %+v", explanation)
 	}
@@ -133,7 +134,7 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 		t.Fatalf("Result: %v", err)
 	}
 	if response.Metadata.Model != suite.Model.ID ||
-		response.Metadata.Operation != inference.OperationGenerate ||
+		response.Metadata.Operation != model.OperationGenerate ||
 		len(response.Metadata.Decisions) == 0 {
 		t.Fatalf("Result metadata = %+v", response.Metadata)
 	}
@@ -167,7 +168,7 @@ func RunGenerateStream(t *testing.T, suite GenerateStreamSuite) {
 // cleanly mid-stream: Next surfaces the error, Result carries the same
 // failure, and Close remains usable afterwards.
 type GenerateStreamFailureSuite struct {
-	Model   inference.ModelRef
+	Model   model.ModelRef
 	Request func() inference.GenerateRequest
 	Driver  inference.GenerateStreamDriver
 
@@ -192,7 +193,7 @@ func RunGenerateStreamFailure(t *testing.T, suite GenerateStreamFailureSuite) {
 		t.Fatalf("Explain: %v", err)
 	}
 	if suite.TransportCalls() != before ||
-		explanation.Operation != inference.OperationGenerate ||
+		explanation.Operation != model.OperationGenerate ||
 		len(explanation.Decisions) == 0 {
 		t.Fatalf("Explain performed I/O or lost decisions: %+v", explanation)
 	}

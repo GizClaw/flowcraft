@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -28,9 +29,9 @@ import (
 // assembly is the same inference assembly the router executes against; it may
 // be nil to disable capability filtering (order-only selection).
 func (p Policy) Selectors(assembly *inference.Assembly) Selectors {
-	generate := newPolicyRoute(inference.OperationGenerate, p.Generate, assembly)
-	embed := newPolicyRoute(inference.OperationEmbed, p.Embed, assembly)
-	transcribe := newPolicyRoute(inference.OperationTranscription, p.Transcription, assembly)
+	generate := newPolicyRoute(model.OperationGenerate, p.Generate, assembly)
+	embed := newPolicyRoute(model.OperationEmbed, p.Embed, assembly)
+	transcribe := newPolicyRoute(model.OperationTranscription, p.Transcription, assembly)
 	return Selectors{
 		Generate:                  generate,
 		GenerateFallback:          generate,
@@ -46,23 +47,23 @@ func (p Policy) Selectors(assembly *inference.Assembly) Selectors {
 // policyRoute implements one operation's selector and fallback policy over the
 // policy's declared target order.
 type policyRoute struct {
-	operation inference.Operation
+	operation model.Operation
 	targets   []policyTarget
 	target    *inference.Assembly
 }
 
 type policyTarget struct {
 	tier  Tier
-	model inference.ModelRef
+	model model.ModelRef
 }
 
 func newPolicyRoute(
-	operation inference.Operation,
+	operation model.Operation,
 	pools []Pool,
 	assembly *inference.Assembly,
 ) *policyRoute {
 	route := &policyRoute{operation: operation, target: assembly}
-	seen := make(map[inference.ModelRef]struct{})
+	seen := make(map[model.ModelRef]struct{})
 	for _, pool := range pools {
 		for _, target := range pool.Targets {
 			if _, ok := seen[target.Model]; ok {
@@ -106,7 +107,7 @@ func (r *policyRoute) selectTarget() (Decision, error) {
 func (r *policyRoute) nextTarget(
 	hint string,
 	attempt Attempt,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	order := r.effectiveOrder(hint)
 	for index, target := range order {
 		if target.model != attempt.Target {
@@ -115,9 +116,9 @@ func (r *policyRoute) nextTarget(
 		if index+1 < len(order) {
 			return order[index+1].model, true, nil
 		}
-		return inference.ModelRef{}, false, nil
+		return model.ModelRef{}, false, nil
 	}
-	return inference.ModelRef{}, false, nil
+	return model.ModelRef{}, false, nil
 }
 
 // effectiveOrder returns the fallback order for one request: when the
@@ -247,7 +248,7 @@ func (r *policyRoute) hintTarget(hint string) *policyTarget {
 // until every provider publishes capabilities, and preflight remains the
 // final arbiter for undeclared models.
 func (r *policyRoute) supportsOutputs(
-	model inference.ModelRef,
+	model model.ModelRef,
 	requested []message.PartKind,
 ) (bool, error) {
 	if r.target == nil || len(requested) == 0 {
@@ -273,7 +274,7 @@ func (r *policyRoute) NextGenerate(
 	_ context.Context,
 	request inference.GenerateRequest,
 	attempt Attempt,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	return r.nextTarget(request.ModelHint, attempt)
 }
 
@@ -288,7 +289,7 @@ func (r *policyRoute) NextEmbed(
 	_ context.Context,
 	_ inference.EmbedRequest,
 	attempt Attempt,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	return r.nextTarget("", attempt)
 }
 
@@ -303,7 +304,7 @@ func (r *policyRoute) NextTranscribe(
 	_ context.Context,
 	_ inference.TranscriptionRequest,
 	attempt Attempt,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	return r.nextTarget("", attempt)
 }
 
@@ -318,6 +319,6 @@ func (r *policyRoute) NextTranscribeSession(
 	_ context.Context,
 	_ inference.TranscriptionSessionRequest,
 	attempt Attempt,
-) (inference.ModelRef, bool, error) {
+) (model.ModelRef, bool, error) {
 	return r.nextTarget("", attempt)
 }
