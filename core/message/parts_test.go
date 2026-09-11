@@ -36,7 +36,7 @@ func TestContentRoundTripsEveryCanonicalPart(t *testing.T) {
 			message.FilePart{URI: "s3://bucket/document.pdf", MediaType: "application/pdf", Name: "document.pdf"},
 			message.DataPart{MediaType: "application/json", Value: json.RawMessage(`{"answer":42}`)},
 			message.ToolCallPart{Call: call},
-			message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "found"}},
+			message.ToolResultPart{Result: message.NewTextToolResult("call-1", "found")},
 			message.ReasoningPart{Text: "let me think", Signature: "sig-1"},
 		},
 	}
@@ -133,7 +133,7 @@ func TestMessageValidationRoles(t *testing.T) {
 	toolResult := message.Message{
 		Role: message.RoleTool,
 		Content: message.Content{Parts: []message.Part{
-			message.ToolResultPart{Result: message.ToolResult{CallID: "c1", Content: "ok"}},
+			message.ToolResultPart{Result: message.NewTextToolResult("c1", "ok")},
 		}},
 	}
 	if err := toolResult.Validate(); err != nil {
@@ -360,8 +360,8 @@ func TestNormalizePart(t *testing.T) {
 		{"tool_call", message.ToolCallPart{Call: call}, &message.ToolCallPart{Call: call}},
 		{
 			"tool_result",
-			message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "ok"}},
-			&message.ToolResultPart{Result: message.ToolResult{CallID: "call-1", Content: "ok"}},
+			message.ToolResultPart{Result: message.NewTextToolResult("call-1", "ok")},
+			&message.ToolResultPart{Result: message.NewTextToolResult("call-1", "ok")},
 		},
 		{"reasoning", message.ReasoningPart{Text: "thinking"}, &message.ReasoningPart{Text: "thinking"}},
 	}
@@ -434,5 +434,67 @@ func TestPartKindValidate(t *testing.T) {
 	}
 	if err := (message.PartKind("audio_cassette")).Validate(); err == nil {
 		t.Fatal("unknown kind unexpectedly accepted")
+	}
+}
+
+func TestNewJSONContentCarriesObjectsAsData(t *testing.T) {
+	content, err := message.NewJSONContent([]byte("  {\"answer\":42}\n"))
+	if err != nil {
+		t.Fatalf("NewJSONContent: %v", err)
+	}
+	if len(content.Parts) != 1 {
+		t.Fatalf("parts = %d, want 1", len(content.Parts))
+	}
+	data, ok := content.Parts[0].(message.DataPart)
+	if !ok {
+		t.Fatalf("part = %T, want message.DataPart", content.Parts[0])
+	}
+	if data.MediaType != "application/json" {
+		t.Fatalf("media type = %q, want application/json", data.MediaType)
+	}
+	if string(data.Value) != `{"answer":42}` {
+		t.Fatalf("value = %s, want the trimmed object", data.Value)
+	}
+
+	for name, payload := range map[string]string{
+		"array":   `[1,2]`,
+		"scalar":  `42`,
+		"garbage": `not json`,
+		"empty":   ``,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := message.NewJSONContent([]byte(payload)); err == nil {
+				t.Fatalf("NewJSONContent(%q) succeeded, want rejection", payload)
+			}
+		})
+	}
+}
+
+func TestMessageCloneDeepCopiesToolResultParts(t *testing.T) {
+	source, err := media.NewImageBytes([]byte{1, 2, 3}, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	original := message.Message{
+		Role: message.RoleTool,
+		Content: message.Content{Parts: []message.Part{
+			message.ToolResultPart{Result: message.NewToolResult("c1",
+				message.Content{Parts: []message.Part{
+					message.TextPart{Text: "found"},
+					message.ImagePart{Source: source},
+				}})},
+		}},
+	}
+
+	clone := original.Clone()
+	cloned, ok := clone.Content.Parts[0].(message.ToolResultPart)
+	if !ok {
+		t.Fatalf("cloned part = %T, want message.ToolResultPart", clone.Content.Parts[0])
+	}
+	cloned.Result.Content.Parts[0] = message.TextPart{Text: "rewritten"}
+
+	kept := original.Content.Parts[0].(message.ToolResultPart)
+	if got := kept.Result.Content.Parts[0].(message.TextPart).Text; got != "found" {
+		t.Fatalf("original text = %q, want the clone to leave it untouched", got)
 	}
 }

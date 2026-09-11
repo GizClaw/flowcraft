@@ -134,10 +134,10 @@ func filterTargets(targets []sdkdelegation.Target) []sdkdelegation.Target {
 	return valid
 }
 
-func (delegateTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (delegateTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	var args delegateArgs
 	if err := decodeStrict(arguments, &args); err != nil {
-		return "", errdefs.Validationf("%s: parse arguments: %v", sdkdelegation.ToolName, err)
+		return message.Content{}, errdefs.Validationf("%s: parse arguments: %v", sdkdelegation.ToolName, err)
 	}
 	metadata := cloneMetadata(args.Metadata)
 	if args.Note != nil {
@@ -153,27 +153,27 @@ func (delegateTool) Execute(ctx context.Context, arguments string) (string, erro
 		Metadata: metadata,
 	}
 	if err := request.Validate(); err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	service, err := serviceFromContext(ctx)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	result, err := service.Delegate(ctx, request)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	if err := result.Validate(); err != nil {
-		return "", errdefs.Internal(fmt.Errorf("%s: service returned invalid response: %w", sdkdelegation.ToolName, err))
+		return message.Content{}, errdefs.Internal(fmt.Errorf("%s: service returned invalid response: %w", sdkdelegation.ToolName, err))
 	}
 	switch args.Mode {
 	case sdkdelegation.ModeSync:
 		if !result.Status.Terminal() {
-			return "", errdefs.Internalf("%s: sync response is not terminal: %q", sdkdelegation.ToolName, result.Status)
+			return message.Content{}, errdefs.Internalf("%s: sync response is not terminal: %q", sdkdelegation.ToolName, result.Status)
 		}
 	case sdkdelegation.ModeAsync:
 		if result.Status != sdkdelegation.StatusAccepted {
-			return "", errdefs.Internalf("%s: %s response is not accepted: %q", sdkdelegation.ToolName, args.Mode, result.Status)
+			return message.Content{}, errdefs.Internalf("%s: %s response is not accepted: %q", sdkdelegation.ToolName, args.Mode, result.Status)
 		}
 	}
 	return encodeResponse(result)
@@ -187,24 +187,24 @@ func (statusTool) Definition() message.ToolDefinition {
 	).Required("delegation_id").DisallowAdditionalProperties().Build()
 }
 
-func (statusTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (statusTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	var args statusArgs
 	if err := decodeStrict(arguments, &args); err != nil {
-		return "", errdefs.Validationf("%s: parse arguments: %v", StatusToolName, err)
+		return message.Content{}, errdefs.Validationf("%s: parse arguments: %v", StatusToolName, err)
 	}
 	if strings.TrimSpace(args.DelegationID) == "" {
-		return "", errdefs.Validationf("%s: delegation_id must be non-empty", StatusToolName)
+		return message.Content{}, errdefs.Validationf("%s: delegation_id must be non-empty", StatusToolName)
 	}
 	service, err := serviceFromContext(ctx)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	result, err := service.Get(ctx, args.DelegationID)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	if err := result.Validate(); err != nil {
-		return "", errdefs.Internal(fmt.Errorf("%s: service returned invalid response: %w", StatusToolName, err))
+		return message.Content{}, errdefs.Internal(fmt.Errorf("%s: service returned invalid response: %w", StatusToolName, err))
 	}
 	return encodeResponse(result)
 }
@@ -216,24 +216,24 @@ func (t targetsTool) Definition() message.ToolDefinition {
 	).DisallowAdditionalProperties().Build()
 }
 
-func (t targetsTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (t targetsTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	if err := rejectUnexpectedArguments(arguments); err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	if t.directory == nil {
-		return "", errdefs.NotAvailablef("%s: no directory wired", TargetsToolName)
+		return message.Content{}, errdefs.NotAvailablef("%s: no directory wired", TargetsToolName)
 	}
 	targets, err := t.directory.List(ctx)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	raw, err := json.Marshal(struct {
 		Targets []sdkdelegation.Target `json:"targets"`
 	}{Targets: filterTargets(targets)})
 	if err != nil {
-		return "", errdefs.Internal(fmt.Errorf("%s: encode targets: %w", TargetsToolName, err))
+		return message.Content{}, errdefs.Internal(fmt.Errorf("%s: encode targets: %w", TargetsToolName, err))
 	}
-	return string(raw), nil
+	return message.NewJSONContent(raw)
 }
 
 // rejectUnexpectedArguments accepts the empty string, JSON null, and the
@@ -269,7 +269,7 @@ func serviceFromContext(ctx context.Context) (sdkdelegation.Service, error) {
 	return service, nil
 }
 
-func encodeResponse(result sdkdelegation.Response) (string, error) {
+func encodeResponse(result sdkdelegation.Response) (message.Content, error) {
 	raw, err := json.Marshal(response{
 		DelegationID: result.ID,
 		Status:       result.Status,
@@ -278,9 +278,9 @@ func encodeResponse(result sdkdelegation.Response) (string, error) {
 		Metadata:     cloneMetadata(result.Metadata),
 	})
 	if err != nil {
-		return "", errdefs.Internal(fmt.Errorf("delegation tools: encode response: %w", err))
+		return message.Content{}, errdefs.Internal(fmt.Errorf("delegation tools: encode response: %w", err))
 	}
-	return string(raw), nil
+	return message.NewJSONContent(raw)
 }
 
 func decodeStrict(arguments string, out any) error {

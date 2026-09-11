@@ -22,11 +22,8 @@ func Concurrency(limit int) tool.Middleware {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
-				return message.ToolResult{
-					CallID:  call.ID,
-					Content: fmt.Sprintf("tool %q failed to acquire execution slot: %v", call.Name, ctx.Err()),
-					IsError: true,
-				}
+				return message.NewErrorToolResult(call.ID,
+					fmt.Sprintf("tool %q failed to acquire execution slot: %v", call.Name, ctx.Err()))
 			}
 			return next(ctx, call)
 		}

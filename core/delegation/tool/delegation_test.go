@@ -22,6 +22,20 @@ type toolTestSource struct {
 	tools []tool.Tool
 }
 
+// dataJSON returns the JSON object a structured tool result carries. The
+// delegation tools answer with a data part, not a JSON string.
+func dataJSON(t *testing.T, content message.Content) []byte {
+	t.Helper()
+	if len(content.Parts) != 1 {
+		t.Fatalf("content parts = %d, want 1", len(content.Parts))
+	}
+	data, ok := content.Parts[0].(message.DataPart)
+	if !ok {
+		t.Fatalf("content part = %T, want message.DataPart", content.Parts[0])
+	}
+	return data.Value
+}
+
 func (s toolTestSource) Tools() []tool.Tool         { return s.tools }
 func (s toolTestSource) LazyTools() []tool.LazyTool { return nil }
 
@@ -170,7 +184,7 @@ func TestDelegateExecuteModesAndNoteMetadata(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Execute: %v", err)
 			}
-			if got != test.want {
+			if got := string(dataJSON(t, got)); got != test.want {
 				t.Fatalf("output = %s, want %s", got, test.want)
 			}
 		})
@@ -245,15 +259,15 @@ func TestDelegationStatusMapsEveryStatus(t *testing.T) {
 				t.Fatalf("Execute: %v", err)
 			}
 			var got map[string]any
-			if err := json.Unmarshal([]byte(output), &got); err != nil {
+			if err := json.Unmarshal(dataJSON(t, output), &got); err != nil {
 				t.Fatal(err)
 			}
 			if got["delegation_id"] != "job-1" || got["status"] != string(status) {
-				t.Fatalf("output = %s", output)
+				t.Fatalf("output = %s", dataJSON(t, output))
 			}
 			for _, forbidden := range []string{"card", "board", "claim"} {
 				if _, found := got[forbidden]; found {
-					t.Fatalf("output exposes %q: %s", forbidden, output)
+					t.Fatalf("output exposes %q: %s", forbidden, dataJSON(t, output))
 				}
 			}
 		})
@@ -342,11 +356,11 @@ func TestTargetsToolListsCurrentTargets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(out, `"billing"`) || !strings.Contains(out, `"technical"`) {
-		t.Fatalf("output = %s, want both targets", out)
+	if rendered := string(dataJSON(t, out)); !strings.Contains(rendered, `"billing"`) || !strings.Contains(rendered, `"technical"`) {
+		t.Fatalf("output = %s, want both targets", rendered)
 	}
-	if !strings.Contains(out, `"modes"`) {
-		t.Fatalf("output = %s, want mode info", out)
+	if !strings.Contains(string(dataJSON(t, out)), `"modes"`) {
+		t.Fatalf("output = %s, want mode info", dataJSON(t, out))
 	}
 }
 
@@ -364,8 +378,8 @@ func TestTargetsToolAcceptsNoArgumentForms(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Execute(%q): %v", arguments, err)
 			}
-			if !strings.Contains(out, `"billing"`) {
-				t.Fatalf("output = %s, want billing", out)
+			if !strings.Contains(string(dataJSON(t, out)), `"billing"`) {
+				t.Fatalf("output = %s, want billing", dataJSON(t, out))
 			}
 		})
 	}

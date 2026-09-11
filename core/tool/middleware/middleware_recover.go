@@ -24,11 +24,8 @@ func Recover() tool.Middleware {
 						otellog.String(telemetry.AttrToolName, call.Name),
 						otellog.String(telemetry.AttrToolCallID, call.ID),
 						otellog.String(telemetry.AttrErrorMessage, fmt.Sprint(rv)))
-					res = message.ToolResult{
-						CallID:  call.ID,
-						Content: fmt.Sprintf("tool %q panicked: %v", call.Name, rv),
-						IsError: true,
-					}
+					res = message.NewErrorToolResult(call.ID,
+						fmt.Sprintf("tool %q panicked: %v", call.Name, rv))
 				}
 			}()
 			return next(ctx, call)

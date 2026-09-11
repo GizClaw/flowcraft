@@ -9,13 +9,14 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
-// FuncTool builds a simple tool whose input schema is an empty JSON
-// object.
+// FuncTool builds a simple text-returning tool whose input schema is an
+// empty JSON object. Tools that return non-text parts build on
+// [tool.FuncTool] directly.
 func FuncTool(
 	name, description string,
 	fn func(context.Context, string) (string, error),
 ) tool.Tool {
-	return tool.FuncTool(message.ToolDefinition{
+	return tool.TextTool(message.ToolDefinition{
 		Name:        name,
 		Description: description,
 		InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -72,7 +73,8 @@ func Registry(t *testing.T, tools ...tool.Tool) *tool.Registry {
 }
 
 // Execute runs one tool call and fails the test on transport or lookup
-// errors.
+// errors. It returns the result's text, which is the whole result for
+// the text-only tools this helper builds.
 func Execute(
 	t *testing.T,
 	catalog tool.Catalog,
@@ -86,7 +88,7 @@ func Execute(
 		Arguments: json.RawMessage(arguments),
 	})
 	if result.IsError {
-		t.Fatalf("tooltest.Execute(%q): %s", name, result.Content)
+		t.Fatalf("tooltest.Execute(%q): %s", name, result.Content.Text())
 	}
-	return result.Content, nil
+	return result.Content.Text(), nil
 }

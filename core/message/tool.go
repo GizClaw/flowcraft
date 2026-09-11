@@ -69,18 +69,48 @@ func (c ToolCall) Validate() error {
 	return nil
 }
 
-// ToolResult carries one tool execution result back into a chat operation.
+// ToolResult carries one tool execution result back into a chat
+// operation. Content is the ordered multimodal payload: a text-only
+// tool returns a single text part (see [NewTextContent]), while image,
+// audio, file, and structured-data results keep their typed parts
+// instead of being flattened into a string at the tool boundary.
 type ToolResult struct {
-	CallID  string `json:"call_id"`
-	Content string `json:"content"`
-	IsError bool   `json:"is_error,omitempty"`
+	CallID  string  `json:"call_id"`
+	Content Content `json:"content"`
+	IsError bool    `json:"is_error,omitempty"`
+}
+
+func (r ToolResult) Clone() ToolResult {
+	r.Content = r.Content.Clone()
+	return r
 }
 
 func (r ToolResult) Validate() error {
 	if r.CallID == "" {
 		return fmt.Errorf("tool result call id is required")
 	}
+	if err := r.Content.Validate(); err != nil {
+		return fmt.Errorf("tool result %q: %w", r.CallID, err)
+	}
 	return nil
+}
+
+// NewToolResult pairs a call id with its result content.
+func NewToolResult(callID string, content Content) ToolResult {
+	return ToolResult{CallID: callID, Content: content}
+}
+
+// NewTextToolResult builds a successful result whose content is a
+// single text part — the shape a text-only tool returns.
+func NewTextToolResult(callID, text string) ToolResult {
+	return ToolResult{CallID: callID, Content: NewTextContent(text)}
+}
+
+// NewErrorToolResult builds a failed result whose content is a single
+// text part. Tool failures are model-visible messages, so the text is
+// the message itself, not a diagnostic dump.
+func NewErrorToolResult(callID, text string) ToolResult {
+	return ToolResult{CallID: callID, Content: NewTextContent(text), IsError: true}
 }
 
 func isJSONObject(raw json.RawMessage) bool {

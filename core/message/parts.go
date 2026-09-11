@@ -376,8 +376,11 @@ type ToolResultPart struct {
 	Result ToolResult `json:"result"`
 }
 
-func (ToolResultPart) Kind() PartKind    { return PartToolResult }
-func (p ToolResultPart) Clone() Part     { return p }
+func (ToolResultPart) Kind() PartKind { return PartToolResult }
+func (p ToolResultPart) Clone() Part {
+	p.Result = p.Result.Clone()
+	return p
+}
 func (p ToolResultPart) Validate() error { return p.Result.Validate() }
 func (ToolResultPart) messagePart()      {}
 

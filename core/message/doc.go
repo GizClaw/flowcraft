@@ -14,6 +14,13 @@
 // tag each part with its [PartKind] so the same payload survives a
 // round-trip through any tool that ignores FlowCraft's Go types.
 //
+// Tool results follow one representation rule: a JSON object payload is
+// a structured [DataPart] built by [NewJSONContent], never stringified
+// prose, while text and non-object payloads (arrays, scalars) stay
+// [TextPart]s — [DataPart] holds objects only. One shape means
+// redaction, result limiting, and driver lowering treat every tool's
+// structured output the same way.
+//
 // The media subpackage holds the operation-neutral Source / Format types
 // that ride inside multimodal Parts (images, audio, video). They are DTOs
 // for the same reason and live here for the same reason.

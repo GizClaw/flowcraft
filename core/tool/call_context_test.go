@@ -28,7 +28,7 @@ func TestCallIDContext_RoundTrip(t *testing.T) {
 func TestExecutor_ExecuteStampsCallID(t *testing.T) {
 	var toolSeen, middlewareSeen string
 	reg, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
-		tool.FuncTool(
+		tool.TextTool(
 			message.ToolDefinition{Name: "peek", InputSchema: []byte(`{"type":"object"}`)},
 			func(ctx context.Context, _ string) (string, error) {
 				toolSeen, _ = tool.CallIDFromContext(ctx)
@@ -63,7 +63,7 @@ func TestExecutor_ExecuteStampsCallID(t *testing.T) {
 // each see their own call id.
 func TestExecutor_ExecuteAllStampsPerCallIDs(t *testing.T) {
 	reg, err := tool.NewRegistry([]tool.Source{source{tools: []tool.Tool{
-		tool.FuncTool(
+		tool.TextTool(
 			message.ToolDefinition{Name: "peek", InputSchema: []byte(`{"type":"object"}`)},
 			func(ctx context.Context, _ string) (string, error) {
 				id, _ := tool.CallIDFromContext(ctx)
@@ -88,7 +88,7 @@ func TestExecutor_ExecuteAllStampsPerCallIDs(t *testing.T) {
 			t.Fatalf("result = %+v", res)
 		}
 		mu.Lock()
-		got[res.Content] = true
+		got[res.Content.Text()] = true
 		mu.Unlock()
 	}
 	for _, call := range calls {

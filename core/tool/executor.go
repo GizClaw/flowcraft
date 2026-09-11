@@ -92,21 +92,29 @@ func coreDispatch(catalog Catalog) Dispatch {
 	return func(ctx context.Context, call message.ToolCall) message.ToolResult {
 		t, ok := catalog.Get(call.Name)
 		if !ok {
-			return message.ToolResult{
-				CallID:  call.ID,
-				Content: fmt.Sprintf("tool %q not found", call.Name),
-				IsError: true,
-			}
+			return message.NewErrorToolResult(call.ID,
+				fmt.Sprintf("tool %q not found", call.Name))
 		}
 		content, err := t.Execute(ctx, string(call.Arguments))
 		if err != nil {
-			return message.ToolResult{
-				CallID:  call.ID,
-				Content: err.Error(),
-				IsError: true,
-			}
+			return message.NewErrorToolResult(call.ID, err.Error())
 		}
-		return message.ToolResult{CallID: call.ID, Content: content}
+		if len(content.Parts) == 0 {
+			// A tool that returned no parts said nothing. Normalizing here
+			// keeps every dispatched result a valid message payload, so a
+			// partless result can never reach message validation, the
+			// board, or a driver's wire compile.
+			content = message.NewTextContent("")
+		}
+		if err := content.Validate(); err != nil {
+			// Content that does not validate is a broken tool, not a
+			// broken run: report it as an error result instead of letting
+			// an invalid part reach the board, a checkpoint, or a
+			// provider compile.
+			return message.NewErrorToolResult(call.ID,
+				fmt.Sprintf("tool %q returned invalid content: %v", call.Name, err))
+		}
+		return message.NewToolResult(call.ID, content)
 	}
 }
 

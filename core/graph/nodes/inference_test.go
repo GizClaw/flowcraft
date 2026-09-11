@@ -130,7 +130,9 @@ func (t stubTool) Definition() message.ToolDefinition {
 	return message.DefineSchema(t.name, t.desc).Build()
 }
 
-func (stubTool) Execute(context.Context, string) (string, error) { return "ok", nil }
+func (stubTool) Execute(context.Context, string) (message.Content, error) {
+	return message.NewTextContent("ok"), nil
+}
 
 func inferenceRegistry(t *testing.T, deps InferenceNodeDeps) *graph.Registry {
 	t.Helper()
@@ -269,7 +271,7 @@ func TestInferenceNode_ToolPendingFlagAndCatalogTools(t *testing.T) {
 			}
 		},
 	}
-	catalog := toolCatalog(t, tool.FuncTool(
+	catalog := toolCatalog(t, tool.TextTool(
 		message.ToolDefinition{
 			Name:        "search",
 			Description: "search the web",
@@ -1723,7 +1725,7 @@ func TestInferenceNode_Intent_TextControlsReachRequest(t *testing.T) {
 }
 
 func TestInferenceNode_Intent_ToolsMergeIntoTextIntent(t *testing.T) {
-	catalog := toolCatalog(t, tool.FuncTool(
+	catalog := toolCatalog(t, tool.TextTool(
 		message.ToolDefinition{
 			Name:        "search",
 			Description: "search the web",

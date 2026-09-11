@@ -143,7 +143,7 @@ type closableTool struct {
 }
 
 func (c *closableTool) Definition() message.ToolDefinition { return c.tool.Definition() }
-func (c *closableTool) Execute(ctx context.Context, args string) (string, error) {
+func (c *closableTool) Execute(ctx context.Context, args string) (message.Content, error) {
 	return c.tool.Execute(ctx, args)
 }
 func (c *closableTool) Close() error {
@@ -157,7 +157,7 @@ func mustExecute(t *testing.T, tl tool.Tool) string {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	return out
+	return out.Text()
 }
 
 func TestRegistry_RejectsNilSourceAndBadLazyTool(t *testing.T) {

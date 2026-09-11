@@ -66,11 +66,8 @@ func timeout(catalog tool.Catalog, defaultTimeout time.Duration, perTool map[str
 
 			res := next(execCtx, call)
 			if execCtx.Err() == context.DeadlineExceeded {
-				return message.ToolResult{
-					CallID:  call.ID,
-					Content: fmt.Sprintf("tool %q timed out after %s", call.Name, limit),
-					IsError: true,
-				}
+				return message.NewErrorToolResult(call.ID,
+					fmt.Sprintf("tool %q timed out after %s", call.Name, limit))
 			}
 			return res
 		}

@@ -1,10 +1,13 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"regexp"
 
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -117,6 +120,102 @@ func (r *redactor) Bytes(b []byte) []byte {
 }
 
 func (r *redactor) Result(res message.ToolResult) message.ToolResult {
-	res.Content = r.String(res.Content)
+	res.Content = r.Content(res.Content)
 	return res
+}
+
+// Content rewrites every text-bearing part through the rules: text
+// parts, file references, structured data, and URL-backed media
+// sources. Inline media holds encoded bytes, which rewriting in place
+// would corrupt, so it passes through untouched.
+func (r *redactor) Content(content message.Content) message.Content {
+	if len(r.rules) == 0 || len(content.Parts) == 0 {
+		return content
+	}
+	out := content.Clone()
+	for i, part := range out.Parts {
+		switch value := part.(type) {
+		case message.TextPart:
+			value.Text = r.String(value.Text)
+			out.Parts[i] = value
+		case message.DataPart:
+			out.Parts[i] = r.dataPart(value)
+		case message.FilePart:
+			value.URI = r.String(value.URI)
+			value.Name = r.String(value.Name)
+			out.Parts[i] = value
+		case message.ImagePart, message.AudioPart, message.VideoPart:
+			out.Parts[i] = r.mediaPart(value)
+		}
+	}
+	return out
+}
+
+// dataPart rewrites the JSON payload of a data part. A replacement that
+// breaks the JSON structure must not resurrect the original secret, so
+// the redacted bytes fall back to a text part — which is how drivers
+// without a structured surface render data anyway.
+func (r *redactor) dataPart(part message.DataPart) message.Part {
+	redacted := r.Bytes(part.Value)
+	if bytes.Equal(redacted, part.Value) {
+		return part
+	}
+	part.Value = json.RawMessage(redacted)
+	if err := part.Validate(); err != nil {
+		return message.TextPart{Text: string(redacted)}
+	}
+	return part
+}
+
+// mediaPart rewrites the URL of a URL-backed media source. An inline
+// source carries encoded bytes and passes through untouched.
+func (r *redactor) mediaPart(part message.Part) message.Part {
+	var rawURL, mediaType string
+	switch value := part.(type) {
+	case message.ImagePart:
+		if value.Source.Kind() != media.SourceURL {
+			return part
+		}
+		rawURL, mediaType = value.Source.URL(), value.Source.MediaType()
+	case message.AudioPart:
+		if value.Source.Kind() != media.SourceURL {
+			return part
+		}
+		rawURL, mediaType = value.Source.URL(), value.Source.MediaType()
+	case message.VideoPart:
+		if value.Source.Kind() != media.SourceURL {
+			return part
+		}
+		rawURL, mediaType = value.Source.URL(), value.Source.MediaType()
+	default:
+		return part
+	}
+	redacted := r.String(rawURL)
+	if redacted == rawURL {
+		return part
+	}
+	switch value := part.(type) {
+	case message.ImagePart:
+		source, err := media.NewImageURL(redacted, mediaType)
+		if err != nil {
+			return message.TextPart{Text: redacted}
+		}
+		value.Source = source
+		return value
+	case message.AudioPart:
+		source, err := media.NewAudioURL(redacted, mediaType)
+		if err != nil {
+			return message.TextPart{Text: redacted}
+		}
+		value.Source = source
+		return value
+	case message.VideoPart:
+		source, err := media.NewVideoURL(redacted, mediaType)
+		if err != nil {
+			return message.TextPart{Text: redacted}
+		}
+		value.Source = source
+		return value
+	}
+	return part
 }

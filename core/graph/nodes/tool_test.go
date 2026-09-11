@@ -11,6 +11,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/graph"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -28,7 +29,7 @@ func toolRegistry(t *testing.T, dispatcher tool.Dispatcher) *graph.Registry {
 
 func echoDispatcher(t *testing.T) tool.Dispatcher {
 	t.Helper()
-	reg := toolCatalog(t, tool.FuncTool(
+	reg := toolCatalog(t, tool.TextTool(
 		message.ToolDefinition{Name: "search", Description: "search the web"},
 		func(_ context.Context, args string) (string, error) {
 			return "results for " + args, nil
@@ -76,7 +77,7 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 		if !ok {
 			t.Fatalf("part %d = %T, want ToolResultPart", i, parts[i])
 		}
-		if result.Result.CallID != wantID || result.Result.Content == "" {
+		if result.Result.CallID != wantID || result.Result.Content.Text() == "" {
 			t.Fatalf("result %d = %+v, want call %s with content", i, result.Result, wantID)
 		}
 	}
@@ -88,6 +89,44 @@ func TestToolNode_ExecutesAndAppendsToolMessage(t *testing.T) {
 	results, ok := v.([]message.ToolResult)
 	if !ok || len(results) != 2 {
 		t.Fatalf("results var = %T, want []message.ToolResult len 2", v)
+	}
+}
+
+func TestToolNode_KeepsMultimodalResultParts(t *testing.T) {
+	source, err := media.NewImageBytes([]byte{1, 2, 3}, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	shot := tool.FuncTool(message.ToolDefinition{Name: "shot"},
+		func(context.Context, string) (message.Content, error) {
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: "captured"},
+				message.ImagePart{Source: source},
+			}}, nil
+		})
+	reg := toolRegistry(t, tool.NewExecutor(toolCatalog(t, shot)))
+	g := singleNodeGraph(t, reg, "tool", ToolConfig{ResultsKey: "results"})
+
+	board := agent.NewBoard()
+	board.AppendChannelMessage(agent.MainChannel, assistantWithCalls(
+		message.ToolCall{ID: "call_1", Name: "shot", Arguments: json.RawMessage(`{}`)}))
+	if err := executeGraph(t, g, agent.NoopHost{}, board); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	msgs := board.Channel(agent.MainChannel)
+	if len(msgs) != 2 {
+		t.Fatalf("channel = %+v, want assistant + one role=tool message", msgs)
+	}
+	part, ok := msgs[1].Content.Parts[0].(message.ToolResultPart)
+	if !ok {
+		t.Fatalf("part = %T, want ToolResultPart", msgs[1].Content.Parts[0])
+	}
+	if len(part.Result.Content.Parts) != 2 {
+		t.Fatalf("result parts = %d, want text + image", len(part.Result.Content.Parts))
+	}
+	if _, ok := part.Result.Content.Parts[1].(message.ImagePart); !ok {
+		t.Fatalf("part 1 = %T, want the image to survive the node", part.Result.Content.Parts[1])
 	}
 }
 

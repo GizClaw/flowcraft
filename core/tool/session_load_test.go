@@ -20,7 +20,7 @@ func lazyWeather(name string, loads *atomic.Int32) tool.LazyTool {
 		},
 		Load: func(context.Context) (tool.Tool, error) {
 			loads.Add(1)
-			return tool.FuncTool(
+			return tool.TextTool(
 				message.ToolDefinition{
 					Name:        name,
 					Description: "weather lookup for cities",

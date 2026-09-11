@@ -262,10 +262,10 @@ func (p *lazyProxy) Definition() message.ToolDefinition {
 	return p.spec.Placeholder
 }
 
-func (p *lazyProxy) Execute(ctx context.Context, arguments string) (string, error) {
+func (p *lazyProxy) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	t, err := p.load(ctx)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	return t.Execute(ctx, arguments)
 }

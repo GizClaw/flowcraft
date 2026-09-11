@@ -232,6 +232,7 @@ tools:
     middlewares:
       recover: {enabled: true}
       telemetry: {enabled: true}
+      result_limit: {max: 20000}
       timeout: {default: 30s}
       concurrency: {limit: 8}
     dynamic: {default: deferred, exposures: {tool_search: always}}
@@ -244,7 +245,12 @@ converts tool panics into error results, `telemetry.enabled` records an
 OpenTelemetry span plus executions/duration/error metrics and a warning
 log per call, `timeout.default` bounds each call (calls that already
 carry a deadline pass through), and `concurrency.limit` caps in-flight
-executions.
+executions. `result_limit.max` caps the runes of one result's text parts
+and `result_limit.part_budget_bytes` caps the encoded size of its non-text
+parts (images, audio, video, file references, structured data); an absent
+budget means 1 MiB and `0` lifts the cap. Parts over budget are dropped and
+the truncation marker (`result_limit.marker`, default `…[result truncated]`)
+is appended.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host

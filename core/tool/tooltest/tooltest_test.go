@@ -23,8 +23,8 @@ func TestRecordingTool(t *testing.T) {
 	rec := tooltest.NewRecordingTool("rec")
 	rec.SetResponse("ok", nil)
 	got, err := rec.Execute(context.Background(), `{"a":1}`)
-	if err != nil || got != "ok" {
-		t.Fatalf("Execute = (%q, %v)", got, err)
+	if err != nil || got.Text() != "ok" {
+		t.Fatalf("Execute = (%q, %v)", got.Text(), err)
 	}
 	calls := rec.Calls()
 	if len(calls) != 1 || calls[0].Arguments != `{"a":1}` {

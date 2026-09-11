@@ -139,6 +139,7 @@ resources:
       middlewares:
         recover: {enabled: true}
         telemetry: {enabled: true}
+        result_limit: {max: 20000}
         timeout: {default: 30s}
         concurrency: {limit: 8}
 ```
@@ -150,7 +151,13 @@ OpenTelemetry span, executions/duration/error metrics, and a warning log
 for each call; `timeout.default` bounds each call with a Go duration (calls
 that already carry a deadline pass through); `concurrency.limit` caps
 in-flight executions, with excess callers waiting (respecting context
-cancellation). The plain `memory` impl rejects the `middlewares` key.
+cancellation); `result_limit.max` caps the text of one result in runes and
+`result_limit.part_budget_bytes` caps the encoded size of its non-text parts
+(images, audio, file references, structured data) — absent means 1 MiB, `0`
+lifts the cap. Whatever exceeds a budget is dropped and the truncation
+marker (`result_limit.marker`, default `…[result truncated]`) is appended, so
+the model learns the result was shortened. The plain `memory` impl rejects
+the `middlewares` key.
 
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`

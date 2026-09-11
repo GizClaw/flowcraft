@@ -39,7 +39,8 @@ func WithAllowedToolNames(names ...string) ToolBridgeOption {
 }
 
 // NewToolBridge exposes tool execution to scripts as global "tools":
-//   - call(name, argumentsJSON) -> { content, is_error, tool_call_id }
+//   - call(name, argumentsJSON) -> { parts, is_error, tool_call_id,
+//     name }
 //   - callAll([{ name, arguments, id? }, ...]) -> same shape, in input
 //     order, plus a "name" echo per entry. Concurrency comes from the
 //     dispatcher's ExecuteAll. The optional id lets a script forward a
@@ -50,6 +51,13 @@ func WithAllowedToolNames(names ...string) ToolBridgeOption {
 //   - definitions() -> message.ToolDefinition wire JSON for the same allowed
 //     set, ready to splice into a generate request's
 //     input.content.intent.text.tools
+//
+// A result carries its content as "parts": the canonical part array,
+// using the same wire objects as the message contract. A text-only tool
+// answers with one text part; an image or audio result reaches the
+// script intact and can be handed back to tools.callAll, emitted as a
+// "part" event, or spliced into a message. Scripts read parts and never
+// a flattened string.
 //
 // dispatcher executes the calls (typically a *tool.Executor assembled
 // with the middleware the host wants — approval, timeouts, audit);
@@ -66,8 +74,13 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 	for _, o := range opts {
 		o(cfg)
 	}
+	textResult := func(msg string) map[string]any {
+		// A single text part always projects, so the error is impossible.
+		parts, _ := partsToScript(message.NewTextContent(msg).Parts)
+		return map[string]any{"parts": parts, "is_error": true, "tool_call_id": ""}
+	}
 	deny := func(msg string) map[string]any {
-		return map[string]any{"content": msg, "is_error": true, "tool_call_id": ""}
+		return textResult(msg)
 	}
 	allowed := func(name string) (map[string]any, bool) {
 		if dispatcher == nil || catalog == nil {
@@ -82,13 +95,19 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 		}
 		return nil, true
 	}
-	resultMap := func(name string, res message.ToolResult) map[string]any {
+	// resultMap projects a dispatched result into the script-facing shape:
+	// the canonical part array, so media survives the boundary intact.
+	resultMap := func(name string, res message.ToolResult) (map[string]any, error) {
+		parts, err := partsToScript(res.Content.Parts)
+		if err != nil {
+			return nil, err
+		}
 		return map[string]any{
-			"content":      res.Content,
+			"parts":        parts,
 			"is_error":     res.IsError,
 			"tool_call_id": res.CallID,
 			"name":         name,
-		}
+		}, nil
 	}
 	return func(ctx context.Context) (string, any) {
 		return "tools", map[string]any{
@@ -101,7 +120,7 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 					Name:      name,
 					Arguments: json.RawMessage(argumentsJSON),
 				}
-				return resultMap(name, dispatcher.Execute(ctx, call)), nil
+				return resultMap(name, dispatcher.Execute(ctx, call))
 			},
 			"callAll": func(raw any) ([]map[string]any, error) {
 				items, err := asAnyList(raw, "tools.callAll")
@@ -134,7 +153,11 @@ func NewToolBridge(dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...Too
 				}
 				results := dispatcherOrNil(dispatcher).ExecuteAll(ctx, calls)
 				for j, res := range results {
-					out[slots[j]] = resultMap(calls[j].Name, res)
+					projected, err := resultMap(calls[j].Name, res)
+					if err != nil {
+						return nil, err
+					}
+					out[slots[j]] = projected
 				}
 				return out, nil
 			},
@@ -217,7 +240,7 @@ func parseCallSpec(raw any, idx int) (callSpec, error) {
 type nilDispatcher struct{}
 
 func (nilDispatcher) Execute(_ context.Context, call message.ToolCall) message.ToolResult {
-	return message.ToolResult{CallID: call.ID, Content: "tools: no dispatcher/catalog configured", IsError: true}
+	return message.NewErrorToolResult(call.ID, "tools: no dispatcher/catalog configured")
 }
 
 func (d nilDispatcher) ExecuteAll(_ context.Context, calls []message.ToolCall) []message.ToolResult {

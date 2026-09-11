@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/message"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -408,7 +409,7 @@ func TestSource_ReconnectsAfterServerExit(t *testing.T) {
 	})
 	tool := src.Tools()[0]
 
-	execute := func() (string, error) {
+	execute := func() (message.Content, error) {
 		return tool.Execute(context.Background(), "{}")
 	}
 	if _, err := execute(); err != nil {
@@ -421,7 +422,7 @@ func TestSource_ReconnectsAfterServerExit(t *testing.T) {
 	})
 	waitFor(t, 10*time.Second, "reconnect to restore execution", func() bool {
 		out, err := execute()
-		return err == nil && out == "ok"
+		return err == nil && out.Text() == "ok"
 	})
 }
 

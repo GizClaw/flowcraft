@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -56,41 +57,44 @@ func (a *adaptedTool) Definition() message.ToolDefinition { return a.def }
 
 func (a *adaptedTool) Metadata() sdktool.ToolMeta { return a.meta }
 
-// Execute forwards the call to the server as tools/call and renders the
-// result into the single string the tool contract returns.
+// Execute forwards the call to the server as tools/call and maps the
+// result onto canonical content parts: text, image, audio, resource
+// links, and embedded resources keep their native representation
+// instead of being flattened into text at the MCP boundary.
 //
 // Two failure modes are distinguished deliberately. A transport or
 // protocol failure means the server is unreachable or broke the
 // contract, so it surfaces as errdefs.NotAvailable tagged with the
 // server name — that is what makes one dead server degrade only its own
 // tools. A result carrying isError is the *tool* failing, which the
-// model is expected to see and self-correct from, so the rendered
-// content becomes the error message verbatim.
-func (a *adaptedTool) Execute(ctx context.Context, arguments string) (string, error) {
+// model is expected to see and self-correct from, so the content's
+// rendered form becomes the error message verbatim.
+func (a *adaptedTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	args, err := decodeArguments(arguments)
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	session, err := a.server.currentSession()
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	res, err := session.CallTool(ctx, &mcpsdk.CallToolParams{
 		Name:      a.remote,
 		Arguments: args,
 	})
 	if err != nil {
-		return "", errdefs.NotAvailablef(
+		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: call tool %q: %v", a.server.name, a.remote, err)
 	}
-	rendered := renderResult(res)
-	if res.IsError {
+	content := resultContent(res)
+	if res != nil && res.IsError {
+		rendered := content.Text()
 		if rendered == "" {
 			rendered = fmt.Sprintf("mcp tool %q reported an error with no detail", a.remote)
 		}
-		return "", fmt.Errorf("%s", rendered)
+		return message.Content{}, fmt.Errorf("%s", rendered)
 	}
-	return rendered, nil
+	return content, nil
 }
 
 // decodeArguments turns the contract's JSON string into the `any` the
@@ -184,43 +188,90 @@ func metaFromAnnotations(ann *mcpsdk.ToolAnnotations) sdktool.ToolMeta {
 	}
 }
 
-// renderResult flattens an MCP result into one string.
+// resultContent maps an MCP tool result onto canonical message parts.
 //
-// The rule is deterministic and documented in the package overview:
-// content parts render in order, joined by newlines; text parts
-// contribute their text verbatim; every other part contributes its JSON
-// wire form so no information is silently dropped. When there is no
-// content at all but there is structured content, the structured value
-// is rendered instead — servers using output schemas commonly populate
-// only that field.
-func renderResult(res *mcpsdk.CallToolResult) string {
+// Text, image, and audio content map to their typed parts; a resource
+// link becomes a [message.FilePart] reference; an embedded resource
+// contributes its text or its typed media payload. Anything the local
+// model has no typed home for — including forward-compatible content
+// types this client does not know yet — keeps its JSON wire form as a
+// data part (or a text part when it is not a JSON object), so no
+// information is silently dropped.
+//
+// When the server returns no content at all but does return structured
+// content, the structured value is carried instead: servers using
+// output schemas commonly populate only that field.
+func resultContent(res *mcpsdk.CallToolResult) message.Content {
 	if res == nil {
-		return ""
+		return message.NewTextContent("")
 	}
-	parts := make([]string, 0, len(res.Content))
+	parts := make([]message.Part, 0, len(res.Content))
 	for _, content := range res.Content {
-		if rendered := renderContent(content); rendered != "" {
-			parts = append(parts, rendered)
+		if part, ok := contentPart(content); ok {
+			parts = append(parts, part)
 		}
 	}
 	if len(parts) == 0 && res.StructuredContent != nil {
 		if encoded, err := json.Marshal(res.StructuredContent); err == nil {
-			return string(encoded)
+			parts = append(parts, jsonPart(encoded))
 		}
 	}
-	return strings.Join(parts, "\n")
+	if len(parts) == 0 {
+		return message.NewTextContent("")
+	}
+	return message.Content{Parts: parts}
 }
 
-func renderContent(content mcpsdk.Content) string {
+// contentPart maps one MCP content block onto a canonical part. The
+// boolean is false only when the block is nil or cannot be encoded.
+func contentPart(content mcpsdk.Content) (message.Part, bool) {
 	if content == nil {
-		return ""
+		return nil, false
 	}
-	if text, ok := content.(*mcpsdk.TextContent); ok {
-		return text.Text
+	switch typed := content.(type) {
+	case *mcpsdk.TextContent:
+		// An empty block carries nothing; treating it as absent keeps the
+		// structured-content fallback below reachable.
+		if typed.Text == "" {
+			return nil, false
+		}
+		return message.TextPart{Text: typed.Text}, true
+	case *mcpsdk.ImageContent:
+		if source, err := media.NewImageBytes(typed.Data, typed.MIMEType); err == nil {
+			return message.ImagePart{Source: source}, true
+		}
+	case *mcpsdk.AudioContent:
+		if source, err := media.NewAudioBytes(typed.Data, typed.MIMEType); err == nil {
+			return message.AudioPart{Source: source}, true
+		}
+	case *mcpsdk.ResourceLink:
+		if typed.URI != "" {
+			return message.FilePart{
+				URI:       typed.URI,
+				MediaType: typed.MIMEType,
+				Name:      typed.Name,
+			}, true
+		}
+	case *mcpsdk.EmbeddedResource:
+		if part, ok := resourceContentsPart(typed.Resource); ok {
+			return part, true
+		}
 	}
+	// No typed home: keep the wire form rather than dropping the block.
 	encoded, err := json.Marshal(content)
 	if err != nil {
-		return fmt.Sprintf("<unrenderable %T content>", content)
+		return nil, false
 	}
-	return string(encoded)
+	return jsonPart(encoded), true
+}
+
+// jsonPart carries encoded JSON as a structured data part when it is a
+// JSON object, and as text otherwise ([message.DataPart] requires an
+// object). Nothing is dropped either way.
+func jsonPart(raw []byte) message.Part {
+	content, err := message.NewJSONContent(raw)
+	if err != nil {
+		return message.TextPart{Text: strings.TrimSpace(string(raw))}
+	}
+	return content.Parts[0]
 }

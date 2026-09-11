@@ -2,12 +2,14 @@ package bindings
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	"github.com/GizClaw/flowcraft/core/tool"
 )
 
@@ -22,6 +24,22 @@ type toolAPI struct {
 	callAll     func(items []any) []map[string]any
 	list        func() []string
 	definitions func() []any
+}
+
+// textOf returns the text carried by a bridge result, which is a part
+// array rather than a flattened string.
+func textOf(t *testing.T, res map[string]any) string {
+	t.Helper()
+	parts, ok := res["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("parts = %#v, want one part", res["parts"])
+	}
+	part, ok := parts[0].(map[string]any)
+	if !ok || part["type"] != "text" {
+		t.Fatalf("part = %#v, want a text part", parts[0])
+	}
+	text, _ := part["text"].(string)
+	return text
 }
 
 func newToolAPI(t *testing.T, dispatcher tool.Dispatcher, catalog tool.Catalog, opts ...ToolBridgeOption) toolAPI {
@@ -88,7 +106,7 @@ func newEchoTools(t *testing.T, names ...string) (tool.Dispatcher, tool.Catalog)
 	var tools []tool.Tool
 	for _, n := range names {
 		name := n
-		tools = append(tools, tool.FuncTool(
+		tools = append(tools, tool.TextTool(
 			message.ToolDefinition{Name: name, Description: name},
 			func(_ context.Context, args string) (string, error) {
 				return "got:" + name + ":" + args, nil
@@ -108,10 +126,10 @@ func TestToolBridge_Allowed(t *testing.T) {
 
 	res := api.call("echo", `{"x":1}`)
 	if res["is_error"] == true {
-		t.Fatalf("call failed: %v", res["content"])
+		t.Fatalf("call failed: %v", res["parts"])
 	}
-	if got, want := res["content"], `got:echo:{"x":1}`; got != want {
-		t.Fatalf("content = %v, want %v", got, want)
+	if got, want := textOf(t, res), `got:echo:{"x":1}`; got != want {
+		t.Fatalf("text = %v, want %v", got, want)
 	}
 	if res["tool_call_id"] == "" {
 		t.Fatal("tool_call_id should be populated")
@@ -120,6 +138,75 @@ func TestToolBridge_Allowed(t *testing.T) {
 	names := api.list()
 	if len(names) != 1 || names[0] != "echo" {
 		t.Fatalf("list = %v, want [echo]", names)
+	}
+}
+
+func TestToolBridge_CarriesFullContentParts(t *testing.T) {
+	source, err := media.NewImageBytes([]byte{1, 2, 3}, "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	shot := tool.FuncTool(
+		message.ToolDefinition{Name: "shot", Description: "screenshot"},
+		func(context.Context, string) (message.Content, error) {
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: "captured"},
+				message.ImagePart{Source: source},
+			}}, nil
+		},
+	)
+	reg, err := tool.NewRegistry([]tool.Source{toolSource{tools: []tool.Tool{shot}}})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	api := newToolAPI(t, tool.NewExecutor(reg), reg, WithAllowedToolNames("shot"))
+
+	res := api.call("shot", "{}")
+	parts, ok := res["parts"].([]any)
+	if !ok {
+		t.Fatalf("parts = %T, want []any (scripts must see the whole result)", res["parts"])
+	}
+	if len(parts) != 2 {
+		t.Fatalf("parts = %v, want text + image", parts)
+	}
+	image, ok := parts[1].(map[string]any)
+	if !ok || image["type"] != "image" {
+		t.Fatalf("part 1 = %#v, want a canonical image object", parts[1])
+	}
+	if _, ok := image["source"].(map[string]any); !ok {
+		t.Fatalf("image source = %#v, want the media source object", image["source"])
+	}
+	if text, _ := parts[0].(map[string]any); text["text"] != "captured" {
+		t.Fatalf("part 0 = %#v, want the captured text", parts[0])
+	}
+}
+
+func TestToolBridge_DeniedResultCarriesTextPart(t *testing.T) {
+	dispatcher, catalog := newEchoTools(t, "echo")
+	api := newToolAPI(t, dispatcher, catalog)
+
+	res := api.call("echo", "{}")
+	if res["is_error"] != true {
+		t.Fatalf("expected deny, got %v", res)
+	}
+	parts, ok := res["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("parts = %#v, want one text part", res["parts"])
+	}
+	if text, _ := parts[0].(map[string]any); text["type"] != "text" {
+		t.Fatalf("part = %#v, want a canonical text object", parts[0])
+	}
+}
+
+// Guard the script-facing shape: parts must be plain JSON values so any
+// script VM can inject them as tables.
+func TestToolBridge_PartsAreJSONValues(t *testing.T) {
+	dispatcher, catalog := newEchoTools(t, "echo")
+	api := newToolAPI(t, dispatcher, catalog, WithAllowedToolNames("echo"))
+
+	res := api.call("echo", "{}")
+	if _, err := json.Marshal(res["parts"]); err != nil {
+		t.Fatalf("parts are not JSON-encodable: %v", err)
 	}
 }
 
@@ -140,10 +227,10 @@ func TestToolBridge_AllowAll(t *testing.T) {
 	dispatcher, catalog := newEchoTools(t, "a", "b")
 	api := newToolAPI(t, dispatcher, catalog, WithToolAllowAll())
 
-	if res := api.call("a", "{}"); res["is_error"] == true || res["content"] != "got:a:{}" {
+	if res := api.call("a", "{}"); res["is_error"] == true || textOf(t, res) != "got:a:{}" {
 		t.Fatalf("a failed: %v", res)
 	}
-	if res := api.call("b", "{}"); res["is_error"] == true || res["content"] != "got:b:{}" {
+	if res := api.call("b", "{}"); res["is_error"] == true || textOf(t, res) != "got:b:{}" {
 		t.Fatalf("b failed: %v", res)
 	}
 
@@ -164,8 +251,8 @@ func TestToolBridge_AllowAll_UnknownTool(t *testing.T) {
 	if res["is_error"] != true {
 		t.Fatalf("expected is_error for unknown tool, got %v", res)
 	}
-	if content, _ := res["content"].(string); content == "" || !contains(content, "ghost") {
-		t.Fatalf("error content should mention the missing tool name: %v", res["content"])
+	if text := textOf(t, res); text == "" || !contains(text, "ghost") {
+		t.Fatalf("error part should mention the missing tool name: %v", res["parts"])
 	}
 }
 
@@ -197,8 +284,8 @@ func TestToolBridge_CallAll_OrderPreserved(t *testing.T) {
 		t.Fatalf("callAll returned %d results, want 3", len(out))
 	}
 	for i, want := range []string{`got:echo:{"n":1}`, `got:echo:{"n":2}`, `got:echo:{"n":3}`} {
-		if out[i]["content"] != want || out[i]["is_error"] == true {
-			t.Fatalf("result[%d] = %v, want content %q", i, out[i], want)
+		if got := textOf(t, out[i]); got != want || out[i]["is_error"] == true {
+			t.Fatalf("result[%d] = %v, want text %q", i, out[i], want)
 		}
 		if out[i]["name"] != "echo" {
 			t.Fatalf("result[%d].name = %v, want echo", i, out[i]["name"])
@@ -248,8 +335,7 @@ func TestToolBridge_CallAll_PerEntryDeny(t *testing.T) {
 	if out[1]["is_error"] != true {
 		t.Fatalf("denied entry should be is_error in place: %v", out[1])
 	}
-	content, _ := out[1]["content"].(string)
-	if !strings.Contains(content, "not allowed") || out[1]["name"] != "rm" {
+	if text := textOf(t, out[1]); !strings.Contains(text, "not allowed") || out[1]["name"] != "rm" {
 		t.Fatalf("denied entry = %v, want not-allowed error named rm", out[1])
 	}
 }
@@ -290,7 +376,7 @@ func TestToolBridge_CallAll_ArgumentsDefault(t *testing.T) {
 	api := newToolAPI(t, dispatcher, catalog, WithAllowedToolNames("echo"))
 
 	out := api.callAll([]any{map[string]any{"name": "echo"}})
-	if out[0]["content"] != "got:echo:{}" {
+	if textOf(t, out[0]) != "got:echo:{}" {
 		t.Fatalf("omitted arguments should default to {}: %v", out[0])
 	}
 }

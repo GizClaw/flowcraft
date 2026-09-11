@@ -8,6 +8,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/message/media"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -39,10 +40,10 @@ var _ sdktool.Tool = (*resourceTool)(nil)
 
 func (r *resourceTool) Definition() message.ToolDefinition { return r.def }
 
-func (r *resourceTool) Execute(ctx context.Context, arguments string) (string, error) {
+func (r *resourceTool) Execute(ctx context.Context, arguments string) (message.Content, error) {
 	session, err := r.server.currentSession()
 	if err != nil {
-		return "", err
+		return message.Content{}, err
 	}
 	switch r.kind {
 	case resourceList:
@@ -50,47 +51,72 @@ func (r *resourceTool) Execute(ctx context.Context, arguments string) (string, e
 	case resourceRead:
 		return r.read(ctx, session, arguments)
 	default:
-		return "", errdefs.Internalf("mcp: unknown resource tool kind")
+		return message.Content{}, errdefs.Internalf("mcp: unknown resource tool kind")
 	}
 }
 
-func (r *resourceTool) list(ctx context.Context, session *mcpsdk.ClientSession) (string, error) {
+func (r *resourceTool) list(ctx context.Context, session *mcpsdk.ClientSession) (message.Content, error) {
 	res, err := session.ListResources(ctx, nil)
 	if err != nil {
-		return "", errdefs.NotAvailablef(
+		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: list resources: %v", r.server.name, err)
 	}
 	raw, err := json.Marshal(renderResourceList(res))
 	if err != nil {
-		return "", errdefs.Internalf(
+		return message.Content{}, errdefs.Internalf(
 			"mcp: server %q: encode resource list: %v", r.server.name, err)
 	}
-	return string(raw), nil
+	// The list is a JSON array, which has no data-part form, so the
+	// answer stays text.
+	return message.NewTextContent(string(raw)), nil
 }
 
-func (r *resourceTool) read(ctx context.Context, session *mcpsdk.ClientSession, arguments string) (string, error) {
+func (r *resourceTool) read(ctx context.Context, session *mcpsdk.ClientSession, arguments string) (message.Content, error) {
 	var args struct {
 		URI string `json:"uri"`
 	}
 	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-		return "", errdefs.Validationf(
+		return message.Content{}, errdefs.Validationf(
 			"mcp: %s: parse arguments: %v", readResourceToolName, err)
 	}
 	if strings.TrimSpace(args.URI) == "" {
-		return "", errdefs.Validationf(
+		return message.Content{}, errdefs.Validationf(
 			"mcp: %s: uri is required", readResourceToolName)
 	}
 	res, err := session.ReadResource(ctx, &mcpsdk.ReadResourceParams{URI: args.URI})
 	if err != nil {
-		return "", errdefs.NotAvailablef(
+		return message.Content{}, errdefs.NotAvailablef(
 			"mcp: server %q: read resource %q: %v", r.server.name, args.URI, err)
 	}
-	raw, err := json.Marshal(renderResourceContents(res.Contents))
-	if err != nil {
-		return "", errdefs.Internalf(
-			"mcp: server %q: encode resource contents: %v", r.server.name, err)
+	parts := make([]message.Part, 0, len(res.Contents))
+	for _, content := range res.Contents {
+		if content == nil {
+			continue
+		}
+		if part, ok := resourceContentsPart(content); ok {
+			parts = append(parts, part)
+			continue
+		}
+		// No typed home (unknown or non-media binary): keep the
+		// documented JSON shape, base64 blob included, so the caller
+		// loses nothing.
+		raw, err := json.Marshal(renderResource(content))
+		if err != nil {
+			continue
+		}
+		structured, err := message.NewJSONContent(raw)
+		if err != nil {
+			parts = append(parts, message.TextPart{Text: string(raw)})
+			continue
+		}
+		parts = append(parts, structured.Parts[0])
 	}
-	return string(raw), nil
+	if len(parts) == 0 {
+		// An empty read has nothing to report, but content still has to
+		// carry one part to stay a valid message payload.
+		return message.NewTextContent(""), nil
+	}
+	return message.Content{Parts: parts}, nil
 }
 
 type resourceMeta struct {
@@ -130,22 +156,38 @@ type renderedResource struct {
 	BlobBase64 string `json:"blob_base64,omitempty"`
 }
 
-func renderResourceContents(contents []*mcpsdk.ResourceContents) []renderedResource {
-	if len(contents) == 0 {
-		return []renderedResource{}
+func renderResource(c *mcpsdk.ResourceContents) renderedResource {
+	item := renderedResource{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text}
+	if len(c.Blob) > 0 {
+		item.BlobBase64 = base64.StdEncoding.EncodeToString(c.Blob)
 	}
-	out := make([]renderedResource, 0, len(contents))
-	for _, c := range contents {
-		if c == nil {
-			continue
-		}
-		item := renderedResource{URI: c.URI, MIMEType: c.MIMEType, Text: c.Text}
-		if len(c.Blob) > 0 {
-			item.BlobBase64 = base64.StdEncoding.EncodeToString(c.Blob)
-		}
-		out = append(out, item)
+	return item
+}
+
+// resourceContentsPart maps one resource payload onto a typed part when
+// the payload has a typed home: text becomes text, a blob follows its
+// declared media family. Anything else returns false so the caller
+// keeps the lossless JSON form.
+func resourceContentsPart(c *mcpsdk.ResourceContents) (message.Part, bool) {
+	if c == nil {
+		return nil, false
 	}
-	return out
+	if c.Text != "" {
+		return message.TextPart{Text: c.Text}, true
+	}
+	if len(c.Blob) == 0 {
+		return nil, false
+	}
+	if source, err := media.NewImageBytes(c.Blob, c.MIMEType); err == nil {
+		return message.ImagePart{Source: source}, true
+	}
+	if source, err := media.NewAudioBytes(c.Blob, c.MIMEType); err == nil {
+		return message.AudioPart{Source: source}, true
+	}
+	if source, err := media.NewVideoBytes(c.Blob, c.MIMEType); err == nil {
+		return message.VideoPart{Source: source}, true
+	}
+	return nil, false
 }
 
 func listResourcesDefinition(qualified string) message.ToolDefinition {
@@ -159,7 +201,8 @@ func listResourcesDefinition(qualified string) message.ToolDefinition {
 func readResourceDefinition(qualified string) message.ToolDefinition {
 	return message.DefineSchema(
 		qualified,
-		"Read one resource from this MCP server by URI. Returns the resource contents as JSON; binary blobs are base64-encoded.",
+		"Read one resource from this MCP server by URI. Text resources are returned as text, "+
+			"image/audio/video blobs as their media kind, and anything else as JSON with base64-encoded blobs.",
 		message.ToolProperty("uri", "string", "the resource URI to read"),
 	).Required("uri").Build()
 }

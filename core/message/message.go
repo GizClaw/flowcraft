@@ -142,7 +142,31 @@ func LastByRole(msgs []Message, role Role) (Message, bool) {
 
 // NewTextMessage builds a message carrying a single text part.
 func NewTextMessage(role Role, text string) Message {
-	return Message{Role: role, Content: Content{Parts: []Part{TextPart{Text: text}}}}
+	return Message{Role: role, Content: NewTextContent(text)}
+}
+
+// NewTextContent builds a content carrying a single text part. It is the
+// canonical way to express the "plain string result" that text-only
+// producers and wire formats still deal in.
+func NewTextContent(text string) Content {
+	return Content{Parts: []Part{TextPart{Text: text}}}
+}
+
+// NewJSONContent builds a content carrying one structured data part.
+// A JSON object result is data, not prose: keeping it typed lets
+// middleware redact and bound it like any other part, while drivers
+// that lack a structured surface render the same JSON text the model
+// saw before. Values that are not JSON objects are rejected — see
+// [DataPart.Validate].
+func NewJSONContent(value []byte) (Content, error) {
+	part := DataPart{
+		MediaType: "application/json",
+		Value:     json.RawMessage(bytes.Clone(bytes.TrimSpace(value))),
+	}
+	if err := part.Validate(); err != nil {
+		return Content{}, err
+	}
+	return Content{Parts: []Part{part}}, nil
 }
 
 // Content is an ordered collection of canonical parts. Intent deliberately
