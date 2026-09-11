@@ -10,77 +10,6 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
-func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
-	if err != nil {
-		t.Fatalf("buildProvider: %v", err)
-	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
-	}
-	for name, entry := range catalog {
-		if entry.kind != kindGenerate {
-			continue
-		}
-		descriptor := descriptors[name]
-		if entry.limits.MaxInputTokens == nil || descriptor.Limits.MaxInputTokens == nil {
-			t.Errorf("model %q: max input tokens not declared", name)
-		}
-	}
-	checks := map[string]int{
-		"MiniMax-M3":             1_000_000,
-		"MiniMax-M2.7":           204_800,
-		"MiniMax-M2.5-highspeed": 204_800,
-	}
-	for name, want := range checks {
-		descriptor := descriptors[name]
-		if descriptor.Limits.MaxInputTokens == nil ||
-			*descriptor.Limits.MaxInputTokens != want {
-			t.Errorf("model %q: max input tokens = %v, want %d",
-				name, descriptor.Limits.MaxInputTokens, want)
-		}
-	}
-}
-
-func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
-	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
-	if err != nil {
-		t.Fatalf("buildProvider: %v", err)
-	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
-	}
-	for name, entry := range catalog {
-		if entry.kind != kindGenerate {
-			continue
-		}
-		descriptor := descriptors[name]
-		if entry.limits.MaxOutputTokens == nil {
-			if descriptor.Limits.MaxOutputTokens != nil {
-				t.Errorf("model %q: undeclared max output tokens = %d",
-					name, *descriptor.Limits.MaxOutputTokens)
-			}
-			continue
-		}
-		if descriptor.Limits.MaxOutputTokens == nil {
-			t.Errorf("model %q: max output tokens not declared", name)
-		}
-	}
-	checks := map[string]int{
-		"MiniMax-M3": 524_288,
-	}
-	for name, want := range checks {
-		descriptor := descriptors[name]
-		if descriptor.Limits.MaxOutputTokens == nil ||
-			*descriptor.Limits.MaxOutputTokens != want {
-			t.Errorf("model %q: max output tokens = %v, want %d",
-				name, descriptor.Limits.MaxOutputTokens, want)
-		}
-	}
-}
-
 func TestCatalogPublishesCapabilities(t *testing.T) {
 	provider, err := buildProvider(context.Background(), ResourceSettings{ID: "minimax"}, nil)
 	if err != nil {
@@ -89,21 +18,6 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
 	for _, model := range provider.Models {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
-	}
-
-	m3 := descriptors["MiniMax-M3"]
-	if !reflect.DeepEqual(m3.Capabilities.Outputs, []message.PartKind{message.PartText}) ||
-		!slices.Contains(m3.Capabilities.Inputs, message.PartImage) ||
-		!slices.Contains(m3.Capabilities.Inputs, message.PartVideo) ||
-		m3.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
-		t.Fatalf("M3 capabilities = %+v", m3.Capabilities)
-	}
-
-	m2 := descriptors["MiniMax-M2.7"]
-	if m2.Capabilities.Reasoning.Kind != inference.ReasoningAlways ||
-		slices.Contains(m2.Capabilities.Inputs, message.PartImage) ||
-		slices.Contains(m2.Capabilities.Inputs, message.PartVideo) {
-		t.Fatalf("M2.7 capabilities = %+v", m2.Capabilities)
 	}
 
 	image := descriptors["image-01"]
@@ -199,74 +113,5 @@ func TestMergedCatalogPreservesBuiltInVideoFlags(t *testing.T) {
 	}
 	if entry := models["MiniMax-H3-Context-IR"]; entry.wireModel != "MiniMax-H3" {
 		t.Fatalf("redeclared Context-IR wireModel = %q, want MiniMax-H3", entry.wireModel)
-	}
-}
-
-func TestMergedCatalogOverlaysDeclaredLimits(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{
-		"models": [{
-			"name": "MiniMax-M3",
-			"kind": "generate",
-			"capabilities": {"inputs":["text"],"outputs":["text"]}
-		}]
-	}`))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
-	}
-	entry := models["MiniMax-M3"]
-	in, out := entry.limits.Values()
-	if in != 1_000_000 || out != 524_288 {
-		t.Fatalf("redeclared limits = %d/%d, want catalog 1000000/524288",
-			in, out)
-	}
-
-	spec, err = decodeSpec(context.Background(), []byte(`{
-		"models": [{
-			"name": "MiniMax-M3",
-			"kind": "generate",
-			"capabilities": {"inputs":["text"],"outputs":["text"]},
-			"limits": {"max_output_tokens": 4096}
-		}]
-	}`))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err = mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
-	}
-	entry = models["MiniMax-M3"]
-	in, out = entry.limits.Values()
-	if in != 1_000_000 || out != 4096 {
-		t.Fatalf("overridden limits = %d/%d, want 1000000/4096",
-			in, out)
-	}
-}
-
-func TestMergedCatalogOverridesDeclaredInputLimit(t *testing.T) {
-	spec, err := decodeSpec(context.Background(), []byte(`{
-		"models": [{
-			"name": "MiniMax-M3",
-			"kind": "generate",
-			"capabilities": {"inputs":["text"],"outputs":["text"]},
-			"limits": {"max_input_tokens": 65536}
-		}]
-	}`))
-	if err != nil {
-		t.Fatalf("decodeSpec: %v", err)
-	}
-	models, err := mergedCatalog(spec)
-	if err != nil {
-		t.Fatalf("mergedCatalog: %v", err)
-	}
-	entry := models["MiniMax-M3"]
-	in, out := entry.limits.Values()
-	if in != 65_536 || out != 524_288 {
-		t.Fatalf("declared input limits = %d/%d, want 65536/524288",
-			in, out)
 	}
 }

@@ -131,8 +131,6 @@ func openersFor(
 			return inference.GenerateOperations{}, err
 		}
 		switch entry.kind {
-		case kindGenerate:
-			return openGenerate(cls, entry, id, model.Profile)
 		case kindImage:
 			return openImage(cls, entry, id)
 		case kindTTS:

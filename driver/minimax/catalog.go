@@ -13,7 +13,6 @@ import (
 type modelKind string
 
 const (
-	kindGenerate  modelKind = "generate"
 	kindImage     modelKind = "image"
 	kindTTS       modelKind = "tts"
 	kindVideo     modelKind = "video"
@@ -65,10 +64,6 @@ func (e catalogEntry) validate() error {
 		return err
 	}
 	switch e.kind {
-	case kindGenerate:
-		if !slices.Contains(e.capabilities.Outputs, message.PartText) {
-			return fmt.Errorf("generate family must declare text output")
-		}
 	case kindImage:
 		if !slices.Contains(e.capabilities.Outputs, message.PartImage) {
 			return fmt.Errorf("image family must declare image output")
@@ -122,59 +117,6 @@ func generateChatCapabilities() inference.ModelCapabilities {
 // lyrics/format through MusicOptions; music-cover stays out because it has
 // no honest surface in that intent.
 var catalog = map[string]catalogEntry{
-	"MiniMax-M3": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithInputs(message.PartImage, message.PartVideo).
-			WithReasoning(inference.ReasoningToggle),
-		limits: inference.ModelLimits{}.
-			WithMaxInputTokens(1_000_000).
-			WithMaxOutputTokens(524_288),
-	},
-	"MiniMax-M2.7": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.7-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.5": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.5-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.1": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2.1-highspeed": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-	"MiniMax-M2": {
-		kind: kindGenerate,
-		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningAlways),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(204_800),
-	},
-
-	// Speech synthesis (t2a_v2): HD and turbo tiers.
 	"speech-2.8-hd": {
 		kind: kindTTS,
 		capabilities: inference.ModelCapabilities{}.
@@ -353,7 +295,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			}
 		} else {
 			if entry.kind == "" {
-				entry.kind = kindGenerate
+				return nil, fmt.Errorf(
+					"model %q needs a kind: text generation moved to the anthropic driver (impl: anthropic)",
+					declared.Name,
+				)
 			}
 		}
 		// The declaration's capability leaves always apply; the base is the

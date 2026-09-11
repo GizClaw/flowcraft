@@ -5,17 +5,14 @@ import (
 	"fmt"
 	"strings"
 
-	anthropicgo "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/option"
-
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
-// defaultBaseURL is the China endpoint, matching the legacy minimax
-// adapter; international deployments override base_url with
-// https://api.minimax.io/anthropic.
-const defaultBaseURL = "https://api.minimaxi.com/anthropic"
+// defaultMediaBaseURL is the China media root (t2a, video, image, music);
+// international deployments override media_base_url with
+// https://api.minimax.io. The Messages endpoint lives in the anthropic driver.
+const defaultMediaBaseURL = "https://api.minimaxi.com"
 
 // profileMaterial is one profile's resolved credentials and profile-level
 // settings, validated once at factory build time.
@@ -25,13 +22,10 @@ type profileMaterial struct {
 	resolver *resource.SecretResolver
 }
 
-// clients carries the handles one profile opens drivers with. MiniMax
-// serves the Anthropic Messages protocol — signed thinking blocks and
-// all — so the anthropic-go client does the Messages HTTP work; the media
-// APIs (t2a, video, image) ride a plain JSON client rooted at the media
-// base URL.
+// clients carries the handles one profile opens drivers with. Every
+// remaining surface is a MiniMax-native API, so one plain JSON client rooted
+// at the media base URL is all it takes.
 type clients struct {
-	api   anthropicgo.Client
 	media *mediaClient
 }
 
@@ -63,29 +57,7 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 	if apiKey == "" {
 		return nil, errdefs.Validationf("minimax profile resolves no api_key secret")
 	}
-	baseURL := spec.BaseURL
-	if baseURL == "" {
-		baseURL = defaultBaseURL
-	}
-	options := []option.RequestOption{
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(baseURL),
-	}
-	if spec.HTTPRetries != nil {
-		options = append(options,
-			option.WithMaxRetries(sdkMaxRetries(int(*spec.HTTPRetries))))
-	}
 	return &clients{
-		api:   anthropicgo.NewClient(options...),
 		media: newMediaClient(apiKey, spec.mediaBaseURL(), spec),
 	}, nil
-}
-
-// sdkMaxRetries converts a total-attempt budget (including the first) into
-// the SDK's retry-count option.
-func sdkMaxRetries(total int) int {
-	if total <= 1 {
-		return 0
-	}
-	return total - 1
 }
