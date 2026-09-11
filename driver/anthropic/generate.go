@@ -55,6 +55,7 @@ type wireBlockKind string
 const (
 	wireBlockText             wireBlockKind = "text"
 	wireBlockImage            wireBlockKind = "image"
+	wireBlockVideo            wireBlockKind = "video"
 	wireBlockToolUse          wireBlockKind = "tool_use"
 	wireBlockToolResult       wireBlockKind = "tool_result"
 	wireBlockThinking         wireBlockKind = "thinking"
@@ -68,6 +69,11 @@ type wireBlock struct {
 	imageURL  string
 	imageData []byte
 	imageType string
+	// video carries an absolute URL or inline bytes plus media type; the
+	// transport renders it as a raw union block.
+	videoURL  string
+	videoData []byte
+	videoType string
 	// tool_use / tool_result.
 	callID string
 	name   string // tool_use
@@ -437,7 +443,22 @@ func compileMessage(
 		case message.AudioPart:
 			ledger.reject(fields[message.PartAudio], "audio input is not supported by claude models")
 		case message.VideoPart:
-			ledger.reject(fields[message.PartVideo], "video input is not supported by claude models")
+			switch {
+			case !entry.videoInput:
+				ledger.reject(
+					fields[message.PartVideo],
+					"endpoint does not accept video blocks (set spec.wire.video_input)",
+				)
+			case !slices.Contains(entry.capabilities.Inputs, message.PartVideo):
+				ledger.reject(fields[message.PartVideo], "model does not accept video input")
+			case value.Source.Kind() == media.SourceStream:
+				ledger.reject(
+					fields[message.PartVideo],
+					"stream media sources must be materialized before generate",
+				)
+			default:
+				wire.appendBlock(role, videoBlock(value.Source))
+			}
 		case message.FilePart:
 			ledger.reject(fields[message.PartFile], "file references are not supported")
 		case message.DataPart:
@@ -456,7 +477,7 @@ func compileMessage(
 			wire.appendBlock("user", wireBlock{
 				kind:   wireBlockToolResult,
 				callID: value.Result.CallID,
-				output: value.Result.Content,
+				output: value.Result.Content.Text(),
 			})
 		case message.ReasoningPart:
 			compileReasoning(wire, role, value, fields, ledger)
@@ -519,7 +540,7 @@ func compileToolResults(
 		wire.appendBlock("user", wireBlock{
 			kind:   wireBlockToolResult,
 			callID: result.Result.CallID,
-			output: result.Result.Content,
+			output: result.Result.Content.Text(),
 		})
 	}
 }
@@ -534,6 +555,19 @@ func imageBlock(source media.ImageSource) wireBlock {
 		kind:      wireBlockImage,
 		imageData: bytesClone(source.Bytes()),
 		imageType: source.MediaType(),
+	}
+}
+
+// videoBlock lowers a video source: URLs pass through, inline bytes carry
+// their raw data plus media type for base64 encoding at the transport.
+func videoBlock(source media.VideoSource) wireBlock {
+	if source.Kind() == media.SourceURL {
+		return wireBlock{kind: wireBlockVideo, videoURL: source.URL()}
+	}
+	return wireBlock{
+		kind:      wireBlockVideo,
+		videoData: append([]byte(nil), source.Bytes()...),
+		videoType: source.MediaType(),
 	}
 }
 

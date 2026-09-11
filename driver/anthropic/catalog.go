@@ -15,13 +15,16 @@ import (
 // canonical-to-wire effort map).
 type catalogEntry struct {
 	capabilities inference.ModelCapabilities
-	deprecated   bool
-	replacement  string
 	// limits carries the model's context/output windows in tokens. Nil
 	// leaves are undeclared. Values mirror the context window and maximum
 	// output published on https://platform.claude.com/docs/en/about-claude/
 	// models.
 	limits inference.ModelLimits
+	// videoInput mirrors Spec.Wire.VideoInput: the endpoint accepts video
+	// blocks. Sending one still requires the model to declare video input.
+	videoInput  bool
+	deprecated  bool
+	replacement string
 }
 
 // validate enforces the generate family contract: Claude compilers only
@@ -184,7 +187,11 @@ var catalog = map[string]catalogEntry{
 // conservative zero base.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
-	maps.Copy(models, catalog)
+	// A declared catalog starts empty: a compatible endpoint's model names
+	// must never inherit Claude facts just because they collide.
+	if spec.catalogMode() == catalogBuiltinDeclared {
+		maps.Copy(models, catalog)
+	}
 	for _, model := range spec.Models {
 		entry := catalogEntry{}
 		if builtin, exists := models[model.Name]; exists {
@@ -204,6 +211,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			entry.limits.MaxOutputTokens = &value
 		}
 		models[model.Name] = entry
+	}
+	for name, entry := range models {
+		entry.videoInput = spec.Wire.VideoInput
+		models[name] = entry
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {

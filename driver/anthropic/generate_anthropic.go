@@ -5,6 +5,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -82,6 +83,21 @@ func wireToParams(wire generateWire) anthropicgo.MessageNewParams {
 // blockToParam lowers one wire block into the SDK's content block union.
 func blockToParam(block wireBlock) anthropicgo.ContentBlockParamUnion {
 	switch block.kind {
+	case wireBlockVideo:
+		// The SDK has no video block yet: this compatible-endpoint extension
+		// rides a raw union. Anthropic's own schema has no video content.
+		source := map[string]any{"type": "url", "url": block.videoURL}
+		if block.videoURL == "" {
+			source = map[string]any{
+				"type":       "base64",
+				"media_type": block.videoType,
+				"data":       base64.StdEncoding.EncodeToString(block.videoData),
+			}
+		}
+		raw, _ := json.Marshal(map[string]any{"type": "video", "source": source})
+		return param.Override[anthropicgo.ContentBlockParamUnion](
+			json.RawMessage(raw),
+		)
 	case wireBlockImage:
 		if block.imageURL != "" {
 			return anthropicgo.NewImageBlock(anthropicgo.URLImageSourceParam{

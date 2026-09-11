@@ -53,8 +53,8 @@ func (m profileMaterial) newClients(ctx context.Context, spec Spec) (*clients, e
 		return nil, errdefs.Validationf("anthropic profile is missing the required api_key secret")
 	}
 	options := []option.RequestOption{option.WithAPIKey(apiKey)}
-	if spec.BaseURL != "" {
-		options = append(options, option.WithBaseURL(spec.BaseURL))
+	if spec.Endpoint.BaseURL != "" {
+		options = append(options, option.WithBaseURL(spec.Endpoint.BaseURL))
 	}
 	if spec.HTTPRetries != nil {
 		options = append(options,
