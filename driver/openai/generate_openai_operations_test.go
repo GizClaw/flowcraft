@@ -175,7 +175,7 @@ func TestImageTransport(t *testing.T) {
 			},
 		},
 	}
-	compiled, err := compileImage("gpt-image-2")(
+	compiled, err := compileImage("gpt-image-2", false)(
 		context.Background(),
 		openaiModel("gpt-image-2"),
 		request,
@@ -229,7 +229,7 @@ func TestImageCompilerSizeRules(t *testing.T) {
 				},
 			},
 		}
-		compiled, err := compileImage("gpt-image-2")(
+		compiled, err := compileImage("gpt-image-2", false)(
 			context.Background(),
 			openaiModel("gpt-image-2"),
 			request,
@@ -292,7 +292,7 @@ func TestImageCompilerSizeRules(t *testing.T) {
 // opening image operations succeeds for both execution shapes.
 func TestImageOpsBind(t *testing.T) {
 	operations, err := inference.BindGenerateOperations(
-		compileImage("gpt-image-2"),
+		compileImage("gpt-image-2", false),
 		transportImage(openai.Client{}),
 		decodeImage,
 		transportImageStream(openai.Client{}),
@@ -378,7 +378,7 @@ func TestImageEditTransport(t *testing.T) {
 			},
 		},
 	}
-	compiled, err := compileImage("gpt-image-2")(
+	compiled, err := compileImage("gpt-image-2", false)(
 		context.Background(),
 		openaiModel("gpt-image-2"),
 		request,
@@ -510,7 +510,7 @@ func TestImageStreamTransport(t *testing.T) {
 			ImageOptions{PartialImages: &two},
 		},
 	}
-	compiled, err := compileImage("gpt-image-2")(
+	compiled, err := compileImage("gpt-image-2", false)(
 		context.Background(),
 		openaiModel("gpt-image-2"),
 		request,
@@ -663,7 +663,7 @@ func TestImageEditStreamTransport(t *testing.T) {
 			ImageOptions{PartialImages: &two},
 		},
 	}
-	compiled, err := compileImage("gpt-image-2")(
+	compiled, err := compileImage("gpt-image-2", false)(
 		context.Background(),
 		openaiModel("gpt-image-2"),
 		request,
@@ -735,7 +735,7 @@ func TestImageCompilerStreamShape(t *testing.T) {
 				ImageOptions{PartialImages: partial},
 			}
 		}
-		compiled, err := compileImage("gpt-image-2")(
+		compiled, err := compileImage("gpt-image-2", false)(
 			context.Background(),
 			openaiModel("gpt-image-2"),
 			request,
@@ -799,7 +799,7 @@ func TestImageCompilerQuality(t *testing.T) {
 				},
 			},
 		}
-		compiled, err := compileImage("gpt-image-2")(
+		compiled, err := compileImage("gpt-image-2", false)(
 			context.Background(),
 			openaiModel("gpt-image-2"),
 			request,

@@ -17,7 +17,7 @@ Every call takes a concrete `ModelRef`:
 model := inference.ModelRef{
     ID: inference.ModelID{
         Provider: "deepseek",
-        Name:     "deepseek-v4-flash",
+        Name:     "deepseek-flash",
     },
 }
 ```
@@ -37,9 +37,22 @@ Providers and the assembly are separate resources:
 resources:
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       id: deepseek
+      spec:
+        api: responses
+        endpoint:
+          base_url: https://api.deepseek.com
+        wire:
+          reasoning_channel: text   # DeepSeek streams plain reasoning text
+        catalog: declared
+        models:
+          - name: deepseek-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
       profiles:
         - secrets:
             api_key: ${env:DEEPSEEK_API_KEY}
@@ -54,7 +67,7 @@ Provider implementations are registered by the application from provider
 driver modules:
 
 ```go
-reg.MustRegister(deepseek.NewFactory())
+reg.MustRegister(openai.NewFactory())
 reg.MustRegister(inference.Factory{})
 ```
 
@@ -95,7 +108,7 @@ resources:
       generate:
         - tier: fast
           targets:
-            - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+            - model: {id: {provider: deepseek, name: deepseek-flash}}
               score: {quality: 0.8, speed: 0.9}
       retry:
         generate:
@@ -178,8 +191,9 @@ object; `client_metadata` is emitted as a passthrough object for gateways
 that speak the Codex convention. An empty configuration never sends
 anything, and core keys are forwarded verbatim.
 
-`request_metadata` forwarding is implemented by the DeepSeek, OpenAI, and
-Azure drivers. Anthropic, MiniMax, Bytedance, Kimi, and Qwen are the current
+`request_metadata` forwarding is implemented by the OpenAI driver, which
+covers OpenAI, Azure, and any compatible endpoint configured through its
+`endpoint` block. Anthropic, MiniMax, Bytedance, and Qwen are the current
 exceptions: their official Messages/Ark/DashScope surfaces do not model
 arbitrary request metadata and the drivers deliberately keep their native
 transport paths, so canonical metadata is not forwarded until those
@@ -191,6 +205,25 @@ Drivers that forward it report `native` when their deployment enables an
 envelope. The envelope is an arbitrary non-empty string naming the top-level
 body field; providers that type `metadata` natively lower that name through
 their SDK types, while other names ride as passthrough JSON fields.
+
+### Component notes
+
+Decisions are field-level: every active canonical field carries exactly one
+terminal disposition. Some fields aggregate several content parts under one
+path — the `*` in `generate.context.*.content.parts.tool_result` spans every
+message — so a single disposition cannot say "the text arrived but the image
+did not". Such a decision may carry `components` notes: one entry per part,
+in encounter order, each naming the content kind, its position, and its own
+disposition. The notes are populated only when the field lost at least one
+part, and they must fold onto the field's disposition, so a field can never
+read `native` while one of its components was dropped.
+
+The OpenAI driver uses them for multimodal tool results: text that rides
+along is `native`, an image the wire cannot carry (a Chat Completions tool
+message, a model without image input, an unmaterialized stream source) is
+`dropped` at its own position with a reason, and the model receives an
+in-place `[omitted tool output: ...]` placeholder so the surrounding text
+keeps its meaning.
 
 ## Streaming
 

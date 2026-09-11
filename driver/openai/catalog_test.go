@@ -198,7 +198,7 @@ func TestMergedCatalogRejectsFamilyContractViolation(t *testing.T) {
 
 func TestMergedCatalogAppliesChatStreamUsagePolicy(t *testing.T) {
 	spec, err := decodeSpec(context.Background(), []byte(
-		`{"api":"chat","chat_stream_options":{"include_usage":false,"include_obfuscation":false}}`,
+		`{"api":"chat","wire":{"chat_stream_options":{"include_usage":false,"include_obfuscation":false}}}`,
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)

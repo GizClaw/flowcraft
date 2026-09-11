@@ -26,6 +26,9 @@ type ttsWire struct {
 	format string // mp3 | opus | aac | flac | pcm
 	speed  *float64
 	stream bool
+	// instructions steers delivery for models that accept free-form style
+	// direction; it comes from TTSOptions, not the canonical intent.
+	instructions string
 	// canonicalFormat echoes the negotiated format for the response part;
 	// it is derived from the request, never from provider payloads.
 	canonicalEncoding  string
@@ -148,8 +151,10 @@ func compileTTS(
 				"speech models do not produce video",
 			)
 		}
-		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "openai speech synthesis supports no extensions")
+		options, other := operationExtensions[TTSOptions](request.Extensions)
+		rejectOtherExtensions("speech synthesis", other, ledger)
+		if instructions := options.Instructions; instructions != nil {
+			wire.instructions = *instructions
 		}
 
 		report := ledger.report()
@@ -224,6 +229,9 @@ func ttsParams(wire ttsWire) openai.AudioSpeechNewParams {
 	}
 	if wire.speed != nil {
 		params.Speed = param.NewOpt(*wire.speed)
+	}
+	if wire.instructions != "" {
+		params.Instructions = param.NewOpt(wire.instructions)
 	}
 	return params
 }

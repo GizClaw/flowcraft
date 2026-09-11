@@ -15,7 +15,7 @@ resources:
 
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       file: ./inference.yaml
 

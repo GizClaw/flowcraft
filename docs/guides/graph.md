@@ -32,7 +32,7 @@ A `*Graph` is an `agent.Engine`.
       "type": "inference",
       "config": {
         "model": {
-          "id": { "provider": "deepseek", "name": "deepseek-v4-flash" }
+          "id": { "provider": "deepseek", "name": "deepseek-flash" }
         },
         "messages_channel": "__main_channel"
       }

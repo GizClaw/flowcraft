@@ -62,6 +62,25 @@ type catalogEntry struct {
 	// requestMetadataEnvelope is the provider-level lowering policy for
 	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
 	requestMetadataEnvelope string
+	// store asks the provider to retain responses server-side. The driver
+	// default is false: FlowCraft replays context itself.
+	store bool
+	// omitReasoningPayload suppresses include: [reasoning.encrypted_content].
+	// The zero value keeps the OpenAI shape — reasoning traces round-trip
+	// into later context — so an entry built outside mergedCatalog still
+	// describes the surface it belongs to.
+	omitReasoningPayload bool
+	// reasoningChannel selects the reasoning round-trip shape: summary text
+	// plus an opaque payload, or plain reasoning text.
+	reasoningChannel reasoningChannel
+	// reasoningSummary asks the provider for readable reasoning summaries;
+	// empty leaves the API default (no summary text).
+	reasoningSummary reasoningSummaryPolicy
+	// truncation selects the provider's context-overflow policy.
+	truncation truncationMode
+	// azureDeployment marks endpoints whose data-plane routes carry the
+	// deployment name in the path.
+	azureDeployment bool
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -70,6 +89,24 @@ type catalogEntry struct {
 func (e catalogEntry) validate() error {
 	if err := e.capabilities.Validate(); err != nil {
 		return err
+	}
+	// Publishing an input kind the wire cannot carry would promise a
+	// capability the compiler has to reject at request time.
+	for _, kind := range e.capabilities.Inputs {
+		switch kind {
+		case message.PartAudio:
+			return fmt.Errorf(
+				"the OpenAI wire has no audio input; drop it from capabilities.inputs",
+			)
+		case message.PartVideo:
+			return fmt.Errorf(
+				"the OpenAI wire has no video input; drop it from capabilities.inputs",
+			)
+		case message.PartFile:
+			return fmt.Errorf(
+				"the OpenAI wire has no file input; drop it from capabilities.inputs",
+			)
+		}
 	}
 	switch e.kind {
 	case kindGenerate:
@@ -282,7 +319,11 @@ var catalog = map[string]catalogEntry{
 // compiler would reject.
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	models := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
-	maps.Copy(models, catalog)
+	// A declared catalog starts empty: deployment names must never inherit
+	// OpenAI facts just because they collide with a built-in slug.
+	if spec.catalogMode() == catalogBuiltinDeclared {
+		maps.Copy(models, catalog)
+	}
 	for _, model := range spec.Models {
 		kind := modelKind(model.Kind)
 		builtin, exists := models[model.Name]
@@ -309,16 +350,32 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	chatStreamIncludeUsage := spec.chatStreamIncludeUsage()
 	chatStreamIncludeObfuscation := spec.chatStreamIncludeObfuscation()
 	api := spec.apiMode()
+	channel := spec.reasoningChannel()
+	reasoningSummary := spec.reasoningSummaryPolicy()
+	truncation := spec.truncation()
+	omitReasoningPayload := !spec.includeReasoningPayload()
+	store := spec.store()
+	azureDeployment := spec.routing() == routingAzureDeployment
 	for name, entry := range models {
 		entry.api = api
 		entry.requestMetadataEnvelope = envelope
 		entry.chatStreamIncludeUsage = chatStreamIncludeUsage
 		entry.chatStreamIncludeObfuscation = chatStreamIncludeObfuscation
+		entry.store = store
+		entry.reasoningChannel = channel
+		entry.reasoningSummary = reasoningSummary
+		entry.truncation = truncation
+		entry.omitReasoningPayload = omitReasoningPayload
+		entry.azureDeployment = azureDeployment
 		if entry.kind == kindGenerate &&
 			entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
 			entry.api == apiChat {
 			// Chat Completions has no way to express reasoning off for any
 			// model, so the truthful per-surface capability is always-on.
+			// The text reasoning channel keeps its declaration instead:
+			// whether that surface can disable reasoning is an endpoint
+			// fact (DeepSeek honors reasoning.effort="none", Kimi does not),
+			// so the catalog states it rather than the driver guessing.
 			entry.capabilities.Reasoning.Kind = inference.ReasoningAlways
 		}
 		models[name] = entry

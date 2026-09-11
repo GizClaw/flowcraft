@@ -2,6 +2,8 @@ package inference
 
 import (
 	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/message"
 )
 
 type FieldID string
@@ -118,6 +120,34 @@ type Decision struct {
 	Field       FieldID     `json:"field"`
 	Disposition Disposition `json:"disposition"`
 	Reason      string      `json:"reason,omitempty"`
+	// Components carries per-component detail when a field aggregates whole
+	// content kinds across occurrences (the `*` in
+	// generate.context.*.content.parts.tool_result spans every message).
+	// A field-level disposition cannot say "the text arrived but the image
+	// did not"; these notes keep that distinction machine-readable without
+	// widening the field table or letting one field carry several terminal
+	// dispositions.
+	//
+	// The list is populated only when the field lost at least one
+	// component; it then covers every component of the field in encounter
+	// order, so Index positions stay meaningful. Disposition equals the
+	// worst component disposition.
+	Components []ComponentNote `json:"components,omitempty"`
+}
+
+// ComponentNote records how one component inside a canonical field fared.
+type ComponentNote struct {
+	// Kind is the canonical content kind this note covers.
+	Kind message.PartKind `json:"kind"`
+	// Disposition is this component's own terminal disposition.
+	Disposition Disposition `json:"disposition"`
+	// Index is the component's position in encounter order. Drivers choose
+	// the granularity the field aggregates at: for a tool result it is the
+	// position inside that result's content, and indexes are unique within
+	// one decision.
+	Index int `json:"index"`
+	// Reason states why a non-native component was degraded.
+	Reason string `json:"reason,omitempty"`
 }
 
 type CompileReport struct {
@@ -126,8 +156,22 @@ type CompileReport struct {
 }
 
 func (r CompileReport) Clone() CompileReport {
-	r.Decisions = append([]Decision(nil), r.Decisions...)
+	r.Decisions = cloneDecisions(r.Decisions)
 	return r
+}
+
+// cloneDecisions deep-copies decisions, including their component notes, so
+// callers can mutate a report without reaching into the original.
+func cloneDecisions(decisions []Decision) []Decision {
+	if decisions == nil {
+		return nil
+	}
+	cloned := make([]Decision, len(decisions))
+	for index, decision := range decisions {
+		decision.Components = append([]ComponentNote(nil), decision.Components...)
+		cloned[index] = decision
+	}
+	return cloned
 }
 
 func (r CompileReport) Rejects(field FieldID) bool {
@@ -150,11 +194,24 @@ func (r CompileReport) Dropped(field FieldID) bool {
 	return false
 }
 
+// Components returns the per-component notes recorded for field, or nil when
+// the decision carried none. The notes are meaningful only when the field
+// lost at least one component: the driver then reports every component in
+// encounter order.
+func (r CompileReport) Components(field FieldID) []ComponentNote {
+	for _, decision := range r.Decisions {
+		if decision.Field == field {
+			return append([]ComponentNote(nil), decision.Components...)
+		}
+	}
+	return nil
+}
+
 func (r CompileReport) Metadata(model ModelRef) Metadata {
 	return Metadata{
 		Model:     model.ID,
 		Operation: r.Operation,
-		Decisions: append([]Decision(nil), r.Decisions...),
+		Decisions: cloneDecisions(r.Decisions),
 	}
 }
 
@@ -188,6 +245,9 @@ func (r CompileReport) ValidateSuccess(operation Operation, active []FieldID) er
 			return contractViolation(r.Operation, decision.Field, "successful compile contains rejection")
 		default:
 			return contractViolation(r.Operation, decision.Field, "unknown disposition")
+		}
+		if err := validateComponents(r.Operation, decision); err != nil {
+			return err
 		}
 	}
 	for _, field := range active {
@@ -236,9 +296,79 @@ func (r CompileReport) ValidateFailure(operation Operation, active []FieldID) er
 		default:
 			return contractViolation(operation, decision.Field, "unknown disposition")
 		}
+		if err := validateComponents(operation, decision); err != nil {
+			return err
+		}
 	}
 	if !rejected {
 		return contractViolation(operation, "", "failed compile has no rejected field")
+	}
+	return nil
+}
+
+// validateComponents checks a decision's per-component notes. The notes are
+// optional — a decision without them keeps the field-level contract — but
+// when present they must be well formed and must fold onto the field's own
+// disposition, so a report can never claim "native" for a field that lost an
+// image.
+func validateComponents(operation Operation, decision Decision) error {
+	if len(decision.Components) == 0 {
+		return nil
+	}
+	seen := make(map[int]struct{}, len(decision.Components))
+	worst := Native
+	for _, note := range decision.Components {
+		if err := note.Kind.Validate(); err != nil {
+			return contractViolation(
+				operation,
+				decision.Field,
+				"component names an invalid content kind",
+			)
+		}
+		if _, duplicate := seen[note.Index]; duplicate {
+			return contractViolation(
+				operation,
+				decision.Field,
+				"duplicate component index",
+			)
+		}
+		seen[note.Index] = struct{}{}
+		switch note.Disposition {
+		case Native:
+		case Dropped:
+			if note.Reason == "" {
+				return contractViolation(
+					operation,
+					decision.Field,
+					"dropped component carries no reason",
+				)
+			}
+			if worst == Native {
+				worst = Dropped
+			}
+		case Rejected:
+			if note.Reason == "" {
+				return contractViolation(
+					operation,
+					decision.Field,
+					"rejected component carries no reason",
+				)
+			}
+			worst = Rejected
+		default:
+			return contractViolation(
+				operation,
+				decision.Field,
+				"unknown component disposition",
+			)
+		}
+	}
+	if worst != decision.Disposition {
+		return contractViolation(
+			operation,
+			decision.Field,
+			"component dispositions do not fold onto the field disposition",
+		)
 	}
 	return nil
 }

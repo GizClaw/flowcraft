@@ -1,7 +1,5 @@
 github.com/GizClaw/flowcraft/core v0.2.0 h1:t2W4W4LtMT7SH4ZPyzTv3Tosu3fP6afxu/d4J8rI8rA=
 github.com/GizClaw/flowcraft/core v0.2.0/go.mod h1:2EZ+ZFBICJse3GS48m7S+IpXy2s8j/xEy/O7dN5VB+U=
-github.com/GizClaw/flowcraft/driver/deepseek v0.2.0 h1:kIsIdfVcrGfKnEBYWq4aWojNkssjn0Ms08XjT/RTn3Q=
-github.com/GizClaw/flowcraft/driver/deepseek v0.2.0/go.mod h1:moKBOC7BYT/DlD+IEJDsrzcFbWCddDANP+j7leTW6Tw=
 github.com/GizClaw/flowcraft/driver/openai v0.2.0 h1:eKPtlCnIG+ROEX7oSBtqVjn0+cD1GCuoaZqnKyOwVZc=
 github.com/GizClaw/flowcraft/driver/openai v0.2.0/go.mod h1:pIklnydcXxm4LboM0A3r7j+SS9VDXOH21GkmZWONu5A=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=

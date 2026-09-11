@@ -109,6 +109,7 @@ type GenerateRequest struct {
 	// keys, and each provider driver decides whether and how to surface
 	// it on the provider request (metadata, client_metadata, or none).
 	RequestMetadata map[string]string `json:"request_metadata,omitempty"`
+
 }
 
 func (r GenerateRequest) Clone() GenerateRequest {
@@ -375,7 +376,7 @@ type GenerateResponse struct {
 func (r GenerateResponse) Clone() GenerateResponse {
 	r.Message = r.Message.Clone()
 	r.Usage = r.Usage.Clone()
-	r.Metadata.Decisions = append([]Decision(nil), r.Metadata.Decisions...)
+	r.Metadata.Decisions = cloneDecisions(r.Metadata.Decisions)
 	r.ProviderOutputs = r.ProviderOutputs.Clone()
 	return r
 }

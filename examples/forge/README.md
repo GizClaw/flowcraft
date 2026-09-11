@@ -93,9 +93,13 @@ including failures) and `chat_log.txt`.
 
 Provider credentials are read from environment variables declared by the
 `inference.yaml` secret resolvers (`resolver: env`). The demo loads `.env` from
-the forge directory at startup; it currently carries `DEEPSEEK_API_KEY`, and
-every scenario pins `deepseek-v4-flash`. Without a credential the app fails
-with a clear message.
+the forge directory at startup. Only `DEEPSEEK_API_KEY` is required: every
+scenario routes to `deepseek-flash`. Two more providers are declared and
+ready to use — `gpt-5.6-luna` through the OpenAI line-up (`OPENAI_API_KEY`)
+and `glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
+(`ZHIPU_API_KEY`) — and their references are lazy, so a missing key only
+surfaces if a graph actually routes to them. Without any credential the app
+fails with a clear message.
 
 ## TUI
 
@@ -106,9 +110,25 @@ with a clear message.
 
 `Tab` switches focus, `Enter` submits, `Esc` clears the focused input, and
 `Ctrl+C` twice quits. Empty input is a no-op; type `/start` to open a fresh
-story or `/next` to keep the story moving. After each turn the Chat panel
-shows that turn's token
-accounting under the input box: input / output / total tokens, reasoning
+story or `/next` to keep the story moving.
+
+Two host commands configure inference without leaving the TUI:
+
+- `/model` picks the backend — `auto` (the routing policy's default target) or
+  any selectable `provider/name` the deployment exposes. `/model auto` and
+  `/model <target>` skip the picker.
+- `/think` picks the reasoning effort — `auto` (the graph's own default) or a
+  canonical level (`minimal`/`low`/`medium`/`high`/`xhigh`). Providers fold
+  these onto their own ladder and report any fold on the compile ledger.
+
+Both choices live in the TUI process only: they are handed to the next turn as
+engine inputs, and nothing is written to the workspace or the session. The
+status line shows the current selection. Directives the scenario owns — such
+as `/start` and `/next` — are not TUI commands and still reach the agent as
+plain user text.
+
+After each turn the Chat panel shows that turn's token accounting under the
+input box: input / output / total tokens, reasoning
 tokens, cache read / write tokens, and call count. Usage is mirrored from the
 runtime host through `core/runtime`'s `WithHostFactory` decorator; the runtime
 remains the owner of usage aggregation.
@@ -124,8 +144,8 @@ its own labelled block, and tool invocations appear as separate
 - The graph engine is `core/graph/resource`, with script nodes running on the
   bundled JS runtime (`core/agent/scriptrt/jsrt`).
 - Simulated tools are a `tool.Source` resource registered from
-  `internal/simtools`; the DeepSeek provider comes from
-  `driver/deepseek`.
+  `internal/simtools`; the DeepSeek provider is a `driver/openai` instance
+  pointed at `https://api.deepseek.com` with a declared catalog.
 - `WithHostFactory` wraps the session host so every LLM call's token usage is
   mirrored onto the app for TUI display.
 

@@ -99,6 +99,12 @@ func buildProvider(ctx context.Context, settings ResourceSettings, secrets *reso
 			extensionGenerate: inference.ExtensionDecoderFor(func() *GenerateOptions {
 				return &GenerateOptions{Provider: settings.ID}
 			}),
+			extensionImage: inference.ExtensionDecoderFor(func() *ImageOptions {
+				return &ImageOptions{Provider: settings.ID}
+			}),
+			extensionTTS: inference.ExtensionDecoderFor(func() *TTSOptions {
+				return &TTSOptions{Provider: settings.ID}
+			}),
 		},
 	}
 	for _, profile := range settings.Profiles {
@@ -188,7 +194,7 @@ func openersFor(
 				if err != nil {
 					return inference.GenerateOperations{}, err
 				}
-				return openImage(cls, id, model.Profile)
+				return openImage(cls, entry, id, model.Profile)
 			},
 		}
 	case kindTTS:

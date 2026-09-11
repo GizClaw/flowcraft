@@ -156,6 +156,15 @@ type Model struct {
 	usage         app.UsageSnapshot
 	curNodeID     string
 	callNames     map[string]string
+	// model and think are the per-turn inference preferences this TUI
+	// process holds: empty means automatic. They live only here — nothing is
+	// written to the workspace or the session board until a turn starts.
+	model string
+	think string
+	// picker is the in-TUI option list, non-nil while /model or /think is
+	// collecting a choice.
+	picker    *selectorModel
+	pickerFor string
 }
 
 // NewModel builds a TUI model over an open app.
@@ -217,6 +226,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.quitArmed = false
 		return m, nil
 	case tea.KeyMsg:
+		if m.picker != nil {
+			return m.updatePicker(msg)
+		}
 		if isEnter(msg) {
 			return m.submitFocusedInput()
 		}
@@ -273,7 +285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if name == "" {
 						name = part.Result.CallID
 					}
-					m.appendTool("tool_result", name, part.Result.Content)
+					m.appendTool("tool_result", name, part.Result.Content.Text())
 				}
 			}
 		}
@@ -285,13 +297,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if m.picker != nil {
+		return m.picker.View()
+	}
 	width, _, bodyHeight, midW := m.panelLayout()
 	top := topStyle.Width(width - 2).MaxWidth(width - 2).Render(m.topLine())
 	rightW := maxInt(26, width/4)
 	mid := panelStyle.Width(midW).Height(bodyHeight).Render(m.chatView(midW, bodyHeight))
 	right := panelStyle.Width(rightW).Height(bodyHeight).Render(m.debugView(rightW, bodyHeight))
 	return top + "\n" + lipgloss.JoinHorizontal(lipgloss.Top, mid, right) + "\n" +
-		helpStyle.Render("enter submit  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
+		helpStyle.Render("enter submit  /model /think  esc clear  ctrl+c twice quit  ↑/↓ pgup/pgdn scroll")
 }
 
 func (m Model) topLine() string {
@@ -300,8 +315,8 @@ func (m Model) topLine() string {
 	if m.quitArmed {
 		status = "press ctrl+c again to quit"
 	}
-	return fmt.Sprintf("Forge TUI  agent=%s  context=%s  status=%s",
-		info.AgentName, info.ContextID, status)
+	return fmt.Sprintf("Forge TUI  agent=%s  context=%s  %s  status=%s",
+		info.AgentName, info.ContextID, m.selection(), status)
 }
 
 func (m Model) chatView(width, height int) string {
@@ -419,6 +434,13 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	if text == "" || m.running {
 		return m, nil
 	}
+	if strings.HasPrefix(text, "/") {
+		updated, cmd, consumed := m.runCommand(text)
+		if consumed {
+			updated.chatInput.SetValue("")
+			return updated, cmd
+		}
+	}
 	m.chatInput.SetValue("")
 	m.messages = append(m.messages, chatMessage{Role: "user", Text: text})
 	m.running = true
@@ -431,7 +453,11 @@ func (m Model) submitFocusedInput() (tea.Model, tea.Cmd) {
 	m.syncChatViewport(midW, bodyHeight)
 	ch := make(chan eventMsg, 256)
 	m.eventCh = ch
-	return m, tea.Batch(startRoundCmd(m.app, text, ch), pollCmd(ch), m.chatSpinner.Tick)
+	return m, tea.Batch(
+		startRoundCmd(m.app, text, ch, app.TurnOptions{Model: m.model, Think: m.think}),
+		pollCmd(ch),
+		m.chatSpinner.Tick,
+	)
 }
 
 func (m Model) panelLayout() (width, height, bodyHeight, midW int) {
@@ -478,7 +504,12 @@ func (m Model) chatViewportFor(width, height int) viewport.Model {
 	return vp
 }
 
-func startRoundCmd(a *app.App, text string, ch chan<- eventMsg) tea.Cmd {
+func startRoundCmd(
+	a *app.App,
+	text string,
+	ch chan<- eventMsg,
+	opts app.TurnOptions,
+) tea.Cmd {
 	return func() tea.Msg {
 		sink := session.SinkSpec{
 			ID: "tui",
@@ -488,7 +519,7 @@ func startRoundCmd(a *app.App, text string, ch chan<- eventMsg) tea.Cmd {
 				return nil
 			}),
 		}
-		_, err := a.RunTurn(context.Background(), text, sink)
+		_, err := a.RunTurn(context.Background(), text, sink, opts)
 		if err != nil {
 			ch <- eventMsg{err: err}
 		}

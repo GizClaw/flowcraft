@@ -76,7 +76,7 @@ func (c *capturedOpenAI) body(index int) map[string]any {
 func testClients(t *testing.T, server *httptest.Server) *clients {
 	t.Helper()
 	spec, err := decodeSpec(context.Background(), []byte(
-		fmt.Sprintf(`{"base_url":%q}`, server.URL),
+		fmt.Sprintf(`{"endpoint":{"base_url":%q}}`, server.URL),
 	))
 	if err != nil {
 		t.Fatalf("decodeSpec: %v", err)
@@ -182,18 +182,18 @@ func TestSpecValidation(t *testing.T) {
 		ok   bool
 	}{
 		{name: "empty", raw: `{}`, ok: true},
-		{name: "base url", raw: `{"base_url":"https://gateway.example.com/v1"}`, ok: true},
-		{name: "bad base url", raw: `{"base_url":"api.openai.com"}`, ok: false},
+		{name: "base url", raw: `{"endpoint":{"base_url":"https://gateway.example.com/v1"}}`, ok: true},
+		{name: "bad base url", raw: `{"endpoint":{"base_url":"api.openai.com"}}`, ok: false},
 		{name: "chat stream usage opt out",
-			raw: `{"api":"chat","chat_stream_options":{"include_usage":false}}`, ok: true},
+			raw: `{"api":"chat","wire":{"chat_stream_options":{"include_usage":false}}}`, ok: true},
 		{name: "chat stream obfuscation opt out",
-			raw: `{"api":"chat","chat_stream_options":{"include_usage":false,"include_obfuscation":false}}`, ok: true},
+			raw: `{"api":"chat","wire":{"chat_stream_options":{"include_usage":false,"include_obfuscation":false}}}`, ok: true},
 		{name: "chat stream options on default responses",
-			raw: `{"chat_stream_options":{"include_usage":false}}`, ok: false},
+			raw: `{"wire":{"chat_stream_options":{"include_usage":false}}}`, ok: false},
 		{name: "chat stream options on explicit responses",
-			raw: `{"api":"responses","chat_stream_options":{"include_usage":false}}`, ok: false},
+			raw: `{"api":"responses","wire":{"chat_stream_options":{"include_usage":false}}}`, ok: false},
 		{name: "chat stream options unknown field",
-			raw: `{"api":"chat","chat_stream_options":{"bogus":true}}`, ok: false},
+			raw: `{"api":"chat","wire":{"chat_stream_options":{"bogus":true}}}`, ok: false},
 		{name: "custom model", raw: `{"models":[{"name":"my-model","kind":"generate"}]}`, ok: true},
 		{name: "unknown kind", raw: `{"models":[{"name":"m","kind":"video"}]}`, ok: false},
 		{name: "realtime kind deferred", raw: `{"models":[{"name":"m","kind":"realtime"}]}`, ok: false},
@@ -276,7 +276,7 @@ func TestEscapedEnvSecretSurvivesFactoryDecode(t *testing.T) {
 	settings, err := resource.Expand(context.Background(),
 		json.RawMessage(`{
 			"id": "openai",
-			"spec": {"base_url": "`+server.URL+`"},
+			"spec": {"endpoint": {"base_url": "`+server.URL+`"}},
 			"profiles": [{"id": "default", "secrets": {"api_key": "\\${env:OPENAI_TEST_KEY}"}}]
 		}`), resource.ExpandEnv())
 	if err != nil {
@@ -317,7 +317,7 @@ func TestFactoryBuild(t *testing.T) {
 	input := ResourceSettings{
 		ID: "openai",
 		Spec: json.RawMessage(
-			`{"organization":"org-1","project":"proj-1"}`,
+			`{"endpoint":{"organization":"org-1","project":"proj-1"}}`,
 		),
 		Profiles: []ProfileSettings{{
 			ID:         "default",
@@ -428,7 +428,7 @@ func TestWireToParamsMessages(t *testing.T) {
 			Content: message.Content{Parts: []message.Part{
 				message.ToolResultPart{Result: message.ToolResult{
 					CallID:  "call_1",
-					Content: "found",
+					Content: message.NewTextContent("found"),
 				}},
 			}},
 		},

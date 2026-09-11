@@ -323,7 +323,7 @@ func (p *pipeline[Req, Wire, Raw, Resp]) explain(
 	return Explanation{
 		Model:     model,
 		Operation: p.operation,
-		Decisions: append([]Decision(nil), compiled.Report.Decisions...),
+		Decisions: cloneDecisions(compiled.Report.Decisions),
 	}, nil
 }
 

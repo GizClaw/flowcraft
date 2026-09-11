@@ -10,25 +10,41 @@ are checked when the host build decodes them through the factory.
 ```yaml
 id: deepseek
 spec:
-  api: chat             # "chat" (default) or "responses"
-  base_url: https://api.deepseek.com   # optional override
-  request_metadata:     # optional; supported by deepseek/openai/azure
+  api: responses        # "responses" (default) or "chat"
+  endpoint:             # transport only: where the API is, how it authenticates
+    base_url: https://api.deepseek.com   # optional; default https://api.openai.com/v1
+    routing: azure_deployment            # optional: deployment-path rewriting
+    query: {api-version: "2025-04-01-preview"}   # optional: added to every request
+    headers: {x-gw: "1"}                 # optional static headers (credentials go in auth)
+    timeout: 90s                         # optional: bounds one wire attempt
+  auth:                 # how the profile's api_key rides the wire
+    scheme: header      # "bearer" (default), "header", or "none" (no credential)
+    header: Api-Key
+  wire:                 # dialect this endpoint speaks
+    store: false        # default false: responses are not retained server-side
+    reasoning_channel: summary   # "summary" (default) or "text"
+    include_reasoning_payload: true
+    reasoning_summary: detailed  # optional "auto"/"concise"/"detailed"; opt in to readable traces
+    truncation: auto    # optional "auto"/"disabled": context-overflow policy (responses)
+  catalog: declared     # "builtin_declared" (default) or "declared"
+  request_metadata:     # optional; supported by the openai wire family
     envelope: request_fields   # any non-empty top-level body field; empty disables
   models:               # optional: declare/override catalog models
-    - name: deepseek-v4-flash
+    - name: deepseek-flash
       kind: generate
       capabilities:     # optional: capability leaves (see "Model declarations" below)
-        inputs: [text, data, tool_call, tool_result]
+        inputs: [text, image, data, tool_call, tool_result]
         outputs: [text]
         reasoning:
-          kind: toggle     # "always" or "toggle" (legacy string form accepted); toggle promises reasoning_enabled=false compiles on this surface
+          kind: toggle     # "always" or "toggle"; toggle promises reasoning_enabled=false compiles on this surface
           effort_map:      # optional: canonical effort -> model wire level
             minimal: low
             low: low
             medium: high
             high: high
             xhigh: max
-        hosted_web_search: true
+        # hosted_web_search: false — DeepSeek ignores server-side tools other
+        # than function calls, so claiming hosted search would be a lie.
 profiles:
   - secrets:
       api_key: ${env:DEEPSEEK_API_KEY}
@@ -107,7 +123,7 @@ router:
     generate:
       - tier: fast
         targets:
-          - model: {id: {provider: deepseek, name: deepseek-v4-flash}}
+          - model: {id: {provider: deepseek, name: deepseek-flash}}
             score: {quality: 0.8, speed: 0.9}
     retry:
       generate:

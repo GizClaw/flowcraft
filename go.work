@@ -3,12 +3,9 @@ go 1.26.0
 use (
 	./core
 	./driver/openai
-	./driver/deepseek
-	./driver/azure
 	./driver/anthropic
 	./driver/minimax
 	./driver/qwen
-	./driver/kimi
 	./driver/bytedance
 	./examples/forge
 	./backends/checkpoint

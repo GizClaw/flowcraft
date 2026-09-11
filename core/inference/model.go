@@ -575,7 +575,7 @@ type Metadata struct {
 // Clone returns a defensive copy of the metadata: the returned value
 // shares no backing array with the receiver.
 func (m Metadata) Clone() Metadata {
-	m.Decisions = append([]Decision(nil), m.Decisions...)
+	m.Decisions = cloneDecisions(m.Decisions)
 	return m
 }
 

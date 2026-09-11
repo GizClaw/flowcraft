@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -13,29 +14,46 @@ import (
 // Secret names owned by this provider. Profile secrets outside this set are
 // rejected at build time so typos fail fast instead of silently missing.
 const (
-	// SecretAPIKey authenticates every OpenAI API surface.
+	// SecretAPIKey authenticates every OpenAI-wire API surface.
 	SecretAPIKey = "api_key"
 )
 
-// Spec is the provider-level configuration for OpenAI. It must stay
-// credential-free: strict decoding rejects unknown keys, and credentials
-// live only in profile secrets.
+// DefaultBaseURL is the endpoint used when endpoint.base_url is unset.
+const DefaultBaseURL = "https://api.openai.com/v1"
+
+// DefaultAzureAPIVersion is the api-version used when an Azure deployment
+// endpoint does not name one.
+const DefaultAzureAPIVersion = "2025-04-01-preview"
+
+// Spec is the provider-level configuration for the OpenAI wire family. It is
+// credential-free — strict decoding rejects unknown keys and credentials live
+// only in profile secrets — and split into three orthogonal layers:
+//
+//   - Endpoint: where requests go and how they authenticate. Transport only,
+//     safe to configure freely.
+//   - Wire: what the endpoint accepts on the wire. Every leaf here narrows
+//     behavior the compiler would otherwise derive, so each combination is
+//     cross-checked against the catalog's capability declarations at build
+//     time.
+//   - Catalog: which models exist and whether the built-in OpenAI line-up is
+//     inherited.
 type Spec struct {
 	// API selects the generate surface: "responses" (default) or
 	// "chat" (Chat Completions). Chat mode is provider-wide and only
 	// affects generate; embed / image / tts use their own endpoints.
 	API string `json:"api,omitempty"`
-	// ChatStreamOptions controls chat-completions stream transport when
-	// API is "chat". Responses streams always carry usage in their
-	// terminal event and never consult this setting.
-	ChatStreamOptions *ChatStreamOptionsSpec `json:"chat_stream_options,omitempty"`
-	// BaseURL overrides the API base URL (gateways, proxies, Azure-style
-	// compatible endpoints).
-	BaseURL string `json:"base_url,omitempty"`
-	// Organization sets the OpenAI-Organization header.
-	Organization string `json:"organization,omitempty"`
-	// Project sets the OpenAI-Project header.
-	Project string `json:"project,omitempty"`
+	// Endpoint locates and authenticates the API.
+	Endpoint EndpointSpec `json:"endpoint,omitempty"`
+	// Auth names the credential transport. The value always comes from the
+	// profile's api_key secret; this block only says how it rides the wire.
+	Auth AuthSpec `json:"auth,omitempty"`
+	// Wire declares the dialect the endpoint speaks. Empty keeps the OpenAI
+	// defaults.
+	Wire WireSpec `json:"wire,omitempty"`
+	// Catalog selects the model namespace: "builtin_declared" (default)
+	// merges spec.models over the built-in OpenAI line-up, "declared" starts
+	// from an empty catalog so deployment names never inherit OpenAI facts.
+	Catalog string `json:"catalog,omitempty"`
 	// HTTPRetries bounds wire-level retries inside one logical inference
 	// attempt, including the first. Zero disables SDK-internal retries so
 	// the route Router owns the full retry budget; nil keeps the openai-go
@@ -53,6 +71,75 @@ type Spec struct {
 	Models []ModelSpec `json:"models,omitempty"`
 }
 
+// EndpointSpec locates and authenticates one OpenAI-wire endpoint. Every leaf
+// is transport-only: none of it changes how a request is compiled.
+type EndpointSpec struct {
+	// BaseURL overrides the API base URL (gateways, proxies, Azure-style
+	// compatible endpoints). Empty uses DefaultBaseURL.
+	BaseURL string `json:"base_url,omitempty"`
+	// Routing selects deployment-path rewriting. Empty posts to the plain
+	// OpenAI routes; "azure_deployment" rewrites data-plane paths to
+	// /openai/deployments/{model}/... and adds the api-version query.
+	Routing string `json:"routing,omitempty"`
+	// Query adds query parameters to every request. An Azure deployment
+	// endpoint reads api-version from here, defaulting to
+	// DefaultAzureAPIVersion.
+	Query map[string]string `json:"query,omitempty"`
+	// Headers adds static headers to every request. Use this for gateway
+	// routing hints; credentials belong in profiles.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Organization sets the OpenAI-Organization header.
+	Organization string `json:"organization,omitempty"`
+	// Project sets the OpenAI-Project header.
+	Project string `json:"project,omitempty"`
+	// Timeout bounds one HTTP request, as a Go duration string ("90s",
+	// "2m"). Empty keeps the SDK default. It bounds a single wire attempt,
+	// not the whole logical inference call, which the route Router owns.
+	Timeout string `json:"timeout,omitempty"`
+}
+
+// AuthSpec names the credential transport for one endpoint.
+type AuthSpec struct {
+	// Scheme is "bearer" (Authorization: Bearer <api_key>, the default) or
+	// "header" (a named header carries the key, e.g. Azure's Api-Key).
+	Scheme string `json:"scheme,omitempty"`
+	// Header is the header name carrying the key when Scheme is "header".
+	Header string `json:"header,omitempty"`
+}
+
+// WireSpec declares the dialect an endpoint accepts. Each leaf narrows a
+// derived default, so the driver cross-checks the combination against the
+// catalog's capability declarations before serving any request.
+type WireSpec struct {
+	// Store asks the provider to retain the response server-side. Nil keeps
+	// the driver default (false): FlowCraft replays context itself, and the
+	// OpenAI default (true, retained for at least 30 days) is unnecessary
+	// and surprising.
+	Store *bool `json:"store,omitempty"`
+	// IncludeReasoningPayload sends include: ["reasoning.encrypted_content"]
+	// so reasoning traces round-trip into later context. Nil derives from
+	// ReasoningChannel: true for "summary", false for "text".
+	IncludeReasoningPayload *bool `json:"include_reasoning_payload,omitempty"`
+	// ReasoningChannel selects the reasoning round-trip shape: "summary"
+	// (default) carries summary text plus an opaque encrypted payload;
+	// "text" carries plain reasoning text merged into the adjacent
+	// assistant message.
+	ReasoningChannel string `json:"reasoning_channel,omitempty"`
+	// ReasoningSummary asks a reasoning model to emit readable summaries:
+	// "auto", "concise", or "detailed". Empty sends nothing, and the
+	// provider then returns the encrypted payload without summary text.
+	// Responses only: Chat Completions has no summary channel.
+	ReasoningSummary string `json:"reasoning_summary,omitempty"`
+	// Truncation selects what the provider does when a request exceeds the
+	// context window: "disabled" (default) fails the request, "auto" drops
+	// the oldest items to fit. Responses only.
+	Truncation string `json:"truncation,omitempty"`
+	// ChatStreamOptions controls chat-completions stream transport when API
+	// is "chat". Responses streams always carry usage in their terminal
+	// event and never consult this setting.
+	ChatStreamOptions *ChatStreamOptionsSpec `json:"chat_stream_options,omitempty"`
+}
+
 // ChatStreamOptionsSpec is the provider-level lowering policy for Chat
 // Completions streaming. It mirrors the wire-level stream_options object.
 type ChatStreamOptionsSpec struct {
@@ -64,9 +151,8 @@ type ChatStreamOptionsSpec struct {
 	IncludeUsage *bool `json:"include_usage,omitempty"`
 	// IncludeObfuscation sends stream_options.include_obfuscation on chat
 	// stream requests. Nil keeps the OpenAI default (true): deltas carry
-	// stream-obfuscation fields. Set false to disable stream obfuscation
-	// when the extra payload is unwanted; this keeps stream_options on the
-	// wire even when IncludeUsage is false.
+	// stream-obfuscation fields. Set false to disable stream obfuscation;
+	// this keeps stream_options on the wire even when IncludeUsage is false.
 	IncludeObfuscation *bool `json:"include_obfuscation,omitempty"`
 }
 
@@ -112,7 +198,62 @@ func (s ProfileSpec) Validate() error {
 	return nil
 }
 
+// endpointRouting selects how request paths reach the endpoint.
+type endpointRouting string
+
+const (
+	// routingDirect posts to the plain OpenAI routes.
+	routingDirect endpointRouting = ""
+	// routingAzureDeployment rewrites data-plane routes to
+	// /openai/deployments/{model}/... and adds the api-version query.
+	routingAzureDeployment endpointRouting = "azure_deployment"
+)
+
+// authScheme selects the credential transport.
+type authScheme string
+
+const (
+	authBearer authScheme = "bearer"
+	authHeader authScheme = "header"
+	// authNone authenticates nothing: local or in-cluster gateways often
+	// require no credential at all.
+	authNone authScheme = "none"
+)
+
+// reasoningChannel selects the reasoning round-trip shape.
+type reasoningChannel string
+
+const (
+	// channelSummary carries summary text plus an opaque encrypted payload.
+	channelSummary reasoningChannel = "summary"
+	// channelText carries plain reasoning text merged into the assistant
+	// message, with no encrypted payload.
+	channelText reasoningChannel = "text"
+)
+
+// reasoningSummary selects the readable reasoning summary OpenAI emits; an
+// empty value asks for nothing, matching the API default.
+type reasoningSummaryPolicy string
+
+const (
+	summaryAuto     reasoningSummaryPolicy = "auto"
+	summaryConcise  reasoningSummaryPolicy = "concise"
+	summaryDetailed reasoningSummaryPolicy = "detailed"
+)
+
+// catalogMode selects which model namespace one provider instance serves.
+type catalogMode string
+
+const (
+	// catalogBuiltinDeclared merges spec.models over the built-in line-up.
+	catalogBuiltinDeclared catalogMode = "builtin_declared"
+	// catalogDeclared starts from an empty catalog: deployment names never
+	// inherit OpenAI facts by coincidence.
+	catalogDeclared catalogMode = "declared"
+)
+
 var modelNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var headerNamePattern = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
 
 func (s Spec) Validate() error {
 	switch s.apiMode() {
@@ -120,13 +261,119 @@ func (s Spec) Validate() error {
 	default:
 		return fmt.Errorf("api must be \"responses\" or \"chat\"")
 	}
-	if s.ChatStreamOptions != nil && s.apiMode() != apiChat {
-		return fmt.Errorf("chat_stream_options requires api \"chat\"")
+	if s.Wire.ChatStreamOptions != nil && s.apiMode() != apiChat {
+		return fmt.Errorf("wire.chat_stream_options requires api \"chat\"")
 	}
-	if s.BaseURL != "" &&
-		!strings.HasPrefix(s.BaseURL, "https://") &&
-		!strings.HasPrefix(s.BaseURL, "http://") {
-		return fmt.Errorf("base_url must be an http(s) URL")
+	if s.Endpoint.BaseURL != "" &&
+		!strings.HasPrefix(s.Endpoint.BaseURL, "https://") &&
+		!strings.HasPrefix(s.Endpoint.BaseURL, "http://") {
+		return fmt.Errorf("endpoint.base_url must be an http(s) URL")
+	}
+	if s.Endpoint.Timeout != "" {
+		timeout, err := time.ParseDuration(s.Endpoint.Timeout)
+		if err != nil || timeout <= 0 {
+			return fmt.Errorf(
+				"endpoint.timeout %q must be a positive duration (e.g. \"90s\")",
+				s.Endpoint.Timeout,
+			)
+		}
+	}
+	switch s.routing() {
+	case routingDirect, routingAzureDeployment:
+	default:
+		return fmt.Errorf("endpoint.routing must be \"azure_deployment\" or empty")
+	}
+	for key, value := range s.Endpoint.Query {
+		if key == "" || strings.ContainsAny(key, "&=?#") {
+			return fmt.Errorf("endpoint.query key %q is not a query token", key)
+		}
+		if strings.ContainsAny(value, "&#") {
+			return fmt.Errorf(
+				"endpoint.query[%q] value %q is not a query value token",
+				key,
+				value,
+			)
+		}
+	}
+	for name := range s.Endpoint.Headers {
+		if !headerNamePattern.MatchString(name) {
+			return fmt.Errorf("endpoint.headers key %q is not a header name", name)
+		}
+		// Static headers must not carry credentials: secret material rides
+		// the profile's api_key so core resolves and redacts it.
+		if strings.EqualFold(name, "authorization") ||
+			strings.EqualFold(name, "api-key") {
+			return fmt.Errorf(
+				"endpoint.headers must not carry credentials; %q belongs in auth",
+				name,
+			)
+		}
+	}
+	switch s.authScheme() {
+	case authBearer, authHeader, authNone:
+	default:
+		return fmt.Errorf(
+			"auth.scheme must be \"bearer\", \"header\", or \"none\"",
+		)
+	}
+	switch {
+	case s.authScheme() == authHeader && !headerNamePattern.MatchString(s.Auth.Header):
+		return fmt.Errorf(
+			"auth.header %q is required when auth.scheme is \"header\"",
+			s.Auth.Header,
+		)
+	case s.authScheme() == authBearer && s.Auth.Header != "":
+		return fmt.Errorf("auth.header requires auth.scheme \"header\"")
+	case s.authScheme() == authNone && s.Auth.Header != "":
+		return fmt.Errorf("auth.header requires auth.scheme \"header\"")
+	}
+	if s.routing() == routingAzureDeployment {
+		// Azure carries the key in Api-Key and always needs api-version, so
+		// this endpoint mode owns both instead of letting a second config
+		// path describe the same contract.
+		if s.Auth != (AuthSpec{}) && s.authScheme() != authHeader {
+			return fmt.Errorf(
+				"endpoint.routing \"azure_deployment\" requires auth.scheme \"header\"",
+			)
+		}
+		if version, ok := s.Endpoint.Query["api-version"]; ok && version == "" {
+			return fmt.Errorf("endpoint.query api-version must not be empty")
+		}
+	}
+	switch s.reasoningChannel() {
+	case channelSummary, channelText:
+	default:
+		return fmt.Errorf("wire.reasoning_channel must be \"summary\" or \"text\"")
+	}
+	switch s.reasoningSummaryPolicy() {
+	case "", summaryAuto, summaryConcise, summaryDetailed:
+	default:
+		return fmt.Errorf(
+			"wire.reasoning_summary must be \"auto\", \"concise\", or \"detailed\"",
+		)
+	}
+	switch s.truncation() {
+	case "", truncationAuto, truncationDisabled:
+	default:
+		return fmt.Errorf("wire.truncation must be \"auto\" or \"disabled\"")
+	}
+	if s.truncation() != "" && s.apiMode() != apiResponses {
+		return fmt.Errorf("wire.truncation requires api \"responses\"")
+	}
+	if s.reasoningSummaryPolicy() != "" && s.apiMode() != apiResponses {
+		return fmt.Errorf("wire.reasoning_summary requires api \"responses\"")
+	}
+	if s.reasoningChannel() == channelText &&
+		s.Wire.IncludeReasoningPayload != nil &&
+		*s.Wire.IncludeReasoningPayload {
+		return fmt.Errorf(
+			"wire.include_reasoning_payload requires wire.reasoning_channel \"summary\"",
+		)
+	}
+	switch s.catalogMode() {
+	case catalogBuiltinDeclared, catalogDeclared:
+	default:
+		return fmt.Errorf("catalog must be \"builtin_declared\" or \"declared\"")
 	}
 	if s.HTTPRetries != nil && *s.HTTPRetries < 0 {
 		return fmt.Errorf("http_retries must not be negative")
@@ -157,6 +404,112 @@ func (s Spec) apiMode() apiMode {
 	return apiMode(s.API)
 }
 
+// routing returns the normalized endpoint routing.
+func (s Spec) routing() endpointRouting {
+	return endpointRouting(s.Endpoint.Routing)
+}
+
+// authScheme returns the normalized credential transport.
+func (s Spec) authScheme() authScheme {
+	if s.Auth.Scheme == "" {
+		return authBearer
+	}
+	return authScheme(s.Auth.Scheme)
+}
+
+// authHeader returns the header carrying the key for an explicit header
+// scheme, or "" when the default bearer transport applies.
+func (s Spec) authHeader() string {
+	if s.authScheme() == authHeader {
+		return s.Auth.Header
+	}
+	return ""
+}
+
+// baseURL returns the resolved endpoint URL.
+func (s Spec) baseURL() string {
+	if s.Endpoint.BaseURL != "" {
+		return s.Endpoint.BaseURL
+	}
+	return DefaultBaseURL
+}
+
+// azureAPIVersion returns the api-version an Azure deployment endpoint uses.
+func (s Spec) azureAPIVersion() string {
+	if version := s.Endpoint.Query["api-version"]; version != "" {
+		return version
+	}
+	return DefaultAzureAPIVersion
+}
+
+// store reports whether responses are retained server-side. The driver
+// default is false: FlowCraft replays context itself, so server-side storage
+// is neither needed nor desirable.
+func (s Spec) store() bool {
+	if s.Wire.Store == nil {
+		return false
+	}
+	return *s.Wire.Store
+}
+
+// reasoningChannel returns the normalized reasoning round-trip shape.
+func (s Spec) reasoningChannel() reasoningChannel {
+	if s.Wire.ReasoningChannel == "" {
+		return channelSummary
+	}
+	return reasoningChannel(s.Wire.ReasoningChannel)
+}
+
+// reasoningSummary returns the configured reasoning summary policy, or ""
+// when the deployment leaves it unset.
+func (s Spec) reasoningSummaryPolicy() reasoningSummaryPolicy {
+	return reasoningSummaryPolicy(s.Wire.ReasoningSummary)
+}
+
+// endpointTimeout returns the per-request timeout, or zero for the SDK
+// default.
+func (s Spec) endpointTimeout() time.Duration {
+	if s.Endpoint.Timeout == "" {
+		return 0
+	}
+	timeout, err := time.ParseDuration(s.Endpoint.Timeout)
+	if err != nil || timeout <= 0 {
+		return 0
+	}
+	return timeout
+}
+
+// truncationMode selects the provider's context-overflow policy.
+type truncationMode string
+
+const (
+	truncationAuto     truncationMode = "auto"
+	truncationDisabled truncationMode = "disabled"
+)
+
+// truncation returns the configured overflow policy, or "" when the
+// deployment leaves the provider default in place.
+func (s Spec) truncation() truncationMode {
+	return truncationMode(s.Wire.Truncation)
+}
+
+// includeReasoningPayload reports whether reasoning requests ask for the
+// encrypted payload. It follows the reasoning channel unless overridden.
+func (s Spec) includeReasoningPayload() bool {
+	if s.Wire.IncludeReasoningPayload != nil {
+		return *s.Wire.IncludeReasoningPayload
+	}
+	return s.reasoningChannel() == channelSummary
+}
+
+// catalogMode returns the normalized catalog mode.
+func (s Spec) catalogMode() catalogMode {
+	if s.Catalog == "" {
+		return catalogBuiltinDeclared
+	}
+	return catalogMode(s.Catalog)
+}
+
 func (s Spec) requestMetadataEnvelope() string {
 	if s.RequestMetadata == nil {
 		return ""
@@ -167,19 +520,19 @@ func (s Spec) requestMetadataEnvelope() string {
 // chatStreamIncludeUsage returns the provider policy for chat streaming,
 // or nil when the driver default (include usage) should apply.
 func (s Spec) chatStreamIncludeUsage() *bool {
-	if s.ChatStreamOptions == nil {
+	if s.Wire.ChatStreamOptions == nil {
 		return nil
 	}
-	return s.ChatStreamOptions.IncludeUsage
+	return s.Wire.ChatStreamOptions.IncludeUsage
 }
 
 // chatStreamIncludeObfuscation returns the provider policy for chat stream
 // obfuscation, or nil when the OpenAI default should apply.
 func (s Spec) chatStreamIncludeObfuscation() *bool {
-	if s.ChatStreamOptions == nil {
+	if s.Wire.ChatStreamOptions == nil {
 		return nil
 	}
-	return s.ChatStreamOptions.IncludeObfuscation
+	return s.Wire.ChatStreamOptions.IncludeObfuscation
 }
 
 func (m ModelSpec) Validate() error {

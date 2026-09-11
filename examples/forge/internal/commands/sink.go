@@ -54,7 +54,7 @@ func (s *textCollectorSink) spec() session.SinkSpec {
 				if name == "" {
 					name = part.Result.CallID
 				}
-				s.blocks.ToolResult(name, part.Result.Content)
+				s.blocks.ToolResult(name, part.Result.Content.Text())
 			}
 			return nil
 		}),

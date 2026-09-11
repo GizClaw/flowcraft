@@ -72,6 +72,18 @@ func wireToChatParams(wire generateWire) openai.ChatCompletionNewParams {
 	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
 		params.Metadata = wire.requestMetadata
 	}
+	if wire.promptCacheKey != "" {
+		params.PromptCacheKey = param.NewOpt(wire.promptCacheKey)
+	}
+	if wire.serviceTier != "" {
+		params.ServiceTier = openai.ChatCompletionNewParamsServiceTier(wire.serviceTier)
+	}
+	if wire.parallelToolCalls != nil {
+		params.ParallelToolCalls = param.NewOpt(*wire.parallelToolCalls)
+	}
+	if wire.safetyIdentifier != "" {
+		params.SafetyIdentifier = param.NewOpt(wire.safetyIdentifier)
+	}
 	return params
 }
 
@@ -124,7 +136,7 @@ func chatMessages(items []wireItem) []openai.ChatCompletionMessageParamUnion {
 			})
 		case wireItemToolResult:
 			flushAssistant()
-			out = append(out, openai.ToolMessage(item.output, item.callID))
+			out = append(out, openai.ToolMessage(chatToolResultText(item.output), item.callID))
 		case wireItemReasoning:
 			// Chat Completions has no standardized encrypted reasoning
 			// round-trip; the trace is intentionally dropped.
@@ -133,6 +145,18 @@ func chatMessages(items []wireItem) []openai.ChatCompletionMessageParamUnion {
 	}
 	flushAssistant()
 	return out
+}
+
+// chatToolResultText joins a tool result's lowered content into the plain
+// string Chat Completions carries. Tool messages hold text only, so the
+// compiler already replaced every richer part by an in-place placeholder and
+// reported it on the ledger.
+func chatToolResultText(content []wireContent) string {
+	var builder strings.Builder
+	for _, part := range content {
+		builder.WriteString(part.text)
+	}
+	return builder.String()
 }
 
 func chatText(content []wireContent) string {

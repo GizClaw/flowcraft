@@ -41,6 +41,10 @@ type imageWire struct {
 	// images are inline reference images for image-to-image edits; empty
 	// means a text-only generation.
 	images []wireImage
+	// mask is an inline PNG whose transparent areas mark where the first
+	// reference image should be edited. Deployment-routed endpoints accept
+	// it; plain OpenAI endpoints reject it at compile time.
+	mask wireImage
 }
 
 // wireImage is a concrete inline image payload: raw bytes plus the media
@@ -104,6 +108,7 @@ func imageSize(width, height int) (size, reason string) {
 
 func compileImage(
 	model string,
+	azureDeployment bool,
 ) inference.GenerateCompiler[imageWire] {
 	return func(
 		_ context.Context,
@@ -231,6 +236,31 @@ func compileImage(
 		}
 		options, other := operationExtensions[ImageOptions](request.Extensions)
 		rejectOtherExtensions("image generation", other, ledger)
+		if mask := options.Mask; mask != nil {
+			field := inference.ExtensionField("mask").Qualify(options)
+			switch {
+			case !azureDeployment:
+				ledger.reject(
+					field,
+					"image masks require endpoint.routing \"azure_deployment\"",
+				)
+			case mask.Kind() != media.SourceInline:
+				ledger.reject(
+					field,
+					"images/edits uploads inline bytes; URL-sourced masks have no channel",
+				)
+			case len(wire.images) == 0:
+				ledger.reject(
+					field,
+					"mask requires at least one inline reference image",
+				)
+			default:
+				wire.mask = wireImage{
+					data:      mask.Bytes(),
+					mediaType: mask.BaseMediaType(),
+				}
+			}
+		}
 		if partial := options.PartialImages; partial != nil {
 			field := inference.ExtensionField("partial_images").Qualify(options)
 			switch {
@@ -404,6 +434,12 @@ func imageEditParams(wire imageWire) openai.ImageEditParams {
 	}
 	if wire.partialImages > 0 {
 		params.PartialImages = param.NewOpt(int64(wire.partialImages))
+	}
+	if len(wire.mask.data) > 0 {
+		params.Mask = imageFile{
+			Reader:      bytes.NewReader(wire.mask.data),
+			contentType: wire.mask.mediaType,
+		}
 	}
 	return params
 }
@@ -719,11 +755,12 @@ func streamImagePart(
 
 func openImage(
 	cls *clients,
+	entry catalogEntry,
 	id inference.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
-		compileImage(id.Name),
+		compileImage(id.Name, entry.azureDeployment),
 		transportImage(cls.api),
 		decodeImage,
 		transportImageStream(cls.api),

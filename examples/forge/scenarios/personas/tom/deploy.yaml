@@ -17,21 +17,114 @@ resources:
     impl: local
     settings:
       root: ./workspace
+  # Lazy secret references: providers whose key is absent stay usable to
+  # build, and only fail with a clear message if a model actually routes to
+  # them. ${secret:NAME} resolves through the default store below.
+  secrets:
+    kind: secret.Store
+    impl: env
+    settings:
+      id: env
+      default: true
   provider:
     kind: inference.Provider
-    impl: deepseek
+    impl: openai
     settings:
       id: deepseek
       spec:
-        api: chat
+        api: responses
+        endpoint:
+          base_url: https://api.deepseek.com
+        # DeepSeek returns the trace as plain reasoning text and does not
+        # support include: [reasoning.encrypted_content].
+        wire:
+          reasoning_channel: text
+        catalog: declared
+        models:
+          - name: deepseek-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
+              reasoning:
+                # reasoning.effort="none" disables thinking on the Responses
+                # surface, so the off switch is real.
+                kind: toggle
+                effort_map:
+                  minimal: low
+                  low: low
+                  medium: high
+                  high: high
+                  xhigh: max
+            limits:
+              max_input_tokens: 1000000
+              max_output_tokens: 384000
       profiles:
         - secrets:
             api_key: ${env:DEEPSEEK_API_KEY}
+  # The same driver serves every OpenAI-wire endpoint; the built-in line-up is
+  # inherited unless the provider declares `catalog: declared`.
+  provider-openai:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: openai
+      spec:
+        api: responses
+        models:
+          - {name: gpt-5.6-luna, kind: generate}
+      profiles:
+        - secrets:
+            api_key: ${secret:OPENAI_API_KEY}
+  # GLM speaks the OpenAI Chat Completions protocol; GLM-5.3-Flash is natively
+  # multimodal (text + image here) and always thinks, with low/high/max depth.
+  provider-glm:
+    kind: inference.Provider
+    impl: openai
+    settings:
+      id: glm
+      spec:
+        api: chat
+        endpoint:
+          base_url: https://open.bigmodel.cn/api/paas/v4
+        catalog: declared
+        models:
+          - name: glm-5.3-flash
+            kind: generate
+            capabilities:
+              inputs: [text, image, data, tool_call, tool_result]
+              outputs: [text]
+              reasoning:
+                kind: always
+                effort_map:
+                  minimal: low
+                  low: low
+                  medium: high
+                  high: high
+                  xhigh: max
+            limits:
+              max_input_tokens: 1000000
+              max_output_tokens: 128000
+      profiles:
+        - secrets:
+            api_key: ${secret:ZHIPU_API_KEY}
   infer:
     kind: inference.Assembly
     impl: unified
     deps:
       provider: provider
+      provider.openai: provider-openai
+      provider.glm: provider-glm
+  # Inference nodes carry no static model: the router owns target selection,
+  # so a per-turn model hint (or the default pool below) decides.
+  router:
+    kind: inference.Router
+    impl: unified
+    deps: {target: infer}
+    settings:
+      generate:
+        - tier: default
+          targets: [{model: {id: {provider: deepseek, name: deepseek-flash}}}]
   js:
     kind: agent.ScriptRuntime
     impl: js
@@ -48,6 +141,7 @@ agents:
       impl: graph
       deps:
         inference: infer
+        router: router
         tools: tools
         workspace: ws
         script_runtime: js

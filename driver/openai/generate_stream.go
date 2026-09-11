@@ -45,6 +45,10 @@ type streamPart struct {
 	sawArgsDelta    bool
 	sawArgsSnapshot bool
 	sawSummary      bool
+	// sawReasoningText marks a reasoning item whose trace arrived as
+	// reasoning_text deltas (a plain-text reasoning channel) rather than
+	// summary deltas.
+	sawReasoningText bool
 }
 
 func transportGenerateStream(
@@ -55,7 +59,7 @@ func transportGenerateStream(
 		wire generateWire,
 	) (inference.ProviderStream[streamRaw], error) {
 		var requestID string
-		opts := append([]option.RequestOption(nil), requestMetadataOptions(wire)...)
+		opts := append([]option.RequestOption(nil), requestOptions(wire)...)
 		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Responses.NewStreaming(
 			ctx,
@@ -154,8 +158,11 @@ func (s *responsesStream) apply(
 				signature: event.Item.EncryptedContent,
 				id:        part.id,
 			}
-			if !part.sawSummary {
-				raw.text = reasoningSummary(event.Item.Summary)
+			// The item terminal carries the full trace when no deltas
+			// streamed: summary entries on the OpenAI shape, reasoning_text
+			// content on a plain-text channel.
+			if !part.sawSummary && !part.sawReasoningText {
+				raw.text = reasoningText(event.Item.AsReasoning())
 			}
 			if raw.text == "" && raw.signature == "" {
 				return streamRaw{}, false, nil
@@ -199,6 +206,36 @@ func (s *responsesStream) apply(
 			kind: streamRawReasoning,
 			part: part.index,
 			text: event.Delta,
+		}, true, nil
+	case "response.reasoning_text.delta":
+		// A plain-text reasoning channel streams the trace as
+		// reasoning_text rather than as summary entries.
+		part := s.registerPart(event.OutputIndex, false)
+		part.reasoning = true
+		part.sawReasoningText = true
+		if event.Delta == "" {
+			return streamRaw{}, false, nil
+		}
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: event.Delta,
+		}, true, nil
+	case "response.reasoning_text.done":
+		part := s.registerPart(event.OutputIndex, false)
+		part.reasoning = true
+		if event.ItemID != "" {
+			part.id = event.ItemID
+		}
+		if part.sawReasoningText || event.Text == "" {
+			return streamRaw{}, false, nil
+		}
+		part.sawReasoningText = true
+		return streamRaw{
+			kind: streamRawReasoning,
+			part: part.index,
+			text: event.Text,
+			id:   part.id,
 		}, true, nil
 	case "response.output_text.delta":
 		part := s.registerPart(event.OutputIndex, false)

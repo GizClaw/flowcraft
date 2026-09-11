@@ -40,12 +40,25 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 			items = append(items, responses.ResponseInputItemUnionParam{
 				OfFunctionCallOutput: &responses.ResponseInputItemFunctionCallOutputParam{
 					CallID: item.callID,
-					Output: responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
-						OfString: param.NewOpt(item.output),
-					},
+					Output: functionCallOutputParam(item.output),
 				},
 			})
 		case wireItemReasoning:
+			if wire.reasoningChannel == channelText {
+				// A plain-text reasoning channel round-trips the trace in
+				// the content list: summary and encrypted payload are not
+				// part of its contract, and sending them would describe a
+				// round-trip the endpoint does not verify.
+				items = append(items, responses.ResponseInputItemUnionParam{
+					OfReasoning: &responses.ResponseReasoningItemParam{
+						ID: item.reasoningID,
+						Content: []responses.ResponseReasoningItemContentParam{
+							{Text: item.reasoningText},
+						},
+					},
+				})
+				break
+			}
 			reasoning := responses.ResponseReasoningItemParam{
 				ID:               item.reasoningID,
 				EncryptedContent: param.NewOpt(item.encrypted),
@@ -70,6 +83,10 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 	params := responses.ResponseNewParams{
 		Model: wire.model,
 		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: items},
+		// The OpenAI default is store: true, which retains the response for
+		// at least 30 days. FlowCraft replays context itself, so the driver
+		// states the decision on the wire instead of inheriting it.
+		Store: param.NewOpt(wire.store),
 	}
 	// Reasoning traces are worthless to consumers without their encrypted
 	// payload: without it the reasoning cannot round-trip into later
@@ -89,13 +106,19 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 	if wire.topP != nil {
 		params.TopP = param.NewOpt(*wire.topP)
 	}
-	if wire.reasoning != "" {
+	if wire.reasoning != "" || wire.reasoningSummary != "" {
 		params.Reasoning = shared.ReasoningParam{
 			Effort: shared.ReasoningEffort(wire.reasoning),
 		}
+		// Summaries are opt-in: without this the provider returns the
+		// encrypted payload and no readable trace.
+		if wire.reasoningSummary != "" {
+			params.Reasoning.Summary =
+				shared.ReasoningSummary(wire.reasoningSummary)
+		}
 	}
-	if wire.textFormat != nil {
-		params.Text = textFormatParam(wire.textFormat)
+	if wire.textFormat != nil || wire.verbosity != "" {
+		params.Text = responsesTextControls(wire.textFormat, wire.verbosity)
 	}
 	for _, definition := range wire.tools {
 		toolParam := responses.FunctionToolParam{
@@ -128,20 +151,107 @@ func wireToParams(wire generateWire) responses.ResponseNewParams {
 	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
 		params.Metadata = wire.requestMetadata
 	}
+	if wire.promptCacheKey != "" {
+		params.PromptCacheKey = param.NewOpt(wire.promptCacheKey)
+	}
+	if wire.serviceTier != "" {
+		params.ServiceTier = responses.ResponseNewParamsServiceTier(wire.serviceTier)
+	}
+	if wire.parallelToolCalls != nil {
+		params.ParallelToolCalls = param.NewOpt(*wire.parallelToolCalls)
+	}
+	if wire.maxToolCalls != nil {
+		params.MaxToolCalls = param.NewOpt(int64(*wire.maxToolCalls))
+	}
+	if wire.safetyIdentifier != "" {
+		params.SafetyIdentifier = param.NewOpt(wire.safetyIdentifier)
+	}
 	return params
+}
+
+// responsesTextControls builds the text controls for one request: verbosity
+// rides alongside the response format the intent negotiated.
+func responsesTextControls(
+	format *wireTextFormat,
+	verbosity string,
+) responses.ResponseTextConfigParam {
+	var text responses.ResponseTextConfigParam
+	if format != nil {
+		text = textFormatParam(format)
+	}
+	if verbosity != "" {
+		text.Verbosity = responses.ResponseTextConfigVerbosity(verbosity)
+	}
+	return text
 }
 
 // requestMetadataOptions returns per-request options for metadata that the
 // SDK does not type ("client_metadata"); the standard metadata envelope is
 // typed and set in wireToParams.
+// functionCallOutputParam lowers a tool result. A single text part keeps the
+// string form every endpoint and model accepts verbatim; anything richer
+// rides the content-list form the Responses API defines for tool output.
+func functionCallOutputParam(
+	result []wireContent,
+) responses.ResponseInputItemFunctionCallOutputOutputUnionParam {
+	if len(result) <= 1 &&
+		(len(result) == 0 || result[0].kind == wireContentText) {
+		text := ""
+		if len(result) == 1 {
+			text = result[0].text
+		}
+		return responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+			OfString: param.NewOpt(text),
+		}
+	}
+	list := make(responses.ResponseFunctionCallOutputItemListParam, 0, len(result))
+	for _, part := range result {
+		switch part.kind {
+		case wireContentImage:
+			list = append(list, responses.ResponseFunctionCallOutputItemUnionParam{
+				OfInputImage: &responses.ResponseInputImageContentParam{
+					ImageURL: param.NewOpt(part.uri),
+				},
+			})
+		default:
+			list = append(list, responses.ResponseFunctionCallOutputItemUnionParam{
+				OfInputText: &responses.ResponseInputTextContentParam{
+					Text: part.text,
+				},
+			})
+		}
+	}
+	return responses.ResponseInputItemFunctionCallOutputOutputUnionParam{
+		OfResponseFunctionCallOutputItemArray: list,
+	}
+}
+
 func requestMetadataOptions(wire generateWire) []option.RequestOption {
 	if wire.requestMetadataEnvelope == "" ||
 		wire.requestMetadataEnvelope == "metadata" ||
 		len(wire.requestMetadata) == 0 {
+		return requestOverflowOptions(wire)
+	}
+	return append(requestOverflowOptions(wire),
+		option.WithJSONSet(wire.requestMetadataEnvelope, wire.requestMetadata),
+	)
+}
+
+// requestOptions collects the per-request options a generate call needs
+// beyond the typed body.
+func requestOptions(wire generateWire) []option.RequestOption {
+	return requestMetadataOptions(wire)
+}
+
+// requestOverflowOptions lowers the provider's context-overflow policy. The
+// SDK does not type `truncation` on the create params, so it rides the same
+// raw-JSON path as gateway metadata.
+func requestOverflowOptions(wire generateWire) []option.RequestOption {
+	if wire.truncation == "" {
 		return nil
 	}
 	return []option.RequestOption{
-		option.WithJSONSet(wire.requestMetadataEnvelope, wire.requestMetadata),
+		option.WithJSONSet("truncation", string(wire.truncation)),
 	}
 }
 
@@ -299,7 +409,7 @@ func transportGenerate(
 		response, err := client.Responses.New(
 			ctx,
 			wireToParams(wire),
-			requestMetadataOptions(wire)...,
+			requestOptions(wire)...,
 		)
 		if err != nil {
 			classified := classifyError(err)
@@ -332,9 +442,12 @@ func responseToRaw(response *responses.Response) (generateRaw, error) {
 	for _, item := range response.Output {
 		switch item.Type {
 		case "reasoning":
+			// Summary is the OpenAI shape; a plain-text reasoning channel
+			// carries the trace in the content list instead, and either may
+			// arrive alone.
 			raw.reasonings = append(raw.reasonings, rawReasoning{
 				id:        item.ID,
-				text:      reasoningSummary(item.Summary),
+				text:      reasoningText(item.AsReasoning()),
 				signature: item.EncryptedContent,
 			})
 		case "message":
@@ -478,6 +591,23 @@ func reasoningSummary(summary []responses.ResponseReasoningItemSummary) string {
 		}
 	}
 	return strings.Join(texts, "\n\n")
+}
+
+// reasoningText returns the reasoning item's visible text. OpenAI carries it
+// as summary entries; a plain-text reasoning channel returns reasoning_text
+// content parts instead. Summary wins when both are present, because it is
+// the shape the caller opted into.
+func reasoningText(item responses.ResponseReasoningItem) string {
+	if text := reasoningSummary(item.Summary); text != "" {
+		return text
+	}
+	var builder strings.Builder
+	for _, content := range item.Content {
+		if content.Type == "reasoning_text" {
+			builder.WriteString(content.Text)
+		}
+	}
+	return builder.String()
 }
 
 func decodeGenerate(

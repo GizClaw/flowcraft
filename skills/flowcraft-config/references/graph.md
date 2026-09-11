@@ -11,7 +11,7 @@ File definitions are capped at 1 MiB.
   "entry": "chat",
   "nodes": [
     {"id": "chat", "type": "inference", "config": {
-      "model": {"id": {"provider": "deepseek", "name": "deepseek-v4-flash"}},
+      "model": {"id": {"provider": "deepseek", "name": "deepseek-flash"}},
       "messages_channel": "__main_channel"
     }},
     {"id": "tools", "type": "tool", "config": {
