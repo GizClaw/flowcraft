@@ -16,7 +16,7 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	typed := catalog["gpt-5.6-sol"]
-	typed.requestMetadataEnvelope = "metadata"
+	typed.dialect.requestMetadataEnvelope = "metadata"
 	compiled, err := compileGenerate("gpt-5.6-sol", typed)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -36,7 +36,7 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	client := catalog["gpt-5.6-sol"]
-	client.requestMetadataEnvelope = "client_metadata"
+	client.dialect.requestMetadataEnvelope = "client_metadata"
 	compiled, err = compileGenerate("gpt-5.6-sol", client)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -54,7 +54,7 @@ func TestRequestMetadataTypedAndClientEnvelopes(t *testing.T) {
 	}
 
 	custom := catalog["gpt-5.6-sol"]
-	custom.requestMetadataEnvelope = "request_fields"
+	custom.dialect.requestMetadataEnvelope = "request_fields"
 	compiled, err = compileGenerate("gpt-5.6-sol", custom)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -105,7 +105,7 @@ func TestRequestMetadataClientForwardedUnaryBody(t *testing.T) {
 	})
 	cls := testClients(t, server)
 	entry := catalog["gpt-5.6-sol"]
-	entry.requestMetadataEnvelope = "client_metadata"
+	entry.dialect.requestMetadataEnvelope = "client_metadata"
 	operations, err := openGenerate(
 		cls,
 		entry,

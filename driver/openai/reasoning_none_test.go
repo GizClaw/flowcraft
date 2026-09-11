@@ -33,10 +33,12 @@ func TestToggleFalseCompilesToWireNone(t *testing.T) {
 
 func TestChatModeToggleFalseStillRejects(t *testing.T) {
 	entry := catalogEntry{
-		kind:         kindGenerate,
-		api:          apiChat,
+		kind: kindGenerate,
+
 		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
-	}
+		dialect: dialect{
+			api: apiChat,
+		}}
 	compile := compileGenerate("chat-toggle", entry)
 	request := simpleTextRequest("hi")
 	disabled := false
@@ -58,10 +60,12 @@ func TestChatModeToggleFalseStillRejects(t *testing.T) {
 
 func TestSpecToggleWithoutMapPassesEffortThrough(t *testing.T) {
 	entry := catalogEntry{
-		kind:         kindGenerate,
-		api:          apiResponses,
+		kind: kindGenerate,
+
 		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
-	}
+		dialect: dialect{
+			api: apiResponses,
+		}}
 	compile := compileGenerate("spec-toggle", entry)
 	request := simpleTextRequest("hi")
 	request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningHigh
@@ -244,7 +248,7 @@ func TestChatSurfacePublishesAlways(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	for name, entry := range models {
-		if entry.kind != kindGenerate || entry.api != apiChat {
+		if entry.kind != kindGenerate || entry.dialect.api != apiChat {
 			continue
 		}
 		if entry.capabilities.Reasoning.Kind == inference.ReasoningToggle {

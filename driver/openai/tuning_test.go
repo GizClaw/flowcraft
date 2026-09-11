@@ -67,7 +67,7 @@ func TestPromptCacheKeyRidesTheExtension(t *testing.T) {
 	for _, api := range []string{"responses", "chat"} {
 		entry := catalog["gpt-5.6-sol"]
 		if api == "chat" {
-			entry.api = apiChat
+			entry.dialect.api = apiChat
 		}
 		wire := compileTextWire(t, simpleTextRequest("hi"))
 		ledger := newLedger(inference.OperationGenerate, nil)
@@ -139,7 +139,7 @@ func TestGenerateTuningRejectsChatOnlyGaps(t *testing.T) {
 	}
 	ledger := newLedger(inference.OperationGenerate, active)
 	entry := catalog["gpt-5.6-sol"]
-	entry.api = apiChat
+	entry.dialect.api = apiChat
 	compileGenerateTuning(&wire, options, entry, ledger)
 	if wire.maxToolCalls != nil || wire.verbosity != "" {
 		t.Fatalf("chat wire = %+v", wire)
@@ -179,7 +179,7 @@ func TestTruncationAndTimeout(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	wire := compileTextWire(t, simpleTextRequest("hi"))
-	wire.truncation = models["gpt-5.6-sol"].truncation
+	wire.truncation = models["gpt-5.6-sol"].dialect.truncation
 	if wire.truncation != truncationAuto {
 		t.Fatalf("truncation = %q", wire.truncation)
 	}

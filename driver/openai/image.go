@@ -760,7 +760,7 @@ func openImage(
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
-		compileImage(id.Name, entry.azureDeployment),
+		compileImage(id.Name, entry.dialect.azureDeployment),
 		transportImage(cls.api),
 		decodeImage,
 		transportImageStream(cls.api),

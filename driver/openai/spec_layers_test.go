@@ -75,7 +75,7 @@ func TestWireToParamsStore(t *testing.T) {
 	}
 
 	entry := catalog["gpt-5.6-sol"]
-	entry.store = true
+	entry.dialect.store = true
 	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -149,8 +149,8 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 // decoder reads it back.
 func TestReasoningTextChannelRoundTrip(t *testing.T) {
 	entry := catalog["gpt-5.6-sol"]
-	entry.reasoningChannel = channelText
-	entry.omitReasoningPayload = true
+	entry.dialect.reasoningChannel = channelText
+	entry.dialect.omitReasoningPayload = true
 
 	request := simpleTextRequest("current")
 	request.Context = []message.Message{{

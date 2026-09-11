@@ -23,10 +23,12 @@ func TestChatCompileRejectsWebSearch(t *testing.T) {
 		GenerateOptions{WebSearch: &GenerateWebSearch{}},
 	}
 	compiled, err := compileGenerate("gpt-5.6-sol", catalogEntry{
-		kind:         kindGenerate,
-		api:          apiChat,
+		kind: kindGenerate,
+
 		capabilities: inference.ModelCapabilities{HostedWebSearch: true},
-	})(context.Background(), openaiModel("gpt-5.6-sol"), request, inference.GenerateExecutionUnary)
+		dialect: dialect{
+			api: apiChat,
+		}})(context.Background(), openaiModel("gpt-5.6-sol"), request, inference.GenerateExecutionUnary)
 	if err == nil || !strings.Contains(err.Error(), "web_search") {
 		t.Fatalf("compile error = %v, want web_search rejection", err)
 	}
@@ -117,8 +119,10 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 	defer server.Close()
 
 	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
-		kind: kindGenerate, api: apiChat,
-	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
+		kind: kindGenerate,
+		dialect: dialect{
+			api: apiChat,
+		}})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionUnary)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,8 +161,10 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 	defer server.Close()
 
 	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
-		kind: kindGenerate, api: apiChat,
-	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionStream)
+		kind: kindGenerate,
+		dialect: dialect{
+			api: apiChat,
+		}})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionStream)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,8 +237,10 @@ func TestChatStreamTruncatedEOFSurfacesSynthesizedFinish(t *testing.T) {
 	defer server.Close()
 
 	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
-		kind: kindGenerate, api: apiChat,
-	})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionStream)
+		kind: kindGenerate,
+		dialect: dialect{
+			api: apiChat,
+		}})(context.Background(), openaiModel("gpt-5.6-sol"), simpleTextRequest("hi"), inference.GenerateExecutionStream)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,11 +289,13 @@ func TestChatStreamUsageOptOutOmitsStreamOptions(t *testing.T) {
 	defer server.Close()
 
 	entry := catalogEntry{
-		kind:                   kindGenerate,
-		api:                    apiChat,
-		capabilities:           generateChatCapabilities(),
-		chatStreamIncludeUsage: boolPtr(false),
-	}
+		kind: kindGenerate,
+
+		capabilities: generateChatCapabilities(),
+		dialect: dialect{
+			api:                    apiChat,
+			chatStreamIncludeUsage: boolPtr(false),
+		}}
 	wire, err := compileGenerate("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
@@ -336,12 +346,14 @@ func TestChatStreamObfuscationOptOutSendsStreamOptions(t *testing.T) {
 			defer server.Close()
 
 			entry := catalogEntry{
-				kind:                         kindGenerate,
-				api:                          apiChat,
-				capabilities:                 generateChatCapabilities(),
-				chatStreamIncludeUsage:       tc.includeUsage,
-				chatStreamIncludeObfuscation: boolPtr(false),
-			}
+				kind: kindGenerate,
+
+				capabilities: generateChatCapabilities(),
+				dialect: dialect{
+					api:                          apiChat,
+					chatStreamIncludeUsage:       tc.includeUsage,
+					chatStreamIncludeObfuscation: boolPtr(false),
+				}}
 			wire, err := compileGenerate("gpt-5.6-sol", entry)(
 				context.Background(),
 				openaiModel("gpt-5.6-sol"),

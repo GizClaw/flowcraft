@@ -23,13 +23,24 @@ const (
 	kindTTS      modelKind = "tts"
 )
 
-// apiMode selects the generate wire surface for one provider instance.
-type apiMode string
+// catalogMode selects which model namespace one provider instance serves.
+type catalogMode string
 
 const (
-	apiResponses apiMode = "responses"
-	apiChat      apiMode = "chat"
+	// catalogBuiltinDeclared merges spec.models over the built-in line-up.
+	catalogBuiltinDeclared catalogMode = "builtin_declared"
+	// catalogDeclared starts from an empty catalog: deployment names never
+	// inherit OpenAI facts by coincidence.
+	catalogDeclared catalogMode = "declared"
 )
+
+// catalogMode returns the normalized catalog mode.
+func (s Spec) catalogMode() catalogMode {
+	if s.Catalog == "" {
+		return catalogBuiltinDeclared
+	}
+	return catalogMode(s.Catalog)
+}
 
 // catalogEntry is one model in the built-in catalog. capabilities is the
 // single capability fact source: input/output content kinds, hosted web
@@ -40,47 +51,19 @@ const (
 // mergedCatalog for the per-surface resolution).
 type catalogEntry struct {
 	kind         modelKind
-	api          apiMode
 	capabilities inference.ModelCapabilities
-	// chatStreamIncludeUsage controls whether chat-mode streams ask for
-	// the usage chunk via stream_options.include_usage. Nil keeps the
-	// driver default (true). It only affects generate entries served by
-	// the chat surface; responses-mode streams always include usage.
-	chatStreamIncludeUsage *bool
-	// chatStreamIncludeObfuscation controls whether chat-mode streams send
-	// stream_options.include_obfuscation. Nil keeps the OpenAI default
-	// (true); false disables stream obfuscation. It only affects generate
-	// entries served by the chat surface.
-	chatStreamIncludeObfuscation *bool
-	deprecated                   bool
-	replacement                  string
 	// limits carries the model's context/output windows in tokens. Nil
 	// leaves are undeclared. Generate values mirror the context window and
 	// maximum output on https://developers.openai.com/api/docs/models;
 	// embedding values mirror the per-request input limit.
 	limits inference.ModelLimits
-	// requestMetadataEnvelope is the provider-level lowering policy for
-	// canonical GenerateRequest.RequestMetadata ("" disables forwarding).
-	requestMetadataEnvelope string
-	// store asks the provider to retain responses server-side. The driver
-	// default is false: FlowCraft replays context itself.
-	store bool
-	// omitReasoningPayload suppresses include: [reasoning.encrypted_content].
-	// The zero value keeps the OpenAI shape — reasoning traces round-trip
-	// into later context — so an entry built outside mergedCatalog still
-	// describes the surface it belongs to.
-	omitReasoningPayload bool
-	// reasoningChannel selects the reasoning round-trip shape: summary text
-	// plus an opaque payload, or plain reasoning text.
-	reasoningChannel reasoningChannel
-	// reasoningSummary asks the provider for readable reasoning summaries;
-	// empty leaves the API default (no summary text).
-	reasoningSummary reasoningSummaryPolicy
-	// truncation selects the provider's context-overflow policy.
-	truncation truncationMode
-	// azureDeployment marks endpoints whose data-plane routes carry the
-	// deployment name in the path.
-	azureDeployment bool
+	// deprecated and replacement carry lifecycle facts for discovery.
+	deprecated  bool
+	replacement string
+	// dialect is the provider instance's wire policy, identical for every
+	// entry in one deployment. mergedCatalog stamps it so compilers read the
+	// deployment facts here instead of reaching back into the Spec.
+	dialect dialect
 }
 
 // validate enforces the family contract: the compiler bound by kind can only
@@ -127,18 +110,6 @@ func (e catalogEntry) validate() error {
 		}
 	}
 	return e.limits.Validate()
-}
-
-// includeChatStreamUsage resolves the chat streaming usage policy to the
-// concrete wire decision.
-func (e catalogEntry) includeChatStreamUsage() bool {
-	return e.chatStreamIncludeUsage == nil || *e.chatStreamIncludeUsage
-}
-
-// chatStreamObfuscation returns the explicit stream obfuscation policy, or
-// nil when the OpenAI default should apply.
-func (e catalogEntry) chatStreamObfuscation() *bool {
-	return e.chatStreamIncludeObfuscation
 }
 
 // generateChatCapabilities is the common capability declaration for the
@@ -346,39 +317,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 		}
 		models[model.Name] = entry
 	}
-	envelope := spec.requestMetadataEnvelope()
-	chatStreamIncludeUsage := spec.chatStreamIncludeUsage()
-	chatStreamIncludeObfuscation := spec.chatStreamIncludeObfuscation()
-	api := spec.apiMode()
-	channel := spec.reasoningChannel()
-	reasoningSummary := spec.reasoningSummaryPolicy()
-	truncation := spec.truncation()
-	omitReasoningPayload := !spec.includeReasoningPayload()
-	store := spec.store()
-	azureDeployment := spec.routing() == routingAzureDeployment
+	wire := spec.dialect()
 	for name, entry := range models {
-		entry.api = api
-		entry.requestMetadataEnvelope = envelope
-		entry.chatStreamIncludeUsage = chatStreamIncludeUsage
-		entry.chatStreamIncludeObfuscation = chatStreamIncludeObfuscation
-		entry.store = store
-		entry.reasoningChannel = channel
-		entry.reasoningSummary = reasoningSummary
-		entry.truncation = truncation
-		entry.omitReasoningPayload = omitReasoningPayload
-		entry.azureDeployment = azureDeployment
-		if entry.kind == kindGenerate &&
-			entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
-			entry.api == apiChat {
-			// Chat Completions has no way to express reasoning off for any
-			// model, so the truthful per-surface capability is always-on.
-			// The text reasoning channel keeps its declaration instead:
-			// whether that surface can disable reasoning is an endpoint
-			// fact (DeepSeek honors reasoning.effort="none", Kimi does not),
-			// so the catalog states it rather than the driver guessing.
-			entry.capabilities.Reasoning.Kind = inference.ReasoningAlways
-		}
-		models[name] = entry
+		entry.dialect = wire
+		models[name] = wire.narrow(entry)
 	}
 	for name, entry := range models {
 		if err := entry.validate(); err != nil {

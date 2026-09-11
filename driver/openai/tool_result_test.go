@@ -129,7 +129,7 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 // in-place placeholder with a ledger reason instead of vanishing.
 func TestToolResultChatImagesAreReportedNotSilentlyDropped(t *testing.T) {
 	entry := catalog["gpt-5.6-sol"]
-	entry.api = apiChat
+	entry.dialect.api = apiChat
 	content := message.Content{Parts: []message.Part{
 		message.TextPart{Text: "before"},
 		message.ImagePart{Source: mustImageSource(t)},

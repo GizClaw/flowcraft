@@ -395,18 +395,18 @@ func compileGenerate(
 		wire := generateWire{
 			model:                        model,
 			stream:                       shape == inference.GenerateExecutionStream,
-			store:                        entry.store,
-			reasoningChannel:             entry.reasoningChannel,
-			reasoningSummary:             entry.reasoningSummary,
-			truncation:                   entry.truncation,
-			chatStreamIncludeUsage:       entry.includeChatStreamUsage(),
-			chatStreamIncludeObfuscation: entry.chatStreamObfuscation(),
+			store:                        entry.dialect.store,
+			reasoningChannel:             entry.dialect.reasoningChannel,
+			reasoningSummary:             entry.dialect.reasoningSummary,
+			truncation:                   entry.dialect.truncation,
+			chatStreamIncludeUsage:       entry.dialect.chatStreamUsage(),
+			chatStreamIncludeObfuscation: entry.dialect.chatObfuscation(),
 			includeReasoning: entry.capabilities.Reasoning.Kind != inference.ReasoningNone &&
-				entry.api != apiChat &&
-				!entry.omitReasoningPayload,
+				entry.dialect.api != apiChat &&
+				!entry.dialect.omitReasoningPayload,
 		}
-		if entry.requestMetadataEnvelope != "" && len(request.RequestMetadata) > 0 {
-			wire.requestMetadataEnvelope = entry.requestMetadataEnvelope
+		if entry.dialect.requestMetadataEnvelope != "" && len(request.RequestMetadata) > 0 {
+			wire.requestMetadataEnvelope = entry.dialect.requestMetadataEnvelope
 			wire.requestMetadata = maps.Clone(request.RequestMetadata)
 		} else if len(request.RequestMetadata) > 0 {
 			ledger.drop(
@@ -461,7 +461,7 @@ func compileGenerateOptions(
 	if options.WebSearch == nil {
 		return
 	}
-	if entry.api == apiChat {
+	if entry.dialect.api == apiChat {
 		ledger.reject(
 			inference.ExtensionField("web_search").Qualify(options),
 			"chat completions does not support hosted web search",
@@ -499,7 +499,7 @@ func compileGenerateTuning(
 	entry catalogEntry,
 	ledger *ledger,
 ) {
-	chat := entry.api == apiChat
+	chat := entry.dialect.api == apiChat
 	if tier := options.ServiceTier; tier != "" {
 		field := inference.ExtensionField("service_tier").Qualify(options)
 		if !validServiceTier(tier) {
@@ -579,7 +579,7 @@ func compileMessage(
 			// form, so it fails here rather than reaching the provider as an
 			// item the API refuses. Chat completions lowers assistant
 			// content to a plain string and keeps its own behavior.
-			if role == "assistant" && entry.api != apiChat {
+			if role == "assistant" && entry.dialect.api != apiChat {
 				ledger.reject(
 					fields[message.PartImage],
 					"assistant context cannot carry image input",
@@ -652,7 +652,7 @@ func compileReasoning(
 		ledger.drop(field, "model has no reasoning channel")
 		return
 	}
-	if entry.reasoningChannel == channelText {
+	if entry.dialect.reasoningChannel == channelText {
 		if part.Text == "" {
 			ledger.drop(
 				field,
@@ -667,7 +667,7 @@ func compileReasoning(
 		})
 		return
 	}
-	if entry.omitReasoningPayload {
+	if entry.dialect.omitReasoningPayload {
 		ledger.drop(
 			field,
 			"endpoint does not return reasoning payloads "+
@@ -738,7 +738,7 @@ func compileToolResultContent(
 	ledger *ledger,
 ) []wireContent {
 	vision := slices.Contains(entry.capabilities.Inputs, message.PartImage)
-	chatSurface := entry.api == apiChat
+	chatSurface := entry.dialect.api == apiChat
 	out := make([]wireContent, 0, len(content.Parts))
 	omitted := make([]string, 0, len(content.Parts))
 	notes := make([]inference.ComponentNote, 0, len(content.Parts))
@@ -919,7 +919,7 @@ func compileIntent(
 			// Responses lowers it to reasoning.effort "none", while chat
 			// entries are lowered to always at merge time. The chat guard
 			// stays as compiler-level defense for direct entry misuse.
-			if entry.api != apiChat {
+			if entry.dialect.api != apiChat {
 				wire.reasoning = "none"
 				break
 			}

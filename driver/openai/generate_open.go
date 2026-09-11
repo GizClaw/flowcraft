@@ -14,7 +14,7 @@ func openGenerate(
 	id inference.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
-	if entry.api == apiChat {
+	if entry.dialect.api == apiChat {
 		return inference.BindGenerateOperations(
 			compileGenerate(id.Name, entry),
 			transportChatGenerate(cls.api),
