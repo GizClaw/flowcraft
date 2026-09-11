@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type baseHostFactory struct {
@@ -15,12 +16,12 @@ type baseHostFactory struct {
 }
 
 func newBaseHostFactory(bus event.Bus, checkpoints ...agent.CheckpointStore) (session.HostFactory, error) {
-	if isNil(bus) {
+	if ptr.IsNil(bus) {
 		return nil, errdefs.Validationf("runtime host: event bus is required")
 	}
 	var store agent.CheckpointStore
 	for _, candidate := range checkpoints {
-		if !isNil(candidate) {
+		if !ptr.IsNil(candidate) {
 			store = candidate
 			break
 		}
@@ -29,7 +30,7 @@ func newBaseHostFactory(bus event.Bus, checkpoints ...agent.CheckpointStore) (se
 }
 
 func (f *baseHostFactory) NewHost(_ context.Context, request session.HostRequest) (agent.Host, error) {
-	if f == nil || isNil(f.bus) {
+	if f == nil || ptr.IsNil(f.bus) {
 		return nil, errdefs.Internalf("runtime host: event bus is unavailable")
 	}
 	if err := request.Validate(); err != nil {

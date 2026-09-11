@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type TranscribeSelector interface {
@@ -220,7 +221,7 @@ func (r *Router) ExplainTranscribeSession(
 func transcribeFallbackNext(
 	policy TranscribeFallbackPolicy,
 ) func(context.Context, inference.TranscriptionRequest, Attempt) (model.ModelRef, bool, error) {
-	if isNilInterface(policy) {
+	if ptr.IsNil(policy) {
 		return nil
 	}
 	return policy.NextTranscribe
@@ -229,7 +230,7 @@ func transcribeFallbackNext(
 func transcribeSessionFallbackNext(
 	policy TranscriptionSessionFallbackPolicy,
 ) func(context.Context, inference.TranscriptionSessionRequest, Attempt) (model.ModelRef, bool, error) {
-	if isNilInterface(policy) {
+	if ptr.IsNil(policy) {
 		return nil
 	}
 	return policy.NextTranscribeSession

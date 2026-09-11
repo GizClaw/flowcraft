@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // External declares one caller-owned dependency supplied to the
@@ -44,7 +45,7 @@ func (e ExternalResource) Validate() error {
 	if err := e.External.Validate(); err != nil {
 		return err
 	}
-	if e.Value == nil || isNilValue(e.Value) {
+	if e.Value == nil || ptr.IsNil(e.Value) {
 		return errdefs.Validationf(
 			"deploy external %q: value is required", e.Name)
 	}

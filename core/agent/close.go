@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -45,7 +46,7 @@ func closeSlice[T any](errs *[]error, values []T) {
 }
 
 func closeIfCloser(errs *[]error, value any) {
-	if value == nil || isNilInterface(value) {
+	if value == nil || ptr.IsNil(value) {
 		return
 	}
 	closer, ok := value.(io.Closer)

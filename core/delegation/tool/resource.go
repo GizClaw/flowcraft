@@ -2,12 +2,12 @@ package delegation
 
 import (
 	"context"
-	"reflect"
 
 	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	res "github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // SourceImpl is the tool.Source impl name for the delegation tools.
@@ -48,26 +48,12 @@ func (sourceFactory) New(ctx context.Context, in res.Input) (any, error) {
 			"delegation tool resource: dep %q is required", sdkdelegation.DirectoryDep)
 	}
 	directory, ok := value.(sdkdelegation.Directory)
-	if !ok || isNilInterface(directory) {
+	if !ok || ptr.IsNil(directory) {
 		return nil, errdefs.Validationf(
 			"delegation tool resource: dep %q is %T, want delegation.Directory",
 			sdkdelegation.DirectoryDep, value)
 	}
 	return &source{directory: directory}, nil
-}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	rv := reflect.ValueOf(value)
-	switch rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return rv.IsNil()
-	default:
-		return false
-	}
 }
 
 // source is the tool.Source value contributing the delegation tools.

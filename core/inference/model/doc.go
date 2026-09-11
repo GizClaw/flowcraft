@@ -19,7 +19,10 @@
 //
 // In scope: everything a provider catalog and a deployment spec must name to
 // describe a model, plus the Operation enum those declarations are written
-// against. The package depends only on core/message.
+// against. The package depends on core/message and on core/utils/ptr — a leaf
+// that imports nothing beyond the standard library — for the shared
+// defensive-copy helper its Clone methods use; it never imports the inference
+// contract that re-exports it.
 //
 // The enum enumerates only the workloads that have a request/response surface.
 // The reserved "realtime" value the original declaration carried — and the ten
@@ -40,7 +43,6 @@
 //	                validation
 //	limits.go       ModelLimits
 //	descriptor.go   ModelDescriptor
-//	helpers.go      ClonePointer
 //
 // Each declaration's patch form lives with the declaration it overrides:
 // adding a capability leaf means touching one file, not two. The original

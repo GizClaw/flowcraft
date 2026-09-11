@@ -5,24 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 )
-
-// isNilValue reports whether value is a typed nil (e.g. (*message.Part)(nil))
-// sitting behind an any. reflection.Value.IsNil only works on
-// chan/func/interface/map/pointer/slice; this is the safe equivalent
-// for an any that may carry one.
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	switch v := reflect.ValueOf(value); v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	}
-	return false
-}
 
 // decodeStrict decodes a JSON object/value with strict-mode settings: it
 // rejects unknown fields and trailing values. inference and message

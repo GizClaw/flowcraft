@@ -7,6 +7,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // TranscriptionSession is the canonical duplex recognition session: the
@@ -92,10 +93,10 @@ type boundTranscribeDriver interface {
 }
 
 func (o TranscribeOperations) Validate() error {
-	if isNilValue(o.Unary) && isNilValue(o.Session) {
+	if ptr.IsNil(o.Unary) && ptr.IsNil(o.Session) {
 		return fmt.Errorf("transcribe operations require a unary or session driver")
 	}
-	if !isNilValue(o.Unary) && !isNilValue(o.Session) {
+	if !ptr.IsNil(o.Unary) && !ptr.IsNil(o.Session) {
 		unary, unaryOK := o.Unary.(boundTranscribeDriver)
 		session, sessionOK := o.Session.(boundTranscribeDriver)
 		if !unaryOK || !sessionOK ||
@@ -372,7 +373,7 @@ func (d *transcribeSessionDriver[Wire, RawEvent]) PrepareSession(
 					err,
 				)
 			}
-			if isNilValue(raw) {
+			if ptr.IsNil(raw) {
 				return nil, NewError(
 					InvalidProviderResponse,
 					OperationTranscription,

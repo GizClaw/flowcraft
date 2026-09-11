@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"reflect"
 	"slices"
 	"strings"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type Role string
@@ -181,7 +182,7 @@ func (c Content) Clone() Content {
 	}
 	cloned := Content{Parts: make([]Part, len(c.Parts))}
 	for i, part := range c.Parts {
-		if !isNilValue(part) {
+		if !ptr.IsNil(part) {
 			normalized, _ := NormalizePart(part)
 			cloned.Parts[i] = normalized.Clone()
 		}
@@ -263,22 +264,6 @@ func (c Content) Text() string {
 		}
 	}
 	return b.String()
-}
-
-// isNilValue reports whether value is a typed nil (e.g. (*Part)(nil))
-// sitting behind an any. reflection.Value.IsNil only works on
-// chan/func/interface/map/pointer/slice; this is the safe equivalent
-// for an any that may carry one.
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	switch v := reflect.ValueOf(value); v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	}
-	return false
 }
 
 func decodeStrict(data []byte, dst any) error {

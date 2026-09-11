@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type EmbedSelector interface {
@@ -84,7 +85,7 @@ func (r *Router) ExplainEmbed(
 func embedFallbackNext(
 	policy EmbedFallbackPolicy,
 ) func(context.Context, inference.EmbedRequest, Attempt) (model.ModelRef, bool, error) {
-	if isNilInterface(policy) {
+	if ptr.IsNil(policy) {
 		return nil
 	}
 	return policy.NextEmbed

@@ -3,6 +3,8 @@ package inference
 import (
 	"fmt"
 	"regexp"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Extension is implemented by typed values in provider packages. The
@@ -46,7 +48,7 @@ func (extensions Extensions) Clone() Extensions {
 	}
 	cloned := make(Extensions, len(extensions))
 	for i, extension := range extensions {
-		if !isNilValue(extension) {
+		if !ptr.IsNil(extension) {
 			cloned[i] = extension.Clone()
 		}
 	}
@@ -58,7 +60,7 @@ var extensionIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 func (extensions Extensions) Validate() error {
 	seen := make(map[string]struct{}, len(extensions))
 	for i, extension := range extensions {
-		if isNilValue(extension) {
+		if ptr.IsNil(extension) {
 			return fmt.Errorf("extension %d is nil", i)
 		}
 		if !extensionIDPattern.MatchString(extension.ProviderID()) ||
@@ -98,7 +100,7 @@ func (extensions Extensions) Validate() error {
 func (extensions Extensions) ForProvider(provider string) Extensions {
 	var filtered Extensions
 	for _, extension := range extensions {
-		if isNilValue(extension) ||
+		if ptr.IsNil(extension) ||
 			extension.ProviderID() != provider {
 			continue
 		}
@@ -114,7 +116,7 @@ func (extensions Extensions) AppendActiveFields(fields []FieldID) []FieldID {
 func (extensions Extensions) ActiveFields() []FieldID {
 	var fields []FieldID
 	for _, extension := range extensions {
-		if isNilValue(extension) {
+		if ptr.IsNil(extension) {
 			continue
 		}
 		for _, field := range extension.ActiveFields() {

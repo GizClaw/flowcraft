@@ -13,6 +13,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -152,7 +153,7 @@ func (r *Runtime) Drain(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	if isNilContext(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf("runtime: Drain context is required")
 	}
 	r.lifecycleMu.Lock()

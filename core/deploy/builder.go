@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/secret"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Builder constructs a deployment's resources from a [Document] using
@@ -632,7 +632,7 @@ func appendAny[T any](dst []any, values []T) []any {
 func closeAgentParts(values []any) {
 	for i := len(values) - 1; i >= 0; i-- {
 		value := values[i]
-		if value == nil || isNilValue(value) {
+		if value == nil || ptr.IsNil(value) {
 			continue
 		}
 		if closer, ok := value.(io.Closer); ok {
@@ -890,7 +890,7 @@ func closeAll(values map[string]any, order []string, result *Result) error {
 		if !ok {
 			continue
 		}
-		if isNilValue(closer) {
+		if ptr.IsNil(closer) {
 			continue
 		}
 		if err := closer.Close(); err != nil {
@@ -898,18 +898,4 @@ func closeAll(values map[string]any, order []string, result *Result) error {
 		}
 	}
 	return errors.Join(errs...)
-}
-
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

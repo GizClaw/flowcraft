@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -760,7 +761,7 @@ func WithCommitter(c Committer) ExecuteOption {
 // typed-nil provider disables an earlier provider for this call.
 func WithCommitViewProvider(p CommitViewProvider) ExecuteOption {
 	return func(rc *execConfig) {
-		if isNilInterface(p) {
+		if ptr.IsNil(p) {
 			rc.commitViewProvider = nil
 			return
 		}

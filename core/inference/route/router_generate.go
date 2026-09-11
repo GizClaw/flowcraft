@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type GenerateSelector interface {
@@ -176,7 +177,7 @@ func (r *Router) selectGenerate(
 func generateFallbackNext(
 	policy GenerateFallbackPolicy,
 ) func(context.Context, inference.GenerateRequest, Attempt) (model.ModelRef, bool, error) {
-	if isNilInterface(policy) {
+	if ptr.IsNil(policy) {
 		return nil
 	}
 	return policy.NextGenerate

@@ -24,6 +24,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/sandbox"
 	"github.com/GizClaw/flowcraft/core/tool"
 	"github.com/GizClaw/flowcraft/core/utils"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	"github.com/GizClaw/flowcraft/core/workspace"
 )
 
@@ -379,7 +380,7 @@ func collectNodeTypes(in res.Input) ([]customNodeType, error) {
 			return nil, errdefs.Validationf(
 				"graph engine: dep %q is %T, want graph.NodeTypeRegistrar", key, value)
 		}
-		if isNilValue(registrar) {
+		if ptr.IsNil(registrar) {
 			return nil, errdefs.Validationf("graph engine: dep %q is a typed nil", key)
 		}
 		if identity, has := registrarIdentity(value); has {
@@ -440,23 +441,10 @@ func optionalDep[T any](raw map[string]any, name string) (T, error) {
 		return zero, errdefs.Validationf(
 			"graph engine: dep %q has Go type %T, want %v", name, value, reflect.TypeFor[T]())
 	}
-	if isNilValue(typed) {
+	if ptr.IsNil(typed) {
 		return zero, errdefs.Validationf("graph engine: dep %q is a typed nil", name)
 	}
 	return typed, nil
-}
-
-func isNilValue(value any) bool {
-	if value == nil {
-		return true
-	}
-	v := reflect.ValueOf(value)
-	switch v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	default:
-		return false
-	}
 }
 
 type nodeRequirements struct {

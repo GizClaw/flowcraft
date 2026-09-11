@@ -14,6 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/resource"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // HostFactoryDecorator wraps the runtime's built-in base host factory.
@@ -189,7 +190,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 	reg := b.reg
 	b.mu.Unlock()
 
-	if isNilContext(ctx) {
+	if ptr.IsNil(ctx) {
 		return nil, errdefs.Validationf("runtime Build context is required")
 	}
 	if reg == nil {
@@ -258,7 +259,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, fmt.Errorf("runtime decorate base host factory: %w", err)
 		}
-		if isNil(hostFactory) {
+		if ptr.IsNil(hostFactory) {
 			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, errdefs.Internalf(
 				"runtime host factory decorator returned nil")
@@ -270,7 +271,7 @@ func (b *Builder) Build(ctx context.Context, doc deploy.Document) (*Runtime, err
 			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, fmt.Errorf("runtime decorate host factory with deployment: %w", err)
 		}
-		if isNil(hostFactory) {
+		if ptr.IsNil(hostFactory) {
 			logBuildCleanup(ctx, "close partial deployment", result.Close())
 			return nil, errdefs.Internalf(
 				"runtime result host factory decorator returned nil")
@@ -475,34 +476,12 @@ func resolveValue[T any](result *deploy.Result, name, field string) (T, error) {
 			"runtime config: %s resource %q not found", field, name)
 	}
 	typed, ok := value.(T)
-	if !ok || isNil(typed) {
+	if !ok || ptr.IsNil(typed) {
 		return zero, errdefs.Validationf(
 			"runtime config: %s resource %q is %T, want %v",
 			field, name, value, reflect.TypeFor[T]())
 	}
 	return typed, nil
-}
-
-func isNilContext(ctx context.Context) bool {
-	if ctx == nil {
-		return true
-	}
-	v := reflect.ValueOf(ctx)
-	return v.Kind() == reflect.Pointer && v.IsNil()
-}
-
-func isNil(value any) bool {
-	if value == nil {
-		return true
-	}
-	v := reflect.ValueOf(value)
-	switch v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	default:
-		return false
-	}
 }
 
 // logBuildCleanup records a best-effort teardown error on a failed Build

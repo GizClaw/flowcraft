@@ -9,8 +9,9 @@ import (
 	"io"
 	"mime"
 	"net/url"
-	"reflect"
 	"strings"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type SourceKind string
@@ -148,7 +149,7 @@ func newURL(rawURL, mediaType, prefix string) (source, error) {
 }
 
 func newStream[T any](stream Stream[T], mediaType, prefix string) (source, error) {
-	if isNilStream(stream) {
+	if ptr.IsNil(stream) {
 		return source{}, fmt.Errorf("stream media source requires a stream")
 	}
 	normalized, err := normalizeMediaType(mediaType, prefix, true)
@@ -263,7 +264,7 @@ func (s source) Validate() error {
 			return fmt.Errorf("inline media source media type is required")
 		}
 	case SourceStream:
-		if isNilStream(s.stream) || s.url != "" || len(s.data) != 0 {
+		if ptr.IsNil(s.stream) || s.url != "" || len(s.data) != 0 {
 			return fmt.Errorf("stream media source has invalid payload")
 		}
 		if s.mediaType == "" {
@@ -311,18 +312,6 @@ func (s *source) UnmarshalJSON(data []byte) error {
 	}
 	*s = candidate
 	return nil
-}
-
-func isNilStream(value any) bool {
-	if value == nil {
-		return true
-	}
-	switch v := reflect.ValueOf(value); v.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return v.IsNil()
-	}
-	return false
 }
 
 func decodeStrict(data []byte, value any) error {

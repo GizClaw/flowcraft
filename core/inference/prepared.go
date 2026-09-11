@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // The prepare*Call helpers turn an opened driver set plus one request into a
@@ -46,7 +48,7 @@ func prepareEmbedCall(
 	ref ModelRef,
 	request EmbedRequest,
 ) (*Prepared[EmbedResponse], error) {
-	if isNilValue(driver) {
+	if ptr.IsNil(driver) {
 		return nil, NewError(
 			UnsupportedOperation, OperationEmbed, "",
 			fmt.Errorf("model %q has no embed driver", ref.ID.Name))

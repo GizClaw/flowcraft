@@ -10,6 +10,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -74,7 +75,7 @@ func (r *Runtime) RegisterAgent(
 		return nil, errdefs.Validationf(
 			"runtime: RegisterAgent requires a built Runtime")
 	}
-	if isNilContext(ctx) {
+	if ptr.IsNil(ctx) {
 		return nil, errdefs.Validationf(
 			"runtime: RegisterAgent context is required")
 	}
@@ -88,7 +89,7 @@ func (r *Runtime) RegisterAgent(
 
 	options := registerOptions{}
 	for _, option := range opts {
-		if isNil(option) {
+		if ptr.IsNil(option) {
 			return nil, errdefs.Validationf(
 				"runtime: RegisterAgentOption must not be nil")
 		}
@@ -190,7 +191,7 @@ func (r *Runtime) UnregisterAgent(
 		return errdefs.Validationf(
 			"runtime: UnregisterAgent requires a built Runtime")
 	}
-	if isNilContext(ctx) {
+	if ptr.IsNil(ctx) {
 		return errdefs.Validationf(
 			"runtime: UnregisterAgent context is required")
 	}
@@ -200,7 +201,7 @@ func (r *Runtime) UnregisterAgent(
 
 	options := removeOptions{}
 	for _, option := range opts {
-		if isNil(option) {
+		if ptr.IsNil(option) {
 			return errdefs.Validationf(
 				"runtime: UnregisterAgentOption must not be nil")
 		}

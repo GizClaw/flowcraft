@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // GenerateStreamDecoder implementations must support concurrent calls.
@@ -91,7 +93,7 @@ func (d *generateStreamDriver[Wire, RawEvent]) PrepareStream(
 			if err != nil {
 				return nil, streamProviderError(model.ID.Provider, "stream.open", err)
 			}
-			if isNilValue(raw) {
+			if ptr.IsNil(raw) {
 				return nil, newStreamError(
 					"stream.open.nil",
 					fmt.Errorf("provider opened a nil generate stream"),

@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // PartDelta is the sealed provider-neutral union accepted by GenerateStream.
@@ -15,7 +16,7 @@ type PartDelta interface {
 }
 
 func normalizePartDelta(delta PartDelta) (PartDelta, error) {
-	if isNilValue(delta) {
+	if ptr.IsNil(delta) {
 		return nil, fmt.Errorf("generate part delta is nil")
 	}
 	switch value := delta.(type) {

@@ -3,6 +3,8 @@ package inference
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // ProviderOutput is a typed, provider-owned structured value attached to a
@@ -38,7 +40,7 @@ type providerOutputEnvelope struct {
 func (outputs ProviderOutputs) MarshalJSON() ([]byte, error) {
 	entries := make([]providerOutputEnvelope, len(outputs))
 	for i, output := range outputs {
-		if isNilValue(output) {
+		if ptr.IsNil(output) {
 			return nil, fmt.Errorf("provider output %d is nil", i)
 		}
 		entries[i] = providerOutputEnvelope{
@@ -56,7 +58,7 @@ func (outputs ProviderOutputs) Clone() ProviderOutputs {
 	}
 	cloned := make(ProviderOutputs, len(outputs))
 	for i, output := range outputs {
-		if !isNilValue(output) {
+		if !ptr.IsNil(output) {
 			cloned[i] = output.Clone()
 		}
 	}
@@ -65,7 +67,7 @@ func (outputs ProviderOutputs) Clone() ProviderOutputs {
 
 func (outputs ProviderOutputs) Validate() error {
 	for i, output := range outputs {
-		if isNilValue(output) {
+		if ptr.IsNil(output) {
 			return fmt.Errorf("provider output %d is nil", i)
 		}
 		if !extensionIDPattern.MatchString(output.ProviderID()) ||
@@ -84,11 +86,11 @@ func (outputs ProviderOutputs) Validate() error {
 // provider/extension identity. Streaming providers use this to publish a
 // cumulative snapshot per output family, matching Usage's replace semantics.
 func (outputs *ProviderOutputs) Replace(output ProviderOutput) {
-	if isNilValue(output) {
+	if ptr.IsNil(output) {
 		return
 	}
 	for i, existing := range *outputs {
-		if !isNilValue(existing) &&
+		if !ptr.IsNil(existing) &&
 			existing.ProviderID() == output.ProviderID() &&
 			existing.ExtensionID() == output.ExtensionID() {
 			(*outputs)[i] = output

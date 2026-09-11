@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/deploy"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // ExternalDependency declares one caller-owned dependency in the
@@ -44,7 +45,7 @@ func (e ExternalResource) Validate() error {
 	if err := e.ExternalDependency.Validate(); err != nil {
 		return err
 	}
-	if e.Value == nil || isNil(e.Value) {
+	if e.Value == nil || ptr.IsNil(e.Value) {
 		return errdefs.Validationf(
 			"runtime external_deps: %q value is required", e.Name)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"reflect"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/agent"
@@ -14,6 +13,7 @@ import (
 	memoryrender "github.com/GizClaw/flowcraft/core/memory/render"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -214,7 +214,7 @@ func resolveAssembly(input resource.Input) (sdkmemory.Assembly, error) {
 		return nil, errdefs.NotFoundf("memory hook: dependency %q is not bound", depName)
 	}
 	assembly, ok := raw.(sdkmemory.Assembly)
-	if !ok || isNilAssembly(assembly) {
+	if !ok || ptr.IsNil(assembly) {
 		return nil, errdefs.Validationf(
 			"memory hook: dependency %q has Go type %T, want memory.Assembly",
 			depName, raw,
@@ -237,14 +237,6 @@ func resolveTurn(input resource.Input) (sdkmemory.TurnSink, error) {
 		return nil, err
 	}
 	return assembly, nil
-}
-
-func isNilAssembly(assembly sdkmemory.Assembly) bool {
-	if assembly == nil {
-		return true
-	}
-	value := reflect.ValueOf(assembly)
-	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 func (s ContextSettings) validate() error {

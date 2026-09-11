@@ -2,12 +2,12 @@ package hostwrap
 
 import (
 	"context"
-	"reflect"
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	sdkdelegation "github.com/GizClaw/flowcraft/core/delegation"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/runtime/session"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Deployment is the minimal read-only deployment view needed to locate a
@@ -29,10 +29,10 @@ type Deployment interface {
 //		return hostwrap.Wrap(factory, result)
 //	})
 func Wrap(hostFactory session.HostFactory, deployment Deployment) (session.HostFactory, error) {
-	if isNilInterface(hostFactory) {
+	if ptr.IsNil(hostFactory) {
 		return nil, errdefs.Validationf("delegation hostwrap: nil host factory")
 	}
-	if isNilInterface(deployment) {
+	if ptr.IsNil(deployment) {
 		return nil, errdefs.Validationf("delegation hostwrap: nil deployment")
 	}
 	var service sdkdelegation.Service
@@ -41,15 +41,15 @@ func Wrap(hostFactory session.HostFactory, deployment Deployment) (session.HostF
 		if !ok {
 			continue
 		}
-		if candidate, ok := value.(sdkdelegation.Service); ok && !isNilInterface(candidate) {
-			if !isNilInterface(service) {
+		if candidate, ok := value.(sdkdelegation.Service); ok && !ptr.IsNil(candidate) {
+			if !ptr.IsNil(service) {
 				return nil, errdefs.Conflictf(
 					"delegation hostwrap: multiple delegation services built (%s)", name)
 			}
 			service = candidate
 		}
 	}
-	if isNilInterface(service) {
+	if ptr.IsNil(service) {
 		return hostFactory, nil
 	}
 	return serviceHostFactory{inner: hostFactory, service: service}, nil
@@ -61,31 +61,17 @@ type serviceHostFactory struct {
 }
 
 func (f serviceHostFactory) NewHost(ctx context.Context, request session.HostRequest) (agent.Host, error) {
-	if isNilInterface(f.inner) {
+	if ptr.IsNil(f.inner) {
 		return nil, errdefs.Internalf("delegation hostwrap: nil inner host factory")
 	}
 	host, err := f.inner.NewHost(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	if isNilInterface(host) {
+	if ptr.IsNil(host) {
 		return nil, errdefs.Internalf("delegation hostwrap: inner host factory returned nil host")
 	}
 	return sdkdelegation.WithService(host, f.service), nil
 }
 
 var _ session.HostFactory = serviceHostFactory{}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	rv := reflect.ValueOf(value)
-	switch rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return rv.IsNil()
-	default:
-		return false
-	}
-}

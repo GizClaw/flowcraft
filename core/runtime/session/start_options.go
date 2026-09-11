@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // StartOption configures one StartWithOptions / ResumeWithOptions call.
@@ -32,7 +33,7 @@ func WithSinks(sinks ...SinkSpec) StartOption {
 // publishing prompt lifecycle events or blocking for a reply.
 func WithAskUserOverride(askUser AskUserFunc) StartOption {
 	return func(config *startConfig) error {
-		if isNil(askUser) {
+		if ptr.IsNil(askUser) {
 			return errdefs.Validationf(
 				"runtime session: AskUser override must not be nil")
 		}
@@ -56,7 +57,7 @@ func WithEphemeral() StartOption {
 func applyStartOptions(options []StartOption) (startConfig, error) {
 	config := startConfig{}
 	for _, option := range options {
-		if isNil(option) {
+		if ptr.IsNil(option) {
 			return startConfig{}, errdefs.Validationf(
 				"runtime session: StartOption must not be nil")
 		}

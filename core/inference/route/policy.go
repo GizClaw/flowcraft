@@ -12,6 +12,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 var tierPattern = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
@@ -46,10 +47,10 @@ func (s ModelScore) IsZero() bool {
 
 func (s ModelScore) Clone() ModelScore {
 	return ModelScore{
-		Quality:     model.ClonePointer(s.Quality),
-		Economy:     model.ClonePointer(s.Economy),
-		Speed:       model.ClonePointer(s.Speed),
-		Reliability: model.ClonePointer(s.Reliability),
+		Quality:     ptr.Clone(s.Quality),
+		Economy:     ptr.Clone(s.Economy),
+		Speed:       ptr.Clone(s.Speed),
+		Reliability: ptr.Clone(s.Reliability),
 	}
 }
 

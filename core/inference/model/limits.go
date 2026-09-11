@@ -1,6 +1,10 @@
 package model
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
+)
 
 // ModelLimits declares numeric capacity limits of a model. A nil field
 // means the limit is undeclared rather than zero: the provider catalog did
@@ -18,8 +22,8 @@ type ModelLimits struct {
 
 func (l ModelLimits) Clone() ModelLimits {
 	return ModelLimits{
-		MaxInputTokens:  ClonePointer(l.MaxInputTokens),
-		MaxOutputTokens: ClonePointer(l.MaxOutputTokens),
+		MaxInputTokens:  ptr.Clone(l.MaxInputTokens),
+		MaxOutputTokens: ptr.Clone(l.MaxOutputTokens),
 	}
 }
 

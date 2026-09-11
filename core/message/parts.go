@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type PartKind string
@@ -60,7 +61,7 @@ type Part interface {
 // It returns an error if part is nil (including a typed nil pointer) or is not
 // one of the canonical part types.
 func NormalizePart(part Part) (Part, error) {
-	if isNilValue(part) {
+	if ptr.IsNil(part) {
 		return nil, fmt.Errorf("content part is nil")
 	}
 	switch value := part.(type) {

@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type generatePartAccumulator struct {
@@ -442,8 +442,8 @@ func (p *generatePartAccumulator) result() (message.Part, error) {
 		}
 		return message.AudioPart{
 			Source:         source,
-			Format:         model.ClonePointer(p.audioFormat),
-			DurationMillis: model.ClonePointer(duration),
+			Format:         ptr.Clone(p.audioFormat),
+			DurationMillis: ptr.Clone(duration),
 		}, nil
 	case message.PartImage:
 		if p.completeImage == nil {

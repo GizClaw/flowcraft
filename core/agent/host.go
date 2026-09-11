@@ -2,13 +2,13 @@ package agent
 
 import (
 	"context"
-	"reflect"
 	"sync"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Host is the contract a runtime exposes to a running engine.
@@ -73,14 +73,14 @@ func CapabilityFromHost[T any](h Host) (T, bool) {
 	var zero T
 	const maxWrapperDepth = 64
 	for range maxWrapperDepth {
-		if isNilInterface(h) {
+		if ptr.IsNil(h) {
 			return zero, false
 		}
-		if capability, ok := any(h).(T); ok && !isNilInterface(capability) {
+		if capability, ok := any(h).(T); ok && !ptr.IsNil(capability) {
 			return capability, true
 		}
 		unwrapper, ok := h.(HostUnwrapper)
-		if !ok || isNilInterface(unwrapper) {
+		if !ok || ptr.IsNil(unwrapper) {
 			return zero, false
 		}
 		h = unwrapper.UnwrapHost()
@@ -98,23 +98,10 @@ func EventBusFromHost(h Host) (event.Bus, bool) {
 		return nil, false
 	}
 	bus := provider.EventBus()
-	if isNilInterface(bus) {
+	if ptr.IsNil(bus) {
 		return nil, false
 	}
 	return bus, true
-}
-
-func isNilInterface(v any) bool {
-	if v == nil {
-		return true
-	}
-	rv := reflect.ValueOf(v)
-	switch rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return rv.IsNil()
-	default:
-		return false
-	}
 }
 
 // Publisher emits a single event envelope.
@@ -505,7 +492,7 @@ type hostCtxKey struct{}
 // argument is the contract; the context-carried copy is purely a
 // transport for downstream extensions that lack a Host parameter.
 func ContextWithHost(ctx context.Context, h Host) context.Context {
-	if isNilInterface(h) {
+	if ptr.IsNil(h) {
 		return ctx
 	}
 	return context.WithValue(ctx, hostCtxKey{}, h)
@@ -525,7 +512,7 @@ func HostFromContext(ctx context.Context) (Host, bool) {
 		return nil, false
 	}
 	h, ok := ctx.Value(hostCtxKey{}).(Host)
-	if !ok || isNilInterface(h) {
+	if !ok || ptr.IsNil(h) {
 		return nil, false
 	}
 	return h, true

@@ -3,6 +3,8 @@ package model
 import (
 	"fmt"
 	"time"
+
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type ModelStatus string
@@ -24,8 +26,8 @@ type ModelLifecycle struct {
 
 func (l ModelLifecycle) Clone() ModelLifecycle {
 	clone := l
-	clone.RetiresAt = ClonePointer(l.RetiresAt)
-	clone.Replacement = ClonePointer(l.Replacement)
+	clone.RetiresAt = ptr.Clone(l.RetiresAt)
+	clone.Replacement = ptr.Clone(l.Replacement)
 	return clone
 }
 

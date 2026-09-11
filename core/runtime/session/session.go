@@ -16,6 +16,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/event"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	sdktool "github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -483,7 +484,7 @@ func (s *Session) startTurnLocked(
 		epochRelease()
 		return nil, err
 	}
-	if isNil(host) {
+	if ptr.IsNil(host) {
 		turn.cancel()
 		epochRelease()
 		return nil, errdefs.Internalf("runtime session: HostFactory returned nil Host")

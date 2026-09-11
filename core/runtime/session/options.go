@@ -5,6 +5,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 const (
@@ -82,7 +83,7 @@ func WithSpeculativeBufferLimits(events, bytes int) ManagerOption {
 // contract.
 func WithSessionObserver(observer SessionObserver) ManagerOption {
 	return func(options *managerOptions) error {
-		if isNil(observer) {
+		if ptr.IsNil(observer) {
 			return errdefs.Validationf("runtime session: session observer is required")
 		}
 		options.observer = observer
@@ -96,7 +97,7 @@ func WithSessionObserver(observer SessionObserver) ManagerOption {
 // it when the Session closes.
 func WithCatalogProvider(provider CatalogProvider) ManagerOption {
 	return func(options *managerOptions) error {
-		if isNil(provider) {
+		if ptr.IsNil(provider) {
 			return errdefs.Validationf("runtime session: catalog provider is required")
 		}
 		options.catalogProvider = provider
@@ -122,7 +123,7 @@ func WithIdleTimeout(timeout time.Duration) ManagerOption {
 // is required when [WithResume] is enabled.
 func WithCheckpointStore(store agent.CheckpointStore) ManagerOption {
 	return func(options *managerOptions) error {
-		if isNil(store) {
+		if ptr.IsNil(store) {
 			return errdefs.Validationf("runtime session: checkpoint store is required")
 		}
 		options.checkpoints = store

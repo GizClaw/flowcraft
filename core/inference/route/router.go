@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/telemetry"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 
 	otellog "go.opentelemetry.io/otel/log"
 )
@@ -171,10 +171,10 @@ func New(
 	if target == nil {
 		return nil, errdefs.Validationf("inference assembly is required")
 	}
-	if isNilInterface(selectors.Generate) &&
-		isNilInterface(selectors.Embed) &&
-		isNilInterface(selectors.Transcribe) &&
-		isNilInterface(selectors.TranscribeSession) {
+	if ptr.IsNil(selectors.Generate) &&
+		ptr.IsNil(selectors.Embed) &&
+		ptr.IsNil(selectors.Transcribe) &&
+		ptr.IsNil(selectors.TranscribeSession) {
 		return nil, errdefs.Validationf("at least one route selector is required")
 	}
 	orphans := []struct {
@@ -188,7 +188,7 @@ func New(
 		{model.OperationTranscription, selectors.TranscribeSession, selectors.TranscribeSessionFallback},
 	}
 	for _, orphan := range orphans {
-		if !isNilInterface(orphan.fallback) && isNilInterface(orphan.selector) {
+		if !ptr.IsNil(orphan.fallback) && ptr.IsNil(orphan.selector) {
 			return nil, errdefs.Validationf(
 				"%s fallback policy requires a %s selector",
 				orphan.operation,
@@ -239,7 +239,7 @@ func validateRetryPolicies(
 		if entry.policy == nil {
 			continue
 		}
-		if isNilInterface(entry.selector) {
+		if ptr.IsNil(entry.selector) {
 			return errdefs.Validationf(
 				"%s retry policy requires a %s selector",
 				entry.operation,
@@ -253,8 +253,8 @@ func validateRetryPolicies(
 	if policies.Transcription != nil {
 		// Transcription pools serve both the unary and session selectors,
 		// so one retry policy covers either surface.
-		if isNilInterface(selectors.Transcribe) &&
-			isNilInterface(selectors.TranscribeSession) {
+		if ptr.IsNil(selectors.Transcribe) &&
+			ptr.IsNil(selectors.TranscribeSession) {
 			return errdefs.Validationf(
 				"transcription retry policy requires a transcription selector",
 			)
@@ -746,7 +746,7 @@ func selectTarget[Request any](
 	if err := validate(snapshot); err != nil {
 		return Decision{}, NewError(InvalidRequest, operation, err)
 	}
-	if isNilInterface(selector) {
+	if ptr.IsNil(selector) {
 		return Decision{}, NewError(
 			SelectorUnavailable,
 			operation,
@@ -783,20 +783,6 @@ func selectTarget[Request any](
 		)
 	}
 	return decision, nil
-}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }
 
 // logRouteAttempt emits one log record for a retry / fallback / circuit

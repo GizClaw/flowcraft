@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 type EmbedItem struct {
@@ -33,7 +33,7 @@ func (r EmbedRequest) Clone() EmbedRequest {
 	for i, item := range r.Items {
 		clone.Items[i] = item.Clone()
 	}
-	clone.Dimensions = model.ClonePointer(r.Dimensions)
+	clone.Dimensions = ptr.Clone(r.Dimensions)
 	clone.Extensions = r.Extensions.Clone()
 	return clone
 }

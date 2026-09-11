@@ -8,6 +8,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/agent"
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/event"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // AskUserFunc is the turn-scoped user-prompt callback supplied to a Host.
@@ -32,7 +33,7 @@ func (r HostRequest) Validate() error {
 	if r.Interrupts == nil {
 		return errdefs.Validationf("runtime session: HostRequest.Interrupts is required")
 	}
-	if isNil(r.AskUser) {
+	if ptr.IsNil(r.AskUser) {
 		return errdefs.Validationf("runtime session: HostRequest.AskUser is required")
 	}
 	return nil
@@ -110,7 +111,7 @@ func (s SinkSpec) Validate() error {
 	if s.ID == "" {
 		return errdefs.Validationf("runtime session: SinkSpec.ID is required")
 	}
-	if isNil(s.Sink) {
+	if ptr.IsNil(s.Sink) {
 		return errdefs.Validationf("runtime session: SinkSpec.Sink is required")
 	}
 	if s.QueueSize < 0 {

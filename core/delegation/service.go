@@ -18,6 +18,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/runtime/session"
 	"github.com/GizClaw/flowcraft/core/telemetry"
 	"github.com/GizClaw/flowcraft/core/tool"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 	otellog "go.opentelemetry.io/otel/log"
 )
 
@@ -195,7 +196,7 @@ func WithIdempotencyRetention(retention time.Duration) Option {
 // capabilities such as EventBusProvider. The caller retains Host ownership.
 func WithWorkerHost(host agent.Host) Option {
 	return func(config *serviceConfig) error {
-		if isNilInterface(host) {
+		if ptr.IsNil(host) {
 			return errdefs.Validationf("local delegation: worker host is nil")
 		}
 		config.workerHost = host
@@ -255,7 +256,7 @@ func WithStreamTargetExporter(exporter StreamTargetExporter) Option {
 // fresh ContextID per delegation.
 func WithSessionProvider(provider SessionProvider) Option {
 	return func(config *serviceConfig) error {
-		if isNilInterface(provider) {
+		if ptr.IsNil(provider) {
 			return errdefs.Validationf("local delegation: session provider is nil")
 		}
 		config.sessionProvider = provider
@@ -330,7 +331,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 	if directory == nil {
 		return nil, errdefs.Validationf("local delegation: directory is nil")
 	}
-	if isNilInterface(backend) {
+	if ptr.IsNil(backend) {
 		backend = nil
 	}
 	config := serviceConfig{
@@ -352,7 +353,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 
 	workerCtx, cancelWorker := context.WithCancel(context.Background())
 	asyncRetention := config.idempotencyRetention
-	if provider, ok := backend.(IdempotencyRetentionProvider); ok && !isNilInterface(provider) {
+	if provider, ok := backend.(IdempotencyRetentionProvider); ok && !ptr.IsNil(provider) {
 		if retention := provider.IdempotencyRetention(); retention > 0 {
 			asyncRetention = min(asyncRetention, retention)
 		}
@@ -381,7 +382,7 @@ func NewService(directory *LocalDirectory, backend AsyncBackend, opts ...Option)
 	go service.idempotencyJanitor()
 	service.workers.Add(1)
 	go service.sweepStreamEscrowLoop()
-	if source, ok := backend.(WorkSource); ok && !isNilInterface(source) {
+	if source, ok := backend.(WorkSource); ok && !ptr.IsNil(source) {
 		service.work = source
 		if !config.deferWorkers {
 			if err := service.Start(); err != nil {
@@ -1296,7 +1297,7 @@ func (s *LocalService) inheritAsyncStreams(ctx context.Context, req AsyncRequest
 				err, otellog.String("delegation.stream_target", req.Stream.Target.ID))
 			return ctx
 		}
-		if isNilInterface(sink) {
+		if ptr.IsNil(sink) {
 			telemetry.Warn(ctx, "local delegation: stream resolver returned nil sink",
 				otellog.String("delegation.stream_target", req.Stream.Target.ID))
 			return ctx
@@ -1337,7 +1338,7 @@ func (s *LocalService) notifyRunStarted(ctx context.Context, req AsyncRequest, t
 		return
 	}
 	notifier, ok := s.backend.(RunIDNotifier)
-	if !ok || isNilInterface(notifier) {
+	if !ok || ptr.IsNil(notifier) {
 		return
 	}
 	if err := notifier.NoteRunID(ctx, ref, turn.RunID()); err != nil {
@@ -1618,20 +1619,6 @@ func newID() string {
 		return "delegation-" + hex.EncodeToString(bytes[:])
 	}
 	return fmt.Sprintf("delegation-%d", time.Now().UnixNano())
-}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	rv := reflect.ValueOf(value)
-	switch rv.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
-		reflect.Pointer, reflect.Slice:
-		return rv.IsNil()
-	default:
-		return false
-	}
 }
 
 func claimedWorkContext(workerCtx, workCtx context.Context) (context.Context, context.CancelFunc) {

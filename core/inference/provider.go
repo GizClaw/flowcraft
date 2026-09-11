@@ -9,6 +9,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Compiled is one provider-native request plus the ledger explaining how the
@@ -78,10 +79,10 @@ type boundGenerateDriver interface {
 }
 
 func (o GenerateOperations) Validate() error {
-	if isNilValue(o.Unary) && isNilValue(o.Stream) {
+	if ptr.IsNil(o.Unary) && ptr.IsNil(o.Stream) {
 		return fmt.Errorf("generate operations require a unary or stream driver")
 	}
-	if !isNilValue(o.Unary) && !isNilValue(o.Stream) {
+	if !ptr.IsNil(o.Unary) && !ptr.IsNil(o.Stream) {
 		unary, unaryOK := o.Unary.(boundGenerateDriver)
 		stream, streamOK := o.Stream.(boundGenerateDriver)
 		if !unaryOK || !streamOK ||
