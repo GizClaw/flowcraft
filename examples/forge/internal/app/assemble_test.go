@@ -47,8 +47,8 @@ func TestOpenBuildsScenarioWorkspaces(t *testing.T) {
 }
 
 // assertProviders pins the provider surface each scenario declares: the
-// DeepSeek Responses instance the graphs route to, plus the two extra models
-// that must stay selectable without a credential being present.
+// DeepSeek Responses instance the graphs route to, plus the extra models that
+// must stay selectable without a credential being present.
 func assertProviders(t *testing.T, a *App) {
 	t.Helper()
 	value, ok := a.rt.Resource("infer")
@@ -77,12 +77,18 @@ func assertProviders(t *testing.T, a *App) {
 	if got := strings.Join(exposed["glm"], ","); got != "glm-5.3-flash" {
 		t.Fatalf("glm models = %q", got)
 	}
+	// MiniMax-M3 rides MiniMax's Anthropic-compatible Messages surface, so it
+	// is served by the anthropic driver under its own provider id.
+	if got := strings.Join(exposed["minimax"], ","); got != "MiniMax-M3" {
+		t.Fatalf("minimax models = %q", got)
+	}
 	// The TUI builds its /model menu from Models(); it must offer exactly the
 	// selectable text targets, with automatic routing left to the caller.
 	models := a.Models()
 	for _, want := range []string{
 		"deepseek/deepseek-flash",
 		"glm/glm-5.3-flash",
+		"minimax/MiniMax-M3",
 		"openai/gpt-5.6-luna",
 	} {
 		if !contains(models, want) {

@@ -17,6 +17,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/tool/middleware"
 	"github.com/GizClaw/flowcraft/core/workspace"
 
+	"github.com/GizClaw/flowcraft/driver/anthropic"
 	"github.com/GizClaw/flowcraft/driver/openai"
 
 	"github.com/GizClaw/flowcraft/examples/forge/internal/simtools"
@@ -58,6 +59,9 @@ func buildRuntimeFromDocument(
 		return nil, err
 	}
 	if err := openai.Register(reg); err != nil {
+		return nil, err
+	}
+	if err := anthropic.Register(reg); err != nil {
 		return nil, err
 	}
 	if err := reg.Register(simtools.NewSourceFactory(&a.toolCalls)); err != nil {

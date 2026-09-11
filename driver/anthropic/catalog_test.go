@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -15,9 +15,9 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 	for name, entry := range catalog {
 		descriptor, ok := descriptors[name]
@@ -52,9 +52,9 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 	for name, entry := range catalog {
 		descriptor, ok := descriptors[name]
@@ -90,22 +90,22 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	for _, model := range provider.Models {
-		capabilities := model.Descriptor.Capabilities
+	for _, entry := range provider.Models {
+		capabilities := entry.Descriptor.Capabilities
 		if !reflect.DeepEqual(capabilities.Outputs, []message.PartKind{message.PartText}) {
-			t.Fatalf("%s outputs = %v, want text", model.Descriptor.ID.Name, capabilities.Outputs)
+			t.Fatalf("%s outputs = %v, want text", entry.Descriptor.ID.Name, capabilities.Outputs)
 		}
 		if !slices.Contains(capabilities.Inputs, message.PartImage) {
-			t.Fatalf("%s inputs = %v, want image input", model.Descriptor.ID.Name, capabilities.Inputs)
+			t.Fatalf("%s inputs = %v, want image input", entry.Descriptor.ID.Name, capabilities.Inputs)
 		}
-		want := inference.ReasoningToggle
-		switch model.Descriptor.ID.Name {
+		want := model.ReasoningToggle
+		switch entry.Descriptor.ID.Name {
 		case "claude-fable-5", "claude-mythos-5":
-			want = inference.ReasoningAlways
+			want = model.ReasoningAlways
 		}
 		if capabilities.Reasoning.Kind != want {
 			t.Fatalf("%s reasoning = %q, want %q",
-				model.Descriptor.ID.Name, capabilities.Reasoning, want)
+				entry.Descriptor.ID.Name, capabilities.Reasoning, want)
 		}
 	}
 }

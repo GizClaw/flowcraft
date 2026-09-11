@@ -7,6 +7,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 )
 
 // declaredEntry builds a one-model declared catalog carrying the given
@@ -51,6 +52,15 @@ func toolResultImage(t *testing.T) message.Part {
 	return message.ImagePart{Source: source}
 }
 
+func toolResultVideo(t *testing.T) message.Part {
+	t.Helper()
+	source, err := media.NewVideoBytes([]byte("clip-bytes"), "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoBytes: %v", err)
+	}
+	return message.VideoPart{Source: source}
+}
+
 // TestToolResultCarriesMultimodalBlocks: the Messages tool_result content
 // list carries text and image parts, so a vision model sees the screenshot a
 // tool produced instead of a flattened string.
@@ -75,16 +85,11 @@ func TestToolResultCarriesMultimodalBlocks(t *testing.T) {
 		t.Fatalf("multimodal result must compile native: %+v", compiled.Report.Decisions)
 	}
 	block := findToolResult(t, compiled.Wire)
-	if len(block.result) != 3 ||
-		block.result[0].kind != wireBlockText ||
-		block.result[1].kind != wireBlockImage ||
-		block.result[2].kind != wireBlockText {
-		t.Fatalf("result blocks = %+v", block.result)
-	}
-	param := blockToParam(block)
-	if param.OfToolResult == nil || len(param.OfToolResult.Content) != 3 ||
-		param.OfToolResult.Content[1].OfImage == nil {
-		t.Fatalf("tool result param = %+v", param.OfToolResult)
+	if len(block.Content) != 3 ||
+		block.Content[0].OfText == nil ||
+		block.Content[1].OfImage == nil ||
+		block.Content[2].OfText == nil {
+		t.Fatalf("result blocks = %+v", block.Content)
 	}
 }
 
@@ -113,10 +118,10 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 		t.Fatalf("decisions = %+v", compiled.Report.Decisions)
 	}
 	block := findToolResult(t, compiled.Wire)
-	if len(block.result) != 3 ||
-		block.result[1].kind != wireBlockText ||
-		block.result[1].text != "[omitted tool output: image (model does not accept image input)]" {
-		t.Fatalf("result blocks = %+v", block.result)
+	if len(block.Content) != 3 ||
+		block.Content[1].OfText == nil ||
+		block.Content[1].OfText.Text != "[omitted tool output: image (model does not accept image input)]" {
+		t.Fatalf("result blocks = %+v", block.Content)
 	}
 }
 
@@ -135,23 +140,23 @@ func TestToolResultTextKeepsStringForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	param := blockToParam(findToolResult(t, compiled.Wire))
-	if param.OfToolResult == nil || len(param.OfToolResult.Content) != 1 ||
-		param.OfToolResult.Content[0].OfText == nil ||
-		param.OfToolResult.Content[0].OfText.Text != "found" {
-		t.Fatalf("tool result param = %+v", param.OfToolResult)
+	block := findToolResult(t, compiled.Wire)
+	if len(block.Content) != 1 ||
+		block.Content[0].OfText == nil ||
+		block.Content[0].OfText.Text != "found" {
+		t.Fatalf("tool result = %+v", block.Content)
 	}
 }
 
-func findToolResult(t *testing.T, wire generateWire) wireBlock {
+func findToolResult(t *testing.T, params anthropicgo.MessageNewParams) anthropicgo.ToolResultBlockParam {
 	t.Helper()
-	for _, turn := range wire.messages {
-		for _, block := range turn.blocks {
-			if block.kind == wireBlockToolResult {
-				return block
+	for _, turn := range params.Messages {
+		for _, block := range turn.Content {
+			if block.OfToolResult != nil {
+				return *block.OfToolResult
 			}
 		}
 	}
-	t.Fatalf("no tool_result block in %+v", wire.messages)
-	return wireBlock{}
+	t.Fatalf("no tool_result block in %+v", params.Messages)
+	return anthropicgo.ToolResultBlockParam{}
 }

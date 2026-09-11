@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Provider-specific settings ride on canonical requests as typed extensions
@@ -15,12 +16,13 @@ import (
 //
 // Field names are flat because extension field names may not contain dots.
 
-// driverID namespaces every extension this package defines. The runtime
-// qualifies extension fields with ProviderID and rejects extensions whose
-// provider does not match the resolved model's deployment provider, so a
-// deployment that names its provider differently must set the Provider field
-// on the options structs it attaches.
-const driverID = "minimax"
+// providerID is this driver's provider identity: it namespaces every extension
+// the package defines, labels the compile errors the ledger builds, and tags
+// telemetry. The runtime qualifies extension fields with ProviderID and
+// rejects extensions whose provider does not match the resolved model's
+// deployment provider, so a deployment that names its provider differently
+// must set the Provider field on the options structs it attaches.
+const providerID = "minimax"
 
 const extensionMusic = "music_options"
 
@@ -34,7 +36,7 @@ func extensionProvider(provider string) string {
 	if provider != "" {
 		return provider
 	}
-	return driverID
+	return providerID
 }
 
 // MusicOptions carries music_generation settings that have no canonical
@@ -88,8 +90,8 @@ func (o MusicOptions) Validate() error {
 }
 
 func (o MusicOptions) Clone() inference.Extension {
-	o.Instrumental = clonePointer(o.Instrumental)
-	o.Watermark = clonePointer(o.Watermark)
+	o.Instrumental = ptr.Clone(o.Instrumental)
+	o.Watermark = ptr.Clone(o.Watermark)
 	return o
 }
 
@@ -148,9 +150,9 @@ func (o VideoOptions) Validate() error {
 }
 
 func (o VideoOptions) Clone() inference.Extension {
-	o.PromptOptimizer = clonePointer(o.PromptOptimizer)
-	o.FastPretreatment = clonePointer(o.FastPretreatment)
-	o.LastFrameOnly = clonePointer(o.LastFrameOnly)
+	o.PromptOptimizer = ptr.Clone(o.PromptOptimizer)
+	o.FastPretreatment = ptr.Clone(o.FastPretreatment)
+	o.LastFrameOnly = ptr.Clone(o.LastFrameOnly)
 	return o
 }
 
@@ -211,54 +213,6 @@ func (o ContextIROptions) Validate() error {
 }
 
 func (o ContextIROptions) Clone() inference.Extension {
-	o.DurationMillis = clonePointer(o.DurationMillis)
+	o.DurationMillis = ptr.Clone(o.DurationMillis)
 	return o
-}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
-}
-
-// operationExtensions splits the request's extensions into the options
-// struct this operation consumes and everything else.
-func operationExtensions[T inference.Extension](
-	extensions inference.Extensions,
-) (T, []inference.Extension) {
-	var options T
-	var other []inference.Extension
-	for _, extension := range extensions {
-		if extension == nil {
-			continue
-		}
-		if typed, ok := extension.(T); ok {
-			options = typed
-			continue
-		}
-		other = append(other, extension)
-	}
-	return options, other
-}
-
-// rejectOtherExtensions records a rejection for every active field of
-// extensions that do not apply to the operation being compiled.
-func rejectOtherExtensions(
-	operation string,
-	other []inference.Extension,
-	ledger *ledger,
-) {
-	for _, extension := range other {
-		if extension == nil {
-			continue
-		}
-		for _, field := range extension.ActiveFields() {
-			ledger.reject(
-				field.Qualify(extension),
-				fmt.Sprintf("%s does not consume %s", operation, extension.ExtensionID()),
-			)
-		}
-	}
 }

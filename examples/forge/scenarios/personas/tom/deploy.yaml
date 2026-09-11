@@ -108,6 +108,35 @@ resources:
       profiles:
         - secrets:
             api_key: ${secret:ZHIPU_API_KEY}
+  # MiniMax's Messages surface is Anthropic-compatible, so the anthropic
+  # driver serves it; `catalog: declared` keeps MiniMax model names from
+  # inheriting Claude facts. MiniMax-M3 is natively multimodal (text, image,
+  # video) with a 1M-token context and a binary thinking switch.
+  provider-minimax:
+    kind: inference.Provider
+    impl: anthropic
+    settings:
+      id: minimax
+      spec:
+        endpoint:
+          base_url: https://api.minimaxi.com/anthropic
+        catalog: declared
+        wire:
+          video_input: true
+        models:
+          - name: MiniMax-M3
+            kind: generate
+            capabilities:
+              inputs: [text, image, video, data, tool_call, tool_result]
+              outputs: [text]
+              reasoning:
+                kind: toggle
+            limits:
+              max_input_tokens: 1000000
+              max_output_tokens: 524288
+      profiles:
+        - secrets:
+            api_key: ${secret:MINIMAX_API_KEY}
   infer:
     kind: inference.Assembly
     impl: unified
@@ -115,6 +144,7 @@ resources:
       provider: provider
       provider.openai: provider-openai
       provider.glm: provider-glm
+      provider.minimax: provider-minimax
   # Inference nodes carry no static model: the router owns target selection,
   # so a per-turn model hint (or the default pool below) decides.
   router:

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -49,17 +50,18 @@ func compileContextIR(
 ) inference.GenerateCompiler[contextIRWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[contextIRWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := contextIRWire{model: endpoint}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"context-IR is a unary task on this provider",
 			)
@@ -78,11 +80,11 @@ func compileContextIR(
 		if wire.prompt == "" {
 			reason := fmt.Sprintf("%s requires a non-empty text prompt", endpoint)
 			if len(prompt) > 0 {
-				ledger.reject(inference.FieldGenerateInputText, reason)
+				ledger.Reject(inference.FieldGenerateInputText, reason)
 			} else if intent := request.Input.Content.Intent; intent.Text != nil {
-				ledger.reject(inference.FieldGenerateIntentText, reason)
+				ledger.Reject(inference.FieldGenerateIntentText, reason)
 			} else {
-				ledger.reject(inference.FieldGenerateInputRole, reason)
+				ledger.Reject(inference.FieldGenerateInputRole, reason)
 			}
 		}
 
@@ -96,50 +98,50 @@ func compileContextIR(
 				"context-IR has no thinking control",
 			)
 			if text.MaxOutputTokens != nil {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentTextMaxOutputTokens,
 					"context-IR returns a fixed enhanced prompt; no token cap applies",
 				)
 			}
 			if text.Response != nil {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentTextResponse,
 					"context-IR returns a plain enhanced prompt",
 				)
 			}
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"context-IR returns an enhanced prompt, not an image",
 			)
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"context-IR returns an enhanced prompt, not audio",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"context-IR returns an enhanced prompt, not a video; use the Hailuo/H3 video models to generate",
 			)
 		}
 		if intent.Text == nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputRole,
 				"context-IR requires the text output intent; it returns an enhanced prompt",
 			)
 		}
 
-		options, other := operationExtensions[ContextIROptions](request.Extensions)
+		options, other := inference.ExtensionFor[ContextIROptions](request.Extensions)
 		compileContextIROptions(&wire, options, endpoint, ledger)
-		rejectOtherExtensions("context-IR", other, ledger)
+		ledger.RejectExtensions("context-IR", other)
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[contextIRWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[contextIRWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[contextIRWire]{Wire: wire, Report: report}, nil
 	}
@@ -151,7 +153,7 @@ func compileContextIROptions(
 	wire *contextIRWire,
 	options ContextIROptions,
 	endpoint string,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
@@ -163,14 +165,14 @@ func compileContextIROptions(
 	if options.DurationMillis != nil {
 		millis := *options.DurationMillis
 		if millis%1000 != 0 {
-			ledger.reject(
+			ledger.Reject(
 				field("duration_millis"),
 				fmt.Sprintf("minimax durations are whole seconds, not %dms", millis),
 			)
 		} else {
 			seconds := int(millis / 1000)
 			if seconds < 4 || seconds > 15 {
-				ledger.reject(
+				ledger.Reject(
 					field("duration_millis"),
 					fmt.Sprintf("MiniMax-H3 durations are 4-15s, not %ds", seconds),
 				)
@@ -181,7 +183,7 @@ func compileContextIROptions(
 	}
 	if options.Ratio != "" {
 		if !v2RatioValues[options.Ratio] {
-			ledger.reject(
+			ledger.Reject(
 				field("ratio"),
 				fmt.Sprintf(
 					"MiniMax-H3 ratios are adaptive/21:9/16:9/4:3/1:1/3:4/9:16, not %q",
@@ -197,7 +199,7 @@ func compileContextIROptions(
 		wire.ratio = "16:9"
 	}
 	if wire.ratio == "adaptive" && v2TextOnly(&wire.v2Content) {
-		ledger.reject(
+		ledger.Reject(
 			field("ratio"),
 			"text-only context-IR requires an explicit ratio; adaptive is not allowed",
 		)
@@ -280,7 +282,7 @@ func openContextIR(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	unary, err := inference.BindGenerate(
 		compileContextIR(wireModel(id.Name, entry), entry),

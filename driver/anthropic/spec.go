@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -74,11 +74,11 @@ type ModelSpec struct {
 	// Messages protocol has no channel for it.
 	Kind string `json:"kind,omitempty"`
 	// Capabilities declares the capability leaves this model changes.
-	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
+	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
-	Limits inference.ModelLimits `json:"limits,omitempty"`
+	Limits model.ModelLimits `json:"limits,omitempty"`
 }
 
 func (s Spec) Validate() error {

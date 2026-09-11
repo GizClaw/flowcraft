@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -43,12 +44,13 @@ func compileTTS(
 ) inference.GenerateCompiler[ttsWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[ttsWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := ttsWire{
@@ -57,29 +59,29 @@ func compileTTS(
 		}
 
 		var text []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				if value, ok := part.(message.TextPart); ok {
 					text = append(text, value.Text)
 					continue
 				}
-				ledger.reject(
-					fields[part.Kind()],
+				ledger.Reject(
+					fields(part.Kind()),
 					fmt.Sprintf("speech synthesis speaks text, not %s", part.Kind()),
 				)
 			}
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"speech synthesis keeps user context only",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
+		collect(request.Input.Content.Parts, inputPartField)
 		wire.text = strings.Join(text, "\n")
 
 		intent := request.Input.Content.Intent
@@ -89,26 +91,26 @@ func compileTTS(
 				"speech synthesis has no sampling controls",
 				"speech models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"speech models do not produce text",
 			)
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"speech models do not produce images",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"speech models do not produce video",
 			)
 		}
 		if audio := intent.Audio; audio != nil {
 			if audio.Voice.ID == "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioVoice,
 					"speech synthesis requires a voice",
 				)
@@ -119,7 +121,7 @@ func compileTTS(
 			if audio.Speed != nil {
 				speed := *audio.Speed
 				if speed < 0.5 || speed > 2 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentAudioSpeed,
 						fmt.Sprintf("minimax speech speed ranges 0.5 to 2, not %g", speed),
 					)
@@ -128,23 +130,23 @@ func compileTTS(
 				}
 			}
 			if audio.Count != nil && *audio.Count > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioCount,
 					"speech synthesis produces a single audio stream",
 				)
 			}
 		}
-		rejectOtherExtensions("speech synthesis", request.Extensions, ledger)
+		ledger.RejectExtensions("speech synthesis", request.Extensions)
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[ttsWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[ttsWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[ttsWire]{Wire: wire, Report: report}, nil
 	}
 }
 
-func compileTTSFormat(wire *ttsWire, format media.AudioFormat, ledger *ledger) {
+func compileTTSFormat(wire *ttsWire, format media.AudioFormat, ledger *inference.Ledger) {
 	switch format.Encoding {
 	case "":
 		// Unset: the endpoint defaults to mp3.
@@ -157,19 +159,19 @@ func compileTTSFormat(wire *ttsWire, format media.AudioFormat, ledger *ledger) {
 	case media.AudioEncodingPCM16:
 		wire.format = "pcm"
 	case media.AudioEncodingPCM24, media.AudioEncodingFloat32, media.AudioEncodingAAC:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatEncoding,
 			fmt.Sprintf("minimax speech has no %s encoding; pcm output is 16-bit", format.Encoding),
 		)
 	default:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatEncoding,
 			fmt.Sprintf("minimax speech cannot encode %s", format.Encoding),
 		)
 	}
 	if format.SampleRateHz != 0 {
 		if !ttsSampleRates[format.SampleRateHz] {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudioFormatSampleRate,
 				fmt.Sprintf("minimax speech sample rates are 8000/16000/22050/24000/32000/44100, not %d", format.SampleRateHz),
 			)
@@ -179,7 +181,7 @@ func compileTTSFormat(wire *ttsWire, format media.AudioFormat, ledger *ledger) {
 	}
 	if format.Channels != 0 {
 		if format.Channels < 1 || format.Channels > 2 {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudioFormatChannels,
 				fmt.Sprintf("minimax speech channels are 1 or 2, not %d", format.Channels),
 			)
@@ -326,7 +328,7 @@ func transportTTSStream(
 func openTTS(
 	cls *clients,
 	_ catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(
 		compileTTS(id.Name),

@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -15,7 +15,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
 	for _, model := range provider.Models {
 		descriptors[model.Descriptor.ID.Name] = model.Descriptor
 	}

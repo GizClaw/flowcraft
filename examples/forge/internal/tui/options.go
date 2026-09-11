@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // Slash commands that configure this TUI process. They never reach the
@@ -186,10 +186,10 @@ const (
 // its own ladder; the driver reports any fold on the compile ledger.
 func thinkLevels() []string {
 	return []string{
-		string(inference.ReasoningMinimal),
-		string(inference.ReasoningLow),
-		string(inference.ReasoningMedium),
-		string(inference.ReasoningHigh),
-		string(inference.ReasoningXHigh),
+		string(model.ReasoningMinimal),
+		string(model.ReasoningLow),
+		string(model.ReasoningMedium),
+		string(model.ReasoningHigh),
+		string(model.ReasoningXHigh),
 	}
 }

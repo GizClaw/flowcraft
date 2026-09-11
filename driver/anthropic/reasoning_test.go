@@ -5,23 +5,24 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 func TestClaudeReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 	compile := compileGenerate("claude-fable-5", catalog["claude-fable-5"])
-	model := conformanceModel("claude-fable-5")
+	ref := conformanceModel("claude-fable-5")
 	field := inference.FieldGenerateIntentReasoningEffort
 
 	for _, tc := range []struct {
-		effort  inference.ReasoningEffort
-		want    inference.ReasoningEffort
+		effort  model.ReasoningEffort
+		want    model.ReasoningEffort
 		dropped bool
 	}{
-		{effort: inference.ReasoningMinimal, want: inference.ReasoningLow, dropped: true},
-		{effort: inference.ReasoningLow, want: inference.ReasoningLow},
-		{effort: inference.ReasoningMedium, want: inference.ReasoningMedium},
-		{effort: inference.ReasoningHigh, want: inference.ReasoningHigh},
-		{effort: inference.ReasoningXHigh, want: inference.ReasoningXHigh},
+		{effort: model.ReasoningMinimal, want: model.ReasoningLow, dropped: true},
+		{effort: model.ReasoningLow, want: model.ReasoningLow},
+		{effort: model.ReasoningMedium, want: model.ReasoningMedium},
+		{effort: model.ReasoningHigh, want: model.ReasoningHigh},
+		{effort: model.ReasoningXHigh, want: model.ReasoningXHigh},
 	} {
 		request := conformanceTextRequest()
 		request.Input.Content.Intent.Text = &inference.TextIntent{
@@ -29,18 +30,18 @@ func TestClaudeReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 		}
 		compiled, err := compile(
 			context.Background(),
-			model,
+			ref,
 			request,
 			inference.GenerateExecutionUnary,
 		)
 		if err != nil {
 			t.Fatalf("effort %q: compile: %v", tc.effort, err)
 		}
-		if compiled.Wire.effort != string(tc.want) {
+		if got := compiled.Wire.OutputConfig.Effort; string(got) != string(tc.want) {
 			t.Fatalf(
 				"effort %q: wire = %q, want %q",
 				tc.effort,
-				compiled.Wire.effort,
+				got,
 				tc.want,
 			)
 		}
@@ -53,12 +54,12 @@ func TestClaudeReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 func TestBinaryThinkingEffortDropsAndEnablesThinking(t *testing.T) {
 	entry := catalogEntry{
 		capabilities: generateChatCapabilities().
-			WithReasoning(inference.ReasoningToggle),
+			WithReasoning(model.ReasoningToggle),
 	}
 	compile := compileGenerate("binary", entry)
 	request := conformanceTextRequest()
 	request.Input.Content.Intent.Text = &inference.TextIntent{
-		ReasoningEffort: inference.ReasoningHigh,
+		ReasoningEffort: model.ReasoningHigh,
 	}
 	compiled, err := compile(
 		context.Background(),
@@ -72,10 +73,10 @@ func TestBinaryThinkingEffortDropsAndEnablesThinking(t *testing.T) {
 	if !compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
 		t.Fatal("binary thinking model must drop the effort with a reason")
 	}
-	if compiled.Wire.thinking == nil || !*compiled.Wire.thinking {
-		t.Fatalf("binary drop must enable thinking, got %v", compiled.Wire.thinking)
+	if compiled.Wire.Thinking.OfAdaptive == nil {
+		t.Fatalf("binary drop must enable thinking, got %+v", compiled.Wire.Thinking)
 	}
-	if compiled.Wire.effort != "" {
-		t.Fatalf("wire effort = %q, want empty", compiled.Wire.effort)
+	if compiled.Wire.OutputConfig.Effort != "" {
+		t.Fatalf("wire effort = %q, want empty", compiled.Wire.OutputConfig.Effort)
 	}
 }

@@ -8,7 +8,9 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
+	anthropicgo "github.com/anthropics/anthropic-sdk-go"
 )
 
 func conformanceTextRequest() inference.GenerateRequest {
@@ -21,9 +23,9 @@ func conformanceTextRequest() inference.GenerateRequest {
 	}}
 }
 
-func conformanceModel(name string) inference.ModelRef {
-	return inference.ModelRef{
-		ID:      inference.ModelID{Provider: "anthropic", Name: name},
+func conformanceModel(name string) model.ModelRef {
+	return model.ModelRef{
+		ID:      model.ModelID{Provider: "anthropic", Name: name},
 		Profile: "default",
 	}
 }
@@ -121,7 +123,7 @@ func TestConformanceGenerateStreamFailureProvider(t *testing.T) {
 	calls := &inferencetest.Counter{}
 	operations, err := inference.BindGenerateStream(
 		compileGenerate("claude-sonnet-5", catalog["claude-sonnet-5"]),
-		countingTransport(calls, func(_ context.Context, _ generateWire) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
+		countingTransport(calls, func(_ context.Context, _ anthropicgo.MessageNewParams) (inference.ProviderStream[inference.GenerateStreamEvent], error) {
 			return &failingStream{}, nil
 		}),
 		inference.GenerateStreamDecoder[inference.GenerateStreamEvent](

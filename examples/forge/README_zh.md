@@ -77,11 +77,12 @@ runtime 运行,并写出 `stats.txt`(每轮指标,包含失败信息)和 `chat_l
 
 Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声明的
 环境变量。demo 启动时会加载 forge 目录下的 `.env`。只有 `DEEPSEEK_API_KEY`
-是必需的:所有场景都固定使用 `deepseek-flash`。另外还声明了两个可直接使用
-的 provider —— 走 OpenAI 内置目录的 `gpt-5.6-luna`(`OPENAI_API_KEY`),以及
-走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`);它们用的是惰性
-引用,只有在图里真的路由过去时缺少 key 才会报错。完全没有凭证时应用会给出
-明确报错。
+是必需的:所有场景都固定使用 `deepseek-flash`。另外还声明了三个可直接使用
+的 provider —— 走 OpenAI 内置目录的 `gpt-5.6-luna`(`OPENAI_API_KEY`),
+走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`),以及走 MiniMax
+Anthropic 兼容 Messages 端点、由 anthropic driver 以声明式目录提供的
+`MiniMax-M3`(`MINIMAX_API_KEY`);它们用的是惰性引用,只有在图里真的路由过去
+时缺少 key 才会报错。完全没有凭证时应用会给出明确报错。
 
 ## TUI
 

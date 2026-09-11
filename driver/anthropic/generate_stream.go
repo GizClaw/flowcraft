@@ -35,18 +35,19 @@ type streamPart struct {
 
 func transportGenerateStream(
 	client anthropicgo.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+) inference.Transport[anthropicgo.MessageNewParams, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		params anthropicgo.MessageNewParams,
 	) (inference.ProviderStream[streamRaw], error) {
-		stream := client.Messages.NewStreaming(ctx, wireToParams(wire))
+		modelName := string(params.Model)
+		stream := client.Messages.NewStreaming(ctx, params)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			logInferenceStream(ctx, "generate", modelName, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		logInferenceStream(ctx, "generate", modelName, nil, "")
 		return &messagesStream{
 			stream: stream,
 			parts:  make(map[int64]*streamPart),

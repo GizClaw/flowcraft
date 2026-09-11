@@ -9,8 +9,9 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 )
 
-// providerID is the stable telemetry token for this provider, matching
-// the inference.ModelID.Provider values in the catalog.
+// providerID is this driver's provider identity: it labels the compile errors
+// the ledger builds and tags telemetry, matching the model.ModelID.Provider
+// values the catalog publishes.
 const providerID = "anthropic"
 
 func logInferenceCall(

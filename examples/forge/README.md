@@ -94,10 +94,12 @@ including failures) and `chat_log.txt`.
 Provider credentials are read from environment variables declared by the
 `inference.yaml` secret resolvers (`resolver: env`). The demo loads `.env` from
 the forge directory at startup. Only `DEEPSEEK_API_KEY` is required: every
-scenario routes to `deepseek-flash`. Two more providers are declared and
-ready to use — `gpt-5.6-luna` through the OpenAI line-up (`OPENAI_API_KEY`)
-and `glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
-(`ZHIPU_API_KEY`) — and their references are lazy, so a missing key only
+scenario routes to `deepseek-flash`. Three more providers are declared and
+ready to use — `gpt-5.6-luna` through the OpenAI line-up (`OPENAI_API_KEY`),
+`glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
+(`ZHIPU_API_KEY`), and `MiniMax-M3` through MiniMax's Anthropic-compatible
+Messages endpoint, which the anthropic driver serves with a declared catalog
+(`MINIMAX_API_KEY`) — and their references are lazy, so a missing key only
 surfaces if a graph actually routes to them. Without any credential the app
 fails with a clear message.
 

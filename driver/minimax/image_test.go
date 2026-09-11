@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 )
@@ -26,8 +27,8 @@ func TestCompileImageQualityDrops(t *testing.T) {
 	}
 	compiled, err := compileImage("ep-test")(
 		context.Background(),
-		inference.ModelRef{
-			ID: inference.ModelID{Provider: driverID, Name: "image-01"},
+		model.ModelRef{
+			ID: model.ModelID{Provider: providerID, Name: "image-01"},
 		},
 		request,
 		inference.GenerateExecutionUnary,

@@ -1,11 +1,12 @@
 package anthropic
 
-// Anthropic SDK bindings: wire → params, transport, response → raw, decode.
-// The wire model stays SDK-free; every union and param wrapper lives here.
+// Anthropic SDK bindings: transport, response → raw, decode. The compiler
+// lowers canonical requests straight into SDK params; this file speaks the
+// SDK on the way back and owns the pieces of the param vocabulary the
+// compiler shares (tool schemas, tool choice, argument decoding).
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 
@@ -13,155 +14,7 @@ import (
 	"github.com/GizClaw/flowcraft/core/message"
 
 	anthropicgo "github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/packages/param"
 )
-
-// wireToParams converts the provider wire into the SDK's message params.
-// The reasoning dialect translates here — it selects which params field
-// carries the control, a transport-boundary concern the compiler stays
-// out of.
-func wireToParams(wire generateWire) anthropicgo.MessageNewParams {
-	params := anthropicgo.MessageNewParams{
-		Model:     anthropicgo.Model(wire.model),
-		MaxTokens: wire.maxTokens,
-	}
-	for _, line := range wire.system {
-		params.System = append(params.System, anthropicgo.TextBlockParam{Text: line})
-	}
-	for _, message := range wire.messages {
-		blocks := make([]anthropicgo.ContentBlockParamUnion, 0, len(message.blocks))
-		for _, block := range message.blocks {
-			blocks = append(blocks, blockToParam(block))
-		}
-		if message.role == "assistant" {
-			params.Messages = append(params.Messages, anthropicgo.NewAssistantMessage(blocks...))
-			continue
-		}
-		params.Messages = append(params.Messages, anthropicgo.NewUserMessage(blocks...))
-	}
-	if wire.temperature != nil {
-		params.Temperature = param.NewOpt(*wire.temperature)
-	}
-	if wire.topP != nil {
-		params.TopP = param.NewOpt(*wire.topP)
-	}
-	switch {
-	case wire.thinking != nil && !*wire.thinking:
-		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
-			OfDisabled: &anthropicgo.ThinkingConfigDisabledParam{},
-		}
-	case wire.effort != "":
-		// Anthropic serves the effort dialect: reasoning levels map to
-		// output_config.effort.
-		params.OutputConfig.Effort = anthropicgo.OutputConfigEffort(wire.effort)
-	case wire.thinking != nil && *wire.thinking:
-		params.Thinking = anthropicgo.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropicgo.ThinkingConfigAdaptiveParam{},
-		}
-	}
-	if wire.format != nil {
-		params.OutputConfig.Format = anthropicgo.JSONOutputFormatParam{
-			Schema: schemaMap(wire.format.schema),
-		}
-	}
-	for _, definition := range wire.tools {
-		tool := anthropicgo.ToolParam{
-			Name:        definition.name,
-			InputSchema: toolInputSchema(definition.schema),
-		}
-		if definition.description != "" {
-			tool.Description = param.NewOpt(definition.description)
-		}
-		params.Tools = append(params.Tools, anthropicgo.ToolUnionParam{OfTool: &tool})
-	}
-	if wire.toolChoice != nil {
-		params.ToolChoice = toolChoiceParam(*wire.toolChoice)
-	}
-	return params
-}
-
-// blockToParam lowers one wire block into the SDK's content block union.
-// toolResultParam lowers one result part into the tool_result content union,
-// which carries text and image blocks.
-func toolResultParam(block wireBlock) anthropicgo.ToolResultBlockParamContentUnion {
-	if block.kind == wireBlockImage {
-		source := anthropicgo.ImageBlockParamSourceUnion{}
-		if block.imageURL != "" {
-			source.OfURL = &anthropicgo.URLImageSourceParam{URL: block.imageURL}
-		} else {
-			source.OfBase64 = &anthropicgo.Base64ImageSourceParam{
-				Data:      base64.StdEncoding.EncodeToString(block.imageData),
-				MediaType: anthropicgo.Base64ImageSourceMediaType(block.imageType),
-			}
-		}
-		return anthropicgo.ToolResultBlockParamContentUnion{
-			OfImage: &anthropicgo.ImageBlockParam{Source: source},
-		}
-	}
-	return anthropicgo.ToolResultBlockParamContentUnion{
-		OfText: &anthropicgo.TextBlockParam{Text: block.text},
-	}
-}
-
-func blockToParam(block wireBlock) anthropicgo.ContentBlockParamUnion {
-	switch block.kind {
-	case wireBlockVideo:
-		// The SDK has no video block yet: this compatible-endpoint extension
-		// rides a raw union. Anthropic's own schema has no video content.
-		source := map[string]any{"type": "url", "url": block.videoURL}
-		if block.videoURL == "" {
-			source = map[string]any{
-				"type":       "base64",
-				"media_type": block.videoType,
-				"data":       base64.StdEncoding.EncodeToString(block.videoData),
-			}
-		}
-		raw, _ := json.Marshal(map[string]any{"type": "video", "source": source})
-		return param.Override[anthropicgo.ContentBlockParamUnion](
-			json.RawMessage(raw),
-		)
-	case wireBlockImage:
-		if block.imageURL != "" {
-			return anthropicgo.NewImageBlock(anthropicgo.URLImageSourceParam{
-				URL: block.imageURL,
-			})
-		}
-		return anthropicgo.NewImageBlock(anthropicgo.Base64ImageSourceParam{
-			MediaType: anthropicgo.Base64ImageSourceMediaType(block.imageType),
-			Data:      base64Encode(block.imageData),
-		})
-	case wireBlockToolUse:
-		return anthropicgo.NewToolUseBlock(block.callID, argsValue(block.args), block.name)
-	case wireBlockToolResult:
-		// A single text part keeps the string form every model accepts
-		// verbatim; anything richer rides the content list.
-		if len(block.result) <= 1 &&
-			(len(block.result) == 0 || block.result[0].kind == wireBlockText) {
-			text := ""
-			if len(block.result) == 1 {
-				text = block.result[0].text
-			}
-			return anthropicgo.NewToolResultBlock(block.callID, text, false)
-		}
-		content := make([]anthropicgo.ToolResultBlockParamContentUnion, 0, len(block.result))
-		for _, part := range block.result {
-			content = append(content, toolResultParam(part))
-		}
-		return anthropicgo.ContentBlockParamUnion{
-			OfToolResult: &anthropicgo.ToolResultBlockParam{
-				ToolUseID: block.callID,
-				Content:   content,
-				IsError:   anthropicgo.Bool(false),
-			},
-		}
-	case wireBlockThinking:
-		return anthropicgo.NewThinkingBlock(block.signature, block.text)
-	case wireBlockRedactedThinking:
-		return anthropicgo.NewRedactedThinkingBlock(block.signature)
-	default:
-		return anthropicgo.NewTextBlock(block.text)
-	}
-}
 
 // argsValue decodes tool-call arguments for the SDK's any-typed input. An
 // empty or malformed payload degrades to an empty object; validity is the
@@ -205,19 +58,19 @@ func toolInputSchema(raw []byte) anthropicgo.ToolInputSchemaParam {
 	return param
 }
 
-func toolChoiceParam(choice wireToolChoice) anthropicgo.ToolChoiceUnionParam {
-	switch choice.mode {
-	case "none":
+func toolChoiceParam(choice inference.ToolChoice) anthropicgo.ToolChoiceUnionParam {
+	switch choice.Kind {
+	case inference.ToolChoiceNone:
 		return anthropicgo.ToolChoiceUnionParam{
 			OfNone: &anthropicgo.ToolChoiceNoneParam{},
 		}
-	case "any":
+	case inference.ToolChoiceRequired:
 		return anthropicgo.ToolChoiceUnionParam{
 			OfAny: &anthropicgo.ToolChoiceAnyParam{},
 		}
-	case "tool":
+	case inference.ToolChoiceNamed:
 		return anthropicgo.ToolChoiceUnionParam{
-			OfTool: &anthropicgo.ToolChoiceToolParam{Name: choice.name},
+			OfTool: &anthropicgo.ToolChoiceToolParam{Name: choice.Name},
 		}
 	default:
 		return anthropicgo.ToolChoiceUnionParam{
@@ -232,20 +85,21 @@ func toolChoiceParam(choice wireToolChoice) anthropicgo.ToolChoiceUnionParam {
 
 func transportGenerate(
 	client anthropicgo.Client,
-) inference.Transport[generateWire, generateRaw] {
-	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
-		message, err := client.Messages.New(ctx, wireToParams(wire))
+) inference.Transport[anthropicgo.MessageNewParams, generateRaw] {
+	return func(ctx context.Context, params anthropicgo.MessageNewParams) (generateRaw, error) {
+		modelName := string(params.Model)
+		message, err := client.Messages.New(ctx, params)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			logInferenceCall(ctx, "generate", modelName, classified, "", "")
 			return generateRaw{}, classified
 		}
 		raw, err := messageToRaw(message)
 		if err != nil {
-			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			logInferenceCall(ctx, "generate", modelName, err, "", "")
 			return generateRaw{}, err
 		}
-		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		logInferenceCall(ctx, "generate", modelName, nil, "", raw.id)
 		return raw, nil
 	}
 }
