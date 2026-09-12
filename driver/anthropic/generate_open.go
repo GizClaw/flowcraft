@@ -14,13 +14,21 @@ func openGenerate(
 	cls *clients,
 	entry catalogEntry,
 	id model.ModelID,
-	_ string,
+	profile string,
 ) (inference.GenerateOperations, error) {
+	// One scope for the whole attempt: the decoder stamps it on the thinking
+	// traces this model produces, and the compiler requires it before
+	// replaying a stored one. Anthropic verifies a thinking signature per
+	// model, so the derived default refuses to cross a model or an account
+	// unless the deployment declared a shared scope.
+	scope := inference.ReasoningScope(
+		entry.reasoningScopeDeclared, id.Provider, id.Name, profile)
+	entry.reasoningScope = scope
 	return inference.BindGenerateOperations(
 		compileGenerate(id.Name, entry),
 		transportGenerate(cls.api),
-		decodeGenerate,
+		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(cls.api),
-		decodeGenerateStream,
+		inference.WithReasoningDeltaSource(decodeGenerateStream, scope),
 	)
 }

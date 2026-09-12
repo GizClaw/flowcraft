@@ -11,6 +11,8 @@
 //   - Attempt compilation: ledger.go (the shared compile ledger),
 //     generate_ledger.go (the generate part-to-field tables), provider.go
 //     (the compiler/binding pipeline),
+//     reasoning_scope.go (the reasoning provenance rule and the decode
+//     stamping wrappers),
 //     provider_definition.go (ProviderDefinition / Openers),
 //     generate_driver.go, prepared.go (a compiled attempt), binding.go
 //     (opened drivers), binding_cache.go (the host-side reuse cache),

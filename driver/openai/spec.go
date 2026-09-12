@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
@@ -98,6 +99,13 @@ type AuthSpec struct {
 // derived default, so the driver cross-checks the combination against the
 // catalog's capability declarations before serving any request.
 type WireSpec struct {
+	// ReasoningScope declares the verification scope this deployment's
+	// reasoning traces belong to. It replaces the derived scope — provider,
+	// model, and credential profile — so an operator who has verified that
+	// several models or credentials decrypt and verify each other's traces
+	// says so once. Unset keeps the conservative derived scope, which never
+	// replays a trace across a model or an account.
+	ReasoningScope string `json:"reasoning_scope,omitempty"`
 	// VideoInput allows video content parts, a compatible-endpoint extension:
 	// OpenAI's own schema has no video content part. Only the Chat
 	// Completions surface lowers it today (as `video_url`), and only when a
@@ -259,6 +267,9 @@ func (s Spec) Validate() error {
 		return fmt.Errorf(
 			"wire.video_input requires api \"chat\": the responses surface has no video input lowering",
 		)
+	}
+	if err := validateReasoningScope(s.Wire.ReasoningScope); err != nil {
+		return err
 	}
 	if err := validateBodyFields("wire.extra_body", s.Wire.ExtraBody); err != nil {
 		return err
@@ -456,6 +467,35 @@ func (s Spec) declaresGenerateModel() bool {
 		}
 	}
 	return false
+}
+
+// maxReasoningScopeLen bounds the declared scope token. The token lands in a
+// compile-report reason, so it stays short and printable.
+const maxReasoningScopeLen = 128
+
+// validateReasoningScope checks the declared verification scope: opaque to
+// the driver, but never surrounding-whitespace sensitive (the comparison is
+// exact), never a control character, and never unbounded.
+func validateReasoningScope(scope string) error {
+	if scope == "" {
+		return nil
+	}
+	if strings.TrimSpace(scope) != scope {
+		return fmt.Errorf("wire.reasoning_scope must not have surrounding whitespace")
+	}
+	if len(scope) > maxReasoningScopeLen {
+		return fmt.Errorf(
+			"wire.reasoning_scope is %d bytes, at most %d are allowed",
+			len(scope), maxReasoningScopeLen,
+		)
+	}
+	for _, char := range scope {
+		if unicode.IsControl(char) {
+			return fmt.Errorf(
+				"wire.reasoning_scope must not contain control characters")
+		}
+	}
+	return nil
 }
 
 func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {

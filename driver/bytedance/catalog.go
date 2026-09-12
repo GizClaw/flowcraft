@@ -40,8 +40,15 @@ type catalogEntry struct {
 	// video: Seedance task-parameter support matrix (see videoParams).
 	video videoParams
 	// lifecycle: deprecated models stay routable but announce a replacement.
-	deprecated  bool
-	replacement string
+	deprecated bool
+	// reasoningScopeDeclared mirrors Spec.ReasoningScope: the verification
+	// scope this deployment declares for its traces.
+	reasoningScopeDeclared string
+	// reasoningScope is the scope of the opened model: the declared token, or
+	// the address that produced the trace. The opener fills it in; today only
+	// the decode side reads it, because ark consumes no reasoning input.
+	reasoningScope string
+	replacement    string
 }
 
 // videoParams is the Seedance task-parameter support matrix for one video
@@ -517,6 +524,10 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 			entry.limits.MaxOutputTokens = &value
 		}
 		merged[declared.Name] = entry
+	}
+	for name, entry := range merged {
+		entry.reasoningScopeDeclared = spec.ReasoningScope
+		merged[name] = entry
 	}
 	for name, entry := range merged {
 		if err := entry.validate(); err != nil {

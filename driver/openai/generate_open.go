@@ -13,22 +13,29 @@ func openGenerate(
 	cls *clients,
 	entry catalogEntry,
 	id model.ModelID,
-	_ string,
+	profile string,
 ) (inference.GenerateOperations, error) {
+	// One scope for the whole attempt: the decoder stamps it on the traces
+	// this model produces, and the compiler requires it before replaying one,
+	// so a trace never crosses a deployment, a model, or an account unless
+	// the deployment declared a shared scope.
+	scope := inference.ReasoningScope(
+		entry.dialect.reasoningScopeDeclared, id.Provider, id.Name, profile)
+	entry.reasoningScope = scope
 	if entry.dialect.api == apiChat {
 		return inference.BindGenerateOperations(
 			compileChat(id.Name, entry),
 			transportChatGenerate(cls.api),
-			decodeGenerate,
+			inference.WithReasoningSource(decodeGenerate, scope),
 			transportChatGenerateStream(cls.api),
-			decodeChatGenerateStream,
+			inference.WithReasoningDeltaSource(decodeChatGenerateStream, scope),
 		)
 	}
 	return inference.BindGenerateOperations(
 		compileResponses(id.Name, entry),
 		transportGenerate(cls.api),
-		decodeGenerate,
+		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(cls.api),
-		decodeGenerateStream,
+		inference.WithReasoningDeltaSource(decodeGenerateStream, scope),
 	)
 }

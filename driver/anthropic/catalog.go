@@ -22,9 +22,18 @@ type catalogEntry struct {
 	limits model.ModelLimits
 	// videoInput mirrors Spec.Wire.VideoInput: the endpoint accepts video
 	// blocks. Sending one still requires the model to declare video input.
-	videoInput  bool
-	deprecated  bool
-	replacement string
+	videoInput bool
+	// reasoningScopeDeclared mirrors Spec.Wire.ReasoningScope: the
+	// verification scope this deployment declares for its thinking traces.
+	reasoningScopeDeclared string
+	// reasoningScope is the scope of the opened model: the declared token, or
+	// the address that produced the trace. The opener fills it in (the
+	// credential profile is per reference), and both the compiler and the
+	// decode wrapper read it, which keeps the stamp and the comparison
+	// identical.
+	reasoningScope string
+	deprecated     bool
+	replacement    string
 }
 
 // validate enforces the generate family contract: Claude compilers only
@@ -214,6 +223,7 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	}
 	for name, entry := range models {
 		entry.videoInput = spec.Wire.VideoInput
+		entry.reasoningScopeDeclared = spec.Wire.ReasoningScope
 		models[name] = entry
 	}
 	for name, entry := range models {

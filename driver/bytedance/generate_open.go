@@ -19,11 +19,18 @@ func openGenerate(
 	if err != nil {
 		return inference.GenerateOperations{}, err
 	}
+	// Ark produces reasoning traces but consumes none, so the stamp keeps
+	// them attributable when a conversation later moves to a target that
+	// would replay one. The scope is the deployment's declared token, or the
+	// address that produced the trace.
+	scope := inference.ReasoningScope(
+		entry.reasoningScopeDeclared, id.Provider, id.Name, profile)
+	entry.reasoningScope = scope
 	return inference.BindGenerateOperations(
 		compileGenerate(cls.endpoint(id.Name), entry),
 		transportGenerate(ark, cls.arkRequestOptions),
-		decodeGenerate,
+		inference.WithReasoningSource(decodeGenerate, scope),
 		transportGenerateStream(ark, cls.arkRequestOptions),
-		decodeGenerateStream,
+		inference.WithReasoningDeltaSource(decodeGenerateStream, scope),
 	)
 }
