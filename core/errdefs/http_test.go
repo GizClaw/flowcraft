@@ -141,7 +141,10 @@ func TestClassifyHTTPStatus_Mapping(t *testing.T) {
 		check func(error) bool
 	}{
 		{"401 → Unauthorized", 401, IsUnauthorized},
-		{"403 → Unauthorized", 403, IsUnauthorized},
+		// 403 is a permanent authorization refusal, not a bad credential:
+		// it must not read as a retryable auth failure, and it must match
+		// ClassifyStatus's mapping for the same status.
+		{"403 → Forbidden", 403, IsForbidden},
 		{"402 → Forbidden", 402, IsForbidden},
 		{"429 → RateLimit", 429, IsRateLimit},
 		{"400 → Validation", 400, IsValidation},

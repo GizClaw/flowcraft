@@ -16,7 +16,9 @@ Create a registry, register every referenced resource factory, then build:
 reg := resource.NewRegistry()
 reg.MustRegister(event.NewFactory())
 reg.MustRegister(graphresource.Factory())
-reg.MustRegister(driverDeepSeek.Factory())
+// One OpenAI-wire driver serves the whole family: register it once per
+// deployment document, next to the other provider drivers you use.
+reg.MustRegister(openai.Factory())
 
 app, err := runtime.NewBuilder(reg).Build(ctx, doc)
 if err != nil {

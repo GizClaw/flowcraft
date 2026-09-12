@@ -72,9 +72,20 @@ Provider implementations are registered by the application from provider
 driver modules:
 
 ```go
-reg.MustRegister(openai.NewFactory())
+reg.MustRegister(openai.Factory())
 reg.MustRegister(inference.Factory{})
 ```
+
+The provider `spec` is layered — `endpoint` (where the API is and how the key
+rides), `wire` (which dialect the endpoint speaks), `catalog` (which model
+namespace it starts from) — and `core/inference` treats every provider
+through the same declaration vocabulary. The full key reference, including
+`wire.store` (`false` by default, or `"omit"` to keep the retention field off
+the request entirely for endpoints whose schema does not know it) and
+`wire.video_input` (a compatible-endpoint extension that, together with a
+model declaring `video` input, lets a chat-surface deployment carry video
+parts), lives in
+the [flowcraft-config provider reference](../../skills/flowcraft-config/references/resources.md).
 
 ## Provider lifecycle
 
@@ -271,6 +282,73 @@ Drivers that forward it report `native` when their deployment enables an
 envelope. The envelope is an arbitrary non-empty string naming the top-level
 body field; providers that type `metadata` natively lower that name through
 their SDK types, while other names ride as passthrough JSON fields.
+
+## Unmodeled provider fields (json_set)
+
+Compatible endpoints extend the OpenAI schema with knobs no SDK models —
+Kimi's `thinking`, Qwen's `enable_thinking` / `thinking_budget`, a gateway's
+own routing field. The OpenAI driver carries those as an explicit per-request
+extension no matter which deployment id serves the call:
+
+```json
+{
+  "provider": "kimi",
+  "extension": "generate_options",
+  "value": {
+    "json_set": {
+      "enable_thinking": false,
+      "thinking.keep": "all"
+    }
+  }
+}
+```
+
+Each key is a path in sjson notation (a dot descends into an object, so
+`thinking.keep` sets one leaf and leaves its siblings alone) and each value is
+the raw JSON to place there. The compile report names every key it applied, so
+the ledger says "this value rode the request" — and nothing more:
+
+| Key | Behavior |
+| --- | --- |
+| `model`, `messages`, `input`, `tools`, `tool_choice`, `response_format`, `text`, `max_tokens` / `max_completion_tokens` / `max_output_tokens`, `temperature`, `top_p`, `n`, `store`, `metadata`, `reasoning` / `reasoning_effort`, `service_tier`, `verbosity`, `parallel_tool_calls`, `max_tool_calls`, `safety_identifier`, `prompt_cache_key`, `modalities`, `audio` | rejected: the compiler lowers these from the canonical request, and a patch would make the report claim a decision the body contradicts |
+| anything else | carried verbatim, at most 32 keys and 64 KiB per request |
+
+This is deliberate passthrough, not a capability claim: FlowCraft cannot
+validate what an endpoint does with a field it did not model, so routing and
+preflight never learn anything from `json_set`. A request that needs the
+endpoint to *do* something with a trace or a content kind — reasoning
+round-trips, video input — needs the driver-side support, not a body patch.
+
+`json_set` applies to the JSON generate surfaces (Responses and Chat
+Completions, unary and stream). Multipart transports do not run it.
+
+### Deployment defaults: `wire.extra_body`
+
+An endpoint whose dialect is fixed — "this GLM instance always thinks",
+"this gateway always wants its own routing field" — declares the same shape in
+the provider spec, so every request the deployment serves carries it:
+
+```yaml
+settings:
+  spec:
+    api: chat
+    wire:
+      extra_body:
+        thinking: {type: enabled}
+```
+
+Keys and values are the json_set vocabulary (sjson paths, raw JSON), with the
+same bounds (32 keys / 64 KiB) and the same rejected keys. The two sources
+compose in a fixed order: `wire.extra_body` is written first, then the
+request's `json_set`, so a request key wins — an identical path replaces the
+deployment value, a nested path updates the object the deployment wrote.
+
+The difference between the two is scope and reporting, not shape: `extra_body`
+is deployment configuration and, like `store` or `endpoint.headers`, carries no
+per-request decision; `json_set` is a request decision and appears in the
+compile report key by key. Both reach the generate surfaces only, so a
+deployment whose declared catalog has no generate model is rejected at build
+time rather than carrying a field that can never apply.
 
 ### Component notes
 

@@ -24,13 +24,20 @@ type Binding struct {
 	generate   GenerateOperations
 	embed      EmbedDriver
 	transcribe TranscribeOperations
+	// unbound carries, per operation the reference's credential profile does
+	// not allow, the rejection the per-call path returns. Binding one
+	// operation the profile refuses must not fail the whole handle: a model
+	// that declares several operations stays usable for the operations the
+	// profile does allow, exactly as Assembly.Generate/Embed/Transcribe are.
+	unbound map[Operation]error
 }
 
 // Bind opens every operation the addressed model declares. The reference must
-// name a configured provider, model, and credential profile; the request-path
-// rules (operation support, profile allow-list) are enforced here, so a
-// binding that returns without error can serve each operation its descriptor
-// lists.
+// name a configured provider, model, and credential profile. The
+// request-path rules (operation support, profile allow-list) are enforced
+// here and per operation: a binding that returns without error can serve
+// every operation its profile allows, and a Prepare for a refused operation
+// reports the same error the per-call path does.
 func (a *Assembly) Bind(ctx context.Context, ref ModelRef) (*Binding, error) {
 	entry, model, err := a.lookupEntry(ref, "")
 	if err != nil {
@@ -39,7 +46,11 @@ func (a *Assembly) Bind(ctx context.Context, ref ModelRef) (*Binding, error) {
 	binding := &Binding{ref: ref, descriptor: model.Descriptor.Clone()}
 	for _, operation := range model.Descriptor.Operations {
 		if err := entry.checkProfile(ref, operation); err != nil {
-			return nil, err
+			if binding.unbound == nil {
+				binding.unbound = make(map[Operation]error, 1)
+			}
+			binding.unbound[operation] = err
+			continue
 		}
 		switch operation {
 		case OperationGenerate:
@@ -80,6 +91,9 @@ func (b *Binding) PrepareGenerate(
 	ctx context.Context,
 	request GenerateRequest,
 ) (*Prepared[GenerateResponse], error) {
+	if err := b.operationRejection(OperationGenerate); err != nil {
+		return nil, err
+	}
 	if b == nil || b.generate.Unary == nil {
 		return nil, NewError(
 			UnsupportedOperation, OperationGenerate, "",
@@ -101,6 +115,9 @@ func (b *Binding) PrepareGenerateStream(
 	ctx context.Context,
 	request GenerateRequest,
 ) (*Prepared[GenerateStream], error) {
+	if err := b.operationRejection(OperationGenerate); err != nil {
+		return nil, err
+	}
 	if b == nil || b.generate.Stream == nil {
 		return nil, NewError(
 			UnsupportedOperation, OperationGenerate, "",
@@ -121,6 +138,9 @@ func (b *Binding) PrepareEmbed(
 	ctx context.Context,
 	request EmbedRequest,
 ) (*Prepared[EmbedResponse], error) {
+	if err := b.operationRejection(OperationEmbed); err != nil {
+		return nil, err
+	}
 	if b == nil || b.embed == nil {
 		return nil, NewError(
 			UnsupportedOperation, OperationEmbed, "",
@@ -139,6 +159,9 @@ func (b *Binding) PrepareTranscribe(
 	ctx context.Context,
 	request TranscriptionRequest,
 ) (*Prepared[TranscriptionResponse], error) {
+	if err := b.operationRejection(OperationTranscription); err != nil {
+		return nil, err
+	}
 	if b == nil || b.transcribe.Unary == nil {
 		return nil, NewError(
 			UnsupportedOperation, OperationTranscription, "",
@@ -157,6 +180,9 @@ func (b *Binding) PrepareTranscribeSession(
 	ctx context.Context,
 	request TranscriptionSessionRequest,
 ) (*Prepared[TranscriptionSession], error) {
+	if err := b.operationRejection(OperationTranscription); err != nil {
+		return nil, err
+	}
 	if b == nil || b.transcribe.Session == nil {
 		return nil, NewError(
 			UnsupportedOperation, OperationTranscription, "",
@@ -174,4 +200,15 @@ func (b *Binding) refName() string {
 		return ""
 	}
 	return b.ref.ID.Name
+}
+
+// operationRejection reports the profile rejection recorded for operation
+// when the credential profile does not allow it, and nil otherwise. It is
+// what keeps a refused operation reporting the per-call path's error instead
+// of the "no driver" error an unbound operation would otherwise produce.
+func (b *Binding) operationRejection(operation Operation) error {
+	if b == nil {
+		return nil
+	}
+	return b.unbound[operation]
 }

@@ -1,6 +1,11 @@
 package openai
 
-import "github.com/GizClaw/flowcraft/core/inference/model"
+import (
+	"encoding/json"
+	"sort"
+
+	"github.com/GizClaw/flowcraft/core/inference/model"
+)
 
 // This file owns the driver's dialect vocabulary: the normalized enums the
 // compiler reads, and the one value that carries every provider-wide wire
@@ -44,18 +49,60 @@ const (
 	truncationDisabled truncationMode = "disabled"
 )
 
+// storePolicy is the wire decision for the provider's server-side retention
+// field. It is an explicit three-way value rather than a *bool so that the
+// zero dialect keeps the pre-existing behavior (send false): omitting the
+// field has to be asked for, never inherited from an unbuilt entry.
+type storePolicy uint8
+
+// bodyField is one unmodeled body assignment a deployment configured through
+// wire.extra_body, pre-sorted at dialect build time so every request the
+// deployment serves writes the fields in the same order.
+type bodyField struct {
+	path  string
+	value json.RawMessage
+}
+
+// sortedBodyFields orders one body-field map by path. It is derived once per
+// provider instance (the dialect is stamped onto every catalog entry), so the
+// request path only copies the slice.
+func sortedBodyFields(entries map[string]json.RawMessage) []bodyField {
+	if len(entries) == 0 {
+		return nil
+	}
+	fields := make([]bodyField, 0, len(entries))
+	for path, value := range entries {
+		fields = append(fields, bodyField{path: path, value: value})
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].path < fields[j].path
+	})
+	return fields
+}
+
+const (
+	// storeDisabled sends store: false, the driver default.
+	storeDisabled storePolicy = iota
+	// storeEnabled sends store: true.
+	storeEnabled
+	// storeOmitted leaves the field off the request entirely.
+	storeOmitted
+)
+
 // dialect is one provider instance's wire policy. Every catalog entry carries
 // the same value, stamped once by mergedCatalog: it is deployment
 // configuration, not a model fact, and the compiler reads it here instead of
 // reaching back into the Spec.
 type dialect struct {
 	api                     apiMode
-	store                   bool
+	store                   storePolicy
 	omitReasoningPayload    bool
 	reasoningChannel        reasoningChannel
 	reasoningSummary        reasoningSummaryPolicy
 	truncation              truncationMode
 	azureDeployment         bool
+	videoInput              bool
+	extraBody               []bodyField
 	requestMetadataEnvelope string
 	// chatStreamIncludeUsage / Obfuscation carry the explicit chat streaming
 	// policy; nil keeps the OpenAI default.
@@ -73,6 +120,8 @@ func (s Spec) dialect() dialect {
 		reasoningSummary:             s.reasoningSummaryPolicy(),
 		truncation:                   s.truncation(),
 		azureDeployment:              s.routing() == routingAzureDeployment,
+		videoInput:                   s.Wire.VideoInput,
+		extraBody:                    sortedBodyFields(s.Wire.ExtraBody),
 		requestMetadataEnvelope:      s.requestMetadataEnvelope(),
 		chatStreamIncludeUsage:       s.chatStreamIncludeUsage(),
 		chatStreamIncludeObfuscation: s.chatStreamIncludeObfuscation(),
@@ -115,12 +164,20 @@ func (s Spec) apiMode() apiMode {
 
 // store reports whether responses are retained server-side. The driver
 // default is false: FlowCraft replays context itself, so server-side storage
-// is neither needed nor desirable.
-func (s Spec) store() bool {
+// is neither needed nor desirable. "omit" means the field is left off the
+// wire entirely, for endpoints that reject request fields their schema does
+// not know.
+func (s Spec) store() storePolicy {
 	if s.Wire.Store == nil {
-		return false
+		return storeDisabled
 	}
-	return *s.Wire.Store
+	if !s.Wire.Store.Send {
+		return storeOmitted
+	}
+	if s.Wire.Store.Value {
+		return storeEnabled
+	}
+	return storeDisabled
 }
 
 // reasoningChannel returns the normalized reasoning round-trip shape.

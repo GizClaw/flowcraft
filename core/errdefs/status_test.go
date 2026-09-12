@@ -16,9 +16,11 @@ func TestClassifyStatusMapping(t *testing.T) {
 	}{
 		{"400 validation", 400, IsValidation},
 		{"404 validation", 404, IsValidation},
+		{"405 validation", 405, IsValidation},
 		{"422 validation", 422, IsValidation},
 		{"401 unauthorized", 401, IsUnauthorized},
 		{"403 forbidden", 403, IsForbidden},
+		{"402 forbidden", 402, IsForbidden},
 		{"409 conflict", 409, IsConflict},
 		{"429 rate limit", 429, IsRateLimit},
 		{"408 timeout", 408, IsTimeout},

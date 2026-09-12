@@ -57,7 +57,13 @@ func newResponsesRequest(
 	// The OpenAI default is store: true, which retains the response for at
 	// least 30 days. FlowCraft replays context itself, so the driver states
 	// the decision instead of inheriting it.
-	request.params.Store = param.NewOpt(entry.dialect.store)
+	switch entry.dialect.store {
+	case storeEnabled:
+		request.params.Store = param.NewOpt(true)
+	case storeDisabled:
+		request.params.Store = param.NewOpt(false)
+	case storeOmitted:
+	}
 	// Summaries are opt-in: without this the provider returns the encrypted
 	// payload and no readable trace.
 	if summary := entry.dialect.reasoningSummary; summary != "" {
@@ -255,6 +261,13 @@ func (r *responsesRequest) setRequestMetadata(
 	// The SDK types only the native metadata object; a gateway envelope names
 	// a field it cannot express, so it rides the raw-JSON option path.
 	r.options = append(r.options, option.WithJSONSet(envelope, metadata))
+}
+
+// setJSONField appends one unmodeled body field the caller supplied. The
+// option is applied to the serialized body, so path and value reach the wire
+// exactly as written.
+func (r *responsesRequest) setJSONField(path string, value json.RawMessage) {
+	r.options = append(r.options, option.WithJSONSet(path, value))
 }
 
 func (r *responsesRequest) addHostedWebSearch(

@@ -26,8 +26,8 @@ import (
 // ---------------------------------------------------------------------------
 
 // contentPart is one carried content piece: text (structured data lowered to
-// text included) or an image the surface addresses by URI. It exists only as a
-// sink argument; nothing accumulates it into a request model.
+// text included), an image, or a video the surface addresses by URI. It exists
+// only as a sink argument; nothing accumulates it into a request model.
 type contentPart struct {
 	kind contentPartKind
 	text string
@@ -39,6 +39,7 @@ type contentPartKind int
 const (
 	contentText contentPartKind = iota
 	contentImage
+	contentVideo
 )
 
 // generateSink is implemented by each OpenAI surface — Responses and Chat
@@ -83,6 +84,9 @@ type generateSink interface {
 	// the body field: "metadata" is the typed OpenAI object, any other name
 	// is a field the SDK leaves untyped.
 	setRequestMetadata(envelope string, metadata map[string]string)
+	// setJSONField places one caller-supplied body field the driver does not
+	// model. path is sjson notation; value is the raw JSON to place there.
+	setJSONField(path string, value json.RawMessage)
 	addHostedWebSearch(search *GenerateWebSearch, required bool)
 }
 
@@ -334,6 +338,67 @@ func compileGenerateTuning(
 	if key := options.PromptCacheKey; key != "" {
 		sink.setPromptCacheKey(key)
 	}
+	compileGenerateBodyFields(sink, options, entry, ledger)
+}
+
+// compileGenerateBodyFields applies the two sources of unmodeled body fields
+// in a fixed order: the deployment's wire.extra_body, then the request's
+// json_set. Both are written in sorted path order so one request always
+// produces the same wire bytes, and a request key therefore wins over the
+// deployment default — an identical path replaces it, a nested path merges
+// into the object the deployment wrote.
+//
+// Neither source is guessed: each value was validated where it was declared
+// (bounds, well-formed JSON, and no key under a field the compiler owns). The
+// deployment's fields are configuration, like `store` or `endpoint.headers`,
+// so they carry no report decision; the request's keys are request decisions
+// and do, which is what keeps the wallet honest about "this value rode the
+// call".
+//
+// One field name the request-level validation cannot know about is reserved at
+// compile time: a deployment that forwards request metadata owns its envelope
+// field, and letting json_set write the same name would leave two channels
+// fighting over one body field.
+func compileGenerateBodyFields(
+	sink generateSink,
+	options GenerateOptions,
+	entry catalogEntry,
+	ledger *inference.Ledger,
+) {
+	for _, field := range entry.dialect.extraBody {
+		sink.setJSONField(field.path, field.value)
+	}
+	if len(options.JSONSet) == 0 {
+		return
+	}
+	envelope := entry.dialect.requestMetadataEnvelope
+	for _, field := range sortedBodyFields(options.JSONSet) {
+		if envelope != "" && jsonSetRoot(field.path) == envelope {
+			ledger.Reject(
+				inference.ExtensionField(jsonSetFieldName(field.path)).Qualify(options),
+				"json_set cannot write the request_metadata envelope field",
+			)
+			continue
+		}
+		sink.setJSONField(field.path, field.value)
+	}
+}
+
+// mediaRoleReason reports why one surface cannot carry media on a message
+// role, or "" when it can. Chat Completions lowers every non-user turn to
+// text, and a Responses output message carries output_text only; a part on
+// one of those turns has no wire form, so the compiler rejects it rather than
+// letting the sink drop it after the ledger recorded it as carried.
+func mediaRoleReason(api apiMode, role string) string {
+	switch {
+	case role == string(message.RoleAssistant) && api == apiChat:
+		return "chat completions lowers assistant content to text"
+	case role == string(message.RoleAssistant):
+		return "the responses output message carries output_text only"
+	case api == apiChat && role != string(message.RoleUser):
+		return "chat completions carries media on user turns only"
+	}
+	return ""
 }
 
 // compileMessage appends one turn's parts. The compiler flushes a run of
@@ -365,17 +430,11 @@ func compileMessage(
 				ledger.Reject(fields(message.PartImage), "model does not accept image input")
 				continue
 			}
-			// Assistant context rides an output-message item on the Responses
-			// surface, whose content is output_text/refusal only: an assistant
-			// image has no form there, so it fails here rather than reaching
-			// the provider as an item the API refuses. Chat Completions
-			// lowers assistant content to a plain string and keeps its own
-			// behavior.
-			if role == string(message.RoleAssistant) && entry.dialect.api != apiChat {
-				ledger.Reject(
-					fields(message.PartImage),
-					"assistant context cannot carry image input",
-				)
+			// Rejecting on a role the surface lowers to text keeps the ledger
+			// honest: appending the part and letting the sink drop it would
+			// report a decision the request never carried.
+			if reason := mediaRoleReason(entry.dialect.api, role); reason != "" {
+				ledger.Reject(fields(message.PartImage), reason)
 				continue
 			}
 			content = append(content, contentPart{
@@ -385,7 +444,40 @@ func compileMessage(
 		case message.AudioPart:
 			ledger.Reject(fields(message.PartAudio), "audio input is not supported by generate models")
 		case message.VideoPart:
-			ledger.Reject(fields(message.PartVideo), "video input is not supported by generate models")
+			switch {
+			case !entry.dialect.videoInput:
+				ledger.Reject(
+					fields(message.PartVideo),
+					"endpoint does not accept video input "+
+						"(declare it with spec.wire.video_input on api \"chat\")",
+				)
+				continue
+			case entry.dialect.api != apiChat:
+				// Unreachable through Spec validation, which keeps the fact on
+				// the chat surface; kept for entries built directly.
+				ledger.Reject(
+					fields(message.PartVideo),
+					"the responses surface has no video input lowering",
+				)
+				continue
+			case !slices.Contains(entry.capabilities.Inputs, message.PartVideo):
+				ledger.Reject(fields(message.PartVideo), "model does not accept video input")
+				continue
+			case value.Source.Kind() == media.SourceStream:
+				ledger.Reject(
+					fields(message.PartVideo),
+					"stream media sources must be materialized before generate",
+				)
+				continue
+			}
+			if reason := mediaRoleReason(entry.dialect.api, role); reason != "" {
+				ledger.Reject(fields(message.PartVideo), reason)
+				continue
+			}
+			content = append(content, contentPart{
+				kind: contentVideo,
+				uri:  sourceURI(value.Source),
+			})
 		case message.FilePart:
 			ledger.Reject(fields(message.PartFile), "file references are not supported")
 		case message.DataPart:
@@ -757,7 +849,16 @@ func rejectTextControls(
 
 // sourceURI renders an image source as the single URI string the API accepts:
 // absolute URLs pass through, inline bytes become a data: URI.
-func sourceURI(source media.ImageSource) string {
+// mediaSource is the part of a media source every surface addresses the same
+// way: a URL when the source is linked, an inline data URI when it is not.
+type mediaSource interface {
+	Kind() media.SourceKind
+	URL() string
+	MediaType() string
+	Bytes() []byte
+}
+
+func sourceURI[Source mediaSource](source Source) string {
 	if source.Kind() == media.SourceURL {
 		return source.URL()
 	}

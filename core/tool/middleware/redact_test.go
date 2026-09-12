@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -195,5 +196,170 @@ func TestRedact_CoversTextDataFileAndMediaURLParts(t *testing.T) {
 	}
 	if got := res.Content.Parts[4].(message.ImagePart).Source.URL(); strings.Contains(got, "abc123") {
 		t.Fatalf("media URL = %q, want the secret replaced", got)
+	}
+}
+
+// TestRedact_CoversToolCallResultAndReasoningParts covers the part kinds a
+// tool result can carry beyond text and media: a nested tool call's arguments,
+// a nested tool result's own content, and a reasoning trace. All of them are
+// model-visible text, so all of them must go through the rules.
+func TestRedact_CoversToolCallResultAndReasoningParts(t *testing.T) {
+	secret := tool.FuncTool(message.ToolDefinition{Name: "secret"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			return message.Content{Parts: []message.Part{
+				message.ToolCallPart{Call: message.ToolCall{
+					ID:        "c1",
+					Name:      "http",
+					Arguments: json.RawMessage(`{"token":"abc123","keep":"ok"}`),
+				}},
+				message.ToolResultPart{Result: message.NewTextToolResult(
+					"c2", "token=abc123",
+				)},
+				message.ReasoningPart{Text: "token=abc123", Signature: "sig-abc123"},
+			}}, nil
+		})
+	exec := tool.NewExecutor(catalogWith(secret),
+		Redact(RedactRule{Pattern: regexp.MustCompile(`abc123`), Replacement: "redacted"}))
+
+	res := exec.Execute(context.Background(), call("secret"))
+	if res.IsError {
+		t.Fatalf("unexpected error result: %s", res.Content.Text())
+	}
+	if len(res.Content.Parts) != 3 {
+		t.Fatalf("parts = %d, want 3", len(res.Content.Parts))
+	}
+	callPart, ok := res.Content.Parts[0].(message.ToolCallPart)
+	if !ok {
+		t.Fatalf("part 0 = %T, want message.ToolCallPart", res.Content.Parts[0])
+	}
+	if strings.Contains(string(callPart.Call.Arguments), "abc123") ||
+		!strings.Contains(string(callPart.Call.Arguments), "redacted") {
+		t.Fatalf("call arguments = %s, want the secret replaced",
+			callPart.Call.Arguments)
+	}
+	if err := callPart.Validate(); err != nil {
+		t.Fatalf("redacted call must stay a JSON object: %v", err)
+	}
+	resultPart, ok := res.Content.Parts[1].(message.ToolResultPart)
+	if !ok {
+		t.Fatalf("part 1 = %T, want message.ToolResultPart", res.Content.Parts[1])
+	}
+	if got := resultPart.Result.Content.Text(); strings.Contains(got, "abc123") {
+		t.Fatalf("nested tool result = %q, want the secret replaced", got)
+	}
+	reasoning, ok := res.Content.Parts[2].(message.ReasoningPart)
+	if !ok {
+		t.Fatalf("part 2 = %T, want message.ReasoningPart", res.Content.Parts[2])
+	}
+	if strings.Contains(reasoning.Text, "abc123") {
+		t.Fatalf("reasoning text = %q, want the secret replaced", reasoning.Text)
+	}
+	// The signature is an opaque provider payload: rewriting it would break
+	// the round-trip without hiding anything the model reads.
+	if reasoning.Signature != "sig-abc123" {
+		t.Fatalf("reasoning signature = %q, want it untouched", reasoning.Signature)
+	}
+}
+
+// TestRedact_AccountsForEveryPartKind pins the coverage contract: every kind
+// in the content vocabulary has a deliberate redaction outcome, so a new kind
+// cannot be added without deciding whether its text is rewritten. The kinds
+// that intentionally keep their payload are inline media (rewriting encoded
+// bytes would corrupt them) and the opaque reasoning signature.
+func TestRedact_AccountsForEveryPartKind(t *testing.T) {
+	inlineImage, err := media.NewImageBytes([]byte("abc123"), "image/png")
+	if err != nil {
+		t.Fatalf("NewImageBytes: %v", err)
+	}
+	inlineAudio, err := media.NewAudioBytes([]byte("abc123"), "audio/wav")
+	if err != nil {
+		t.Fatalf("NewAudioBytes: %v", err)
+	}
+	inlineVideo, err := media.NewVideoBytes([]byte("abc123"), "video/mp4")
+	if err != nil {
+		t.Fatalf("NewVideoBytes: %v", err)
+	}
+	linkedImage, err := media.NewImageURL("https://cdn.example.com/abc123.png", "image/png")
+	if err != nil {
+		t.Fatalf("NewImageURL: %v", err)
+	}
+
+	for _, kind := range message.PartKinds() {
+		t.Run(string(kind), func(t *testing.T) {
+			part := partCarryingSecret(t, kind, inlineImage, inlineAudio, inlineVideo, linkedImage)
+			redacted := newRedactor(
+				RedactRule{Pattern: regexp.MustCompile(`abc123`)},
+			).Content(message.Content{Parts: []message.Part{part}})
+
+			encoded, err := json.Marshal(redacted)
+			if err != nil {
+				t.Fatalf("marshal redacted content: %v", err)
+			}
+			switch kind {
+			case message.PartImage, message.PartAudio, message.PartVideo:
+				// Inline bytes are encoded payloads, not text: the redactor
+				// documents that it leaves them alone.
+				if !strings.Contains(string(encoded), "abc123") &&
+					!strings.Contains(string(encoded), base64.StdEncoding.EncodeToString([]byte("abc123"))) {
+					t.Fatalf("inline media lost its payload: %s", encoded)
+				}
+			default:
+				if strings.Contains(string(encoded), "abc123") {
+					t.Fatalf("part kind %q kept the secret: %s", kind, encoded)
+				}
+			}
+			if err := redacted.Validate(); err != nil {
+				t.Fatalf("redacted content is invalid: %v", err)
+			}
+		})
+	}
+}
+
+// partCarryingSecret builds one part of kind carrying "abc123" wherever the
+// kind can hold text. Kinds the redactor cannot rewrite keep their encoded
+// payload; the caller decides what that means.
+func partCarryingSecret(
+	t *testing.T,
+	kind message.PartKind,
+	image media.ImageSource,
+	audio media.AudioSource,
+	video media.VideoSource,
+	linkedImage media.ImageSource,
+) message.Part {
+	t.Helper()
+	_ = linkedImage
+	switch kind {
+	case message.PartText:
+		return message.TextPart{Text: "token=abc123"}
+	case message.PartImage:
+		return message.ImagePart{Source: image}
+	case message.PartAudio:
+		return message.AudioPart{Source: audio}
+	case message.PartVideo:
+		return message.VideoPart{Source: video}
+	case message.PartFile:
+		return message.FilePart{URI: "https://files.example.com/a?token=abc123", Name: "abc123.txt"}
+	case message.PartData:
+		content, err := message.NewJSONContent([]byte(`{"token":"abc123"}`))
+		if err != nil {
+			t.Fatalf("NewJSONContent: %v", err)
+		}
+		return content.Parts[0]
+	case message.PartToolCall:
+		return message.ToolCallPart{Call: message.ToolCall{
+			ID:        "c1",
+			Name:      "http",
+			Arguments: json.RawMessage(`{"token":"abc123"}`),
+		}}
+	case message.PartToolResult:
+		return message.ToolResultPart{Result: message.NewTextToolResult("c1", "token=abc123")}
+	case message.PartReasoning:
+		return message.ReasoningPart{Text: "token=abc123", Signature: "sig"}
+	default:
+		t.Fatalf(
+			"part kind %q has no redaction expectation: decide whether its text is rewritten",
+			kind,
+		)
+		return nil
 	}
 }

@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -97,11 +98,29 @@ type AuthSpec struct {
 // derived default, so the driver cross-checks the combination against the
 // catalog's capability declarations before serving any request.
 type WireSpec struct {
+	// VideoInput allows video content parts, a compatible-endpoint extension:
+	// OpenAI's own schema has no video content part. Only the Chat
+	// Completions surface lowers it today (as `video_url`), and only when a
+	// model's capabilities declare PartVideo, so both the endpoint fact and
+	// the model declaration have to hold before a request can carry one.
+	VideoInput bool `json:"video_input,omitempty"`
+	// ExtraBody is the deployment-level form of GenerateOptions.JSONSet: body
+	// fields this driver does not model, applied to every request the
+	// deployment serves. Each key is an sjson path and each value the raw
+	// JSON to place there, with the same bounds and the same rejected keys.
+	//
+	// It is deployment configuration, not a request decision: like
+	// `endpoint.headers` or `store` it never appears in the compile report,
+	// and a request-level `json_set` key wins over it (a nested key merges
+	// into the object this one wrote, an identical key replaces it).
+	ExtraBody map[string]json.RawMessage `json:"extra_body,omitempty"`
 	// Store asks the provider to retain the response server-side. Nil keeps
 	// the driver default (false): FlowCraft replays context itself, and the
 	// OpenAI default (true, retained for at least 30 days) is unnecessary
-	// and surprising.
-	Store *bool `json:"store,omitempty"`
+	// and surprising. The string "omit" leaves the field off the wire
+	// entirely, for compatible endpoints that reject request fields their
+	// schema does not know.
+	Store *StoreSetting `json:"store,omitempty"`
 	// IncludeReasoningPayload sends include: ["reasoning.encrypted_content"]
 	// so reasoning traces round-trip into later context. Nil derives from
 	// ReasoningChannel: true for "summary", false for "text".
@@ -124,6 +143,42 @@ type WireSpec struct {
 	// is "chat". Responses streams always carry usage in their terminal
 	// event and never consult this setting.
 	ChatStreamOptions *ChatStreamOptionsSpec `json:"chat_stream_options,omitempty"`
+}
+
+// StoreSetting is the wire policy for the provider's server-side retention
+// field. It decodes from a JSON boolean (send that value) or the string
+// "omit" (send nothing), so the field can be absent for endpoints whose
+// schema does not know it.
+type StoreSetting struct {
+	// Send reports whether the field rides the request at all.
+	Send bool `json:"send"`
+	// Value is the boolean the request carries when Send is true.
+	Value bool `json:"value"`
+}
+
+// UnmarshalJSON accepts a boolean or the string "omit".
+func (s *StoreSetting) UnmarshalJSON(data []byte) error {
+	var value bool
+	if err := json.Unmarshal(data, &value); err == nil {
+		*s = StoreSetting{Send: true, Value: value}
+		return nil
+	}
+	var mode string
+	if err := json.Unmarshal(data, &mode); err != nil || mode != "omit" {
+		return fmt.Errorf(
+			`wire.store must be a boolean or "omit"`,
+		)
+	}
+	*s = StoreSetting{}
+	return nil
+}
+
+// MarshalJSON renders the declared policy in its compact config form.
+func (s StoreSetting) MarshalJSON() ([]byte, error) {
+	if !s.Send {
+		return json.Marshal("omit")
+	}
+	return json.Marshal(s.Value)
 }
 
 // ChatStreamOptionsSpec is the provider-level lowering policy for Chat
@@ -195,6 +250,43 @@ func (s Spec) Validate() error {
 	}
 	if s.Wire.ChatStreamOptions != nil && s.apiMode() != apiChat {
 		return fmt.Errorf("wire.chat_stream_options requires api \"chat\"")
+	}
+	if s.Wire.VideoInput && s.apiMode() != apiChat {
+		// The Responses surface has no video content item: FlowCraft has no
+		// verified lowering for one. Rejecting the fact at build time keeps a
+		// deployment from publishing a capability the compiler would refuse
+		// on every request.
+		return fmt.Errorf(
+			"wire.video_input requires api \"chat\": the responses surface has no video input lowering",
+		)
+	}
+	if err := validateBodyFields("wire.extra_body", s.Wire.ExtraBody); err != nil {
+		return err
+	}
+	// The deployment owns its metadata envelope field, so extra_body must not
+	// write the same name on every request: two sources for one field would
+	// make the wire depend on application order rather than on configuration.
+	if envelope := s.requestMetadataEnvelope(); envelope != "" {
+		for path := range s.Wire.ExtraBody {
+			if jsonSetRoot(path) == envelope {
+				return fmt.Errorf(
+					"wire.extra_body %q is the request_metadata envelope field",
+					path,
+				)
+			}
+		}
+	}
+	// extra_body rides the generate surfaces. A declared catalog that has no
+	// generate model can never use it, and a setting that can never apply is a
+	// configuration error rather than a silent no-op. (builtin_declared always
+	// inherits the built-in generate line-up, so it is never in that state.)
+	if len(s.Wire.ExtraBody) > 0 &&
+		s.catalogMode() == catalogDeclared &&
+		!s.declaresGenerateModel() {
+		return fmt.Errorf(
+			"wire.extra_body applies to the generate surfaces; " +
+				"this deployment declares no generate model",
+		)
 	}
 	if s.Endpoint.BaseURL != "" &&
 		!strings.HasPrefix(s.Endpoint.BaseURL, "https://") &&
@@ -352,6 +444,18 @@ func (m ModelSpec) Validate() error {
 		return err
 	}
 	return m.Limits.Validate()
+}
+
+// declaresGenerateModel reports whether the spec declares at least one
+// generate-kind model, i.e. whether the deployment can serve the surfaces
+// wire.extra_body applies to.
+func (s Spec) declaresGenerateModel() bool {
+	for _, model := range s.Models {
+		if modelKind(model.Kind) == kindGenerate {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeSpec(ctx context.Context, raw []byte) (Spec, error) {

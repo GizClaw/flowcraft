@@ -35,6 +35,11 @@ const DefaultResultPartBudget = 1 << 20 // 1 MiB
 // a part that does not fit is dropped and the marker is appended, so
 // runaway media cannot fill the model's context unnoticed.
 //
+// The two budgets share one promise: a result that was cut never carries
+// more than max runes of text. The marker counts against that budget, so a
+// result whose non-text parts were cut keeps the marker's runes free instead
+// of adding them on top.
+//
 // The rune limit is measured in Unicode code points, not bytes, so a
 // multibyte result is never cut in the middle of a rune. The marker
 // itself counts against that limit; when it is too small to hold the
@@ -84,24 +89,73 @@ func WithResultPartBudget(budget int) ResultLimitOption {
 	return func(c *resultLimitConfig) { c.partBudget = budget }
 }
 
+// ResultPartLimiter bounds the non-text parts of one result without touching
+// its text. It exists for hosts that leave text sizes to their own policy but
+// still need media to be bounded: a tool result rides every later turn's
+// context, and an inline image or audio payload has no natural size. Parts
+// that do not fit the byte budget are dropped and [DefaultResultMarker] is
+// appended, so the loss stays visible to the model.
+func ResultPartLimiter(budget int, opts ...ResultLimitOption) tool.Middleware {
+	if budget <= 0 {
+		panic(fmt.Sprintf(
+			"middleware.ResultPartLimiter: budget must be positive, got %d",
+			budget,
+		))
+	}
+	cfg := resultLimitConfig{marker: DefaultResultMarker}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.marker == "" {
+		cfg.marker = DefaultResultMarker
+	}
+	return func(next tool.Dispatch) tool.Dispatch {
+		return func(ctx context.Context, call message.ToolCall) message.ToolResult {
+			res := next(ctx, call)
+			limited, cut := limitPartBytes(res.Content, budget)
+			if !cut {
+				return res
+			}
+			res.Content = message.Content{Parts: append(
+				append([]message.Part(nil), limited.Parts...),
+				message.TextPart{Text: cfg.marker},
+			)}
+			return res
+		}
+	}
+}
+
 func limitResult(res message.ToolResult, max int, marker string, partBudget int) message.ToolResult {
 	// runeCountAtMost stops at the first rune past the limit, so an
 	// oversized result is never converted to a full []rune just to be
-	// measured.
+	// measured. Non-text parts are metered first because they never carry
+	// the marker: cutting them reserves the marker's runes up front, which
+	// is what keeps the text budget true when media and text are both over.
 	content := res.Content
-	if !textRuneCountAtMost(content, max) {
-		markerRunes := []rune(marker)
-		if len(markerRunes) > max {
-			markerRunes = markerRunes[:max]
-		}
-		keep := max - len(markerRunes)
-		if keep < 0 {
-			keep = 0
-		}
-		content = truncateContent(content, keep, string(markerRunes))
+	content, partsCut := limitPartBytes(content, partBudget)
+	markerRunes := []rune(marker)
+	if len(markerRunes) > max {
+		markerRunes = markerRunes[:max]
 	}
-	if limited, cut := limitPartBytes(content, partBudget, marker); cut {
-		content = limited
+	keep := max - len(markerRunes)
+	if keep < 0 {
+		keep = 0
+	}
+	switch {
+	case partsCut:
+		// The marker goes at the end, where the parts were dropped, so the
+		// text parts are cut to leave room for it and are cut silently: the
+		// end marker is the one signal the model needs, and two markers would
+		// not fit the budget.
+		content = truncateContent(content, keep, "")
+		content.Parts = append(
+			append([]message.Part(nil), content.Parts...),
+			message.TextPart{Text: string(markerRunes)},
+		)
+	case !textRuneCountAtMost(content, max):
+		content = truncateContent(content, keep, string(markerRunes))
 	}
 	res.Content = content
 	return res
@@ -156,9 +210,12 @@ func truncateContent(content message.Content, keep int, marker string) message.C
 			parts = append(parts, text)
 			continue
 		}
-		parts = append(parts, message.TextPart{
-			Text: truncateRunes(text.Text, remaining) + marker,
-		})
+		// A cut that leaves neither text nor a marker contributes nothing —
+		// the caller's own marker is the signal — so the part is dropped
+		// rather than carried as an empty text part.
+		if kept := truncateRunes(text.Text, remaining) + marker; kept != "" {
+			parts = append(parts, message.TextPart{Text: kept})
+		}
 		truncated = true
 	}
 	if !truncated {
@@ -168,10 +225,11 @@ func truncateContent(content message.Content, keep int, marker string) message.C
 }
 
 // limitPartBytes spends budget bytes on the non-text parts in order,
-// dropping the parts that do not fit and appending marker once so the
-// loss stays visible. Text parts are not metered here: they carry their
-// own rune budget. Content is returned unchanged when nothing was cut.
-func limitPartBytes(content message.Content, budget int, marker string) (message.Content, bool) {
+// dropping the parts that do not fit. Text parts are not metered here: they
+// carry their own rune budget. Content is returned unchanged when nothing was
+// cut; the caller appends the truncation marker, because only it knows how
+// much text budget the marker still has to fit into.
+func limitPartBytes(content message.Content, budget int) (message.Content, bool) {
 	if budget <= 0 {
 		return content, false
 	}
@@ -198,7 +256,7 @@ func limitPartBytes(content message.Content, budget int, marker string) (message
 	if !cut {
 		return content, false
 	}
-	return message.Content{Parts: append(parts, message.TextPart{Text: marker})}, true
+	return message.Content{Parts: parts}, true
 }
 
 // nonTextBytes reports how many encoded bytes a part spends against the

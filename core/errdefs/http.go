@@ -97,17 +97,20 @@ func ClassifyProviderError(provider string, err error) error {
 // have a raw response body should use ClassifyHTTPStatus, which builds the
 // message as well.
 //
-// The mapping is the one every provider transport needs: 400/404/422 are
-// validation, 401 unauthorized, 403 forbidden, 409 conflict, 429 rate limit,
-// 408/504 timeout, and everything else — including 5xx — not-available, which
-// the router retries.
+// The mapping is the one every provider transport needs and the same one
+// ClassifyHTTPStatus applies: 400/404/405/422 are validation, 401
+// unauthorized, 402/403 forbidden (billing and authorization refusals are
+// permanent, not retryable), 409 conflict, 429 rate limit, 408/504 timeout,
+// and everything else — including 5xx — not-available, which the router
+// retries.
 func ClassifyStatus(status int, cause error) error {
 	switch status {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
+	case http.StatusBadRequest, http.StatusNotFound,
+		http.StatusMethodNotAllowed, http.StatusUnprocessableEntity:
 		return Validation(cause)
 	case http.StatusUnauthorized:
 		return Unauthorized(cause)
-	case http.StatusForbidden:
+	case http.StatusForbidden, http.StatusPaymentRequired:
 		return Forbidden(cause)
 	case http.StatusConflict:
 		return Conflict(cause)
@@ -125,12 +128,25 @@ func ClassifyStatus(status int, cause error) error {
 // error message to preserve provider diagnostics; pass an empty string
 // when no body is available. Codes below 400 always map to Internal —
 // the helper assumes callers have already gated on a non-2xx response.
+//
+// The status mapping is ClassifyStatus's, plus the caller-supplied provider
+// and body in the message: 402 and 403 stay permanent authorization/billing
+// refusals rather than collapsing into a retryable auth failure.
 func ClassifyHTTPStatus(provider string, code int, body string) error {
 	msg := fmt.Sprintf("%s: http %d", provider, code)
 	if body != "" {
 		msg = fmt.Sprintf("%s: %s", msg, body)
 	}
 	wrapped := errors.New(msg)
+	if code < 400 {
+		return Internal(wrapped)
+	}
+	if code == http.StatusForbidden {
+		// ClassifyStatus reports 403 as Forbidden; the ProviderCategory axis
+		// folds 401 and 403 onto one Auth class, so the finer distinction has
+		// to be made here to keep the two entry points in lock-step.
+		return Forbidden(wrapped)
+	}
 	if cat, ok := ProviderCategoryFromHTTPCode(code); ok {
 		switch cat {
 		case ProviderAuth:
