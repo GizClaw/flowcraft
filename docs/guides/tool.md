@@ -156,8 +156,17 @@ cancellation); `result_limit.max` caps the text of one result in runes and
 (images, audio, file references, structured data) — absent means 1 MiB, `0`
 lifts the cap. Whatever exceeds a budget is dropped and the truncation
 marker (`result_limit.marker`, default `…[result truncated]`) is appended, so
-the model learns the result was shortened. The plain `memory` impl rejects
-the `middlewares` key.
+the model learns the result was shortened, and text never exceeds
+`result_limit.max` runes once anything was cut: the marker's runes are
+reserved rather than added on top.
+
+Non-text parts are bounded by default, even without a `result_limit`: a tool
+result rides every later turn's context, and an inline image or audio payload
+has no natural size. `result_part_budget_bytes` at the `middlewares` level
+moves that default (absent means 1 MiB, `0` lifts it); when `result_limit`
+declares its own `part_budget_bytes`, that value is the one that applies. The
+plain `memory` impl runs no middleware at all, so a deployment that uses it
+bounds tool results in its own tools.
 
 A model that calls a deferred tool before `tool_search` has exposed it is
 rejected at response validation with a distinguishable `undefined_tool`

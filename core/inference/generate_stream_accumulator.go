@@ -449,6 +449,12 @@ func (p *generatePartAccumulator) result() (message.Part, error) {
 		if p.completeImage == nil {
 			return nil, fmt.Errorf("streamed image is incomplete")
 		}
+		if p.imageInterim {
+			// The stream ended on a progress snapshot. Returning it would
+			// hand the caller a partially rendered image as the final
+			// result, so the part index is reported as incomplete instead.
+			return nil, fmt.Errorf("streamed image ended on an interim snapshot")
+		}
 		return p.completeImage.Clone(), nil
 	case message.PartReasoning:
 		part := message.ReasoningPart{

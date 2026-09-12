@@ -10,6 +10,8 @@ import (
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/resource"
+
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // TestSpecValidationLayers locks the three-layer config contract: endpoint
@@ -65,29 +67,82 @@ func TestSpecValidationLayers(t *testing.T) {
 	}
 }
 
-// TestWireToParamsStore pins the store policy: omitted keeps the driver
-// default (false, so responses are not retained server-side) and an explicit
-// opt-in reaches the wire.
+// TestResponsesStore pins the store policy: omitted keeps the driver default
+// (false, so responses are not retained server-side), an explicit opt-in
+// reaches the wire, and "omit" leaves the field off it entirely so a
+// compatible endpoint that does not know the field is never sent one.
 func TestResponsesStore(t *testing.T) {
 	params := compileTextParams(t, simpleTextRequest("hi"))
 	if !params.Store.Valid() || params.Store.Value {
 		t.Fatalf("store = %+v, want an explicit false", params.Store)
 	}
 
-	entry := catalog["gpt-5.6-sol"]
-	entry.dialect.store = true
-	compiled, err := compileResponses("gpt-5.6-sol", entry)(
-		context.Background(),
-		openaiModel("gpt-5.6-sol"),
-		simpleTextRequest("hi"),
-		inference.GenerateExecutionUnary,
-	)
-	if err != nil {
-		t.Fatalf("compileResponses: %v", err)
+	compile := func(t *testing.T, store storePolicy) responses.ResponseNewParams {
+		t.Helper()
+		entry := catalog["gpt-5.6-sol"]
+		entry.dialect.store = store
+		compiled, err := compileResponses("gpt-5.6-sol", entry)(
+			context.Background(),
+			openaiModel("gpt-5.6-sol"),
+			simpleTextRequest("hi"),
+			inference.GenerateExecutionUnary,
+		)
+		if err != nil {
+			t.Fatalf("compileResponses: %v", err)
+		}
+		return compiled.Wire.params
 	}
-	params = compiled.Wire.params
+
+	params = compile(t, storeEnabled)
 	if !params.Store.Valid() || !params.Store.Value {
 		t.Fatalf("store = %+v, want an explicit true", params.Store)
+	}
+
+	omitted := compile(t, storeOmitted)
+	if omitted.Store.Valid() {
+		t.Fatalf("store = %+v, want the field left off the wire", omitted.Store)
+	}
+
+	// The nil policy must come from the configured "omit", not from an
+	// unset spec: the default path is covered above and still sends false.
+	spec, err := decodeSpec(context.Background(), []byte(`{"wire":{"store":"omit"}}`))
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	if store := spec.store(); store != storeOmitted {
+		t.Fatalf("spec.store() = %v, want storeOmitted", store)
+	}
+}
+
+// TestStoreSettingDecodesBoolAndOmit pins the config surface: the field keeps
+// accepting a plain boolean and gains the "omit" string.
+func TestStoreSettingDecodesBoolAndOmit(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		want    storePolicy
+		wantErr bool
+	}{
+		{raw: `{}`, want: storeDisabled},
+		{raw: `{"wire":{"store":true}}`, want: storeEnabled},
+		{raw: `{"wire":{"store":false}}`, want: storeDisabled},
+		{raw: `{"wire":{"store":"omit"}}`, want: storeOmitted},
+		{raw: `{"wire":{"store":"never"}}`, wantErr: true},
+		{raw: `{"wire":{"store":1}}`, wantErr: true},
+	} {
+		spec, err := decodeSpec(context.Background(), []byte(tc.raw))
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("decodeSpec(%s): want error", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("decodeSpec(%s): %v", tc.raw, err)
+			continue
+		}
+		if got := spec.store(); got != tc.want {
+			t.Errorf("decodeSpec(%s): store = %v, want %v", tc.raw, got, tc.want)
+		}
 	}
 }
 

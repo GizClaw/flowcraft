@@ -63,3 +63,33 @@ func TestImagePartAccumulatorRejectsDuplicateFinal(t *testing.T) {
 		t.Fatal("second final image at the same part index succeeded, want error")
 	}
 }
+
+// TestImagePartAccumulatorRejectsInterimTerminal guards the other half of the
+// terminal-image rule: a part index whose last delta is a progress snapshot
+// has no final image, and returning the snapshot would hand the caller a
+// partially rendered image as the result.
+func TestImagePartAccumulatorRejectsInterimTerminal(t *testing.T) {
+	preview := streamImagePart(t, []byte("preview"))
+	final := streamImagePart(t, []byte("final"))
+
+	interimOnly := &generatePartAccumulator{kind: message.PartImage}
+	if err := interimOnly.add(ImagePartDelta{Part: preview, Interim: true}); err != nil {
+		t.Fatalf("add interim preview: %v", err)
+	}
+	if _, err := interimOnly.result(); err == nil {
+		t.Fatal("a result that ends on an interim snapshot succeeded, want error")
+	}
+
+	// A late snapshot must not displace the final image either: the index is
+	// still incomplete until a non-interim delta follows it.
+	finalThenInterim := &generatePartAccumulator{kind: message.PartImage}
+	if err := finalThenInterim.add(ImagePartDelta{Part: final}); err != nil {
+		t.Fatalf("add final image: %v", err)
+	}
+	if err := finalThenInterim.add(ImagePartDelta{Part: preview, Interim: true}); err != nil {
+		t.Fatalf("add late interim snapshot: %v", err)
+	}
+	if _, err := finalThenInterim.result(); err == nil {
+		t.Fatal("a late interim snapshot was accepted as the final image")
+	}
+}

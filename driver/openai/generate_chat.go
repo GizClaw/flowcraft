@@ -57,8 +57,15 @@ func newChatRequest(
 		params: openai.ChatCompletionNewParams{Model: modelName},
 	}
 	// The driver states the retention decision instead of leaving it to a
-	// provider default, exactly as the Responses surface does.
-	request.params.Store = param.NewOpt(entry.dialect.store)
+	// provider default, exactly as the Responses surface does — unless the
+	// deployment asked for the field to be omitted.
+	switch entry.dialect.store {
+	case storeEnabled:
+		request.params.Store = param.NewOpt(true)
+	case storeDisabled:
+		request.params.Store = param.NewOpt(false)
+	case storeOmitted:
+	}
 	if shape != inference.GenerateExecutionStream {
 		return request
 	}

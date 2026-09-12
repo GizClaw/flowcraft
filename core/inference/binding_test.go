@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -97,6 +98,161 @@ func bindingAssembly(
 }
 
 var bindingRef = ModelRef{ID: ModelID{Provider: "binding", Name: "model-1"}}
+
+// multiOperationAssembly declares one model that serves generate and embed
+// from a profile-restricted provider, which is the shape a profile-scoped
+// credential has: the model is usable, but not for every operation it
+// declares.
+func multiOperationAssembly(t *testing.T) (*Assembly, *atomic.Int64, *atomic.Int64) {
+	t.Helper()
+	var opens, embeds atomic.Int64
+	compile := GenerateCompiler[string](
+		func(
+			_ context.Context,
+			_ ModelRef,
+			request GenerateRequest,
+			shape GenerateExecutionShape,
+		) (Compiled[string], error) {
+			fields := request.ActiveFieldsFor(shape)
+			decisions := make([]Decision, len(fields))
+			for index, field := range fields {
+				decisions[index] = Decision{Field: field, Disposition: Native}
+			}
+			return Compiled[string]{
+				Wire:   "wire",
+				Report: CompileReport{Operation: OperationGenerate, Decisions: decisions},
+			}, nil
+		},
+	)
+	driver, err := BindGenerate(
+		compile,
+		Transport[string, string](func(context.Context, string) (string, error) {
+			return "raw", nil
+		}),
+		Decoder[string, GenerateResponse](
+			func(context.Context, string) (GenerateResponse, error) {
+				return GenerateResponse{
+					Message: message.Message{
+						Role:    message.RoleAssistant,
+						Content: message.NewTextContent("ok"),
+					},
+					FinishReason: FinishCompleted,
+				}, nil
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("BindGenerate: %v", err)
+	}
+	embed, err := BindEmbed(
+		func(
+			_ context.Context,
+			_ ModelRef,
+			request EmbedRequest,
+		) (Compiled[string], error) {
+			fields := request.ActiveFields()
+			decisions := make([]Decision, len(fields))
+			for index, field := range fields {
+				decisions[index] = Decision{Field: field, Disposition: Native}
+			}
+			return Compiled[string]{
+				Wire:   "wire",
+				Report: CompileReport{Operation: OperationEmbed, Decisions: decisions},
+			}, nil
+		},
+		Transport[string, string](func(context.Context, string) (string, error) {
+			return "raw", nil
+		}),
+		Decoder[string, EmbedResponse](
+			func(context.Context, string) (EmbedResponse, error) {
+				return EmbedResponse{
+					Embeddings: []Embedding{{Vector: []float32{1}}},
+				}, nil
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("BindEmbed: %v", err)
+	}
+	return &Assembly{providers: map[string]ProviderDefinition{
+		"multi": {
+			ID: "multi",
+			Profiles: []ProfileDefinition{
+				{ID: "default", Operations: []Operation{OperationGenerate}},
+			},
+			Models: []ModelImplementation{{
+				Descriptor: ModelDescriptor{
+					ID: ModelID{Provider: "multi", Name: "model-1"},
+				},
+				Openers: Openers{
+					Generate: func(
+						context.Context, ModelRef,
+					) (GenerateOperations, error) {
+						opens.Add(1)
+						return GenerateOperations{Unary: driver}, nil
+					},
+					Embed: func(context.Context, ModelRef) (EmbedDriver, error) {
+						embeds.Add(1)
+						return embed, nil
+					},
+				},
+			}},
+		},
+	}}, &opens, &embeds
+}
+
+// TestBindingSkipsOperationTheProfileRefuses pins the per-operation rule: a
+// profile allow-list that covers one of a model's operations must not fail the
+// whole bind — the allowed operation stays usable, and the refused one reports
+// the same rejection the per-call path produces.
+func TestBindingSkipsOperationTheProfileRefuses(t *testing.T) {
+	assembly, opens, embeds := multiOperationAssembly(t)
+	ref := ModelRef{ID: ModelID{Provider: "multi", Name: "model-1"}, Profile: "default"}
+
+	binding, err := assembly.Bind(context.Background(), ref)
+	if err != nil {
+		t.Fatalf("Bind: %v", err)
+	}
+	if opens.Load() != 1 {
+		t.Fatalf("generate openers ran %d times, want 1", opens.Load())
+	}
+	if embeds.Load() != 0 {
+		t.Fatalf("embed opener ran %d times for a refused operation", embeds.Load())
+	}
+	if _, err := binding.PrepareGenerate(context.Background(), bindingRequest()); err != nil {
+		t.Fatalf("PrepareGenerate: %v", err)
+	}
+	embedRequest := EmbedRequest{Items: []EmbedItem{{Content: message.NewTextContent("hi")}}}
+	_, err = binding.PrepareEmbed(context.Background(), embedRequest)
+	if err == nil {
+		t.Fatal("PrepareEmbed on a profile-refused operation succeeded")
+	}
+	if kind := errorKind(t, err); kind != UnsupportedOperation {
+		t.Fatalf("PrepareEmbed kind = %q, want %q", kind, UnsupportedOperation)
+	}
+	// The caller has to be able to tell the profile refusal from "this model
+	// has no embed driver", so the cause names the profile.
+	if got := errors.Unwrap(err).Error(); !strings.Contains(got, `"default" does not allow embed`) {
+		t.Fatalf("PrepareEmbed cause = %q, want the profile refusal", got)
+	}
+
+	// The per-call path must agree with the binding: both refuse and both
+	// allow the same operation.
+	if _, err := assembly.Embed(context.Background(), ref, embedRequest); err == nil ||
+		errorKind(t, err) != UnsupportedOperation {
+		t.Fatalf("Assembly.Embed = %v, want the same profile refusal", err)
+	}
+}
+
+// errorKind extracts the inference error kind from err.
+func errorKind(t *testing.T, err error) ErrorKind {
+	t.Helper()
+	var inferenceErr *Error
+	if !errors.As(err, &inferenceErr) {
+		t.Fatalf("error %v is not an *inference.Error", err)
+	}
+	return inferenceErr.Kind
+}
 
 func bindingRequest() GenerateRequest {
 	return GenerateRequest{Input: GenerateInput{

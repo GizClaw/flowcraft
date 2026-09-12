@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -100,8 +101,10 @@ type WireSpec struct {
 	// Store asks the provider to retain the response server-side. Nil keeps
 	// the driver default (false): FlowCraft replays context itself, and the
 	// OpenAI default (true, retained for at least 30 days) is unnecessary
-	// and surprising.
-	Store *bool `json:"store,omitempty"`
+	// and surprising. The string "omit" leaves the field off the wire
+	// entirely, for compatible endpoints that reject request fields their
+	// schema does not know.
+	Store *StoreSetting `json:"store,omitempty"`
 	// IncludeReasoningPayload sends include: ["reasoning.encrypted_content"]
 	// so reasoning traces round-trip into later context. Nil derives from
 	// ReasoningChannel: true for "summary", false for "text".
@@ -124,6 +127,42 @@ type WireSpec struct {
 	// is "chat". Responses streams always carry usage in their terminal
 	// event and never consult this setting.
 	ChatStreamOptions *ChatStreamOptionsSpec `json:"chat_stream_options,omitempty"`
+}
+
+// StoreSetting is the wire policy for the provider's server-side retention
+// field. It decodes from a JSON boolean (send that value) or the string
+// "omit" (send nothing), so the field can be absent for endpoints whose
+// schema does not know it.
+type StoreSetting struct {
+	// Send reports whether the field rides the request at all.
+	Send bool `json:"send"`
+	// Value is the boolean the request carries when Send is true.
+	Value bool `json:"value"`
+}
+
+// UnmarshalJSON accepts a boolean or the string "omit".
+func (s *StoreSetting) UnmarshalJSON(data []byte) error {
+	var value bool
+	if err := json.Unmarshal(data, &value); err == nil {
+		*s = StoreSetting{Send: true, Value: value}
+		return nil
+	}
+	var mode string
+	if err := json.Unmarshal(data, &mode); err != nil || mode != "omit" {
+		return fmt.Errorf(
+			`wire.store must be a boolean or "omit"`,
+		)
+	}
+	*s = StoreSetting{}
+	return nil
+}
+
+// MarshalJSON renders the declared policy in its compact config form.
+func (s StoreSetting) MarshalJSON() ([]byte, error) {
+	if !s.Send {
+		return json.Marshal("omit")
+	}
+	return json.Marshal(s.Value)
 }
 
 // ChatStreamOptionsSpec is the provider-level lowering policy for Chat

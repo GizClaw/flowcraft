@@ -5,15 +5,10 @@
 // (CapabilitiesPatch, ReasoningPatch) deployments use to redeclare built-in
 // entries.
 //
-// # Status: extraction probe
-//
-// This package is a stand-alone copy of core/inference's model.go and
-// model_patch.go, created to measure the split boundary before any of the
-// original code moves. Nothing imports it yet; core/inference is unchanged.
-// The parity tests in this package pin byte-identical JSON and identical
-// validation behavior against core/inference's declarations, so the eventual
-// swap (aliases in core/inference, or a direct migration) is provably
-// behavior-preserving.
+// This is the only home of that vocabulary: core/inference re-exports it
+// through deprecated aliases (see core/inference/model_alias.go) so existing
+// callers keep compiling, and the execution contract above it declares
+// nothing about models on its own.
 //
 // # Boundary
 //
@@ -32,7 +27,7 @@
 //
 // # Layout
 //
-// One concept per file, mirroring the original single model.go:
+// One concept per file:
 //
 //	operation.go    Operation and its validation
 //	identity.go     ModelID, ModelRef

@@ -8,13 +8,22 @@ import (
 )
 
 // Settings declares the built-in middleware chain. Each entry is
-// optional; absent entries are skipped.
+// optional; absent entries are skipped, with one exception: non-text
+// result parts are bounded even when ResultLimit is absent (see
+// ResultPartBudgetBytes).
 type Settings struct {
 	Recover     *RecoverSettings     `json:"recover,omitempty"`
 	Timeout     *TimeoutSettings     `json:"timeout,omitempty"`
 	Concurrency *ConcurrencySettings `json:"concurrency,omitempty"`
 	Telemetry   *TelemetrySettings   `json:"telemetry,omitempty"`
 	ResultLimit *ResultLimitSettings `json:"result_limit,omitempty"`
+	// ResultPartBudgetBytes caps the encoded size of one result's non-text
+	// parts when ResultLimit declares no text budget. Non-text parts are
+	// bounded by default ([DefaultResultPartBudget]) because a tool result is
+	// replayed in every later turn's context and media has no natural size;
+	// this field moves that bound, and 0 lifts it. It is ignored when
+	// ResultLimit is set, which carries its own part_budget_bytes.
+	ResultPartBudgetBytes *int `json:"result_part_budget_bytes,omitempty"`
 }
 
 type RecoverSettings struct {
@@ -82,6 +91,11 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 			opts = append(opts, WithResultPartBudget(*budget))
 		}
 		mws = append(mws, ResultLimiter(s.ResultLimit.Max, opts...))
+	} else if budget := partBudget(s.ResultPartBudgetBytes); budget > 0 {
+		// Text is unbounded unless the deployment asks for a rune budget, but
+		// media is bounded by default so a tool cannot hand the model an
+		// unbounded context item by returning one.
+		mws = append(mws, ResultPartLimiter(budget))
 	}
 	if s.Timeout != nil && s.Timeout.Default != "" {
 		d, err := time.ParseDuration(s.Timeout.Default)
@@ -95,4 +109,13 @@ func FromSettings(s Settings) ([]tool.Middleware, error) {
 		mws = append(mws, Concurrency(s.Concurrency.Limit))
 	}
 	return mws, nil
+}
+
+// partBudget resolves the non-text byte budget: an explicit value wins, and
+// an absent one keeps the default.
+func partBudget(configured *int) int {
+	if configured == nil {
+		return DefaultResultPartBudget
+	}
+	return *configured
 }

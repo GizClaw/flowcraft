@@ -192,6 +192,126 @@ func TestResultLimiter_InvalidMaxPanics(t *testing.T) {
 	ResultLimiter(0)
 }
 
+// TestResultLimiter_PartsCutKeepsTextBudget pins the shared budget promise: a
+// result whose non-text parts were dropped still carries at most max runes of
+// text, because the marker's runes are reserved rather than added on top.
+func TestResultLimiter_PartsCutKeepsTextBudget(t *testing.T) {
+	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
+	caption := strings.Repeat("c", 30)
+	exec := tool.NewExecutor(catalogWith(tool.FuncTool(
+		message.ToolDefinition{Name: "cap"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			data, err := message.NewJSONContent([]byte(payload))
+			if err != nil {
+				return message.Content{}, err
+			}
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: caption},
+				data.Parts[0],
+			}}, nil
+		},
+	)), ResultLimiter(30, WithResultPartBudget(256)))
+
+	res := exec.Execute(context.Background(), call("cap"))
+	text := res.Content.Text()
+	if got := len([]rune(text)); got > 30 {
+		t.Fatalf("text = %d runes, want at most the 30-rune budget (%q)", got, text)
+	}
+	if !strings.HasSuffix(text, DefaultResultMarker) {
+		t.Fatalf("content = %q, want the truncation marker", text)
+	}
+	for _, part := range res.Content.Parts {
+		if _, ok := part.(message.DataPart); ok {
+			t.Fatal("the oversized data part survived the byte budget")
+		}
+	}
+}
+
+// TestResultLimiter_BothCutsKeepOneMarker pins the case where text and parts
+// are both over budget: the result stays within max runes and carries one
+// marker, not one marker per budget.
+func TestResultLimiter_BothCutsKeepOneMarker(t *testing.T) {
+	payload := `{"blob":"` + strings.Repeat("x", 2048) + `"}`
+	exec := tool.NewExecutor(catalogWith(tool.FuncTool(
+		message.ToolDefinition{Name: "both"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			data, err := message.NewJSONContent([]byte(payload))
+			if err != nil {
+				return message.Content{}, err
+			}
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: strings.Repeat("c", 100)},
+				data.Parts[0],
+			}}, nil
+		},
+	)), ResultLimiter(20, WithResultPartBudget(256)))
+
+	res := exec.Execute(context.Background(), call("both"))
+	text := res.Content.Text()
+	if got := len([]rune(text)); got != 20 {
+		t.Fatalf("text = %d runes (%q), want the full 20-rune budget", got, text)
+	}
+	if got := strings.Count(text, DefaultResultMarker); got != 1 {
+		t.Fatalf("markers = %d in %q, want exactly one", got, text)
+	}
+	if err := res.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+}
+
+// TestResultPartLimiter_BoundsMediaOnly pins the media-only limiter: text
+// passes through untouched, oversized non-text parts are dropped with the
+// marker, and a result within budget is returned as is.
+func TestResultPartLimiter_BoundsMediaOnly(t *testing.T) {
+	mediaTool := tool.FuncTool(message.ToolDefinition{Name: "shot"},
+		func(_ context.Context, _ string) (message.Content, error) {
+			data, err := message.NewJSONContent(
+				[]byte(`{"blob":"` + strings.Repeat("x", 512) + `"}`),
+			)
+			if err != nil {
+				return message.Content{}, err
+			}
+			return message.Content{Parts: []message.Part{
+				message.TextPart{Text: strings.Repeat("c", 4096)},
+				data.Parts[0],
+			}}, nil
+		})
+
+	exec := tool.NewExecutor(catalogWith(mediaTool), ResultPartLimiter(256))
+	res := exec.Execute(context.Background(), call("shot"))
+	if len(res.Content.Parts) != 2 {
+		t.Fatalf("parts = %d, want the text part plus the marker", len(res.Content.Parts))
+	}
+	text, ok := res.Content.Parts[0].(message.TextPart)
+	if !ok {
+		t.Fatalf("part 0 = %T, want the untouched text part", res.Content.Parts[0])
+	}
+	if len([]rune(text.Text)) != 4096 {
+		t.Fatalf("text was shortened to %d runes, want it untouched", len([]rune(text.Text)))
+	}
+	if marker, ok := res.Content.Parts[1].(message.TextPart); !ok || marker.Text != DefaultResultMarker {
+		t.Fatalf("part 1 = %#v, want the truncation marker", res.Content.Parts[1])
+	}
+
+	within := tool.NewExecutor(catalogWith(dataTool("data", `{"answer":42}`)), ResultPartLimiter(256))
+	parts := within.Execute(context.Background(), call("data")).Content.Parts
+	if len(parts) != 1 {
+		t.Fatalf("parts = %d, want the untouched data part", len(parts))
+	}
+	if _, ok := parts[0].(message.DataPart); !ok {
+		t.Fatalf("part = %T, want message.DataPart", parts[0])
+	}
+}
+
+func TestResultPartLimiter_InvalidBudgetPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic for non-positive budget")
+		}
+	}()
+	ResultPartLimiter(0)
+}
+
 // dataTool returns a tool whose result is one structured data part
 // carrying payload.
 func dataTool(name, payload string) tool.Tool {

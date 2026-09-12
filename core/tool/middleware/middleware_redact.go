@@ -125,9 +125,13 @@ func (r *redactor) Result(res message.ToolResult) message.ToolResult {
 }
 
 // Content rewrites every text-bearing part through the rules: text
-// parts, file references, structured data, and URL-backed media
-// sources. Inline media holds encoded bytes, which rewriting in place
-// would corrupt, so it passes through untouched.
+// parts, file references, structured data, tool-call arguments, nested
+// tool results, reasoning text, and URL-backed media sources. Inline
+// media holds encoded bytes, which rewriting in place would corrupt, so
+// it passes through untouched; so do the opaque provider payloads that
+// only round-trip verbatim (a reasoning signature, a trace id), because
+// rewriting them breaks the provider contract without hiding anything a
+// model reads.
 func (r *redactor) Content(content message.Content) message.Content {
 	if len(r.rules) == 0 || len(content.Parts) == 0 {
 		return content
@@ -144,11 +148,45 @@ func (r *redactor) Content(content message.Content) message.Content {
 			value.URI = r.String(value.URI)
 			value.Name = r.String(value.Name)
 			out.Parts[i] = value
+		case message.ToolCallPart:
+			out.Parts[i] = r.toolCallPart(value)
+		case message.ToolResultPart:
+			value.Result.Content = r.Content(value.Result.Content)
+			out.Parts[i] = value
+		case message.ReasoningPart:
+			value.Text = r.String(value.Text)
+			out.Parts[i] = value
 		case message.ImagePart, message.AudioPart, message.VideoPart:
 			out.Parts[i] = r.mediaPart(value)
 		}
 	}
 	return out
+}
+
+// toolCallPart rewrites a tool call's argument JSON. Arguments are a JSON
+// object by contract, so a replacement that breaks the structure cannot be
+// forwarded as a call; like [redactor.dataPart] it degrades to a text part
+// rather than resurrecting the original secret. Name and id are identifiers
+// the call is addressed by, so they are left alone.
+func (r *redactor) toolCallPart(part message.ToolCallPart) message.Part {
+	redacted := r.Bytes(part.Call.Arguments)
+	if bytes.Equal(redacted, part.Call.Arguments) {
+		return part
+	}
+	if !isJSONObject(redacted) {
+		return message.TextPart{Text: string(redacted)}
+	}
+	call := part.Call
+	call.Arguments = json.RawMessage(redacted)
+	part.Call = call
+	return part
+}
+
+// isJSONObject reports whether raw is a JSON object, the only argument shape
+// [message.ToolCall] accepts.
+func isJSONObject(raw []byte) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
 }
 
 // dataPart rewrites the JSON payload of a data part. A replacement that

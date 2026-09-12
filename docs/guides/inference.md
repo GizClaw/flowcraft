@@ -72,9 +72,17 @@ Provider implementations are registered by the application from provider
 driver modules:
 
 ```go
-reg.MustRegister(openai.NewFactory())
+reg.MustRegister(openai.Factory())
 reg.MustRegister(inference.Factory{})
 ```
+
+The provider `spec` is layered — `endpoint` (where the API is and how the key
+rides), `wire` (which dialect the endpoint speaks), `catalog` (which model
+namespace it starts from) — and `core/inference` treats every provider
+through the same declaration vocabulary. The full key reference, including
+`wire.store` (`false` by default, or `"omit"` to keep the retention field off
+the request entirely for endpoints whose schema does not know it), lives in
+the [flowcraft-config provider reference](../../skills/flowcraft-config/references/resources.md).
 
 ## Provider lifecycle
 

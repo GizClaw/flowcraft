@@ -21,7 +21,7 @@ spec:
     scheme: header      # "bearer" (default), "header", or "none" (no credential)
     header: Api-Key
   wire:                 # dialect this endpoint speaks
-    store: false        # default false: responses are not retained server-side
+    store: false        # default false; "omit" sends no store field at all
     reasoning_channel: summary   # "summary" (default) or "text"
     include_reasoning_payload: true
     reasoning_summary: detailed  # optional "auto"/"concise"/"detailed"; opt in to readable traces
@@ -266,7 +266,14 @@ and `result_limit.part_budget_bytes` caps the encoded size of its non-text
 parts (images, audio, video, file references, structured data); an absent
 budget means 1 MiB and `0` lifts the cap. Parts over budget are dropped and
 the truncation marker (`result_limit.marker`, default `…[result truncated]`)
-is appended.
+is appended, and a result that was cut never carries more than
+`result_limit.max` runes of text.
+
+Non-text parts are bounded by default even without a `result_limit`, because a
+tool result rides every later turn's context and inline media has no natural
+size. `result_part_budget_bytes` (same level as the middleware entries) moves
+that default — absent means 1 MiB, `0` lifts it — and is ignored when
+`result_limit.part_budget_bytes` is set.
 
 MCP servers attach as a `tool.Source/mcp` resource; attach is best-effort
 with background reconnection, and `required: true` marks a server the host

@@ -57,7 +57,13 @@ func newResponsesRequest(
 	// The OpenAI default is store: true, which retains the response for at
 	// least 30 days. FlowCraft replays context itself, so the driver states
 	// the decision instead of inheriting it.
-	request.params.Store = param.NewOpt(entry.dialect.store)
+	switch entry.dialect.store {
+	case storeEnabled:
+		request.params.Store = param.NewOpt(true)
+	case storeDisabled:
+		request.params.Store = param.NewOpt(false)
+	case storeOmitted:
+	}
 	// Summaries are opt-in: without this the provider returns the encrypted
 	// payload and no readable trace.
 	if summary := entry.dialect.reasoningSummary; summary != "" {

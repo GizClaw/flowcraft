@@ -44,13 +44,28 @@ const (
 	truncationDisabled truncationMode = "disabled"
 )
 
+// storePolicy is the wire decision for the provider's server-side retention
+// field. It is an explicit three-way value rather than a *bool so that the
+// zero dialect keeps the pre-existing behavior (send false): omitting the
+// field has to be asked for, never inherited from an unbuilt entry.
+type storePolicy uint8
+
+const (
+	// storeDisabled sends store: false, the driver default.
+	storeDisabled storePolicy = iota
+	// storeEnabled sends store: true.
+	storeEnabled
+	// storeOmitted leaves the field off the request entirely.
+	storeOmitted
+)
+
 // dialect is one provider instance's wire policy. Every catalog entry carries
 // the same value, stamped once by mergedCatalog: it is deployment
 // configuration, not a model fact, and the compiler reads it here instead of
 // reaching back into the Spec.
 type dialect struct {
 	api                     apiMode
-	store                   bool
+	store                   storePolicy
 	omitReasoningPayload    bool
 	reasoningChannel        reasoningChannel
 	reasoningSummary        reasoningSummaryPolicy
@@ -115,12 +130,20 @@ func (s Spec) apiMode() apiMode {
 
 // store reports whether responses are retained server-side. The driver
 // default is false: FlowCraft replays context itself, so server-side storage
-// is neither needed nor desirable.
-func (s Spec) store() bool {
+// is neither needed nor desirable. "omit" means the field is left off the
+// wire entirely, for endpoints that reject request fields their schema does
+// not know.
+func (s Spec) store() storePolicy {
 	if s.Wire.Store == nil {
-		return false
+		return storeDisabled
 	}
-	return *s.Wire.Store
+	if !s.Wire.Store.Send {
+		return storeOmitted
+	}
+	if s.Wire.Store.Value {
+		return storeEnabled
+	}
+	return storeDisabled
 }
 
 // reasoningChannel returns the normalized reasoning round-trip shape.
