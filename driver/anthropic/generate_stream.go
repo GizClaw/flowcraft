@@ -44,10 +44,10 @@ func transportGenerateStream(
 		stream := client.Messages.NewStreaming(ctx, params)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", modelName, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", modelName, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", modelName, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", modelName, nil, "")
 		return &messagesStream{
 			stream: stream,
 			parts:  make(map[int64]*streamPart),
@@ -73,7 +73,7 @@ func (s *messagesStream) Next(ctx context.Context) (streamRaw, error) {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
 				classified := classifyError(err)
-				logInferenceStream(ctx, "generate", "", classified, "")
+				inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 				return streamRaw{}, classified
 			}
 			return streamRaw{}, io.EOF
@@ -279,7 +279,7 @@ func decodeGenerateStream(
 			FinishReason: raw.finish,
 			ResponseID:   raw.responseID,
 		}
-		logInferenceStreamEnd(ctx, "generate", raw.responseID)
+		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

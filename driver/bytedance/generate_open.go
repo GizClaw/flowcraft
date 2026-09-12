@@ -2,6 +2,7 @@ package bytedance
 
 import (
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // openGenerate binds the Responses API pipeline for one generate model. The
@@ -11,7 +12,7 @@ func openGenerate(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
 	ark, err := cls.requireArk(profile)
@@ -20,9 +21,9 @@ func openGenerate(
 	}
 	return inference.BindGenerateOperations(
 		compileGenerate(cls.endpoint(id.Name), entry),
-		transportGenerate(ark),
+		transportGenerate(ark, cls.arkRequestOptions),
 		decodeGenerate,
-		transportGenerateStream(ark),
+		transportGenerateStream(ark, cls.arkRequestOptions),
 		decodeGenerateStream,
 	)
 }

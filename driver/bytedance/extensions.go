@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
 
 // Provider-specific settings ride on canonical requests as typed extensions
@@ -16,18 +17,19 @@ import (
 //
 // Field names are flat because extension field names may not contain dots.
 
-// driverID namespaces every extension this package defines. The runtime
-// qualifies extension fields with ProviderID and rejects extensions whose
-// provider does not match the resolved model's deployment provider, so a
-// deployment that names its provider differently must set the Provider field
-// on the options structs it attaches.
-const driverID = "bytedance"
-
 const (
 	extensionGenerate = "generate_options"
 	extensionImage    = "image_options"
 	extensionVideo    = "video_options"
 )
+
+// providerID is this driver's provider identity: it namespaces every extension
+// the package defines, labels the compile errors the ledger builds, and tags
+// telemetry. The runtime qualifies extension fields with ProviderID and
+// rejects extensions whose provider does not match the resolved model's
+// deployment provider, so a deployment that names its provider differently
+// must set the Provider field on the options structs it attaches.
+const providerID = "bytedance"
 
 // extensionProvider resolves the deployment provider ID an extension targets,
 // defaulting to the driver name.
@@ -35,15 +37,7 @@ func extensionProvider(provider string) string {
 	if provider != "" {
 		return provider
 	}
-	return driverID
-}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
+	return providerID
 }
 
 // ---------------------------------------------------------------------------
@@ -65,10 +59,20 @@ type GenerateOptions struct {
 	Store *bool `json:"store,omitempty"`
 	// PreviousResponseID chains this request to a stored response.
 	PreviousResponseID string `json:"previous_response_id,omitempty"`
+	// ExpireAt sets when a stored response expires, in unix seconds. It is
+	// meaningful only together with Store: true.
+	ExpireAt *int64 `json:"expire_at,omitempty"`
 	// ParallelToolCalls allows the model to emit concurrent tool calls.
 	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 	// MaxToolCalls bounds the number of tool calls in one response.
 	MaxToolCalls *int64 `json:"max_tool_calls,omitempty"`
+	// PromptCacheKey names the conversation prefix this request extends, so an
+	// endpoint with explicit cache routing targets the right cache.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// SafetyIdentifier is a stable, privacy-preserving identifier for the end
+	// user, used by the provider for abuse monitoring. Send a hash, not an
+	// email or account id.
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 	// WebSearch attaches the provider's web search tool; the model decides
 	// when to search.
 	WebSearch *GenerateWebSearch `json:"web_search,omitempty"`
@@ -121,11 +125,20 @@ func (o GenerateOptions) ActiveFields() []inference.ExtensionField {
 	if o.PreviousResponseID != "" {
 		fields = append(fields, "previous_response_id")
 	}
+	if o.ExpireAt != nil {
+		fields = append(fields, "expire_at")
+	}
 	if o.ParallelToolCalls != nil {
 		fields = append(fields, "parallel_tool_calls")
 	}
 	if o.MaxToolCalls != nil {
 		fields = append(fields, "max_tool_calls")
+	}
+	if o.PromptCacheKey != "" {
+		fields = append(fields, "prompt_cache_key")
+	}
+	if o.SafetyIdentifier != "" {
+		fields = append(fields, "safety_identifier")
 	}
 	if o.WebSearch != nil {
 		fields = append(fields, "web_search")
@@ -164,17 +177,17 @@ func (o GenerateOptions) Validate() error {
 }
 
 func (o GenerateOptions) Clone() inference.Extension {
-	o.Store = clonePointer(o.Store)
-	o.ParallelToolCalls = clonePointer(o.ParallelToolCalls)
-	o.MaxToolCalls = clonePointer(o.MaxToolCalls)
+	o.Store = ptr.Clone(o.Store)
+	o.ParallelToolCalls = ptr.Clone(o.ParallelToolCalls)
+	o.MaxToolCalls = ptr.Clone(o.MaxToolCalls)
 	if o.Caching != nil {
 		caching := *o.Caching
 		o.Caching = &caching
 	}
 	if o.WebSearch != nil {
 		search := *o.WebSearch
-		search.Limit = clonePointer(search.Limit)
-		search.MaxKeyword = clonePointer(search.MaxKeyword)
+		search.Limit = ptr.Clone(search.Limit)
+		search.MaxKeyword = ptr.Clone(search.MaxKeyword)
 		search.Sources = append([]string(nil), search.Sources...)
 		o.WebSearch = &search
 	}
@@ -316,12 +329,12 @@ func (o ImageOptions) Validate() error {
 }
 
 func (o ImageOptions) Clone() inference.Extension {
-	o.GuidanceScale = clonePointer(o.GuidanceScale)
-	o.Watermark = clonePointer(o.Watermark)
-	o.Sequential = clonePointer(o.Sequential)
-	o.SequentialMaxImages = clonePointer(o.SequentialMaxImages)
-	o.WebSearch = clonePointer(o.WebSearch)
-	o.LayerDecomposition = clonePointer(o.LayerDecomposition)
+	o.GuidanceScale = ptr.Clone(o.GuidanceScale)
+	o.Watermark = ptr.Clone(o.Watermark)
+	o.Sequential = ptr.Clone(o.Sequential)
+	o.SequentialMaxImages = ptr.Clone(o.SequentialMaxImages)
+	o.WebSearch = ptr.Clone(o.WebSearch)
+	o.LayerDecomposition = ptr.Clone(o.LayerDecomposition)
 	if o.OptimizePrompt != nil {
 		optimize := *o.OptimizePrompt
 		o.OptimizePrompt = &optimize
@@ -445,59 +458,14 @@ func (o VideoOptions) Validate() error {
 }
 
 func (o VideoOptions) Clone() inference.Extension {
-	o.CameraFixed = clonePointer(o.CameraFixed)
-	o.GenerateAudio = clonePointer(o.GenerateAudio)
-	o.ExecutionExpiresAfter = clonePointer(o.ExecutionExpiresAfter)
-	o.Priority = clonePointer(o.Priority)
-	o.OutputFormat = clonePointer(o.OutputFormat)
-	o.OmniReferenceTaskType = clonePointer(o.OmniReferenceTaskType)
-	o.WebSearch = clonePointer(o.WebSearch)
-	o.CallbackURL = clonePointer(o.CallbackURL)
-	o.SafetyIdentifier = clonePointer(o.SafetyIdentifier)
+	o.CameraFixed = ptr.Clone(o.CameraFixed)
+	o.GenerateAudio = ptr.Clone(o.GenerateAudio)
+	o.ExecutionExpiresAfter = ptr.Clone(o.ExecutionExpiresAfter)
+	o.Priority = ptr.Clone(o.Priority)
+	o.OutputFormat = ptr.Clone(o.OutputFormat)
+	o.OmniReferenceTaskType = ptr.Clone(o.OmniReferenceTaskType)
+	o.WebSearch = ptr.Clone(o.WebSearch)
+	o.CallbackURL = ptr.Clone(o.CallbackURL)
+	o.SafetyIdentifier = ptr.Clone(o.SafetyIdentifier)
 	return o
-}
-
-// ---------------------------------------------------------------------------
-// Consumption helper.
-// ---------------------------------------------------------------------------
-
-// operationExtensions splits request extensions into the options struct
-// applying to one operation and every other extension present. The runtime
-// has already rejected foreign providers and duplicate identities, so at most
-// one T can appear; the caller rejects the remaining extensions' fields.
-func operationExtensions[T inference.Extension](
-	extensions inference.Extensions,
-) (T, []inference.Extension) {
-	var options T
-	var other []inference.Extension
-	for _, extension := range extensions {
-		if extension == nil {
-			continue
-		}
-		if typed, ok := extension.(T); ok {
-			options = typed
-			continue
-		}
-		other = append(other, extension)
-	}
-	return options, other
-}
-
-// rejectOtherExtensions records a rejection for every active field of
-// extensions that do not apply to the operation being compiled.
-func rejectOtherExtensions(
-	operation string,
-	other []inference.Extension,
-	ledger *ledger,
-) {
-	for _, extension := range other {
-		reason := fmt.Sprintf(
-			"extension %q does not apply to %s",
-			extension.ExtensionID(),
-			operation,
-		)
-		for _, field := range extension.ActiveFields() {
-			ledger.reject(field.Qualify(extension), reason)
-		}
-	}
 }

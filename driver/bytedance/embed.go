@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/volcengine/volcengine-go-sdk/service/arkruntime"
@@ -38,34 +39,27 @@ type embedRaw struct {
 	inputTokens int64
 }
 
-var embedPartFields = map[message.PartKind]inference.FieldID{
-	message.PartText:       inference.FieldEmbedItemText,
-	message.PartImage:      inference.FieldEmbedItemImage,
-	message.PartAudio:      inference.FieldEmbedItemAudio,
-	message.PartVideo:      inference.FieldEmbedItemVideo,
-	message.PartFile:       inference.FieldEmbedItemFile,
-	message.PartData:       inference.FieldEmbedItemData,
-	message.PartToolCall:   inference.FieldEmbedItemToolCall,
-	message.PartToolResult: inference.FieldEmbedItemToolResult,
-}
-
 func compileEmbed(
 	endpoint string,
 	entry catalogEntry,
 ) inference.Compiler[inference.EmbedRequest, embedWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.EmbedRequest,
 	) (inference.Compiled[embedWire], error) {
-		ledger := newLedger(inference.OperationEmbed, request.ActiveFields())
+		ledger := inference.NewLedger(
+			model.OperationEmbed,
+			providerID,
+			request.ActiveFields(),
+		)
 		wire := embedWire{
 			model:      endpoint,
 			multimodal: slices.Contains(entry.capabilities.Inputs, message.PartImage),
 			dimensions: request.Dimensions,
 		}
 		if request.Dimensions != nil && !entry.capabilities.CustomEmbedDimensions {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldEmbedDimensions,
 				"model does not accept custom dimensions",
 			)
@@ -96,7 +90,7 @@ func compileEmbed(
 					text.WriteString(string(value.Value))
 				case message.ImagePart:
 					if !slices.Contains(entry.capabilities.Inputs, message.PartImage) {
-						ledger.reject(
+						ledger.Reject(
 							inference.FieldEmbedItemImage,
 							"model embeds text only",
 						)
@@ -110,8 +104,8 @@ func compileEmbed(
 				case message.AudioPart, message.VideoPart,
 					message.FilePart,
 					message.ToolCallPart, message.ToolResultPart:
-					ledger.reject(
-						embedPartFields[part.Kind()],
+					ledger.Reject(
+						embedPartField(part.Kind()),
 						fmt.Sprintf("%s parts cannot be embedded", part.Kind()),
 					)
 				}
@@ -127,14 +121,14 @@ func compileEmbed(
 			// The text endpoint embeds one string per item; a multi-part item
 			// cannot be represented without silently concatenating parts.
 			if textParts > 1 || len(inputs) > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldEmbedItemMultiPart,
 					"text embedding accepts one text part per item",
 				)
 				continue
 			}
 			if inputs[0].kind != "text" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldEmbedItemImage,
 					"model embeds text only",
 				)
@@ -143,18 +137,18 @@ func compileEmbed(
 			wire.texts = append(wire.texts, inputs[0].text)
 		}
 		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "bytedance embed supports no extensions")
+			ledger.Reject(field, "bytedance embed supports no extensions")
 		}
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[embedWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[embedWire]{Report: report}, ledger.Err()
 		}
 		if wire.multimodal && len(wire.items) != len(request.Items) {
 			// Cannot happen without a rejection above; guard the invariant.
 			return inference.Compiled[embedWire]{Report: report}, inference.NewError(
 				inference.UnsupportedFeature,
-				inference.OperationEmbed,
+				model.OperationEmbed,
 				inference.FieldEmbedItems,
 				fmt.Errorf("bytedance: embedding item lost during compile"),
 			)
@@ -165,20 +159,21 @@ func compileEmbed(
 
 func transportEmbed(
 	client *arkruntime.Client,
+	options []arkruntime.RequestOption,
 ) inference.Transport[embedWire, embedRaw] {
 	return func(ctx context.Context, wire embedWire) (embedRaw, error) {
 		var raw embedRaw
 		var err error
 		if wire.multimodal {
-			raw, err = transportEmbedMultimodal(ctx, client, wire)
+			raw, err = transportEmbedMultimodal(ctx, client, wire, options)
 		} else {
-			raw, err = transportEmbedText(ctx, client, wire)
+			raw, err = transportEmbedText(ctx, client, wire, options)
 		}
 		if err != nil {
-			logInferenceCall(ctx, "embed", wire.model, err, "", "")
+			inference.LogProviderCall(ctx, providerID, "embed", wire.model, err, "", "")
 			return raw, err
 		}
-		logInferenceCall(ctx, "embed", wire.model, nil, "", "")
+		inference.LogProviderCall(ctx, providerID, "embed", wire.model, nil, "", "")
 		return raw, nil
 	}
 }
@@ -187,6 +182,7 @@ func transportEmbedText(
 	ctx context.Context,
 	client *arkruntime.Client,
 	wire embedWire,
+	options []arkruntime.RequestOption,
 ) (embedRaw, error) {
 	request := arkmodel.EmbeddingRequestStrings{
 		Input:          wire.texts,
@@ -196,7 +192,7 @@ func transportEmbedText(
 	if wire.dimensions != nil {
 		request.Dimensions = *wire.dimensions
 	}
-	response, err := client.CreateEmbeddings(ctx, request)
+	response, err := client.CreateEmbeddings(ctx, request, options...)
 	if err != nil {
 		return embedRaw{}, classifyError(err)
 	}
@@ -219,6 +215,7 @@ func transportEmbedMultimodal(
 	ctx context.Context,
 	client *arkruntime.Client,
 	wire embedWire,
+	options []arkruntime.RequestOption,
 ) (embedRaw, error) {
 	// The multimodal endpoint fuses one item's inputs into a single vector
 	// per call, so items are embedded one request at a time.
@@ -240,7 +237,7 @@ func transportEmbedMultimodal(
 			}
 			request.Input = append(request.Input, entry)
 		}
-		response, err := client.CreateMultiModalEmbeddings(ctx, request)
+		response, err := client.CreateMultiModalEmbeddings(ctx, request, options...)
 		if err != nil {
 			return embedRaw{}, classifyError(err)
 		}
@@ -277,7 +274,7 @@ func openEmbed(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.EmbedDriver, error) {
 	ark, err := cls.requireArk(profile)
@@ -286,7 +283,7 @@ func openEmbed(
 	}
 	return inference.BindEmbed(
 		compileEmbed(cls.endpoint(id.Name), entry),
-		transportEmbed(ark),
+		transportEmbed(ark, cls.arkRequestOptions),
 		decodeEmbed,
 	)
 }

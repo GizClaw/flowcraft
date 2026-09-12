@@ -81,8 +81,10 @@ Provider 凭证读取自 `inference.yaml` secret 解析器(`resolver: env`)声�
 的 provider —— 走 OpenAI 内置目录的 `gpt-5.6-luna`(`OPENAI_API_KEY`),
 走智谱 OpenAI 兼容端点的 `glm-5.3-flash`(`ZHIPU_API_KEY`),以及走 MiniMax
 Anthropic 兼容 Messages 端点、由 anthropic driver 以声明式目录提供的
-`MiniMax-M3`(`MINIMAX_API_KEY`);它们用的是惰性引用,只有在图里真的路由过去
-时缺少 key 才会报错。完全没有凭证时应用会给出明确报错。
+`MiniMax-M3`(`MINIMAX_API_KEY`),以及走 bytedance driver 的 Ark Responses API、
+由 profile 绑定账号内带日期部署地址的 `doubao-seed-2-0-lite`(`ARK_API_KEY`);
+它们用的是惰性引用,只有在图里真的路由过去时缺少 key 才会报错。完全没有凭证
+时应用会给出明确报错。
 
 ## TUI
 

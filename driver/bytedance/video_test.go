@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -37,17 +38,17 @@ func compileVideoRequest(parts []message.Part, options VideoOptions) inference.G
 
 func compileVideoWire(
 	t *testing.T,
-	model string,
+	name string,
 	request inference.GenerateRequest,
 ) (videoWire, inference.CompileReport, error) {
 	t.Helper()
-	entry, ok := catalog[model]
+	entry, ok := catalog[name]
 	if !ok {
-		t.Fatalf("catalog model %q missing", model)
+		t.Fatalf("catalog model %q missing", name)
 	}
 	compiled, err := compileVideo("ep-test", entry)(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: model}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: name}},
 		request,
 		inference.GenerateExecutionUnary,
 	)
@@ -553,7 +554,7 @@ func TestTransportVideoExpired(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+	_, err := transportVideo(client, time.Millisecond, nil)(context.Background(), videoWire{
 		model:  "ep-test",
 		prompt: "a cinematic scene",
 	})
@@ -590,7 +591,7 @@ func TestTransportVideoSucceeded(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	raw, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+	raw, err := transportVideo(client, time.Millisecond, nil)(context.Background(), videoWire{
 		model:  "ep-test",
 		prompt: "a cinematic scene",
 	})
@@ -863,7 +864,7 @@ func TestTransportVideoCarriesReferenceInputs(t *testing.T) {
 		arkruntime.WithHTTPClient(server.Client()),
 		arkruntime.WithRetryTimes(0),
 	)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+	_, err := transportVideo(client, time.Millisecond, nil)(context.Background(), videoWire{
 		model:           "ep-test",
 		prompt:          "reference please",
 		firstFrame:      "https://example.com/first.png",
@@ -918,7 +919,7 @@ func TestTransportVideoCarriesExtendedFields(t *testing.T) {
 		arkruntime.WithRetryTimes(0),
 	)
 	priority := int32(5)
-	_, err := transportVideo(client, time.Millisecond)(context.Background(), videoWire{
+	_, err := transportVideo(client, time.Millisecond, nil)(context.Background(), videoWire{
 		model:                 "ep-test",
 		prompt:                "a cinematic scene",
 		priority:              &priority,

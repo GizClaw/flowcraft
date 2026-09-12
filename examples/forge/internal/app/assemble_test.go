@@ -82,10 +82,16 @@ func assertProviders(t *testing.T, a *App) {
 	if got := strings.Join(exposed["minimax"], ","); got != "MiniMax-M3" {
 		t.Fatalf("minimax models = %q", got)
 	}
+	// ByteDance keeps its own driver and catalog; the scenario binds the
+	// account's dated Ark deployment address in the profile.
+	if !contains(exposed["bytedance"], "doubao-seed-2-0-lite") {
+		t.Fatalf("bytedance models = %v, want doubao-seed-2-0-lite", exposed["bytedance"])
+	}
 	// The TUI builds its /model menu from Models(); it must offer exactly the
 	// selectable text targets, with automatic routing left to the caller.
 	models := a.Models()
 	for _, want := range []string{
+		"bytedance/doubao-seed-2-0-lite",
 		"deepseek/deepseek-flash",
 		"glm/glm-5.3-flash",
 		"minimax/MiniMax-M3",

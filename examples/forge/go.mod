@@ -24,6 +24,7 @@ require (
 
 require (
 	github.com/GizClaw/flowcraft/driver/anthropic v0.2.5
+	github.com/GizClaw/flowcraft/driver/bytedance v0.2.5
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect

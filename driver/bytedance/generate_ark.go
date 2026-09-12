@@ -19,129 +19,153 @@ import (
 // field the compiler set has exactly one protobuf destination.
 // ---------------------------------------------------------------------------
 
-func wireToArk(wire generateWire) *arkresponses.ResponsesRequest {
-	list := &arkresponses.InputItemList{}
-	for _, item := range wire.items {
-		switch item.kind {
-		case wireItemMessage:
-			list.ListValue = append(list.ListValue, &arkresponses.InputItem{
-				Union: &arkresponses.InputItem_EasyMessage{
-					EasyMessage: &arkresponses.ItemEasyMessage{
-						Type:    arkresponses.ItemType_message.Enum(),
-						Role:    arkMessageRole(item.role),
-						Content: arkMessageContent(item.content),
-					},
-				},
-			})
-		case wireItemToolCall:
-			list.ListValue = append(list.ListValue, &arkresponses.InputItem{
-				Union: &arkresponses.InputItem_FunctionToolCall{
-					FunctionToolCall: &arkresponses.ItemFunctionToolCall{
-						Type:      arkresponses.ItemType_function_call,
-						CallId:    item.callID,
-						Name:      item.name,
-						Arguments: string(item.args),
-					},
-				},
-			})
-		case wireItemToolResult:
-			list.ListValue = append(list.ListValue, &arkresponses.InputItem{
-				Union: &arkresponses.InputItem_FunctionToolCallOutput{
-					FunctionToolCallOutput: &arkresponses.ItemFunctionToolCallOutput{
-						Type:   arkresponses.ItemType_function_call_output,
-						CallId: item.callID,
-						Output: item.output,
-					},
-				},
-			})
+// The constructors below are the only place the compiler speaks ark's
+// protobuf unions: each owns one wire shape and the compile loop reads as what
+// the part means.
+
+// appendInputItem adds one input item, creating the list on first use.
+func appendInputItem(
+	ark *arkresponses.ResponsesRequest,
+	item *arkresponses.InputItem,
+) {
+	if ark.Input == nil || ark.Input.GetListValue() == nil {
+		ark.Input = &arkresponses.ResponsesInput{
+			Union: &arkresponses.ResponsesInput_ListValue{
+				ListValue: &arkresponses.InputItemList{},
+			},
 		}
 	}
+	list := ark.Input.GetListValue()
+	list.ListValue = append(list.ListValue, item)
+}
 
-	request := &arkresponses.ResponsesRequest{
-		Input: &arkresponses.ResponsesInput{
-			Union: &arkresponses.ResponsesInput_ListValue{ListValue: list},
+func arkMessageItem(
+	role string,
+	content []*arkresponses.ContentItem,
+) *arkresponses.InputItem {
+	return &arkresponses.InputItem{
+		Union: &arkresponses.InputItem_EasyMessage{
+			EasyMessage: &arkresponses.ItemEasyMessage{
+				Type: arkresponses.ItemType_message.Enum(),
+				Role: arkMessageRole(role),
+				Content: &arkresponses.MessageContent{
+					Union: &arkresponses.MessageContent_ListValue{
+						ListValue: &arkresponses.ContentItemList{ListValue: content},
+					},
+				},
+			},
 		},
-		Model:           wire.model,
-		MaxOutputTokens: wire.maxTokens,
-		Temperature:     wire.temperature,
-		TopP:            wire.topP,
 	}
-	if wire.instructions != "" {
-		request.Instructions = &wire.instructions
+}
+
+func arkContentText(text string) *arkresponses.ContentItem {
+	return &arkresponses.ContentItem{
+		Union: &arkresponses.ContentItem_Text{
+			Text: &arkresponses.ContentItemText{
+				Type: arkresponses.ContentItemType_input_text,
+				Text: text,
+			},
+		},
 	}
-	if wire.stream {
-		stream := true
-		request.Stream = &stream
+}
+
+func arkContentImage(uri string) *arkresponses.ContentItem {
+	return &arkresponses.ContentItem{
+		Union: &arkresponses.ContentItem_Image{
+			Image: &arkresponses.ContentItemImage{
+				Type:     arkresponses.ContentItemType_input_image,
+				ImageUrl: &uri,
+			},
+		},
 	}
-	if wire.textFormat != nil {
-		request.Text = &arkresponses.ResponsesText{Format: arkTextFormat(wire.textFormat)}
+}
+
+func arkContentVideo(uri string) *arkresponses.ContentItem {
+	return &arkresponses.ContentItem{
+		Union: &arkresponses.ContentItem_Video{
+			Video: &arkresponses.ContentItemVideo{
+				Type:     arkresponses.ContentItemType_input_video,
+				VideoUrl: uri,
+			},
+		},
 	}
-	// Thinking: an explicit canonical switch wins; otherwise thinking follows
-	// the reasoning effort. Neither set leaves the provider default in place.
+}
+
+func arkContentAudio(uri string) *arkresponses.ContentItem {
+	return &arkresponses.ContentItem{
+		Union: &arkresponses.ContentItem_Audio{
+			Audio: &arkresponses.ContentItemAudio{
+				Type:     arkresponses.ContentItemType_input_audio,
+				AudioUrl: uri,
+			},
+		},
+	}
+}
+
+func arkToolCallItem(callID, name string, args []byte) *arkresponses.InputItem {
+	return &arkresponses.InputItem{
+		Union: &arkresponses.InputItem_FunctionToolCall{
+			FunctionToolCall: &arkresponses.ItemFunctionToolCall{
+				Type:      arkresponses.ItemType_function_call,
+				CallId:    callID,
+				Name:      name,
+				Arguments: string(bytesClone(args)),
+			},
+		},
+	}
+}
+
+func arkToolResultItem(callID, output string) *arkresponses.InputItem {
+	return &arkresponses.InputItem{
+		Union: &arkresponses.InputItem_FunctionToolCallOutput{
+			FunctionToolCallOutput: &arkresponses.ItemFunctionToolCallOutput{
+				Type:   arkresponses.ItemType_function_call_output,
+				CallId: callID,
+				Output: output,
+			},
+		},
+	}
+}
+
+// arkTool lowers one canonical tool definition.
+func arkTool(definition message.ToolDefinition) *arkresponses.ResponsesTool {
+	tool := &arkresponses.ToolFunction{
+		Type:       arkresponses.ToolType_function,
+		Name:       definition.Name,
+		Parameters: &arkresponses.Bytes{Value: bytesClone(definition.InputSchema)},
+	}
+	if definition.Description != "" {
+		description := definition.Description
+		tool.Description = &description
+	}
+	return &arkresponses.ResponsesTool{
+		Union: &arkresponses.ResponsesTool_ToolFunction{ToolFunction: tool},
+	}
+}
+
+// setArkThinking applies one reasoning decision: an explicit canonical switch
+// wins, otherwise thinking follows the effort level. Neither set leaves the
+// provider default in place.
+func setArkThinking(
+	ark *arkresponses.ResponsesRequest,
+	enabled *bool,
+	effort string,
+) {
 	switch {
-	case wire.thinking != nil && !*wire.thinking:
-		request.Thinking = &arkresponses.ResponsesThinking{
+	case enabled != nil && !*enabled:
+		ark.Thinking = &arkresponses.ResponsesThinking{
 			Type: arkresponses.ThinkingType_disabled.Enum(),
 		}
-	case wire.reasoning != nil || (wire.thinking != nil && *wire.thinking):
-		request.Thinking = &arkresponses.ResponsesThinking{
+	case effort != "" || (enabled != nil && *enabled):
+		ark.Thinking = &arkresponses.ResponsesThinking{
 			Type: arkresponses.ThinkingType_enabled.Enum(),
 		}
-		if wire.reasoning != nil {
-			request.Reasoning = &arkresponses.ResponsesReasoning{
-				Effort: arkReasoningEffort(wire.reasoning.effort),
+		if effort != "" {
+			ark.Reasoning = &arkresponses.ResponsesReasoning{
+				Effort: arkReasoningEffort(effort),
 			}
 		}
 	}
-	if wire.serviceTier != "" {
-		request.ServiceTier = arkServiceTier(wire.serviceTier)
-	}
-	if wire.caching != nil {
-		cacheType := arkresponses.CacheType_disabled
-		if wire.caching.enabled {
-			cacheType = arkresponses.CacheType_enabled
-		}
-		request.Caching = &arkresponses.ResponsesCaching{
-			Type:   cacheType.Enum(),
-			Prefix: &wire.caching.prefix,
-		}
-	}
-	if wire.store != nil {
-		request.Store = wire.store
-	}
-	if wire.previousResponseID != "" {
-		request.PreviousResponseId = &wire.previousResponseID
-	}
-	if wire.parallelToolCalls != nil {
-		request.ParallelToolCalls = wire.parallelToolCalls
-	}
-	if wire.maxToolCalls != nil {
-		request.MaxToolCalls = wire.maxToolCalls
-	}
-	for _, t := range wire.tools {
-		definition := &arkresponses.ToolFunction{
-			Type:       arkresponses.ToolType_function,
-			Name:       t.name,
-			Parameters: &arkresponses.Bytes{Value: t.schema},
-		}
-		if t.description != "" {
-			definition.Description = &t.description
-		}
-		request.Tools = append(request.Tools, &arkresponses.ResponsesTool{
-			Union: &arkresponses.ResponsesTool_ToolFunction{ToolFunction: definition},
-		})
-	}
-	if wire.toolChoice != nil {
-		request.ToolChoice = arkToolChoice(wire.toolChoice)
-	}
-	if wire.webSearch != nil {
-		request.Tools = append(request.Tools, &arkresponses.ResponsesTool{
-			Union: &arkresponses.ResponsesTool_ToolWebSearch{
-				ToolWebSearch: arkWebSearch(wire.webSearch),
-			},
-		})
-	}
-	return request
 }
 
 // arkServiceTier maps the extension token to the serving tier enum; the
@@ -153,37 +177,40 @@ func arkServiceTier(tier string) *arkresponses.ResponsesServiceTier_Enum {
 	return arkresponses.ResponsesServiceTier_default.Enum()
 }
 
-// arkWebSearch lowers the wire web search config. The location is attached
+// arkWebSearchTool lowers the web search extension. The location is attached
 // only when at least one field is set; the provider treats it as approximate.
-func arkWebSearch(search *wireWebSearch) *arkresponses.ToolWebSearch {
+func arkWebSearchTool(search *GenerateWebSearch) *arkresponses.ResponsesTool {
 	tool := &arkresponses.ToolWebSearch{
 		Type:       arkresponses.ToolType_web_search,
-		Limit:      search.limit,
-		MaxKeyword: search.maxKeyword,
+		Limit:      search.Limit,
+		MaxKeyword: search.MaxKeyword,
 	}
-	for _, source := range search.sources {
+	for _, source := range search.Sources {
 		tool.Sources = append(tool.Sources, arkSearchSource(source))
 	}
-	if search.city != "" || search.country != "" ||
-		search.region != "" || search.timezone != "" {
-		location := &arkresponses.UserLocation{
+	location := search.UserLocation
+	if location.City != "" || location.Country != "" ||
+		location.Region != "" || location.Timezone != "" {
+		approximate := &arkresponses.UserLocation{
 			Type: arkresponses.UserLocationType_approximate,
 		}
-		if search.city != "" {
-			location.City = &search.city
+		if location.City != "" {
+			approximate.City = &location.City
 		}
-		if search.country != "" {
-			location.Country = &search.country
+		if location.Country != "" {
+			approximate.Country = &location.Country
 		}
-		if search.region != "" {
-			location.Region = &search.region
+		if location.Region != "" {
+			approximate.Region = &location.Region
 		}
-		if search.timezone != "" {
-			location.Timezone = &search.timezone
+		if location.Timezone != "" {
+			approximate.Timezone = &location.Timezone
 		}
-		tool.UserLocation = location
+		tool.UserLocation = approximate
 	}
-	return tool
+	return &arkresponses.ResponsesTool{
+		Union: &arkresponses.ResponsesTool_ToolWebSearch{ToolWebSearch: tool},
+	}
 }
 
 // arkSearchSource maps one extension source token to its enum.
@@ -207,66 +234,19 @@ func arkMessageRole(role string) arkresponses.MessageRole_Enum {
 	return arkresponses.MessageRole_user
 }
 
-func arkMessageContent(content []wireContent) *arkresponses.MessageContent {
-	items := make([]*arkresponses.ContentItem, 0, len(content))
-	for _, part := range content {
-		switch part.kind {
-		case wireContentText:
-			items = append(items, &arkresponses.ContentItem{
-				Union: &arkresponses.ContentItem_Text{
-					Text: &arkresponses.ContentItemText{
-						Type: arkresponses.ContentItemType_input_text,
-						Text: part.text,
-					},
-				},
-			})
-		case wireContentImage:
-			uri := part.uri
-			items = append(items, &arkresponses.ContentItem{
-				Union: &arkresponses.ContentItem_Image{
-					Image: &arkresponses.ContentItemImage{
-						Type:     arkresponses.ContentItemType_input_image,
-						ImageUrl: &uri,
-					},
-				},
-			})
-		case wireContentVideo:
-			items = append(items, &arkresponses.ContentItem{
-				Union: &arkresponses.ContentItem_Video{
-					Video: &arkresponses.ContentItemVideo{
-						Type:     arkresponses.ContentItemType_input_video,
-						VideoUrl: part.uri,
-					},
-				},
-			})
-		case wireContentAudio:
-			items = append(items, &arkresponses.ContentItem{
-				Union: &arkresponses.ContentItem_Audio{
-					Audio: &arkresponses.ContentItemAudio{
-						Type:     arkresponses.ContentItemType_input_audio,
-						AudioUrl: part.uri,
-					},
-				},
-			})
-		}
-	}
-	return &arkresponses.MessageContent{
-		Union: &arkresponses.MessageContent_ListValue{
-			ListValue: &arkresponses.ContentItemList{ListValue: items},
-		},
-	}
-}
-
-func arkTextFormat(format *wireTextFormat) *arkresponses.TextFormat {
-	switch format.kind {
+func arkTextFormat(
+	kind, name string,
+	schema []byte,
+	strict bool,
+) *arkresponses.TextFormat {
+	switch kind {
 	case "json_object":
 		return &arkresponses.TextFormat{Type: arkresponses.TextType_json_object}
 	case "json_schema":
-		strict := format.strict
 		return &arkresponses.TextFormat{
 			Type:   arkresponses.TextType_json_schema,
-			Name:   format.name,
-			Schema: &arkresponses.Bytes{Value: format.schema},
+			Name:   name,
+			Schema: &arkresponses.Bytes{Value: bytesClone(schema)},
 			Strict: &strict,
 		}
 	}
@@ -284,22 +264,22 @@ func arkReasoningEffort(effort string) arkresponses.ReasoningEffort_Enum {
 	}
 }
 
-func arkToolChoice(choice *wireToolChoice) *arkresponses.ResponsesToolChoice {
-	switch choice.mode {
-	case "none":
+func arkToolChoice(choice inference.ToolChoice) *arkresponses.ResponsesToolChoice {
+	switch choice.Kind {
+	case inference.ToolChoiceNone:
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_none},
 		}
-	case "required":
+	case inference.ToolChoiceRequired:
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_Mode{Mode: arkresponses.ToolChoiceMode_required},
 		}
-	case "named":
+	case inference.ToolChoiceNamed:
 		return &arkresponses.ResponsesToolChoice{
 			Union: &arkresponses.ResponsesToolChoice_FunctionToolChoice{
 				FunctionToolChoice: &arkresponses.FunctionToolChoice{
 					Type: arkresponses.ToolType_function,
-					Name: choice.name,
+					Name: choice.Name,
 				},
 			},
 		}
@@ -314,20 +294,23 @@ func arkToolChoice(choice *wireToolChoice) *arkresponses.ResponsesToolChoice {
 // Unary transport and decode.
 // ---------------------------------------------------------------------------
 
-func transportGenerate(client *arkruntime.Client) inference.Transport[generateWire, generateRaw] {
-	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
-		response, err := client.CreateResponses(ctx, wireToArk(wire))
+func transportGenerate(
+	client *arkruntime.Client,
+	options []arkruntime.RequestOption,
+) inference.Transport[*arkresponses.ResponsesRequest, generateRaw] {
+	return func(ctx context.Context, request *arkresponses.ResponsesRequest) (generateRaw, error) {
+		response, err := client.CreateResponses(ctx, request, options...)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", request.Model, classified, "", "")
 			return generateRaw{}, classified
 		}
 		raw, err := arkToRaw(response)
 		if err != nil {
-			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", request.Model, err, "", "")
 			return generateRaw{}, err
 		}
-		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		inference.LogProviderCall(ctx, providerID, "generate", request.Model, nil, "", raw.id)
 		return raw, nil
 	}
 }

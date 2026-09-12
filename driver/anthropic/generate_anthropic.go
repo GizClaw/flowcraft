@@ -91,15 +91,15 @@ func transportGenerate(
 		message, err := client.Messages.New(ctx, params)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceCall(ctx, "generate", modelName, classified, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", modelName, classified, "", "")
 			return generateRaw{}, classified
 		}
 		raw, err := messageToRaw(message)
 		if err != nil {
-			logInferenceCall(ctx, "generate", modelName, err, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", modelName, err, "", "")
 			return generateRaw{}, err
 		}
-		logInferenceCall(ctx, "generate", modelName, nil, "", raw.id)
+		inference.LogProviderCall(ctx, providerID, "generate", modelName, nil, "", raw.id)
 		return raw, nil
 	}
 }

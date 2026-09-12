@@ -5,23 +5,25 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
+	arkresponses "github.com/volcengine/volcengine-go-sdk/service/arkruntime/model/responses"
 )
 
 func TestDoubaoReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 	compile := compileGenerate("doubao-seed-2-1-pro", catalog["doubao-seed-2-1-pro"])
-	model := conformanceModel("doubao-seed-2-1-pro")
+	ref := conformanceModel("doubao-seed-2-1-pro")
 	field := inference.FieldGenerateIntentReasoningEffort
 
 	for _, tc := range []struct {
-		effort  inference.ReasoningEffort
-		want    inference.ReasoningEffort
+		effort  model.ReasoningEffort
+		want    model.ReasoningEffort
 		dropped bool
 	}{
-		{effort: inference.ReasoningMinimal, want: inference.ReasoningLow, dropped: true},
-		{effort: inference.ReasoningLow, want: inference.ReasoningLow},
-		{effort: inference.ReasoningMedium, want: inference.ReasoningMedium},
-		{effort: inference.ReasoningHigh, want: inference.ReasoningHigh},
-		{effort: inference.ReasoningXHigh, want: inference.ReasoningHigh, dropped: true},
+		{effort: model.ReasoningMinimal, want: model.ReasoningLow, dropped: true},
+		{effort: model.ReasoningLow, want: model.ReasoningLow},
+		{effort: model.ReasoningMedium, want: model.ReasoningMedium},
+		{effort: model.ReasoningHigh, want: model.ReasoningHigh},
+		{effort: model.ReasoningXHigh, want: model.ReasoningHigh, dropped: true},
 	} {
 		request := conformanceTextRequest()
 		request.Input.Content.Intent.Text = &inference.TextIntent{
@@ -29,19 +31,20 @@ func TestDoubaoReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 		}
 		compiled, err := compile(
 			context.Background(),
-			model,
+			ref,
 			request,
 			inference.GenerateExecutionUnary,
 		)
 		if err != nil {
 			t.Fatalf("effort %q: compile: %v", tc.effort, err)
 		}
-		if compiled.Wire.reasoning == nil ||
-			compiled.Wire.reasoning.effort != string(tc.want) {
+		reasoning := compiled.Wire.GetReasoning()
+		if reasoning == nil ||
+			reasoning.GetEffort() != arkReasoningEffort(string(tc.want)) {
 			t.Fatalf(
 				"effort %q: wire = %+v, want %q",
 				tc.effort,
-				compiled.Wire.reasoning,
+				reasoning,
 				tc.want,
 			)
 		}
@@ -54,12 +57,12 @@ func TestDoubaoReasoningEffortResolvesAgainstPrivateDial(t *testing.T) {
 func TestSpecBinaryReasoningEffortDropsAndEnablesThinking(t *testing.T) {
 	entry := catalogEntry{
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
+		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
 	}
 	compile := compileGenerate("spec-binary", entry)
 	request := conformanceTextRequest()
 	request.Input.Content.Intent.Text = &inference.TextIntent{
-		ReasoningEffort: inference.ReasoningHigh,
+		ReasoningEffort: model.ReasoningHigh,
 	}
 	compiled, err := compile(
 		context.Background(),
@@ -73,10 +76,12 @@ func TestSpecBinaryReasoningEffortDropsAndEnablesThinking(t *testing.T) {
 	if !compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
 		t.Fatal("binary thinking model must drop the effort with a reason")
 	}
-	if compiled.Wire.thinking == nil || !*compiled.Wire.thinking {
-		t.Fatalf("binary drop must enable thinking, got %v", compiled.Wire.thinking)
+	thinking := compiled.Wire.GetThinking()
+	if thinking == nil ||
+		thinking.GetType() != arkresponses.ThinkingType_enabled {
+		t.Fatalf("binary drop must enable thinking, got %v", thinking)
 	}
-	if compiled.Wire.reasoning != nil {
-		t.Fatalf("wire reasoning = %+v, want nil", compiled.Wire.reasoning)
+	if compiled.Wire.GetReasoning() != nil {
+		t.Fatalf("wire reasoning = %+v, want nil", compiled.Wire.GetReasoning())
 	}
 }

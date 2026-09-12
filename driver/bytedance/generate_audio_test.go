@@ -36,14 +36,14 @@ func TestCompileGenerateAudioInputURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileGenerate: %v", err)
 	}
-	item := compiled.Wire.items[0]
-	if item.kind != wireItemMessage || item.role != "user" {
+	item := compiled.Wire.GetInput().GetListValue().GetListValue()[0]
+	message := item.GetEasyMessage()
+	if message == nil || message.GetRole() != arkresponses.MessageRole_user {
 		t.Fatalf("item = %+v, want user message", item)
 	}
-	if len(item.content) != 1 ||
-		item.content[0].kind != wireContentAudio ||
-		item.content[0].uri != "https://example.com/audio.mp3" {
-		t.Fatalf("content = %+v, want audio url content", item.content)
+	audio := message.GetContent().GetListValue().GetListValue()[0].GetAudio()
+	if audio == nil || audio.GetAudioUrl() != "https://example.com/audio.mp3" {
+		t.Fatalf("content = %+v, want audio url content", audio)
 	}
 }
 
@@ -61,12 +61,13 @@ func TestCompileGenerateAudioInputInline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileGenerate: %v", err)
 	}
-	content := compiled.Wire.items[0].content
-	if len(content) != 1 || content[0].kind != wireContentAudio {
-		t.Fatalf("content = %+v, want audio content", content)
+	audio := compiled.Wire.GetInput().GetListValue().GetListValue()[0].
+		GetEasyMessage().GetContent().GetListValue().GetListValue()[0].GetAudio()
+	if audio == nil {
+		t.Fatal("content has no audio part")
 	}
-	if want := "data:audio/mpeg;base64,AAEC"; content[0].uri != want {
-		t.Fatalf("audio uri = %q, want %q", content[0].uri, want)
+	if want := "data:audio/mpeg;base64,AAEC"; audio.GetAudioUrl() != want {
+		t.Fatalf("audio uri = %q, want %q", audio.GetAudioUrl(), want)
 	}
 }
 
@@ -98,11 +99,10 @@ func TestCompileGenerateRejectsAudioWithoutCapability(t *testing.T) {
 }
 
 func TestWireToArkAudioContent(t *testing.T) {
-	request := wireToArk(generateWire{items: []wireItem{{
-		kind:    wireItemMessage,
-		role:    "user",
-		content: []wireContent{{kind: wireContentAudio, uri: "https://example.com/audio.mp3"}},
-	}}})
+	request := &arkresponses.ResponsesRequest{}
+	appendInputItem(request, arkMessageItem("user", []*arkresponses.ContentItem{
+		arkContentAudio("https://example.com/audio.mp3"),
+	}))
 	items := request.GetInput().GetListValue().GetListValue()
 	if len(items) != 1 {
 		t.Fatalf("input items = %d, want 1", len(items))

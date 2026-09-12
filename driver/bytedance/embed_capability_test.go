@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -26,7 +27,7 @@ func embedDimensionRequest() inference.EmbedRequest {
 func TestEmbedDimensionsGate(t *testing.T) {
 	fixed := catalogEntry{
 		kind:         kindEmbed,
-		capabilities: inference.ModelCapabilities{}.WithInputs(message.PartText),
+		capabilities: model.ModelCapabilities{}.WithInputs(message.PartText),
 	}
 	compiled, err := compileEmbed("fixed", fixed)(
 		context.Background(),

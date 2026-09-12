@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -29,6 +29,18 @@ type Spec struct {
 	HTTPRetries *resource.Int `json:"http_retries,omitempty"`
 	// Region selects the Ark service region.
 	Region string `json:"region,omitempty"`
+	// Project sets the Ark project name requests are attributed to.
+	Project string `json:"project,omitempty"`
+	// Timeout bounds one HTTP request to Ark, as a Go duration string
+	// ("90s", "2m"). Empty keeps the driver default. It bounds a single
+	// attempt, not the whole logical inference call, which the route Router
+	// owns.
+	Timeout string `json:"timeout,omitempty"`
+	// Headers adds static headers to every request. Use this for gateway
+	// routing hints; credentials belong in the profile's api_key secret.
+	Headers map[string]string `json:"headers,omitempty"`
+	// Query adds query parameters to every request.
+	Query map[string]string `json:"query,omitempty"`
 	// VideoPollIntervalMillis paces content-generation task polls (Seedance
 	// video). It tunes client-side waiting only — nothing is sent upstream —
 	// so it lives in the deployment Spec, not in a per-request extension.
@@ -53,11 +65,11 @@ type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	// Capabilities declares the capability leaves this model changes.
-	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
+	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
-	Limits inference.ModelLimits `json:"limits,omitempty"`
+	Limits model.ModelLimits `json:"limits,omitempty"`
 	// MaxResolution (video) caps the supported resolution tier, e.g. "720p"
 	// or "4k". Nil inherits the built-in value; an explicit empty string
 	// declares resolution unconstrained.

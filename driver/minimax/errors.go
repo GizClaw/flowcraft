@@ -2,7 +2,6 @@ package minimax
 
 import (
 	"fmt"
-	"net/http"
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 )
@@ -51,23 +50,4 @@ func (b baseResp) err(operation string) error {
 	default:
 		return errdefs.NotAvailable(err)
 	}
-}
-
-// classifyHTTPStatus maps a non-200 HTTP response (gateway, proxy, or
-// transport-level failure — the APIs themselves answer 200 always) into
-// the errdefs taxonomy.
-func classifyHTTPStatus(status int, err error) error {
-	switch status {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
-		return errdefs.Validation(err)
-	case http.StatusUnauthorized:
-		return errdefs.Unauthorized(err)
-	case http.StatusForbidden:
-		return errdefs.Forbidden(err)
-	case http.StatusTooManyRequests:
-		return errdefs.RateLimit(err)
-	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
-		return errdefs.Timeout(err)
-	}
-	return errdefs.NotAvailable(err)
 }

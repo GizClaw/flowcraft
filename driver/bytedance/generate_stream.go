@@ -47,18 +47,19 @@ type streamPart struct {
 
 func transportGenerateStream(
 	client *arkruntime.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+	options []arkruntime.RequestOption,
+) inference.Transport[*arkresponses.ResponsesRequest, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		request *arkresponses.ResponsesRequest,
 	) (inference.ProviderStream[streamRaw], error) {
-		reader, err := client.CreateResponsesStream(ctx, wireToArk(wire))
+		reader, err := client.CreateResponsesStream(ctx, request, options...)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", request.Model, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", request.Model, nil, "")
 		return &responsesStream{
 			reader:    reader,
 			requestID: reader.Header().Get(arkmodel.ClientRequestHeader),
@@ -88,7 +89,7 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 				return streamRaw{}, io.EOF
 			}
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", "", classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 			return streamRaw{}, classified
 		}
 		if event == nil {
@@ -441,7 +442,7 @@ func decodeGenerateStream(
 			ResponseID:      raw.responseID,
 			ProviderOutputs: raw.providerOutputs.Clone(),
 		}
-		logInferenceStreamEnd(ctx, "generate", raw.responseID)
+		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

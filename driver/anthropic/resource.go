@@ -15,6 +15,11 @@ import (
 // Anthropic provider driver.
 const ResourceKind = "inference.Provider"
 
+// providerID is this driver's provider identity: it labels the compile errors
+// the ledger builds and tags telemetry, matching the model.ModelID.Provider
+// values the catalog publishes.
+const providerID = "anthropic"
+
 // ResourceSettings is the settings subtree of one Anthropic provider
 // resource.
 type ResourceSettings struct {

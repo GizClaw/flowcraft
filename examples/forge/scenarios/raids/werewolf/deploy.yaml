@@ -142,6 +142,20 @@ resources:
       profiles:
         - secrets:
             api_key: ${secret:MINIMAX_API_KEY}
+  # ByteDance's Ark Responses API. The built-in catalog already carries the
+  # seed models; the profile binds this account's dated deployment address,
+  # which is what Ark actually routes on.
+  provider-bytedance:
+    kind: inference.Provider
+    impl: bytedance
+    settings:
+      id: bytedance
+      profiles:
+        - secrets:
+            api_key: ${secret:ARK_API_KEY}
+          spec:
+            endpoints:
+              doubao-seed-2-0-lite: doubao-seed-2-0-lite-260428
   infer:
     kind: inference.Assembly
     impl: unified
@@ -150,6 +164,7 @@ resources:
       provider.openai: provider-openai
       provider.glm: provider-glm
       provider.minimax: provider-minimax
+      provider.bytedance: provider-bytedance
   # Inference nodes carry no static model: the router owns target selection,
   # so a per-turn model hint (or the default pool below) decides.
   router:

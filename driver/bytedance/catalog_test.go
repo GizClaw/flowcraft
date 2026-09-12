@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -15,9 +15,9 @@ func TestCatalogDeclaresMaxInputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 	for name, entry := range catalog {
 		if entry.kind != kindGenerate && entry.kind != kindEmbed {
@@ -56,9 +56,9 @@ func TestCatalogDeclaresMaxOutputTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 	for name, entry := range catalog {
 		if entry.kind != kindGenerate {
@@ -96,9 +96,9 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 
 	chat := descriptors["doubao-seed-2-1-pro"]
@@ -110,7 +110,7 @@ func TestCatalogPublishesCapabilities(t *testing.T) {
 		t.Fatalf("chat inputs = %v, want image and video input", chat.Capabilities.Inputs)
 	}
 	if !chat.Capabilities.HostedWebSearch ||
-		chat.Capabilities.Reasoning.Kind != inference.ReasoningToggle {
+		chat.Capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("chat capabilities = %+v", chat.Capabilities)
 	}
 
@@ -165,9 +165,9 @@ func TestCatalogDeclaresAudioInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildProvider: %v", err)
 	}
-	descriptors := make(map[string]inference.ModelDescriptor, len(provider.Models))
-	for _, model := range provider.Models {
-		descriptors[model.Descriptor.ID.Name] = model.Descriptor
+	descriptors := make(map[string]model.ModelDescriptor, len(provider.Models))
+	for _, entry := range provider.Models {
+		descriptors[entry.Descriptor.ID.Name] = entry.Descriptor
 	}
 	// Ark's audio-understanding line is the 260428 lite/mini revisions;
 	// the rest of the generate family does not take audio input.

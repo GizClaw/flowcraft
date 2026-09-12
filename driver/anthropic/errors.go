@@ -21,7 +21,9 @@ func classifyError(err error) error {
 	}
 	var apiErr *anthropic.Error
 	if errors.As(err, &apiErr) {
-		classified := classifyHTTPStatus(apiErr.StatusCode, err)
+		classified := errdefs.ClassifyStatus(
+			apiErr.StatusCode, fmt.Errorf("%s: %w", providerID, err),
+		)
 		classified = errdefs.WithRequestID(classified, apiErr.RequestID)
 		if apiErr.Response != nil {
 			classified = errdefs.WithRetryAfter(
@@ -46,22 +48,4 @@ func wireAttempts(request *http.Request) int {
 		return 0
 	}
 	return errdefs.ParseRetryCount(value) + 1
-}
-
-func classifyHTTPStatus(status int, err error) error {
-	switch status {
-	case http.StatusBadRequest, http.StatusNotFound, http.StatusUnprocessableEntity:
-		return errdefs.Validation(fmt.Errorf("anthropic: %w", err))
-	case http.StatusUnauthorized:
-		return errdefs.Unauthorized(fmt.Errorf("anthropic: %w", err))
-	case http.StatusForbidden:
-		return errdefs.Forbidden(fmt.Errorf("anthropic: %w", err))
-	case http.StatusTooManyRequests:
-		return errdefs.RateLimit(fmt.Errorf("anthropic: %w", err))
-	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
-		return errdefs.Timeout(fmt.Errorf("anthropic: %w", err))
-	case http.StatusConflict:
-		return errdefs.Conflict(fmt.Errorf("anthropic: %w", err))
-	}
-	return errdefs.NotAvailable(fmt.Errorf("anthropic: %w", err))
 }

@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -27,7 +27,13 @@ const (
 // expresses and stays a separate flag.
 type catalogEntry struct {
 	kind         modelKind
-	capabilities inference.ModelCapabilities
+	capabilities model.ModelCapabilities
+	// limits carries the model's context/output windows in tokens. Nil
+	// leaves are undeclared. Generate values mirror the family context
+	// window and per-version max output on the Volcengine Ark model detail
+	// pages (https://www.volcengine.com/docs/82379/1330310); embedding
+	// values mirror the documented per-input limit.
+	limits model.ModelLimits
 	// video: highest supported resolution tier ("720p", "1080p", "4k");
 	// empty leaves resolution unconstrained.
 	maxResolution string
@@ -36,12 +42,6 @@ type catalogEntry struct {
 	// lifecycle: deprecated models stay routable but announce a replacement.
 	deprecated  bool
 	replacement string
-	// limits carries the model's context/output windows in tokens. Nil
-	// leaves are undeclared. Generate values mirror the family context
-	// window and per-version max output on the Volcengine Ark model detail
-	// pages (https://www.volcengine.com/docs/82379/1330310); embedding
-	// values mirror the documented per-input limit.
-	limits inference.ModelLimits
 }
 
 // videoParams is the Seedance task-parameter support matrix for one video
@@ -122,8 +122,8 @@ func (e catalogEntry) validate() error {
 // text compiler family. Individual entries add image/video input, hosted web
 // search, and the reasoning control capability. Ark consumes no reasoning
 // input, so PartReasoning is deliberately absent.
-func generateChatCapabilities() inference.ModelCapabilities {
-	return inference.ModelCapabilities{
+func generateChatCapabilities() model.ModelCapabilities {
+	return model.ModelCapabilities{
 		Inputs: []message.PartKind{
 			message.PartText,
 			message.PartData,
@@ -139,12 +139,12 @@ func generateChatCapabilities() inference.ModelCapabilities {
 // canonical minimal folds onto low and xhigh folds onto high; Doubao's
 // documented minimal level is its no-thinking mode, which the canonical
 // ReasoningEnabled switch covers instead.
-var arkEffortMap = map[inference.ReasoningEffort]string{
-	inference.ReasoningMinimal: string(inference.ReasoningLow),
-	inference.ReasoningLow:     string(inference.ReasoningLow),
-	inference.ReasoningMedium:  string(inference.ReasoningMedium),
-	inference.ReasoningHigh:    string(inference.ReasoningHigh),
-	inference.ReasoningXHigh:   string(inference.ReasoningHigh),
+var arkEffortMap = map[model.ReasoningEffort]string{
+	model.ReasoningMinimal: string(model.ReasoningLow),
+	model.ReasoningLow:     string(model.ReasoningLow),
+	model.ReasoningMedium:  string(model.ReasoningMedium),
+	model.ReasoningHigh:    string(model.ReasoningHigh),
+	model.ReasoningXHigh:   string(model.ReasoningHigh),
 }
 
 // catalog is the built-in model registry. Names are stable Volcengine model
@@ -162,9 +162,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_024_000).
 			WithMaxOutputTokens(256_000),
 	},
@@ -176,9 +176,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(256_000),
 	},
@@ -187,9 +187,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(256_000),
 	},
@@ -203,9 +203,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -214,9 +214,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -225,9 +225,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo, message.PartAudio).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -236,9 +236,9 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -250,10 +250,10 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage, message.PartVideo).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(64_000),
 	},
@@ -262,51 +262,51 @@ var catalog = map[string]catalogEntry{
 		capabilities: generateChatCapabilities().
 			WithInputs(message.PartImage).
 			WithHostedWebSearch().
-			WithReasoning(inference.ReasoningToggle).
+			WithReasoning(model.ReasoningToggle).
 			WithReasoningEffortMap(arkEffortMap),
 		deprecated: true, replacement: "doubao-seed-2-0-lite",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(256_000).
 			WithMaxOutputTokens(64_000),
 	},
 
 	"doubao-embedding-large": {
 		kind: kindEmbed,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithCustomEmbedDimensions(),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(4_095),
+		limits: model.ModelLimits{}.WithMaxInputTokens(4_095),
 	},
 	"doubao-embedding-vision": {
 		kind: kindEmbed,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithCustomEmbedDimensions(),
-		limits: inference.ModelLimits{}.WithMaxInputTokens(8_191),
+		limits: model.ModelLimits{}.WithMaxInputTokens(8_191),
 	},
 
 	// Seedream image generation; 5.0-pro/5.0/4.5 current, 4.0 superseded.
 	"doubao-seedream-5-0-pro": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"doubao-seedream-5-0": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"doubao-seedream-4-5": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"doubao-seedream-4-0": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 		deprecated: true, replacement: "doubao-seedream-5-0",
@@ -318,7 +318,7 @@ var catalog = map[string]catalogEntry{
 	// stays routable for existing deployments.
 	"doubao-seedance-2-5": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -345,7 +345,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-2-0": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -368,7 +368,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-2-0-fast": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -391,7 +391,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-2-0-mini": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(
 				message.PartText,
 				message.PartImage,
@@ -414,7 +414,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-1-5-pro": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
@@ -431,7 +431,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-1-0-pro": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "1080p",
@@ -446,7 +446,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-1-0-lite-t2v": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
@@ -463,7 +463,7 @@ var catalog = map[string]catalogEntry{
 	},
 	"doubao-seedance-1-0-lite-i2v": {
 		kind: kindVideo,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartVideo),
 		maxResolution: "720p",
@@ -488,35 +488,35 @@ var catalog = map[string]catalogEntry{
 func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	merged := make(map[string]catalogEntry, len(catalog)+len(spec.Models))
 	maps.Copy(merged, catalog)
-	for _, model := range spec.Models {
-		kind := modelKind(model.Kind)
-		builtin, exists := merged[model.Name]
+	for _, declared := range spec.Models {
+		kind := modelKind(declared.Kind)
+		builtin, exists := merged[declared.Name]
 		entry := catalogEntry{kind: kind}
 		if exists && builtin.kind == kind {
-			entry.capabilities = model.Capabilities.Apply(builtin.capabilities)
+			entry.capabilities = declared.Capabilities.Apply(builtin.capabilities)
 			entry.limits = builtin.limits.Clone()
 			entry.video = builtin.video
 			entry.maxResolution = builtin.maxResolution
-			if model.MaxResolution != nil {
-				entry.maxResolution = *model.MaxResolution
+			if declared.MaxResolution != nil {
+				entry.maxResolution = *declared.MaxResolution
 			}
 		} else {
-			entry.capabilities = model.Capabilities.Apply(
-				inference.ModelCapabilities{},
+			entry.capabilities = declared.Capabilities.Apply(
+				model.ModelCapabilities{},
 			)
-			if model.MaxResolution != nil {
-				entry.maxResolution = *model.MaxResolution
+			if declared.MaxResolution != nil {
+				entry.maxResolution = *declared.MaxResolution
 			}
 		}
-		if model.Limits.MaxInputTokens != nil {
-			value := *model.Limits.MaxInputTokens
+		if declared.Limits.MaxInputTokens != nil {
+			value := *declared.Limits.MaxInputTokens
 			entry.limits.MaxInputTokens = &value
 		}
-		if model.Limits.MaxOutputTokens != nil {
-			value := *model.Limits.MaxOutputTokens
+		if declared.Limits.MaxOutputTokens != nil {
+			value := *declared.Limits.MaxOutputTokens
 			entry.limits.MaxOutputTokens = &value
 		}
-		merged[model.Name] = entry
+		merged[declared.Name] = entry
 	}
 	for name, entry := range merged {
 		if err := entry.validate(); err != nil {
@@ -529,15 +529,15 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 // descriptorFor lowers one catalog entry into its public discovery
 // descriptor under id. buildProvider and Catalog share this lowering so
 // offline catalog views cannot drift from deployed provider models.
-func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDescriptor {
-	descriptor := inference.ModelDescriptor{
+func descriptorFor(id model.ModelID, entry catalogEntry) model.ModelDescriptor {
+	descriptor := model.ModelDescriptor{
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
 	if entry.deprecated {
-		descriptor.Lifecycle.Status = inference.ModelStatusDeprecated
+		descriptor.Lifecycle.Status = model.ModelStatusDeprecated
 		if entry.replacement != "" {
-			replacement := inference.ModelID{
+			replacement := model.ModelID{
 				Provider: id.Provider,
 				Name:     entry.replacement,
 			}
@@ -553,7 +553,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 // lifecycle; Operations stay empty because the inference assembly derives them
 // from the model's openers after deployment. Provider IDs are a deployment
 // property, so callers supply the identity that appears in each descriptor.
-func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+func Catalog(provider string) ([]model.ModelDescriptor, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("catalog: provider is required")
 	}
@@ -562,10 +562,10 @@ func Catalog(provider string) ([]inference.ModelDescriptor, error) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	descriptors := make([]inference.ModelDescriptor, 0, len(catalog))
+	descriptors := make([]model.ModelDescriptor, 0, len(catalog))
 	for _, name := range names {
 		descriptor := descriptorFor(
-			inference.ModelID{Provider: provider, Name: name},
+			model.ModelID{Provider: provider, Name: name},
 			catalog[name],
 		)
 		descriptors = append(descriptors, descriptor)

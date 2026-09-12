@@ -97,9 +97,11 @@ the forge directory at startup. Only `DEEPSEEK_API_KEY` is required: every
 scenario routes to `deepseek-flash`. Three more providers are declared and
 ready to use — `gpt-5.6-luna` through the OpenAI line-up (`OPENAI_API_KEY`),
 `glm-5.3-flash` through Zhipu's OpenAI-compatible endpoint
-(`ZHIPU_API_KEY`), and `MiniMax-M3` through MiniMax's Anthropic-compatible
+(`ZHIPU_API_KEY`), `MiniMax-M3` through MiniMax's Anthropic-compatible
 Messages endpoint, which the anthropic driver serves with a declared catalog
-(`MINIMAX_API_KEY`) — and their references are lazy, so a missing key only
+(`MINIMAX_API_KEY`), and `doubao-seed-2-0-lite` on ByteDance's Ark Responses
+API through the bytedance driver, whose profile binds the account's dated
+deployment address (`ARK_API_KEY`) — and their references are lazy, so a missing key only
 surfaces if a graph actually routes to them. Without any credential the app
 fails with a clear message.
 

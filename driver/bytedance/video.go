@@ -9,6 +9,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -81,19 +82,20 @@ func compileVideo(
 ) inference.GenerateCompiler[videoWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		ref model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[videoWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := videoWire{
 			model: endpoint,
 		}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"video generation is unary on this provider",
 			)
@@ -103,7 +105,7 @@ func compileVideo(
 		var images []string
 		var videos []string
 		var audios []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
 				case message.TextPart:
@@ -115,8 +117,8 @@ func compileVideo(
 				case message.AudioPart:
 					audios = append(audios, value.Source.URL())
 				default:
-					ledger.reject(
-						fields[part.Kind()],
+					ledger.Reject(
+						fields(part.Kind()),
 						fmt.Sprintf(
 							"video generation accepts text, image, video, and audio parts, not %s",
 							part.Kind(),
@@ -127,21 +129,21 @@ func compileVideo(
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"video generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
+		collect(request.Input.Content.Parts, inputPartField)
 		wire.prompt = strings.Join(prompt, "\n")
 		referenceMode := len(images) > 2 || len(videos) > 0 || len(audios) > 0
 		switch {
 		case len(images) == 1:
 			if referenceMode {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					"first/last-frame input and reference inputs are mutually exclusive",
 				)
@@ -149,7 +151,7 @@ func compileVideo(
 			wire.firstFrame = images[0]
 		case len(images) == 2:
 			if referenceMode {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					"first/last-frame input and reference inputs are mutually exclusive",
 				)
@@ -157,19 +159,19 @@ func compileVideo(
 			wire.firstFrame, wire.lastFrame = images[0], images[1]
 		case len(images) > 2:
 			if entry.video.referenceImage == 0 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
 						"model %s does not support reference-image input; it accepts at most a first-frame and a last-frame image",
-						model.ID.Name,
+						ref.ID.Name,
 					),
 				)
 			} else if len(images) > entry.video.referenceImage {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateInputImage,
 					fmt.Sprintf(
 						"model %s supports at most %d reference images",
-						model.ID.Name, entry.video.referenceImage,
+						ref.ID.Name, entry.video.referenceImage,
 					),
 				)
 			} else {
@@ -178,16 +180,16 @@ func compileVideo(
 		}
 		switch {
 		case len(videos) > 0 && entry.video.referenceVideo == 0:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputVideo,
-				fmt.Sprintf("model %s does not support video-reference input", model.ID.Name),
+				fmt.Sprintf("model %s does not support video-reference input", ref.ID.Name),
 			)
 		case len(videos) > entry.video.referenceVideo:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputVideo,
 				fmt.Sprintf(
 					"model %s supports at most %d reference videos",
-					model.ID.Name, entry.video.referenceVideo,
+					ref.ID.Name, entry.video.referenceVideo,
 				),
 			)
 		default:
@@ -195,16 +197,16 @@ func compileVideo(
 		}
 		switch {
 		case len(audios) > 0 && entry.video.referenceAudio == 0:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
-				fmt.Sprintf("model %s does not support audio-reference input", model.ID.Name),
+				fmt.Sprintf("model %s does not support audio-reference input", ref.ID.Name),
 			)
 		case len(audios) > entry.video.referenceAudio:
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
 					"model %s supports at most %d reference audio clips",
-					model.ID.Name, entry.video.referenceAudio,
+					ref.ID.Name, entry.video.referenceAudio,
 				),
 			)
 		default:
@@ -212,11 +214,11 @@ func compileVideo(
 		}
 		if len(audios) > 0 && len(images) == 0 && len(videos) == 0 &&
 			!entry.video.audioOnly {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateInputAudio,
 				fmt.Sprintf(
 					"model %s does not allow audio-only input; include at least one reference image or video",
-					model.ID.Name,
+					ref.ID.Name,
 				),
 			)
 		}
@@ -226,22 +228,22 @@ func compileVideo(
 			if video.DurationMillis != nil {
 				millis := *video.DurationMillis
 				if millis%1000 != 0 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoDuration,
 						"the task API bills whole seconds; sub-second durations cannot be honored",
 					)
 				} else {
 					seconds := millis / 1000
 					if min := entry.video.durationMin; min != nil && seconds < *min {
-						ledger.reject(
+						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
-							fmt.Sprintf("model %s requires a duration of at least %ds", model.ID.Name, *min),
+							fmt.Sprintf("model %s requires a duration of at least %ds", ref.ID.Name, *min),
 						)
 					}
 					if max := entry.video.durationMax; max != nil && seconds > *max {
-						ledger.reject(
+						ledger.Reject(
 							inference.FieldGenerateIntentVideoDuration,
-							fmt.Sprintf("model %s caps duration at %ds", model.ID.Name, *max),
+							fmt.Sprintf("model %s caps duration at %ds", ref.ID.Name, *max),
 						)
 					}
 					wire.duration = &seconds
@@ -250,48 +252,48 @@ func compileVideo(
 			if video.Resolution != "" {
 				wire.resolution = strings.ToLower(video.Resolution)
 				if cap := entry.maxResolution; cap != "" && !resolutionWithin(wire.resolution, cap) {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoResolution,
-						fmt.Sprintf("model %s caps resolution at %s", model.ID.Name, cap),
+						fmt.Sprintf("model %s caps resolution at %s", ref.ID.Name, cap),
 					)
 				}
 			}
 			if video.AspectRatio != "" {
 				wire.ratio = string(video.AspectRatio)
 				if !validVideoRatio(wire.ratio) {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoAspectRatio,
 						fmt.Sprintf("unsupported video ratio %q", wire.ratio),
 					)
 				} else if entry.video.frameRatioAdaptiveOnly &&
 					(wire.firstFrame != "" || wire.lastFrame != "") &&
 					wire.ratio != "adaptive" {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentVideoAspectRatio,
 						fmt.Sprintf(
 							"model %s supports only ratio=adaptive for first/last-frame tasks",
-							model.ID.Name,
+							ref.ID.Name,
 						),
 					)
 				}
 			}
 			wire.seed = video.Seed
 			if wire.seed != nil && !entry.video.seed {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoSeed,
-					fmt.Sprintf("model %s does not support seed", model.ID.Name),
+					fmt.Sprintf("model %s does not support seed", ref.ID.Name),
 				)
 			} else if wire.seed != nil && (*wire.seed < -1 || *wire.seed > 2_147_483_647) {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentVideoSeed,
 					"seed must be within [-1, 2147483647]",
 				)
 			}
 			wire.watermark = video.Watermark
 		}
-		options, other := operationExtensions[VideoOptions](request.Extensions)
-		rejectOtherExtensions("video generation", other, ledger)
-		compileVideoOptions(&wire, options, entry, ledger, model.ID.Name)
+		options, other := inference.ExtensionFor[VideoOptions](request.Extensions)
+		ledger.RejectExtensions("video generation", other)
+		compileVideoOptions(&wire, options, entry, ledger, ref.ID.Name)
 
 		if text := intent.Text; text != nil {
 			// Specific control rejections precede the wholesale text
@@ -301,26 +303,26 @@ func compileVideo(
 				"the task API has no sampling controls",
 				"video models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"video models do not produce text",
 			)
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"video models do not produce images",
 			)
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"video models do not synthesize standalone audio; the generate_audio extension adds a track to the video",
 			)
 		}
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[videoWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[videoWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[videoWire]{Wire: wire, Report: report}, nil
 	}
@@ -333,51 +335,51 @@ func compileVideoOptions(
 	wire *videoWire,
 	options VideoOptions,
 	entry catalogEntry,
-	ledger *ledger,
+	ledger *inference.Ledger,
 	modelName string,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
 	}
 	if options.CameraFixed != nil && !entry.video.cameraFixed {
-		ledger.reject(
+		ledger.Reject(
 			field("camera_fixed"),
 			fmt.Sprintf("model %s does not support camera_fixed", modelName),
 		)
 	}
 	if options.GenerateAudio != nil && !entry.video.generateAudio {
-		ledger.reject(
+		ledger.Reject(
 			field("generate_audio"),
 			fmt.Sprintf("model %s does not support generate_audio", modelName),
 		)
 	}
 	if options.ServiceTier == "flex" && !entry.video.flexTier {
-		ledger.reject(
+		ledger.Reject(
 			field("service_tier"),
 			fmt.Sprintf("model %s does not support service_tier=flex", modelName),
 		)
 	}
 	if options.Priority != nil && !entry.video.priority {
-		ledger.reject(
+		ledger.Reject(
 			field("priority"),
 			fmt.Sprintf("model %s does not support priority", modelName),
 		)
 	}
 	if options.OutputFormat != nil && !entry.video.outputFormat {
-		ledger.reject(
+		ledger.Reject(
 			field("output_format"),
 			fmt.Sprintf("model %s does not support output_format", modelName),
 		)
 	}
 	if options.OmniReferenceTaskType != nil && !entry.video.omniReference {
-		ledger.reject(
+		ledger.Reject(
 			field("omni_reference_task_type"),
 			fmt.Sprintf("model %s does not support omni_reference_task_type", modelName),
 		)
 	}
 	if options.WebSearch != nil && *options.WebSearch &&
 		!entry.capabilities.HostedWebSearch {
-		ledger.reject(
+		ledger.Reject(
 			field("web_search"),
 			fmt.Sprintf("model %s does not support web_search", modelName),
 		)
@@ -388,19 +390,19 @@ func compileVideoOptions(
 			// Official constraints: at least one reference_video;
 			// ratio=adaptive; edit additionally requires duration=-1.
 			if len(wire.referenceVideos) == 0 {
-				ledger.reject(
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					fmt.Sprintf("%s requires at least one reference video", taskType),
 				)
 			}
 			if wire.ratio != "adaptive" {
-				ledger.reject(
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					fmt.Sprintf("%s requires ratio=adaptive", taskType),
 				)
 			}
 			if taskType == "edit" && wire.duration != nil {
-				ledger.reject(
+				ledger.Reject(
 					field("omni_reference_task_type"),
 					"edit requires duration=-1; omit the canonical duration",
 				)
@@ -456,6 +458,7 @@ func resolutionWithin(resolution, cap string) bool {
 func transportVideo(
 	client *arkruntime.Client,
 	pollInterval time.Duration,
+	options []arkruntime.RequestOption,
 ) inference.Transport[videoWire, videoRaw] {
 	return func(ctx context.Context, wire videoWire) (videoRaw, error) {
 		prompt := wire.prompt
@@ -515,7 +518,7 @@ func transportVideo(
 		if wire.safetyIdentifier != "" {
 			request.SafetyIdentifier = &wire.safetyIdentifier
 		}
-		created, err := client.CreateContentGenerationTask(ctx, request)
+		created, err := client.CreateContentGenerationTask(ctx, request, options...)
 		if err != nil {
 			return videoRaw{}, classifyError(err)
 		}
@@ -523,6 +526,7 @@ func transportVideo(
 			task, err := client.GetContentGenerationTask(
 				ctx,
 				arkmodel.GetContentGenerationTaskRequest{ID: created.ID},
+				options...,
 			)
 			if err != nil {
 				return videoRaw{}, classifyError(err)
@@ -621,7 +625,7 @@ func openVideo(
 	cls *clients,
 	spec Spec,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
 	ark, err := cls.requireArk(profile)
@@ -630,7 +634,7 @@ func openVideo(
 	}
 	unary, err := inference.BindGenerate(
 		compileVideo(cls.endpoint(id.Name), entry),
-		transportVideo(ark, spec.videoPollInterval()),
+		transportVideo(ark, spec.videoPollInterval(), cls.arkRequestOptions),
 		decodeVideo,
 	)
 	if err != nil {

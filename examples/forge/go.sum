@@ -2,6 +2,10 @@ github.com/GizClaw/flowcraft/core v0.3.0 h1:zGsRlMbbot1FPQ29RnzaSGYu6Ze/i67AZvst
 github.com/GizClaw/flowcraft/core v0.3.0/go.mod h1:oM890ls+7bEtnG6LfBcDfrmKSm+hQPNzutRpQf3hscI=
 github.com/GizClaw/flowcraft/driver/anthropic v0.2.5 h1:e480CpKX+TGf+9bD98Nqd2rjNjyUcU0wLVl1vlgyn6M=
 github.com/GizClaw/flowcraft/driver/anthropic v0.2.5/go.mod h1:0oiAXsZZ/lxBvnRl+pynmwIwZSC4JizIlEk4l+8W1f8=
+github.com/GizClaw/flowcraft/driver/bytedance v0.2.0 h1:w1DNh29KKc3bks/ro9fderWI1ITbPAvP7GlstW7HdgA=
+github.com/GizClaw/flowcraft/driver/bytedance v0.2.0/go.mod h1:/yTDELv8NaoDUvZKvNzfqtJBw3OvcFXNg4Q1FfHncys=
+github.com/GizClaw/flowcraft/driver/bytedance v0.2.5 h1:gcQNF6Xeqq1PrXuDHFBRVupviaoalWB4hTxnP6mg++Y=
+github.com/GizClaw/flowcraft/driver/bytedance v0.2.5/go.mod h1:lHOL0nZWBqWsb3RknSOk/QisUxafTTGNoaWLc3YQI+I=
 github.com/GizClaw/flowcraft/driver/openai v0.2.0 h1:eKPtlCnIG+ROEX7oSBtqVjn0+cD1GCuoaZqnKyOwVZc=
 github.com/GizClaw/flowcraft/driver/openai v0.2.0/go.mod h1:pIklnydcXxm4LboM0A3r7j+SS9VDXOH21GkmZWONu5A=
 github.com/Masterminds/semver/v3 v3.2.1 h1:RN9w6+7QoMeJVGyfmbcgs28Br8cvmnucEXnY0rYXWg0=

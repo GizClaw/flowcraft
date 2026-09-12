@@ -10,6 +10,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -48,7 +49,7 @@ func compileImageWire(
 	t.Helper()
 	compiled, err := compileImage("ep-test")(
 		context.Background(),
-		inference.ModelRef{ID: inference.ModelID{Provider: driverID, Name: "seedream-5-0-pro"}},
+		model.ModelRef{ID: model.ModelID{Provider: providerID, Name: "seedream-5-0-pro"}},
 		request,
 		inference.GenerateExecutionUnary,
 	)

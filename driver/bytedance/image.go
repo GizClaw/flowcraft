@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -80,12 +81,13 @@ func compileImage(
 ) inference.GenerateCompiler[imageWire] {
 	return func(
 		_ context.Context,
-		model inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
 	) (inference.Compiled[imageWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
 		wire := imageWire{
@@ -94,14 +96,14 @@ func compileImage(
 			delivery: "url",
 		}
 		if shape == inference.GenerateExecutionStream {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateExecutionStream,
 				"image generation is unary on this provider",
 			)
 		}
 
 		var prompt []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
 				case message.TextPart:
@@ -109,8 +111,8 @@ func compileImage(
 				case message.ImagePart:
 					wire.references = append(wire.references, sourceURI(value.Source))
 				default:
-					ledger.reject(
-						fields[part.Kind()],
+					ledger.Reject(
+						fields(part.Kind()),
 						fmt.Sprintf("image generation accepts text and image parts, not %s", part.Kind()),
 					)
 				}
@@ -118,15 +120,15 @@ func compileImage(
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
+		collect(request.Input.Content.Parts, inputPartField)
 		wire.prompt = strings.Join(prompt, "\n")
 
 		intent := request.Input.Content.Intent
@@ -136,7 +138,7 @@ func compileImage(
 				"the images API has no sampling controls",
 				"image models have no thinking control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"image models do not produce text",
 			)
@@ -146,7 +148,7 @@ func compileImage(
 				wire.size = fmt.Sprintf("%dx%d", image.Size.Width, image.Size.Height)
 			}
 			if image.AspectRatio != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentImageAspectRatio,
 					"the images API has no aspect-ratio parameter; give an explicit size",
 				)
@@ -163,7 +165,7 @@ func compileImage(
 				case media.ImageFormatPNG, media.ImageFormatJPEG, media.ImageFormatWebP:
 					wire.format = string(image.OutputFormat)
 				default:
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageOutputFormat,
 						fmt.Sprintf("image format %q is not supported", image.OutputFormat),
 					)
@@ -178,30 +180,30 @@ func compileImage(
 				}
 			}
 			if image.Quality != "" {
-				ledger.drop(
+				ledger.Drop(
 					inference.FieldGenerateIntentImageQuality,
 					"seedream has no quality parameter; quality is set by model and resolution tier",
 				)
 			}
 		}
 		if wire.seed != nil && wire.count > 1 {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImageSeed,
 				"seed is supported for single-image requests only",
 			)
 		}
-		options, other := operationExtensions[ImageOptions](request.Extensions)
-		rejectOtherExtensions("image generation", other, ledger)
+		options, other := inference.ExtensionFor[ImageOptions](request.Extensions)
+		ledger.RejectExtensions("image generation", other)
 		compileImageOptions(&wire, options, intent.Image, ledger)
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"image models do not synthesize audio",
 			)
 		}
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[imageWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[imageWire]{Report: report}, ledger.Err()
 		}
 		return inference.Compiled[imageWire]{Wire: wire, Report: report}, nil
 	}
@@ -214,7 +216,7 @@ func compileImageOptions(
 	wire *imageWire,
 	options ImageOptions,
 	image *inference.ImageIntent,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	field := func(name string) inference.FieldID {
 		return inference.ExtensionField(name).Qualify(options)
@@ -235,7 +237,7 @@ func compileImageOptions(
 		wire.sequential = true
 		switch {
 		case options.SequentialMaxImages != nil && image != nil && image.Count != nil:
-			ledger.reject(
+			ledger.Reject(
 				field("sequential_max_images"),
 				"the canonical count intent already bounds the group size",
 			)
@@ -245,7 +247,7 @@ func compileImageOptions(
 	}
 	if options.SizeToken != "" {
 		if image != nil && image.Size != nil {
-			ledger.reject(
+			ledger.Reject(
 				field("size_token"),
 				"the canonical size intent already selects dimensions",
 			)
@@ -259,17 +261,17 @@ func compileImageOptions(
 	if options.LayerDecomposition != nil && *options.LayerDecomposition {
 		switch {
 		case len(wire.references) == 0:
-			ledger.reject(
+			ledger.Reject(
 				field("layer_decomposition"),
 				"layer decomposition requires an input image",
 			)
 		case wire.sequential:
-			ledger.reject(
+			ledger.Reject(
 				field("layer_decomposition"),
 				"layer decomposition is not supported with sequential generation",
 			)
 		case image != nil && image.Size != nil:
-			ledger.reject(
+			ledger.Reject(
 				field("layer_decomposition"),
 				"layer decomposition supports resolution levels only; use size_token instead of explicit dimensions",
 			)
@@ -280,12 +282,12 @@ func compileImageOptions(
 	if options.Background != "" {
 		switch {
 		case len(wire.references) != 1:
-			ledger.reject(
+			ledger.Reject(
 				field("background"),
 				"background requires exactly one input image with an alpha channel",
 			)
 		case wire.sequential:
-			ledger.reject(
+			ledger.Reject(
 				field("background"),
 				"background is not supported with sequential generation",
 			)
@@ -389,7 +391,7 @@ func generateOneImage(
 		}}
 	}
 	if wire.layerDecomposition == nil && wire.background == "" {
-		response, err := cls.ark.GenerateImages(ctx, request)
+		response, err := cls.ark.GenerateImages(ctx, request, cls.arkRequestOptions...)
 		if err != nil {
 			return imageRaw{}, classifyError(err)
 		}
@@ -502,11 +504,9 @@ func imageRawError(status int, requestID string, body io.Reader) error {
 	var envelope arkmodel.ErrorResponse
 	if err := json.NewDecoder(body).Decode(&envelope); err != nil || envelope.Error == nil {
 		return errdefs.WithRequestID(
-			classifyHTTPStatus(
+			errdefs.ClassifyStatus(
 				status,
-				"",
-				"",
-				fmt.Errorf("bytedance: image request failed with status %d", status),
+				fmt.Errorf("%s: image request failed with status %d", providerID, status),
 			),
 			requestID,
 		)
@@ -614,7 +614,7 @@ func sniffImageMediaType(data []byte) string {
 func openImage(
 	cls *clients,
 	spec Spec,
-	id inference.ModelID,
+	id model.ModelID,
 	profile string,
 ) (inference.GenerateOperations, error) {
 	if _, err := cls.requireArk(profile); err != nil {

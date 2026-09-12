@@ -1,6 +1,6 @@
 // Package bytedance implements the ByteDance (Volcengine Ark) provider for
 // the unified inference runtime. It owns the provider's model catalog, strict
-// Spec decoding, and all wire compilers; sdk/inference never sees ByteDance
+// Spec decoding, and all request lowering; core/inference never sees ByteDance
 // concepts.
 //
 // Operation coverage:
