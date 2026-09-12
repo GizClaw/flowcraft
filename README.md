@@ -48,11 +48,14 @@ the layers they need.
 `impl:` name, the `memory.context` / `memory.turn` agent-lifecycle hooks, and
 the GoTemplate context renderer.
 
-This mirrors the inference pattern: `core/inference` is generic, and
-each provider (`openai`, `deepseek`, …) is a registered factory. Memory
-implementations plug in the same way — each registers under its own
-`impl:` name with its own parameters (the flowcraft memory module is one
-such app-registered implementation); `core` owns only the contracts and
+This mirrors the inference pattern: `core/inference` is generic, and each
+provider driver (`openai`, `anthropic`, `bytedance`, `minimax`) is a
+registered factory. A deployment points one of them at any endpoint speaking
+that wire family — DeepSeek and GLM ride the OpenAI driver, for example — so
+the document's provider id (`openai`, `deepseek`, …) names the deployment, not
+the module. Memory implementations plug in the same way — each registers under
+its own `impl:` name with its own parameters (the flowcraft memory module is
+one such app-registered implementation); `core` owns only the contracts and
 glue.
 
 ## Quickstart

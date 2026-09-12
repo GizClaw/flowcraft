@@ -61,6 +61,10 @@ retrieval, runtime orchestration, and voice. Source on
 - [`core/v0.1.0`](migrations/core-v0.1.0.md) — the breaking cut from
   `sdk`/`sdkx` to the `core` platform module, provider `driver/*`
   modules, and platform-specific `backends/*`.
+- [One driver per wire family](migrations/drivers-one-per-wire-family.md) —
+  the consolidation that folded the Azure, DeepSeek and Kimi drivers into
+  `driver/openai`, moved MiniMax's Messages surface to `driver/anthropic`, and
+  removed `driver/qwen`.
 
 Older `sdk`/`sdkx` migration notes remain in `docs/migrations/` as
 historical reference and are not part of the current core migration path.
