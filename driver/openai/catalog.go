@@ -82,9 +82,17 @@ func (e catalogEntry) validate() error {
 				"the OpenAI wire has no audio input; drop it from capabilities.inputs",
 			)
 		case message.PartVideo:
-			return fmt.Errorf(
-				"the OpenAI wire has no video input; drop it from capabilities.inputs",
-			)
+			// Video is a compatible-endpoint extension: the family carries it
+			// only when the deployment states the endpoint fact (and the spec
+			// requires that fact to be on the chat surface, the one with a
+			// lowering).
+			if !e.dialect.videoInput {
+				return fmt.Errorf(
+					"the endpoint does not accept video input; " +
+						"set spec.wire.video_input on a chat-surface deployment, " +
+						"or drop it from capabilities.inputs",
+				)
+			}
 		case message.PartFile:
 			return fmt.Errorf(
 				"the OpenAI wire has no file input; drop it from capabilities.inputs",

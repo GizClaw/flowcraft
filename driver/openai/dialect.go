@@ -1,6 +1,11 @@
 package openai
 
-import "github.com/GizClaw/flowcraft/core/inference/model"
+import (
+	"encoding/json"
+	"sort"
+
+	"github.com/GizClaw/flowcraft/core/inference/model"
+)
 
 // This file owns the driver's dialect vocabulary: the normalized enums the
 // compiler reads, and the one value that carries every provider-wide wire
@@ -50,6 +55,31 @@ const (
 // field has to be asked for, never inherited from an unbuilt entry.
 type storePolicy uint8
 
+// bodyField is one unmodeled body assignment a deployment configured through
+// wire.extra_body, pre-sorted at dialect build time so every request the
+// deployment serves writes the fields in the same order.
+type bodyField struct {
+	path  string
+	value json.RawMessage
+}
+
+// sortedBodyFields orders one body-field map by path. It is derived once per
+// provider instance (the dialect is stamped onto every catalog entry), so the
+// request path only copies the slice.
+func sortedBodyFields(entries map[string]json.RawMessage) []bodyField {
+	if len(entries) == 0 {
+		return nil
+	}
+	fields := make([]bodyField, 0, len(entries))
+	for path, value := range entries {
+		fields = append(fields, bodyField{path: path, value: value})
+	}
+	sort.Slice(fields, func(i, j int) bool {
+		return fields[i].path < fields[j].path
+	})
+	return fields
+}
+
 const (
 	// storeDisabled sends store: false, the driver default.
 	storeDisabled storePolicy = iota
@@ -71,6 +101,8 @@ type dialect struct {
 	reasoningSummary        reasoningSummaryPolicy
 	truncation              truncationMode
 	azureDeployment         bool
+	videoInput              bool
+	extraBody               []bodyField
 	requestMetadataEnvelope string
 	// chatStreamIncludeUsage / Obfuscation carry the explicit chat streaming
 	// policy; nil keeps the OpenAI default.
@@ -88,6 +120,8 @@ func (s Spec) dialect() dialect {
 		reasoningSummary:             s.reasoningSummaryPolicy(),
 		truncation:                   s.truncation(),
 		azureDeployment:              s.routing() == routingAzureDeployment,
+		videoInput:                   s.Wire.VideoInput,
+		extraBody:                    sortedBodyFields(s.Wire.ExtraBody),
 		requestMetadataEnvelope:      s.requestMetadataEnvelope(),
 		chatStreamIncludeUsage:       s.chatStreamIncludeUsage(),
 		chatStreamIncludeObfuscation: s.chatStreamIncludeObfuscation(),

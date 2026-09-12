@@ -1,8 +1,11 @@
 package openai
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -54,6 +57,50 @@ type GenerateOptions struct {
 	// OpenAI-wire vocabulary rather than a canonical concept: endpoints that
 	// manage caching themselves leave it unset.
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// JSONSet carries request-body fields this driver does not model, for
+	// compatible endpoints whose dialect extends the OpenAI schema (Kimi's
+	// `thinking`, Qwen's `enable_thinking` / `thinking_budget`, a gateway's
+	// own knob). Each key is a path in sjson notation — `enable_thinking`
+	// sets a top-level field, `thinking.keep` sets one leaf and leaves its
+	// siblings alone — and each value is the raw JSON to place there.
+	//
+	// This is unverified passthrough, not a capability claim: FlowCraft
+	// cannot validate what an endpoint does with a field it did not model,
+	// so a deployment that needs it says so here, explicitly, per request.
+	// The compile report names every key it applied, which is what keeps the
+	// ledger from claiming a setting the provider never received.
+	//
+	// Keys naming a field the compiler already lowers from the canonical
+	// request (model, messages, tools, reasoning, store, ...) are rejected:
+	// the typed knob and the ledger are the only honest way to set those.
+	JSONSet map[string]json.RawMessage `json:"json_set,omitempty"`
+}
+
+// JSONSet limits bound what one request may inject. The escape hatch is for
+// a handful of provider knobs, not for smuggling a payload past the ledger,
+// and the request report carries one decision per key.
+const (
+	maxJSONSetKeys  = 32
+	maxJSONSetBytes = 64 << 10
+)
+
+// jsonSetReservedRoots are the body fields the compiler owns. A root here
+// either carries canonical request data the compiler lowered (model,
+// messages, tools, reasoning, store, the output-shape knobs) or changes the
+// response contract the decoder assumes (n, modalities, audio). A JSONSet key
+// under one of them is a configuration error, not a passthrough: letting it
+// through would make the compile report claim a decision the body contradicts.
+var jsonSetReservedRoots = []string{
+	"model", "messages", "input", "instructions",
+	"stream", "stream_options",
+	"tools", "tool_choice", "functions", "function_call",
+	"response_format", "text",
+	"max_tokens", "max_completion_tokens", "max_output_tokens",
+	"temperature", "top_p", "n",
+	"store", "metadata", "reasoning", "reasoning_effort",
+	"service_tier", "verbosity", "parallel_tool_calls", "max_tool_calls",
+	"safety_identifier", "prompt_cache_key",
+	"modalities", "audio",
 }
 
 // GenerateWebSearch configures the hosted web_search tool.
@@ -120,10 +167,72 @@ func (o GenerateOptions) ActiveFields() []inference.ExtensionField {
 			fields = append(fields, "web_search_tool_choice")
 		}
 	}
+	fields = append(fields, jsonSetFields(o.JSONSet)...)
 	return fields
 }
 
+// jsonSetFields names one active field per injected body path, sorted so the
+// compile report does not inherit Go's map iteration order. The ledger's field
+// vocabulary is a flat identifier, so a path is flattened with the same
+// character set extension ids use ("thinking.keep" → "thinking_keep"); two
+// paths that flatten alike share one decision rather than tripping the
+// duplicate-field check.
+func jsonSetFields(entries map[string]json.RawMessage) []inference.ExtensionField {
+	if len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for path := range entries {
+		name := jsonSetFieldName(path)
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fields := make([]inference.ExtensionField, 0, len(names))
+	for _, name := range names {
+		fields = append(fields, inference.ExtensionField(name))
+	}
+	return fields
+}
+
+// jsonSetFieldName flattens one sjson path into the ledger's identifier
+// vocabulary. Paths that start with a character an identifier may not start
+// with are prefixed so the name stays valid.
+func jsonSetFieldName(path string) string {
+	var builder strings.Builder
+	builder.Grow(len(path))
+	for _, char := range path {
+		switch {
+		case char >= 'a' && char <= 'z',
+			char >= 'A' && char <= 'Z',
+			char >= '0' && char <= '9',
+			char == '_', char == '-':
+			builder.WriteRune(char)
+		default:
+			builder.WriteRune('_')
+		}
+	}
+	name := builder.String()
+	if name == "" {
+		return "field"
+	}
+	first := rune(name[0])
+	if (first >= 'a' && first <= 'z') ||
+		(first >= 'A' && first <= 'Z') ||
+		(first >= '0' && first <= '9') {
+		return name
+	}
+	return "field" + name
+}
+
 func (o GenerateOptions) Validate() error {
+	if err := validateBodyFields("json_set", o.JSONSet); err != nil {
+		return err
+	}
 	if o.ServiceTier != "" && !validServiceTier(o.ServiceTier) {
 		return fmt.Errorf(
 			"service_tier %q is not one of auto/default/flex/scale/priority",
@@ -160,9 +269,77 @@ func (o GenerateOptions) Validate() error {
 	return nil
 }
 
+// validateBodyFields enforces the contract shared by the two ways to name a
+// body field this driver does not model — the per-request json_set extension
+// and the deployment-level spec.wire.extra_body: a bounded number of bounded,
+// well-formed values, none of them under a body field the compiler owns.
+// label names the configuration surface in the error.
+func validateBodyFields(label string, entries map[string]json.RawMessage) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	if len(entries) > maxJSONSetKeys {
+		return fmt.Errorf(
+			"%s carries %d keys, at most %d are allowed",
+			label, len(entries), maxJSONSetKeys,
+		)
+	}
+	paths := make([]string, 0, len(entries))
+	for path := range entries {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	total := 0
+	for _, path := range paths {
+		value := entries[path]
+		switch {
+		case strings.TrimSpace(path) == "":
+			return fmt.Errorf("%s has an empty key", label)
+		case !json.Valid(value) || len(bytes.TrimSpace(value)) == 0:
+			return fmt.Errorf("%s %q is not a JSON value", label, path)
+		case slices.Contains(jsonSetReservedRoots, jsonSetRoot(path)):
+			return fmt.Errorf(
+				"%s %q names a field the compiler lowers from the "+
+					"canonical request; use the typed knob or extension field instead",
+				label, path,
+			)
+		}
+		total += len(value)
+	}
+	if total > maxJSONSetBytes {
+		return fmt.Errorf(
+			"%s carries %d bytes, at most %d are allowed",
+			label, total, maxJSONSetBytes,
+		)
+	}
+	return nil
+}
+
+// jsonSetRoot returns the body field a path addresses: the first sjson
+// segment, with escaped dots kept inside the segment. Bracket segments
+// (`messages[0]`) count as a new segment for the same reason a dot does, so a
+// key can never reach under a reserved field by another spelling.
+func jsonSetRoot(path string) string {
+	escaped := false
+	for index, char := range path {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch char {
+		case '\\':
+			escaped = true
+		case '.', '[':
+			return path[:index]
+		}
+	}
+	return path
+}
+
 func (o GenerateOptions) Clone() inference.Extension {
 	o.ParallelToolCalls = ptr.Clone(o.ParallelToolCalls)
 	o.MaxToolCalls = ptr.Clone(o.MaxToolCalls)
+	o.JSONSet = cloneJSONSet(o.JSONSet)
 	if o.WebSearch != nil {
 		search := *o.WebSearch
 		search.AllowedDomains = append([]string(nil), search.AllowedDomains...)
@@ -171,6 +348,20 @@ func (o GenerateOptions) Clone() inference.Extension {
 		o.WebSearch = &search
 	}
 	return o
+}
+
+// cloneJSONSet copies the injected body values: the extension is cloned onto
+// every attempt, and an attempt must not hand a caller's backing array to the
+// next one.
+func cloneJSONSet(entries map[string]json.RawMessage) map[string]json.RawMessage {
+	if entries == nil {
+		return nil
+	}
+	cloned := make(map[string]json.RawMessage, len(entries))
+	for path, value := range entries {
+		cloned[path] = bytes.Clone(value)
+	}
+	return cloned
 }
 
 // ---------------------------------------------------------------------------

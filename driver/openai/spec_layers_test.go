@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
@@ -42,6 +44,12 @@ func TestSpecValidationLayers(t *testing.T) {
 			raw: `{"endpoint":{"routing":"azure_deployment"}}`, ok: true},
 		{name: "azure routing rejects bearer",
 			raw: `{"endpoint":{"routing":"azure_deployment"},"auth":{"scheme":"bearer"}}`, ok: false},
+		{name: "video input on the chat surface",
+			raw: `{"api":"chat","wire":{"video_input":true}}`, ok: true},
+		{name: "video input needs the chat surface",
+			raw: `{"wire":{"video_input":true}}`, ok: false},
+		{name: "video input rejected on responses explicitly",
+			raw: `{"api":"responses","wire":{"video_input":true}}`, ok: false},
 		{name: "unknown routing",
 			raw: `{"endpoint":{"routing":"deployment"}}`, ok: false},
 		{name: "store opt in", raw: `{"wire":{"store":true}}`, ok: true},
@@ -180,10 +188,12 @@ func TestCatalogDeclaredMode(t *testing.T) {
 }
 
 // TestCatalogRejectsUnsupportedInputModalities locks the promise boundary:
-// publishing an input kind the OpenAI wire cannot carry fails at build time
-// instead of dropping the part at request time.
+// publishing an input kind this family cannot carry fails at build time
+// instead of dropping the part at request time. Video is the compatible-
+// endpoint extension, so it needs the endpoint fact as well as the model
+// declaration; audio and file stay unsupported.
 func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
-	for _, kind := range []string{"video", "audio", "file"} {
+	for _, kind := range []string{"audio", "file"} {
 		spec, err := decodeSpec(context.Background(), []byte(fmt.Sprintf(
 			`{"catalog":"declared","models":[{"name":"m","kind":"generate",`+
 				`"capabilities":{"inputs":["text","%s"],"outputs":["text"]}}]}`,
@@ -195,6 +205,42 @@ func TestCatalogRejectsUnsupportedInputModalities(t *testing.T) {
 		if _, err := mergedCatalog(spec); err == nil {
 			t.Fatalf("declaring %s input must fail the catalog build", kind)
 		}
+	}
+
+	videoSpec := func(extra string) []byte {
+		return []byte(`{"catalog":"declared",` + extra +
+			`"models":[{"name":"m","kind":"generate",` +
+			`"capabilities":{"inputs":["text","video"],"outputs":["text"]}}]}`)
+	}
+	withoutFact, err := decodeSpec(
+		context.Background(), videoSpec(""),
+	)
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	if _, err := mergedCatalog(withoutFact); err == nil {
+		t.Fatal("declaring video input without the endpoint fact must fail")
+	} else if !strings.Contains(err.Error(), "spec.wire.video_input") {
+		t.Fatalf("error = %v, want it to name the endpoint fact", err)
+	}
+
+	withFact, err := decodeSpec(
+		context.Background(),
+		videoSpec(`"api":"chat","wire":{"video_input":true},`),
+	)
+	if err != nil {
+		t.Fatalf("decodeSpec: %v", err)
+	}
+	models, err := mergedCatalog(withFact)
+	if err != nil {
+		t.Fatalf("mergedCatalog: %v", err)
+	}
+	entry, ok := models["m"]
+	if !ok {
+		t.Fatal("declared model is missing from the catalog")
+	}
+	if !slices.Contains(entry.capabilities.Inputs, message.PartVideo) {
+		t.Fatalf("inputs = %v, want the video declaration kept", entry.capabilities.Inputs)
 	}
 }
 

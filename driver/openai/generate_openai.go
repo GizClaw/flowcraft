@@ -263,6 +263,13 @@ func (r *responsesRequest) setRequestMetadata(
 	r.options = append(r.options, option.WithJSONSet(envelope, metadata))
 }
 
+// setJSONField appends one unmodeled body field the caller supplied. The
+// option is applied to the serialized body, so path and value reach the wire
+// exactly as written.
+func (r *responsesRequest) setJSONField(path string, value json.RawMessage) {
+	r.options = append(r.options, option.WithJSONSet(path, value))
+}
+
 func (r *responsesRequest) addHostedWebSearch(
 	search *GenerateWebSearch,
 	required bool,

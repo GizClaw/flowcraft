@@ -8,6 +8,8 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 
@@ -45,6 +47,28 @@ type chatRequest struct {
 	// Chat Completions carries calls inside the message, so the compiler's
 	// item order is reassembled here.
 	assistant *openai.ChatCompletionAssistantMessageParam
+	// pendingVideo carries the video content parts of the message being
+	// built. The SDK's content union has no video variant, so each one holds
+	// a placeholder element until flushVideo patches it into the serialized
+	// body as the `video_url` object the compatible endpoints accept.
+	pendingVideo []pendingVideoPart
+}
+
+// pendingVideoPart is one video content element of the last appended message:
+// its index inside that message's content array, and the URI it addresses.
+type pendingVideoPart struct {
+	index int
+	uri   string
+}
+
+// chatVideoURLPart is the wire element a video content part lowers to. OpenAI
+// has no such content type; the compatible endpoints that accept video take
+// the image shape under a video key.
+type chatVideoURLPart struct {
+	Type     string `json:"type"`
+	VideoURL struct {
+		URL string `json:"url"`
+	} `json:"video_url"`
 }
 
 // newChatRequest seeds the provider-wide policy of one Chat Completions call.
@@ -105,14 +129,19 @@ func (r *chatRequest) message(role string, content []contentPart) {
 		r.params.Messages = append(r.params.Messages,
 			openai.SystemMessage(joinedText(content)))
 	default: // user
-		parts := chatUserContent(content)
-		if len(parts) == 1 && parts[0].OfText != nil {
+		parts, videos := chatUserContent(content)
+		// A carried video is not expressible in the SDK's content union, so
+		// the element is patched into the serialized body below; the string
+		// fast path must not swallow it.
+		if len(videos) == 0 && len(parts) == 1 && parts[0].OfText != nil {
 			r.params.Messages = append(r.params.Messages,
 				openai.UserMessage(parts[0].OfText.Text))
 			return
 		}
 		r.params.Messages = append(r.params.Messages,
 			openai.UserMessage(parts))
+		r.pendingVideo = videos
+		r.flushVideo(len(r.params.Messages) - 1)
 	}
 }
 
@@ -235,6 +264,36 @@ func (r *chatRequest) setPromptCacheKey(key string) {
 	r.params.PromptCacheKey = param.NewOpt(key)
 }
 
+// setJSONField appends one unmodeled body field the caller supplied. The
+// option is applied to the serialized body, so path and value reach the wire
+// exactly as written.
+func (r *chatRequest) setJSONField(path string, value json.RawMessage) {
+	r.options = append(r.options, option.WithJSONSet(path, value))
+}
+
+// flushVideo patches the message at messageIndex, replacing every placeholder
+// element the content lowering reserved with the video_url object that belongs
+// there. The paths address the serialized body, so the indices are exactly the
+// ones the content array was built with.
+func (r *chatRequest) flushVideo(messageIndex int) {
+	defer func() { r.pendingVideo = nil }()
+	for _, video := range r.pendingVideo {
+		r.setJSONField(
+			fmt.Sprintf("messages.%d.content.%d", messageIndex, video.index),
+			videoURLJSON(video.uri),
+		)
+	}
+}
+
+// videoURLJSON renders one video content element. Encoding a struct of two
+// strings cannot fail, so the result is used directly.
+func videoURLJSON(uri string) json.RawMessage {
+	part := chatVideoURLPart{Type: "video_url"}
+	part.VideoURL.URL = uri
+	encoded, _ := json.Marshal(part)
+	return encoded
+}
+
 func (r *chatRequest) setRequestMetadata(
 	envelope string,
 	metadata map[string]string,
@@ -277,10 +336,18 @@ func joinedText(content []contentPart) string {
 	return builder.String()
 }
 
-func chatUserContent(content []contentPart) []openai.ChatCompletionContentPartUnionParam {
+// chatUserContent lowers a carried content run into the Chat Completions
+// content array. A video part reserves a placeholder element, so the array
+// indices the video patch addresses stay stable; the request replaces that
+// element with the video_url object once the message is appended.
+func chatUserContent(
+	content []contentPart,
+) ([]openai.ChatCompletionContentPartUnionParam, []pendingVideoPart) {
 	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(content))
+	var videos []pendingVideoPart
 	for _, part := range content {
-		if part.kind == contentImage {
+		switch part.kind {
+		case contentImage:
 			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
 				OfImageURL: &openai.ChatCompletionContentPartImageParam{
 					ImageURL: openai.ChatCompletionContentPartImageImageURLParam{
@@ -288,13 +355,18 @@ func chatUserContent(content []contentPart) []openai.ChatCompletionContentPartUn
 					},
 				},
 			})
-			continue
+		case contentVideo:
+			videos = append(videos, pendingVideoPart{index: len(parts), uri: part.uri})
+			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: ""},
+			})
+		default:
+			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+				OfText: &openai.ChatCompletionContentPartTextParam{Text: part.text},
+			})
 		}
-		parts = append(parts, openai.ChatCompletionContentPartUnionParam{
-			OfText: &openai.ChatCompletionContentPartTextParam{Text: part.text},
-		})
 	}
-	return parts
+	return parts, videos
 }
 
 // ---------------------------------------------------------------------------

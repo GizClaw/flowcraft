@@ -50,6 +50,18 @@
 // stream obfuscation. The profile Spec is reserved and currently carries
 // no settings.
 //
+// Two dialect facts describe what a compatible endpoint accepts beyond the
+// OpenAI schema. `wire.video_input: true` (chat surface only) lets a model
+// that declares video input carry video content parts, lowered as the
+// `video_url` element those endpoints define; without the fact the catalog
+// refuses the declaration, so a descriptor never promises a part the compiler
+// would reject. GenerateOptions.JSONSet carries any other unmodeled body field
+// per request, at a bounded cost and with one ledger decision per key: it is
+// the escape hatch for vocabulary this driver cannot verify, not a capability
+// claim. Keys under a field the compiler lowers (model, messages, tools,
+// reasoning, store, ...) are rejected so the report cannot describe a request
+// the provider never received.
+//
 // Transcription (gpt-4o-transcribe family) is also absent for now:
 // core/inference does not expose the transcription operation surface yet.
 //
