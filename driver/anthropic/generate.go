@@ -395,7 +395,6 @@ func compileToolResults(
 }
 
 // compileToolResultContent lowers one tool result's content parts. Text and
-// compileToolResultContent lowers one tool result's content parts. Text and
 // structured data always ride; an image needs a model that declares image
 // input and a materialized source. The tool_result content union carries text
 // and images only, so a video becomes a placeholder even where the endpoint
