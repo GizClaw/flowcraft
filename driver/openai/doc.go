@@ -26,6 +26,12 @@
 //     encrypted payload in the Signature slot, item id) and round-trip
 //     through context when id and payload survive; the request always
 //     includes reasoning.encrypted_content so round-trips stay possible.
+//     Every trace the decoder produces is stamped with this deployment's
+//     verification scope, and the compiler replays a stored trace only when
+//     that scope matches: an item another model or account minted cannot be
+//     verified here, so sending it is a provider error no retry repairs.
+//     `wire.reasoning_scope` declares a shared scope when the operator has
+//     verified that several models or credentials accept each other's.
 //     GenerateOptions.WebSearch attaches OpenAI's hosted web_search tool;
 //     web_search_call items and url_citation annotations surface on
 //     GenerateResponse.ProviderOutputs (never inside Message).

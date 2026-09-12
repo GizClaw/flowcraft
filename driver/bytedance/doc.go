@@ -9,7 +9,10 @@
 //     tool calling, reasoning effort, JSON/JSON-schema response formats.
 //     Reasoning items decode into canonical reasoning parts (summary text
 //     plus item id); ark signs nothing and consumes no reasoning input, so
-//     traces never round-trip and context compiles them as Dropped.
+//     traces never round-trip and context compiles them as Dropped. They do
+//     carry the deployment's verification scope (`spec.reasoning_scope`, or
+//     the derived provider/model/profile), so a conversation that moves to a
+//     target which replays traces can tell where one came from.
 //     GenerateOptions.WebSearch attaches Ark's hosted web_search tool;
 //     web_search_call items and url_citation annotations surface on
 //     GenerateResponse.ProviderOutputs (never inside Message).
