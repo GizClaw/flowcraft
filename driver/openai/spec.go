@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/resource"
 )
 
@@ -167,11 +167,11 @@ type ModelSpec struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	// Capabilities declares the capability leaves this model changes.
-	Capabilities *inference.CapabilitiesPatch `json:"capabilities,omitempty"`
+	Capabilities *model.CapabilitiesPatch `json:"capabilities,omitempty"`
 	// Limits declares numeric capacity limits for the model. Overriding a
 	// built-in catalog entry by name keeps the catalog limit for any field
 	// left nil; declaring a value replaces it.
-	Limits inference.ModelLimits `json:"limits,omitempty"`
+	Limits model.ModelLimits `json:"limits,omitempty"`
 }
 
 // ProfileSpec is the per-credential-profile configuration. OpenAI addresses

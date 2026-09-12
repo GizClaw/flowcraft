@@ -5,7 +5,7 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 )
 
@@ -51,12 +51,12 @@ func (s Spec) catalogMode() catalogMode {
 // mergedCatalog for the per-surface resolution).
 type catalogEntry struct {
 	kind         modelKind
-	capabilities inference.ModelCapabilities
+	capabilities model.ModelCapabilities
 	// limits carries the model's context/output windows in tokens. Nil
 	// leaves are undeclared. Generate values mirror the context window and
 	// maximum output on https://developers.openai.com/api/docs/models;
 	// embedding values mirror the per-request input limit.
-	limits inference.ModelLimits
+	limits model.ModelLimits
 	// deprecated and replacement carry lifecycle facts for discovery.
 	deprecated  bool
 	replacement string
@@ -116,8 +116,8 @@ func (e catalogEntry) validate() error {
 // text chat/responses compiler family. Individual entries add image input
 // when the model has vision and the reasoning kind when the model reasons;
 // hosted web search rides on the capabilities bit.
-func generateChatCapabilities() inference.ModelCapabilities {
-	return inference.ModelCapabilities{
+func generateChatCapabilities() model.ModelCapabilities {
+	return model.ModelCapabilities{
 		Inputs: []message.PartKind{
 			message.PartText,
 			message.PartData,
@@ -130,12 +130,12 @@ func generateChatCapabilities() inference.ModelCapabilities {
 
 // openaiEffortMap is the canonical-to-wire identity map: OpenAI's
 // reasoning.effort accepts the canonical five verbatim.
-var openaiEffortMap = map[inference.ReasoningEffort]string{
-	inference.ReasoningMinimal: string(inference.ReasoningMinimal),
-	inference.ReasoningLow:     string(inference.ReasoningLow),
-	inference.ReasoningMedium:  string(inference.ReasoningMedium),
-	inference.ReasoningHigh:    string(inference.ReasoningHigh),
-	inference.ReasoningXHigh:   string(inference.ReasoningXHigh),
+var openaiEffortMap = map[model.ReasoningEffort]string{
+	model.ReasoningMinimal: string(model.ReasoningMinimal),
+	model.ReasoningLow:     string(model.ReasoningLow),
+	model.ReasoningMedium:  string(model.ReasoningMedium),
+	model.ReasoningHigh:    string(model.ReasoningHigh),
+	model.ReasoningXHigh:   string(model.ReasoningXHigh),
 }
 
 // catalog is the built-in model list, aligned with the OpenAI model lineup
@@ -145,55 +145,55 @@ var catalog = map[string]catalogEntry{
 	// Generate — GPT-5.6 flagship family (reasoning + vision).
 	"gpt-5.6-sol": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		limits: inference.ModelLimits{}.
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_050_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.6-terra": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		limits: inference.ModelLimits{}.
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_050_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.6-luna": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
-		limits: inference.ModelLimits{}.
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningToggle).WithReasoningEffortMap(openaiEffortMap),
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_050_000).
 			WithMaxOutputTokens(128_000),
 	},
 	// Generate — previous generations, superseded but available.
 	"gpt-5.5": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_050_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-sol",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_050_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4-mini": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-terra",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(400_000).
 			WithMaxOutputTokens(128_000),
 	},
 	"gpt-5.4-nano": {
 		kind:         kindGenerate,
-		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(inference.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
+		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch().WithReasoning(model.ReasoningAlways).WithReasoningEffortMap(openaiEffortMap),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(400_000).
 			WithMaxOutputTokens(128_000),
 	},
@@ -201,14 +201,14 @@ var catalog = map[string]catalogEntry{
 	"gpt-4.1": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_047_576).
 			WithMaxOutputTokens(32_768),
 	},
 	"gpt-4.1-mini": {
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage).WithHostedWebSearch(),
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_047_576).
 			WithMaxOutputTokens(32_768),
 	},
@@ -217,7 +217,7 @@ var catalog = map[string]catalogEntry{
 		kind:         kindGenerate,
 		capabilities: generateChatCapabilities().WithInputs(message.PartImage),
 		deprecated:   true, replacement: "gpt-5.6-luna",
-		limits: inference.ModelLimits{}.
+		limits: model.ModelLimits{}.
 			WithMaxInputTokens(1_047_576).
 			WithMaxOutputTokens(32_768),
 	},
@@ -225,30 +225,30 @@ var catalog = map[string]catalogEntry{
 	// Embed.
 	"text-embedding-3-small": {
 		kind:         kindEmbed,
-		capabilities: inference.ModelCapabilities{}.WithCustomEmbedDimensions(),
-		limits:       inference.ModelLimits{}.WithMaxInputTokens(8_192),
+		capabilities: model.ModelCapabilities{}.WithCustomEmbedDimensions(),
+		limits:       model.ModelLimits{}.WithMaxInputTokens(8_192),
 	},
 	"text-embedding-3-large": {
 		kind:         kindEmbed,
-		capabilities: inference.ModelCapabilities{}.WithCustomEmbedDimensions(),
-		limits:       inference.ModelLimits{}.WithMaxInputTokens(8_192),
+		capabilities: model.ModelCapabilities{}.WithCustomEmbedDimensions(),
+		limits:       model.ModelLimits{}.WithMaxInputTokens(8_192),
 	},
 	"text-embedding-ada-002": {
 		kind:       kindEmbed,
 		deprecated: true, replacement: "text-embedding-3-small",
-		limits: inference.ModelLimits{}.WithMaxInputTokens(8_192),
+		limits: model.ModelLimits{}.WithMaxInputTokens(8_192),
 	},
 
 	// Image.
 	"gpt-image-2": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText, message.PartImage).
 			WithOutputs(message.PartImage),
 	},
 	"gpt-image-1": {
 		kind: kindImage,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartImage),
 		deprecated: true, replacement: "gpt-image-2",
@@ -257,20 +257,20 @@ var catalog = map[string]catalogEntry{
 	// TTS.
 	"gpt-4o-mini-tts": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 	},
 	"tts-1": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 		deprecated: true, replacement: "gpt-4o-mini-tts",
 	},
 	"tts-1-hd": {
 		kind: kindTTS,
-		capabilities: inference.ModelCapabilities{}.
+		capabilities: model.ModelCapabilities{}.
 			WithInputs(message.PartText).
 			WithOutputs(message.PartAudio),
 		deprecated: true, replacement: "gpt-4o-mini-tts",
@@ -295,27 +295,27 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 	if spec.catalogMode() == catalogBuiltinDeclared {
 		maps.Copy(models, catalog)
 	}
-	for _, model := range spec.Models {
-		kind := modelKind(model.Kind)
-		builtin, exists := models[model.Name]
+	for _, declared := range spec.Models {
+		kind := modelKind(declared.Kind)
+		builtin, exists := models[declared.Name]
 		entry := catalogEntry{kind: kind}
 		if exists && builtin.kind == kind {
 			// Same-kind redeclarations inherit the built-in capabilities as
 			// the patch base plus the limits below.
-			entry.capabilities = model.Capabilities.Apply(builtin.capabilities)
+			entry.capabilities = declared.Capabilities.Apply(builtin.capabilities)
 			entry.limits = builtin.limits.Clone()
 		} else {
-			entry.capabilities = model.Capabilities.Apply(inference.ModelCapabilities{})
+			entry.capabilities = declared.Capabilities.Apply(model.ModelCapabilities{})
 		}
-		if model.Limits.MaxInputTokens != nil {
-			value := *model.Limits.MaxInputTokens
+		if declared.Limits.MaxInputTokens != nil {
+			value := *declared.Limits.MaxInputTokens
 			entry.limits.MaxInputTokens = &value
 		}
-		if model.Limits.MaxOutputTokens != nil {
-			value := *model.Limits.MaxOutputTokens
+		if declared.Limits.MaxOutputTokens != nil {
+			value := *declared.Limits.MaxOutputTokens
 			entry.limits.MaxOutputTokens = &value
 		}
-		models[model.Name] = entry
+		models[declared.Name] = entry
 	}
 	wire := spec.dialect()
 	for name, entry := range models {
@@ -333,15 +333,15 @@ func mergedCatalog(spec Spec) (map[string]catalogEntry, error) {
 // descriptorFor lowers one catalog entry into its public discovery
 // descriptor under id. buildProvider and Catalog share this lowering so
 // offline catalog views cannot drift from deployed provider models.
-func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDescriptor {
-	descriptor := inference.ModelDescriptor{
+func descriptorFor(id model.ModelID, entry catalogEntry) model.ModelDescriptor {
+	descriptor := model.ModelDescriptor{
 		ID:           id,
 		Capabilities: entry.capabilities,
 	}
 	if entry.deprecated {
-		descriptor.Lifecycle.Status = inference.ModelStatusDeprecated
+		descriptor.Lifecycle.Status = model.ModelStatusDeprecated
 		if entry.replacement != "" {
-			replacement := inference.ModelID{
+			replacement := model.ModelID{
 				Provider: id.Provider,
 				Name:     entry.replacement,
 			}
@@ -357,7 +357,7 @@ func descriptorFor(id inference.ModelID, entry catalogEntry) inference.ModelDesc
 // lifecycle; Operations stay empty because the inference assembly derives them
 // from the model's openers after deployment. Provider IDs are a deployment
 // property, so callers supply the identity that appears in each descriptor.
-func Catalog(provider string) ([]inference.ModelDescriptor, error) {
+func Catalog(provider string) ([]model.ModelDescriptor, error) {
 	if provider == "" {
 		return nil, fmt.Errorf("catalog: provider is required")
 	}
@@ -366,10 +366,10 @@ func Catalog(provider string) ([]inference.ModelDescriptor, error) {
 		names = append(names, name)
 	}
 	slices.Sort(names)
-	descriptors := make([]inference.ModelDescriptor, 0, len(catalog))
+	descriptors := make([]model.ModelDescriptor, 0, len(catalog))
 	for _, name := range names {
 		descriptor := descriptorFor(
-			inference.ModelID{Provider: provider, Name: name},
+			model.ModelID{Provider: provider, Name: name},
 			catalog[name],
 		)
 		descriptors = append(descriptors, descriptor)

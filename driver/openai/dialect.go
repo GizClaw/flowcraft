@@ -1,6 +1,6 @@
 package openai
 
-import "github.com/GizClaw/flowcraft/core/inference"
+import "github.com/GizClaw/flowcraft/core/inference/model"
 
 // This file owns the driver's dialect vocabulary: the normalized enums the
 // compiler reads, and the one value that carries every provider-wide wire
@@ -87,9 +87,9 @@ func (s Spec) dialect() dialect {
 // reasoning channel.
 func (d dialect) narrow(entry catalogEntry) catalogEntry {
 	if entry.kind == kindGenerate &&
-		entry.capabilities.Reasoning.Kind == inference.ReasoningToggle &&
+		entry.capabilities.Reasoning.Kind == model.ReasoningToggle &&
 		d.api == apiChat {
-		entry.capabilities.Reasoning.Kind = inference.ReasoningAlways
+		entry.capabilities.Reasoning.Kind = model.ReasoningAlways
 	}
 	return entry
 }

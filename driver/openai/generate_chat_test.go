@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
+	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -22,18 +24,18 @@ func TestChatCompileRejectsWebSearch(t *testing.T) {
 	request.Extensions = inference.Extensions{
 		GenerateOptions{WebSearch: &GenerateWebSearch{}},
 	}
-	compiled, err := compileGenerate("gpt-5.6-sol", catalogEntry{
+	compiled, err := compileChat("gpt-5.6-sol", catalogEntry{
 		kind: kindGenerate,
 
-		capabilities: inference.ModelCapabilities{HostedWebSearch: true},
+		capabilities: model.ModelCapabilities{HostedWebSearch: true},
 		dialect: dialect{
 			api: apiChat,
 		}})(context.Background(), openaiModel("gpt-5.6-sol"), request, inference.GenerateExecutionUnary)
 	if err == nil || !strings.Contains(err.Error(), "web_search") {
 		t.Fatalf("compile error = %v, want web_search rejection", err)
 	}
-	if compiled.Wire.webSearch != nil {
-		t.Fatal("chat wire carries web_search")
+	if compiled.Wire != nil {
+		t.Fatalf("rejected web_search still built a request: %+v", compiled.Wire.params.Tools)
 	}
 }
 
@@ -118,7 +120,7 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 	})
 	defer server.Close()
 
-	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
+	request, err := compileChat("gpt-5.6-sol", catalogEntry{
 		kind: kindGenerate,
 		dialect: dialect{
 			api: apiChat,
@@ -126,7 +128,7 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := transportChatGenerate(testClients(t, server).api)(context.Background(), wire.Wire)
+	raw, err := transportChatGenerate(testClients(t, server).api)(context.Background(), request.Wire)
 	if err != nil {
 		t.Fatalf("transport: %v", err)
 	}
@@ -144,6 +146,60 @@ func TestChatUnaryTransportAndDecode(t *testing.T) {
 	if body["model"] != "gpt-5.6-sol" {
 		t.Fatalf("model = %v", body["model"])
 	}
+	if store, ok := body["store"].(bool); !ok || store {
+		t.Fatalf("store = %v, want an explicit false", body["store"])
+	}
+}
+
+// TestChatReasoningItemsAreReportedDropped pins the chat surface contract:
+// Chat Completions has no standardized reasoning round-trip, so a replayed
+// trace is reported as dropped instead of quietly vanishing on the way out.
+func TestChatReasoningItemsAreReportedDropped(t *testing.T) {
+	entry := catalogEntry{
+		kind:         kindGenerate,
+		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningAlways),
+		dialect:      dialect{api: apiChat},
+	}
+	request := simpleTextRequest("current")
+	request.Context = []message.Message{{
+		Role: message.RoleAssistant,
+		Content: message.Content{Parts: []message.Part{
+			message.ReasoningPart{Text: "trace", Signature: "enc", ID: "rs_1"},
+			message.TextPart{Text: "answer"},
+		}},
+	}}
+	compiled, err := compileChat("gpt-5.6-sol", entry)(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		request,
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compileChat: %v", err)
+	}
+	dropped := false
+	for _, decision := range compiled.Report.Decisions {
+		if decision.Field != inference.FieldGenerateContextReasoning {
+			continue
+		}
+		if decision.Disposition != inference.Dropped || decision.Reason == "" {
+			t.Fatalf("reasoning decision = %+v, want a drop with a reason", decision)
+		}
+		dropped = true
+	}
+	if !dropped {
+		t.Fatalf("no decision for context reasoning: %+v", compiled.Report.Decisions)
+	}
+	var texts []string
+	for _, item := range compiled.Wire.params.Messages {
+		if item.OfAssistant == nil {
+			continue
+		}
+		texts = append(texts, item.OfAssistant.Content.OfString.Value)
+	}
+	if len(texts) != 1 || texts[0] != "answer" {
+		t.Fatalf("assistant content = %q, want the text alone", texts)
+	}
 }
 
 func TestChatStreamTransportAndDecode(t *testing.T) {
@@ -160,7 +216,7 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 	})
 	defer server.Close()
 
-	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
+	request, err := compileChat("gpt-5.6-sol", catalogEntry{
 		kind: kindGenerate,
 		dialect: dialect{
 			api: apiChat,
@@ -169,7 +225,7 @@ func TestChatStreamTransportAndDecode(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream, err := transportChatGenerateStream(testClients(t, server).api)(
-		context.Background(), wire.Wire)
+		context.Background(), request.Wire)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -236,7 +292,7 @@ func TestChatStreamTruncatedEOFSurfacesSynthesizedFinish(t *testing.T) {
 	})
 	defer server.Close()
 
-	wire, err := compileGenerate("gpt-5.6-sol", catalogEntry{
+	request, err := compileChat("gpt-5.6-sol", catalogEntry{
 		kind: kindGenerate,
 		dialect: dialect{
 			api: apiChat,
@@ -245,7 +301,7 @@ func TestChatStreamTruncatedEOFSurfacesSynthesizedFinish(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream, err := transportChatGenerateStream(testClients(t, server).api)(
-		context.Background(), wire.Wire)
+		context.Background(), request.Wire)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -296,7 +352,7 @@ func TestChatStreamUsageOptOutOmitsStreamOptions(t *testing.T) {
 			api:                    apiChat,
 			chatStreamIncludeUsage: boolPtr(false),
 		}}
-	wire, err := compileGenerate("gpt-5.6-sol", entry)(
+	request, err := compileChat("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),
@@ -305,11 +361,11 @@ func TestChatStreamUsageOptOutOmitsStreamOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wire.Wire.chatStreamIncludeUsage {
-		t.Fatal("compiled wire must carry the usage opt-out")
+	if request.Wire.params.StreamOptions.IncludeUsage.Valid() {
+		t.Fatal("compiled request must carry the usage opt-out")
 	}
 	stream, err := transportChatGenerateStream(testClients(t, server).api)(
-		context.Background(), wire.Wire)
+		context.Background(), request.Wire)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
@@ -354,7 +410,7 @@ func TestChatStreamObfuscationOptOutSendsStreamOptions(t *testing.T) {
 					chatStreamIncludeUsage:       tc.includeUsage,
 					chatStreamIncludeObfuscation: boolPtr(false),
 				}}
-			wire, err := compileGenerate("gpt-5.6-sol", entry)(
+			request, err := compileChat("gpt-5.6-sol", entry)(
 				context.Background(),
 				openaiModel("gpt-5.6-sol"),
 				simpleTextRequest("hi"),
@@ -364,7 +420,7 @@ func TestChatStreamObfuscationOptOutSendsStreamOptions(t *testing.T) {
 				t.Fatal(err)
 			}
 			stream, err := transportChatGenerateStream(testClients(t, server).api)(
-				context.Background(), wire.Wire)
+				context.Background(), request.Wire)
 			if err != nil {
 				t.Fatalf("open stream: %v", err)
 			}

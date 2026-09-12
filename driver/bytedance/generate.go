@@ -112,9 +112,9 @@ var (
 // Compiler
 // ---------------------------------------------------------------------------
 
-// compileGenerate lowers a canonical request into the provider wire. It never
-// downgrades silently: parts the model cannot consume natively are rejected
-// in the ledger with a precise reason.
+// compileGenerate lowers a canonical request into the Ark Responses request.
+// It never downgrades silently: parts the model cannot consume natively are
+// rejected in the ledger with a precise reason.
 // rejectTextControls rejects the text-only intent controls (tools, sampling,
 // reasoning) for a non-text operation, one decision per active field so the
 // report stays field-precise.

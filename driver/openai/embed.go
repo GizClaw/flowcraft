@@ -6,59 +6,47 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/packages/param"
 )
 
-// Embed has one native shape: the batched text embeddings endpoint. The wire
-// carries one string per canonical item; text and data parts fuse into that
-// string (data lowers to its JSON text), while any other part kind is
-// rejected.
-
-type embedWire struct {
-	model      string
-	texts      []string
-	dimensions *int
-}
+// Embed has one native shape: the batched text embeddings endpoint. The
+// compiled request carries one input string per canonical item; text and data
+// parts fuse into that string (data lowers to its JSON text), while any other
+// part kind is rejected.
 
 type embedRaw struct {
 	vectors     [][]float32
 	inputTokens int64
 }
 
-var embedPartFields = map[message.PartKind]inference.FieldID{
-	message.PartText:       inference.FieldEmbedItemText,
-	message.PartImage:      inference.FieldEmbedItemImage,
-	message.PartAudio:      inference.FieldEmbedItemAudio,
-	message.PartVideo:      inference.FieldEmbedItemVideo,
-	message.PartFile:       inference.FieldEmbedItemFile,
-	message.PartData:       inference.FieldEmbedItemData,
-	message.PartToolCall:   inference.FieldEmbedItemToolCall,
-	message.PartToolResult: inference.FieldEmbedItemToolResult,
-}
+var embedPartField = partField(inference.EmbedItemPartField)
 
 func compileEmbed(
-	model string,
+	modelName string,
 	entry catalogEntry,
-) inference.Compiler[inference.EmbedRequest, embedWire] {
+) inference.Compiler[inference.EmbedRequest, openai.EmbeddingNewParams] {
 	return func(
 		_ context.Context,
-		_ inference.ModelRef,
+		_ model.ModelRef,
 		request inference.EmbedRequest,
-	) (inference.Compiled[embedWire], error) {
-		ledger := newLedger(inference.OperationEmbed, request.ActiveFields())
-		wire := embedWire{
-			model:      model,
-			dimensions: request.Dimensions,
+	) (inference.Compiled[openai.EmbeddingNewParams], error) {
+		ledger := inference.NewLedger(model.OperationEmbed, providerID, request.ActiveFields())
+		params := openai.EmbeddingNewParams{Model: modelName}
+		if request.Dimensions != nil {
+			if !entry.capabilities.CustomEmbedDimensions {
+				ledger.Reject(
+					inference.FieldEmbedDimensions,
+					"model does not accept custom dimensions",
+				)
+			} else {
+				params.Dimensions = param.NewOpt(int64(*request.Dimensions))
+			}
 		}
-		if request.Dimensions != nil && !entry.capabilities.CustomEmbedDimensions {
-			ledger.reject(
-				inference.FieldEmbedDimensions,
-				"model does not accept custom dimensions",
-			)
-		}
+		texts := make([]string, 0, len(request.Items))
 		for _, item := range request.Items {
 			var text strings.Builder
 			textParts := 0
@@ -76,8 +64,8 @@ func compileEmbed(
 					}
 					text.WriteString(string(value.Value))
 				default:
-					ledger.reject(
-						embedPartFields[part.Kind()],
+					ledger.Reject(
+						embedPartField(part.Kind()),
 						fmt.Sprintf("%s parts cannot be embedded", part.Kind()),
 					)
 				}
@@ -86,50 +74,50 @@ func compileEmbed(
 				continue
 			}
 			if textParts > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldEmbedItemMultiPart,
 					"text embedding accepts one text part per item",
 				)
 				continue
 			}
-			wire.texts = append(wire.texts, text.String())
+			texts = append(texts, text.String())
 		}
+		params.Input = openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts}
 		for _, field := range request.Extensions.ActiveFields() {
-			ledger.reject(field, "openai embed supports no extensions")
+			ledger.Reject(field, "openai embed supports no extensions")
 		}
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[embedWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[openai.EmbeddingNewParams]{Report: report}, ledger.Err()
 		}
-		if len(wire.texts) != len(request.Items) {
+		if len(texts) != len(request.Items) {
 			// Cannot happen without a rejection above; guard the invariant.
-			return inference.Compiled[embedWire]{Report: report}, inference.NewError(
+			return inference.Compiled[openai.EmbeddingNewParams]{Report: report}, inference.NewError(
 				inference.UnsupportedFeature,
-				inference.OperationEmbed,
+				model.OperationEmbed,
 				inference.FieldEmbedItems,
 				fmt.Errorf("openai: embedding item lost during compile"),
 			)
 		}
-		return inference.Compiled[embedWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[openai.EmbeddingNewParams]{
+			Wire:   params,
+			Report: report,
+		}, nil
 	}
 }
 
 func transportEmbed(
 	client openai.Client,
-) inference.Transport[embedWire, embedRaw] {
-	return func(ctx context.Context, wire embedWire) (embedRaw, error) {
-		params := openai.EmbeddingNewParams{
-			Input: openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: wire.texts},
-			Model: wire.model,
-		}
-		if wire.dimensions != nil {
-			params.Dimensions = param.NewOpt(int64(*wire.dimensions))
-		}
+) inference.Transport[openai.EmbeddingNewParams, embedRaw] {
+	return func(
+		ctx context.Context,
+		params openai.EmbeddingNewParams,
+	) (embedRaw, error) {
 		response, err := client.Embeddings.New(ctx, params)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceCall(ctx, "embed", wire.model, classified, "", "")
+			inference.LogProviderCall(ctx, providerID, "embed", params.Model, classified, "", "")
 			return embedRaw{}, classified
 		}
 		vectors := make([][]float32, len(response.Data))
@@ -150,7 +138,7 @@ func transportEmbed(
 			vectors:     vectors,
 			inputTokens: response.Usage.TotalTokens,
 		}
-		logInferenceCall(ctx, "embed", wire.model, nil, "", "")
+		inference.LogProviderCall(ctx, providerID, "embed", params.Model, nil, "", "")
 		return raw, nil
 	}
 }
@@ -181,7 +169,7 @@ func decodeEmbed(
 func openEmbed(
 	cls *clients,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	_ string,
 ) (inference.EmbedDriver, error) {
 	return inference.BindEmbed(

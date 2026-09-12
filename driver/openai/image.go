@@ -12,6 +12,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -30,31 +31,40 @@ import (
 // always returns base64 payloads, so URL delivery has no native channel and
 // is rejected.
 
-type imageWire struct {
-	model         string
-	prompt        string
-	size          string // WxH; gpt-image-2-family models accept arbitrary sizes
-	count         int
-	format        string // png | jpeg | webp
-	quality       string // auto | low | medium | high
-	partialImages int    // 0-3 progress previews before the final image (stream only)
-	// images are inline reference images for image-to-image edits; empty
-	// means a text-only generation.
-	images []wireImage
+// imageRequest is one compiled images call. The endpoint exposes two bodies —
+// images/generations for a text-only prompt and the multipart images/edits when
+// inline reference images ride along — so the compiled request holds the
+// generations params plus the uploads the edits body is built from.
+//
+// The edits body is rebuilt for every attempt rather than compiled once: it
+// carries the uploads as io.Readers, and a prepared attempt may execute more
+// than once (that is how a caller retries without recompiling), so each
+// attempt needs unread bodies.
+type imageRequest struct {
+	params openai.ImageGenerateParams
+	// images are inline reference images; empty means a text-only generation.
+	images []imageUpload
 	// mask is an inline PNG whose transparent areas mark where the first
 	// reference image should be edited. Deployment-routed endpoints accept
 	// it; plain OpenAI endpoints reject it at compile time.
-	mask wireImage
+	mask imageUpload
 }
 
-// wireImage is a concrete inline image payload: raw bytes plus the media
-// type the compiler validated. Only inline sources reach the wire — URL and
-// stream sources are rejected at compile time — so the source kind is
-// constant and stays off the wire to satisfy the concrete-wire binding
-// contract (core rejects wires containing interface values).
-type wireImage struct {
+// imageUpload is one concrete inline upload: raw bytes plus the media type the
+// multipart part declares. Only inline sources reach the request — URL and
+// stream sources are rejected at compile time.
+type imageUpload struct {
 	data      []byte
 	mediaType string
+}
+
+// reader returns a fresh multipart part. The reader is deliberately not
+// cached: every attempt must start from the beginning of the bytes.
+func (u imageUpload) reader() imageFile {
+	return imageFile{
+		Reader:      bytes.NewReader(u.data),
+		contentType: u.mediaType,
+	}
 }
 
 // imageFile is a multipart file part that carries the image's media type;
@@ -107,42 +117,46 @@ func imageSize(width, height int) (size, reason string) {
 }
 
 func compileImage(
-	model string,
+	modelName string,
 	azureDeployment bool,
-) inference.GenerateCompiler[imageWire] {
+) inference.GenerateCompiler[*imageRequest] {
 	return func(
 		_ context.Context,
-		_ inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[imageWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+	) (inference.Compiled[*imageRequest], error) {
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
-		wire := imageWire{model: model, count: 1}
+		compiled := &imageRequest{params: openai.ImageGenerateParams{
+			Model: modelName,
+			N:     param.NewOpt(int64(1)),
+		}}
 
 		var prompt []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				switch value := part.(type) {
 				case message.TextPart:
 					prompt = append(prompt, value.Text)
 				case message.ImagePart:
 					if value.Source.Kind() != media.SourceInline {
-						ledger.reject(
-							fields[message.PartImage],
+						ledger.Reject(
+							fields(message.PartImage),
 							"images/edits uploads inline bytes; URL-sourced reference images have no channel",
 						)
 						continue
 					}
-					wire.images = append(wire.images, wireImage{
+					compiled.images = append(compiled.images, imageUpload{
 						data:      value.Source.Bytes(),
 						mediaType: value.Source.BaseMediaType(),
 					})
 				default:
-					ledger.reject(
-						fields[part.Kind()],
+					ledger.Reject(
+						fields(part.Kind()),
 						fmt.Sprintf("image generation accepts text and image parts, not %s", part.Kind()),
 					)
 				}
@@ -150,16 +164,16 @@ func compileImage(
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"image generation keeps user context only; assistant, system, and tool turns have no native channel",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
-		wire.prompt = strings.Join(prompt, "\n")
+		collect(request.Input.Content.Parts, inputPartField)
+		compiled.params.Prompt = strings.Join(prompt, "\n")
 
 		intent := request.Input.Content.Intent
 		if text := intent.Text; text != nil {
@@ -168,7 +182,7 @@ func compileImage(
 				"the images API has no sampling controls",
 				"image models have no reasoning control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"image models do not produce text",
 			)
@@ -176,25 +190,25 @@ func compileImage(
 		if image := intent.Image; image != nil {
 			if image.Size != nil {
 				if size, reason := imageSize(image.Size.Width, image.Size.Height); reason == "" {
-					wire.size = size
+					compiled.params.Size = openai.ImageGenerateParamsSize(size)
 				} else {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageSize,
 						reason,
 					)
 				}
 			}
 			if image.AspectRatio != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentImageAspectRatio,
 					"the images API has no aspect-ratio parameter; give an explicit size",
 				)
 			}
 			if image.Count != nil {
-				wire.count = *image.Count
+				compiled.params.N = param.NewOpt(int64(*image.Count))
 			}
 			if image.Seed != nil {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentImageSeed,
 					"the images API has no seed parameter",
 				)
@@ -202,16 +216,17 @@ func compileImage(
 			if image.OutputFormat != "" {
 				switch image.OutputFormat {
 				case media.ImageFormatPNG, media.ImageFormatJPEG, media.ImageFormatWebP:
-					wire.format = string(image.OutputFormat)
+					compiled.params.OutputFormat =
+						openai.ImageGenerateParamsOutputFormat(image.OutputFormat)
 				default:
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageOutputFormat,
 						fmt.Sprintf("image format %q is not supported", image.OutputFormat),
 					)
 				}
 			}
 			if image.Delivery == media.SourceURL {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentImageDelivery,
 					"gpt-image returns inline payloads only; URL delivery has no channel",
 				)
@@ -222,9 +237,10 @@ func compileImage(
 					media.ImageQualityLow,
 					media.ImageQualityMedium,
 					media.ImageQualityHigh:
-					wire.quality = string(image.Quality)
+					compiled.params.Quality =
+						openai.ImageGenerateParamsQuality(image.Quality)
 				default:
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentImageQuality,
 						fmt.Sprintf(
 							"image quality %q is not supported",
@@ -234,28 +250,28 @@ func compileImage(
 				}
 			}
 		}
-		options, other := operationExtensions[ImageOptions](request.Extensions)
-		rejectOtherExtensions("image generation", other, ledger)
+		options, other := inference.ExtensionFor[ImageOptions](request.Extensions)
+		ledger.RejectExtensions("image generation", other)
 		if mask := options.Mask; mask != nil {
 			field := inference.ExtensionField("mask").Qualify(options)
 			switch {
 			case !azureDeployment:
-				ledger.reject(
+				ledger.Reject(
 					field,
 					"image masks require endpoint.routing \"azure_deployment\"",
 				)
 			case mask.Kind() != media.SourceInline:
-				ledger.reject(
+				ledger.Reject(
 					field,
 					"images/edits uploads inline bytes; URL-sourced masks have no channel",
 				)
-			case len(wire.images) == 0:
-				ledger.reject(
+			case len(compiled.images) == 0:
+				ledger.Reject(
 					field,
 					"mask requires at least one inline reference image",
 				)
 			default:
-				wire.mask = wireImage{
+				compiled.mask = imageUpload{
 					data:      mask.Bytes(),
 					mediaType: mask.BaseMediaType(),
 				}
@@ -265,12 +281,12 @@ func compileImage(
 			field := inference.ExtensionField("partial_images").Qualify(options)
 			switch {
 			case shape != inference.GenerateExecutionStream:
-				ledger.reject(
+				ledger.Reject(
 					field,
 					"partial_images applies to the stream execution shape",
 				)
 			case *partial < 0 || *partial > 3:
-				ledger.reject(
+				ledger.Reject(
 					field,
 					fmt.Sprintf(
 						"partial_images must be between 0 and 3, not %d",
@@ -278,46 +294,51 @@ func compileImage(
 					),
 				)
 			default:
-				wire.partialImages = *partial
+				// Zero asks for no previews, which is the provider default:
+				// leaving the field out keeps the body identical to a request
+				// that never mentioned the knob.
+				if *partial > 0 {
+					compiled.params.PartialImages = param.NewOpt(int64(*partial))
+				}
 			}
 		}
 		if intent.Audio != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentAudio,
 				"image models do not synthesize audio",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"image models do not generate video",
 			)
 		}
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[imageWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[*imageRequest]{Report: report}, ledger.Err()
 		}
-		return inference.Compiled[imageWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[*imageRequest]{Wire: compiled, Report: report}, nil
 	}
 }
 
 func transportImage(
 	client openai.Client,
-) inference.Transport[imageWire, imageRaw] {
-	return func(ctx context.Context, wire imageWire) (imageRaw, error) {
+) inference.Transport[*imageRequest, imageRaw] {
+	return func(ctx context.Context, request *imageRequest) (imageRaw, error) {
 		var response *openai.ImagesResponse
 		var err error
 		var requestID string
-		if len(wire.images) == 0 {
+		if len(request.images) == 0 {
 			response, err = client.Images.Generate(
 				ctx,
-				imageGenerateParams(wire),
+				request.params,
 				captureRequestID(&requestID),
 			)
 		} else {
 			response, err = client.Images.Edit(
 				ctx,
-				imageEditParams(wire),
+				request.editParams(),
 				captureRequestID(&requestID),
 			)
 		}
@@ -325,7 +346,7 @@ func transportImage(
 			return imageRaw{}, classifyError(err)
 		}
 		raw := imageRaw{
-			mediaType:    media.ImageFormat(wire.format).MediaType(),
+			mediaType:    media.ImageFormat(request.params.OutputFormat).MediaType(),
 			inputTokens:  response.Usage.InputTokens,
 			outputTokens: response.Usage.OutputTokens,
 			totalTokens:  response.Usage.TotalTokens,
@@ -384,62 +405,26 @@ func responseBodyID(fields map[string]respjson.Field) string {
 	return id
 }
 
-// imageGenerateParams renders the images/generations request body. Both the
-// unary and streaming transports share it; partialImages stays zero off the
-// stream shape, so unary requests never carry the streaming-only parameter.
-func imageGenerateParams(wire imageWire) openai.ImageGenerateParams {
-	params := openai.ImageGenerateParams{
-		Model:  wire.model,
-		Prompt: wire.prompt,
-		N:      param.NewOpt(int64(wire.count)),
-	}
-	if wire.size != "" {
-		params.Size = openai.ImageGenerateParamsSize(wire.size)
-	}
-	if wire.format != "" {
-		params.OutputFormat = openai.ImageGenerateParamsOutputFormat(wire.format)
-	}
-	if wire.quality != "" {
-		params.Quality = openai.ImageGenerateParamsQuality(wire.quality)
-	}
-	if wire.partialImages > 0 {
-		params.PartialImages = param.NewOpt(int64(wire.partialImages))
-	}
-	return params
-}
-
-// imageEditParams renders the images/edits multipart request body.
-func imageEditParams(wire imageWire) openai.ImageEditParams {
-	readers := make([]io.Reader, 0, len(wire.images))
-	for _, image := range wire.images {
-		readers = append(readers, imageFile{
-			Reader:      bytes.NewReader(image.data),
-			contentType: image.mediaType,
-		})
+// editParams derives the multipart images/edits body from the compiled
+// request. The two bodies carry the same knobs, so the generations params are
+// the source and only the uploads differ; each upload gets a fresh reader.
+func (r *imageRequest) editParams() openai.ImageEditParams {
+	readers := make([]io.Reader, 0, len(r.images))
+	for _, image := range r.images {
+		readers = append(readers, image.reader())
 	}
 	params := openai.ImageEditParams{
-		Model:  openai.ImageModel(wire.model),
-		Prompt: wire.prompt,
-		N:      param.NewOpt(int64(wire.count)),
-		Image:  openai.ImageEditParamsImageUnion{OfFileArray: readers},
+		Model:         r.params.Model,
+		Prompt:        r.params.Prompt,
+		N:             r.params.N,
+		Size:          openai.ImageEditParamsSize(r.params.Size),
+		OutputFormat:  openai.ImageEditParamsOutputFormat(r.params.OutputFormat),
+		Quality:       openai.ImageEditParamsQuality(r.params.Quality),
+		PartialImages: r.params.PartialImages,
+		Image:         openai.ImageEditParamsImageUnion{OfFileArray: readers},
 	}
-	if wire.size != "" {
-		params.Size = openai.ImageEditParamsSize(wire.size)
-	}
-	if wire.format != "" {
-		params.OutputFormat = openai.ImageEditParamsOutputFormat(wire.format)
-	}
-	if wire.quality != "" {
-		params.Quality = openai.ImageEditParamsQuality(wire.quality)
-	}
-	if wire.partialImages > 0 {
-		params.PartialImages = param.NewOpt(int64(wire.partialImages))
-	}
-	if len(wire.mask.data) > 0 {
-		params.Mask = imageFile{
-			Reader:      bytes.NewReader(wire.mask.data),
-			contentType: wire.mask.mediaType,
-		}
+	if len(r.mask.data) > 0 {
+		params.Mask = r.mask.reader()
 	}
 	return params
 }
@@ -619,7 +604,7 @@ func (s *imageStream) Next(
 		if !s.sdk.Next() {
 			if err := s.sdk.Err(); err != nil {
 				classified := classifyError(err)
-				logInferenceStream(ctx, "generate", "", classified, "")
+				inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 				return imageStreamRaw{}, classified
 			}
 			return imageStreamRaw{}, io.EOF
@@ -664,18 +649,18 @@ func (s *imageStream) ResponseID() string { return "" }
 
 func transportImageStream(
 	client openai.Client,
-) inference.Transport[imageWire, inference.ProviderStream[imageStreamRaw]] {
+) inference.Transport[*imageRequest, inference.ProviderStream[imageStreamRaw]] {
 	return func(
 		ctx context.Context,
-		wire imageWire,
+		request *imageRequest,
 	) (inference.ProviderStream[imageStreamRaw], error) {
 		var sdk imageSDKStream
 		var requestID string
-		if len(wire.images) == 0 {
+		if len(request.images) == 0 {
 			sdk = imageGenSDKStream{
 				stream: client.Images.GenerateStreaming(
 					ctx,
-					imageGenerateParams(wire),
+					request.params,
 					captureRequestID(&requestID),
 				),
 			}
@@ -683,17 +668,17 @@ func transportImageStream(
 			sdk = imageEditSDKStream{
 				stream: client.Images.EditStreaming(
 					ctx,
-					imageEditParams(wire),
+					request.editParams(),
 					captureRequestID(&requestID),
 				),
 			}
 		}
 		if err := sdk.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", request.params.Model, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", request.params.Model, nil, "")
 		return &imageStream{sdk: sdk, requestID: requestID}, nil
 	}
 }
@@ -756,7 +741,7 @@ func streamImagePart(
 func openImage(
 	cls *clients,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(

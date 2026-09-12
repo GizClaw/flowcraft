@@ -2,12 +2,17 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
+
+	"github.com/openai/openai-go/v3/responses"
 )
 
 // TestReasoningSummaryReachesTheWire pins the opt-in that makes reasoning
@@ -27,34 +32,34 @@ func TestReasoningSummaryReachesTheWire(t *testing.T) {
 	entry := models["gpt-5.6-sol"]
 	request := simpleTextRequest("hi")
 	request.Input.Content.Intent.Text = &inference.TextIntent{
-		ReasoningEffort: inference.ReasoningHigh,
+		ReasoningEffort: model.ReasoningHigh,
 	}
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		t.Fatalf("compileGenerate: %v", err)
+		t.Fatalf("compileResponses: %v", err)
 	}
-	params := wireToParams(compiled.Wire)
+	params := compiled.Wire.params
 	if string(params.Reasoning.Summary) != "detailed" ||
 		string(params.Reasoning.Effort) != "high" {
 		t.Fatalf("reasoning = %+v", params.Reasoning)
 	}
 
 	// A summary alone (no explicit effort) must still reach the request.
-	compiled, err = compileGenerate("gpt-5.6-sol", entry)(
+	compiled, err = compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		t.Fatalf("compileGenerate: %v", err)
+		t.Fatalf("compileResponses: %v", err)
 	}
-	params = wireToParams(compiled.Wire)
+	params = compiled.Wire.params
 	if string(params.Reasoning.Summary) != "detailed" {
 		t.Fatalf("reasoning = %+v", params.Reasoning)
 	}
@@ -64,29 +69,28 @@ func TestReasoningSummaryReachesTheWire(t *testing.T) {
 // vocabulary, so it travels as a per-call extension on both surfaces rather
 // than as a canonical request field every provider would have to answer for.
 func TestPromptCacheKeyRidesTheExtension(t *testing.T) {
-	for _, api := range []string{"responses", "chat"} {
-		entry := catalog["gpt-5.6-sol"]
-		if api == "chat" {
-			entry.dialect.api = apiChat
-		}
-		wire := compileTextWire(t, simpleTextRequest("hi"))
-		ledger := newLedger(inference.OperationGenerate, nil)
-		compileGenerateTuning(&wire, GenerateOptions{
-			PromptCacheKey: "conversation-42",
-		}, entry, ledger)
-		if wire.promptCacheKey != "conversation-42" {
-			t.Fatalf("%s wire = %+v", api, wire.promptCacheKey)
-		}
-		params := wireToParams(wire)
-		if params.PromptCacheKey.Value != "conversation-42" {
-			t.Fatalf("%s params = %+v", api, params.PromptCacheKey)
-		}
+	options := GenerateOptions{PromptCacheKey: "conversation-42"}
+
+	responsesEntry := catalog["gpt-5.6-sol"]
+	responses := newResponsesRequest("gpt-5.6-sol", responsesEntry)
+	compileGenerateTuning(responses, options, responsesEntry,
+		inference.NewLedger(model.OperationGenerate, providerID, nil))
+	if responses.params.PromptCacheKey.Value != "conversation-42" {
+		t.Fatalf("responses params = %+v", responses.params.PromptCacheKey)
 	}
 
-	chat := compileTextWire(t, simpleTextRequest("hi"))
-	chatParams := wireToChatParams(chat)
-	if chatParams.PromptCacheKey.Value != "" {
-		t.Fatalf("unset key leaked: %+v", chatParams.PromptCacheKey)
+	chatEntry := catalog["gpt-5.6-sol"]
+	chatEntry.dialect.api = apiChat
+	chat := newChatRequest("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
+	compileGenerateTuning(chat, options, chatEntry,
+		inference.NewLedger(model.OperationGenerate, providerID, nil))
+	if chat.params.PromptCacheKey.Value != "conversation-42" {
+		t.Fatalf("chat params = %+v", chat.params.PromptCacheKey)
+	}
+
+	unset := newChatRequest("gpt-5.6-sol", chatEntry, inference.GenerateExecutionUnary)
+	if unset.params.PromptCacheKey.Value != "" {
+		t.Fatalf("unset key leaked: %+v", unset.params.PromptCacheKey)
 	}
 }
 
@@ -106,18 +110,11 @@ func TestGenerateTuningExtensions(t *testing.T) {
 	if err := options.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	wire := compileTextWire(t, simpleTextRequest("hi"))
-	ledger := newLedger(inference.OperationGenerate, nil)
-	compileGenerateTuning(&wire, options, catalog["gpt-5.6-sol"], ledger)
-	if wire.serviceTier != "priority" ||
-		wire.parallelToolCalls == nil || *wire.parallelToolCalls ||
-		wire.maxToolCalls == nil || *wire.maxToolCalls != 4 ||
-		wire.verbosity != "low" ||
-		wire.safetyIdentifier != "hashed-user" {
-		t.Fatalf("wire = %+v", wire)
-	}
-
-	params := wireToParams(wire)
+	entry := catalog["gpt-5.6-sol"]
+	request := newResponsesRequest("gpt-5.6-sol", entry)
+	ledger := inference.NewLedger(model.OperationGenerate, providerID, nil)
+	compileGenerateTuning(request, options, entry, ledger)
+	params := request.params
 	if string(params.ServiceTier) != "priority" ||
 		params.ParallelToolCalls.Value ||
 		params.MaxToolCalls.Value != 4 ||
@@ -127,27 +124,27 @@ func TestGenerateTuningExtensions(t *testing.T) {
 	}
 }
 
-// TestGenerateTuningRejectsChatOnlyGaps: Chat Completions has no verbosity or
-// tool-call budget, so those must fail loudly rather than disappear.
-func TestGenerateTuningRejectsChatOnlyGaps(t *testing.T) {
+// TestGenerateTuningChatGaps: Chat Completions has no tool-call budget, so
+// that knob must fail loudly rather than disappear; verbosity is part of the
+// chat surface and reaches the request.
+func TestGenerateTuningChatGaps(t *testing.T) {
 	calls := 2
-	wire := generateWire{}
 	options := GenerateOptions{MaxToolCalls: &calls, Verbosity: "high"}
 	active := make([]inference.FieldID, 0, len(options.ActiveFields()))
 	for _, field := range options.ActiveFields() {
 		active = append(active, field.Qualify(options))
 	}
-	ledger := newLedger(inference.OperationGenerate, active)
 	entry := catalog["gpt-5.6-sol"]
 	entry.dialect.api = apiChat
-	compileGenerateTuning(&wire, options, entry, ledger)
-	if wire.maxToolCalls != nil || wire.verbosity != "" {
-		t.Fatalf("chat wire = %+v", wire)
+	ledger := inference.NewLedger(model.OperationGenerate, providerID, active)
+	request := newChatRequest("gpt-5.6-sol", entry, inference.GenerateExecutionUnary)
+	compileGenerateTuning(request, options, entry, ledger)
+	if string(request.params.Verbosity) != "high" {
+		t.Fatalf("chat verbosity = %q, want high", request.params.Verbosity)
 	}
-	report := ledger.report()
+	report := ledger.Report()
 	for _, want := range []inference.FieldID{
 		inference.ExtensionField("max_tool_calls").Qualify(options),
-		inference.ExtensionField("verbosity").Qualify(options),
 	} {
 		found := false
 		for _, decision := range report.Decisions {
@@ -158,6 +155,9 @@ func TestGenerateTuningRejectsChatOnlyGaps(t *testing.T) {
 		if !found {
 			t.Fatalf("no rejection for %s in %+v", want, report.Decisions)
 		}
+	}
+	if report.Rejects(inference.ExtensionField("verbosity").Qualify(options)) {
+		t.Fatalf("chat verbosity must not be rejected: %+v", report.Decisions)
 	}
 }
 
@@ -178,13 +178,22 @@ func TestTruncationAndTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
-	wire := compileTextWire(t, simpleTextRequest("hi"))
-	wire.truncation = models["gpt-5.6-sol"].dialect.truncation
-	if wire.truncation != truncationAuto {
-		t.Fatalf("truncation = %q", wire.truncation)
+	entry := models["gpt-5.6-sol"]
+	if entry.dialect.truncation != truncationAuto {
+		t.Fatalf("truncation = %q", entry.dialect.truncation)
 	}
-	if opts := requestOverflowOptions(wire); len(opts) != 1 {
-		t.Fatalf("overflow options = %v", opts)
+	request := newResponsesRequest("gpt-5.6-sol", entry)
+	if request.params.Truncation != responses.ResponseNewParamsTruncationAuto {
+		t.Fatalf("truncation param = %q", request.params.Truncation)
+	}
+	// The SDK types the field now, so the policy rides the body instead of
+	// the raw-JSON option path.
+	body, err := json.Marshal(request.params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	if !strings.Contains(string(body), `"truncation":"auto"`) {
+		t.Fatalf("body = %s, want truncation on the request", body)
 	}
 }
 
@@ -216,7 +225,7 @@ func TestAuthNoneDropsCredentials(t *testing.T) {
 	}
 	if _, err := transportGenerate(cls.api)(
 		context.Background(),
-		compileTextWire(t, simpleTextRequest("hi")),
+		compileTextRequest(t, simpleTextRequest("hi")),
 	); err != nil {
 		t.Fatalf("transportGenerate: %v", err)
 	}

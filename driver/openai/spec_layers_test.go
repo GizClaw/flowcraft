@@ -68,24 +68,24 @@ func TestSpecValidationLayers(t *testing.T) {
 // TestWireToParamsStore pins the store policy: omitted keeps the driver
 // default (false, so responses are not retained server-side) and an explicit
 // opt-in reaches the wire.
-func TestWireToParamsStore(t *testing.T) {
-	params := wireToParams(compileTextWire(t, simpleTextRequest("hi")))
+func TestResponsesStore(t *testing.T) {
+	params := compileTextParams(t, simpleTextRequest("hi"))
 	if !params.Store.Valid() || params.Store.Value {
 		t.Fatalf("store = %+v, want an explicit false", params.Store)
 	}
 
 	entry := catalog["gpt-5.6-sol"]
 	entry.dialect.store = true
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		simpleTextRequest("hi"),
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		t.Fatalf("compileGenerate: %v", err)
+		t.Fatalf("compileResponses: %v", err)
 	}
-	params = wireToParams(compiled.Wire)
+	params = compiled.Wire.params
 	if !params.Store.Valid() || !params.Store.Value {
 		t.Fatalf("store = %+v, want an explicit true", params.Store)
 	}
@@ -160,14 +160,14 @@ func TestReasoningTextChannelRoundTrip(t *testing.T) {
 			message.TextPart{Text: "answer"},
 		}},
 	}}
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		request,
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		t.Fatalf("compileGenerate: %v", err)
+		t.Fatalf("compileResponses: %v", err)
 	}
 	for _, decision := range compiled.Report.Decisions {
 		if decision.Field == inference.FieldGenerateContextReasoning &&
@@ -175,15 +175,7 @@ func TestReasoningTextChannelRoundTrip(t *testing.T) {
 			t.Fatalf("plain reasoning must compile native: %+v", decision)
 		}
 	}
-	item := compiled.Wire.items[0]
-	if item.kind != wireItemReasoning ||
-		item.reasoningText != "plain trace" ||
-		item.summary != "" ||
-		item.encrypted != "" {
-		t.Fatalf("reasoning item = %+v", item)
-	}
-
-	params := wireToParams(compiled.Wire)
+	params := compiled.Wire.params
 	if len(params.Include) != 0 {
 		t.Fatalf("include = %v, want none on a plain-text channel", params.Include)
 	}
@@ -191,7 +183,8 @@ func TestReasoningTextChannelRoundTrip(t *testing.T) {
 	if reasoning == nil ||
 		len(reasoning.Content) != 1 ||
 		reasoning.Content[0].Text != "plain trace" ||
-		len(reasoning.Summary) != 0 {
+		len(reasoning.Summary) != 0 ||
+		reasoning.EncryptedContent.Valid() {
 		t.Fatalf("reasoning param = %+v", reasoning)
 	}
 }
@@ -237,7 +230,7 @@ func TestEndpointAuthHeaderQueryAndStaticHeaders(t *testing.T) {
 	}
 	if _, err := transportGenerate(cls.api)(
 		context.Background(),
-		compileTextWire(t, simpleTextRequest("hi")),
+		compileTextRequest(t, simpleTextRequest("hi")),
 	); err != nil {
 		t.Fatalf("transportGenerate: %v", err)
 	}

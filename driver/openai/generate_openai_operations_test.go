@@ -238,7 +238,7 @@ func TestImageCompilerSizeRules(t *testing.T) {
 		if err != nil {
 			return "", err
 		}
-		return compiled.Wire.size, nil
+		return string(compiled.Wire.params.Size), nil
 	}
 
 	for _, size := range []struct {
@@ -314,6 +314,7 @@ func TestImageEditTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	uploads := 0
 	server, capture := newCapturedOpenAI(t, func(
 		w http.ResponseWriter,
 		r *http.Request,
@@ -352,6 +353,7 @@ func TestImageEditTransport(t *testing.T) {
 			prompt[0] != "make it a red circle" {
 			t.Errorf("prompt = %v", r.MultipartForm.Value["prompt"])
 		}
+		uploads++
 		w.Header().Set("Content-Type", "application/json")
 		payload, _ := json.Marshal(map[string]any{
 			"data":  []map[string]any{{"b64_json": base64.StdEncoding.EncodeToString(png)}},
@@ -388,7 +390,7 @@ func TestImageEditTransport(t *testing.T) {
 		t.Fatalf("compileImage: %v", err)
 	}
 	if len(compiled.Wire.images) != 1 {
-		t.Fatalf("wire images = %d, want 1", len(compiled.Wire.images))
+		t.Fatalf("reference images = %d, want 1", len(compiled.Wire.images))
 	}
 	raw, err := transportImage(cls.api)(context.Background(), compiled.Wire)
 	if err != nil {
@@ -400,6 +402,16 @@ func TestImageEditTransport(t *testing.T) {
 	}
 	if len(response.Message.Content.Parts) != 1 {
 		t.Fatalf("parts = %d", len(response.Message.Content.Parts))
+	}
+	// A prepared attempt may execute more than once — that is how a caller
+	// retries without recompiling — so a second execution of the same
+	// compiled request must upload the reference image again instead of
+	// sending a drained multipart body.
+	if _, err := transportImage(cls.api)(context.Background(), compiled.Wire); err != nil {
+		t.Fatalf("second transportImage: %v", err)
+	}
+	if uploads != 2 {
+		t.Fatalf("uploads = %d, want one per attempt", uploads)
 	}
 	_ = capture.body(0)
 }
@@ -519,8 +531,9 @@ func TestImageStreamTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileImage stream: %v", err)
 	}
-	if compiled.Wire.partialImages != 2 {
-		t.Fatalf("wire partial_images = %d, want 2", compiled.Wire.partialImages)
+	if !compiled.Wire.params.PartialImages.Valid() ||
+		compiled.Wire.params.PartialImages.Value != 2 {
+		t.Fatalf("partial_images = %+v, want 2", compiled.Wire.params.PartialImages)
 	}
 
 	rawStream, err := transportImageStream(cls.api)(
@@ -715,7 +728,7 @@ func TestImageEditStreamTransport(t *testing.T) {
 
 func TestImageCompilerStreamShape(t *testing.T) {
 	compile := func(shape inference.GenerateExecutionShape, partial *int) (
-		imageWire,
+		*imageRequest,
 		error,
 	) {
 		t.Helper()
@@ -742,7 +755,7 @@ func TestImageCompilerStreamShape(t *testing.T) {
 			shape,
 		)
 		if err != nil {
-			return imageWire{}, err
+			return nil, err
 		}
 		return compiled.Wire, nil
 	}
@@ -755,8 +768,8 @@ func TestImageCompilerStreamShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream compile with partial_images: %v", err)
 	}
-	if wire.partialImages != 2 {
-		t.Fatalf("wire partial_images = %d, want 2", wire.partialImages)
+	if !wire.params.PartialImages.Valid() || wire.params.PartialImages.Value != 2 {
+		t.Fatalf("partial_images = %+v, want 2", wire.params.PartialImages)
 	}
 
 	// partial_images is stream-only: the unary shape rejects it.
@@ -808,7 +821,7 @@ func TestImageCompilerQuality(t *testing.T) {
 		if err != nil {
 			return "", err
 		}
-		return compiled.Wire.quality, nil
+		return string(compiled.Wire.params.Quality), nil
 	}
 
 	for _, quality := range []media.ImageQuality{
@@ -823,7 +836,7 @@ func TestImageCompilerQuality(t *testing.T) {
 			continue
 		}
 		if got != string(quality) {
-			t.Errorf("quality %q: wire = %q", quality, got)
+			t.Errorf("quality %q: params = %q", quality, got)
 		}
 	}
 
@@ -895,6 +908,87 @@ func TestTTSTransport(t *testing.T) {
 		t.Fatalf("audio = %d bytes", len(part.Source.Bytes()))
 	}
 	_ = capture.body(0)
+}
+
+// TestTTSCanonicalFormat pins the two vocabularies the speech endpoint keeps
+// apart: the request carries the endpoint's token (the canonical pcm16 stream
+// is "pcm" there), while the decoded part reports the canonical format. An
+// unset format means the provider default (mp3) with no channel claim.
+func TestTTSCanonicalFormat(t *testing.T) {
+	cases := []struct {
+		name         string
+		encoding     media.AudioEncoding
+		wantRequest  openai.AudioSpeechNewParamsResponseFormat
+		wantEncoding media.AudioEncoding
+		wantChannels int
+	}{
+		{
+			name:         "unset falls back to the provider default",
+			wantEncoding: media.AudioEncodingMP3,
+		},
+		{
+			name:         "mp3",
+			encoding:     media.AudioEncodingMP3,
+			wantRequest:  openai.AudioSpeechNewParamsResponseFormatMP3,
+			wantEncoding: media.AudioEncodingMP3,
+			wantChannels: 1,
+		},
+		{
+			name:         "pcm16 rides the endpoint's pcm token",
+			encoding:     media.AudioEncodingPCM16,
+			wantRequest:  openai.AudioSpeechNewParamsResponseFormatPCM,
+			wantEncoding: media.AudioEncodingPCM16,
+			wantChannels: 1,
+		},
+		{
+			name:         "flac",
+			encoding:     media.AudioEncodingFLAC,
+			wantRequest:  openai.AudioSpeechNewParamsResponseFormatFLAC,
+			wantEncoding: media.AudioEncodingFLAC,
+			wantChannels: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			request := inference.GenerateRequest{
+				Input: inference.GenerateInput{
+					Role: inference.InputRoleUser,
+					Content: inference.InputContent{
+						Content: message.Content{Parts: []message.Part{
+							message.TextPart{Text: "say hi"},
+						}},
+						Intent: inference.Intent{Audio: &inference.AudioIntent{
+							Voice:  media.VoiceSpec{ID: "alloy"},
+							Format: media.AudioFormat{Encoding: tc.encoding},
+						}},
+					},
+				},
+			}
+			compiled, err := compileTTS("gpt-4o-mini-tts")(
+				context.Background(),
+				openaiModel("gpt-4o-mini-tts"),
+				request,
+				inference.GenerateExecutionUnary,
+			)
+			if err != nil {
+				t.Fatalf("compileTTS: %v", err)
+			}
+			if compiled.Wire.ResponseFormat != tc.wantRequest {
+				t.Fatalf("response_format = %q, want %q",
+					compiled.Wire.ResponseFormat, tc.wantRequest)
+			}
+			format := ttsCanonicalFormat(compiled.Wire)
+			if format.Encoding != tc.wantEncoding ||
+				format.Channels != tc.wantChannels {
+				t.Fatalf("canonical format = %+v, want %q/%d channels",
+					format, tc.wantEncoding, tc.wantChannels)
+			}
+			if mediaType := format.Encoding.MediaType(); mediaType == "" {
+				t.Fatalf("canonical encoding %q has no media type", format.Encoding)
+			}
+		})
+	}
 }
 
 func TestTTSStreamTransport(t *testing.T) {

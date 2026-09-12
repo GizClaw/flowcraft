@@ -15,13 +15,13 @@ import (
 )
 
 // ---------------------------------------------------------------------------
-// Wire → ark Responses API request. This conversion is total and pure: every
-// field the compiler set has exactly one protobuf destination.
+// Ark Responses API request construction. The compiler lowers canonical
+// requests straight into the protobuf request shape through these
+// constructors, so this file is the only place the driver speaks its unions.
 // ---------------------------------------------------------------------------
 
-// The constructors below are the only place the compiler speaks ark's
-// protobuf unions: each owns one wire shape and the compile loop reads as what
-// the part means.
+// Each constructor owns one input shape, so the compile loop reads as what the
+// part means.
 
 // appendInputItem adds one input item, creating the list on first use.
 func appendInputItem(

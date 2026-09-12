@@ -6,8 +6,8 @@ import (
 )
 
 // openGenerate binds the Responses API pipeline for one generate model. The
-// compiler is shared by unary and stream shapes; the execution shape flag in
-// the wire selects the transport path.
+// same compiler serves both execution shapes — it states the shape on the
+// request — and each shape has its own transport.
 func openGenerate(
 	cls *clients,
 	spec Spec,

@@ -6,10 +6,11 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/inference/inferencetest"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 func TestToggleFalseCompilesToWireNone(t *testing.T) {
-	compile := compileGenerate("gpt-5.6-sol", catalog["gpt-5.6-sol"])
+	compile := compileResponses("gpt-5.6-sol", catalog["gpt-5.6-sol"])
 	request := simpleTextRequest("hi")
 	disabled := false
 	request.Input.Content.Intent.Text.ReasoningEnabled = &disabled
@@ -23,8 +24,8 @@ func TestToggleFalseCompilesToWireNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if compiled.Wire.reasoning != "none" {
-		t.Fatalf("wire reasoning = %q, want none", compiled.Wire.reasoning)
+	if string(compiled.Wire.params.Reasoning.Effort) != "none" {
+		t.Fatalf("reasoning effort = %q, want none", compiled.Wire.params.Reasoning.Effort)
 	}
 	if compiled.Report.Rejects(inference.FieldGenerateIntentReasoningEnabled) {
 		t.Fatal("disable request unexpectedly rejected on a toggle model")
@@ -35,11 +36,11 @@ func TestChatModeToggleFalseStillRejects(t *testing.T) {
 	entry := catalogEntry{
 		kind: kindGenerate,
 
-		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
+		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
 		dialect: dialect{
 			api: apiChat,
 		}}
-	compile := compileGenerate("chat-toggle", entry)
+	compile := compileChat("chat-toggle", entry)
 	request := simpleTextRequest("hi")
 	disabled := false
 	request.Input.Content.Intent.Text.ReasoningEnabled = &disabled
@@ -62,13 +63,13 @@ func TestSpecToggleWithoutMapPassesEffortThrough(t *testing.T) {
 	entry := catalogEntry{
 		kind: kindGenerate,
 
-		capabilities: generateChatCapabilities().WithReasoning(inference.ReasoningToggle),
+		capabilities: generateChatCapabilities().WithReasoning(model.ReasoningToggle),
 		dialect: dialect{
 			api: apiResponses,
 		}}
-	compile := compileGenerate("spec-toggle", entry)
+	compile := compileResponses("spec-toggle", entry)
 	request := simpleTextRequest("hi")
-	request.Input.Content.Intent.Text.ReasoningEffort = inference.ReasoningHigh
+	request.Input.Content.Intent.Text.ReasoningEffort = model.ReasoningHigh
 
 	compiled, err := compile(
 		context.Background(),
@@ -79,8 +80,8 @@ func TestSpecToggleWithoutMapPassesEffortThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if compiled.Wire.reasoning != "high" {
-		t.Fatalf("wire reasoning = %q, want high", compiled.Wire.reasoning)
+	if string(compiled.Wire.params.Reasoning.Effort) != "high" {
+		t.Fatalf("reasoning effort = %q, want high", compiled.Wire.params.Reasoning.Effort)
 	}
 	if compiled.Report.Dropped(inference.FieldGenerateIntentReasoningEffort) {
 		t.Fatal("legacy spec effort unexpectedly dropped")
@@ -112,7 +113,7 @@ func TestRedeclaredBuiltinKeepsToggleRoute(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 		t.Fatalf("reasoning kind = %q, want toggle", entry.capabilities.Reasoning.Kind)
 	}
 	if len(entry.capabilities.Reasoning.EffortMap) != 5 {
@@ -120,7 +121,7 @@ func TestRedeclaredBuiltinKeepsToggleRoute(t *testing.T) {
 			entry.capabilities.Reasoning.EffortMap)
 	}
 
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		inferencetest.ReasoningOffProbe(),
@@ -129,8 +130,8 @@ func TestRedeclaredBuiltinKeepsToggleRoute(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disable request rejected after redeclaration: %v", err)
 	}
-	if compiled.Wire.reasoning != "none" {
-		t.Fatalf("wire reasoning = %q, want none", compiled.Wire.reasoning)
+	if string(compiled.Wire.params.Reasoning.Effort) != "none" {
+		t.Fatalf("reasoning effort = %q, want none", compiled.Wire.params.Reasoning.Effort)
 	}
 	if compiled.Report.Rejects(inference.FieldGenerateIntentReasoningEnabled) {
 		t.Fatal("disable request unexpectedly rejected after redeclaration")
@@ -156,7 +157,7 @@ func TestRedeclaredBuiltinWithoutCapabilitiesInheritsWholesale(t *testing.T) {
 		t.Fatalf("limits = %d/%d, want built-in %d/%d",
 			in, out, bin, bout)
 	}
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningToggle ||
+	if entry.capabilities.Reasoning.Kind != model.ReasoningToggle ||
 		len(entry.capabilities.Reasoning.EffortMap) != 5 {
 		t.Fatalf("empty capabilities block must inherit reasoning wholesale: %+v",
 			entry.capabilities.Reasoning)
@@ -185,7 +186,7 @@ func TestCustomToggleCompilesReasoningOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
-	compiled, err := compileGenerate("my-toggle", models["my-toggle"])(
+	compiled, err := compileResponses("my-toggle", models["my-toggle"])(
 		context.Background(),
 		openaiModel("my-toggle"),
 		inferencetest.ReasoningOffProbe(),
@@ -194,8 +195,8 @@ func TestCustomToggleCompilesReasoningOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("custom toggle rejected reasoning off: %v", err)
 	}
-	if compiled.Wire.reasoning != "none" {
-		t.Fatalf("wire reasoning = %q, want none", compiled.Wire.reasoning)
+	if string(compiled.Wire.params.Reasoning.Effort) != "none" {
+		t.Fatalf("reasoning effort = %q, want none", compiled.Wire.params.Reasoning.Effort)
 	}
 }
 
@@ -218,14 +219,14 @@ func TestRedeclaredBuiltinAsAlwaysGivesTheMigrationPath(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningAlways {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningAlways {
 		t.Fatalf("reasoning kind = %q, want always", entry.capabilities.Reasoning.Kind)
 	}
 	if len(entry.capabilities.Reasoning.EffortMap) != 5 {
 		t.Fatalf("reasoning effort map must still inherit, got %v",
 			entry.capabilities.Reasoning.EffortMap)
 	}
-	if _, err := compileGenerate("gpt-5.6-sol", entry)(
+	if _, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		inferencetest.ReasoningOffProbe(),
@@ -251,13 +252,13 @@ func TestChatSurfacePublishesAlways(t *testing.T) {
 		if entry.kind != kindGenerate || entry.dialect.api != apiChat {
 			continue
 		}
-		if entry.capabilities.Reasoning.Kind == inference.ReasoningToggle {
+		if entry.capabilities.Reasoning.Kind == model.ReasoningToggle {
 			t.Fatalf("model %q publishes toggle on the chat surface", name)
 		}
-		if entry.capabilities.Reasoning.Kind != inference.ReasoningAlways {
+		if entry.capabilities.Reasoning.Kind != model.ReasoningAlways {
 			continue
 		}
-		compiled, err := compileGenerate(name, entry)(
+		compiled, err := compileChat(name, entry)(
 			context.Background(),
 			openaiModel(name),
 			inferencetest.ReasoningOffProbe(),
@@ -287,11 +288,11 @@ func TestPublishedToggleCompilesReasoningOff(t *testing.T) {
 	checked := 0
 	for name, entry := range models {
 		if entry.kind != kindGenerate ||
-			entry.capabilities.Reasoning.Kind != inference.ReasoningToggle {
+			entry.capabilities.Reasoning.Kind != model.ReasoningToggle {
 			continue
 		}
 		checked++
-		if compiled, err := compileGenerate(name, entry)(
+		if compiled, err := compileResponses(name, entry)(
 			context.Background(),
 			openaiModel(name),
 			inferencetest.ReasoningOffProbe(),
@@ -345,11 +346,11 @@ func TestChatSurfaceLowersDeclaredToggle(t *testing.T) {
 		t.Fatalf("mergedCatalog: %v", err)
 	}
 	entry := models["gpt-5.6-sol"]
-	if entry.capabilities.Reasoning.Kind != inference.ReasoningAlways {
+	if entry.capabilities.Reasoning.Kind != model.ReasoningAlways {
 		t.Fatalf("chat redeclaration reasoning kind = %q, want always",
 			entry.capabilities.Reasoning.Kind)
 	}
-	if _, err := compileGenerate("gpt-5.6-sol", entry)(
+	if _, err := compileChat("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		inferencetest.ReasoningOffProbe(),

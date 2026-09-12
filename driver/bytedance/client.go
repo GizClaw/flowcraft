@@ -48,9 +48,9 @@ type clients struct {
 	// (ProfileSpec.Endpoints); empty maps resolve to the catalog name.
 	endpoints map[string]string
 	// Raw request support: the pinned SDK cannot encode every official
-	// parameter (image layer_decomposition/background), so the image
-	// transport falls back to a direct POST carrying the same credentials,
-	// base URL, and HTTP client.
+	// parameter (the image background field), so the image transport falls
+	// back to a direct POST carrying the same credentials, base URL, and
+	// HTTP client.
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client

@@ -7,10 +7,8 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/inference"
 	"github.com/GizClaw/flowcraft/core/message/media"
+	"github.com/GizClaw/flowcraft/core/utils/ptr"
 )
-
-// driverID namespaces every extension this package defines.
-const driverID = "openai"
 
 const (
 	extensionGenerate = "generate_options"
@@ -24,15 +22,7 @@ func extensionProvider(provider string) string {
 	if provider != "" {
 		return provider
 	}
-	return driverID
-}
-
-func clonePointer[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
+	return providerID
 }
 
 // GenerateOptions carries OpenAI Responses API settings that have no
@@ -171,13 +161,13 @@ func (o GenerateOptions) Validate() error {
 }
 
 func (o GenerateOptions) Clone() inference.Extension {
-	o.ParallelToolCalls = clonePointer(o.ParallelToolCalls)
-	o.MaxToolCalls = clonePointer(o.MaxToolCalls)
+	o.ParallelToolCalls = ptr.Clone(o.ParallelToolCalls)
+	o.MaxToolCalls = ptr.Clone(o.MaxToolCalls)
 	if o.WebSearch != nil {
 		search := *o.WebSearch
 		search.AllowedDomains = append([]string(nil), search.AllowedDomains...)
-		search.ExternalWebAccess = clonePointer(search.ExternalWebAccess)
-		search.ToolChoice = clonePointer(search.ToolChoice)
+		search.ExternalWebAccess = ptr.Clone(search.ExternalWebAccess)
+		search.ToolChoice = ptr.Clone(search.ToolChoice)
 		o.WebSearch = &search
 	}
 	return o
@@ -245,47 +235,8 @@ func (o ImageOptions) Clone() inference.Extension {
 		mask := o.Mask.Clone()
 		o.Mask = &mask
 	}
-	o.PartialImages = clonePointer(o.PartialImages)
+	o.PartialImages = ptr.Clone(o.PartialImages)
 	return o
-}
-
-// ---------------------------------------------------------------------------
-// Consumption helpers.
-// ---------------------------------------------------------------------------
-
-func operationExtensions[T inference.Extension](
-	extensions inference.Extensions,
-) (T, []inference.Extension) {
-	var options T
-	var other []inference.Extension
-	for _, extension := range extensions {
-		if extension == nil {
-			continue
-		}
-		if typed, ok := extension.(T); ok {
-			options = typed
-			continue
-		}
-		other = append(other, extension)
-	}
-	return options, other
-}
-
-func rejectOtherExtensions(
-	operation string,
-	other []inference.Extension,
-	ledger *ledger,
-) {
-	for _, extension := range other {
-		reason := fmt.Sprintf(
-			"extension %q does not apply to %s",
-			extension.ExtensionID(),
-			operation,
-		)
-		for _, field := range extension.ActiveFields() {
-			ledger.reject(field.Qualify(extension), reason)
-		}
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -320,7 +271,7 @@ func (o TTSOptions) Validate() error {
 }
 
 func (o TTSOptions) Clone() inference.Extension {
-	o.Instructions = clonePointer(o.Instructions)
+	o.Instructions = ptr.Clone(o.Instructions)
 	return o
 }
 

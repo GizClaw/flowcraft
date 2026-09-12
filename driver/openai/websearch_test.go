@@ -31,11 +31,10 @@ func TestGenerateOptionsWebSearchCompilesToHostedTool(t *testing.T) {
 			},
 		},
 	}
-	wire := compileTextWire(t, request)
-	if wire.webSearch == nil {
-		t.Fatal("web search extension did not reach the wire")
+	params := compileTextParams(t, request)
+	if len(params.Tools) == 0 {
+		t.Fatal("web search extension did not reach the request")
 	}
-	params := wireToParams(wire)
 	if len(params.Tools) != 1 || params.Tools[0].OfWebSearch == nil {
 		t.Fatalf("tools = %+v, want one hosted web_search tool", params.Tools)
 	}
@@ -76,7 +75,7 @@ func TestGenerateOptionsWebSearchRejectedWithoutCapability(t *testing.T) {
 	request.Extensions = inference.Extensions{
 		GenerateOptions{WebSearch: &GenerateWebSearch{}},
 	}
-	_, err := compileGenerate("gpt-4.1-nano", catalog["gpt-4.1-nano"])(
+	_, err := compileResponses("gpt-4.1-nano", catalog["gpt-4.1-nano"])(
 		context.Background(),
 		openaiModel("gpt-4.1-nano"),
 		request,

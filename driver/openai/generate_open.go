@@ -2,6 +2,7 @@ package openai
 
 import (
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 )
 
 // openGenerate binds the generate pipeline (unary + stream) for one
@@ -11,12 +12,12 @@ import (
 func openGenerate(
 	cls *clients,
 	entry catalogEntry,
-	id inference.ModelID,
+	id model.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	if entry.dialect.api == apiChat {
 		return inference.BindGenerateOperations(
-			compileGenerate(id.Name, entry),
+			compileChat(id.Name, entry),
 			transportChatGenerate(cls.api),
 			decodeGenerate,
 			transportChatGenerateStream(cls.api),
@@ -24,7 +25,7 @@ func openGenerate(
 		)
 	}
 	return inference.BindGenerateOperations(
-		compileGenerate(id.Name, entry),
+		compileResponses(id.Name, entry),
 		transportGenerate(cls.api),
 		decodeGenerate,
 		transportGenerateStream(cls.api),

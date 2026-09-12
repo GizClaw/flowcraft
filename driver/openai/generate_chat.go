@@ -1,5 +1,11 @@
 package openai
 
+// Chat Completions surface: the sink that spells the compiler's decisions as
+// Chat Completions params, plus both transports and the response decoder.
+// Chat Completions carries function calls inside the assistant message rather
+// than as items of their own, which is where its item model differs from
+// Responses.
+
 import (
 	"context"
 	"io"
@@ -7,6 +13,7 @@ import (
 
 	"github.com/GizClaw/flowcraft/core/errdefs"
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/message"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -15,169 +22,258 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-// wireToChatParams converts the shared generate wire into openai-go chat
-// completion params. Chat Completions cannot carry Responses-style
-// reasoning items or the hosted web_search tool; the compiler already
-// rejects web_search in chat mode and reasoning items are dropped here
-// (they cannot round-trip on this surface).
-func wireToChatParams(wire generateWire) openai.ChatCompletionNewParams {
-	params := openai.ChatCompletionNewParams{
-		Model:    openai.ChatModel(wire.model),
-		Messages: chatMessages(wire.items),
+// compileChat lowers a canonical request into Chat Completions params.
+func compileChat(
+	modelName string,
+	entry catalogEntry,
+) inference.GenerateCompiler[*chatRequest] {
+	return compileGenerate(
+		entry,
+		func(shape inference.GenerateExecutionShape) *chatRequest {
+			return newChatRequest(modelName, entry, shape)
+		},
+	)
+}
+
+// chatRequest is one compiled Chat Completions call: the SDK params the
+// transports post, plus the per-request options for the fields the API leaves
+// untyped (an aliased metadata envelope).
+type chatRequest struct {
+	params  openai.ChatCompletionNewParams
+	options []option.RequestOption
+	// assistant buffers the assistant turn a run of tool calls attaches to:
+	// Chat Completions carries calls inside the message, so the compiler's
+	// item order is reassembled here.
+	assistant *openai.ChatCompletionAssistantMessageParam
+}
+
+// newChatRequest seeds the provider-wide policy of one Chat Completions call.
+func newChatRequest(
+	modelName string,
+	entry catalogEntry,
+	shape inference.GenerateExecutionShape,
+) *chatRequest {
+	request := &chatRequest{
+		params: openai.ChatCompletionNewParams{Model: modelName},
 	}
-	if wire.maxTokens != nil {
-		params.MaxCompletionTokens = param.NewOpt(*wire.maxTokens)
+	// The driver states the retention decision instead of leaving it to a
+	// provider default, exactly as the Responses surface does.
+	request.params.Store = param.NewOpt(entry.dialect.store)
+	if shape != inference.GenerateExecutionStream {
+		return request
 	}
-	if wire.temperature != nil {
-		params.Temperature = param.NewOpt(*wire.temperature)
+	// stream_options carries the streaming policy. Both fields are opt-out,
+	// and the object only goes out when a policy actually asks for a field:
+	// some compatible endpoints reject it outright.
+	options := openai.ChatCompletionStreamOptionsParam{}
+	set := false
+	if entry.dialect.chatStreamUsage() {
+		options.IncludeUsage = openai.Bool(true)
+		set = true
 	}
-	if wire.topP != nil {
-		params.TopP = param.NewOpt(*wire.topP)
+	if obfuscation := entry.dialect.chatObfuscation(); obfuscation != nil {
+		options.IncludeObfuscation = openai.Bool(*obfuscation)
+		set = true
 	}
-	if wire.reasoning != "" {
-		params.ReasoningEffort = shared.ReasoningEffort(wire.reasoning)
+	if set {
+		request.params.StreamOptions = options
 	}
-	if wire.textFormat != nil {
-		params.ResponseFormat = chatTextFormat(wire.textFormat)
+	return request
+}
+
+// ---------------------------------------------------------------------------
+// Sink
+// ---------------------------------------------------------------------------
+
+func (r *chatRequest) message(role string, content []contentPart) {
+	r.flushAssistant()
+	switch role {
+	case string(message.RoleAssistant):
+		assistant := &openai.ChatCompletionAssistantMessageParam{}
+		if text := joinedText(content); text != "" {
+			assistant.Content.OfString = openai.String(text)
+		}
+		r.assistant = assistant
+	case string(message.RoleSystem):
+		r.params.Messages = append(r.params.Messages,
+			openai.SystemMessage(joinedText(content)))
+	default: // user
+		parts := chatUserContent(content)
+		if len(parts) == 1 && parts[0].OfText != nil {
+			r.params.Messages = append(r.params.Messages,
+				openai.UserMessage(parts[0].OfText.Text))
+			return
+		}
+		r.params.Messages = append(r.params.Messages,
+			openai.UserMessage(parts))
 	}
-	for _, definition := range wire.tools {
-		params.Tools = append(params.Tools, openai.ChatCompletionToolUnionParam{
-			OfFunction: &openai.ChatCompletionFunctionToolParam{
-				Function: openai.FunctionDefinitionParam{
-					Name:        definition.name,
-					Description: openai.String(definition.description),
-					Parameters:  openai.FunctionParameters(schemaMap(definition.schema)),
+}
+
+func (r *chatRequest) toolCall(callID, name string, args []byte) {
+	if r.assistant == nil {
+		r.assistant = &openai.ChatCompletionAssistantMessageParam{}
+	}
+	r.assistant.ToolCalls = append(r.assistant.ToolCalls,
+		openai.ChatCompletionMessageToolCallUnionParam{
+			OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
+				ID: callID,
+				Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
+					Name:      name,
+					Arguments: string(args),
 				},
 			},
 		})
-	}
-	if choice := wire.toolChoice; choice != nil {
-		params.ToolChoice = chatToolChoice(choice)
-	}
-	if wire.stream {
-		options := openai.ChatCompletionStreamOptionsParam{}
-		set := false
-		if wire.chatStreamIncludeUsage {
-			options.IncludeUsage = openai.Bool(true)
-			set = true
-		}
-		if obfuscation := wire.chatStreamIncludeObfuscation; obfuscation != nil {
-			options.IncludeObfuscation = openai.Bool(*obfuscation)
-			set = true
-		}
-		if set {
-			params.StreamOptions = options
-		}
-	}
-	if wire.requestMetadataEnvelope == "metadata" && len(wire.requestMetadata) > 0 {
-		params.Metadata = wire.requestMetadata
-	}
-	if wire.promptCacheKey != "" {
-		params.PromptCacheKey = param.NewOpt(wire.promptCacheKey)
-	}
-	if wire.serviceTier != "" {
-		params.ServiceTier = openai.ChatCompletionNewParamsServiceTier(wire.serviceTier)
-	}
-	if wire.parallelToolCalls != nil {
-		params.ParallelToolCalls = param.NewOpt(*wire.parallelToolCalls)
-	}
-	if wire.safetyIdentifier != "" {
-		params.SafetyIdentifier = param.NewOpt(wire.safetyIdentifier)
-	}
-	return params
 }
 
-// chatMessages assembles chat messages from the Responses-style wire
-// items. Tool calls are attached to the assistant message that precedes
-// them, and tool results become tool-role messages, matching the chat
-// completions conversation shape.
-func chatMessages(items []wireItem) []openai.ChatCompletionMessageParamUnion {
-	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(items))
-	var assistant *openai.ChatCompletionAssistantMessageParam
-	flushAssistant := func() {
-		if assistant == nil {
-			return
+func (r *chatRequest) toolResult(callID string, content []contentPart) {
+	r.flushAssistant()
+	r.params.Messages = append(r.params.Messages,
+		openai.ToolMessage(joinedText(content), callID))
+}
+
+// reasoning is unreachable on this surface: the compiler reports the drop for
+// every reasoning item it sees in chat mode, because Chat Completions has no
+// standardized reasoning round-trip to spell.
+func (*chatRequest) reasoning(message.ReasoningPart, bool) {}
+
+func (r *chatRequest) setTextFormat(format *inference.ResponseFormat) {
+	switch format.Kind {
+	case inference.ResponseJSONObject:
+		r.params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
 		}
-		out = append(out, openai.ChatCompletionMessageParamUnion{OfAssistant: assistant})
-		assistant = nil
-	}
-	for _, item := range items {
-		switch item.kind {
-		case wireItemMessage:
-			flushAssistant()
-			switch item.role {
-			case "system":
-				out = append(out, openai.SystemMessage(chatText(item.content)))
-			case "assistant":
-				assistant = &openai.ChatCompletionAssistantMessageParam{}
-				if text := chatText(item.content); text != "" {
-					assistant.Content.OfString = openai.String(text)
-				}
-			default: // user
-				parts := chatUserContent(item.content)
-				if len(parts) == 1 && parts[0].OfText != nil {
-					out = append(out, openai.UserMessage(parts[0].OfText.Text))
-				} else {
-					out = append(out, openai.UserMessage(parts))
-				}
-			}
-		case wireItemToolCall:
-			if assistant == nil {
-				assistant = &openai.ChatCompletionAssistantMessageParam{}
-			}
-			assistant.ToolCalls = append(assistant.ToolCalls, openai.ChatCompletionMessageToolCallUnionParam{
-				OfFunction: &openai.ChatCompletionMessageFunctionToolCallParam{
-					ID: item.callID,
-					Function: openai.ChatCompletionMessageFunctionToolCallFunctionParam{
-						Name:      item.name,
-						Arguments: string(item.args),
-					},
+	case inference.ResponseJSONSchema:
+		r.params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
+				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
+					Name:   format.Name,
+					Strict: param.NewOpt(true),
+					Schema: schemaMap(format.Schema),
 				},
-			})
-		case wireItemToolResult:
-			flushAssistant()
-			out = append(out, openai.ToolMessage(chatToolResultText(item.output), item.callID))
-		case wireItemReasoning:
-			// Chat Completions has no standardized encrypted reasoning
-			// round-trip; the trace is intentionally dropped.
-			continue
+			},
 		}
 	}
-	flushAssistant()
-	return out
 }
 
-// chatToolResultText joins a tool result's lowered content into the plain
-// string Chat Completions carries. Tool messages hold text only, so the
-// compiler already replaced every richer part by an in-place placeholder and
-// reported it on the ledger.
-func chatToolResultText(content []wireContent) string {
-	var builder strings.Builder
-	for _, part := range content {
-		builder.WriteString(part.text)
+func (r *chatRequest) setMaxOutputTokens(tokens int64) {
+	r.params.MaxCompletionTokens = param.NewOpt(tokens)
+}
+
+func (r *chatRequest) setTemperature(value float64) {
+	r.params.Temperature = param.NewOpt(value)
+}
+
+func (r *chatRequest) setTopP(value float64) {
+	r.params.TopP = param.NewOpt(value)
+}
+
+func (r *chatRequest) addTool(definition message.ToolDefinition) {
+	r.params.Tools = append(r.params.Tools, openai.ChatCompletionToolUnionParam{
+		OfFunction: &openai.ChatCompletionFunctionToolParam{
+			Function: openai.FunctionDefinitionParam{
+				Name:        definition.Name,
+				Description: openai.String(definition.Description),
+				Parameters:  openai.FunctionParameters(schemaMap(definition.InputSchema)),
+			},
+		},
+	})
+}
+
+func (r *chatRequest) setToolChoice(choice inference.ToolChoice) {
+	switch choice.Kind {
+	case inference.ToolChoiceNone, inference.ToolChoiceRequired:
+		r.params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.String(string(choice.Kind)),
+		}
+	case inference.ToolChoiceNamed:
+		r.params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfFunctionToolChoice: &openai.ChatCompletionNamedToolChoiceParam{
+				Function: openai.ChatCompletionNamedToolChoiceFunctionParam{
+					Name: choice.Name,
+				},
+			},
+		}
+	case inference.ToolChoiceAuto:
+		r.params.ToolChoice = openai.ChatCompletionToolChoiceOptionUnionParam{
+			OfAuto: openai.String("auto"),
+		}
 	}
-	return builder.String()
 }
 
-func chatText(content []wireContent) string {
+func (r *chatRequest) setReasoningEffort(effort string) {
+	r.params.ReasoningEffort = shared.ReasoningEffort(effort)
+}
+
+func (r *chatRequest) setVerbosity(level string) {
+	r.params.Verbosity = openai.ChatCompletionNewParamsVerbosity(level)
+}
+
+func (r *chatRequest) setServiceTier(tier string) {
+	r.params.ServiceTier = openai.ChatCompletionNewParamsServiceTier(tier)
+}
+
+func (r *chatRequest) setParallelToolCalls(value bool) {
+	r.params.ParallelToolCalls = param.NewOpt(value)
+}
+
+// setMaxToolCalls is unreachable on this surface: Chat Completions has no
+// tool-call budget, so the compiler rejects the knob before the sink is asked.
+func (*chatRequest) setMaxToolCalls(int) {}
+
+func (r *chatRequest) setSafetyIdentifier(identifier string) {
+	r.params.SafetyIdentifier = param.NewOpt(identifier)
+}
+
+func (r *chatRequest) setPromptCacheKey(key string) {
+	r.params.PromptCacheKey = param.NewOpt(key)
+}
+
+func (r *chatRequest) setRequestMetadata(
+	envelope string,
+	metadata map[string]string,
+) {
+	if envelope == "metadata" {
+		r.params.Metadata = metadata
+		return
+	}
+	// The SDK types only the native metadata object; a gateway envelope names
+	// a field it cannot express, so it rides the raw-JSON option path.
+	r.options = append(r.options, option.WithJSONSet(envelope, metadata))
+}
+
+// addHostedWebSearch is unreachable on this surface: Chat Completions has no
+// hosted web_search tool, so the compiler rejects it before the sink is asked.
+func (*chatRequest) addHostedWebSearch(*GenerateWebSearch, bool) {}
+
+// flushAssistant appends the buffered assistant turn, if any. Tool calls
+// attach to that turn, so it is only complete once the next role arrives.
+func (r *chatRequest) flushAssistant() {
+	if r.assistant == nil {
+		return
+	}
+	r.params.Messages = append(r.params.Messages,
+		openai.ChatCompletionMessageParamUnion{OfAssistant: r.assistant})
+	r.assistant = nil
+}
+
+// joinedText concatenates a carried content run into the plain string Chat
+// Completions carries. The compiler lowered structured data to text and
+// replaced every part this surface cannot hold with a text placeholder, so
+// nothing is lost here.
+func joinedText(content []contentPart) string {
 	var builder strings.Builder
 	for _, part := range content {
-		if part.kind == wireContentText {
+		if part.kind == contentText {
 			builder.WriteString(part.text)
 		}
 	}
 	return builder.String()
 }
 
-func chatUserContent(content []wireContent) []openai.ChatCompletionContentPartUnionParam {
+func chatUserContent(content []contentPart) []openai.ChatCompletionContentPartUnionParam {
 	parts := make([]openai.ChatCompletionContentPartUnionParam, 0, len(content))
 	for _, part := range content {
-		switch part.kind {
-		case wireContentText:
-			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
-				OfText: &openai.ChatCompletionContentPartTextParam{Text: part.text},
-			})
-		case wireContentImage:
+		if part.kind == contentImage {
 			parts = append(parts, openai.ChatCompletionContentPartUnionParam{
 				OfImageURL: &openai.ChatCompletionContentPartImageParam{
 					ImageURL: openai.ChatCompletionContentPartImageImageURLParam{
@@ -185,70 +281,42 @@ func chatUserContent(content []wireContent) []openai.ChatCompletionContentPartUn
 					},
 				},
 			})
+			continue
 		}
+		parts = append(parts, openai.ChatCompletionContentPartUnionParam{
+			OfText: &openai.ChatCompletionContentPartTextParam{Text: part.text},
+		})
 	}
 	return parts
 }
 
-func chatTextFormat(format *wireTextFormat) openai.ChatCompletionNewParamsResponseFormatUnion {
-	switch format.kind {
-	case "json_object":
-		return openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONObject: &shared.ResponseFormatJSONObjectParam{},
-		}
-	case "json_schema":
-		return openai.ChatCompletionNewParamsResponseFormatUnion{
-			OfJSONSchema: &shared.ResponseFormatJSONSchemaParam{
-				JSONSchema: shared.ResponseFormatJSONSchemaJSONSchemaParam{
-					Name:   format.name,
-					Strict: param.NewOpt(format.strict),
-					Schema: schemaMap(format.schema),
-				},
-			},
-		}
-	}
-	return openai.ChatCompletionNewParamsResponseFormatUnion{}
-}
-
-func chatToolChoice(choice *wireToolChoice) openai.ChatCompletionToolChoiceOptionUnionParam {
-	switch choice.mode {
-	case "none", "required":
-		return openai.ChatCompletionToolChoiceOptionUnionParam{
-			OfAuto: openai.String(choice.mode),
-		}
-	case "named":
-		return openai.ChatCompletionToolChoiceOptionUnionParam{
-			OfFunctionToolChoice: &openai.ChatCompletionNamedToolChoiceParam{
-				Function: openai.ChatCompletionNamedToolChoiceFunctionParam{Name: choice.name},
-			},
-		}
-	default:
-		return openai.ChatCompletionToolChoiceOptionUnionParam{
-			OfAuto: openai.String("auto"),
-		}
-	}
-}
+// ---------------------------------------------------------------------------
+// Transport and decode.
+// ---------------------------------------------------------------------------
 
 // transportChatGenerate executes the compiled request against the chat
 // completions endpoint.
-func transportChatGenerate(client openai.Client) inference.Transport[generateWire, generateRaw] {
-	return func(ctx context.Context, wire generateWire) (generateRaw, error) {
+func transportChatGenerate(
+	client openai.Client,
+) inference.Transport[*chatRequest, generateRaw] {
+	return func(ctx context.Context, request *chatRequest) (generateRaw, error) {
+		modelName := string(request.params.Model)
 		response, err := client.Chat.Completions.New(
 			ctx,
-			wireToChatParams(wire),
-			requestMetadataOptions(wire)...,
+			request.params,
+			request.options...,
 		)
 		if err != nil {
 			classified := classifyError(err)
-			logInferenceCall(ctx, "generate", wire.model, classified, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", modelName, classified, "", "")
 			return generateRaw{}, classified
 		}
 		raw, err := chatCompletionToRaw(response)
 		if err != nil {
-			logInferenceCall(ctx, "generate", wire.model, err, "", "")
+			inference.LogProviderCall(ctx, providerID, "generate", modelName, err, "", "")
 			return generateRaw{}, err
 		}
-		logInferenceCall(ctx, "generate", wire.model, nil, "", raw.id)
+		inference.LogProviderCall(ctx, providerID, "generate", modelName, nil, "", raw.id)
 		return raw, nil
 	}
 }
@@ -350,17 +418,18 @@ type chatStream struct {
 // transportChatGenerateStream opens the streaming chat request.
 func transportChatGenerateStream(
 	client openai.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+) inference.Transport[*chatRequest, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		request *chatRequest,
 	) (inference.ProviderStream[streamRaw], error) {
+		modelName := string(request.params.Model)
 		var requestID string
-		opts := append([]option.RequestOption(nil), requestMetadataOptions(wire)...)
+		opts := append([]option.RequestOption(nil), request.options...)
 		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Chat.Completions.NewStreaming(
 			ctx,
-			wireToChatParams(wire),
+			request.params,
 			opts...,
 		)
 		if stream == nil {
@@ -369,16 +438,16 @@ func transportChatGenerateStream(
 		}
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", modelName, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", modelName, nil, "")
 		return &chatStream{
 			stream:    stream,
 			textPart:  -1,
 			toolParts: make(map[int64]int),
 			requestID: requestID,
-			model:     wire.model,
+			model:     modelName,
 		}, nil
 	}
 }
@@ -409,7 +478,7 @@ func (s *chatStream) Next(ctx context.Context) (streamRaw, error) {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
 				classified := classifyError(err)
-				logInferenceStream(ctx, "generate", "", classified, "")
+				inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 				return streamRaw{}, classified
 			}
 			if synthesized := s.end(); synthesized != "" {

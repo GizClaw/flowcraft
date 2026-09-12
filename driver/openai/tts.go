@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/GizClaw/flowcraft/core/inference"
+	"github.com/GizClaw/flowcraft/core/inference/model"
 	"github.com/GizClaw/flowcraft/core/message"
 	"github.com/GizClaw/flowcraft/core/message/media"
 
@@ -18,23 +19,6 @@ import (
 // spoken as-is. The endpoint has no language, sample-rate, or channel
 // controls, and the provider's speed range is [0.25, 4.0], so requests
 // outside those bounds are rejected instead of clamped or silently dropped.
-
-type ttsWire struct {
-	model  string
-	text   string
-	voice  string
-	format string // mp3 | opus | aac | flac | pcm
-	speed  *float64
-	stream bool
-	// instructions steers delivery for models that accept free-form style
-	// direction; it comes from TTSOptions, not the canonical intent.
-	instructions string
-	// canonicalFormat echoes the negotiated format for the response part;
-	// it is derived from the request, never from provider payloads.
-	canonicalEncoding  string
-	canonicalMediaType string
-	canonicalChannels  int
-}
 
 type ttsRaw struct {
 	data   []byte
@@ -51,48 +35,46 @@ type ttsStreamRaw struct {
 }
 
 func compileTTS(
-	model string,
-) inference.GenerateCompiler[ttsWire] {
+	modelName string,
+) inference.GenerateCompiler[openai.AudioSpeechNewParams] {
 	return func(
 		_ context.Context,
-		_ inference.ModelRef,
+		_ model.ModelRef,
 		request inference.GenerateRequest,
 		shape inference.GenerateExecutionShape,
-	) (inference.Compiled[ttsWire], error) {
-		ledger := newLedger(
-			inference.OperationGenerate,
+	) (inference.Compiled[openai.AudioSpeechNewParams], error) {
+		ledger := inference.NewLedger(
+			model.OperationGenerate,
+			providerID,
 			request.ActiveFieldsFor(shape),
 		)
-		wire := ttsWire{
-			model:  model,
-			stream: shape == inference.GenerateExecutionStream,
-		}
+		params := openai.AudioSpeechNewParams{Model: modelName}
 
 		var text []string
-		collect := func(parts []message.Part, fields map[message.PartKind]inference.FieldID) {
+		collect := func(parts []message.Part, fields func(message.PartKind) inference.FieldID) {
 			for _, part := range parts {
 				if value, ok := part.(message.TextPart); ok {
 					text = append(text, value.Text)
 					continue
 				}
-				ledger.reject(
-					fields[part.Kind()],
+				ledger.Reject(
+					fields(part.Kind()),
 					fmt.Sprintf("speech synthesis speaks text, not %s", part.Kind()),
 				)
 			}
 		}
 		for _, turn := range request.Context {
 			if turn.Role != message.RoleUser {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateContextRole,
 					"speech synthesis keeps user context only",
 				)
 				continue
 			}
-			collect(turn.Content.Parts, contextPartFields)
+			collect(turn.Content.Parts, contextPartField)
 		}
-		collect(request.Input.Content.Parts, inputPartFields)
-		wire.text = strings.Join(text, "\n")
+		collect(request.Input.Content.Parts, inputPartField)
+		params.Input = strings.Join(text, "\n")
 
 		intent := request.Input.Content.Intent
 		if text := intent.Text; text != nil {
@@ -101,157 +83,140 @@ func compileTTS(
 				"speech synthesis has no sampling controls",
 				"speech models have no reasoning control",
 			)
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentText,
 				"speech models do not produce text",
 			)
 		}
 		if audio := intent.Audio; audio != nil {
 			if audio.Voice.ID == "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioVoice,
 					"speech synthesis requires a voice",
 				)
 			}
-			wire.voice = audio.Voice.ID
+			params.Voice = openai.AudioSpeechNewParamsVoiceUnion{
+				OfAudioSpeechNewsVoiceString2: openai.String(audio.Voice.ID),
+			}
 			if audio.Voice.Language != "" {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioVoiceLanguage,
 					"the speech API has no language parameter",
 				)
 			}
-			compileTTSFormat(&wire, audio.Format, ledger)
+			compileTTSFormat(&params, audio.Format, ledger)
 			if audio.Speed != nil {
 				speed := *audio.Speed
 				if speed < 0.25 || speed > 4.0 {
-					ledger.reject(
+					ledger.Reject(
 						inference.FieldGenerateIntentAudioSpeed,
 						fmt.Sprintf("provider supports speed between 0.25 and 4, not %g", speed),
 					)
 				} else {
-					wire.speed = &speed
+					params.Speed = param.NewOpt(speed)
 				}
 			}
 			if audio.Count != nil && *audio.Count > 1 {
-				ledger.reject(
+				ledger.Reject(
 					inference.FieldGenerateIntentAudioCount,
 					"speech synthesis produces a single audio stream",
 				)
 			}
 		}
 		if intent.Image != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentImage,
 				"speech models do not produce images",
 			)
 		}
 		if intent.Video != nil {
-			ledger.reject(
+			ledger.Reject(
 				inference.FieldGenerateIntentVideo,
 				"speech models do not produce video",
 			)
 		}
-		options, other := operationExtensions[TTSOptions](request.Extensions)
-		rejectOtherExtensions("speech synthesis", other, ledger)
+		options, other := inference.ExtensionFor[TTSOptions](request.Extensions)
+		ledger.RejectExtensions("speech synthesis", other)
 		if instructions := options.Instructions; instructions != nil {
-			wire.instructions = *instructions
+			params.Instructions = param.NewOpt(*instructions)
 		}
 
-		report := ledger.report()
-		if len(ledger.order) > 0 {
-			return inference.Compiled[ttsWire]{Report: report}, ledger.err()
+		report := ledger.Report()
+		if ledger.Rejected() {
+			return inference.Compiled[openai.AudioSpeechNewParams]{Report: report}, ledger.Err()
 		}
-		return inference.Compiled[ttsWire]{Wire: wire, Report: report}, nil
+		return inference.Compiled[openai.AudioSpeechNewParams]{
+			Wire:   params,
+			Report: report,
+		}, nil
 	}
 }
 
 // compileTTSFormat maps the canonical audio format onto endpoint tokens.
-// Raw PCM is 24kHz mono on this API, with no rate or channel controls, so
-// only the encoding round-trips.
+// Raw PCM is 24kHz mono on this API, with no rate or channel controls, so only
+// the encoding reaches the request.
 func compileTTSFormat(
-	wire *ttsWire,
+	params *openai.AudioSpeechNewParams,
 	format media.AudioFormat,
-	ledger *ledger,
+	ledger *inference.Ledger,
 ) {
 	switch format.Encoding {
 	case "":
 		// Unset: the provider default (mp3) applies; nothing is negotiated.
 	case media.AudioEncodingPCM16:
-		wire.format = "pcm"
+		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormatPCM
 	case media.AudioEncodingMP3:
-		wire.format = "mp3"
+		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormatMP3
 	case media.AudioEncodingOpus:
-		wire.format = "opus"
+		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormatOpus
 	case media.AudioEncodingAAC:
-		wire.format = "aac"
+		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormatAAC
 	case media.AudioEncodingFLAC:
-		wire.format = "flac"
+		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormatFLAC
 	default:
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatEncoding,
 			fmt.Sprintf("audio encoding %q has no native token", format.Encoding),
 		)
 		return
 	}
 	if format.SampleRateHz != 0 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatSampleRate,
 			"the speech API has no sample-rate control",
 		)
 		return
 	}
 	if format.Channels > 1 {
-		ledger.reject(
+		ledger.Reject(
 			inference.FieldGenerateIntentAudioFormatChannels,
 			"speech synthesis is mono",
 		)
-		return
 	}
-	if format.Encoding == "" {
-		return
-	}
-	wire.canonicalEncoding = string(format.Encoding)
-	wire.canonicalMediaType = format.Encoding.MediaType()
-	wire.canonicalChannels = 1
 }
 
-// ttsParams renders the endpoint request body.
-func ttsParams(wire ttsWire) openai.AudioSpeechNewParams {
-	params := openai.AudioSpeechNewParams{
-		Model: wire.model,
-		Input: wire.text,
-		Voice: openai.AudioSpeechNewParamsVoiceUnion{
-			OfAudioSpeechNewsVoiceString2: openai.String(wire.voice),
-		},
+// ttsCanonicalFormat rebuilds the negotiated canonical format from the
+// compiled request. An unset response format means the provider default (mp3)
+// is what the payload will actually carry; the endpoint is mono, so an
+// negotiated encoding reports one channel. The endpoint spells the canonical
+// pcm16 stream "pcm", so the two vocabularies meet here and nowhere else.
+func ttsCanonicalFormat(params openai.AudioSpeechNewParams) media.AudioFormat {
+	switch params.ResponseFormat {
+	case "":
+		// Provider default: mp3. The endpoint negotiated nothing, so no
+		// channel count is claimed.
+		return media.AudioFormat{Encoding: media.AudioEncodingMP3}
+	case openai.AudioSpeechNewParamsResponseFormatPCM:
+		return media.AudioFormat{
+			Encoding: media.AudioEncodingPCM16,
+			Channels: 1,
+		}
+	default:
+		return media.AudioFormat{
+			Encoding: media.AudioEncoding(string(params.ResponseFormat)),
+			Channels: 1,
+		}
 	}
-	if wire.format != "" {
-		params.ResponseFormat = openai.AudioSpeechNewParamsResponseFormat(wire.format)
-	}
-	if wire.speed != nil {
-		params.Speed = param.NewOpt(*wire.speed)
-	}
-	if wire.instructions != "" {
-		params.Instructions = param.NewOpt(wire.instructions)
-	}
-	return params
-}
-
-// ttsCanonicalFormat rebuilds the negotiated canonical format from the wire.
-// An unset encoding means the provider default (mp3) is what the payload
-// will actually carry.
-func ttsCanonicalFormat(wire ttsWire) media.AudioFormat {
-	encoding := wire.canonicalEncoding
-	if encoding == "" {
-		encoding = string(media.AudioEncodingMP3)
-	}
-	format := media.AudioFormat{
-		Encoding: media.AudioEncoding(encoding),
-		Channels: wire.canonicalChannels,
-	}
-	if format.Encoding == media.AudioEncodingPCM16 && format.Channels == 0 {
-		format.Channels = 1
-	}
-	return format
 }
 
 // ---------------------------------------------------------------------------
@@ -260,9 +225,12 @@ func ttsCanonicalFormat(wire ttsWire) media.AudioFormat {
 
 func transportTTS(
 	client openai.Client,
-) inference.Transport[ttsWire, ttsRaw] {
-	return func(ctx context.Context, wire ttsWire) (ttsRaw, error) {
-		body, err := client.Audio.Speech.New(ctx, ttsParams(wire))
+) inference.Transport[openai.AudioSpeechNewParams, ttsRaw] {
+	return func(
+		ctx context.Context,
+		params openai.AudioSpeechNewParams,
+	) (ttsRaw, error) {
+		body, err := client.Audio.Speech.New(ctx, params)
 		if err != nil {
 			return ttsRaw{}, classifyError(err)
 		}
@@ -274,7 +242,7 @@ func transportTTS(
 		if len(data) == 0 {
 			return ttsRaw{}, fmt.Errorf("openai: synthesis produced no audio")
 		}
-		return ttsRaw{data: data, format: ttsCanonicalFormat(wire)}, nil
+		return ttsRaw{data: data, format: ttsCanonicalFormat(params)}, nil
 	}
 }
 
@@ -323,18 +291,18 @@ type ttsStream struct {
 
 func transportTTSStream(
 	client openai.Client,
-) inference.Transport[ttsWire, inference.ProviderStream[ttsStreamRaw]] {
+) inference.Transport[openai.AudioSpeechNewParams, inference.ProviderStream[ttsStreamRaw]] {
 	return func(
 		ctx context.Context,
-		wire ttsWire,
+		params openai.AudioSpeechNewParams,
 	) (inference.ProviderStream[ttsStreamRaw], error) {
-		body, err := client.Audio.Speech.New(ctx, ttsParams(wire))
+		body, err := client.Audio.Speech.New(ctx, params)
 		if err != nil {
 			return nil, classifyError(err)
 		}
 		return &ttsStream{
 			body:   body.Body,
-			format: ttsCanonicalFormat(wire),
+			format: ttsCanonicalFormat(params),
 		}, nil
 	}
 }
@@ -397,7 +365,7 @@ func decodeTTSStream(
 
 func openTTS(
 	cls *clients,
-	id inference.ModelID,
+	id model.ModelID,
 	_ string,
 ) (inference.GenerateOperations, error) {
 	return inference.BindGenerateOperations(

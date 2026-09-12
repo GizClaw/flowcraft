@@ -77,8 +77,8 @@ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
 github.com/volcengine/volc-sdk-golang v1.0.23 h1:anOslb2Qp6ywnsbyq9jqR0ljuO63kg9PY+4OehIk5R8=
 github.com/volcengine/volc-sdk-golang v1.0.23/go.mod h1:AfG/PZRUkHJ9inETvbjNifTDgut25Wbkm2QoYBTbvyU=
-github.com/volcengine/volcengine-go-sdk v1.2.48 h1:RyADovt3Zfs7MQng/RxBBM+Nv9PqRyInXZQ58WJxRUg=
-github.com/volcengine/volcengine-go-sdk v1.2.48/go.mod h1:5duonraYH9kPPB5/Ke2y63atELLRymBSgCo9ItIZqEM=
+github.com/volcengine/volcengine-go-sdk v1.2.52 h1:L0RxzqCF/d69flYDgEua5BDRxZNglJRc6DUti7zmpr4=
+github.com/volcengine/volcengine-go-sdk v1.2.52/go.mod h1:DURKPVQ8Rsi4OQu4/NPjUyjla3MeHPgXT/qV+400fAw=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/runtime v0.65.0 h1:n8qdwrebNEHF/zHpueuZ4OacdJ8CdSaP7xef9WRZXTQ=

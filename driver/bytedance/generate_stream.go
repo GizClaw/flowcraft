@@ -290,7 +290,7 @@ func (s *responsesStream) applyTerminal(
 // registerPart assigns a stable canonical part index per ark output index.
 // Text output (the answer message) lands before tool calls in the canonical
 // response only when ark emits it first; the runtime assembles parts in
-// index order, which mirrors wire order here.
+// index order, which mirrors the request's output order here.
 func (s *responsesStream) registerPart(outputIndex int64, tool bool) *streamPart {
 	part, ok := s.parts[outputIndex]
 	if !ok {

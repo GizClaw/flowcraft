@@ -16,7 +16,7 @@ type WebSearchOutput struct {
 	Citations []inference.Citation      `json:"citations,omitempty"`
 }
 
-func (WebSearchOutput) ProviderID() string  { return driverID }
+func (WebSearchOutput) ProviderID() string  { return providerID }
 func (WebSearchOutput) ExtensionID() string { return extensionWebSearch }
 
 func (o WebSearchOutput) Validate() error {

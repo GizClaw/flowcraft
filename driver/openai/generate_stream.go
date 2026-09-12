@@ -53,25 +53,26 @@ type streamPart struct {
 
 func transportGenerateStream(
 	client openai.Client,
-) inference.Transport[generateWire, inference.ProviderStream[streamRaw]] {
+) inference.Transport[*responsesRequest, inference.ProviderStream[streamRaw]] {
 	return func(
 		ctx context.Context,
-		wire generateWire,
+		request *responsesRequest,
 	) (inference.ProviderStream[streamRaw], error) {
+		modelName := string(request.params.Model)
 		var requestID string
-		opts := append([]option.RequestOption(nil), requestOptions(wire)...)
+		opts := append([]option.RequestOption(nil), request.options...)
 		opts = append(opts, captureRequestID(&requestID))
 		stream := client.Responses.NewStreaming(
 			ctx,
-			wireToParams(wire),
+			request.params,
 			opts...,
 		)
 		if err := stream.Err(); err != nil {
 			classified := classifyError(err)
-			logInferenceStream(ctx, "generate", wire.model, classified, "")
+			inference.LogProviderStream(ctx, providerID, "generate", modelName, classified, "")
 			return nil, classified
 		}
-		logInferenceStream(ctx, "generate", wire.model, nil, "")
+		inference.LogProviderStream(ctx, providerID, "generate", modelName, nil, "")
 		return &responsesStream{
 			stream:    stream,
 			parts:     make(map[int64]*streamPart),
@@ -98,7 +99,7 @@ func (s *responsesStream) Next(ctx context.Context) (streamRaw, error) {
 		if !s.stream.Next() {
 			if err := s.stream.Err(); err != nil {
 				classified := classifyError(err)
-				logInferenceStream(ctx, "generate", "", classified, "")
+				inference.LogProviderStream(ctx, providerID, "generate", "", classified, "")
 				return streamRaw{}, classified
 			}
 			return streamRaw{}, io.EOF
@@ -457,7 +458,7 @@ func decodeGenerateStream(
 			ResponseID:        raw.responseID,
 			ProviderOutputs:   raw.providerOutputs.Clone(),
 		}
-		logInferenceStreamEnd(ctx, "generate", raw.responseID)
+		inference.LogProviderStreamEnd(ctx, providerID, "generate", raw.responseID)
 		if raw.usage != nil {
 			usage := rawUsageCanonical(*raw.usage)
 			event.Usage = &usage

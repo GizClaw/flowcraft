@@ -43,16 +43,43 @@ func toolResultImageParts(t *testing.T) message.Content {
 	}}
 }
 
-func compileToolResult(t *testing.T, entry catalogEntry, content message.Content) inference.Compiled[generateWire] {
+// compileToolResult compiles a tool-result request for the surface the entry
+// speaks and returns the request the transport would post.
+func compileToolResult(
+	t *testing.T,
+	entry catalogEntry,
+	content message.Content,
+) inference.Compiled[*responsesRequest] {
 	t.Helper()
-	compiled, err := compileGenerate("gpt-5.6-sol", entry)(
+	if entry.dialect.api == apiChat {
+		t.Fatal("chat entries compile through compileChatToolResult")
+	}
+	compiled, err := compileResponses("gpt-5.6-sol", entry)(
 		context.Background(),
 		openaiModel("gpt-5.6-sol"),
 		toolResultRequest(t, content),
 		inference.GenerateExecutionUnary,
 	)
 	if err != nil {
-		t.Fatalf("compileGenerate: %v", err)
+		t.Fatalf("compileResponses: %v", err)
+	}
+	return compiled
+}
+
+func compileChatToolResult(
+	t *testing.T,
+	entry catalogEntry,
+	content message.Content,
+) inference.Compiled[*chatRequest] {
+	t.Helper()
+	compiled, err := compileChat("gpt-5.6-sol", entry)(
+		context.Background(),
+		openaiModel("gpt-5.6-sol"),
+		toolResultRequest(t, content),
+		inference.GenerateExecutionUnary,
+	)
+	if err != nil {
+		t.Fatalf("compileChat: %v", err)
 	}
 	return compiled
 }
@@ -65,7 +92,7 @@ func TestToolResultMultimodalCarriesImage(t *testing.T) {
 	if compiled.Report.Dropped(inference.FieldGenerateContextToolResult) {
 		t.Fatalf("multimodal tool result must compile native: %+v", compiled.Report.Decisions)
 	}
-	params := wireToParams(compiled.Wire)
+	params := compiled.Wire.params
 	output := params.Input.OfInputItemList[0].OfFunctionCallOutput.Output
 	list := output.OfResponseFunctionCallOutputItemArray
 	if len(list) != 3 {
@@ -98,15 +125,17 @@ func TestToolResultOmittedPartKeepsPosition(t *testing.T) {
 	if !compiled.Report.Dropped(inference.FieldGenerateContextToolResult) {
 		t.Fatal("an unconsumable tool result part must be reported as dropped")
 	}
-	items := compiled.Wire.items[0].output
+	output := compiled.Wire.params.Input.OfInputItemList[0].OfFunctionCallOutput.Output
+	items := output.OfResponseFunctionCallOutputItemArray
 	if len(items) != 3 {
 		t.Fatalf("lowered parts = %d, want 3 (text, placeholder, text)", len(items))
 	}
-	if items[0].text != "before" || items[2].text != "after" {
+	if items[0].OfInputText == nil || items[0].OfInputText.Text != "before" ||
+		items[2].OfInputText == nil || items[2].OfInputText.Text != "after" {
 		t.Fatalf("surrounding text lost its place: %+v", items)
 	}
 	want := "[omitted tool output: image (model does not accept image input)]"
-	if items[1].kind != wireContentText || items[1].text != want {
+	if items[1].OfInputText == nil || items[1].OfInputText.Text != want {
 		t.Fatalf("placeholder = %+v, want %q", items[1], want)
 	}
 	notes := compiled.Report.Components(inference.FieldGenerateContextToolResult)
@@ -134,11 +163,11 @@ func TestToolResultChatImagesAreReportedNotSilentlyDropped(t *testing.T) {
 		message.TextPart{Text: "before"},
 		message.ImagePart{Source: mustImageSource(t)},
 	}}
-	compiled := compileToolResult(t, entry, content)
+	compiled := compileChatToolResult(t, entry, content)
 	if !compiled.Report.Dropped(inference.FieldGenerateContextToolResult) {
 		t.Fatal("chat tool images must be reported as dropped")
 	}
-	params := wireToChatParams(compiled.Wire)
+	params := compiled.Wire.params
 	var tool *string
 	for _, item := range params.Messages {
 		if item.OfTool != nil {
